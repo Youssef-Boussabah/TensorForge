@@ -190,6 +190,66 @@ class Tensor:
         out._backward = _backward
         return out
 
+    def exp(self):
+        out = Tensor(
+            np.exp(self.data),
+            requires_grad=self.requires_grad,
+            _children=(self,),
+            _op="exp",
+        )
+
+        def _backward():
+            # d(e^x)/dx = e^x, which is exactly the forward output.
+            self._accumulate_grad(out.data * out.grad)
+
+        out._backward = _backward
+        return out
+
+    def log(self):
+        out = Tensor(
+            np.log(self.data),
+            requires_grad=self.requires_grad,
+            _children=(self,),
+            _op="log",
+        )
+
+        def _backward():
+            # d(ln x)/dx = 1/x.
+            self._accumulate_grad(out.grad / self.data)
+
+        out._backward = _backward
+        return out
+
+    def tanh(self):
+        out = Tensor(
+            np.tanh(self.data),
+            requires_grad=self.requires_grad,
+            _children=(self,),
+            _op="tanh",
+        )
+
+        def _backward():
+            # d(tanh x)/dx = 1 - tanh(x)^2, reusing the forward output.
+            self._accumulate_grad((1.0 - out.data ** 2) * out.grad)
+
+        out._backward = _backward
+        return out
+
+    def sigmoid(self):
+        out = Tensor(
+            1.0 / (1.0 + np.exp(-self.data)),
+            requires_grad=self.requires_grad,
+            _children=(self,),
+            _op="sigmoid",
+        )
+
+        def _backward():
+            # d(sigmoid x)/dx = sigmoid(x) * (1 - sigmoid(x)).
+            self._accumulate_grad(out.data * (1.0 - out.data) * out.grad)
+
+        out._backward = _backward
+        return out
+
     # ------------------------------------------------------------------
     # Derived operations (built from the primitives above, so they get
     # their gradients for free)
