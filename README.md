@@ -23,7 +23,7 @@ y.backward()
 print(x.grad)  # 8.0
 ```
 
-## Run the first training example
+## Run the training examples
 
 Train a `Linear(1, 1)` model to recover the line `y = 2x + 1`:
 
@@ -33,6 +33,16 @@ uv run python examples/train_regression.py
 
 It prints the loss as it falls and the learned weight (≈ 2.0) and
 bias (≈ 1.0).
+
+Train a small MLP (`Linear → Tanh → Linear → Sigmoid`) to solve XOR —
+the classic problem a single linear layer cannot learn:
+
+```
+uv run python examples/train_xor.py
+```
+
+It prints the loss as it falls and the final predictions for all four
+XOR inputs (near 0, 1, 1, 0).
 
 ## Run the tests
 
