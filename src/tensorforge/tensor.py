@@ -146,6 +146,34 @@ class Tensor:
         out._backward = _backward
         return out
 
+    def matmul(self, other):
+        other = _ensure_tensor(other)
+        if self.data.ndim > 2 or other.data.ndim > 2:
+            raise NotImplementedError(
+                "matmul supports 1-D and 2-D tensors for now"
+            )
+        out = Tensor(
+            self.data @ other.data,
+            requires_grad=self.requires_grad or other.requires_grad,
+            _children=(self, other),
+            _op="@",
+        )
+
+        def _backward():
+            a, b = self.data, other.data
+            # Promote 1-D operands to 2-D the same way np.matmul does
+            # (left vector becomes a row, right vector becomes a column),
+            # so one pair of gradient formulas covers every case.
+            a2 = a.reshape(1, -1) if a.ndim == 1 else a
+            b2 = b.reshape(-1, 1) if b.ndim == 1 else b
+            grad2 = out.grad.reshape(a2.shape[0], b2.shape[1])
+            # For C = A @ B: dL/dA = dL/dC @ B^T and dL/dB = A^T @ dL/dC.
+            self._accumulate_grad((grad2 @ b2.T).reshape(a.shape))
+            other._accumulate_grad((a2.T @ grad2).reshape(b.shape))
+
+        out._backward = _backward
+        return out
+
     def relu(self):
         out = Tensor(
             np.maximum(self.data, 0.0),
@@ -166,6 +194,12 @@ class Tensor:
     # Derived operations (built from the primitives above, so they get
     # their gradients for free)
     # ------------------------------------------------------------------
+
+    def __matmul__(self, other):
+        return self.matmul(other)
+
+    def __rmatmul__(self, other):
+        return _ensure_tensor(other).matmul(self)
 
     def __neg__(self):
         return self * -1.0
