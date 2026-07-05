@@ -2,7 +2,7 @@
 
 from tensorforge.nn.activations import ReLU, Sigmoid, Tanh
 from tensorforge.nn.linear import Linear
-from tensorforge.nn.losses import mse_loss
+from tensorforge.nn.losses import cross_entropy, mse_loss
 from tensorforge.nn.module import Module
 from tensorforge.nn.parameter import Parameter
 from tensorforge.nn.sequential import Sequential
@@ -16,4 +16,5 @@ __all__ = [
     "Tanh",
     "Sequential",
     "mse_loss",
+    "cross_entropy",
 ]

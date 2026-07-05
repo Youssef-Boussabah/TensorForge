@@ -115,18 +115,23 @@ class Tensor:
         out._backward = _backward
         return out
 
-    def sum(self):
+    def sum(self, axis=None, keepdims=False):
         out = Tensor(
-            self.data.sum(),
+            self.data.sum(axis=axis, keepdims=keepdims),
             requires_grad=self.requires_grad,
             _children=(self,),
             _op="sum",
         )
 
         def _backward():
-            # Every element contributed with weight 1, so the scalar
-            # gradient is spread back to every position.
-            self._accumulate_grad(np.ones_like(self.data) * out.grad)
+            grad = out.grad
+            # If an axis was summed away, put it back (with size 1) so
+            # the gradient broadcasts across the positions it came from.
+            if axis is not None and not keepdims:
+                grad = np.expand_dims(grad, axis)
+            # Every element contributed with weight 1, so the gradient
+            # is spread back to every position.
+            self._accumulate_grad(np.ones_like(self.data) * grad)
 
         out._backward = _backward
         return out
@@ -260,6 +265,19 @@ class Tensor:
 
     def __rmatmul__(self, other):
         return _ensure_tensor(other).matmul(self)
+
+    def softmax(self, axis=-1):
+        """Normalize values along ``axis`` into probabilities that sum to 1.
+
+        Built from existing autograd ops, so it needs no backward logic
+        of its own. Subtracting the max first is the standard trick for
+        numerical stability: it prevents exp() from overflowing, and it
+        does not change the result (softmax is shift-invariant). The max
+        is a plain constant here, which still yields the correct gradient.
+        """
+        shifted = self - self.data.max(axis=axis, keepdims=True)
+        exp = shifted.exp()
+        return exp / exp.sum(axis=axis, keepdims=True)
 
     def __neg__(self):
         return self * -1.0
