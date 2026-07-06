@@ -46,3 +46,47 @@ class Adam:
         """Clear gradients so the next backward() starts fresh."""
         for param in self.parameters:
             param.grad = None
+
+    def state_dict(self):
+        """Return everything needed to resume Adam exactly: the
+        hyperparameters, the step count, and copies of the moment
+        estimates."""
+        return {
+            "lr": self.lr,
+            "beta1": self.beta1,
+            "beta2": self.beta2,
+            "eps": self.eps,
+            "t": self.t,
+            "m": [m.copy() for m in self.m],
+            "v": [v.copy() for v in self.v],
+        }
+
+    def load_state_dict(self, state):
+        """Restore state produced by ``state_dict``.
+
+        The moment estimates must match the optimizer's parameter list
+        in length and shapes. Arrays are copied in, and the parameter
+        list itself is untouched.
+        """
+        m, v = state["m"], state["v"]
+        if len(m) != len(self.parameters) or len(v) != len(self.parameters):
+            raise ValueError(
+                f"optimizer state holds {len(m)}/{len(v)} moment arrays "
+                f"but the optimizer has {len(self.parameters)} parameters"
+            )
+        for i, param in enumerate(self.parameters):
+            for label, moments in (("m", m), ("v", v)):
+                shape = np.asarray(moments[i]).shape
+                if shape != param.data.shape:
+                    raise ValueError(
+                        f"shape mismatch for {label}[{i}]: parameter is "
+                        f"{param.data.shape}, state has {shape}"
+                    )
+
+        self.lr = float(state["lr"])
+        self.beta1 = float(state["beta1"])
+        self.beta2 = float(state["beta2"])
+        self.eps = float(state["eps"])
+        self.t = int(state["t"])
+        self.m = [np.array(x, dtype=np.float64) for x in m]
+        self.v = [np.array(x, dtype=np.float64) for x in v]

@@ -23,6 +23,8 @@ numeric dependency.
   `train_test_split` for validation holdouts
 - [x] **Save/load parameters** — `save_parameters` / `load_parameters`
   (plain NumPy `.npz`, plus `state_dict()` on every module)
+- [x] **Checkpointing** — `save_checkpoint` / `load_checkpoint` with
+  optimizer state and metadata, so training can resume exactly
 - [x] **Model inspection** — `model.summary()` and `count_parameters`;
   parameters with `requires_grad=False` are frozen: skipped by
   optimizers and excluded from trainable counts
@@ -73,6 +75,18 @@ from tensorforge import save_parameters, load_parameters
 
 save_parameters(model, "model.npz")
 load_parameters(new_model, "model.npz")
+```
+
+To *resume training* rather than just reuse weights, save a checkpoint —
+it also captures the optimizer's state (for Adam, the step count and
+moment estimates) and any JSON metadata you attach:
+
+```python
+from tensorforge import save_checkpoint, load_checkpoint
+
+save_checkpoint("ckpt.npz", model, optimizer, metadata={"epoch": 40})
+report = load_checkpoint("ckpt.npz", model, optimizer)
+print(report["metadata"]["epoch"])  # 40 — continue from here
 ```
 
 Models can describe themselves:

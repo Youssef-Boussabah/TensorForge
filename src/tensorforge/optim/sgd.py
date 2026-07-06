@@ -19,3 +19,13 @@ class SGD:
         """Clear gradients so the next backward() starts fresh."""
         for param in self.parameters:
             param.grad = None
+
+    def state_dict(self):
+        """Return the optimizer's restorable state (SGD is stateless
+        apart from its hyperparameters)."""
+        return {"lr": self.lr}
+
+    def load_state_dict(self, state):
+        """Restore hyperparameters from ``state``. Parameters are
+        untouched — they belong to the model, not the checkpoint."""
+        self.lr = float(state["lr"])

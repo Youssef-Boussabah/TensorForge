@@ -6,7 +6,12 @@ from tensorforge.nn.metrics import accuracy, binary_accuracy, evaluate_classifie
 from tensorforge.nn.module import count_parameters, model_summary
 from tensorforge.nn.parameter import Parameter
 from tensorforge.optim import SGD, Adam
-from tensorforge.serialization import load_parameters, save_parameters
+from tensorforge.serialization import (
+    load_checkpoint,
+    load_parameters,
+    save_checkpoint,
+    save_parameters,
+)
 from tensorforge.tensor import Tensor
 
 __all__ = [
@@ -23,6 +28,8 @@ __all__ = [
     "evaluate_classifier",
     "save_parameters",
     "load_parameters",
+    "save_checkpoint",
+    "load_checkpoint",
     "count_parameters",
     "model_summary",
 ]

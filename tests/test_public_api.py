@@ -14,8 +14,10 @@ def test_root_package_exports():
         count_parameters,
         cross_entropy,
         evaluate_classifier,
+        load_checkpoint,
         load_parameters,
         model_summary,
+        save_checkpoint,
         save_parameters,
         train_test_split,
     )
