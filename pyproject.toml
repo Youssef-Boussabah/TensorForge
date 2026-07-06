@@ -19,3 +19,9 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
 ]
+
+[tool.pytest.ini_options]
+# The default .pytest_cache at the repo root has broken permissions on
+# this machine (access denied even to reads), which made every pytest
+# run emit cache warnings. Point the cache somewhere writable instead.
+cache_dir = ".cache/pytest"

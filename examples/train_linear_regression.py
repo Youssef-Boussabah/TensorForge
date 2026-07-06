@@ -3,7 +3,7 @@
 Trains a Linear(1, 1) model to recover the line y = 2x + 1 from data.
 Run it with:
 
-    uv run python examples/train_regression.py
+    uv run python examples/train_linear_regression.py
 """
 
 import numpy as np

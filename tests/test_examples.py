@@ -6,7 +6,7 @@ import numpy as np
 # The examples/ folder is not a package, so put it on the path directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "examples"))
 
-from train_regression import train
+from train_linear_regression import train
 from train_xor import train as train_xor
 
 from tensorforge import Tensor
