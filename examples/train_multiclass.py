@@ -14,7 +14,7 @@ Run it with:
 import numpy as np
 
 from tensorforge import Tensor
-from tensorforge.nn import Linear, Sequential, Tanh, cross_entropy
+from tensorforge.nn import Linear, Sequential, Tanh, accuracy, cross_entropy
 from tensorforge.optim import SGD
 
 NUM_CLASSES = 3
@@ -71,23 +71,21 @@ def train(
         """Current loss and accuracy on the full dataset."""
         logits = model(x)
         loss = cross_entropy(logits, y_np)
-        predictions = np.argmax(logits.data, axis=1)
-        accuracy = float((predictions == y_np).mean())
-        return logits, loss, accuracy
+        return logits, loss, accuracy(logits, y_np)
 
     losses = []
     accuracies = []
     for epoch in range(epochs):
-        logits, loss, accuracy = evaluate()
+        logits, loss, epoch_accuracy = evaluate()
         losses.append(float(loss.data))
-        accuracies.append(accuracy)
+        accuracies.append(epoch_accuracy)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         if verbose and epoch % 100 == 0:
-            print(f"epoch {epoch:04d} | loss {float(loss.data):.4f} | accuracy {accuracy:.1%}")
+            print(f"epoch {epoch:04d} | loss {float(loss.data):.4f} | accuracy {epoch_accuracy:.1%}")
 
     # One last forward pass to measure the model after the final update.
     _, final_loss_tensor, final_accuracy = evaluate()
