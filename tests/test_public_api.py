@@ -8,6 +8,7 @@ def test_root_package_exports():
         Conv2d,
         Dropout,
         Flatten,
+        MaxPool2d,
         Parameter,
         SGD,
         Tensor,
@@ -38,6 +39,7 @@ def test_nn_exports():
         Dropout,
         Flatten,
         Linear,
+        MaxPool2d,
         Module,
         Parameter,
         ReLU,
@@ -83,3 +85,4 @@ def test_root_names_are_the_same_objects_as_submodule_names():
     assert tensorforge.Parameter is tensorforge.nn.Parameter
     assert tensorforge.Conv2d is tensorforge.nn.Conv2d
     assert tensorforge.Flatten is tensorforge.nn.Flatten
+    assert tensorforge.MaxPool2d is tensorforge.nn.MaxPool2d

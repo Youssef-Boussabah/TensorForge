@@ -21,6 +21,7 @@ src/tensorforge/
     dropout.py       Dropout
     batchnorm.py     BatchNorm1d
     conv.py          Conv2d (NCHW image-shaped inputs)
+    pool.py          MaxPool2d
     flatten.py       Flatten
     sequential.py    Sequential container
     losses.py        mse_loss, cross_entropy, binary_cross_entropy
@@ -56,12 +57,14 @@ registration calls needed. Modules can also declare non-trainable
 **Layers** (Linear, activations, Dropout, BatchNorm1d, Conv2d,
 Flatten) are small Module subclasses. Each one implements `forward()`
 using Tensor operations, so gradients flow through them automatically
-(Conv2d is the exception — it's a fused op with an explicit backward,
-because composing a convolution from elementwise ops would be
-unreadable). Conv2d works on image-shaped `(batch, channels, height,
-width)` input, and Flatten bridges that back to the `(batch, features)`
-shape Linear expects. Sequential chains layers so the output of one
-feeds the next.
+(Conv2d and MaxPool2d are the exceptions — fused ops with explicit
+backwards, because composing them from elementwise ops would be
+unreadable). Conv2d and MaxPool2d work on image-shaped `(batch,
+channels, height, width)` input; MaxPool2d has no Parameters at all and
+its backward routes each window's gradient only to the position that
+won the max. Flatten bridges image-shaped activations back to the
+`(batch, features)` shape Linear expects. Sequential chains layers so
+the output of one feeds the next.
 
 **Losses** are either plain Tensor expressions (`mse_loss`) or fused
 operations with a hand-written backward pass where numerical stability

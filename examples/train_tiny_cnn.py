@@ -7,7 +7,10 @@ slid across the image can detect a bar *wherever* it appears, which is
 exactly what a Linear layer on raw pixels cannot do without learning
 every position separately.
 
-Model: Conv2d -> ReLU -> Flatten -> Linear, trained with cross-entropy.
+Model: Conv2d -> ReLU -> MaxPool2d -> Flatten -> Linear, trained with
+cross-entropy. The pooling layer halves the spatial grid, keeping only
+the strongest activation in each 2x2 window — fewer values for the
+classifier, and a little tolerance to where exactly the bar sits.
 
 Run it with:
 
@@ -17,7 +20,15 @@ Run it with:
 import numpy as np
 
 from tensorforge import Tensor, accuracy
-from tensorforge.nn import Conv2d, Flatten, Linear, ReLU, Sequential, cross_entropy
+from tensorforge.nn import (
+    Conv2d,
+    Flatten,
+    Linear,
+    MaxPool2d,
+    ReLU,
+    Sequential,
+    cross_entropy,
+)
 from tensorforge.optim import Adam
 
 IMAGE_SIZE = 6
@@ -43,13 +54,14 @@ def train(epochs=150, lr=0.01, seed=0, verbose=True):
     x_np, y_np = make_bars()
     x = Tensor(x_np)
 
-    # One conv layer learns bar-shaped kernels; Flatten bridges the
-    # image-shaped activations into the final Linear classifier.
+    # One conv layer learns bar-shaped kernels, pooling downsamples the
+    # activation map, and Flatten bridges into the Linear classifier.
     model = Sequential(
         Conv2d(1, 4, kernel_size=3),   # (N, 1, 6, 6) -> (N, 4, 4, 4)
         ReLU(),
-        Flatten(),                     # -> (N, 64)
-        Linear(4 * 4 * 4, 2),          # -> (N, 2) class logits
+        MaxPool2d(2),                  # -> (N, 4, 2, 2)
+        Flatten(),                     # -> (N, 16)
+        Linear(4 * 2 * 2, 2),          # -> (N, 2) class logits
     )
     optimizer = Adam(model.parameters(), lr=lr)
 

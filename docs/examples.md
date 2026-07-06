@@ -57,12 +57,13 @@ clouds.
 uv run python examples/train_tiny_cnn.py
 ```
 
-Why convolutions exist: a `Conv2d -> ReLU -> Flatten -> Linear` model
-classifies synthetic 6x6 images containing a vertical or horizontal
-bar at a *random position*. One small kernel slid across the image
-detects a bar wherever it appears — which a Linear layer on raw pixels
-can't do without learning every position separately. Reaches 100%
-accuracy in about 50 epochs.
+Why convolutions exist: a `Conv2d -> ReLU -> MaxPool2d -> Flatten ->
+Linear` model classifies synthetic 6x6 images containing a vertical or
+horizontal bar at a *random position*. One small kernel slid across
+the image detects a bar wherever it appears — which a Linear layer on
+raw pixels can't do without learning every position separately — and
+max-pooling downsamples the activation map, keeping the strongest
+response per window. Reaches 100% accuracy in well under 100 epochs.
 
 ## MLP with Dropout
 

@@ -26,14 +26,16 @@ that capture optimizer state so training can resume exactly.
 example that uses it properly), eval-safe evaluators, BatchNorm1d with
 module buffers, gradient clipping, the StepLR scheduler, scheduler
 state in checkpoints — completing the training-resume story — and
-image-shaped input: Conv2d, Flatten, and a tiny CNN example.
+image-shaped input: Conv2d, MaxPool2d, Flatten, and a tiny CNN example.
 
 ## Practical next steps
 
 Roughly in order of usefulness:
 
-- **MaxPool2d** — the usual companion to Conv2d, for downsampling
-  image-shaped activations.
+- **LayerNorm** — normalization that doesn't depend on the batch, a
+  nice contrast to the batch-statistics normalization already shipped.
+- **RNG state in checkpoints** — so runs that use random layers or
+  shuffling resume with the exact same randomness.
 - **A larger synthetic image example** — more classes, bigger images,
   still dependency-free.
 - **More docs** — deeper walkthroughs of individual layers as the

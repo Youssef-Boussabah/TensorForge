@@ -15,6 +15,7 @@ from tensorforge.nn.metrics import (
 )
 from tensorforge.nn.module import Module, count_parameters, model_summary
 from tensorforge.nn.parameter import Parameter
+from tensorforge.nn.pool import MaxPool2d
 from tensorforge.nn.sequential import Sequential
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "Dropout",
     "BatchNorm1d",
     "Conv2d",
+    "MaxPool2d",
     "Flatten",
     "Sequential",
     "mse_loss",

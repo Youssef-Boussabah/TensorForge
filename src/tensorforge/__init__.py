@@ -14,6 +14,7 @@ from tensorforge.nn.dropout import Dropout
 from tensorforge.nn.flatten import Flatten
 from tensorforge.nn.module import count_parameters, model_summary
 from tensorforge.nn.parameter import Parameter
+from tensorforge.nn.pool import MaxPool2d
 from tensorforge.optim import SGD, Adam, StepLR, clip_grad_norm, clip_grad_value
 from tensorforge.serialization import (
     load_checkpoint,
@@ -29,6 +30,7 @@ __all__ = [
     "Dropout",
     "BatchNorm1d",
     "Conv2d",
+    "MaxPool2d",
     "Flatten",
     "cross_entropy",
     "binary_cross_entropy",

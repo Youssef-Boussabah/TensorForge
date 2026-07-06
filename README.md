@@ -17,7 +17,7 @@ actually does, this repo is a few hundred lines away from telling you.
 
 **Models (`tensorforge.nn`)**
 - `Parameter`, `Module`, `Linear`, `ReLU`/`Sigmoid`/`Tanh`, `Dropout`,
-  `BatchNorm1d`, `Conv2d`, `Flatten`, `Sequential`
+  `BatchNorm1d`, `Conv2d`, `MaxPool2d`, `Flatten`, `Sequential`
 - Train/eval mode (`model.train()` / `model.eval()`), frozen
   parameters, model summaries, parameter counting
 - Losses: `mse_loss`, numerically stable `cross_entropy` and
