@@ -2,7 +2,9 @@
 
 from tensorforge.nn.activations import ReLU, Sigmoid, Tanh
 from tensorforge.nn.batchnorm import BatchNorm1d
+from tensorforge.nn.conv import Conv2d
 from tensorforge.nn.dropout import Dropout
+from tensorforge.nn.flatten import Flatten
 from tensorforge.nn.linear import Linear
 from tensorforge.nn.losses import binary_cross_entropy, cross_entropy, mse_loss
 from tensorforge.nn.metrics import (
@@ -24,6 +26,8 @@ __all__ = [
     "Tanh",
     "Dropout",
     "BatchNorm1d",
+    "Conv2d",
+    "Flatten",
     "Sequential",
     "mse_loss",
     "cross_entropy",

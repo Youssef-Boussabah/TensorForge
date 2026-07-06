@@ -9,7 +9,9 @@ from tensorforge.nn.metrics import (
     evaluate_classifier,
 )
 from tensorforge.nn.batchnorm import BatchNorm1d
+from tensorforge.nn.conv import Conv2d
 from tensorforge.nn.dropout import Dropout
+from tensorforge.nn.flatten import Flatten
 from tensorforge.nn.module import count_parameters, model_summary
 from tensorforge.nn.parameter import Parameter
 from tensorforge.optim import SGD, Adam, StepLR, clip_grad_norm, clip_grad_value
@@ -26,6 +28,8 @@ __all__ = [
     "Parameter",
     "Dropout",
     "BatchNorm1d",
+    "Conv2d",
+    "Flatten",
     "cross_entropy",
     "binary_cross_entropy",
     "accuracy",

@@ -24,16 +24,18 @@ that capture optimizer state so training can resume exactly.
 
 **v2.x — deeper framework features.** Train/eval mode, Dropout (and an
 example that uses it properly), eval-safe evaluators, BatchNorm1d with
-module buffers, gradient clipping, the StepLR scheduler, and scheduler
-state in checkpoints — completing the training-resume story.
+module buffers, gradient clipping, the StepLR scheduler, scheduler
+state in checkpoints — completing the training-resume story — and
+image-shaped input: Conv2d, Flatten, and a tiny CNN example.
 
 ## Practical next steps
 
 Roughly in order of usefulness:
 
-- **Conv2d + Flatten** — the first step beyond flat vectors.
-- **A tiny CNN-style example** — something image-shaped, still
-  synthetic and dependency-free.
+- **MaxPool2d** — the usual companion to Conv2d, for downsampling
+  image-shaped activations.
+- **A larger synthetic image example** — more classes, bigger images,
+  still dependency-free.
 - **More docs** — deeper walkthroughs of individual layers as the
   framework grows.
 - **Backend planning** — a C++ or GPU backend has always been the

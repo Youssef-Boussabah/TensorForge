@@ -20,6 +20,8 @@ src/tensorforge/
     activations.py   ReLU, Sigmoid, Tanh
     dropout.py       Dropout
     batchnorm.py     BatchNorm1d
+    conv.py          Conv2d (NCHW image-shaped inputs)
+    flatten.py       Flatten
     sequential.py    Sequential container
     losses.py        mse_loss, cross_entropy, binary_cross_entropy
     metrics.py       accuracy, binary_accuracy, evaluators
@@ -51,10 +53,15 @@ registration calls needed. Modules can also declare non-trainable
 *buffers* (like BatchNorm's running statistics) that travel with
 `state_dict()` but are never optimized.
 
-**Layers** (Linear, activations, Dropout, BatchNorm1d) are small
-Module subclasses. Each one implements `forward()` using Tensor
-operations, so gradients flow through them automatically. Sequential
-chains layers so the output of one feeds the next.
+**Layers** (Linear, activations, Dropout, BatchNorm1d, Conv2d,
+Flatten) are small Module subclasses. Each one implements `forward()`
+using Tensor operations, so gradients flow through them automatically
+(Conv2d is the exception — it's a fused op with an explicit backward,
+because composing a convolution from elementwise ops would be
+unreadable). Conv2d works on image-shaped `(batch, channels, height,
+width)` input, and Flatten bridges that back to the `(batch, features)`
+shape Linear expects. Sequential chains layers so the output of one
+feeds the next.
 
 **Losses** are either plain Tensor expressions (`mse_loss`) or fused
 operations with a hand-written backward pass where numerical stability

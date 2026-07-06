@@ -51,6 +51,19 @@ stable), a train/validation split, and `binary_accuracy`. Reaches
 about 97% train / 93% validation accuracy on two overlapping point
 clouds.
 
+## Tiny CNN
+
+```
+uv run python examples/train_tiny_cnn.py
+```
+
+Why convolutions exist: a `Conv2d -> ReLU -> Flatten -> Linear` model
+classifies synthetic 6x6 images containing a vertical or horizontal
+bar at a *random position*. One small kernel slid across the image
+detects a bar wherever it appears — which a Linear layer on raw pixels
+can't do without learning every position separately. Reaches 100%
+accuracy in about 50 epochs.
+
 ## MLP with Dropout
 
 ```

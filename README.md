@@ -17,7 +17,7 @@ actually does, this repo is a few hundred lines away from telling you.
 
 **Models (`tensorforge.nn`)**
 - `Parameter`, `Module`, `Linear`, `ReLU`/`Sigmoid`/`Tanh`, `Dropout`,
-  `BatchNorm1d`, `Sequential`
+  `BatchNorm1d`, `Conv2d`, `Flatten`, `Sequential`
 - Train/eval mode (`model.train()` / `model.eval()`), frozen
   parameters, model summaries, parameter counting
 - Losses: `mse_loss`, numerically stable `cross_entropy` and
@@ -67,8 +67,8 @@ optimizer.step()
 
 ## Examples
 
-Five runnable, seeded examples, from a bare linear regression up to a
-dropout-regularized MLP that demonstrates train/eval mode:
+Six runnable, seeded examples, from a bare linear regression up to a
+tiny convolutional network on synthetic images:
 
 ```
 uv run python examples/train_linear_regression.py
@@ -76,6 +76,7 @@ uv run python examples/train_xor.py
 uv run python examples/train_multiclass.py
 uv run python examples/train_binary_classification.py
 uv run python examples/train_mlp_with_dropout.py
+uv run python examples/train_tiny_cnn.py
 ```
 
 What each one teaches, and what to expect: [docs/examples.md](docs/examples.md).

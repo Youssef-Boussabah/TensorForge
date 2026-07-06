@@ -179,6 +179,26 @@ class Tensor:
         out._backward = _backward
         return out
 
+    def reshape(self, *shape):
+        """Return a Tensor with the same values in a new shape.
+
+        Reshaping moves no values, so the gradient just reshapes back.
+        """
+        if len(shape) == 1 and isinstance(shape[0], (tuple, list)):
+            shape = tuple(shape[0])
+        out = Tensor(
+            self.data.reshape(shape),
+            requires_grad=self.requires_grad,
+            _children=(self,),
+            _op="reshape",
+        )
+
+        def _backward():
+            self._accumulate_grad(out.grad.reshape(self.data.shape))
+
+        out._backward = _backward
+        return out
+
     def relu(self):
         out = Tensor(
             np.maximum(self.data, 0.0),

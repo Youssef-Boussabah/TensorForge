@@ -5,7 +5,9 @@ def test_root_package_exports():
     from tensorforge import (  # noqa: F401
         Adam,
         BatchNorm1d,
+        Conv2d,
         Dropout,
+        Flatten,
         Parameter,
         SGD,
         Tensor,
@@ -32,7 +34,9 @@ def test_root_package_exports():
 def test_nn_exports():
     from tensorforge.nn import (  # noqa: F401
         BatchNorm1d,
+        Conv2d,
         Dropout,
+        Flatten,
         Linear,
         Module,
         Parameter,
@@ -77,3 +81,5 @@ def test_root_names_are_the_same_objects_as_submodule_names():
     assert tensorforge.cross_entropy is tensorforge.nn.cross_entropy
     assert tensorforge.accuracy is tensorforge.nn.accuracy
     assert tensorforge.Parameter is tensorforge.nn.Parameter
+    assert tensorforge.Conv2d is tensorforge.nn.Conv2d
+    assert tensorforge.Flatten is tensorforge.nn.Flatten
