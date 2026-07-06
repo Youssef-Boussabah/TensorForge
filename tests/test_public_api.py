@@ -10,6 +10,8 @@ def test_root_package_exports():
         accuracy,
         batches,
         cross_entropy,
+        load_parameters,
+        save_parameters,
     )
 
 

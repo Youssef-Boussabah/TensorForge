@@ -18,6 +18,8 @@ numeric dependency.
 - [x] **Metrics** — `accuracy`
 - [x] **`tensorforge.optim`** — `SGD`, `Adam`
 - [x] **`tensorforge.data`** — `batches` mini-batch iterator
+- [x] **Save/load parameters** — `save_parameters` / `load_parameters`
+  (plain NumPy `.npz`, plus `state_dict()` on every module)
 - [x] **Runnable examples** — linear regression, XOR, 3-class spiral
 
 ## Setup
@@ -55,6 +57,15 @@ loss = cross_entropy(logits, targets)   # targets: integer class IDs
 optimizer.zero_grad()
 loss.backward()
 optimizer.step()
+```
+
+Trained weights can be saved and loaded into a same-architecture model:
+
+```python
+from tensorforge import save_parameters, load_parameters
+
+save_parameters(model, "model.npz")
+load_parameters(new_model, "model.npz")
 ```
 
 ## Examples
