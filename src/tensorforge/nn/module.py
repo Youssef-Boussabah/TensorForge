@@ -15,6 +15,16 @@ def model_summary(model):
     return model.summary()
 
 
+def _child_modules(value):
+    """Yield every Module directly reachable from ``value`` (either a
+    Module itself or a list/tuple containing Modules)."""
+    if isinstance(value, Module):
+        yield value
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _child_modules(item)
+
+
 def _named_parameters(value, prefix):
     """Yield (name, Parameter) pairs reachable from ``value``.
 
@@ -39,8 +49,30 @@ class Module:
     function runs it: ``y = model(x)``.
     """
 
+    # Class-level default: every module starts in training mode.
+    # train()/eval() set an instance attribute that shadows this, so
+    # subclasses don't need to call any __init__ chain for it.
+    training = True
+
     def __call__(self, *args, **kwargs):
         return self.forward(*args, **kwargs)
+
+    def train(self, mode=True):
+        """Put this module and all its children in training mode
+        (or evaluation mode with ``mode=False``). Returns self.
+
+        Layers like Dropout behave differently in the two modes;
+        layers without mode-dependent behavior simply ignore the flag.
+        """
+        self.training = mode
+        for value in self.__dict__.values():
+            for child in _child_modules(value):
+                child.train(mode)
+        return self
+
+    def eval(self):
+        """Equivalent to ``train(False)``. Returns self."""
+        return self.train(False)
 
     def forward(self, *args, **kwargs):
         raise NotImplementedError(

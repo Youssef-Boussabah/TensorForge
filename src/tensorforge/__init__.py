@@ -3,6 +3,7 @@
 from tensorforge.data import batches, train_test_split
 from tensorforge.nn.losses import binary_cross_entropy, cross_entropy
 from tensorforge.nn.metrics import accuracy, binary_accuracy, evaluate_classifier
+from tensorforge.nn.dropout import Dropout
 from tensorforge.nn.module import count_parameters, model_summary
 from tensorforge.nn.parameter import Parameter
 from tensorforge.optim import SGD, Adam
@@ -17,6 +18,7 @@ from tensorforge.tensor import Tensor
 __all__ = [
     "Tensor",
     "Parameter",
+    "Dropout",
     "cross_entropy",
     "binary_cross_entropy",
     "accuracy",

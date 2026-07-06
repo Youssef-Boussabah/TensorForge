@@ -4,6 +4,7 @@
 def test_root_package_exports():
     from tensorforge import (  # noqa: F401
         Adam,
+        Dropout,
         Parameter,
         SGD,
         Tensor,
@@ -25,6 +26,7 @@ def test_root_package_exports():
 
 def test_nn_exports():
     from tensorforge.nn import (  # noqa: F401
+        Dropout,
         Linear,
         Module,
         Parameter,

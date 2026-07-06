@@ -14,6 +14,10 @@ numeric dependency.
   `softmax`, with broadcasting-aware gradients
 - [x] **`tensorforge.nn`** — `Parameter`, `Module`, `Linear`, `ReLU`,
   `Sigmoid`, `Tanh`, `Sequential`
+- [x] **Train/eval mode + `Dropout`** — `model.train()` / `model.eval()`
+  toggle all children; inverted dropout randomly zeroes activations
+  during training and scales the survivors by 1/(1−p), and is the
+  identity at evaluation time
 - [x] **Losses** — `mse_loss`, numerically stable `cross_entropy` and
   `binary_cross_entropy` (both work on raw logits)
 - [x] **Metrics** — `accuracy`, `binary_accuracy`,
