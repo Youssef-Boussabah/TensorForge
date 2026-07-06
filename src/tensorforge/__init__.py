@@ -8,10 +8,11 @@ from tensorforge.nn.metrics import (
     evaluate_binary_classifier,
     evaluate_classifier,
 )
+from tensorforge.nn.batchnorm import BatchNorm1d
 from tensorforge.nn.dropout import Dropout
 from tensorforge.nn.module import count_parameters, model_summary
 from tensorforge.nn.parameter import Parameter
-from tensorforge.optim import SGD, Adam
+from tensorforge.optim import SGD, Adam, StepLR, clip_grad_norm, clip_grad_value
 from tensorforge.serialization import (
     load_checkpoint,
     load_parameters,
@@ -24,12 +25,16 @@ __all__ = [
     "Tensor",
     "Parameter",
     "Dropout",
+    "BatchNorm1d",
     "cross_entropy",
     "binary_cross_entropy",
     "accuracy",
     "binary_accuracy",
     "SGD",
     "Adam",
+    "StepLR",
+    "clip_grad_norm",
+    "clip_grad_value",
     "batches",
     "train_test_split",
     "evaluate_classifier",

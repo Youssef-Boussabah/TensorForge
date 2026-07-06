@@ -56,6 +56,48 @@ def test_deterministic_with_seed():
     assert stats_a["validation_losses"] == stats_b["validation_losses"]
 
 
+def test_grad_clipping_returns_gradient_norms():
+    stats = train(epochs=30, seed=0, verbose=False, max_grad_norm=5.0)
+    assert "gradient_norms" in stats
+    assert len(stats["gradient_norms"]) == 30  # one per optimization step
+    assert all(np.isfinite(n) and n >= 0 for n in stats["gradient_norms"])
+    assert np.isfinite(stats["final_loss"])
+    # Default runs don't include the key.
+    assert "gradient_norms" not in train(epochs=5, seed=0, verbose=False)
+
+
+def test_scheduler_decays_final_lr():
+    stats = train(
+        epochs=60, seed=0, verbose=False,
+        scheduler_step_size=20, scheduler_gamma=0.5,
+    )
+    assert np.isclose(stats["final_lr"], 0.03 * 0.5 ** 3)  # decayed 3 times
+    assert stats["final_lr"] < 0.03
+    # Without a scheduler the lr never moves.
+    assert train(epochs=5, seed=0, verbose=False)["final_lr"] == 0.03
+
+
+def test_clipping_and_scheduler_together_still_learn():
+    stats = train(
+        epochs=200, seed=0, verbose=False,
+        max_grad_norm=5.0, scheduler_step_size=100, scheduler_gamma=0.5,
+    )
+    assert stats["final_accuracy"] >= 0.95
+    assert stats["final_validation_accuracy"] >= 0.90
+
+
+def test_deterministic_with_clipping_and_scheduler():
+    kwargs = dict(
+        epochs=40, seed=0, verbose=False,
+        max_grad_norm=5.0, scheduler_step_size=15,
+    )
+    stats_a = train(**kwargs)
+    stats_b = train(**kwargs)
+    assert stats_a["losses"] == stats_b["losses"]
+    assert stats_a["gradient_norms"] == stats_b["gradient_norms"]
+    assert stats_a["final_lr"] == stats_b["final_lr"]
+
+
 def test_returned_model_is_in_eval_mode():
     stats = train(epochs=10, seed=0, verbose=False)
     model = stats["model"]

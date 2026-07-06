@@ -18,12 +18,18 @@ numeric dependency.
   toggle all children; inverted dropout randomly zeroes activations
   during training and scales the survivors by 1/(1−p), and is the
   identity at evaluation time
+- [x] **`BatchNorm1d`** — trainable scale/shift (`gamma`, `beta`) plus
+  running-mean/variance *buffers*: non-trainable state that is saved
+  and loaded with the model and used to normalize at evaluation time
 - [x] **Losses** — `mse_loss`, numerically stable `cross_entropy` and
   `binary_cross_entropy` (both work on raw logits)
 - [x] **Metrics** — `accuracy`, `binary_accuracy`, plus
   `evaluate_classifier` / `evaluate_binary_classifier` (loss + accuracy
   in one call, measured with the model safely in eval mode)
-- [x] **`tensorforge.optim`** — `SGD`, `Adam`
+- [x] **`tensorforge.optim`** — `SGD`, `Adam`, `StepLR`
+- [x] **Training stability** — `clip_grad_norm` / `clip_grad_value`
+  limit oversized gradients before the optimizer step; `StepLR` decays
+  the learning rate by a factor every fixed number of epochs
 - [x] **`tensorforge.data`** — `batches` mini-batch iterator and
   `train_test_split` for validation holdouts
 - [x] **Save/load parameters** — `save_parameters` / `load_parameters`
@@ -141,6 +147,10 @@ eval mode (dropout off):
 uv run python examples/train_mlp_with_dropout.py
 ```
 
+Its `train()` also takes optional `max_grad_norm=...` (gradient
+clipping) and `scheduler_step_size=...` / `scheduler_gamma=...`
+(StepLR learning-rate decay) arguments.
+
 ## Tests
 
 Every feature is covered by tests:
@@ -166,7 +176,7 @@ tests/             pytest suite
 
 Possible next steps, in rough order:
 
-- Normalization layers
+- Convolutional layers
 - A larger dataset example
 - C++ backend experiments
 - GPU/CUDA experiments

@@ -4,6 +4,7 @@
 def test_root_package_exports():
     from tensorforge import (  # noqa: F401
         Adam,
+        BatchNorm1d,
         Dropout,
         Parameter,
         SGD,
@@ -21,12 +22,16 @@ def test_root_package_exports():
         model_summary,
         save_checkpoint,
         save_parameters,
+        StepLR,
+        clip_grad_norm,
+        clip_grad_value,
         train_test_split,
     )
 
 
 def test_nn_exports():
     from tensorforge.nn import (  # noqa: F401
+        BatchNorm1d,
         Dropout,
         Linear,
         Module,
@@ -46,7 +51,13 @@ def test_nn_exports():
 
 
 def test_optim_exports():
-    from tensorforge.optim import SGD, Adam  # noqa: F401
+    from tensorforge.optim import (  # noqa: F401
+        SGD,
+        Adam,
+        StepLR,
+        clip_grad_norm,
+        clip_grad_value,
+    )
 
 
 def test_data_exports():

@@ -22,7 +22,7 @@ import numpy as np
 
 from tensorforge import Tensor, evaluate_binary_classifier, train_test_split
 from tensorforge.nn import Dropout, Linear, ReLU, Sequential, binary_cross_entropy
-from tensorforge.optim import Adam
+from tensorforge.optim import Adam, StepLR, clip_grad_norm
 
 
 def make_circles(points_per_class=100, noise=0.1):
@@ -46,6 +46,9 @@ def train(
     seed=0,
     validation_split=0.25,
     verbose=True,
+    max_grad_norm=None,
+    scheduler_step_size=None,
+    scheduler_gamma=0.5,
 ):
     """Train the classifier and return a dictionary of training stats."""
     np.random.seed(seed)  # fixes the dataset and the weight init
@@ -66,7 +69,12 @@ def train(
         Linear(hidden_size, 1),  # one raw logit per row
     )
     optimizer = Adam(model.parameters(), lr=lr)
+    # Optional: decay the learning rate every scheduler_step_size epochs.
+    scheduler = None
+    if scheduler_step_size is not None:
+        scheduler = StepLR(optimizer, step_size=scheduler_step_size, gamma=scheduler_gamma)
 
+    gradient_norms = []
     losses = []
     accuracies = []
     validation_losses = []
@@ -86,7 +94,13 @@ def train(
         loss = binary_cross_entropy(model(x), y_np)
         optimizer.zero_grad()
         loss.backward()
+        # Optional: cap the gradient norm before stepping, so one bad
+        # batch can't blow up the weights.
+        if max_grad_norm is not None:
+            gradient_norms.append(clip_grad_norm(model.parameters(), max_grad_norm))
         optimizer.step()
+        if scheduler is not None:
+            scheduler.step()
 
         if verbose and epoch % 100 == 0:
             print(
@@ -115,7 +129,7 @@ def train(
         print(f"final validation loss = {validation_losses[-1]:.4f}")
         print(f"final validation accuracy = {validation_accuracies[-1]:.1%}")
 
-    return {
+    stats = {
         "model": model,
         "initial_loss": losses[0],
         "final_loss": losses[-1],
@@ -126,7 +140,11 @@ def train(
         "final_validation_accuracy": validation_accuracies[-1],
         "validation_losses": validation_losses,
         "validation_accuracies": validation_accuracies,
+        "final_lr": float(optimizer.lr),
     }
+    if max_grad_norm is not None:
+        stats["gradient_norms"] = gradient_norms
+    return stats
 
 
 def main():

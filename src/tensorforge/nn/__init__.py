@@ -1,6 +1,7 @@
 """tensorforge.nn — a tiny neural-network module system."""
 
 from tensorforge.nn.activations import ReLU, Sigmoid, Tanh
+from tensorforge.nn.batchnorm import BatchNorm1d
 from tensorforge.nn.dropout import Dropout
 from tensorforge.nn.linear import Linear
 from tensorforge.nn.losses import binary_cross_entropy, cross_entropy, mse_loss
@@ -22,6 +23,7 @@ __all__ = [
     "Sigmoid",
     "Tanh",
     "Dropout",
+    "BatchNorm1d",
     "Sequential",
     "mse_loss",
     "cross_entropy",

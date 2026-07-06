@@ -42,6 +42,16 @@ def _named_parameters(value, prefix):
             yield from _named_parameters(item, f"{prefix}.{index}")
 
 
+def _named_buffers(value, prefix):
+    """Like _named_parameters, but for the buffers of child Modules."""
+    if isinstance(value, Module):
+        for name, buf in value.named_buffers():
+            yield f"{prefix}.{name}", buf
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            yield from _named_buffers(item, f"{prefix}.{index}")
+
+
 class Module:
     """Base class for layers and models.
 
@@ -97,6 +107,23 @@ class Module:
         (``requires_grad=True``)."""
         return [param for param in self.parameters() if param.requires_grad]
 
+    def named_buffers(self):
+        """Yield (name, array) for this module's buffers and its children's.
+
+        Buffers are non-trainable NumPy arrays a module wants saved and
+        loaded with its state — e.g. BatchNorm's running statistics. A
+        module declares them by listing attribute names in
+        ``self._buffers``. Never optimized, never given gradients.
+        """
+        for attr in getattr(self, "_buffers", ()):
+            yield attr, getattr(self, attr)
+        for attr, value in self.__dict__.items():
+            yield from _named_buffers(value, attr)
+
+    def buffers(self):
+        """Return all buffer arrays in this module and its children."""
+        return [buf for _, buf in self.named_buffers()]
+
     def zero_grad(self):
         """Clear stored gradients so the next backward() starts fresh."""
         for param in self.parameters():
@@ -150,25 +177,31 @@ class Module:
         return "\n".join(lines)
 
     def state_dict(self):
-        """Return {name: array} of all parameter values.
+        """Return {name: array} of all parameter and buffer values.
 
         The arrays are copies: mutating them does not touch the model.
         """
-        return {name: param.data.copy() for name, param in self.named_parameters()}
+        state = {name: param.data.copy() for name, param in self.named_parameters()}
+        for name, buf in self.named_buffers():
+            state[name] = buf.copy()
+        return state
 
     def load_state_dict(self, state_dict, strict=True):
-        """Load parameter values from ``state_dict`` in place.
+        """Load parameter and buffer values from ``state_dict`` in place.
 
-        Values are copied into the existing Parameter objects (nothing
-        is replaced), and shapes must match exactly. With ``strict=True``
-        the keys must match exactly too; with ``strict=False`` missing
-        and unexpected keys are tolerated and matching keys still load.
+        Values are copied into the existing Parameter objects and buffer
+        arrays (nothing is replaced), and shapes must match exactly.
+        With ``strict=True`` the keys must match exactly too; with
+        ``strict=False`` missing and unexpected keys are tolerated and
+        matching keys still load.
 
         Returns {"missing_keys": [...], "unexpected_keys": [...]}.
         """
         params = dict(self.named_parameters())
-        missing = [name for name in params if name not in state_dict]
-        unexpected = [name for name in state_dict if name not in params]
+        buffers = dict(self.named_buffers())
+        entries = {**params, **buffers}
+        missing = [name for name in entries if name not in state_dict]
+        unexpected = [name for name in state_dict if name not in entries]
         if strict and (missing or unexpected):
             raise ValueError(
                 f"state_dict keys do not match the model: "
@@ -185,5 +218,16 @@ class Module:
                     f"{param.data.shape}, state_dict has {value.shape}"
                 )
             param.data = value.copy()
+
+        for name, buf in buffers.items():
+            if name not in state_dict:
+                continue
+            value = np.asarray(state_dict[name], dtype=buf.dtype)
+            if value.shape != buf.shape:
+                raise ValueError(
+                    f"shape mismatch for {name!r}: model expects "
+                    f"{buf.shape}, state_dict has {value.shape}"
+                )
+            buf[...] = value  # copy in place so the owning module keeps its array
 
         return {"missing_keys": missing, "unexpected_keys": unexpected}
