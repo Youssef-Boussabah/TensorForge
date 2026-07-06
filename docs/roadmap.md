@@ -24,15 +24,13 @@ that capture optimizer state so training can resume exactly.
 
 **v2.x — deeper framework features.** Train/eval mode, Dropout (and an
 example that uses it properly), eval-safe evaluators, BatchNorm1d with
-module buffers, gradient clipping, and the StepLR scheduler.
+module buffers, gradient clipping, the StepLR scheduler, and scheduler
+state in checkpoints — completing the training-resume story.
 
 ## Practical next steps
 
 Roughly in order of usefulness:
 
-- **Scheduler checkpointing** — StepLR already has
-  `state_dict()`/`load_state_dict()`; wiring it into
-  `save_checkpoint`/`load_checkpoint` is a small follow-up.
 - **Conv2d + Flatten** — the first step beyond flat vectors.
 - **A tiny CNN-style example** — something image-shaped, still
   synthetic and dependency-free.

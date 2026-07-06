@@ -74,12 +74,15 @@ Two levels, both plain NumPy `.npz` files (no pickle):
 - `save_parameters(model, path)` / `load_parameters(model, path)`
   save **weights only** (including buffers like BatchNorm running
   stats). Use this to reuse a trained model.
-- `save_checkpoint(path, model, optimizer, metadata=...)` /
-  `load_checkpoint(path, model, optimizer)` additionally save the
-  **optimizer's state** — for Adam that means the step count and
-  moment estimates — plus any JSON metadata. Use this to *resume
-  training*: a run resumed from a checkpoint continues exactly as if
-  it had never stopped, which weights alone cannot guarantee.
+- `save_checkpoint(path, model, optimizer, metadata=..., scheduler=...)` /
+  `load_checkpoint(path, model, optimizer, scheduler=...)` additionally
+  save the **optimizer's state** — for Adam that means the step count
+  and moment estimates — the **scheduler's state** if you pass one
+  (StepLR's epoch counter and decay settings), plus any JSON metadata.
+  Use this to *resume training*: a run resumed from a checkpoint
+  continues exactly as if it had never stopped, which weights alone
+  cannot guarantee. Without the scheduler state, a resumed run would
+  restart the learning-rate schedule from the wrong place.
 
 Loading requires a model built with the same architecture; only the
 values move.

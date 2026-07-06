@@ -34,9 +34,9 @@ def load_parameters(model, path, strict=True):
     return model.load_state_dict(state_dict, strict=strict)
 
 
-def save_checkpoint(path, model, optimizer=None, metadata=None):
+def save_checkpoint(path, model, optimizer=None, metadata=None, scheduler=None):
     """Save a training checkpoint: model weights, optional optimizer
-    state, and optional JSON-serializable metadata.
+    state, optional scheduler state, and optional JSON metadata.
 
     Archive layout (all pickle-free):
       model::<param_name>   parameter arrays
@@ -44,9 +44,20 @@ def save_checkpoint(path, model, optimizer=None, metadata=None):
       optimizer::meta       optimizer class + scalar state as JSON
       optimizer::m::<i>     Adam's moment arrays, one entry each
       optimizer::v::<i>
+      scheduler::meta       scheduler class + state as JSON
     """
+    if scheduler is not None and optimizer is None:
+        raise ValueError(
+            "saving scheduler state requires the optimizer too — a "
+            "scheduler is meaningless without the optimizer it drives"
+        )
     arrays = {f"model::{name}": value for name, value in model.state_dict().items()}
     arrays["checkpoint::meta"] = json.dumps(metadata if metadata is not None else {})
+
+    if scheduler is not None:
+        arrays["scheduler::meta"] = json.dumps(
+            {"class": type(scheduler).__name__, "state": scheduler.state_dict()}
+        )
 
     if optimizer is not None:
         state = optimizer.state_dict()
@@ -63,19 +74,28 @@ def save_checkpoint(path, model, optimizer=None, metadata=None):
     np.savez(Path(path), **arrays)
 
 
-def load_checkpoint(path, model, optimizer=None, strict=True):
+def load_checkpoint(path, model, optimizer=None, strict=True, scheduler=None):
     """Load a checkpoint saved by ``save_checkpoint``.
 
     Model weights always load (``strict`` is passed through to
     ``model.load_state_dict``). Optimizer state loads only when an
-    ``optimizer`` is passed; it must be the same class the checkpoint
-    was saved with. Passing an optimizer when the checkpoint has no
-    optimizer state is an error. Returns::
+    ``optimizer`` is passed, and scheduler state only when a
+    ``scheduler`` is passed (which requires the optimizer too, loaded
+    first). Each must be the same class the checkpoint was saved with,
+    and passing one when the checkpoint holds no matching state is an
+    error. Scheduler state in a checkpoint is ignored when no scheduler
+    is passed. Returns::
 
         {"model": <load_state_dict report>,
          "optimizer_loaded": bool,
+         "scheduler_loaded": bool,
          "metadata": dict}
     """
+    if scheduler is not None and optimizer is None:
+        raise ValueError(
+            "loading scheduler state requires the optimizer too — a "
+            "scheduler is meaningless without the optimizer it drives"
+        )
     with np.load(Path(path), allow_pickle=False) as archive:
         files = set(archive.files)
         model_state = {
@@ -84,6 +104,9 @@ def load_checkpoint(path, model, optimizer=None, strict=True):
             if name.startswith("model::")
         }
         metadata = json.loads(archive["checkpoint::meta"].item())
+        scheduler_meta = None
+        if "scheduler::meta" in files:
+            scheduler_meta = json.loads(archive["scheduler::meta"].item())
         optimizer_meta = None
         moment_arrays = {"m": {}, "v": {}}
         if "optimizer::meta" in files:
@@ -120,8 +143,29 @@ def load_checkpoint(path, model, optimizer=None, strict=True):
         optimizer.load_state_dict(state)
         optimizer_loaded = True
 
+    # Scheduler state loads after the optimizer, so a restored lr is
+    # not overwritten by a stale scheduler-driven value (and vice versa
+    # the scheduler's epoch counter lines up with the restored lr).
+    scheduler_loaded = False
+    if scheduler is not None:
+        if scheduler_meta is None:
+            raise ValueError(
+                "a scheduler was passed, but this checkpoint contains "
+                "no scheduler state"
+            )
+        expected = scheduler_meta["class"]
+        actual = type(scheduler).__name__
+        if expected != actual:
+            raise ValueError(
+                f"checkpoint was saved with scheduler {expected!r}, "
+                f"but got {actual!r}"
+            )
+        scheduler.load_state_dict(scheduler_meta["state"])
+        scheduler_loaded = True
+
     return {
         "model": model_report,
         "optimizer_loaded": optimizer_loaded,
+        "scheduler_loaded": scheduler_loaded,
         "metadata": metadata,
     }

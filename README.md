@@ -32,8 +32,9 @@ actually does, this repo is a few hundred lines away from telling you.
 
 **Persistence**
 - `save_parameters` / `load_parameters` for weights, and
-  `save_checkpoint` / `load_checkpoint` with optimizer state and
-  metadata so training resumes exactly — all plain `.npz`, no pickle
+  `save_checkpoint` / `load_checkpoint` with optimizer state, optional
+  scheduler state, and metadata so training resumes exactly — all
+  plain `.npz`, no pickle
 
 ## Quickstart
 
