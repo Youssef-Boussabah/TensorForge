@@ -20,6 +20,7 @@ src/tensorforge/
     activations.py   ReLU, Sigmoid, Tanh
     dropout.py       Dropout
     batchnorm.py     BatchNorm1d
+    layernorm.py     LayerNorm
     conv.py          Conv2d (NCHW image-shaped inputs)
     pool.py          MaxPool2d
     flatten.py       Flatten
@@ -54,8 +55,12 @@ registration calls needed. Modules can also declare non-trainable
 *buffers* (like BatchNorm's running statistics) that travel with
 `state_dict()` but are never optimized.
 
-**Layers** (Linear, activations, Dropout, BatchNorm1d, Conv2d,
-Flatten) are small Module subclasses. Each one implements `forward()`
+**Layers** (Linear, activations, Dropout, BatchNorm1d, LayerNorm,
+Conv2d, Flatten) are small Module subclasses. The two normalizations
+differ in what they average over: BatchNorm1d normalizes each feature
+*across the batch* (so it keeps running statistics and changes behavior
+in eval mode), while LayerNorm normalizes each sample over *its own*
+trailing dimensions (no buffers, identical in train and eval mode). Each one implements `forward()`
 using Tensor operations, so gradients flow through them automatically
 (Conv2d and MaxPool2d are the exceptions — fused ops with explicit
 backwards, because composing them from elementwise ops would be

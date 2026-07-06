@@ -12,6 +12,7 @@ from tensorforge.nn.batchnorm import BatchNorm1d
 from tensorforge.nn.conv import Conv2d
 from tensorforge.nn.dropout import Dropout
 from tensorforge.nn.flatten import Flatten
+from tensorforge.nn.layernorm import LayerNorm
 from tensorforge.nn.module import count_parameters, model_summary
 from tensorforge.nn.parameter import Parameter
 from tensorforge.nn.pool import MaxPool2d
@@ -29,6 +30,7 @@ __all__ = [
     "Parameter",
     "Dropout",
     "BatchNorm1d",
+    "LayerNorm",
     "Conv2d",
     "MaxPool2d",
     "Flatten",

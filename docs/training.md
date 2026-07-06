@@ -46,6 +46,10 @@ Some layers behave differently while training:
   training mode and updates its running averages; in eval mode it uses
   the stored running averages and updates nothing.
 
+Not every layer cares: **LayerNorm** normalizes each sample over its
+own features, uses no batch statistics, and behaves identically in
+both modes.
+
 `model.train()` and `model.eval()` switch the whole model, recursing
 through all children. The rule of thumb: **optimize in train mode,
 measure in eval mode.** A loss measured with dropout active jumps
