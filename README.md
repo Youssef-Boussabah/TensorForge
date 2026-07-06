@@ -44,6 +44,15 @@ uv run python examples/train_xor.py
 It prints the loss as it falls and the final predictions for all four
 XOR inputs (near 0, 1, 1, 0).
 
+Train a two-hidden-layer MLP on a 3-class spiral with cross-entropy:
+
+```
+uv run python examples/train_multiclass.py
+```
+
+It prints loss and accuracy every 100 epochs and reaches 100% training
+accuracy on the spiral.
+
 ## Run the tests
 
 ```
