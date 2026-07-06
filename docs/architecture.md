@@ -93,7 +93,10 @@ A few conventions hold across the codebase:
   deferred.
 - Comments explain math and autograd reasoning, not obvious Python.
 - Randomness is always seedable: helpers take a `seed` argument and
-  use their own `np.random.default_rng` rather than global state.
+  use their own `np.random.default_rng`. The one deliberate exception
+  is unseeded Dropout, which draws from NumPy's global RNG so that
+  checkpoint RNG save/restore can make dropout training resume
+  bit-for-bit.
 - Every feature ships with tests, and training tests assert learning
   (loss decreased, accuracy above a threshold) rather than exact
   floating-point values.

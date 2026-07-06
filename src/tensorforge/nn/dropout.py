@@ -24,7 +24,14 @@ class Dropout(Module):
         if not 0.0 <= p < 1.0:
             raise ValueError(f"p must satisfy 0 <= p < 1, got {p}")
         self.p = float(p)
-        self.rng = np.random.default_rng(seed)
+        if seed is None:
+            # Unseeded dropout draws from NumPy's global RNG, so
+            # np.random.seed makes it reproducible and checkpoint RNG
+            # save/restore covers it. Both np.random and a Generator
+            # expose .random(shape), so forward() works with either.
+            self.rng = np.random
+        else:
+            self.rng = np.random.default_rng(seed)
 
     def forward(self, x):
         if not self.training or self.p == 0.0:

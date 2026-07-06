@@ -90,3 +90,13 @@ Two levels, both plain NumPy `.npz` files (no pickle):
 
 Loading requires a model built with the same architecture; only the
 values move.
+
+One more optional piece: randomness. If training uses unseeded Dropout
+(or anything else drawing from NumPy's global RNG), the sequence of
+random masks is part of the training trajectory. Pass
+``rng_state=True`` when saving and ``restore_rng_state=True`` when
+loading, and the resumed run replays the exact same masks the
+uninterrupted run would have seen — making the resume bit-for-bit.
+Both flags are off by default: without them checkpoints behave exactly
+as before, and a resumed dropout run is statistically equivalent but
+not identical.

@@ -66,6 +66,25 @@ def test_backward_zero_for_dropped_scaled_for_kept():
     assert np.array_equal(x.grad[~kept], np.zeros((~kept).sum()))
 
 
+def test_unseeded_dropout_follows_global_rng():
+    """Dropout without a seed draws from NumPy's global RNG, so
+    np.random.seed makes it reproducible (and checkpoint RNG restore
+    covers it). Seeded Dropout keeps its own generator as before."""
+    x = Tensor(np.ones(100))
+    np.random.seed(11)
+    first = Dropout(p=0.5)(x).data
+    np.random.seed(11)
+    second = Dropout(p=0.5)(x).data
+    assert np.array_equal(first, second)
+
+    # A seeded instance ignores the global stream entirely.
+    np.random.seed(11)
+    seeded_a = Dropout(p=0.5, seed=5)(x).data
+    np.random.seed(12)
+    seeded_b = Dropout(p=0.5, seed=5)(x).data
+    assert np.array_equal(seeded_a, seeded_b)
+
+
 def test_dropout_in_sequential_respects_mode():
     np.random.seed(0)
     model = Sequential(Linear(3, 3), Dropout(p=0.9, seed=0))

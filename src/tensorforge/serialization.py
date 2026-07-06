@@ -34,9 +34,15 @@ def load_parameters(model, path, strict=True):
     return model.load_state_dict(state_dict, strict=strict)
 
 
-def save_checkpoint(path, model, optimizer=None, metadata=None, scheduler=None):
+def save_checkpoint(path, model, optimizer=None, metadata=None, scheduler=None, rng_state=None):
     """Save a training checkpoint: model weights, optional optimizer
-    state, optional scheduler state, and optional JSON metadata.
+    state, optional scheduler state, optional RNG state, and optional
+    JSON metadata.
+
+    ``rng_state=True`` captures NumPy's current global RNG state
+    (``np.random.get_state()``); an explicit state tuple is also
+    accepted. Saving it lets a resumed run replay the exact same
+    randomness — dropout masks, shuffles — as the uninterrupted run.
 
     Archive layout (all pickle-free):
       model::<param_name>   parameter arrays
@@ -45,6 +51,8 @@ def save_checkpoint(path, model, optimizer=None, metadata=None, scheduler=None):
       optimizer::m::<i>     Adam's moment arrays, one entry each
       optimizer::v::<i>
       scheduler::meta       scheduler class + state as JSON
+      rng::meta             RNG scalars as JSON
+      rng::keys             the RNG key array
     """
     if scheduler is not None and optimizer is None:
         raise ValueError(
@@ -53,6 +61,27 @@ def save_checkpoint(path, model, optimizer=None, metadata=None, scheduler=None):
         )
     arrays = {f"model::{name}": value for name, value in model.state_dict().items()}
     arrays["checkpoint::meta"] = json.dumps(metadata if metadata is not None else {})
+
+    if rng_state is not None and rng_state is not False:
+        state = np.random.get_state() if rng_state is True else rng_state
+        # The legacy global state is a 5-tuple:
+        # (bit_generator_name, keys_array, pos, has_gauss, cached_gaussian)
+        try:
+            name, keys, pos, has_gauss, cached = state
+            arrays["rng::keys"] = np.asarray(keys, dtype=np.uint32)
+            arrays["rng::meta"] = json.dumps(
+                {
+                    "bit_generator": str(name),
+                    "pos": int(pos),
+                    "has_gauss": int(has_gauss),
+                    "cached_gaussian": float(cached),
+                }
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(
+                f"rng_state must be True or a NumPy np.random.get_state() "
+                f"tuple, got {rng_state!r}"
+            ) from error
 
     if scheduler is not None:
         arrays["scheduler::meta"] = json.dumps(
@@ -74,7 +103,7 @@ def save_checkpoint(path, model, optimizer=None, metadata=None, scheduler=None):
     np.savez(Path(path), **arrays)
 
 
-def load_checkpoint(path, model, optimizer=None, strict=True, scheduler=None):
+def load_checkpoint(path, model, optimizer=None, strict=True, scheduler=None, restore_rng_state=False):
     """Load a checkpoint saved by ``save_checkpoint``.
 
     Model weights always load (``strict`` is passed through to
@@ -84,11 +113,16 @@ def load_checkpoint(path, model, optimizer=None, strict=True, scheduler=None):
     first). Each must be the same class the checkpoint was saved with,
     and passing one when the checkpoint holds no matching state is an
     error. Scheduler state in a checkpoint is ignored when no scheduler
-    is passed. Returns::
+    is passed.
+
+    ``restore_rng_state=True`` additionally restores NumPy's global RNG
+    from the checkpoint (error if the checkpoint has none); by default
+    the RNG is left untouched. Returns::
 
         {"model": <load_state_dict report>,
          "optimizer_loaded": bool,
          "scheduler_loaded": bool,
+         "rng_loaded": bool,
          "metadata": dict}
     """
     if scheduler is not None and optimizer is None:
@@ -104,6 +138,11 @@ def load_checkpoint(path, model, optimizer=None, strict=True, scheduler=None):
             if name.startswith("model::")
         }
         metadata = json.loads(archive["checkpoint::meta"].item())
+        rng_meta = None
+        rng_keys = None
+        if "rng::meta" in files:
+            rng_meta = json.loads(archive["rng::meta"].item())
+            rng_keys = archive["rng::keys"]
         scheduler_meta = None
         if "scheduler::meta" in files:
             scheduler_meta = json.loads(archive["scheduler::meta"].item())
@@ -163,9 +202,28 @@ def load_checkpoint(path, model, optimizer=None, strict=True, scheduler=None):
         scheduler.load_state_dict(scheduler_meta["state"])
         scheduler_loaded = True
 
+    rng_loaded = False
+    if restore_rng_state:
+        if rng_meta is None:
+            raise ValueError(
+                "restore_rng_state=True, but this checkpoint contains "
+                "no RNG state"
+            )
+        np.random.set_state(
+            (
+                rng_meta["bit_generator"],
+                rng_keys,
+                rng_meta["pos"],
+                rng_meta["has_gauss"],
+                rng_meta["cached_gaussian"],
+            )
+        )
+        rng_loaded = True
+
     return {
         "model": model_report,
         "optimizer_loaded": optimizer_loaded,
         "scheduler_loaded": scheduler_loaded,
+        "rng_loaded": rng_loaded,
         "metadata": metadata,
     }

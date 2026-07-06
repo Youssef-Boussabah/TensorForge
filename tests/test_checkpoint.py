@@ -8,7 +8,7 @@ from tensorforge import (
     save_checkpoint,
     save_parameters,
 )
-from tensorforge.nn import Linear, Parameter, mse_loss
+from tensorforge.nn import Dropout, Linear, Parameter, ReLU, Sequential, mse_loss
 from tensorforge.optim import SGD, Adam, StepLR
 
 
@@ -363,6 +363,152 @@ def test_adam_steplr_resume_matches_uninterrupted_training(tmp_path):
     assert np.allclose(model_a.bias.data, model_b.bias.data, atol=1e-12)
     assert np.isclose(opt_a.lr, opt_b.lr)
     assert sched_a.last_epoch == sched_b.last_epoch == 12
+
+
+# ---------------------------------------------------------------------------
+# RNG checkpointing
+# ---------------------------------------------------------------------------
+
+
+def test_rng_state_roundtrip(tmp_path):
+    np.random.seed(42)
+    np.random.random(10)  # advance the stream a bit
+    model = Linear(1, 1)
+
+    path = tmp_path / "ckpt.npz"
+    save_checkpoint(path, model, rng_state=True)
+    expected_next = np.random.random(5)  # what the stream produces next
+
+    np.random.seed(7)  # scramble the global RNG
+    report = load_checkpoint(path, model, restore_rng_state=True)
+    assert report["rng_loaded"] is True
+    assert np.array_equal(np.random.random(5), expected_next)
+
+    with np.load(path, allow_pickle=False) as archive:  # pickle-free
+        assert "rng::meta" in archive.files
+        assert "rng::keys" in archive.files
+
+
+def test_explicit_rng_state_can_be_saved(tmp_path):
+    np.random.seed(3)
+    state = np.random.get_state()
+    expected_next = np.random.random(4)
+
+    model = Linear(1, 1)
+    path = tmp_path / "ckpt.npz"
+    save_checkpoint(path, model, rng_state=state)
+
+    np.random.seed(99)
+    load_checkpoint(path, model, restore_rng_state=True)
+    assert np.array_equal(np.random.random(4), expected_next)
+
+
+def test_restore_false_leaves_rng_untouched(tmp_path):
+    model = Linear(1, 1)
+    path = tmp_path / "ckpt.npz"
+    save_checkpoint(path, model, rng_state=True)
+
+    np.random.seed(123)
+    before = np.random.get_state()
+    report = load_checkpoint(path, model)  # restore_rng_state defaults to False
+    after = np.random.get_state()
+    assert report["rng_loaded"] is False
+    assert np.array_equal(before[1], after[1]) and before[2] == after[2]
+
+
+def test_restore_without_saved_rng_raises(tmp_path):
+    model = Linear(1, 1)
+    path = tmp_path / "ckpt.npz"
+    save_checkpoint(path, model)  # no RNG saved
+    with pytest.raises(ValueError, match="no RNG state"):
+        load_checkpoint(path, model, restore_rng_state=True)
+
+
+def test_invalid_rng_state_raises(tmp_path):
+    model = Linear(1, 1)
+    path = tmp_path / "ckpt.npz"
+    for bad in ("state", (1, 2), 42):
+        with pytest.raises(ValueError, match="rng_state"):
+            save_checkpoint(path, model, rng_state=bad)
+
+
+def test_rng_loaded_reported_false_without_restore(tmp_path):
+    model = Linear(1, 1)
+    path = tmp_path / "ckpt.npz"
+    save_checkpoint(path, model, rng_state=True)
+    report = load_checkpoint(path, model)
+    assert report["rng_loaded"] is False  # state present but not requested
+
+
+def _make_dropout_model():
+    return Sequential(Linear(2, 8), ReLU(), Dropout(p=0.5), Linear(8, 1))
+
+
+def _train_dropout_steps(model, optimizer, steps):
+    x = Tensor([[0.0, 1.0], [1.0, 0.0], [1.0, 1.0], [0.5, -0.5]])
+    y = Tensor([[1.0], [2.0], [3.0], [0.0]])
+    for _ in range(steps):
+        optimizer.zero_grad()
+        mse_loss(model(x), y).backward()
+        optimizer.step()
+
+
+def test_dropout_resume_matches_uninterrupted_training(tmp_path):
+    """The point of RNG checkpointing: with the global RNG restored,
+    a resumed dropout run replays the exact same masks as the
+    uninterrupted run and lands on identical weights."""
+    # Uninterrupted reference: 12 straight steps.
+    np.random.seed(0)
+    model_a = _make_dropout_model()
+    opt_a = Adam(model_a.parameters(), lr=0.05)
+    _train_dropout_steps(model_a, opt_a, steps=12)
+
+    # Same run again, but stopped at step 5 and checkpointed with RNG.
+    np.random.seed(0)
+    model_c = _make_dropout_model()
+    opt_c = Adam(model_c.parameters(), lr=0.05)
+    _train_dropout_steps(model_c, opt_c, steps=5)
+    path = tmp_path / "ckpt.npz"
+    save_checkpoint(path, model_c, opt_c, rng_state=True)
+
+    # Resume in a "fresh process": unrelated seed, fresh model/optimizer.
+    np.random.seed(999)
+    model_b = _make_dropout_model()
+    opt_b = Adam(model_b.parameters(), lr=0.9)
+    report = load_checkpoint(path, model_b, opt_b, restore_rng_state=True)
+    assert report["rng_loaded"] is True
+    _train_dropout_steps(model_b, opt_b, steps=7)
+
+    for p_a, p_b in zip(model_a.parameters(), model_b.parameters()):
+        assert np.allclose(p_a.data, p_b.data, atol=1e-12)
+
+
+def test_dropout_resume_without_rng_restore_diverges(tmp_path):
+    """Negative control: same checkpoint, but without restoring the RNG
+    the resumed run sees different dropout masks and diverges. Fully
+    deterministic — both sides are seeded."""
+    np.random.seed(0)
+    model_a = _make_dropout_model()
+    opt_a = Adam(model_a.parameters(), lr=0.05)
+    _train_dropout_steps(model_a, opt_a, steps=12)
+
+    np.random.seed(0)
+    model_c = _make_dropout_model()
+    opt_c = Adam(model_c.parameters(), lr=0.05)
+    _train_dropout_steps(model_c, opt_c, steps=5)
+    path = tmp_path / "ckpt.npz"
+    save_checkpoint(path, model_c, opt_c, rng_state=True)
+
+    np.random.seed(999)  # different RNG state, deliberately kept
+    model_b = _make_dropout_model()
+    opt_b = Adam(model_b.parameters(), lr=0.05)
+    load_checkpoint(path, model_b, opt_b)  # no restore_rng_state
+    _train_dropout_steps(model_b, opt_b, steps=7)
+
+    assert not all(
+        np.allclose(p_a.data, p_b.data, atol=1e-12)
+        for p_a, p_b in zip(model_a.parameters(), model_b.parameters())
+    )
 
 
 def test_save_load_parameters_still_work(tmp_path):

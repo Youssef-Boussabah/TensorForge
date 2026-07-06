@@ -27,14 +27,15 @@ example that uses it properly), eval-safe evaluators, BatchNorm1d with
 module buffers, gradient clipping, the StepLR scheduler, scheduler
 state in checkpoints — completing the training-resume story — and
 image-shaped input: Conv2d, MaxPool2d, Flatten, and a tiny CNN
-example; and LayerNorm as the batch-independent normalization.
+example; LayerNorm as the batch-independent normalization; and
+optional RNG state in checkpoints for bit-exact dropout resume.
 
 ## Practical next steps
 
 Roughly in order of usefulness:
 
-- **RNG state in checkpoints** — so runs that use random layers or
-  shuffling resume with the exact same randomness.
+- **v3.0 portfolio polish** — a documentation and consistency pass to
+  round off the framework as a portfolio piece.
 - **A larger synthetic image example** — more classes, bigger images,
   still dependency-free.
 - **More docs** — deeper walkthroughs of individual layers as the
