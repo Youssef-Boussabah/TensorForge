@@ -75,6 +75,44 @@ def test_full_batch_default_unchanged_by_batch_size_argument():
     assert stats_default["losses"] == stats_none["losses"]
 
 
+def test_validation_split_returns_validation_keys():
+    stats = train(epochs=100, seed=0, verbose=False, validation_split=0.25)
+    for key in (
+        "final_validation_loss",
+        "final_validation_accuracy",
+        "validation_losses",
+        "validation_accuracies",
+    ):
+        assert key in stats
+    # One entry per epoch plus the post-training measurement, matching
+    # the training histories.
+    assert len(stats["validation_losses"]) == 101
+    assert len(stats["validation_accuracies"]) == 101
+    assert np.isfinite(stats["final_validation_loss"])
+    assert 0.0 <= stats["final_validation_accuracy"] <= 1.0
+    assert all(np.isfinite(v) for v in stats["validation_losses"])
+    assert all(0.0 <= a <= 1.0 for a in stats["validation_accuracies"])
+
+
+def test_validation_split_learns_on_holdout():
+    stats = train(epochs=300, seed=0, verbose=False, validation_split=0.25)
+    assert stats["validation_losses"][-1] < stats["validation_losses"][0]
+    assert stats["final_validation_accuracy"] >= 0.60
+
+
+def test_validation_split_is_deterministic():
+    stats_a = train(epochs=50, seed=0, verbose=False, validation_split=0.25)
+    stats_b = train(epochs=50, seed=0, verbose=False, validation_split=0.25)
+    assert stats_a["losses"] == stats_b["losses"]
+    assert stats_a["validation_losses"] == stats_b["validation_losses"]
+
+
+def test_no_validation_keys_by_default():
+    stats = train(epochs=5, seed=0, verbose=False)
+    assert "final_validation_loss" not in stats
+    assert "validation_losses" not in stats
+
+
 def test_script_runs_as_main():
     result = subprocess.run(
         [sys.executable, str(REPO_ROOT / "examples" / "train_multiclass.py")],

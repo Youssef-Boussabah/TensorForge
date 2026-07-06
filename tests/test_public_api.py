@@ -11,9 +11,11 @@ def test_root_package_exports():
         batches,
         count_parameters,
         cross_entropy,
+        evaluate_classifier,
         load_parameters,
         model_summary,
         save_parameters,
+        train_test_split,
     )
 
 
@@ -28,6 +30,7 @@ def test_nn_exports():
         Tanh,
         accuracy,
         cross_entropy,
+        evaluate_classifier,
         mse_loss,
     )
 
@@ -37,7 +40,7 @@ def test_optim_exports():
 
 
 def test_data_exports():
-    from tensorforge.data import batches  # noqa: F401
+    from tensorforge.data import batches, train_test_split  # noqa: F401
 
 
 def test_root_names_are_the_same_objects_as_submodule_names():

@@ -15,9 +15,11 @@ numeric dependency.
 - [x] **`tensorforge.nn`** — `Parameter`, `Module`, `Linear`, `ReLU`,
   `Sigmoid`, `Tanh`, `Sequential`
 - [x] **Losses** — `mse_loss`, numerically stable `cross_entropy`
-- [x] **Metrics** — `accuracy`
+- [x] **Metrics** — `accuracy`, `evaluate_classifier` (loss + accuracy
+  on a dataset in one call)
 - [x] **`tensorforge.optim`** — `SGD`, `Adam`
-- [x] **`tensorforge.data`** — `batches` mini-batch iterator
+- [x] **`tensorforge.data`** — `batches` mini-batch iterator and
+  `train_test_split` for validation holdouts
 - [x] **Save/load parameters** — `save_parameters` / `load_parameters`
   (plain NumPy `.npz`, plus `state_dict()` on every module)
 - [x] **Model inspection** — `model.summary()` and `count_parameters`;
@@ -128,11 +130,14 @@ tests/             pytest suite
 
 Possible next steps, in rough order:
 
-- Numerical gradient checking
 - More layers (Dropout, normalization)
 - A larger dataset example
 - C++ backend experiments
 - GPU/CUDA experiments
+
+Already done along the way: gradient checking against finite
+differences, save/load, model summaries, mini-batching, and
+train/validation splits.
 
 ## Note
 
