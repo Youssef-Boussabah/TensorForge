@@ -9,7 +9,7 @@ What exists so far:
   `sum`, `mean`, `relu`, `exp`, `log`, `tanh`, `sigmoid`, `softmax`)
 - **tensorforge.nn** — `Parameter`, `Module`, `Linear`, `ReLU`, `Sigmoid`,
   `Tanh`, `Sequential`, `mse_loss`, `cross_entropy`
-- **tensorforge.optim** — `SGD`
+- **tensorforge.optim** — `SGD`, `Adam`
 
 ## Quick taste
 
