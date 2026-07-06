@@ -60,6 +60,11 @@ class Module:
         """Return all Parameters in this module and its children."""
         return [param for _, param in self.named_parameters()]
 
+    def trainable_parameters(self):
+        """Return only the Parameters that are not frozen
+        (``requires_grad=True``)."""
+        return [param for param in self.parameters() if param.requires_grad]
+
     def zero_grad(self):
         """Clear stored gradients so the next backward() starts fresh."""
         for param in self.parameters():

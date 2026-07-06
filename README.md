@@ -20,7 +20,9 @@ numeric dependency.
 - [x] **`tensorforge.data`** — `batches` mini-batch iterator
 - [x] **Save/load parameters** — `save_parameters` / `load_parameters`
   (plain NumPy `.npz`, plus `state_dict()` on every module)
-- [x] **Model inspection** — `model.summary()` and `count_parameters`
+- [x] **Model inspection** — `model.summary()` and `count_parameters`;
+  parameters with `requires_grad=False` are frozen: skipped by
+  optimizers and excluded from trainable counts
 - [x] **Runnable examples** — linear regression, XOR, 3-class spiral
 
 ## Setup

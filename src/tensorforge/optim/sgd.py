@@ -9,7 +9,9 @@ class SGD:
     def step(self):
         """Take one descent step: move each parameter against its gradient."""
         for param in self.parameters:
-            if param.grad is None:
+            # Skip parameters with no gradient and frozen parameters
+            # (requires_grad=False), even if a stale grad is present.
+            if param.grad is None or not param.requires_grad:
                 continue
             param.data = param.data - self.lr * param.grad
 

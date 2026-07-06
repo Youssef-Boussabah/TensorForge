@@ -21,9 +21,7 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-# The default .pytest_cache at the repo root and the shared temp dir
-# %TEMP%/pytest-of-* both have broken permissions on this machine
-# (access denied even to reads). Point pytest's cache and tmp_path
-# base somewhere writable instead.
+# The default .pytest_cache at the repo root has broken permissions on
+# this machine (access denied even to reads), so the cache lives in a
+# writable spot instead. tmp_path handling lives in conftest.py.
 cache_dir = ".cache/pytest"
-addopts = "--basetemp=.cache/pytest-tmp"

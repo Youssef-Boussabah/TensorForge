@@ -24,7 +24,10 @@ class Adam:
         """Take one Adam step using each parameter's current gradient."""
         self.t += 1
         for i, param in enumerate(self.parameters):
-            if param.grad is None:
+            # Skip parameters with no gradient and frozen parameters
+            # (requires_grad=False), even if a stale grad is present.
+            # Skipped parameters keep their m/v state untouched.
+            if param.grad is None or not param.requires_grad:
                 continue
             grad = param.grad
 
