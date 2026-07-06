@@ -13,7 +13,7 @@ Run it with:
 
 import numpy as np
 
-from tensorforge import Tensor
+from tensorforge import Tensor, batches
 from tensorforge.nn import Linear, Sequential, Tanh, accuracy, cross_entropy
 from tensorforge.optim import SGD
 
@@ -48,6 +48,7 @@ def train(
     num_samples_per_class=40,
     seed=0,
     verbose=True,
+    batch_size=None,
 ):
     """Train the classifier and return a dictionary of training stats."""
     np.random.seed(seed)  # fixes both the dataset and the weight init
@@ -80,9 +81,20 @@ def train(
         losses.append(float(loss.data))
         accuracies.append(epoch_accuracy)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        if batch_size is None:
+            # Full-batch: one update per epoch on the whole dataset.
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+        else:
+            # Mini-batch: several smaller updates per epoch. Seeding the
+            # shuffle with seed + epoch keeps the run reproducible while
+            # still reshuffling every epoch.
+            for xb, yb in batches(x_np, y_np, batch_size, shuffle=True, seed=seed + epoch):
+                batch_loss = cross_entropy(model(Tensor(xb)), yb)
+                optimizer.zero_grad()
+                batch_loss.backward()
+                optimizer.step()
 
         if verbose and epoch % 100 == 0:
             print(f"epoch {epoch:04d} | loss {float(loss.data):.4f} | accuracy {epoch_accuracy:.1%}")

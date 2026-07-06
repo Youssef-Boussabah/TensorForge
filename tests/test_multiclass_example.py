@@ -49,6 +49,32 @@ def test_training_is_deterministic():
     assert stats_a["accuracies"] == stats_b["accuracies"]
 
 
+def test_minibatch_training_stats():
+    stats = train(epochs=200, batch_size=16, seed=0, verbose=False)
+    assert np.isfinite(stats["final_loss"])
+    assert 0.0 <= stats["final_accuracy"] <= 1.0
+    assert len(stats["losses"]) == 201
+
+
+def test_minibatch_training_learns():
+    stats = train(epochs=200, batch_size=16, seed=0, verbose=False)
+    assert stats["final_loss"] < stats["initial_loss"]
+    assert stats["final_accuracy"] >= 0.60
+
+
+def test_minibatch_training_is_deterministic():
+    stats_a = train(epochs=50, batch_size=16, seed=0, verbose=False)
+    stats_b = train(epochs=50, batch_size=16, seed=0, verbose=False)
+    assert stats_a["losses"] == stats_b["losses"]
+
+
+def test_full_batch_default_unchanged_by_batch_size_argument():
+    """batch_size=None must reproduce the original full-batch behavior."""
+    stats_default = train(epochs=50, seed=0, verbose=False)
+    stats_none = train(epochs=50, seed=0, verbose=False, batch_size=None)
+    assert stats_default["losses"] == stats_none["losses"]
+
+
 def test_script_runs_as_main():
     result = subprocess.run(
         [sys.executable, str(REPO_ROOT / "examples" / "train_multiclass.py")],

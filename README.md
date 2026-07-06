@@ -10,6 +10,7 @@ What exists so far:
 - **tensorforge.nn** — `Parameter`, `Module`, `Linear`, `ReLU`, `Sigmoid`,
   `Tanh`, `Sequential`, `mse_loss`, `cross_entropy`
 - **tensorforge.optim** — `SGD`, `Adam`
+- **tensorforge.data** — `batches` mini-batch iterator
 
 ## Quick taste
 
