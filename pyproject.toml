@@ -21,7 +21,9 @@ dev = [
 ]
 
 [tool.pytest.ini_options]
-# The default .pytest_cache at the repo root has broken permissions on
-# this machine (access denied even to reads), which made every pytest
-# run emit cache warnings. Point the cache somewhere writable instead.
+# The default .pytest_cache at the repo root and the shared temp dir
+# %TEMP%/pytest-of-* both have broken permissions on this machine
+# (access denied even to reads). Point pytest's cache and tmp_path
+# base somewhere writable instead.
 cache_dir = ".cache/pytest"
+addopts = "--basetemp=.cache/pytest-tmp"

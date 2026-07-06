@@ -20,6 +20,7 @@ numeric dependency.
 - [x] **`tensorforge.data`** — `batches` mini-batch iterator
 - [x] **Save/load parameters** — `save_parameters` / `load_parameters`
   (plain NumPy `.npz`, plus `state_dict()` on every module)
+- [x] **Model inspection** — `model.summary()` and `count_parameters`
 - [x] **Runnable examples** — linear regression, XOR, 3-class spiral
 
 ## Setup
@@ -66,6 +67,15 @@ from tensorforge import save_parameters, load_parameters
 
 save_parameters(model, "model.npz")
 load_parameters(new_model, "model.npz")
+```
+
+Models can describe themselves:
+
+```python
+from tensorforge import count_parameters
+
+print(model.summary())         # per-parameter names, shapes, counts
+print(count_parameters(model)) # total trainable scalars
 ```
 
 ## Examples

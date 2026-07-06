@@ -9,8 +9,10 @@ def test_root_package_exports():
         Tensor,
         accuracy,
         batches,
+        count_parameters,
         cross_entropy,
         load_parameters,
+        model_summary,
         save_parameters,
     )
 

@@ -3,6 +3,7 @@
 from tensorforge.data import batches
 from tensorforge.nn.losses import cross_entropy
 from tensorforge.nn.metrics import accuracy
+from tensorforge.nn.module import count_parameters, model_summary
 from tensorforge.nn.parameter import Parameter
 from tensorforge.optim import SGD, Adam
 from tensorforge.serialization import load_parameters, save_parameters
@@ -18,4 +19,6 @@ __all__ = [
     "batches",
     "save_parameters",
     "load_parameters",
+    "count_parameters",
+    "model_summary",
 ]

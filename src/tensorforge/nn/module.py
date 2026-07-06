@@ -5,6 +5,16 @@ import numpy as np
 from tensorforge.nn.parameter import Parameter
 
 
+def count_parameters(model, trainable_only=True):
+    """Convenience wrapper for ``model.num_parameters(...)``."""
+    return model.num_parameters(trainable_only=trainable_only)
+
+
+def model_summary(model):
+    """Convenience wrapper for ``model.summary()``."""
+    return model.summary()
+
+
 def _named_parameters(value, prefix):
     """Yield (name, Parameter) pairs reachable from ``value``.
 
@@ -54,6 +64,53 @@ class Module:
         """Clear stored gradients so the next backward() starts fresh."""
         for param in self.parameters():
             param.grad = None
+
+    def num_parameters(self, trainable_only=True):
+        """Total number of scalar values across this module's parameters.
+
+        By default counts only parameters with ``requires_grad=True``;
+        pass ``trainable_only=False`` to count everything.
+        """
+        return sum(
+            param.data.size
+            for _, param in self.named_parameters()
+            if param.requires_grad or not trainable_only
+        )
+
+    def summary(self):
+        """Return a readable multi-line description of the parameters.
+
+        Lists every parameter's name, shape, size, and trainability,
+        plus totals. Returns a string (does not print) and never runs
+        a forward pass.
+        """
+        rows = [
+            (
+                name,
+                str(param.data.shape),
+                param.data.size,
+                "yes" if param.requires_grad else "no",
+            )
+            for name, param in self.named_parameters()
+        ]
+        total = sum(size for _, _, size, _ in rows)
+        trainable = sum(size for _, _, size, flag in rows if flag == "yes")
+
+        lines = ["TensorForge Model Summary", f"Model: {type(self).__name__}", ""]
+        if rows:
+            name_w = max(len("Name"), *(len(name) for name, _, _, _ in rows))
+            shape_w = max(len("Shape"), *(len(shape) for _, shape, _, _ in rows))
+            size_w = max(len("Params"), *(len(str(size)) for _, _, size, _ in rows))
+            lines.append(
+                f"{'Name':<{name_w}}  {'Shape':<{shape_w}}  {'Params':<{size_w}}  Trainable"
+            )
+            for name, shape, size, flag in rows:
+                lines.append(f"{name:<{name_w}}  {shape:<{shape_w}}  {size:<{size_w}}  {flag}")
+            lines.append("")
+        lines.append(f"Total params: {total}")
+        lines.append(f"Trainable params: {trainable}")
+        lines.append(f"Non-trainable params: {total - trainable}")
+        return "\n".join(lines)
 
     def state_dict(self):
         """Return {name: array} of all parameter values.
