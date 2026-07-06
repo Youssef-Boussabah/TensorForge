@@ -14,6 +14,7 @@ def test_root_package_exports():
         binary_cross_entropy,
         count_parameters,
         cross_entropy,
+        evaluate_binary_classifier,
         evaluate_classifier,
         load_checkpoint,
         load_parameters,
@@ -38,6 +39,7 @@ def test_nn_exports():
         binary_accuracy,
         binary_cross_entropy,
         cross_entropy,
+        evaluate_binary_classifier,
         evaluate_classifier,
         mse_loss,
     )

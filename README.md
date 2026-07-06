@@ -20,8 +20,9 @@ numeric dependency.
   identity at evaluation time
 - [x] **Losses** — `mse_loss`, numerically stable `cross_entropy` and
   `binary_cross_entropy` (both work on raw logits)
-- [x] **Metrics** — `accuracy`, `binary_accuracy`,
-  `evaluate_classifier` (loss + accuracy on a dataset in one call)
+- [x] **Metrics** — `accuracy`, `binary_accuracy`, plus
+  `evaluate_classifier` / `evaluate_binary_classifier` (loss + accuracy
+  in one call, measured with the model safely in eval mode)
 - [x] **`tensorforge.optim`** — `SGD`, `Adam`
 - [x] **`tensorforge.data`** — `batches` mini-batch iterator and
   `train_test_split` for validation holdouts
@@ -33,7 +34,7 @@ numeric dependency.
   parameters with `requires_grad=False` are frozen: skipped by
   optimizers and excluded from trainable counts
 - [x] **Runnable examples** — linear regression, XOR, 3-class spiral,
-  binary classification
+  binary classification, dropout-regularized MLP
 
 ## Setup
 
@@ -132,6 +133,14 @@ split, using `binary_cross_entropy` on raw logits:
 uv run python examples/train_binary_classification.py
 ```
 
+Train a deeper MLP with Dropout on concentric circles — optimization
+steps run in train mode (dropout active), all metrics are measured in
+eval mode (dropout off):
+
+```
+uv run python examples/train_mlp_with_dropout.py
+```
+
 ## Tests
 
 Every feature is covered by tests:
@@ -157,7 +166,7 @@ tests/             pytest suite
 
 Possible next steps, in rough order:
 
-- More layers (Dropout, normalization)
+- Normalization layers
 - A larger dataset example
 - C++ backend experiments
 - GPU/CUDA experiments

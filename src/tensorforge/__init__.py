@@ -2,7 +2,12 @@
 
 from tensorforge.data import batches, train_test_split
 from tensorforge.nn.losses import binary_cross_entropy, cross_entropy
-from tensorforge.nn.metrics import accuracy, binary_accuracy, evaluate_classifier
+from tensorforge.nn.metrics import (
+    accuracy,
+    binary_accuracy,
+    evaluate_binary_classifier,
+    evaluate_classifier,
+)
 from tensorforge.nn.dropout import Dropout
 from tensorforge.nn.module import count_parameters, model_summary
 from tensorforge.nn.parameter import Parameter
@@ -28,6 +33,7 @@ __all__ = [
     "batches",
     "train_test_split",
     "evaluate_classifier",
+    "evaluate_binary_classifier",
     "save_parameters",
     "load_parameters",
     "save_checkpoint",

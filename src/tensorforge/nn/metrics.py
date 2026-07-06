@@ -4,10 +4,35 @@ Metrics are for reporting, not for training: they are plain NumPy
 computations that stay outside autograd and return Python floats.
 """
 
+from contextlib import contextmanager
+
 import numpy as np
 
-from tensorforge.nn.losses import _align_binary_targets, cross_entropy
+from tensorforge.nn.losses import (
+    _align_binary_targets,
+    binary_cross_entropy,
+    cross_entropy,
+)
 from tensorforge.tensor import Tensor
+
+
+@contextmanager
+def _eval_mode(model):
+    """Temporarily put ``model`` in eval mode, restoring it afterwards.
+
+    Layers like Dropout behave randomly in training mode, so metrics
+    must be measured with the model in eval mode — but evaluating
+    should never change the model's mode from the caller's point of
+    view. Models without train/eval support pass through untouched.
+    """
+    was_training = getattr(model, "training", False) and hasattr(model, "train")
+    if was_training:
+        model.train(False)
+    try:
+        yield
+    finally:
+        if was_training:
+            model.train(True)
 
 
 def accuracy(logits, targets):
@@ -52,7 +77,9 @@ def evaluate_classifier(model, X, y):
     integer class IDs. Returns ``{"loss": float, "accuracy": float}``.
 
     This is a read-only measurement: it never calls backward() and
-    never touches gradients or parameters.
+    never touches gradients or parameters. The model is temporarily
+    switched to eval mode (so e.g. Dropout is inactive) and restored
+    to its previous mode afterwards.
     """
     if not isinstance(X, Tensor):
         X = Tensor(X)
@@ -60,6 +87,29 @@ def evaluate_classifier(model, X, y):
         y = y.data
     y = np.asarray(y, dtype=int)
 
-    logits = model(X)
+    with _eval_mode(model):
+        logits = model(X)
     loss = cross_entropy(logits, y)
     return {"loss": float(loss.data), "accuracy": accuracy(logits, y)}
+
+
+def evaluate_binary_classifier(model, X, y):
+    """Run a binary classifier on a dataset and report loss and accuracy.
+
+    ``X`` and ``y`` may be Tensors, NumPy arrays, or lists; ``y`` holds
+    0/1 labels and the model outputs raw binary logits (no Sigmoid).
+    Returns ``{"loss": float, "accuracy": float}``.
+
+    Like evaluate_classifier, this is read-only and measures with the
+    model temporarily in eval mode, restoring its previous mode after.
+    """
+    if not isinstance(X, Tensor):
+        X = Tensor(X)
+    if isinstance(y, Tensor):
+        y = y.data
+    y = np.asarray(y, dtype=np.float64)
+
+    with _eval_mode(model):
+        logits = model(X)
+    loss = binary_cross_entropy(logits, y)
+    return {"loss": float(loss.data), "accuracy": binary_accuracy(logits, y)}
