@@ -6,9 +6,9 @@ a tiny, educational take on PyTorch.
 What exists so far:
 
 - **Tensor** with reverse-mode autograd (`+`, `*`, `-`, `/`, `**`, `@`,
-  `sum`, `mean`, `relu`, `exp`, `log`, `tanh`, `sigmoid`)
+  `sum`, `mean`, `relu`, `exp`, `log`, `tanh`, `sigmoid`, `softmax`)
 - **tensorforge.nn** — `Parameter`, `Module`, `Linear`, `ReLU`, `Sigmoid`,
-  `Tanh`, `Sequential`, `mse_loss`
+  `Tanh`, `Sequential`, `mse_loss`, `cross_entropy`
 - **tensorforge.optim** — `SGD`
 
 ## Quick taste

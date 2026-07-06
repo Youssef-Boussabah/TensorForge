@@ -255,6 +255,34 @@ class Tensor:
         out._backward = _backward
         return out
 
+    def softmax(self, axis=-1):
+        """Normalize values along ``axis`` into probabilities that sum to 1.
+
+        Subtracting the max before exponentiating is the standard trick
+        for numerical stability: it prevents exp() from overflowing, and
+        it does not change the result (softmax is shift-invariant).
+        """
+        shifted = self.data - self.data.max(axis=axis, keepdims=True)
+        exp = np.exp(shifted)
+        out = Tensor(
+            exp / exp.sum(axis=axis, keepdims=True),
+            requires_grad=self.requires_grad,
+            _children=(self,),
+            _op="softmax",
+        )
+
+        def _backward():
+            # The softmax Jacobian is dy_i/dx_j = y_i * (delta_ij - y_j).
+            # Applied to an upstream gradient g, that collapses to
+            #   dx = y * (g - sum(g * y))
+            # along the softmax axis: each entry pulls its own gradient
+            # minus the probability-weighted average of all of them.
+            y, g = out.data, out.grad
+            self._accumulate_grad(y * (g - (g * y).sum(axis=axis, keepdims=True)))
+
+        out._backward = _backward
+        return out
+
     # ------------------------------------------------------------------
     # Derived operations (built from the primitives above, so they get
     # their gradients for free)
@@ -265,19 +293,6 @@ class Tensor:
 
     def __rmatmul__(self, other):
         return _ensure_tensor(other).matmul(self)
-
-    def softmax(self, axis=-1):
-        """Normalize values along ``axis`` into probabilities that sum to 1.
-
-        Built from existing autograd ops, so it needs no backward logic
-        of its own. Subtracting the max first is the standard trick for
-        numerical stability: it prevents exp() from overflowing, and it
-        does not change the result (softmax is shift-invariant). The max
-        is a plain constant here, which still yields the correct gradient.
-        """
-        shifted = self - self.data.max(axis=axis, keepdims=True)
-        exp = shifted.exp()
-        return exp / exp.sum(axis=axis, keepdims=True)
 
     def __neg__(self):
         return self * -1.0
