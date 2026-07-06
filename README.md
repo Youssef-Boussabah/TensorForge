@@ -14,9 +14,10 @@ numeric dependency.
   `softmax`, with broadcasting-aware gradients
 - [x] **`tensorforge.nn`** — `Parameter`, `Module`, `Linear`, `ReLU`,
   `Sigmoid`, `Tanh`, `Sequential`
-- [x] **Losses** — `mse_loss`, numerically stable `cross_entropy`
-- [x] **Metrics** — `accuracy`, `evaluate_classifier` (loss + accuracy
-  on a dataset in one call)
+- [x] **Losses** — `mse_loss`, numerically stable `cross_entropy` and
+  `binary_cross_entropy` (both work on raw logits)
+- [x] **Metrics** — `accuracy`, `binary_accuracy`,
+  `evaluate_classifier` (loss + accuracy on a dataset in one call)
 - [x] **`tensorforge.optim`** — `SGD`, `Adam`
 - [x] **`tensorforge.data`** — `batches` mini-batch iterator and
   `train_test_split` for validation holdouts
@@ -25,7 +26,8 @@ numeric dependency.
 - [x] **Model inspection** — `model.summary()` and `count_parameters`;
   parameters with `requires_grad=False` are frozen: skipped by
   optimizers and excluded from trainable counts
-- [x] **Runnable examples** — linear regression, XOR, 3-class spiral
+- [x] **Runnable examples** — linear regression, XOR, 3-class spiral,
+  binary classification
 
 ## Setup
 
@@ -103,6 +105,13 @@ Train a two-hidden-layer MLP on a 3-class spiral with cross-entropy
 
 ```
 uv run python examples/train_multiclass.py
+```
+
+Train logistic regression on two point clouds with a train/validation
+split, using `binary_cross_entropy` on raw logits:
+
+```
+uv run python examples/train_binary_classification.py
 ```
 
 ## Tests

@@ -1,6 +1,7 @@
 import numpy as np
+import pytest
 
-from tensorforge import Tensor, accuracy, evaluate_classifier
+from tensorforge import Tensor, accuracy, binary_accuracy, evaluate_classifier
 from tensorforge.nn import Linear
 
 LOGITS = np.array(
@@ -89,6 +90,46 @@ def test_evaluate_classifier_accepts_tensor_and_list_inputs():
     c = evaluate_classifier(model, X.tolist(), np.array(y))
     assert a == b == c
     assert a["accuracy"] == 1.0
+
+
+def test_binary_accuracy_on_known_logits():
+    logits = [2.0, -1.0, 0.5, -3.0]  # predictions: [1, 0, 1, 0]
+    assert binary_accuracy(logits, [1, 0, 1, 0]) == 1.0
+    assert binary_accuracy(logits, [0, 0, 1, 0]) == 0.75
+    assert binary_accuracy(logits, [0, 1, 0, 1]) == 0.0
+
+
+def test_binary_accuracy_zero_logit_predicts_one():
+    assert binary_accuracy([0.0], [1]) == 1.0
+    assert binary_accuracy([0.0], [0]) == 0.0
+
+
+def test_binary_accuracy_input_types():
+    logits = np.array([2.0, -1.0])
+    targets = [1, 0]
+    a = binary_accuracy(logits, targets)
+    b = binary_accuracy(Tensor(logits), Tensor(np.array([1.0, 0.0])))
+    c = binary_accuracy(logits.tolist(), np.array(targets))
+    assert a == b == c == 1.0
+    assert type(a) is float
+
+
+def test_binary_accuracy_column_logits_flat_targets():
+    logits = np.array([[2.0], [-1.0], [0.5]])  # (3, 1)
+    assert binary_accuracy(logits, [1, 0, 1]) == 1.0
+    assert binary_accuracy(logits, [[1], [0], [1]]) == 1.0
+
+
+def test_binary_accuracy_non_binary_targets_raise():
+    with pytest.raises(ValueError, match="0 and 1"):
+        binary_accuracy([1.0, -1.0], [1, 2])
+
+
+def test_binary_accuracy_incompatible_shapes_raise():
+    with pytest.raises(ValueError):
+        binary_accuracy([[1.0], [2.0]], [1, 0, 1])
+    with pytest.raises(ValueError):
+        binary_accuracy([1.0, 2.0], [[1], [0]])
 
 
 def test_evaluate_classifier_is_read_only():

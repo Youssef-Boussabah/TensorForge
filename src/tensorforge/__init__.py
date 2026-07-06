@@ -1,8 +1,8 @@
 """TensorForge — a mini deep learning framework built from scratch."""
 
 from tensorforge.data import batches, train_test_split
-from tensorforge.nn.losses import cross_entropy
-from tensorforge.nn.metrics import accuracy, evaluate_classifier
+from tensorforge.nn.losses import binary_cross_entropy, cross_entropy
+from tensorforge.nn.metrics import accuracy, binary_accuracy, evaluate_classifier
 from tensorforge.nn.module import count_parameters, model_summary
 from tensorforge.nn.parameter import Parameter
 from tensorforge.optim import SGD, Adam
@@ -13,7 +13,9 @@ __all__ = [
     "Tensor",
     "Parameter",
     "cross_entropy",
+    "binary_cross_entropy",
     "accuracy",
+    "binary_accuracy",
     "SGD",
     "Adam",
     "batches",
