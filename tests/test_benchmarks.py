@@ -16,16 +16,11 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from benchmarks.cpp_backend import build_cases, measure, run_benchmarks
 
-try:
-    from tensorforge.backends import cpp
-    _IMPORT_ERROR = None
-except ImportError as error:
-    cpp = None
-    _IMPORT_ERROR = str(error)
+from tensorforge.backends import cpp  # importing never raises (lazy load)
 
 needs_backend = pytest.mark.skipif(
-    cpp is None,
-    reason=f"experimental C++ backend not built: {_IMPORT_ERROR}",
+    not cpp.is_available(),
+    reason="experimental C++ backend not built; " + cpp.build_instructions(),
 )
 
 

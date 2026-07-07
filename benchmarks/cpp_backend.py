@@ -28,12 +28,14 @@ import numpy as np
 
 
 def _load_backend():
-    try:
-        from tensorforge.backends import cpp
-        return cpp
-    except ImportError as error:
-        # The backend's own message already includes build instructions.
-        raise SystemExit(str(error)) from None
+    from tensorforge.backends import cpp
+
+    if not cpp.is_available():
+        raise SystemExit(
+            "The experimental C++ backend is not available.\n"
+            + cpp.build_instructions()
+        )
+    return cpp
 
 
 def measure(fn, repeats, warmup=2):

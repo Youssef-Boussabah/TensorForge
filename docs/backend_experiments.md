@@ -48,8 +48,30 @@ uv run python cpp/build.py
 ```
 
 The compiled library lands next to the wrapper and is gitignored.
-If the backend is not built, importing `tensorforge.backends.cpp`
-raises an ImportError with these instructions, and its tests skip.
+Importing `tensorforge.backends.cpp` always succeeds — the library
+loads lazily on first use. If the backend is not built, calling a
+math kernel raises ImportError with these instructions, and the
+backend tests skip.
+
+### Inspecting the backend
+
+The namespace answers its own questions:
+
+```python
+from tensorforge.backends import cpp
+
+cpp.is_available()        # True only if the compiled library loads
+cpp.list_kernels()        # ('elementwise_add', ..., 'relu', 'matmul')
+cpp.build_instructions()  # how to build it, as a string
+cpp.backend_info()        # one dict with all of the above, plus
+                          # dtype='float64' and the (false) tensor/
+                          # autograd integration flags
+```
+
+`is_available()` performs a real load attempt (cached), not just a
+file check, and never raises. Everything here is still experimental
+and not wired into Tensor or autograd — `backend_info()` says so
+explicitly.
 
 CI does not rely on that skip: the GitHub Actions workflow builds the
 backend from source on every run and smoke-tests the compiled kernel

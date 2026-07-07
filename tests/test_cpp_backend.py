@@ -9,22 +9,14 @@ depends on it.
 import numpy as np
 import pytest
 
-try:
-    from tensorforge.backends import cpp
-    _IMPORT_ERROR = None
-except ImportError as error:
-    cpp = None
-    _IMPORT_ERROR = str(error)
+from tensorforge.backends import cpp  # importing never raises (lazy load)
 
 pytestmark = pytest.mark.skipif(
-    cpp is None,
-    reason=f"experimental C++ backend not built: {_IMPORT_ERROR}",
+    not cpp.is_available(),
+    reason="experimental C++ backend not built; " + cpp.build_instructions(),
 )
 
 
-# Kernel names are parametrized as strings and resolved with getattr
-# inside the tests, so collection works even when the backend is not
-# built (cpp is None and the module-level skip applies).
 BINARY_OPS = (
     ("elementwise_add", np.add),
     ("elementwise_subtract", np.subtract),

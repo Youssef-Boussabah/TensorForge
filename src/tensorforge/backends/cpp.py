@@ -8,8 +8,10 @@ normal framework never imports it.
 All kernels are float64-only. Binary operations require identical
 shapes; broadcasting is deliberately not supported.
 
-Importing this module raises ImportError with build instructions if
-the shared library has not been compiled.
+Importing this module always succeeds. The compiled library is loaded
+lazily: check ``is_available()`` to see whether it can be used, and
+call ``backend_info()`` for a summary. Calling a math kernel while the
+backend is unbuilt raises ImportError with build instructions.
 """
 
 import ctypes
@@ -21,6 +23,16 @@ import numpy as np
 _SUFFIX = {"Windows": ".dll", "Darwin": ".dylib"}.get(platform.system(), ".so")
 _LIBRARY_PATH = Path(__file__).with_name("_tensorforge_cpp" + _SUFFIX)
 
+# The supported kernels, in the order they were added.
+KERNELS = (
+    "elementwise_add",
+    "elementwise_subtract",
+    "elementwise_multiply",
+    "elementwise_divide",
+    "relu",
+    "matmul",
+)
+
 _BINARY_KERNELS = (
     "tf_elementwise_add",
     "tf_elementwise_subtract",
@@ -28,16 +40,31 @@ _BINARY_KERNELS = (
     "tf_elementwise_divide",
 )
 
+_lib = None  # loaded lazily by _require_library()
+
+
+def build_instructions():
+    """The commands needed to build the experimental backend."""
+    return (
+        "The C++ backend is experimental. Build it from the repo root:\n"
+        "    uv sync --group cpp   # only if you have no C++ compiler\n"
+        "    uv run python cpp/build.py"
+    )
+
 
 def _load_library():
     if not _LIBRARY_PATH.exists():
         raise ImportError(
             f"The experimental C++ backend is not built "
-            f"(missing {_LIBRARY_PATH.name}). Build it from the repo root "
-            f"with: uv run python cpp/build.py "
-            f"(add 'uv sync --group cpp' first if you have no C++ compiler)."
+            f"(missing {_LIBRARY_PATH.name}).\n" + build_instructions()
         )
-    library = ctypes.CDLL(str(_LIBRARY_PATH))
+    try:
+        library = ctypes.CDLL(str(_LIBRARY_PATH))
+    except OSError as error:
+        raise ImportError(
+            f"The experimental C++ backend library exists but failed to "
+            f"load ({error}). Try rebuilding it.\n" + build_instructions()
+        ) from error
     f64_array = np.ctypeslib.ndpointer(dtype=np.float64, flags="C_CONTIGUOUS")
     for name in _BINARY_KERNELS:
         kernel = getattr(library, name)
@@ -53,12 +80,50 @@ def _load_library():
     return library
 
 
-_lib = _load_library()
+def _require_library():
+    """Load the compiled library on first use; raise helpfully if missing."""
+    global _lib
+    if _lib is None:
+        _lib = _load_library()
+    return _lib
 
 
-def _binary_op(kernel, a, b, name):
+def is_available():
+    """True if the compiled backend can actually be loaded.
+
+    This attempts a real load (cached after the first success), not
+    just a file-existence check. Never raises.
+    """
+    try:
+        _require_library()
+    except ImportError:
+        return False
+    return True
+
+
+def list_kernels():
+    """The experimental kernels this backend provides, in stable order."""
+    return KERNELS
+
+
+def backend_info():
+    """A small metadata dictionary describing the experimental backend."""
+    return {
+        "name": "cpp",
+        "experimental": True,
+        "available": is_available(),
+        "kernels": KERNELS,
+        "dtype": "float64",
+        "tensor_integration": False,
+        "autograd_integration": False,
+        "build_instructions": build_instructions(),
+    }
+
+
+def _binary_op(kernel_name, a, b, name):
     """Shared plumbing for the binary kernels: convert both inputs to
     contiguous float64, require identical shapes, call the kernel."""
+    lib = _require_library()
     a = np.ascontiguousarray(a, dtype=np.float64)
     b = np.ascontiguousarray(b, dtype=np.float64)
     if a.shape != b.shape:
@@ -67,23 +132,23 @@ def _binary_op(kernel, a, b, name):
             f"shapes (no broadcasting), got {a.shape} and {b.shape}"
         )
     out = np.empty_like(a)
-    kernel(a, b, out, a.size)
+    getattr(lib, kernel_name)(a, b, out, a.size)
     return out
 
 
 def elementwise_add(a, b):
     """a + b elementwise, using the compiled C++ kernel."""
-    return _binary_op(_lib.tf_elementwise_add, a, b, "elementwise_add")
+    return _binary_op("tf_elementwise_add", a, b, "elementwise_add")
 
 
 def elementwise_subtract(a, b):
     """a - b elementwise, using the compiled C++ kernel."""
-    return _binary_op(_lib.tf_elementwise_subtract, a, b, "elementwise_subtract")
+    return _binary_op("tf_elementwise_subtract", a, b, "elementwise_subtract")
 
 
 def elementwise_multiply(a, b):
     """a * b elementwise, using the compiled C++ kernel."""
-    return _binary_op(_lib.tf_elementwise_multiply, a, b, "elementwise_multiply")
+    return _binary_op("tf_elementwise_multiply", a, b, "elementwise_multiply")
 
 
 def elementwise_divide(a, b):
@@ -93,7 +158,7 @@ def elementwise_divide(a, b):
     0/0), the same values NumPy produces — but without NumPy's runtime
     warning.
     """
-    return _binary_op(_lib.tf_elementwise_divide, a, b, "elementwise_divide")
+    return _binary_op("tf_elementwise_divide", a, b, "elementwise_divide")
 
 
 def relu(a):
@@ -102,9 +167,10 @@ def relu(a):
     Unary: accepts any shape, returns a new float64 array of the same
     shape.
     """
+    lib = _require_library()
     a = np.ascontiguousarray(a, dtype=np.float64)
     out = np.empty_like(a)
-    _lib.tf_relu(a, out, a.size)
+    lib.tf_relu(a, out, a.size)
     return out
 
 
@@ -116,6 +182,7 @@ def matmul(a, b):
     Strictly 2-D: vectors must be passed as (1, n) or (n, 1) matrices.
     Returns a new (m, p) float64 array.
     """
+    lib = _require_library()
     a = np.ascontiguousarray(a, dtype=np.float64)
     b = np.ascontiguousarray(b, dtype=np.float64)
     if a.ndim != 2:
@@ -136,5 +203,5 @@ def matmul(a, b):
     m, n = a.shape
     p = b.shape[1]
     out = np.empty((m, p), dtype=np.float64)
-    _lib.tf_matmul(a, b, out, m, n, p)
+    lib.tf_matmul(a, b, out, m, n, p)
     return out

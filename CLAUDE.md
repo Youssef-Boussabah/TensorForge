@@ -53,9 +53,12 @@ backend, CUDA experiments), which do not exist yet.
 - `cpp/` + `src/tensorforge/backends/` — the experimental C++ backend
   (post-v3.0 line). Plain C-ABI kernels loaded via ctypes; built with
   `uv run python cpp/build.py` (`uv sync --group cpp` first if no
-  compiler). Never imported by the main framework; its tests skip
-  when unbuilt. `benchmarks/cpp_backend.py` compares kernels against
-  NumPy honestly (no performance assertions anywhere).
+  compiler). Never imported by the main framework; importing the
+  wrapper is always safe (lazy load) — check `cpp.is_available()` /
+  `cpp.backend_info()`; kernels raise ImportError at call time when
+  unbuilt, and the backend tests skip. `benchmarks/cpp_backend.py`
+  compares kernels against NumPy honestly (no performance assertions
+  anywhere).
 
 ## Commands
 
