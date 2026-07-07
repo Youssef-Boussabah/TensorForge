@@ -12,6 +12,7 @@ DOCS = (
     "roadmap.md",
     "release_history.md",
     "project_summary.md",
+    "backend_experiments.md",
 )
 
 EXAMPLE_FILES = (

@@ -3,6 +3,9 @@ __pycache__/
 *.py[oc]
 .pytest_cache/
 .cache/
+
+# Built experimental C++ backend (rebuild with: uv run python cpp/build.py)
+src/tensorforge/backends/_tensorforge_cpp.*
 build/
 dist/
 wheels/

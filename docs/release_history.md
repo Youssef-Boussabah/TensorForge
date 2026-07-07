@@ -36,8 +36,10 @@ landing page, a project summary, CI, and guardrail tests that keep
 docs and code from drifting apart. This closes the Python framework
 line.
 
-## Later — Advanced branches
+## Advanced branches — after v3.0
 
-Long-parked ideas that would each be their own project: a C++ backend
-experiment, and CUDA/GPU experiments. Neither exists yet; with the
-Python line complete, they are the next frontier.
+The experimental line, separate from the finished Python framework.
+**C++ v0.1** built the first proof: a tiny compiled elementwise-add
+kernel called from Python through ctypes (see
+[backend_experiments.md](backend_experiments.md)). More kernels may
+follow; CUDA/GPU experiments remain future work.

@@ -98,6 +98,7 @@ What each one teaches, and what to expect: [docs/examples.md](docs/examples.md).
 - [docs/examples.md](docs/examples.md) — the examples and what they teach
 - [docs/roadmap.md](docs/roadmap.md) — what's done and what's next
 - [docs/release_history.md](docs/release_history.md) — how the project grew, by version
+- [docs/backend_experiments.md](docs/backend_experiments.md) — the experimental C++ backend line
 
 ## Limitations
 
@@ -114,9 +115,12 @@ Honest expectations:
 ## Status
 
 **v3.0 — the Python educational framework is complete.** Everything
-above works, is covered by 370+ tests, and is documented. Future work
-moves to advanced branches — a C++ backend experiment and CUDA/GPU
-experiments — which do not exist yet. See
+above works, is covered by 370+ tests, and is documented. Advanced
+work now happens in experimental branches: a C++ backend experiment
+has started (one ctypes-loaded kernel proving the mechanism — see
+[docs/backend_experiments.md](docs/backend_experiments.md)); CUDA/GPU
+experiments are still future work. There is still no production C++
+backend yet and no CUDA backend yet. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 

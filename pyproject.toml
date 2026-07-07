@@ -19,6 +19,12 @@ build-backend = "uv_build"
 dev = [
     "pytest>=9.1.1",
 ]
+# Opt-in group for building the experimental C++ backend on machines
+# without a system C++ compiler: ziglang bundles a clang-based one.
+# Normal Python development never needs this.
+cpp = [
+    "ziglang>=0.13",
+]
 
 [tool.pytest.ini_options]
 # The default .pytest_cache at the repo root has broken permissions on

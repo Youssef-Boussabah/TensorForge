@@ -37,10 +37,12 @@ release-readiness pass over docs and guardrail tests.
 
 The Python line is done; what remains is expansion on its own terms:
 
-- **Advanced branches** — a C++ backend experiment, and CUDA/GPU
-  experiments. Each is a substantial project; neither exists yet.
-  These were always the long-term daydream, and the Python framework
-  is now finished enough to start dreaming.
+- **Advanced branches** — the C++ backend experiment has started with
+  a single proof-of-mechanism kernel
+  (see [backend_experiments.md](backend_experiments.md)); next steps
+  there are more kernels. CUDA/GPU experiments are still entirely
+  future work. The Python framework stays the reference
+  implementation.
 - **A larger synthetic image example** — more classes, bigger images,
   still dependency-free.
 - **More docs** — deeper walkthroughs of individual layers, if the
