@@ -41,6 +41,10 @@ _BINARY_KERNELS = (
     "tf_elementwise_divide",
 )
 
+# Operations available as NativeTensorCore methods — distinct from
+# KERNELS, which lists the raw NumPy-buffer kernels.
+TENSOR_CORE_KERNELS = ("relu", "add", "subtract", "multiply")
+
 _lib = None  # loaded lazily by _require_library()
 
 
@@ -101,6 +105,19 @@ def _load_library():
         ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_storage_materialize.restype = None
+    library.tf_core_relu.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array,
+        ctypes.c_int64, ctypes.c_int64,
+    ]
+    library.tf_core_relu.restype = None
+    for name in ("tf_core_add", "tf_core_subtract", "tf_core_multiply"):
+        kernel = getattr(library, name)
+        kernel.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            i64_array, i64_array, i64_array,
+            ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+        ]
+        kernel.restype = None
     return library
 
 
@@ -140,6 +157,7 @@ def backend_info():
         "storage_object": "NativeStorage",
         "tensor_view": "NativeTensorView",
         "tensor_core": "NativeTensorCore",
+        "tensor_core_kernels": TENSOR_CORE_KERNELS,
         "dtype": "float64",
         "tensor_integration": False,
         "autograd_integration": False,
@@ -474,6 +492,69 @@ class NativeTensorCore:
         tensor is already contiguous."""
         self._require_open()
         return NativeTensorCore.from_array(self.to_numpy())
+
+    # -- native compute (arithmetic happens in C++ over storage) ---------
+
+    def _layout_arrays(self):
+        return (
+            np.asarray(self.shape, dtype=np.int64),
+            np.asarray(self.strides, dtype=np.int64),
+        )
+
+    def relu(self):
+        """max(x, 0) elementwise, computed by the native kernel reading
+        this tensor's (possibly strided) view directly. Returns a new
+        row-major contiguous NativeTensorCore."""
+        self._require_open()
+        out = NativeTensorCore.zeros(self.shape)
+        shape_arr, strides_arr = self._layout_arrays()
+        self._storage._lib.tf_core_relu(
+            self._storage._require_open(),
+            out._storage._require_open(),
+            shape_arr, strides_arr, self.offset, self.ndim,
+        )
+        return out
+
+    def _binary_core_op(self, other, kernel_name, op_name):
+        """Shared plumbing for add/subtract/multiply over tensor cores:
+        both strided inputs are read in lockstep by the native kernel,
+        which writes a fresh contiguous output. Shapes must match
+        exactly — no broadcasting."""
+        self._require_open()
+        if not isinstance(other, NativeTensorCore):
+            raise TypeError(
+                f"{op_name} requires a NativeTensorCore operand, "
+                f"got {type(other).__name__}"
+            )
+        other._require_open()
+        if self.shape != other.shape:
+            raise ValueError(
+                f"{op_name} requires identical shapes (no broadcasting), "
+                f"got {self.shape} and {other.shape}"
+            )
+        out = NativeTensorCore.zeros(self.shape)
+        shape_arr, a_strides = self._layout_arrays()
+        b_strides = np.asarray(other.strides, dtype=np.int64)
+        getattr(self._storage._lib, kernel_name)(
+            self._storage._require_open(),
+            other._storage._require_open(),
+            out._storage._require_open(),
+            shape_arr, a_strides, b_strides,
+            self.offset, other.offset, self.ndim,
+        )
+        return out
+
+    def add(self, other):
+        """self + other elementwise, natively. Same-shape only."""
+        return self._binary_core_op(other, "tf_core_add", "add")
+
+    def subtract(self, other):
+        """self - other elementwise, natively. Same-shape only."""
+        return self._binary_core_op(other, "tf_core_subtract", "subtract")
+
+    def multiply(self, other):
+        """self * other elementwise, natively. Same-shape only."""
+        return self._binary_core_op(other, "tf_core_multiply", "multiply")
 
     # -- view operations (metadata only: no data is copied) --------------
 

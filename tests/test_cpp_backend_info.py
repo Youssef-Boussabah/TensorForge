@@ -53,6 +53,7 @@ def test_backend_info_shape():
         "storage_object",
         "tensor_view",
         "tensor_core",
+        "tensor_core_kernels",
         "dtype",
         "tensor_integration",
         "autograd_integration",
@@ -61,6 +62,7 @@ def test_backend_info_shape():
     assert info["storage_object"] == "NativeStorage"
     assert info["tensor_view"] == "NativeTensorView"
     assert info["tensor_core"] == "NativeTensorCore"
+    assert info["tensor_core_kernels"] == ("relu", "add", "subtract", "multiply")
     assert info["name"] == "cpp"
     assert info["experimental"] is True
     assert info["dtype"] == "float64"

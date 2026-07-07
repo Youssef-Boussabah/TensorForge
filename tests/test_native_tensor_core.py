@@ -318,6 +318,121 @@ def test_view_operations_on_closed_core_raise():
             operation()
 
 
+# ---------------------------------------------------------------------------
+# v1.2: native kernels over tensor cores
+# ---------------------------------------------------------------------------
+
+
+def test_relu_on_contiguous_tensor():
+    base = np.array([[-1.0, 2.0], [-3.0, 4.0]])
+    with cpp.NativeTensorCore.from_array(base) as tensor:
+        result = tensor.relu()
+        assert isinstance(result, cpp.NativeTensorCore)
+        assert result.contiguous is True
+        assert np.array_equal(result.to_numpy(), np.maximum(base, 0.0))
+        result.close()
+
+
+def test_relu_on_noncontiguous_views():
+    base = np.arange(-6.0, 6.0).reshape(3, 4)
+    with cpp.NativeTensorCore.from_array(base) as tensor:
+        assert np.array_equal(tensor.T.relu().to_numpy(), np.maximum(base.T, 0.0))
+        narrowed = tensor.narrow(1, 1, 2)
+        assert np.array_equal(narrowed.relu().to_numpy(), np.maximum(base[:, 1:3], 0.0))
+
+
+@pytest.mark.parametrize("method,numpy_op", (
+    ("add", np.add),
+    ("subtract", np.subtract),
+    ("multiply", np.multiply),
+))
+def test_binary_ops_match_numpy(method, numpy_op):
+    rng = np.random.default_rng(12)
+    x = rng.normal(size=(3, 4))
+    y = rng.normal(size=(3, 4))
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        result = getattr(a, method)(b)
+        assert isinstance(result, cpp.NativeTensorCore)
+        assert result.contiguous is True
+        assert np.array_equal(result.to_numpy(), numpy_op(x, y))
+
+
+@pytest.mark.parametrize("method,numpy_op", (
+    ("add", np.add),
+    ("subtract", np.subtract),
+    ("multiply", np.multiply),
+))
+def test_binary_ops_on_noncontiguous_views(method, numpy_op):
+    rng = np.random.default_rng(13)
+    x = rng.normal(size=(3, 4))
+    y = rng.normal(size=(4, 3))
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        # A transposed view against a contiguous tensor of matching shape.
+        result = getattr(a.T, method)(b)
+        assert np.array_equal(result.to_numpy(), numpy_op(x.T, y))
+        # Two strided views: narrowed slices of each.
+        left = a.narrow(1, 1, 3)                 # (3, 3) view of x
+        right = b.narrow(0, 0, 3)                # (3, 3) view of y
+        result = getattr(left, method)(right)
+        assert np.array_equal(result.to_numpy(), numpy_op(x[:, 1:4], y[:3]))
+
+
+def test_outputs_are_independent_and_inputs_unmutated():
+    x = np.array([[1.0, -2.0]])
+    y = np.array([[3.0, 4.0]])
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        result = a.add(b)
+        assert result.storage is not a.storage and result.storage is not b.storage
+        result.storage.fill(0.0)  # mutating the output...
+        assert a.to_numpy().tolist() == [[1.0, -2.0]]  # ...touches no input
+        assert b.to_numpy().tolist() == [[3.0, 4.0]]
+        assert a.relu().to_numpy().tolist() == [[1.0, 0.0]]
+        assert a.to_numpy().tolist() == [[1.0, -2.0]]  # relu didn't mutate
+
+
+def test_binary_ops_reject_shape_mismatch():
+    with cpp.NativeTensorCore.zeros((2, 3)) as a, cpp.NativeTensorCore.zeros((3, 2)) as b:
+        with pytest.raises(ValueError, match="no broadcasting"):
+            a.add(b)
+        with pytest.raises(ValueError, match="identical shapes"):
+            a.multiply(b)
+
+
+def test_binary_ops_reject_non_tensor_core_operands():
+    with cpp.NativeTensorCore.zeros((2,)) as a:
+        for bad in (np.zeros(2), [0.0, 0.0], 3.0):
+            with pytest.raises(TypeError, match="NativeTensorCore"):
+                a.add(bad)
+
+
+def test_kernels_reject_closed_tensors():
+    a = cpp.NativeTensorCore.zeros((2,))
+    b = cpp.NativeTensorCore.zeros((2,))
+    b.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        a.add(b)  # closed right operand
+    a.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        a.relu()  # closed self
+
+
+def test_scalar_tensor_core_kernels():
+    with cpp.NativeTensorCore.full((), -3.0) as a, cpp.NativeTensorCore.full((), 5.0) as b:
+        assert float(a.relu().to_numpy()) == 0.0
+        assert float(a.add(b).to_numpy()) == 2.0
+        assert float(a.multiply(b).to_numpy()) == -15.0
+
+
+def test_backend_info_advertises_tensor_core_kernels():
+    info = cpp.backend_info()
+    assert info["tensor_core_kernels"] == ("relu", "add", "subtract", "multiply")
+    # TensorCore methods are not raw-buffer kernels; list_kernels is
+    # unchanged ("relu" appears there as the raw kernel, "add" only in
+    # its "elementwise_add" form).
+    assert "add" not in cpp.list_kernels()
+    assert "elementwise_add" in cpp.list_kernels()
+
+
 def test_backend_info_advertises_tensor_core_and_kernels_stay_kernels():
     info = cpp.backend_info()
     assert info["tensor_core"] == "NativeTensorCore"

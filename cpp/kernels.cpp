@@ -80,6 +80,121 @@ TF_EXPORT void tf_storage_copy_to(const void* handle, double* dst) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Kernels over native tensor cores: read strided views directly from
+// NativeStorage and write into fresh contiguous storage. Same odometer
+// traversal as materialization, so contiguous and non-contiguous
+// inputs (transposes, narrows) work identically.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// Plain function pointers keep the binary walker generic without
+// templates or registries.
+typedef double (*TfBinaryOp)(double, double);
+double tf_op_add(double x, double y) { return x + y; }
+double tf_op_subtract(double x, double y) { return x - y; }
+double tf_op_multiply(double x, double y) { return x * y; }
+
+// Walk two strided sources in lockstep (same logical shape, separate
+// strides/offsets) and write row-major contiguous output.
+void tf_core_binary(
+    const void* a_handle, const void* b_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
+    int64_t a_offset, int64_t b_offset, int64_t ndim, TfBinaryOp op
+) {
+    const double* a = static_cast<const TfStorage*>(a_handle)->data;
+    const double* b = static_cast<const TfStorage*>(b_handle)->data;
+    double* dst = static_cast<TfStorage*>(dst_handle)->data;
+    if (ndim == 0) {
+        dst[0] = op(a[a_offset], b[b_offset]);
+        return;
+    }
+    int64_t total = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        total *= shape[d];
+    }
+    int64_t* counter = new int64_t[ndim]();
+    int64_t a_pos = a_offset;
+    int64_t b_pos = b_offset;
+    for (int64_t out = 0; out < total; ++out) {
+        dst[out] = op(a[a_pos], b[b_pos]);
+        for (int64_t d = ndim - 1; d >= 0; --d) {
+            ++counter[d];
+            a_pos += a_strides[d];
+            b_pos += b_strides[d];
+            if (counter[d] < shape[d]) {
+                break;
+            }
+            counter[d] = 0;
+            a_pos -= shape[d] * a_strides[d];
+            b_pos -= shape[d] * b_strides[d];
+        }
+    }
+    delete[] counter;
+}
+
+}  // namespace
+
+TF_EXPORT void tf_core_relu(
+    const void* src_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim
+) {
+    const double* src = static_cast<const TfStorage*>(src_handle)->data;
+    double* dst = static_cast<TfStorage*>(dst_handle)->data;
+    if (ndim == 0) {
+        dst[0] = src[offset] > 0.0 ? src[offset] : 0.0;
+        return;
+    }
+    int64_t total = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        total *= shape[d];
+    }
+    int64_t* counter = new int64_t[ndim]();
+    int64_t src_pos = offset;
+    for (int64_t out = 0; out < total; ++out) {
+        dst[out] = src[src_pos] > 0.0 ? src[src_pos] : 0.0;
+        for (int64_t d = ndim - 1; d >= 0; --d) {
+            ++counter[d];
+            src_pos += strides[d];
+            if (counter[d] < shape[d]) {
+                break;
+            }
+            counter[d] = 0;
+            src_pos -= shape[d] * strides[d];
+        }
+    }
+    delete[] counter;
+}
+
+TF_EXPORT void tf_core_add(
+    const void* a, const void* b, void* dst,
+    const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
+    int64_t a_offset, int64_t b_offset, int64_t ndim
+) {
+    tf_core_binary(a, b, dst, shape, a_strides, b_strides,
+                   a_offset, b_offset, ndim, tf_op_add);
+}
+
+TF_EXPORT void tf_core_subtract(
+    const void* a, const void* b, void* dst,
+    const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
+    int64_t a_offset, int64_t b_offset, int64_t ndim
+) {
+    tf_core_binary(a, b, dst, shape, a_strides, b_strides,
+                   a_offset, b_offset, ndim, tf_op_subtract);
+}
+
+TF_EXPORT void tf_core_multiply(
+    const void* a, const void* b, void* dst,
+    const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
+    int64_t a_offset, int64_t b_offset, int64_t ndim
+) {
+    tf_core_binary(a, b, dst, shape, a_strides, b_strides,
+                   a_offset, b_offset, ndim, tf_op_multiply);
+}
+
 // Materialize a strided view of the storage into a contiguous output
 // buffer — the canonical tensor-runtime loop. The logical indices are
 // walked like an odometer (last dimension fastest, i.e. row-major

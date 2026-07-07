@@ -54,6 +54,8 @@ C++-owned float64 buffer. **v0.9** bound the two together as
 first operation. **v1.0** composed storage + view into
 `NativeTensorCore`, the first native tensor runtime object. **v1.1**
 gave it metadata-only view operations — reshape, transpose/T, narrow —
-sharing storage without copying (see
+sharing storage without copying. **v1.2** made the runtime
+self-contained for simple compute: relu/add/subtract/multiply as
+native kernels reading strided views directly (see
 [backend_experiments.md](backend_experiments.md)). CUDA/GPU
 experiments remain future work.

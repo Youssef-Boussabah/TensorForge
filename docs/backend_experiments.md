@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.1 (current)
+## C++ backend — v1.2 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -164,11 +164,36 @@ Closing a view closes only that view — the owner and sibling views
 keep working. Closing the owner releases the memory for every core
 sharing it, after which their data operations raise.
 
+### Kernels over tensor cores (v1.2)
+
+The step that makes the native runtime self-contained for simple
+compute: `relu`, `add`, `subtract`, and `multiply` as
+`NativeTensorCore` methods, computed **entirely in C++** — the
+kernels read the input's storage plus shape/stride/offset metadata
+directly (the same odometer traversal as materialization, so
+transposed and narrowed views work without being materialized first)
+and write into fresh contiguous native storage. No NumPy round trip
+is involved in the arithmetic.
+
+```python
+a = NativeTensorCore.from_array([[1.0, 2.0], [3.0, 4.0]])
+b = NativeTensorCore.from_array([[10.0, 20.0], [30.0, 40.0]])
+
+a.add(b)            # a new contiguous NativeTensorCore
+a.T.multiply(b.T)   # strided views compute directly — no copy first
+a.relu()
+```
+
+Binary operations require exactly matching shapes — no broadcasting
+yet. Outputs are always new row-major contiguous tensor cores,
+independent of their inputs. `backend_info()` lists these under
+``tensor_core_kernels``, separate from the raw NumPy-buffer kernels
+in `list_kernels()`.
+
 To be precise about what this is **not**: it is not
-`tensorforge.Tensor`, it has no autograd, and it performs no math yet
-— even the compiled kernels don't operate on it. It is the foundation
-for exactly those later steps: kernels over tensor cores, explicit
-backend dispatch, and eventually native backend integration.
+`tensorforge.Tensor`, it has no autograd, and there is no backend
+dispatch. Future milestones may add TensorCore matmul, dispatch, or
+integration behind an explicit flag.
 
 ### The tiled matmul experiment
 

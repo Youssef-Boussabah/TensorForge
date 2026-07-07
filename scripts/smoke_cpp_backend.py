@@ -60,6 +60,15 @@ def main():
     assert tensor.T.to_numpy().tolist() == [[1.0, 4.0], [2.0, 5.0], [3.0, 6.0]]
     assert tensor.reshape((3, 2)).to_numpy().tolist() == [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]
     assert tensor.narrow(1, 1, 2).to_numpy().tolist() == [[2.0, 3.0], [5.0, 6.0]]
+
+    # Native kernels over tensor cores, strided inputs included.
+    other = NativeTensorCore.from_array(np.ones((2, 3)))
+    assert tensor.add(other).to_numpy().tolist() == [[2.0, 3.0, 4.0], [5.0, 6.0, 7.0]]
+    signs = NativeTensorCore.from_array([[-1.0, 2.0], [3.0, -4.0]])
+    assert signs.relu().to_numpy().tolist() == [[0.0, 2.0], [3.0, 0.0]]
+    assert signs.T.multiply(signs.T).to_numpy().tolist() == [[1.0, 9.0], [4.0, 16.0]]
+    other.close()
+    signs.close()
     tensor.close()
 
     print("cpp backend smoke ok")
