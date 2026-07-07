@@ -1,15 +1,19 @@
 """Honest benchmarks: the experimental C++ backend vs NumPy.
 
-This script exists for honest measurement, not marketing. The C++
-kernels are naive, single-threaded, textbook loops; NumPy dispatches
-to heavily optimized C — and, for matmul, to a BLAS library. Expect
-NumPy to be faster, often dramatically so for matmul. What the
-numbers show:
+This script exists for honest measurement, not marketing. It compares
+three implementations of each operation:
 
-- per-call overhead (ctypes + conversion) dominates on small arrays;
-- on large elementwise arrays the naive loop can get within range of
-  NumPy, because both are ultimately memory-bound;
-- for matmul, BLAS's blocking/SIMD/threading crushes the triple loop.
+- NumPy (the baseline; optimized C, and BLAS for matmul);
+- the raw-buffer C++ kernels (naive single-threaded loops over
+  contiguous NumPy arrays, converted at the call boundary);
+- the NativeTensorCore runtime kernels, which read native storage
+  through shape/stride metadata — their timings therefore include the
+  Python wrapper, output-storage allocation, and strided traversal,
+  which is exactly the overhead worth seeing. View rows feed
+  non-contiguous (transposed) inputs straight to the native kernels.
+
+Expect NumPy to win, often dramatically for matmul. Nothing here
+asserts a speedup; numbers are hardware-dependent.
 
 Build the backend first:
 
@@ -59,85 +63,156 @@ def _format_time(seconds):
     return f"{seconds:8.2f} s "
 
 
-def build_cases(cpp, quick):
-    """Return (name, shape_label, numpy_fn, cpp_fn) benchmark cases."""
-    rng = np.random.default_rng(0)
-    small_n = 1_000
-    large_n = 100_000 if quick else 1_000_000
-    mat_n = 48 if quick else 192
+def _as_numpy(result):
+    """Normalize a benchmark result for correctness checking: tensor
+    cores materialize, NumPy arrays pass through."""
+    if hasattr(result, "to_numpy"):
+        return result.to_numpy()
+    return np.asarray(result)
 
-    cases = []
-    for n in (small_n, large_n):
-        a = rng.normal(size=n)
-        b = rng.normal(size=n)
-        cases.append((
-            "elementwise_add", f"({n:,})",
-            lambda a=a, b=b: a + b,
-            lambda a=a, b=b: cpp.elementwise_add(a, b),
-        ))
-    for n in (small_n, large_n):
-        x = rng.normal(size=n)
-        cases.append((
-            "relu", f"({n:,})",
-            lambda x=x: np.maximum(x, 0.0),
-            lambda x=x: cpp.relu(x),
-        ))
-    for n in (mat_n // 2, mat_n):
+
+def build_suite(cpp, quick):
+    """Build the benchmark plan: a list of groups, one per
+    (operation, size). Each group has a timed NumPy ``baseline`` and
+    ``implementations`` — (name, timed_fn, reference_fn) triples.
+    Every implementation carries its own correctness reference because
+    view cases legitimately compute transposed results.
+    """
+    core = cpp.NativeTensorCore
+    rng = np.random.default_rng(0)
+    elementwise_shapes = [(250, 400)] if quick else [(25, 40), (1_000, 1_000)]
+    matmul_sizes = [48] if quick else [96, 192]
+
+    groups = []
+
+    for shape in elementwise_shapes:
+        x = rng.normal(size=shape)
+        y = rng.normal(size=shape)
+        cx, cy = core.from_array(x), core.from_array(y)
+        label = f"({shape[0]}x{shape[1]})"
+        groups.append({
+            "operation": "add",
+            "shape": label,
+            "baseline": lambda x=x, y=y: x + y,
+            "implementations": [
+                ("cpp raw buffer",
+                 lambda x=x, y=y: cpp.elementwise_add(x, y),
+                 lambda x=x, y=y: x + y),
+                ("tensor core",
+                 lambda cx=cx, cy=cy: cx.add(cy),
+                 lambda x=x, y=y: x + y),
+                ("tensor core (view)",
+                 lambda cx=cx, cy=cy: cx.T.add(cy.T),
+                 lambda x=x, y=y: x.T + y.T),
+            ],
+        })
+        groups.append({
+            "operation": "relu",
+            "shape": label,
+            "baseline": lambda x=x: np.maximum(x, 0.0),
+            "implementations": [
+                ("cpp raw buffer",
+                 lambda x=x: cpp.relu(x),
+                 lambda x=x: np.maximum(x, 0.0)),
+                ("tensor core",
+                 lambda cx=cx: cx.relu(),
+                 lambda x=x: np.maximum(x, 0.0)),
+                ("tensor core (view)",
+                 lambda cx=cx: cx.T.relu(),
+                 lambda x=x: np.maximum(x.T, 0.0)),
+            ],
+        })
+
+    for n in matmul_sizes:
         m1 = rng.normal(size=(n, n))
         m2 = rng.normal(size=(n, n))
-        # Both C++ matmuls against the same NumPy baseline: the naive
-        # reference loop and the cache-blocked experiment.
-        cases.append((
-            "matmul_naive", f"({n}x{n}) @ ({n}x{n})",
-            lambda m1=m1, m2=m2: m1 @ m2,
-            lambda m1=m1, m2=m2: cpp.matmul(m1, m2),
-        ))
-        cases.append((
-            "matmul_tiled", f"({n}x{n}) @ ({n}x{n})",
-            lambda m1=m1, m2=m2: m1 @ m2,
-            lambda m1=m1, m2=m2: cpp.matmul_tiled(m1, m2),
-        ))
-    return cases
+        cm1, cm2 = core.from_array(m1), core.from_array(m2)
+        groups.append({
+            "operation": "matmul",
+            "shape": f"({n}x{n}) @ ({n}x{n})",
+            "baseline": lambda m1=m1, m2=m2: m1 @ m2,
+            "implementations": [
+                ("cpp raw naive",
+                 lambda m1=m1, m2=m2: cpp.matmul(m1, m2),
+                 lambda m1=m1, m2=m2: m1 @ m2),
+                ("cpp raw tiled",
+                 lambda m1=m1, m2=m2: cpp.matmul_tiled(m1, m2),
+                 lambda m1=m1, m2=m2: m1 @ m2),
+                ("tensor core",
+                 lambda cm1=cm1, cm2=cm2: cm1.matmul(cm2),
+                 lambda m1=m1, m2=m2: m1 @ m2),
+                ("tensor core (T view)",
+                 lambda cm1=cm1, cm2=cm2: cm1.T.matmul(cm2),
+                 lambda m1=m1, m2=m2: m1.T @ m2),
+            ],
+        })
+
+    return groups
 
 
-def run_benchmarks(quick=False, cpp=None):
-    """Run all cases; return a list of result-row dicts."""
+def run_suite(quick=False, cpp=None):
+    """Run every group; return result rows. Each group produces one
+    ``numpy`` baseline row (ratio 1.0) plus one row per implementation
+    with its time and its ratio against that baseline. Correctness is
+    verified against each implementation's own reference before any
+    timing — a fast wrong kernel is not interesting."""
     if cpp is None:
         cpp = _load_backend()
     repeats = 5 if quick else 20
 
     rows = []
-    for name, shape, numpy_fn, cpp_fn in build_cases(cpp, quick):
-        # Correctness first: a fast wrong kernel is not interesting.
-        if not np.allclose(numpy_fn(), cpp_fn(), atol=1e-10):
-            raise AssertionError(f"{name} {shape}: C++ result disagrees with NumPy")
-        numpy_time = measure(numpy_fn, repeats)
-        cpp_time = measure(cpp_fn, repeats)
+    for group in build_suite(cpp, quick):
+        baseline_fn = group["baseline"]
+        baseline_time = measure(baseline_fn, repeats)
         rows.append({
-            "operation": name,
-            "shape": shape,
-            "numpy_s": numpy_time,
-            "cpp_s": cpp_time,
-            "ratio": cpp_time / numpy_time,
+            "operation": group["operation"],
+            "shape": group["shape"],
+            "implementation": "numpy",
+            "time_s": baseline_time,
+            "ratio": 1.0,
         })
+        for name, timed_fn, reference_fn in group["implementations"]:
+            if not np.allclose(_as_numpy(timed_fn()), reference_fn(), atol=1e-10):
+                raise AssertionError(
+                    f"{group['operation']} {group['shape']} [{name}]: "
+                    f"result disagrees with the reference"
+                )
+            impl_time = measure(timed_fn, repeats)
+            rows.append({
+                "operation": group["operation"],
+                "shape": group["shape"],
+                "implementation": name,
+                "time_s": impl_time,
+                "ratio": impl_time / baseline_time,
+            })
     return rows
 
 
 def print_report(rows):
-    header = f"{'operation':<17} {'shape':<20} {'numpy':>12} {'c++':>12} {'c++/numpy':>10}"
+    header = (
+        f"{'operation':<10} {'shape':<20} {'implementation':<21} "
+        f"{'time':>12} {'vs numpy':>10}"
+    )
     print(header)
     print("-" * len(header))
+    previous_group = None
     for row in rows:
+        group = (row["operation"], row["shape"])
+        if previous_group is not None and group != previous_group:
+            print()
+        previous_group = group
         print(
-            f"{row['operation']:<17} {row['shape']:<20} "
-            f"{_format_time(row['numpy_s'])} {_format_time(row['cpp_s'])} "
+            f"{row['operation']:<10} {row['shape']:<20} "
+            f"{row['implementation']:<21} {_format_time(row['time_s'])} "
             f"{row['ratio']:>9.1f}x"
         )
     print()
-    print("ratio > 1 means the C++ backend is slower than NumPy.")
-    print("That is expected: these kernels are naive, single-threaded")
-    print("reference loops, while NumPy uses optimized C and BLAS.")
-    print("Small arrays also pay ctypes call + conversion overhead.")
+    print("ratio > 1 means slower than NumPy. That is expected: the C++")
+    print("kernels are naive, single-threaded reference loops, while")
+    print("NumPy uses optimized C and BLAS. 'tensor core' rows include")
+    print("wrapper, output allocation, and strided-traversal overhead;")
+    print("small arrays also pay ctypes call + conversion overhead.")
+    print("Results are hardware-dependent.")
 
 
 def main():
@@ -147,7 +222,7 @@ def main():
         help="small sizes and few repeats, for smoke checks",
     )
     args = parser.parse_args()
-    print_report(run_benchmarks(quick=args.quick))
+    print_report(run_suite(quick=args.quick))
 
 
 if __name__ == "__main__":

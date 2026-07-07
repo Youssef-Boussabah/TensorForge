@@ -57,6 +57,9 @@ gave it metadata-only view operations — reshape, transpose/T, narrow —
 sharing storage without copying. **v1.2** made the runtime
 self-contained for simple compute: relu/add/subtract/multiply as
 native kernels reading strided views directly. **v1.3** completed the
-compute set with TensorCore matmul over strided views (see
+compute set with TensorCore matmul over strided views. **v1.4**
+upgraded the benchmarks into a suite covering NumPy, the raw-buffer
+kernels, and the TensorCore runtime side by side — overheads
+included, honestly (see
 [backend_experiments.md](backend_experiments.md)). CUDA/GPU
 experiments remain future work.

@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.3 (current)
+## C++ backend — v1.4 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -303,22 +303,32 @@ uv run python benchmarks/cpp_backend.py          # default sizes
 uv run python benchmarks/cpp_backend.py --quick  # fast smoke run
 ```
 
-The output is a small table (operation, shape, NumPy time, C++ time,
-ratio). It is deliberately **not** a performance claim — the point is
-what the numbers teach:
+The suite (v1.4) measures every implementation of each operation
+against a shared NumPy baseline: the **raw-buffer kernels** (naive
+loops over contiguous NumPy arrays, converted at the call boundary)
+and the **NativeTensorCore kernels** (native compute over storage +
+shape/stride metadata), including non-contiguous view rows where
+transposed inputs feed the kernels directly. It is deliberately
+**not** a performance claim — the point is what the numbers teach:
 
-- On tiny arrays, the C++ backend loses badly: every call pays ctypes
-  and array-conversion overhead that NumPy's own dispatch amortizes
-  better.
-- On large elementwise arrays, naive C++ gets competitive with NumPy
-  (both end up memory-bound — the loop isn't the bottleneck).
-- For matmul, NumPy's BLAS (blocking, SIMD, threading) beats the
-  textbook triple loop by an order of magnitude, and the gap grows
-  with size.
+- On small arrays, everything native loses to NumPy: per-call ctypes
+  and conversion overhead dominates.
+- On large elementwise arrays the raw-buffer loop gets competitive
+  with NumPy (both memory-bound).
+- The TensorCore rows include what the raw rows don't: Python wrapper
+  cost, output-storage allocation, and the generic strided-traversal
+  (odometer) loop — visibly slower than the flat raw-buffer loop for
+  elementwise work. That overhead is the honest price of layout
+  generality, and measuring it is the reason these rows exist.
+- For matmul, the triple loop dominates everything else, so the
+  TensorCore path costs about the same as the raw naive kernel —
+  and NumPy's BLAS beats both by an order of magnitude.
 
-Correctness is verified against NumPy before anything is timed, and
-timings are medians over repeated runs after warmup. Expect exact
-numbers to vary by machine; the *shape* of the story shouldn't.
+Correctness is verified (each implementation against its own NumPy
+reference — view rows compute transposed results) before anything is
+timed, and timings are medians over repeated runs after warmup.
+Results are hardware-dependent and should not be oversold; expect
+exact numbers to vary, the *shape* of the story shouldn't.
 
 ## What might come next
 
