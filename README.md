@@ -1,19 +1,21 @@
 # TensorForge
 
-An educational deep learning framework built from scratch in Python
-and NumPy — a tiny, readable take on PyTorch, with autograd, modules,
-optimizers, checkpointing, and basic CNN support.
+A from-scratch deep learning framework built in Python and NumPy —
+a serious, Daedalus-inspired ML systems project covering PyTorch-style
+framework internals: autograd, modules, optimizers, checkpointing,
+CNN support, and an experimental native C++ backend.
 
 Everything is implemented by hand and kept readable: the autograd
 engine, the layers, the optimizers, the losses. NumPy is the only
-numeric dependency. If you want to understand what `loss.backward()`
-actually does, this repo is a few hundred lines away from telling you.
+numeric dependency. If you want to see what `loss.backward()`
+actually does, this repo is a few hundred lines away from showing you.
 
-**What it teaches:** reverse-mode autograd, how neural network modules
-and parameters fit together, what optimizers actually do,
-regularization (Dropout) and normalization (BatchNorm, LayerNorm),
-checkpoint/resume mechanics down to the RNG, and the internals of
-convolution and pooling.
+**Framework internals covered:** reverse-mode autograd, how neural
+network modules and parameters fit together, what optimizers actually
+do, regularization (Dropout) and normalization (BatchNorm, LayerNorm),
+checkpoint/resume mechanics down to the RNG, the internals of
+convolution and pooling, and native-backend mechanics (ctypes-loaded
+C++ kernels with honest benchmarks).
 
 ## Features
 
@@ -104,8 +106,8 @@ What each one teaches, and what to expect: [docs/examples.md](docs/examples.md).
 
 Honest expectations:
 
-- Educational, not production-ready — clarity beats performance every
-  time.
+- Not production-ready — clarity and correctness take priority over
+  performance everywhere.
 - NumPy on CPU only. No C++ backend yet, no CUDA backend yet — both
   are future experiments, not current features.
 - `Conv2d` and `MaxPool2d` use deliberately naive loops.
@@ -114,7 +116,7 @@ Honest expectations:
 
 ## Status
 
-**v3.0 — the Python educational framework is complete.** Everything
+**v3.0 — the Python framework line is complete.** Everything
 above works, is covered by 370+ tests, and is documented. Advanced
 work now happens in experimental branches: a C++ backend experiment
 has started (ctypes-loaded elementwise kernels and a naive matmul,
@@ -125,6 +127,6 @@ backend yet and no CUDA backend yet. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 
-TensorForge exists to show how a deep learning framework works under
-the hood, not to compete with real ones. Start reading at
+TensorForge is a from-scratch look at how a deep learning framework
+works under the hood — not a PyTorch replacement. Start reading at
 `src/tensorforge/tensor.py`.

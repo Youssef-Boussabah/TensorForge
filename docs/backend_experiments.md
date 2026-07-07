@@ -6,15 +6,16 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v0.3 (current)
+## C++ backend — v0.6 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
 
 - `cpp/kernels.cpp` — plain C-ABI functions over float64 buffers:
-  elementwise add, subtract, multiply, divide, ReLU, and a naive 2-D
-  matmul (the textbook triple loop). No Python C-API, no pybind11,
-  no NumPy headers.
+  elementwise add, subtract, multiply, divide, ReLU, a naive 2-D
+  matmul (the textbook triple loop, kept as the reference kernel),
+  and a tiled matmul (the cache-blocking optimization experiment).
+  No Python C-API, no pybind11, no NumPy headers.
 - `src/tensorforge/backends/cpp.py` — a ctypes wrapper that loads the
   compiled shared library and exposes the kernels as Python functions,
   handling array conversion and validation on the Python side.
@@ -30,7 +31,26 @@ from tensorforge.backends.cpp import (
 elementwise_add(np.array([1.0, 2.0]), np.array([3.0, 4.0]))  # [4. 6.]
 relu(np.array([-1.0, 0.0, 2.0]))                             # [0. 0. 2.]
 matmul(np.ones((2, 3)), np.ones((3, 4)))                     # (2, 4) of 3s
+matmul_tiled(np.ones((2, 3)), np.ones((3, 4)))               # same values
 ```
+
+### The tiled matmul experiment
+
+`matmul_tiled(a, b, block_size=32)` is the first *optimization*
+experiment: same contract and same results as the naive `matmul`, but
+computed block by block. Tiling is about **memory locality** — the
+naive loop re-reads the same rows and columns from main memory over
+and over once matrices outgrow the CPU cache, while the tiled version
+works on small sub-matrices that stay cache-resident during their
+reuse, and orders its inner loops to walk memory sequentially. Any
+positive `block_size` works, including ones that don't divide the
+matrix dimensions.
+
+The naive matmul deliberately stays: it is the reference the
+experiment is measured against. And the honest caveat applies as ever:
+tiling alone is one idea from a long list (SIMD, threading, deeper
+blocking...) that libraries behind NumPy implement — NumPy may well
+still be faster. Neither matmul is connected to Tensor or autograd.
 
 ### Building it
 
@@ -85,10 +105,11 @@ build or kernel fails CI instead of silently skipping.
   `relu` is unary and accepts any shape.
 - Division follows IEEE float64 rules (inf/NaN for zero denominators,
   the same values as NumPy) but does not emit NumPy's runtime warning.
-- `matmul` is strictly 2-D — `(m, n) @ (n, p)` only, vectors must be
-  passed as `(1, n)` / `(n, 1)` matrices — and it is the naive triple
-  loop: correct, but much slower than NumPy's BLAS-backed matmul. The
-  point is the mechanism, not speed.
+- Both matmuls are strictly 2-D — `(m, n) @ (n, p)` only, vectors must
+  be passed as `(1, n)` / `(n, 1)` matrices. `matmul` is the naive
+  triple loop; `matmul_tiled` adds cache blocking but remains
+  single-threaded scalar code. NumPy's BLAS-backed matmul is expected
+  to stay faster.
 - Not connected to Tensor or autograd.
 - A proof of mechanism, not a performance claim.
 

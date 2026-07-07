@@ -31,10 +31,9 @@ bit-exact dropout resume, and this release-readiness pass.
 
 ## v3.0 — Portfolio Release
 
-The completed Python educational framework: consistent docs, a clean
-landing page, a project summary, CI, and guardrail tests that keep
-docs and code from drifting apart. This closes the Python framework
-line.
+The completed Python framework line: consistent docs, a clean landing
+page, a project summary, CI, and guardrail tests that keep docs and
+code from drifting apart.
 
 ## Advanced branches — after v3.0
 
@@ -46,6 +45,8 @@ add/subtract/multiply/divide/ReLU. **v0.3** added a naive 2-D matmul
 kernel. **v0.4** added honest benchmarks against NumPy — which NumPy
 mostly wins, as expected. **v0.5** cleaned up the backend API with
 introspection helpers (`is_available`, `list_kernels`,
-`backend_info`) and lazy library loading (see
+`backend_info`) and lazy library loading. **v0.6** added
+`matmul_tiled`, a cache-blocking optimization experiment benchmarked
+against the naive reference and NumPy (see
 [backend_experiments.md](backend_experiments.md)). CUDA/GPU
 experiments remain future work.

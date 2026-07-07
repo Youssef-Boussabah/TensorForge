@@ -16,6 +16,7 @@ EXPECTED_KERNELS = (
     "elementwise_divide",
     "relu",
     "matmul",
+    "matmul_tiled",
 )
 
 

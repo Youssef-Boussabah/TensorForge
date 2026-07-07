@@ -103,6 +103,33 @@ def test_roadmap_does_not_list_v3_as_upcoming():
     )
 
 
+def test_positioning_language():
+    """TensorForge is positioned as a serious ML systems framework.
+    Project-facing docs must not reintroduce weak positioning. The
+    banned list is phrase-level, not word-level, so honest limitation
+    language and historical notes stay possible."""
+    banned = (
+        "educational framework",
+        "educational deep learning",
+        "educational take",
+        "educational project",
+        "educational toy",
+        "toy framework",
+        "mini framework",
+        "mini deep learning",
+        "learning project",
+        "teaching framework",
+    )
+    files = [REPO_ROOT / "README.md", REPO_ROOT / "CLAUDE.md",
+             *(REPO_ROOT / "docs").glob("*.md")]
+    for path in files:
+        text = path.read_text(encoding="utf-8").lower()
+        for term in banned:
+            assert term not in text, (
+                f"{path.name} uses banned positioning phrase {term!r}"
+            )
+
+
 def test_readme_mentions_all_example_files():
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     for path in (REPO_ROOT / "examples").glob("train_*.py"):

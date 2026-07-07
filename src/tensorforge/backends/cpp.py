@@ -31,6 +31,7 @@ KERNELS = (
     "elementwise_divide",
     "relu",
     "matmul",
+    "matmul_tiled",
 )
 
 _BINARY_KERNELS = (
@@ -77,6 +78,11 @@ def _load_library():
         ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_matmul.restype = None
+    library.tf_matmul_tiled.argtypes = [
+        f64_array, f64_array, f64_array,
+        ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+    ]
+    library.tf_matmul_tiled.restype = None
     return library
 
 
@@ -174,25 +180,19 @@ def relu(a):
     return out
 
 
-def matmul(a, b):
-    """(m, n) @ (n, p) matrix multiplication using the compiled C++
-    kernel — the naive triple loop, so correct but much slower than
-    NumPy's BLAS-backed matmul.
-
-    Strictly 2-D: vectors must be passed as (1, n) or (n, 1) matrices.
-    Returns a new (m, p) float64 array.
-    """
-    lib = _require_library()
+def _prepare_matmul_inputs(a, b, name):
+    """Shared matmul validation: contiguous float64, strictly 2-D,
+    compatible inner dimensions. Returns (a, b)."""
     a = np.ascontiguousarray(a, dtype=np.float64)
     b = np.ascontiguousarray(b, dtype=np.float64)
     if a.ndim != 2:
         raise ValueError(
-            f"the experimental C++ matmul requires a 2-D left input, "
+            f"the experimental C++ {name} requires a 2-D left input, "
             f"got shape {a.shape}"
         )
     if b.ndim != 2:
         raise ValueError(
-            f"the experimental C++ matmul requires a 2-D right input, "
+            f"the experimental C++ {name} requires a 2-D right input, "
             f"got shape {b.shape}"
         )
     if a.shape[1] != b.shape[0]:
@@ -200,8 +200,46 @@ def matmul(a, b):
             f"inner dimensions do not match: "
             f"{a.shape} @ {b.shape} (need (m, n) @ (n, p))"
         )
+    return a, b
+
+
+def matmul(a, b):
+    """(m, n) @ (n, p) matrix multiplication using the compiled C++
+    kernel — the naive triple loop, kept as the reference that
+    matmul_tiled is measured against. Correct but much slower than
+    NumPy's BLAS-backed matmul.
+
+    Strictly 2-D: vectors must be passed as (1, n) or (n, 1) matrices.
+    Returns a new (m, p) float64 array.
+    """
+    lib = _require_library()
+    a, b = _prepare_matmul_inputs(a, b, "matmul")
     m, n = a.shape
     p = b.shape[1]
     out = np.empty((m, p), dtype=np.float64)
     lib.tf_matmul(a, b, out, m, n, p)
+    return out
+
+
+def matmul_tiled(a, b, block_size=32):
+    """(m, n) @ (n, p) matrix multiplication using the tiled C++
+    kernel — an optimization experiment in cache blocking. Same
+    contract as ``matmul``; ``block_size`` sets the tile edge length
+    and any positive int works, including sizes that don't divide the
+    matrix dimensions.
+
+    Blocking improves memory locality over the naive loop, but this is
+    still single-threaded scalar code: NumPy's BLAS may well remain
+    faster. Returns a new (m, p) float64 array.
+    """
+    if not isinstance(block_size, int) or isinstance(block_size, bool) or block_size <= 0:
+        raise ValueError(
+            f"block_size must be a positive int, got {block_size!r}"
+        )
+    lib = _require_library()
+    a, b = _prepare_matmul_inputs(a, b, "matmul_tiled")
+    m, n = a.shape
+    p = b.shape[1]
+    out = np.empty((m, p), dtype=np.float64)
+    lib.tf_matmul_tiled(a, b, out, m, n, p, block_size)
     return out

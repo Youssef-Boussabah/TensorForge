@@ -1,9 +1,10 @@
 """Honest benchmarks: the experimental C++ backend vs NumPy.
 
-This script exists to teach, not to win. The C++ kernels are naive,
-single-threaded, textbook loops; NumPy dispatches to heavily optimized
-C — and, for matmul, to a BLAS library. Expect NumPy to be faster,
-often dramatically so for matmul. What the numbers show:
+This script exists for honest measurement, not marketing. The C++
+kernels are naive, single-threaded, textbook loops; NumPy dispatches
+to heavily optimized C — and, for matmul, to a BLAS library. Expect
+NumPy to be faster, often dramatically so for matmul. What the
+numbers show:
 
 - per-call overhead (ctypes + conversion) dominates on small arrays;
 - on large elementwise arrays the naive loop can get within range of
@@ -84,10 +85,17 @@ def build_cases(cpp, quick):
     for n in (mat_n // 2, mat_n):
         m1 = rng.normal(size=(n, n))
         m2 = rng.normal(size=(n, n))
+        # Both C++ matmuls against the same NumPy baseline: the naive
+        # reference loop and the cache-blocked experiment.
         cases.append((
-            "matmul", f"({n}x{n}) @ ({n}x{n})",
+            "matmul_naive", f"({n}x{n}) @ ({n}x{n})",
             lambda m1=m1, m2=m2: m1 @ m2,
             lambda m1=m1, m2=m2: cpp.matmul(m1, m2),
+        ))
+        cases.append((
+            "matmul_tiled", f"({n}x{n}) @ ({n}x{n})",
+            lambda m1=m1, m2=m2: m1 @ m2,
+            lambda m1=m1, m2=m2: cpp.matmul_tiled(m1, m2),
         ))
     return cases
 
@@ -127,8 +135,8 @@ def print_report(rows):
         )
     print()
     print("ratio > 1 means the C++ backend is slower than NumPy.")
-    print("That is expected: these kernels are naive, educational,")
-    print("single-threaded loops, while NumPy uses optimized C and BLAS.")
+    print("That is expected: these kernels are naive, single-threaded")
+    print("reference loops, while NumPy uses optimized C and BLAS.")
     print("Small arrays also pay ctypes call + conversion overhead.")
 
 

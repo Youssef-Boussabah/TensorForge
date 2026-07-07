@@ -4,12 +4,14 @@ A two-minute overview for anyone landing on this repository.
 
 ## What TensorForge is
 
-TensorForge is an educational deep learning framework built from
-scratch in Python + NumPy. It reimplements the core machinery of a
-framework like PyTorch — automatic differentiation, neural network
-modules, optimizers, checkpointing, basic CNN support — in small,
-readable code. NumPy is the only dependency. It was built milestone by
-milestone (v0.1 through v3.0), each one tested and documented.
+TensorForge is a from-scratch deep learning framework built in
+Python + NumPy — a serious, Daedalus-inspired ML systems project. It
+reimplements the core machinery of a framework like PyTorch —
+automatic differentiation, neural network modules, optimizers,
+checkpointing, CNN support — in small, readable code, plus an
+experimental native C++ backend. NumPy is the only dependency. It was
+built milestone by milestone (v0.1 through v3.0 and beyond), each one
+tested and documented.
 
 ## What TensorForge implements
 
@@ -29,15 +31,15 @@ milestone (v0.1 through v3.0), each one tested and documented.
   optimizer state, scheduler state, JSON metadata, and optionally the
   RNG state — so training resumes bit-for-bit, dropout included.
 
-## What makes it educational
+## Design principles
 
-Every design decision favors readability. Operations carry short
-comments explaining their local derivative; tricky pieces (stable
-losses, batchnorm statistics, max-pool gradient routing) explain *why*
-they work, not just what they do. Where possible, layers are built by
-composing existing autograd ops so their gradients need no new code —
-and where a fused op is necessary, finite-difference tests prove the
-hand-written backward correct.
+Every design decision favors readability and verifiable correctness.
+Operations carry short comments explaining their local derivative;
+tricky pieces (stable losses, batchnorm statistics, max-pool gradient
+routing) explain *why* they work, not just what they do. Where
+possible, layers are built by composing existing autograd ops so their
+gradients need no new code — and where a fused op is necessary,
+finite-difference tests prove the hand-written backward correct.
 
 ## Example learning path
 
@@ -59,14 +61,17 @@ runs in a few seconds.
 
 ## Current limitations
 
-Educational, not production-ready. NumPy on CPU only; `Conv2d` and
-`MaxPool2d` use deliberately naive loops. No real datasets, no
-external ML libraries. There is no C++ backend and no CUDA backend —
-both are future experiments, not current features.
+Not production-ready and not a PyTorch replacement. NumPy on CPU
+only; `Conv2d` and `MaxPool2d` use deliberately naive loops. No real
+datasets, no external ML libraries. The native C++ backend is an
+experimental research line (elementwise kernels, a naive matmul,
+honest benchmarks) and is not wired into Tensor/autograd; there is no
+CUDA backend.
 
 ## What comes after v3.0
 
-v3.0 closes the Python framework line. Future work moves to advanced
-branches: a C++ backend experiment and CUDA/GPU experiments, each a
-substantial project of its own. See
+v3.0 closes the Python framework line. Work continues on advanced
+branches: the experimental C++ backend is underway (compiled kernels,
+CI-verified builds, honest benchmarks, an introspection API), and
+CUDA/GPU experiments remain future work. See
 [release_history.md](release_history.md) for the full arc.

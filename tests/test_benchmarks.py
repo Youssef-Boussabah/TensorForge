@@ -36,7 +36,9 @@ def test_measure_times_the_function():
 def test_quick_benchmarks_produce_result_rows():
     rows = run_benchmarks(quick=True, cpp=cpp)
     assert len(rows) == len(build_cases(cpp, quick=True))
-    assert {row["operation"] for row in rows} == {"elementwise_add", "relu", "matmul"}
+    assert {row["operation"] for row in rows} == {
+        "elementwise_add", "relu", "matmul_naive", "matmul_tiled",
+    }
     for row in rows:
         assert set(row) == {"operation", "shape", "numpy_s", "cpp_s", "ratio"}
         assert row["numpy_s"] > 0.0

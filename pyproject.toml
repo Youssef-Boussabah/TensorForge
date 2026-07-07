@@ -1,7 +1,7 @@
 [project]
 name = "tensorforge"
 version = "0.1.0"
-description = "Add your description here"
+description = "A from-scratch deep learning framework in Python + NumPy, with an experimental native C++ backend"
 readme = "README.md"
 authors = [
     { name = "Youssef Boussabah", email = "youssefboussabah2007@gmail.com" }

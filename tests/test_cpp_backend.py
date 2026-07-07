@@ -26,8 +26,7 @@ BINARY_OPS = (
 
 
 def test_backend_imports_and_exposes_all_functions():
-    for name in ("elementwise_add", "elementwise_subtract",
-                 "elementwise_multiply", "elementwise_divide", "relu"):
+    for name in cpp.list_kernels():
         assert callable(getattr(cpp, name))
 
 
@@ -223,3 +222,83 @@ def test_matmul_rejects_non_2d_inputs():
 def test_matmul_rejects_incompatible_inner_dimensions():
     with pytest.raises(ValueError, match="inner dimensions"):
         cpp.matmul(np.ones((2, 3)), np.ones((4, 2)))
+
+
+# ---------------------------------------------------------------------------
+# v0.6 kernel: matmul_tiled
+# ---------------------------------------------------------------------------
+
+
+def test_matmul_tiled_is_importable():
+    from tensorforge.backends.cpp import matmul_tiled  # noqa: F401
+
+    assert callable(cpp.matmul_tiled)
+
+
+def test_matmul_tiled_known_values():
+    x = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    y = np.array([[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]])
+    assert cpp.matmul_tiled(x, y).tolist() == [[58.0, 64.0], [139.0, 154.0]]
+
+
+def test_matmul_tiled_matches_numpy_and_naive():
+    rng = np.random.default_rng(8)
+    for (m, n, p) in ((2, 3, 4), (5, 1, 3), (64, 64, 64), (1, 7, 1)):
+        a = rng.normal(size=(m, n))
+        b = rng.normal(size=(n, p))
+        tiled = cpp.matmul_tiled(a, b)
+        assert tiled.shape == (m, p)
+        assert np.allclose(tiled, a @ b, atol=1e-10)
+        assert np.allclose(tiled, cpp.matmul(a, b), atol=1e-10)
+
+
+def test_matmul_tiled_dimensions_not_divisible_by_block():
+    rng = np.random.default_rng(9)
+    # 33x45 @ 45x21 with block 32: every dimension has a ragged edge.
+    a = rng.normal(size=(33, 45))
+    b = rng.normal(size=(45, 21))
+    assert np.allclose(cpp.matmul_tiled(a, b, block_size=32), a @ b, atol=1e-10)
+
+
+@pytest.mark.parametrize("block_size", (1, 2, 8, 16, 32, 100))
+def test_matmul_tiled_block_sizes(block_size):
+    rng = np.random.default_rng(10)
+    a = rng.normal(size=(17, 23))
+    b = rng.normal(size=(23, 11))
+    # Any positive block size — including 1 and larger-than-the-matrix —
+    # must give the same answer.
+    assert np.allclose(cpp.matmul_tiled(a, b, block_size=block_size), a @ b, atol=1e-10)
+
+
+def test_matmul_tiled_output_properties_and_no_mutation():
+    a = np.array([[1.0, 2.0]])
+    b = np.array([[3.0], [4.0]])
+    out = cpp.matmul_tiled(a, b)
+    assert isinstance(out, np.ndarray)
+    assert out.dtype == np.float64
+    assert not np.shares_memory(out, a) and not np.shares_memory(out, b)
+    assert np.array_equal(a, [[1.0, 2.0]])
+    assert np.array_equal(b, [[3.0], [4.0]])
+
+
+def test_matmul_tiled_handles_strided_inputs():
+    big = np.arange(24.0).reshape(4, 6)
+    a = big[::2, ::2]        # non-contiguous (2, 3) view
+    b = big.T[:3, :2]        # non-contiguous (3, 2) view
+    assert np.allclose(cpp.matmul_tiled(a, b), a @ b)
+
+
+def test_matmul_tiled_rejects_bad_inputs():
+    with pytest.raises(ValueError, match="2-D left"):
+        cpp.matmul_tiled(np.ones(3), np.ones((3, 2)))
+    with pytest.raises(ValueError, match="2-D right"):
+        cpp.matmul_tiled(np.ones((2, 3)), np.ones(3))
+    with pytest.raises(ValueError, match="inner dimensions"):
+        cpp.matmul_tiled(np.ones((2, 3)), np.ones((4, 2)))
+
+
+def test_matmul_tiled_rejects_invalid_block_size():
+    a = np.ones((2, 2))
+    for bad in (0, -8, 2.5, True, "32", None):
+        with pytest.raises(ValueError, match="block_size"):
+            cpp.matmul_tiled(a, a, block_size=bad)

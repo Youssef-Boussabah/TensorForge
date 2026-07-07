@@ -2,7 +2,7 @@
 
 ## Where the project is
 
-**v3.0 is the completed Python educational framework release.** You
+**v3.0 is the completed Python framework release.** You
 can define a model (including CNNs), train it, regularize it,
 normalize it, evaluate it honestly, save it, and resume it bit-for-bit
 — all from readable NumPy code, all tested, all documented. For the
@@ -38,8 +38,8 @@ release-readiness pass over docs and guardrail tests.
 The Python line is done; what remains is expansion on its own terms:
 
 - **Advanced branches** — the C++ backend experiment now has
-  elementwise kernels, a naive 2-D matmul, and honest benchmarks
-  against NumPy
+  elementwise kernels, naive and cache-tiled 2-D matmuls, an
+  introspection API, and honest benchmarks against NumPy
   (see [backend_experiments.md](backend_experiments.md)). CUDA/GPU
   experiments are still entirely future work. The Python framework
   stays the reference implementation.

@@ -1,4 +1,4 @@
-"""TensorForge — a mini deep learning framework built from scratch."""
+"""TensorForge — a from-scratch deep learning framework in Python + NumPy."""
 
 from tensorforge.data import batches, train_test_split
 from tensorforge.nn.losses import binary_cross_entropy, cross_entropy

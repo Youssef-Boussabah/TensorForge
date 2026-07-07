@@ -2,12 +2,16 @@
 
 ## What this is
 
-TensorForge is a mini deep learning framework built from scratch in
-Python + NumPy — an educational take on PyTorch, inspired by Daedalus ML
-but not a copy. It was developed milestone by milestone (v0.1 … v3.0),
-each one small, tested, and readable. The Python framework line is
-complete as of v3.0; future work targets advanced branches (C++
-backend, CUDA experiments), which do not exist yet.
+TensorForge is a from-scratch deep learning framework built in
+Python + NumPy — a serious ML systems project covering PyTorch-style
+framework internals, inspired by Daedalus ML but not a copy. It was
+developed milestone by milestone (v0.1 … v3.0), each one small,
+tested, and readable. The Python framework line is complete as of
+v3.0; work continues on advanced branches (the experimental C++
+backend is underway; CUDA experiments are future work). Position the
+project as serious and systems-focused — never "educational", "toy",
+or "mini" — while staying honest: not production-ready, not a PyTorch
+replacement.
 
 ## Tech stack
 
@@ -73,7 +77,7 @@ backend, CUDA experiments), which do not exist yet.
 
 ## Style rules
 
-- Keep code simple, readable, and educational — clarity beats cleverness.
+- Keep code simple and readable — clarity beats cleverness.
 - Match the existing style: NumPy-only internals, small modules, one
   concept per file.
 - Comments explain math/autograd reasoning, not obvious Python.

@@ -1,9 +1,11 @@
 # Architecture
 
-TensorForge is a mini deep learning framework written in Python and
-NumPy. It exists to show how a framework like PyTorch works under the
-hood, so every piece is deliberately small and readable. There is no
-C++, no GPU code, and no dependency besides NumPy.
+TensorForge is a from-scratch deep learning framework written in
+Python and NumPy. It reimplements how a framework like PyTorch works
+under the hood, with every piece kept deliberately small and readable.
+The core framework has no dependency besides NumPy and no GPU code;
+an experimental native C++ backend lives in its own namespace (see
+[backend_experiments.md](backend_experiments.md)).
 
 ## Package layout
 
