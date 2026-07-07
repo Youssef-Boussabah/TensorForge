@@ -423,9 +423,114 @@ def test_scalar_tensor_core_kernels():
         assert float(a.multiply(b).to_numpy()) == -15.0
 
 
+# ---------------------------------------------------------------------------
+# v1.3: TensorCore matmul
+# ---------------------------------------------------------------------------
+
+
+def test_matmul_matches_numpy():
+    rng = np.random.default_rng(14)
+    for (m, n, p) in ((2, 3, 4), (5, 1, 3), (4, 4, 4)):
+        x = rng.normal(size=(m, n))
+        y = rng.normal(size=(n, p))
+        with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+            result = a.matmul(b)
+            assert isinstance(result, cpp.NativeTensorCore)
+            assert result.shape == (m, p)
+            assert result.contiguous is True
+            assert np.allclose(result.to_numpy(), x @ y, atol=1e-12)
+
+
+def test_matmul_known_values():
+    a = cpp.NativeTensorCore.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    b = cpp.NativeTensorCore.from_array([[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]])
+    assert a.matmul(b).to_numpy().tolist() == [[58.0, 64.0], [139.0, 154.0]]
+    a.close()
+    b.close()
+
+
+def test_matmul_vector_like_matrices():
+    with cpp.NativeTensorCore.from_array([[1.0, 2.0, 3.0]]) as row:      # (1, 3)
+        with cpp.NativeTensorCore.from_array([[4.0], [5.0], [6.0]]) as col:  # (3, 1)
+            inner = row.matmul(col)
+            assert inner.shape == (1, 1)
+            assert inner.to_numpy()[0, 0] == 32.0
+            outer = col.matmul(row)
+            assert outer.shape == (3, 3)
+            assert np.array_equal(
+                outer.to_numpy(),
+                np.array([[4.0], [5.0], [6.0]]) @ np.array([[1.0, 2.0, 3.0]]),
+            )
+
+
+def test_matmul_with_transposed_left():
+    rng = np.random.default_rng(15)
+    x = rng.normal(size=(3, 2))
+    y = rng.normal(size=(3, 4))
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        result = a.T.matmul(b)  # (2, 3) view @ (3, 4)
+        assert np.allclose(result.to_numpy(), x.T @ y, atol=1e-12)
+
+
+def test_matmul_with_transposed_right():
+    rng = np.random.default_rng(16)
+    x = rng.normal(size=(2, 3))
+    y = rng.normal(size=(4, 3))
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        result = a.matmul(b.T)  # (2, 3) @ (3, 4) view
+        assert np.allclose(result.to_numpy(), x @ y.T, atol=1e-12)
+
+
+def test_matmul_with_narrowed_views():
+    rng = np.random.default_rng(17)
+    x = rng.normal(size=(4, 6))
+    y = rng.normal(size=(5, 4))
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        left = a.narrow(1, 1, 3)    # (4, 3) view of x
+        right = b.narrow(0, 2, 3)   # (3, 4) view of y
+        result = left.matmul(right)
+        assert np.allclose(result.to_numpy(), x[:, 1:4] @ y[2:5], atol=1e-12)
+
+
+def test_matmul_output_independent_and_inputs_unmutated():
+    x = np.array([[1.0, 2.0]])
+    y = np.array([[3.0], [4.0]])
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        result = a.matmul(b)
+        assert result.storage is not a.storage and result.storage is not b.storage
+        result.storage.fill(0.0)
+        assert a.to_numpy().tolist() == [[1.0, 2.0]]
+        assert b.to_numpy().tolist() == [[3.0], [4.0]]
+
+
+def test_matmul_rejects_bad_operands():
+    with cpp.NativeTensorCore.zeros((2, 3)) as a:
+        with pytest.raises(TypeError, match="NativeTensorCore"):
+            a.matmul(np.ones((3, 2)))
+        with cpp.NativeTensorCore.zeros((3,)) as vector:
+            with pytest.raises(ValueError, match="2-D right"):
+                a.matmul(vector)
+            with pytest.raises(ValueError, match="2-D left"):
+                vector.matmul(a)
+        with cpp.NativeTensorCore.zeros((4, 2)) as mismatched:
+            with pytest.raises(ValueError, match="inner dimensions"):
+                a.matmul(mismatched)
+
+
+def test_matmul_rejects_closed_tensors():
+    a = cpp.NativeTensorCore.zeros((2, 2))
+    b = cpp.NativeTensorCore.zeros((2, 2))
+    b.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        a.matmul(b)
+    a.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        a.matmul(a)
+
+
 def test_backend_info_advertises_tensor_core_kernels():
     info = cpp.backend_info()
-    assert info["tensor_core_kernels"] == ("relu", "add", "subtract", "multiply")
+    assert info["tensor_core_kernels"] == ("relu", "add", "subtract", "multiply", "matmul")
     # TensorCore methods are not raw-buffer kernels; list_kernels is
     # unchanged ("relu" appears there as the raw kernel, "add" only in
     # its "elementwise_add" form).

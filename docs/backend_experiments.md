@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.2 (current)
+## C++ backend — v1.3 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -190,10 +190,30 @@ independent of their inputs. `backend_info()` lists these under
 ``tensor_core_kernels``, separate from the raw NumPy-buffer kernels
 in `list_kernels()`.
 
+### TensorCore matmul (v1.3)
+
+The last major compute primitive: `a.matmul(b)` multiplies two 2-D
+tensor cores entirely in C++, addressing each source element through
+its own strides and offset — so a transposed or narrowed view
+multiplies directly, no materialization:
+
+```python
+a = NativeTensorCore.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+b = NativeTensorCore.from_array([[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]])
+
+a.matmul(b)      # (2, 2) contiguous NativeTensorCore
+a.T.matmul(c)    # a transposed view multiplies without copying
+```
+
+Strictly `(m, n) @ (n, p)`, 2-D only, no broadcasting; the naive
+triple loop, matching the reference matmul. The output is a new
+row-major contiguous tensor core.
+
 To be precise about what this is **not**: it is not
 `tensorforge.Tensor`, it has no autograd, and there is no backend
-dispatch. Future milestones may add TensorCore matmul, dispatch, or
-integration behind an explicit flag.
+dispatch. Future milestones may add TensorCore benchmarks, an
+explicit backend dispatch design, or optional integration behind a
+flag.
 
 ### The tiled matmul experiment
 

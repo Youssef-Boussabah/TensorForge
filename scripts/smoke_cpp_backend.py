@@ -67,6 +67,11 @@ def main():
     signs = NativeTensorCore.from_array([[-1.0, 2.0], [3.0, -4.0]])
     assert signs.relu().to_numpy().tolist() == [[0.0, 2.0], [3.0, 0.0]]
     assert signs.T.multiply(signs.T).to_numpy().tolist() == [[1.0, 9.0], [4.0, 16.0]]
+
+    # TensorCore matmul, native end to end.
+    right = NativeTensorCore.from_array(y)
+    assert tensor.matmul(right).to_numpy().tolist() == expected
+    right.close()
     other.close()
     signs.close()
     tensor.close()

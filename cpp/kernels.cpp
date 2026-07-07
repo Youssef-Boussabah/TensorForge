@@ -195,6 +195,34 @@ TF_EXPORT void tf_core_multiply(
                    a_offset, b_offset, ndim, tf_op_multiply);
 }
 
+// Matrix multiplication over tensor cores: out (m x p, contiguous
+// row-major) = a (m x n) @ b (n x p), where each source element is
+// addressed through its own strides and offset. That is what lets a
+// transposed or narrowed view multiply directly — no materialization:
+// a[i, k] lives at a_offset + i*a_stride0 + k*a_stride1, whatever the
+// layout. The naive triple loop, matching the reference matmul.
+TF_EXPORT void tf_core_matmul(
+    const void* a_handle, const void* b_handle, void* dst_handle,
+    int64_t m, int64_t n, int64_t p,
+    int64_t a_stride0, int64_t a_stride1,
+    int64_t b_stride0, int64_t b_stride1,
+    int64_t a_offset, int64_t b_offset
+) {
+    const double* a = static_cast<const TfStorage*>(a_handle)->data;
+    const double* b = static_cast<const TfStorage*>(b_handle)->data;
+    double* dst = static_cast<TfStorage*>(dst_handle)->data;
+    for (int64_t i = 0; i < m; ++i) {
+        for (int64_t j = 0; j < p; ++j) {
+            double sum = 0.0;
+            for (int64_t k = 0; k < n; ++k) {
+                sum += a[a_offset + i * a_stride0 + k * a_stride1]
+                     * b[b_offset + k * b_stride0 + j * b_stride1];
+            }
+            dst[i * p + j] = sum;
+        }
+    }
+}
+
 // Materialize a strided view of the storage into a contiguous output
 // buffer — the canonical tensor-runtime loop. The logical indices are
 // walked like an odometer (last dimension fastest, i.e. row-major

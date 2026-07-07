@@ -44,8 +44,8 @@ The Python line is done; what remains is expansion on its own terms:
   buffer, NativeTensorView binding the two with native contiguous
   materialization, and NativeTensorCore composing it all into the
   first native tensor runtime object with metadata-only view
-  operations (reshape, transpose, narrow) and native elementwise
-  compute over strided views
+  operations (reshape, transpose, narrow) and native compute over
+  strided views (elementwise ops and matmul)
   (see [backend_experiments.md](backend_experiments.md)). CUDA/GPU
   experiments are still entirely future work. The Python framework
   stays the reference implementation.

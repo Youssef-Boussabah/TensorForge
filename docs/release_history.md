@@ -56,6 +56,7 @@ first operation. **v1.0** composed storage + view into
 gave it metadata-only view operations — reshape, transpose/T, narrow —
 sharing storage without copying. **v1.2** made the runtime
 self-contained for simple compute: relu/add/subtract/multiply as
-native kernels reading strided views directly (see
+native kernels reading strided views directly. **v1.3** completed the
+compute set with TensorCore matmul over strided views (see
 [backend_experiments.md](backend_experiments.md)). CUDA/GPU
 experiments remain future work.

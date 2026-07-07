@@ -43,7 +43,7 @@ _BINARY_KERNELS = (
 
 # Operations available as NativeTensorCore methods — distinct from
 # KERNELS, which lists the raw NumPy-buffer kernels.
-TENSOR_CORE_KERNELS = ("relu", "add", "subtract", "multiply")
+TENSOR_CORE_KERNELS = ("relu", "add", "subtract", "multiply", "matmul")
 
 _lib = None  # loaded lazily by _require_library()
 
@@ -118,6 +118,10 @@ def _load_library():
             ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
         ]
         kernel.restype = None
+    library.tf_core_matmul.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+    ] + [ctypes.c_int64] * 9
+    library.tf_core_matmul.restype = None
     return library
 
 
@@ -555,6 +559,49 @@ class NativeTensorCore:
     def multiply(self, other):
         """self * other elementwise, natively. Same-shape only."""
         return self._binary_core_op(other, "tf_core_multiply", "multiply")
+
+    def matmul(self, other):
+        """(m, n) @ (n, p) matrix multiplication over native storage.
+
+        Both operands must be 2-D tensor cores; either may be a
+        non-contiguous view (transposed, narrowed) — the kernel
+        addresses each source through its own strides, so nothing is
+        materialized first. Returns a new (m, p) row-major contiguous
+        NativeTensorCore. The naive triple loop; no broadcasting.
+        """
+        self._require_open()
+        if not isinstance(other, NativeTensorCore):
+            raise TypeError(
+                f"matmul requires a NativeTensorCore operand, "
+                f"got {type(other).__name__}"
+            )
+        other._require_open()
+        if self.ndim != 2:
+            raise ValueError(
+                f"matmul requires a 2-D left operand, got shape {self.shape}"
+            )
+        if other.ndim != 2:
+            raise ValueError(
+                f"matmul requires a 2-D right operand, got shape {other.shape}"
+            )
+        if self.shape[1] != other.shape[0]:
+            raise ValueError(
+                f"inner dimensions do not match: "
+                f"{self.shape} @ {other.shape} (need (m, n) @ (n, p))"
+            )
+        m, n = self.shape
+        p = other.shape[1]
+        out = NativeTensorCore.zeros((m, p))
+        self._storage._lib.tf_core_matmul(
+            self._storage._require_open(),
+            other._storage._require_open(),
+            out._storage._require_open(),
+            m, n, p,
+            self.strides[0], self.strides[1],
+            other.strides[0], other.strides[1],
+            self.offset, other.offset,
+        )
+        return out
 
     # -- view operations (metadata only: no data is copied) --------------
 
