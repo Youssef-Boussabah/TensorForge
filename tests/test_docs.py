@@ -11,6 +11,7 @@ DOCS = (
     "examples.md",
     "roadmap.md",
     "release_history.md",
+    "project_summary.md",
 )
 
 EXAMPLE_FILES = (
@@ -78,6 +79,27 @@ def test_roadmap_does_not_list_shipped_features_as_future():
         assert shipped not in future, (
             f"docs/roadmap.md lists already-shipped {shipped!r} as future work"
         )
+
+
+def test_project_summary_covers_the_essentials():
+    text = (REPO_ROOT / "docs" / "project_summary.md").read_text(encoding="utf-8")
+    for topic in ("NumPy", "autograd", "checkpoint", "CNN", "C++", "CUDA"):
+        assert topic in text, f"docs/project_summary.md does not mention {topic!r}"
+
+
+def test_readme_marks_backends_as_future_work():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert re.search(r"no C\+\+ backend yet", readme, re.IGNORECASE)
+    assert re.search(r"no CUDA backend yet", readme, re.IGNORECASE)
+
+
+def test_roadmap_does_not_list_v3_as_upcoming():
+    text = (REPO_ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
+    future = text.split("## Practical next steps", 1)[1]
+    future = future.split("## What this project is not", 1)[0]
+    assert "v3.0" not in future, (
+        "docs/roadmap.md still lists v3.0 as upcoming work"
+    )
 
 
 def test_readme_mentions_all_example_files():

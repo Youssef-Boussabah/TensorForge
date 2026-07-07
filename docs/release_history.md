@@ -29,14 +29,15 @@ the docs set, image-shaped input (Conv2d, MaxPool2d, Flatten, and the
 tiny CNN example), LayerNorm, optional RNG state in checkpoints for
 bit-exact dropout resume, and this release-readiness pass.
 
-## Next — v3.0 Portfolio Release
+## v3.0 — Portfolio Release
 
-The Python framework line is feature-complete for its educational
-goals. v3.0 is the polish release: consistent docs, a clean landing
-page, and the repository presented as a finished portfolio piece.
+The completed Python educational framework: consistent docs, a clean
+landing page, a project summary, CI, and guardrail tests that keep
+docs and code from drifting apart. This closes the Python framework
+line.
 
 ## Later — Advanced branches
 
 Long-parked ideas that would each be their own project: a C++ backend
-experiment, and CUDA/GPU experiments. Neither exists yet, and neither
-will start until the Python line is done teaching.
+experiment, and CUDA/GPU experiments. Neither exists yet; with the
+Python line complete, they are the next frontier.

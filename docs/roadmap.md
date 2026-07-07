@@ -2,11 +2,12 @@
 
 ## Where the project is
 
-The Python framework line is complete: you can define a model
-(including CNNs), train it, regularize it, normalize it, evaluate it
-honestly, save it, and resume it bit-for-bit — all from readable NumPy
-code. The next milestone is the v3.0 portfolio release. For the
-version-by-version story, see [release_history.md](release_history.md).
+**v3.0 is the completed Python educational framework release.** You
+can define a model (including CNNs), train it, regularize it,
+normalize it, evaluate it honestly, save it, and resume it bit-for-bit
+— all from readable NumPy code, all tested, all documented. For the
+version-by-version story, see [release_history.md](release_history.md);
+for a two-minute overview, see [project_summary.md](project_summary.md).
 
 ## What's been built
 
@@ -34,17 +35,16 @@ release-readiness pass over docs and guardrail tests.
 
 ## Practical next steps
 
-Roughly in order of usefulness:
+The Python line is done; what remains is expansion on its own terms:
 
-- **v3.0 portfolio polish** — a documentation and consistency pass to
-  round off the framework as a portfolio piece.
+- **Advanced branches** — a C++ backend experiment, and CUDA/GPU
+  experiments. Each is a substantial project; neither exists yet.
+  These were always the long-term daydream, and the Python framework
+  is now finished enough to start dreaming.
 - **A larger synthetic image example** — more classes, bigger images,
   still dependency-free.
-- **More docs** — deeper walkthroughs of individual layers as the
-  framework grows.
-- **Backend planning** — a C++ or GPU backend has always been the
-  long-term daydream. It would be a large project and is deliberately
-  parked until the Python framework has nothing left to teach.
+- **More docs** — deeper walkthroughs of individual layers, if the
+  framework grows further.
 
 ## What this project is not
 

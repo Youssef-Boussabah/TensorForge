@@ -1,12 +1,19 @@
 # TensorForge
 
-A mini deep learning framework built from scratch in Python and NumPy —
-a tiny, educational take on PyTorch.
+An educational deep learning framework built from scratch in Python
+and NumPy — a tiny, readable take on PyTorch, with autograd, modules,
+optimizers, checkpointing, and basic CNN support.
 
 Everything is implemented by hand and kept readable: the autograd
 engine, the layers, the optimizers, the losses. NumPy is the only
 numeric dependency. If you want to understand what `loss.backward()`
 actually does, this repo is a few hundred lines away from telling you.
+
+**What it teaches:** reverse-mode autograd, how neural network modules
+and parameters fit together, what optimizers actually do,
+regularization (Dropout) and normalization (BatchNorm, LayerNorm),
+checkpoint/resume mechanics down to the RNG, and the internals of
+convolution and pooling.
 
 ## Features
 
@@ -68,22 +75,23 @@ optimizer.step()
 
 ## Examples
 
-Six runnable, seeded examples, from a bare linear regression up to a
-tiny convolutional network on synthetic images:
+Six runnable, seeded examples forming a progression — each one
+introduces a single idea:
 
 ```
-uv run python examples/train_linear_regression.py
-uv run python examples/train_xor.py
-uv run python examples/train_multiclass.py
-uv run python examples/train_binary_classification.py
-uv run python examples/train_mlp_with_dropout.py
-uv run python examples/train_tiny_cnn.py
+uv run python examples/train_linear_regression.py    # the bare training loop
+uv run python examples/train_xor.py                  # why hidden layers exist
+uv run python examples/train_multiclass.py           # real classification + mini-batches
+uv run python examples/train_binary_classification.py  # logits and stable losses
+uv run python examples/train_mlp_with_dropout.py     # train mode vs eval mode
+uv run python examples/train_tiny_cnn.py             # convolution and pooling
 ```
 
 What each one teaches, and what to expect: [docs/examples.md](docs/examples.md).
 
 ## Documentation
 
+- [docs/project_summary.md](docs/project_summary.md) — the whole project in two minutes
 - [docs/architecture.md](docs/architecture.md) — how the package fits together
 - [docs/autograd.md](docs/autograd.md) — the autograd engine, explained
 - [docs/training.md](docs/training.md) — training loops, train/eval mode, saving
@@ -105,9 +113,10 @@ Honest expectations:
 
 ## Status
 
-The Python framework line is feature-complete for its educational
-goals and covered by 370+ tests; it is now entering final portfolio
-polish (v3.0). Advanced backend experiments come after that. See
+**v3.0 — the Python educational framework is complete.** Everything
+above works, is covered by 370+ tests, and is documented. Future work
+moves to advanced branches — a C++ backend experiment and CUDA/GPU
+experiments — which do not exist yet. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 
