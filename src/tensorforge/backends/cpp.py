@@ -45,6 +45,11 @@ def _load_library():
         kernel.restype = None
     library.tf_relu.argtypes = [f64_array, f64_array, ctypes.c_int64]
     library.tf_relu.restype = None
+    library.tf_matmul.argtypes = [
+        f64_array, f64_array, f64_array,
+        ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+    ]
+    library.tf_matmul.restype = None
     return library
 
 
@@ -100,4 +105,36 @@ def relu(a):
     a = np.ascontiguousarray(a, dtype=np.float64)
     out = np.empty_like(a)
     _lib.tf_relu(a, out, a.size)
+    return out
+
+
+def matmul(a, b):
+    """(m, n) @ (n, p) matrix multiplication using the compiled C++
+    kernel — the naive triple loop, so correct but much slower than
+    NumPy's BLAS-backed matmul.
+
+    Strictly 2-D: vectors must be passed as (1, n) or (n, 1) matrices.
+    Returns a new (m, p) float64 array.
+    """
+    a = np.ascontiguousarray(a, dtype=np.float64)
+    b = np.ascontiguousarray(b, dtype=np.float64)
+    if a.ndim != 2:
+        raise ValueError(
+            f"the experimental C++ matmul requires a 2-D left input, "
+            f"got shape {a.shape}"
+        )
+    if b.ndim != 2:
+        raise ValueError(
+            f"the experimental C++ matmul requires a 2-D right input, "
+            f"got shape {b.shape}"
+        )
+    if a.shape[1] != b.shape[0]:
+        raise ValueError(
+            f"inner dimensions do not match: "
+            f"{a.shape} @ {b.shape} (need (m, n) @ (n, p))"
+        )
+    m, n = a.shape
+    p = b.shape[1]
+    out = np.empty((m, p), dtype=np.float64)
+    _lib.tf_matmul(a, b, out, m, n, p)
     return out
