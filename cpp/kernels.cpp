@@ -6,12 +6,79 @@
 // shapes, and validation; this file only does the arithmetic.
 
 #include <cstdint>
+#include <new>
 
 #ifdef _WIN32
 #define TF_EXPORT extern "C" __declspec(dllexport)
 #else
 #define TF_EXPORT extern "C"
 #endif
+
+// ---------------------------------------------------------------------------
+// Native storage: a C++-owned float64 buffer behind an opaque handle.
+//
+// Python never sees the pointer inside — it holds the handle, moves
+// data in and out through copy_from/copy_to, and must destroy the
+// handle when done (the Python wrapper does this in close()). This is
+// the storage half of a future tensor runtime; the shape/stride
+// metadata layer is the other half.
+// ---------------------------------------------------------------------------
+
+namespace {
+struct TfStorage {
+    double* data;
+    int64_t size;
+};
+}  // namespace
+
+// Returns an opaque handle, or null if allocation fails.
+// The buffer is zero-initialized for predictable behavior.
+TF_EXPORT void* tf_storage_create(int64_t size) {
+    if (size <= 0) {
+        return nullptr;
+    }
+    double* data = new (std::nothrow) double[size]();
+    if (data == nullptr) {
+        return nullptr;
+    }
+    return new TfStorage{data, size};
+}
+
+// Safe to call with null (does nothing), and must be called exactly
+// once per successful create — the Python wrapper guarantees that.
+TF_EXPORT void tf_storage_destroy(void* handle) {
+    if (handle == nullptr) {
+        return;
+    }
+    TfStorage* storage = static_cast<TfStorage*>(handle);
+    delete[] storage->data;
+    delete storage;
+}
+
+TF_EXPORT int64_t tf_storage_size(const void* handle) {
+    return static_cast<const TfStorage*>(handle)->size;
+}
+
+TF_EXPORT void tf_storage_fill(void* handle, double value) {
+    TfStorage* storage = static_cast<TfStorage*>(handle);
+    for (int64_t i = 0; i < storage->size; ++i) {
+        storage->data[i] = value;
+    }
+}
+
+TF_EXPORT void tf_storage_copy_from(void* handle, const double* src) {
+    TfStorage* storage = static_cast<TfStorage*>(handle);
+    for (int64_t i = 0; i < storage->size; ++i) {
+        storage->data[i] = src[i];
+    }
+}
+
+TF_EXPORT void tf_storage_copy_to(const void* handle, double* dst) {
+    const TfStorage* storage = static_cast<const TfStorage*>(handle);
+    for (int64_t i = 0; i < storage->size; ++i) {
+        dst[i] = storage->data[i];
+    }
+}
 
 TF_EXPORT void tf_elementwise_add(
     const double* a, const double* b, double* out, int64_t n

@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v0.6 (current)
+## C++ backend — v0.8 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -33,6 +33,62 @@ relu(np.array([-1.0, 0.0, 2.0]))                             # [0. 0. 2.]
 matmul(np.ones((2, 3)), np.ones((3, 4)))                     # (2, 4) of 3s
 matmul_tiled(np.ones((2, 3)), np.ones((3, 4)))               # same values
 ```
+
+### Shape/stride metadata (v0.7)
+
+The first step from "raw kernels over buffers" toward a real tensor
+runtime foundation. A tensor runtime needs to describe *layout*, not
+just hold data: which logical index lives at which storage position.
+That is exactly what shape + strides + offset encode — and it is what
+makes views, transposes, and slices possible without copying.
+
+```python
+from tensorforge.backends.cpp import (
+    row_major_strides, numel, is_contiguous_shape, flat_offset, shape_info,
+)
+
+row_major_strides((2, 3, 4))            # (12, 4, 1)
+numel((2, 3, 4))                        # 24
+is_contiguous_shape((3, 2), (1, 3))     # False — transposed layout
+flat_offset((1, 2, 3), (12, 4, 1))      # 23
+shape_info((2, 3, 4))                   # one dict with all of the above
+```
+
+Row-major contiguous layout means the last dimension varies fastest:
+element `(i, j, k)` of a `(2, 3, 4)` array lives at flat position
+`i*12 + j*4 + k`. Strides here count **elements**, not bytes (unlike
+`numpy.ndarray.strides`). Zero-size dimensions are rejected for now;
+their conventions deserve their own tested milestone.
+
+This layer is deliberately Python-side: it is the metadata *contract*
+that a later native storage object will honor. It is not yet a C++
+Tensor object, and it is not connected to Tensor/autograd.
+
+### Native storage (v0.8)
+
+`NativeStorage` is the storage half: a **C++-owned float64 buffer**
+behind an opaque handle. Python never sees the raw pointer — data
+moves by copy, and the native memory is released explicitly:
+
+```python
+from tensorforge.backends.cpp import NativeStorage
+
+with NativeStorage.from_array([1.0, 2.0, 3.0]) as storage:
+    storage.size          # 3
+    storage.fill(5.0)
+    storage.to_numpy()    # a new, independent NumPy copy
+    storage.copy_from([7.0, 8.0, 9.0])
+# closed on exit; storage.close() works too, and double-close is safe
+```
+
+New storage is zero-initialized; operations on a closed storage raise
+RuntimeError. `backend_info()` advertises it as ``storage_object``.
+
+This is still not a Tensor: storage has a size but no shape or
+strides, and the v0.7 metadata layer is not yet connected to it —
+combining the two into a TensorView prototype (and materializing
+non-contiguous views into contiguous storage) is exactly what future
+milestones are for. Nothing here touches Tensor/autograd.
 
 ### The tiled matmul experiment
 

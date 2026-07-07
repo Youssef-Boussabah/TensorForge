@@ -50,11 +50,13 @@ def test_backend_info_shape():
         "experimental",
         "available",
         "kernels",
+        "storage_object",
         "dtype",
         "tensor_integration",
         "autograd_integration",
         "build_instructions",
     }
+    assert info["storage_object"] == "NativeStorage"
     assert info["name"] == "cpp"
     assert info["experimental"] is True
     assert info["dtype"] == "float64"

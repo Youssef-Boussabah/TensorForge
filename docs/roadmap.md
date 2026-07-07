@@ -39,7 +39,9 @@ The Python line is done; what remains is expansion on its own terms:
 
 - **Advanced branches** — the C++ backend experiment now has
   elementwise kernels, naive and cache-tiled 2-D matmuls, an
-  introspection API, and honest benchmarks against NumPy
+  introspection API, honest benchmarks against NumPy, a shape/stride
+  metadata layer, and a C++-owned NativeStorage buffer — the two
+  halves of a future TensorView prototype
   (see [backend_experiments.md](backend_experiments.md)). CUDA/GPU
   experiments are still entirely future work. The Python framework
   stays the reference implementation.

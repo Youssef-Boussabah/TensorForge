@@ -83,6 +83,18 @@ def _load_library():
         ctypes.c_int64, ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_matmul_tiled.restype = None
+    library.tf_storage_create.argtypes = [ctypes.c_int64]
+    library.tf_storage_create.restype = ctypes.c_void_p
+    library.tf_storage_destroy.argtypes = [ctypes.c_void_p]
+    library.tf_storage_destroy.restype = None
+    library.tf_storage_size.argtypes = [ctypes.c_void_p]
+    library.tf_storage_size.restype = ctypes.c_int64
+    library.tf_storage_fill.argtypes = [ctypes.c_void_p, ctypes.c_double]
+    library.tf_storage_fill.restype = None
+    library.tf_storage_copy_from.argtypes = [ctypes.c_void_p, f64_array]
+    library.tf_storage_copy_from.restype = None
+    library.tf_storage_copy_to.argtypes = [ctypes.c_void_p, f64_array]
+    library.tf_storage_copy_to.restype = None
     return library
 
 
@@ -119,10 +131,241 @@ def backend_info():
         "experimental": True,
         "available": is_available(),
         "kernels": KERNELS,
+        "storage_object": "NativeStorage",
         "dtype": "float64",
         "tensor_integration": False,
         "autograd_integration": False,
         "build_instructions": build_instructions(),
+    }
+
+
+class NativeStorage:
+    """A C++-owned float64 buffer — the storage half of a future
+    tensor runtime prototype.
+
+    Not a Tensor: it has a size but no shape, no strides, and no
+    connection to Tensor/autograd. Data moves in and out by copy
+    (``copy_from`` / ``to_numpy``); the raw native pointer is never
+    exposed. Call ``close()`` (or use it as a context manager) to
+    release the native memory; operations on a closed storage raise
+    RuntimeError, and closing twice is safe.
+    """
+
+    def __init__(self, size):
+        self._handle = None  # so a failed __init__ still __del__s safely
+        if not isinstance(size, (int, np.integer)) or isinstance(size, bool) or size <= 0:
+            raise ValueError(f"size must be a positive int, got {size!r}")
+        lib = _require_library()
+        handle = lib.tf_storage_create(int(size))
+        if not handle:
+            raise MemoryError(f"could not allocate native storage of size {size}")
+        self._lib = lib
+        self._handle = handle
+        self._size = int(size)
+
+    @classmethod
+    def from_array(cls, values):
+        """Create storage sized to ``values`` and copy them in.
+
+        The input is converted to contiguous float64 and flattened.
+        """
+        array = np.ascontiguousarray(values, dtype=np.float64).ravel()
+        storage = cls(int(array.size))  # empty input fails size validation
+        storage.copy_from(array)
+        return storage
+
+    @property
+    def size(self):
+        """Number of float64 elements the storage holds."""
+        return self._size
+
+    def _require_open(self):
+        if self._handle is None:
+            raise RuntimeError("this NativeStorage has been closed")
+        return self._handle
+
+    def fill(self, value):
+        """Set every element to ``value``."""
+        self._lib.tf_storage_fill(self._require_open(), float(value))
+
+    def copy_from(self, values):
+        """Copy ``values`` into the storage.
+
+        The input is converted to contiguous float64 and flattened; it
+        must contain exactly ``size`` elements.
+        """
+        handle = self._require_open()
+        array = np.ascontiguousarray(values, dtype=np.float64).ravel()
+        if array.size != self._size:
+            raise ValueError(
+                f"copy_from needs exactly {self._size} values, got {array.size}"
+            )
+        self._lib.tf_storage_copy_from(handle, array)
+
+    def to_numpy(self):
+        """Return a new, independent 1-D float64 copy of the contents."""
+        handle = self._require_open()
+        out = np.empty(self._size, dtype=np.float64)
+        self._lib.tf_storage_copy_to(handle, out)
+        return out
+
+    def close(self):
+        """Release the native memory. Safe to call more than once."""
+        if self._handle is not None:
+            self._lib.tf_storage_destroy(self._handle)
+            self._handle = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+
+    def __del__(self):
+        # Defensive cleanup only — correctness never depends on when
+        # (or whether) the garbage collector runs; use close().
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def __repr__(self):
+        state = "closed" if self._handle is None else f"size={self._size}"
+        return f"NativeStorage({state})"
+
+
+# ---------------------------------------------------------------------------
+# Shape/stride metadata
+#
+# The Python-facing metadata layer that prepares the path for a later
+# native tensor storage object: shape, strides, element counts,
+# contiguity checks, and flat-offset math. Implemented in Python on
+# purpose — the deliverable is the *contract* (what shapes/strides
+# mean), and integer arithmetic gains nothing from a ctypes round
+# trip. These helpers never touch the compiled library, so they are
+# safe whether or not the backend is built.
+#
+# Conventions:
+# - strides count ELEMENTS, not bytes (unlike numpy.ndarray.strides);
+#   row_major_strides((2, 3, 4)) == (12, 4, 1).
+# - dimensions must be positive ints; zero-size dimensions are
+#   rejected in v0.7 (their stride conventions deserve their own
+#   tested milestone).
+# - the scalar shape () has strides (), ndim 0, and numel 1.
+# ---------------------------------------------------------------------------
+
+
+def _as_int_tuple(values, name):
+    try:
+        items = tuple(values)
+    except TypeError:
+        raise TypeError(
+            f"{name} must be a sequence of ints, got {values!r}"
+        ) from None
+    for value in items:
+        if not isinstance(value, (int, np.integer)) or isinstance(value, bool):
+            raise TypeError(f"{name} must contain only ints, got {value!r}")
+    return tuple(int(value) for value in items)
+
+
+def _as_shape(shape):
+    dims = _as_int_tuple(shape, "shape")
+    for dim in dims:
+        if dim <= 0:
+            raise ValueError(
+                f"shape dimensions must be positive ints, got {dims} "
+                f"(zero-size dimensions are not supported in v0.7)"
+            )
+    return dims
+
+
+def _as_offset(offset):
+    if not isinstance(offset, (int, np.integer)) or isinstance(offset, bool):
+        raise TypeError(f"offset must be an int, got {offset!r}")
+    return int(offset)
+
+
+def row_major_strides(shape):
+    """Element strides for a row-major contiguous layout of ``shape``.
+
+    The last dimension varies fastest: row_major_strides((2, 3, 4))
+    is (12, 4, 1). The scalar shape () gives ().
+    """
+    dims = _as_shape(shape)
+    strides = []
+    running = 1
+    for dim in reversed(dims):
+        strides.append(running)
+        running *= dim
+    return tuple(reversed(strides))
+
+
+def numel(shape):
+    """Number of elements in ``shape``; 1 for the scalar shape ()."""
+    dims = _as_shape(shape)
+    count = 1
+    for dim in dims:
+        count *= dim
+    return count
+
+
+def is_contiguous_shape(shape, strides):
+    """True if ``strides`` is exactly the row-major contiguous layout
+    for ``shape``. A scalar () with strides () is contiguous."""
+    dims = _as_shape(shape)
+    stride_tuple = _as_int_tuple(strides, "strides")
+    if len(stride_tuple) != len(dims):
+        raise ValueError(
+            f"shape and strides must have the same length, "
+            f"got {len(dims)} and {len(stride_tuple)}"
+        )
+    return stride_tuple == row_major_strides(dims)
+
+
+def flat_offset(indices, strides, offset=0):
+    """Flat storage position of a logical index: offset + sum(i * s).
+
+    Pure stride math — no shape is involved, so no bounds checking is
+    performed, and negative indices or strides are allowed (real
+    strided views use negative strides).
+    """
+    index_tuple = _as_int_tuple(indices, "indices")
+    stride_tuple = _as_int_tuple(strides, "strides")
+    if len(index_tuple) != len(stride_tuple):
+        raise ValueError(
+            f"indices and strides must have the same length, "
+            f"got {len(index_tuple)} and {len(stride_tuple)}"
+        )
+    return _as_offset(offset) + sum(
+        index * stride for index, stride in zip(index_tuple, stride_tuple)
+    )
+
+
+def shape_info(shape, strides=None, offset=0):
+    """A small metadata dictionary describing one array layout.
+
+    With ``strides=None`` the row-major contiguous strides are used
+    (and ``contiguous`` is True by construction). Explicit strides are
+    validated against the shape's length and checked for contiguity.
+    """
+    dims = _as_shape(shape)
+    if strides is None:
+        stride_tuple = row_major_strides(dims)
+    else:
+        stride_tuple = _as_int_tuple(strides, "strides")
+        if len(stride_tuple) != len(dims):
+            raise ValueError(
+                f"shape and strides must have the same length, "
+                f"got {len(dims)} and {len(stride_tuple)}"
+            )
+    return {
+        "shape": dims,
+        "strides": stride_tuple,
+        "ndim": len(dims),
+        "numel": numel(dims),
+        "offset": _as_offset(offset),
+        "contiguous": stride_tuple == row_major_strides(dims),
     }
 
 

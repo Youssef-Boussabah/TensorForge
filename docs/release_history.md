@@ -47,6 +47,8 @@ mostly wins, as expected. **v0.5** cleaned up the backend API with
 introspection helpers (`is_available`, `list_kernels`,
 `backend_info`) and lazy library loading. **v0.6** added
 `matmul_tiled`, a cache-blocking optimization experiment benchmarked
-against the naive reference and NumPy (see
-[backend_experiments.md](backend_experiments.md)). CUDA/GPU
-experiments remain future work.
+against the naive reference and NumPy. **v0.7** added the
+shape/stride metadata layer. **v0.8** added `NativeStorage`, a
+C++-owned float64 buffer — together the two halves of a future tensor
+runtime (see [backend_experiments.md](backend_experiments.md)).
+CUDA/GPU experiments remain future work.
