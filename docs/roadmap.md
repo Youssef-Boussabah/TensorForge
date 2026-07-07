@@ -41,8 +41,9 @@ The Python line is done; what remains is expansion on its own terms:
   elementwise kernels, naive and cache-tiled 2-D matmuls, an
   introspection API, honest benchmarks against NumPy, and a native
   runtime prototype: shape/stride metadata, a C++-owned NativeStorage
-  buffer, and NativeTensorView binding the two with native contiguous
-  materialization
+  buffer, NativeTensorView binding the two with native contiguous
+  materialization, and NativeTensorCore composing it all into the
+  first native tensor runtime object
   (see [backend_experiments.md](backend_experiments.md)). CUDA/GPU
   experiments are still entirely future work. The Python framework
   stays the reference implementation.

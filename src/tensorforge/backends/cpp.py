@@ -139,6 +139,7 @@ def backend_info():
         "kernels": KERNELS,
         "storage_object": "NativeStorage",
         "tensor_view": "NativeTensorView",
+        "tensor_core": "NativeTensorCore",
         "dtype": "float64",
         "tensor_integration": False,
         "autograd_integration": False,
@@ -353,6 +354,145 @@ class NativeTensorView:
         return (
             f"NativeTensorView(shape={self._shape}, strides={self._strides}, "
             f"offset={self._offset}, contiguous={self._contiguous})"
+        )
+
+
+class NativeTensorCore:
+    """The first native tensor runtime object: an owned NativeStorage
+    plus a NativeTensorView describing its layout, composed into one
+    thing you can create, inspect, materialize, and release.
+
+    Still not tensorforge.Tensor: no math operations, no autograd, no
+    backend dispatch. It is the foundation those would build on.
+
+    The core OWNS its storage: ``close()`` releases the native memory
+    (idempotent, also via context manager), after which data
+    operations raise RuntimeError. Metadata properties stay readable
+    after close, matching NativeStorage.size.
+    """
+
+    def __init__(self, storage, view):
+        """Advanced constructor; prefer from_array / zeros / full.
+
+        Takes ownership of ``storage``; ``view`` must describe it.
+        """
+        if not isinstance(storage, NativeStorage):
+            raise TypeError(
+                f"storage must be a NativeStorage, got {type(storage).__name__}"
+            )
+        if not isinstance(view, NativeTensorView) or view._storage is not storage:
+            raise ValueError("view must be a NativeTensorView over the given storage")
+        self._storage = storage
+        self._view = view
+        self._closed = False
+
+    # -- constructors -------------------------------------------------
+
+    @classmethod
+    def from_array(cls, values):
+        """A contiguous tensor holding a copy of ``values``, with the
+        array's shape preserved."""
+        array = np.ascontiguousarray(values, dtype=np.float64)
+        storage = NativeStorage.from_array(array)  # empty input fails here
+        return cls(storage, NativeTensorView(storage, array.shape))
+
+    @classmethod
+    def zeros(cls, shape):
+        """A row-major contiguous tensor of ``shape``, all zeros
+        (native storage is zero-initialized, so no fill pass runs)."""
+        count = numel(shape)  # validates shape by the v0.7 rules
+        storage = NativeStorage(count)
+        return cls(storage, NativeTensorView(storage, shape))
+
+    @classmethod
+    def full(cls, shape, value):
+        """A row-major contiguous tensor of ``shape`` filled with
+        ``value`` (anything float() accepts)."""
+        tensor = cls.zeros(shape)
+        tensor._storage.fill(float(value))
+        return tensor
+
+    # -- metadata (readable even after close) --------------------------
+
+    @property
+    def shape(self):
+        return self._view.shape
+
+    @property
+    def strides(self):
+        return self._view.strides
+
+    @property
+    def offset(self):
+        return self._view.offset
+
+    @property
+    def ndim(self):
+        return self._view.ndim
+
+    @property
+    def numel(self):
+        return self._view.numel
+
+    @property
+    def contiguous(self):
+        return self._view.contiguous
+
+    @property
+    def storage(self):
+        """The owned NativeStorage (read-only access to the object)."""
+        return self._storage
+
+    @property
+    def view(self):
+        """The NativeTensorView describing this tensor's layout."""
+        return self._view
+
+    # -- data operations ------------------------------------------------
+
+    def _require_open(self):
+        if self._closed:
+            raise RuntimeError("this NativeTensorCore has been closed")
+
+    def to_numpy(self):
+        """Materialize into a fresh, independent NumPy array of
+        ``self.shape``."""
+        self._require_open()
+        return self._view.to_numpy()
+
+    def contiguous_copy(self):
+        """A new, independent NativeTensorCore with the same values in
+        row-major contiguous storage. Always copies, even when this
+        tensor is already contiguous."""
+        self._require_open()
+        return NativeTensorCore.from_array(self.to_numpy())
+
+    # -- lifetime -------------------------------------------------------
+
+    def close(self):
+        """Release the owned native storage. Safe to call repeatedly."""
+        self._closed = True
+        self._storage.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.close()
+        return False
+
+    def __del__(self):
+        # Defensive cleanup only — never rely on GC timing; use close().
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def __repr__(self):
+        state = ", closed" if self._closed else ""
+        return (
+            f"NativeTensorCore(shape={self.shape}, strides={self.strides}, "
+            f"contiguous={self.contiguous}{state})"
         )
 
 

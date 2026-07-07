@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v0.9 (current)
+## C++ backend — v1.0 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -112,11 +112,37 @@ Views are bounds-checked at construction (negative strides included),
 so a valid view can never read outside its storage. Views don't own
 the storage: close the storage and the view's operations raise.
 
-This is still not a full Tensor object — no math operations over
-views, no autograd, no connection to `tensorforge.Tensor`. Future
-milestones may add a native TensorCore, view operations (slicing,
-transposing as methods), kernels that operate on views directly, or
-explicit backend dispatch.
+Views by themselves are building blocks; the runtime object that
+composes everything is the tensor core.
+
+### NativeTensorCore (v1.0)
+
+`NativeTensorCore` is the first native tensor runtime object: an
+owned `NativeStorage` plus a `NativeTensorView`, composed into one
+thing you can create, inspect, materialize, and release:
+
+```python
+from tensorforge.backends.cpp import NativeTensorCore
+
+t = NativeTensorCore.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+t.shape, t.strides, t.contiguous   # (2, 3), (3, 1), True
+t.to_numpy()                       # fresh (2, 3) NumPy copy
+c = t.contiguous_copy()            # a new, independent tensor core
+z = NativeTensorCore.zeros((2, 2))
+f = NativeTensorCore.full((2, 2), 7.0)
+t.close()                          # releases the owned native memory
+```
+
+The core owns its storage (context managers work; double-close is
+safe; data operations on a closed core raise RuntimeError).
+`backend_info()` advertises it as ``tensor_core``.
+
+To be precise about what this is **not**: it is not
+`tensorforge.Tensor`, it has no autograd, and it performs no math yet
+— even the compiled kernels don't operate on it. It is the foundation
+for exactly those later steps: view operations (transpose, slice,
+reshape as methods), kernels over tensor cores, explicit backend
+dispatch, and eventually native backend integration.
 
 ### The tiled matmul experiment
 

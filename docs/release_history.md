@@ -51,6 +51,7 @@ against the naive reference and NumPy. **v0.7** added the
 shape/stride metadata layer. **v0.8** added `NativeStorage`, a
 C++-owned float64 buffer. **v0.9** bound the two together as
 `NativeTensorView`, with native contiguous materialization as its
-first operation (see
+first operation. **v1.0** composed storage + view into
+`NativeTensorCore`, the first native tensor runtime object (see
 [backend_experiments.md](backend_experiments.md)). CUDA/GPU
 experiments remain future work.
