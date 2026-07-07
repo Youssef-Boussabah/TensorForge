@@ -43,7 +43,8 @@ The Python line is done; what remains is expansion on its own terms:
   runtime prototype: shape/stride metadata, a C++-owned NativeStorage
   buffer, NativeTensorView binding the two with native contiguous
   materialization, and NativeTensorCore composing it all into the
-  first native tensor runtime object
+  first native tensor runtime object with metadata-only view
+  operations (reshape, transpose, narrow)
   (see [backend_experiments.md](backend_experiments.md)). CUDA/GPU
   experiments are still entirely future work. The Python framework
   stays the reference implementation.

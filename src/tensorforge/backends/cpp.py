@@ -365,16 +365,23 @@ class NativeTensorCore:
     Still not tensorforge.Tensor: no math operations, no autograd, no
     backend dispatch. It is the foundation those would build on.
 
-    The core OWNS its storage: ``close()`` releases the native memory
-    (idempotent, also via context manager), after which data
-    operations raise RuntimeError. Metadata properties stay readable
-    after close, matching NativeStorage.size.
+    Ownership model: a core created by from_array/zeros/full OWNS its
+    storage — its ``close()`` releases the native memory. View
+    operations (reshape, transpose, T, narrow) return cores that
+    BORROW the same storage: closing a borrowing view closes only that
+    view, never the shared memory, so sibling views stay usable.
+    Closing the owner releases the memory for every core sharing it,
+    after which their data operations raise too. close() is
+    idempotent everywhere; metadata properties stay readable after
+    close, matching NativeStorage.size.
     """
 
-    def __init__(self, storage, view):
+    def __init__(self, storage, view, owns_storage=True):
         """Advanced constructor; prefer from_array / zeros / full.
 
-        Takes ownership of ``storage``; ``view`` must describe it.
+        ``view`` must describe ``storage``. With ``owns_storage=True``
+        this core's close() releases the storage; view operations pass
+        False so shared storage is never freed by a view.
         """
         if not isinstance(storage, NativeStorage):
             raise TypeError(
@@ -384,6 +391,7 @@ class NativeTensorCore:
             raise ValueError("view must be a NativeTensorView over the given storage")
         self._storage = storage
         self._view = view
+        self._owns_storage = bool(owns_storage)
         self._closed = False
 
     # -- constructors -------------------------------------------------
@@ -467,12 +475,97 @@ class NativeTensorCore:
         self._require_open()
         return NativeTensorCore.from_array(self.to_numpy())
 
+    # -- view operations (metadata only: no data is copied) --------------
+
+    def _view_core(self, shape, strides, offset):
+        """A new core borrowing this core's storage with new layout."""
+        view = NativeTensorView(self._storage, shape, strides=strides, offset=offset)
+        return NativeTensorCore(self._storage, view, owns_storage=False)
+
+    def reshape(self, new_shape):
+        """A view of the same storage with ``new_shape`` (row-major).
+
+        Metadata only — no copy. Requires a contiguous tensor (a
+        non-contiguous layout cannot be reinterpreted by strides
+        alone; materialize with contiguous_copy() first) and the same
+        total number of elements.
+        """
+        self._require_open()
+        if not self.contiguous:
+            raise ValueError(
+                "reshape requires a contiguous tensor; call "
+                "contiguous_copy() first"
+            )
+        count = numel(new_shape)  # validates the shape by the v0.7 rules
+        if count != self.numel:
+            raise ValueError(
+                f"cannot reshape {self.shape} ({self.numel} elements) "
+                f"into {tuple(new_shape)} ({count} elements)"
+            )
+        return self._view_core(new_shape, None, self.offset)
+
+    def transpose(self, *axes):
+        """A view with permuted axes. Metadata only — no copy.
+
+        With no arguments, all axes are reversed (NumPy behavior; a
+        no-op for scalars and 1-D tensors). Explicit axes must be a
+        complete permutation of range(ndim).
+        """
+        self._require_open()
+        if len(axes) == 1 and isinstance(axes[0], (tuple, list)):
+            axes = tuple(axes[0])
+        if not axes:
+            axes = tuple(reversed(range(self.ndim)))
+        axes = _as_int_tuple(axes, "axes")
+        if sorted(axes) != list(range(self.ndim)):
+            raise ValueError(
+                f"axes must be a permutation of range({self.ndim}), got {axes}"
+            )
+        new_shape = tuple(self.shape[axis] for axis in axes)
+        new_strides = tuple(self.strides[axis] for axis in axes)
+        return self._view_core(new_shape, new_strides, self.offset)
+
+    @property
+    def T(self):
+        """transpose() with all axes reversed — NumPy's .T semantics,
+        so (1, 0) for 2-D and a no-op for scalars and 1-D tensors."""
+        return self.transpose()
+
+    def narrow(self, dim, start, length):
+        """A view keeping ``length`` positions of dimension ``dim``,
+        beginning at ``start``. Metadata only — no copy: the shape
+        shrinks in one dimension and the offset advances by
+        ``start * strides[dim]``; strides are unchanged.
+
+        ``length`` must be at least 1 (zero-size shapes are not
+        supported). No step parameter in v1.1.
+        """
+        self._require_open()
+        for name, value in (("dim", dim), ("start", start), ("length", length)):
+            if not isinstance(value, (int, np.integer)) or isinstance(value, bool):
+                raise TypeError(f"{name} must be an int, got {value!r}")
+        if not 0 <= dim < self.ndim:
+            raise ValueError(f"dim must be in [0, {self.ndim}), got {dim}")
+        if start < 0 or length < 1 or start + length > self.shape[dim]:
+            raise ValueError(
+                f"narrow(dim={dim}, start={start}, length={length}) is out "
+                f"of bounds for dimension size {self.shape[dim]}"
+            )
+        new_shape = tuple(
+            length if axis == dim else size for axis, size in enumerate(self.shape)
+        )
+        new_offset = self.offset + start * self.strides[dim]
+        return self._view_core(new_shape, self.strides, new_offset)
+
     # -- lifetime -------------------------------------------------------
 
     def close(self):
-        """Release the owned native storage. Safe to call repeatedly."""
+        """Close this core. Owners release the native storage; views
+        only close themselves and leave shared storage untouched.
+        Safe to call repeatedly."""
         self._closed = True
-        self._storage.close()
+        if self._owns_storage:
+            self._storage.close()
 
     def __enter__(self):
         return self

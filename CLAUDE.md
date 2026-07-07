@@ -62,7 +62,8 @@ replacement.
   `cpp.backend_info()`; kernels raise ImportError at call time when
   unbuilt, and the backend tests skip. `benchmarks/cpp_backend.py`
   compares kernels against NumPy honestly (no performance assertions
-  anywhere).
+  anywhere). `scripts/smoke_cpp_backend.py` is the hard-failing smoke
+  check CI runs after building.
 
 ## Commands
 
