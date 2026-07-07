@@ -37,10 +37,10 @@ release-readiness pass over docs and guardrail tests.
 
 The Python line is done; what remains is expansion on its own terms:
 
-- **Advanced branches** — the C++ backend experiment has started with
-  a single proof-of-mechanism kernel
-  (see [backend_experiments.md](backend_experiments.md)); next steps
-  there are more kernels. CUDA/GPU experiments are still entirely
+- **Advanced branches** — the C++ backend experiment now has a small
+  family of elementwise kernels
+  (see [backend_experiments.md](backend_experiments.md)); the next
+  step there is matmul. CUDA/GPU experiments are still entirely
   future work. The Python framework stays the reference
   implementation.
 - **A larger synthetic image example** — more classes, bigger images,

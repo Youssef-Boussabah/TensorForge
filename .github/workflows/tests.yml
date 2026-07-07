@@ -18,11 +18,11 @@ jobs:
       - name: Build the experimental C++ backend
         run: uv run python cpp/build.py
 
-      # Prove the compiled kernel imports and computes — this step
+      # Prove the compiled kernels import and compute — this step
       # fails hard, unlike the pytest suite, whose backend tests skip
       # when the library is missing.
       - name: Smoke-test the C++ backend
-        run: uv run python -c "import numpy as np; from tensorforge.backends.cpp import elementwise_add; out = elementwise_add(np.array([1.0, 2.0]), np.array([3.0, 4.0])); print(out); assert out.tolist() == [4.0, 6.0]"
+        run: uv run python -c "import numpy as np; from tensorforge.backends.cpp import elementwise_add, elementwise_subtract, elementwise_multiply, elementwise_divide, relu; a=np.array([1.0,2.0]); b=np.array([3.0,4.0]); assert elementwise_add(a,b).tolist()==[4.0,6.0]; assert elementwise_subtract(b,a).tolist()==[2.0,2.0]; assert elementwise_multiply(a,b).tolist()==[3.0,8.0]; assert elementwise_divide(b,a).tolist()==[3.0,2.0]; assert relu(np.array([-1.0,0.0,2.0])).tolist()==[0.0,0.0,2.0]; print('cpp kernels ok')"
 
       - name: Run the test suite
         run: uv run pytest

@@ -117,7 +117,8 @@ Honest expectations:
 **v3.0 — the Python educational framework is complete.** Everything
 above works, is covered by 370+ tests, and is documented. Advanced
 work now happens in experimental branches: a C++ backend experiment
-has started (one ctypes-loaded kernel proving the mechanism — see
+has started (a handful of ctypes-loaded elementwise kernels proving
+the mechanism — see
 [docs/backend_experiments.md](docs/backend_experiments.md)); CUDA/GPU
 experiments are still future work. There is still no production C++
 backend yet and no CUDA backend yet. See

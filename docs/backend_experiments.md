@@ -6,24 +6,28 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v0.1 (current)
+## C++ backend — v0.2 (current)
 
-The smallest possible proof that Python TensorForge can call compiled
-C++ code:
+Proof that Python TensorForge can call compiled C++ code, now with a
+small family of kernels:
 
-- `cpp/elementwise_add.cpp` — one kernel, a plain C-ABI function that
-  adds two float64 buffers. No Python C-API, no pybind11, no NumPy
-  headers.
+- `cpp/kernels.cpp` — plain C-ABI functions over float64 buffers:
+  elementwise add, subtract, multiply, divide, and ReLU. No Python
+  C-API, no pybind11, no NumPy headers.
 - `src/tensorforge/backends/cpp.py` — a ctypes wrapper that loads the
-  compiled shared library and exposes `elementwise_add(a, b)`,
+  compiled shared library and exposes the kernels as Python functions,
   handling array conversion and validation on the Python side.
 
 Usage:
 
 ```python
-from tensorforge.backends.cpp import elementwise_add
+from tensorforge.backends.cpp import (
+    elementwise_add, elementwise_subtract, elementwise_multiply,
+    elementwise_divide, relu,
+)
 
 elementwise_add(np.array([1.0, 2.0]), np.array([3.0, 4.0]))  # [4. 6.]
+relu(np.array([-1.0, 0.0, 2.0]))                             # [0. 0. 2.]
 ```
 
 ### Building it
@@ -50,17 +54,19 @@ backend from source on every run and smoke-tests the compiled kernel
 with a hard-failing check before running the suite — so a broken
 build or kernel fails CI instead of silently skipping.
 
-### v0.1 limitations
+### Current limitations
 
 - float64 only (other inputs are converted).
-- Shapes must match exactly — no broadcasting.
-- One kernel, elementwise add. Not connected to Tensor or autograd.
+- Binary operations require identical shapes — no broadcasting.
+  `relu` is unary and accepts any shape.
+- Division follows IEEE float64 rules (inf/NaN for zero denominators,
+  the same values as NumPy) but does not emit NumPy's runtime warning.
+- Elementwise only. Not connected to Tensor or autograd.
 - A proof of mechanism, not a performance claim.
 
 ## What might come next
 
-Future backend milestones may add more kernels (subtract, multiply,
-divide, ReLU, eventually matmul), and only much later consider wiring
-them into Tensor behind a flag. CUDA experiments remain a separate
-future branch. The Python framework stays the reference
+Future backend milestones may add matmul, and only much later consider
+wiring kernels into Tensor behind a flag. CUDA experiments remain a
+separate future branch. The Python framework stays the reference
 implementation throughout.

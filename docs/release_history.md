@@ -40,6 +40,8 @@ line.
 
 The experimental line, separate from the finished Python framework.
 **C++ v0.1** built the first proof: a tiny compiled elementwise-add
-kernel called from Python through ctypes (see
-[backend_experiments.md](backend_experiments.md)). More kernels may
-follow; CUDA/GPU experiments remain future work.
+kernel called from Python through ctypes. **v0.1.1** made CI build and
+hard-verify the compiled backend. **v0.2** grew the kernel family to
+add/subtract/multiply/divide/ReLU (see
+[backend_experiments.md](backend_experiments.md)). Matmul may follow;
+CUDA/GPU experiments remain future work.

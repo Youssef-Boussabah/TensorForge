@@ -1,6 +1,6 @@
 """Build the experimental C++ backend.
 
-Compiles cpp/elementwise_add.cpp into a shared library next to the
+Compiles cpp/kernels.cpp into a shared library next to the
 Python wrapper (src/tensorforge/backends/). Tries system compilers
 first; if none exist, falls back to the ziglang pip package, which
 bundles a full clang-based C++ compiler and works anywhere uv works:
@@ -20,7 +20,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-SOURCE = Path(__file__).with_name("elementwise_add.cpp")
+SOURCE = Path(__file__).with_name("kernels.cpp")
 SUFFIX = {"Windows": ".dll", "Darwin": ".dylib"}.get(platform.system(), ".so")
 OUTPUT = REPO_ROOT / "src" / "tensorforge" / "backends" / ("_tensorforge_cpp" + SUFFIX)
 
