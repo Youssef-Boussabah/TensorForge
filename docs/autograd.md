@@ -39,8 +39,8 @@ graph.
 Some operations don't even need their own rule. Subtraction is defined
 as `a + (-b)` and division as `a * b**-1`, so they inherit correct
 gradients from the operations they're built from. `softmax` inside
-`Tensor` and BatchNorm's normalization work the same way: compositions
-of existing ops, gradients for free.
+`Tensor`, and the BatchNorm1d and LayerNorm normalizations, work the
+same way: compositions of existing ops, gradients for free.
 
 ## What backward() does
 

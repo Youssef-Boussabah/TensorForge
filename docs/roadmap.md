@@ -2,10 +2,11 @@
 
 ## Where the project is
 
-The core educational framework is complete: you can define a model,
-train it, regularize it, evaluate it honestly, save it, and resume it —
-all from readable NumPy code. The v2.x milestones are about expanding
-and polishing rather than filling gaps.
+The Python framework line is complete: you can define a model
+(including CNNs), train it, regularize it, normalize it, evaluate it
+honestly, save it, and resume it bit-for-bit — all from readable NumPy
+code. The next milestone is the v3.0 portfolio release. For the
+version-by-version story, see [release_history.md](release_history.md).
 
 ## What's been built
 
@@ -27,8 +28,9 @@ example that uses it properly), eval-safe evaluators, BatchNorm1d with
 module buffers, gradient clipping, the StepLR scheduler, scheduler
 state in checkpoints — completing the training-resume story — and
 image-shaped input: Conv2d, MaxPool2d, Flatten, and a tiny CNN
-example; LayerNorm as the batch-independent normalization; and
-optional RNG state in checkpoints for bit-exact dropout resume.
+example; LayerNorm as the batch-independent normalization; optional
+RNG state in checkpoints for bit-exact dropout resume; and a
+release-readiness pass over docs and guardrail tests.
 
 ## Practical next steps
 

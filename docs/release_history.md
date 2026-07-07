@@ -1,0 +1,42 @@
+# Release history
+
+A short summary of how TensorForge grew, milestone line by milestone.
+Details live in the docs and the test suite; this is the map.
+
+## v0.x — Autograd and basics
+
+The Tensor and the reverse-mode autograd engine: elementwise ops,
+matmul, exp/log/tanh/sigmoid/relu/softmax, broadcasting-aware
+gradients. The module system (Parameter, Module, Linear, activations,
+Sequential), SGD, MSE and cross-entropy losses, and the first three
+examples — linear regression, XOR, and the multi-class spiral.
+
+## v1.x — Training stack and framework utilities
+
+Everything a real training loop needs: the accuracy metric, Adam,
+mini-batching, gradient checking against finite differences, save/load
+parameters, model summaries and parameter counting, frozen parameters,
+train/validation splitting, evaluation helpers, binary cross-entropy
+with a binary classification example, and checkpoints that capture
+optimizer state so training can resume exactly.
+
+## v2.x — Regularization, CNN support, and release readiness
+
+Train/eval mode and Dropout (with an example that measures honestly in
+eval mode), eval-safe evaluators, BatchNorm1d with module buffers,
+gradient clipping, the StepLR scheduler and scheduler checkpointing,
+the docs set, image-shaped input (Conv2d, MaxPool2d, Flatten, and the
+tiny CNN example), LayerNorm, optional RNG state in checkpoints for
+bit-exact dropout resume, and this release-readiness pass.
+
+## Next — v3.0 Portfolio Release
+
+The Python framework line is feature-complete for its educational
+goals. v3.0 is the polish release: consistent docs, a clean landing
+page, and the repository presented as a finished portfolio piece.
+
+## Later — Advanced branches
+
+Long-parked ideas that would each be their own project: a C++ backend
+experiment, and CUDA/GPU experiments. Neither exists yet, and neither
+will start until the Python line is done teaching.

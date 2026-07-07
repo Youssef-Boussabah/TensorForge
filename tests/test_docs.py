@@ -4,7 +4,14 @@ import re
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DOCS = ("architecture.md", "autograd.md", "training.md", "examples.md", "roadmap.md")
+DOCS = (
+    "architecture.md",
+    "autograd.md",
+    "training.md",
+    "examples.md",
+    "roadmap.md",
+    "release_history.md",
+)
 
 EXAMPLE_FILES = (
     "train_linear_regression.py",
@@ -57,7 +64,33 @@ def test_roadmap_does_not_list_shipped_features_as_future():
     # in the future section.
     future = text.split("## Practical next steps", 1)[1]
     future = future.split("## What this project is not", 1)[0]
-    for shipped in ("Dropout", "BatchNorm", "Adam", "clip_grad"):
+    shipped_features = (
+        "Dropout",
+        "BatchNorm",
+        "LayerNorm",
+        "Conv2d",
+        "MaxPool2d",
+        "Adam",
+        "clip_grad",
+        "RNG",
+    )
+    for shipped in shipped_features:
         assert shipped not in future, (
             f"docs/roadmap.md lists already-shipped {shipped!r} as future work"
+        )
+
+
+def test_readme_mentions_all_example_files():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    for path in (REPO_ROOT / "examples").glob("train_*.py"):
+        assert path.name in readme, f"README does not mention examples/{path.name}"
+
+
+def test_readme_commands_reference_existing_files():
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    referenced = re.findall(r"examples/(\w+\.py)", readme)
+    assert referenced, "README contains no example commands"
+    for filename in referenced:
+        assert (REPO_ROOT / "examples" / filename).is_file(), (
+            f"README references examples/{filename}, which does not exist"
         )

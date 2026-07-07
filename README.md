@@ -12,7 +12,7 @@ actually does, this repo is a few hundred lines away from telling you.
 
 **Core engine**
 - Tensor with reverse-mode autograd: `+ - * / ** @`, `sum`, `mean`,
-  `exp`, `log`, `tanh`, `sigmoid`, `relu`, `softmax`, with
+  `reshape`, `exp`, `log`, `tanh`, `sigmoid`, `relu`, `softmax`, with
   broadcasting-aware gradients — all verified against finite differences
 
 **Models (`tensorforge.nn`)**
@@ -89,15 +89,28 @@ What each one teaches, and what to expect: [docs/examples.md](docs/examples.md).
 - [docs/training.md](docs/training.md) — training loops, train/eval mode, saving
 - [docs/examples.md](docs/examples.md) — the examples and what they teach
 - [docs/roadmap.md](docs/roadmap.md) — what's done and what's next
+- [docs/release_history.md](docs/release_history.md) — how the project grew, by version
+
+## Limitations
+
+Honest expectations:
+
+- Educational, not production-ready — clarity beats performance every
+  time.
+- NumPy on CPU only. No C++ backend yet, no CUDA backend yet — both
+  are future experiments, not current features.
+- `Conv2d` and `MaxPool2d` use deliberately naive loops.
+- No real datasets and no external ML libraries; every example runs on
+  small synthetic data.
 
 ## Status
 
-The core educational framework is complete — model definition,
-training, regularization, honest evaluation, and checkpointing all
-work and are covered by 300+ tests. The v2.x milestones are expanding
-it (normalization, training control, docs). See
-[docs/roadmap.md](docs/roadmap.md) for direction.
+The Python framework line is feature-complete for its educational
+goals and covered by 370+ tests; it is now entering final portfolio
+polish (v3.0). Advanced backend experiments come after that. See
+[docs/roadmap.md](docs/roadmap.md) and
+[docs/release_history.md](docs/release_history.md).
 
-TensorForge is an educational project: it exists to show how a deep
-learning framework works under the hood, not to compete with real
-ones. Start reading at `src/tensorforge/tensor.py`.
+TensorForge exists to show how a deep learning framework works under
+the hood, not to compete with real ones. Start reading at
+`src/tensorforge/tensor.py`.
