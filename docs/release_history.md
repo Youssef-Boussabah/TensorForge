@@ -49,6 +49,8 @@ introspection helpers (`is_available`, `list_kernels`,
 `matmul_tiled`, a cache-blocking optimization experiment benchmarked
 against the naive reference and NumPy. **v0.7** added the
 shape/stride metadata layer. **v0.8** added `NativeStorage`, a
-C++-owned float64 buffer — together the two halves of a future tensor
-runtime (see [backend_experiments.md](backend_experiments.md)).
-CUDA/GPU experiments remain future work.
+C++-owned float64 buffer. **v0.9** bound the two together as
+`NativeTensorView`, with native contiguous materialization as its
+first operation (see
+[backend_experiments.md](backend_experiments.md)). CUDA/GPU
+experiments remain future work.

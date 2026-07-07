@@ -95,6 +95,12 @@ def _load_library():
     library.tf_storage_copy_from.restype = None
     library.tf_storage_copy_to.argtypes = [ctypes.c_void_p, f64_array]
     library.tf_storage_copy_to.restype = None
+    i64_array = np.ctypeslib.ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")
+    library.tf_storage_materialize.argtypes = [
+        ctypes.c_void_p, f64_array, i64_array, i64_array,
+        ctypes.c_int64, ctypes.c_int64,
+    ]
+    library.tf_storage_materialize.restype = None
     return library
 
 
@@ -132,6 +138,7 @@ def backend_info():
         "available": is_available(),
         "kernels": KERNELS,
         "storage_object": "NativeStorage",
+        "tensor_view": "NativeTensorView",
         "dtype": "float64",
         "tensor_integration": False,
         "autograd_integration": False,
@@ -233,6 +240,120 @@ class NativeStorage:
     def __repr__(self):
         state = "closed" if self._handle is None else f"size={self._size}"
         return f"NativeStorage({state})"
+
+
+class NativeTensorView:
+    """A logical view: NativeStorage plus shape/stride/offset metadata.
+
+    This binds the two halves of the backend runtime prototype — the
+    v0.7 layout contract and the v0.8 C++-owned buffer — into one
+    object that knows which storage element each logical index means.
+    Its first (and so far only) operation is contiguous
+    materialization. Not a full Tensor: no math ops, no autograd, no
+    connection to tensorforge.Tensor.
+
+    Views never own the storage; closing the storage makes the view's
+    operations raise. Reachable offsets are bounds-checked at
+    construction, so a valid view can never read outside its storage
+    (negative strides included).
+    """
+
+    def __init__(self, storage, shape, strides=None, offset=0):
+        if not isinstance(storage, NativeStorage):
+            raise TypeError(
+                f"storage must be a NativeStorage, got {type(storage).__name__}"
+            )
+        storage._require_open()  # a closed storage cannot back a view
+        info = shape_info(shape, strides=strides, offset=offset)
+
+        # Bounds: each dimension contributes between 0 and
+        # (dim - 1) * stride to the offset — negative strides make the
+        # low end move. The whole reachable range must fit in storage.
+        low = high = info["offset"]
+        for dim, stride in zip(info["shape"], info["strides"]):
+            contribution = (dim - 1) * stride
+            if contribution >= 0:
+                high += contribution
+            else:
+                low += contribution
+        if low < 0 or high > storage.size - 1:
+            raise ValueError(
+                f"view reaches storage offsets [{low}, {high}], outside "
+                f"the valid range [0, {storage.size - 1}]"
+            )
+
+        self._storage = storage
+        self._shape = info["shape"]
+        self._strides = info["strides"]
+        self._offset = info["offset"]
+        self._numel = info["numel"]
+        self._contiguous = info["contiguous"]
+
+    @classmethod
+    def from_array(cls, values):
+        """Create a contiguous view over new storage holding ``values``.
+
+        The array's shape is preserved; its data is copied into a fresh
+        NativeStorage.
+        """
+        array = np.ascontiguousarray(values, dtype=np.float64)
+        storage = NativeStorage.from_array(array)
+        return cls(storage, array.shape)
+
+    @property
+    def shape(self):
+        return self._shape
+
+    @property
+    def strides(self):
+        return self._strides
+
+    @property
+    def offset(self):
+        return self._offset
+
+    @property
+    def ndim(self):
+        return len(self._shape)
+
+    @property
+    def numel(self):
+        return self._numel
+
+    @property
+    def contiguous(self):
+        return self._contiguous
+
+    def to_numpy(self):
+        """Materialize the logical view into a fresh NumPy array of
+        shape ``self.shape`` (row-major), copied element by element by
+        the native materialization kernel."""
+        handle = self._storage._require_open()
+        out = np.empty(self._numel, dtype=np.float64)
+        self._storage._lib.tf_storage_materialize(
+            handle,
+            out,
+            np.asarray(self._shape, dtype=np.int64),
+            np.asarray(self._strides, dtype=np.int64),
+            self._offset,
+            len(self._shape),
+        )
+        return out.reshape(self._shape)
+
+    def contiguous_copy(self):
+        """Materialize into a new NativeStorage in row-major order.
+
+        Always copies, even if the view is already contiguous — the
+        result is an independent storage the caller owns (and must
+        close).
+        """
+        return NativeStorage.from_array(self.to_numpy().ravel())
+
+    def __repr__(self):
+        return (
+            f"NativeTensorView(shape={self._shape}, strides={self._strides}, "
+            f"offset={self._offset}, contiguous={self._contiguous})"
+        )
 
 
 # ---------------------------------------------------------------------------

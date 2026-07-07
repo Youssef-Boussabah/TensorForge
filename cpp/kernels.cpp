@@ -80,6 +80,45 @@ TF_EXPORT void tf_storage_copy_to(const void* handle, double* dst) {
     }
 }
 
+// Materialize a strided view of the storage into a contiguous output
+// buffer — the canonical tensor-runtime loop. The logical indices are
+// walked like an odometer (last dimension fastest, i.e. row-major
+// output order) while the source position is updated incrementally:
+// stepping dimension d moves by strides[d], and when a dimension
+// wraps, its full extent is subtracted before the next dimension
+// steps. Bounds are validated on the Python side before this is
+// called.
+TF_EXPORT void tf_storage_materialize(
+    const void* handle, double* dst,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim
+) {
+    const double* src = static_cast<const TfStorage*>(handle)->data;
+    if (ndim == 0) {  // scalar view: one element at the offset
+        dst[0] = src[offset];
+        return;
+    }
+    int64_t total = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        total *= shape[d];
+    }
+    int64_t* counter = new int64_t[ndim]();
+    int64_t src_pos = offset;
+    for (int64_t out = 0; out < total; ++out) {
+        dst[out] = src[src_pos];
+        for (int64_t d = ndim - 1; d >= 0; --d) {
+            ++counter[d];
+            src_pos += strides[d];
+            if (counter[d] < shape[d]) {
+                break;  // this dimension advanced; done
+            }
+            counter[d] = 0;  // wrap and carry into the next dimension
+            src_pos -= shape[d] * strides[d];
+        }
+    }
+    delete[] counter;
+}
+
 TF_EXPORT void tf_elementwise_add(
     const double* a, const double* b, double* out, int64_t n
 ) {

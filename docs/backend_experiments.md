@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v0.8 (current)
+## C++ backend — v0.9 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -84,11 +84,39 @@ with NativeStorage.from_array([1.0, 2.0, 3.0]) as storage:
 New storage is zero-initialized; operations on a closed storage raise
 RuntimeError. `backend_info()` advertises it as ``storage_object``.
 
-This is still not a Tensor: storage has a size but no shape or
-strides, and the v0.7 metadata layer is not yet connected to it —
-combining the two into a TensorView prototype (and materializing
-non-contiguous views into contiguous storage) is exactly what future
-milestones are for. Nothing here touches Tensor/autograd.
+Storage by itself has a size but no shape or strides — that binding
+is the tensor view's job.
+
+### NativeTensorView (v0.9)
+
+`NativeTensorView` connects the two halves: a `NativeStorage` plus
+shape/stride/offset metadata, forming a logical view that knows which
+storage element each index means. Its first operation is **contiguous
+materialization** — walking the strided view in row-major order and
+copying it out — performed by a native odometer loop in C++:
+
+```python
+from tensorforge.backends.cpp import NativeStorage, NativeTensorView
+
+view = NativeTensorView.from_array(np.arange(6.0).reshape(2, 3))
+view.shape, view.strides, view.contiguous   # (2, 3), (3, 1), True
+
+# The same six values seen transposed, without copying anything:
+storage = NativeStorage.from_array(np.arange(6.0))
+transposed = NativeTensorView(storage, shape=(3, 2), strides=(1, 3))
+transposed.to_numpy()          # the (3, 2) transpose, materialized
+copy = transposed.contiguous_copy()  # a new row-major NativeStorage
+```
+
+Views are bounds-checked at construction (negative strides included),
+so a valid view can never read outside its storage. Views don't own
+the storage: close the storage and the view's operations raise.
+
+This is still not a full Tensor object — no math operations over
+views, no autograd, no connection to `tensorforge.Tensor`. Future
+milestones may add a native TensorCore, view operations (slicing,
+transposing as methods), kernels that operate on views directly, or
+explicit backend dispatch.
 
 ### The tiled matmul experiment
 
