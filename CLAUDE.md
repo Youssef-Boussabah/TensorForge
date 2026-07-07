@@ -47,7 +47,9 @@ backend, CUDA experiments), which do not exist yet.
   examples, roadmap, release history. When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
-- `.github/workflows/tests.yml` — minimal CI: install uv, run pytest.
+- `.github/workflows/tests.yml` — minimal CI: install uv, build the
+  experimental C++ backend, hard-failing kernel smoke check, then
+  pytest.
 - `cpp/` + `src/tensorforge/backends/` — the experimental C++ backend
   (post-v3.0 line). Plain C-ABI kernels loaded via ctypes; built with
   `uv run python cpp/build.py` (`uv sync --group cpp` first if no

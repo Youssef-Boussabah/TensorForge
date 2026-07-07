@@ -11,4 +11,18 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       # uv reads .python-version and installs the right Python itself.
-      - run: uv run pytest
+
+      # Build the experimental C++ backend from source (the runner's
+      # g++ is used; cpp/build.py falls back to the ziglang package if
+      # no system compiler exists). Nothing compiled is checked in.
+      - name: Build the experimental C++ backend
+        run: uv run python cpp/build.py
+
+      # Prove the compiled kernel imports and computes — this step
+      # fails hard, unlike the pytest suite, whose backend tests skip
+      # when the library is missing.
+      - name: Smoke-test the C++ backend
+        run: uv run python -c "import numpy as np; from tensorforge.backends.cpp import elementwise_add; out = elementwise_add(np.array([1.0, 2.0]), np.array([3.0, 4.0])); print(out); assert out.tolist() == [4.0, 6.0]"
+
+      - name: Run the test suite
+        run: uv run pytest

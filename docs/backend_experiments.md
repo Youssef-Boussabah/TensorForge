@@ -45,6 +45,11 @@ The compiled library lands next to the wrapper and is gitignored.
 If the backend is not built, importing `tensorforge.backends.cpp`
 raises an ImportError with these instructions, and its tests skip.
 
+CI does not rely on that skip: the GitHub Actions workflow builds the
+backend from source on every run and smoke-tests the compiled kernel
+with a hard-failing check before running the suite — so a broken
+build or kernel fails CI instead of silently skipping.
+
 ### v0.1 limitations
 
 - float64 only (other inputs are converted).
