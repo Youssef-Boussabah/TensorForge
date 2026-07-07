@@ -43,5 +43,7 @@ The experimental line, separate from the finished Python framework.
 kernel called from Python through ctypes. **v0.1.1** made CI build and
 hard-verify the compiled backend. **v0.2** grew the kernel family to
 add/subtract/multiply/divide/ReLU. **v0.3** added a naive 2-D matmul
-kernel (see [backend_experiments.md](backend_experiments.md)).
-CUDA/GPU experiments remain future work.
+kernel. **v0.4** added honest benchmarks against NumPy — which NumPy
+mostly wins, as expected (see
+[backend_experiments.md](backend_experiments.md)). CUDA/GPU
+experiments remain future work.

@@ -54,7 +54,8 @@ backend, CUDA experiments), which do not exist yet.
   (post-v3.0 line). Plain C-ABI kernels loaded via ctypes; built with
   `uv run python cpp/build.py` (`uv sync --group cpp` first if no
   compiler). Never imported by the main framework; its tests skip
-  when unbuilt.
+  when unbuilt. `benchmarks/cpp_backend.py` compares kernels against
+  NumPy honestly (no performance assertions anywhere).
 
 ## Commands
 

@@ -70,9 +70,34 @@ build or kernel fails CI instead of silently skipping.
 - Not connected to Tensor or autograd.
 - A proof of mechanism, not a performance claim.
 
+## Benchmarks
+
+After building the backend, compare it against NumPy:
+
+```
+uv run python benchmarks/cpp_backend.py          # default sizes
+uv run python benchmarks/cpp_backend.py --quick  # fast smoke run
+```
+
+The output is a small table (operation, shape, NumPy time, C++ time,
+ratio). It is deliberately **not** a performance claim — the point is
+what the numbers teach:
+
+- On tiny arrays, the C++ backend loses badly: every call pays ctypes
+  and array-conversion overhead that NumPy's own dispatch amortizes
+  better.
+- On large elementwise arrays, naive C++ gets competitive with NumPy
+  (both end up memory-bound — the loop isn't the bottleneck).
+- For matmul, NumPy's BLAS (blocking, SIMD, threading) beats the
+  textbook triple loop by an order of magnitude, and the gap grows
+  with size.
+
+Correctness is verified against NumPy before anything is timed, and
+timings are medians over repeated runs after warmup. Expect exact
+numbers to vary by machine; the *shape* of the story shouldn't.
+
 ## What might come next
 
-Future backend milestones might compare kernels honestly against
-NumPy, and only much later consider wiring kernels into Tensor behind
-a flag. CUDA experiments remain a separate future branch. The Python
+A future milestone might consider wiring kernels into Tensor behind a
+flag. CUDA experiments remain a separate future branch. The Python
 framework stays the reference implementation throughout.

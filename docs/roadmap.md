@@ -38,7 +38,8 @@ release-readiness pass over docs and guardrail tests.
 The Python line is done; what remains is expansion on its own terms:
 
 - **Advanced branches** — the C++ backend experiment now has
-  elementwise kernels and a naive 2-D matmul
+  elementwise kernels, a naive 2-D matmul, and honest benchmarks
+  against NumPy
   (see [backend_experiments.md](backend_experiments.md)). CUDA/GPU
   experiments are still entirely future work. The Python framework
   stays the reference implementation.
