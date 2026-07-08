@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.14 (current)
+## C++ backend — v1.16 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -379,6 +379,35 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native broadcasting — design (v1.16)
+
+v1.16 is **design-only**: no kernels change and broadcasting is **not
+implemented**. With Phase A1 (the contiguous fast path) complete —
+designed v1.13, implemented v1.14, benchmark impact reported v1.15 — the
+next Phase A step is broadcasting, and this milestone writes its design.
+
+Today the native elementwise ops are **exact-shape only**:
+`NativeTensorCore._binary_core_op` rejects any mismatched pair (a `(3, 4)`
+and a `(3, 1)`, or a scalar and a matrix) with a clear `ValueError`. The
+design specifies lifting that to NumPy-style broadcasting for
+`add`/`subtract`/`multiply` — scalar↔tensor, same-rank size-1 stretching,
+and left-padding a lower-rank operand with leading 1s
+(`() + (3, 4) -> (3, 4)`, `(3, 1) + (1, 4) -> (3, 4)`,
+`(1, 3, 1) + (2, 1, 5) -> (2, 3, 5)`). The mechanism is a **zero-stride
+read model**: a stretched axis is read with stride 0 (re-reading one
+element) rather than materializing an expanded operand, and the output
+stays freshly allocated row-major contiguous native storage. The v1.14
+fast path is preserved untouched for the same-shape contiguous case;
+broadcasting only engages when the shapes actually differ, and takes the
+generic broadcast odometer first (specialized broadcast fast paths are
+deferred). It composes with transposed/narrowed/offset views because
+everything is expressed in strides. Errors stay explicit — a mismatch
+names both shapes, and there is **no silent NumPy fallback**. Autograd
+implications (a broadcast forward read is a sum-reduction on the backward
+pass) are noted for later, not built. The full design, scope
+(implementation is v1.17), test/benchmark plans, and roadmap fit are in
+[native_broadcasting_design.md](native_broadcasting_design.md).
+
 ### Contiguous fast-path — benchmark impact report (v1.15)
 
 This closes the optimization loop the last four milestones opened:
@@ -675,14 +704,13 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 ## What might come next
 
-The contiguous elementwise fast path is now **implemented** (v1.14) and
-its impact is **measured and reported** (v1.15, above): on a local run
-the contiguous elementwise rows moved to roughly raw-buffer speed while
-the strided-view rows stayed on the retained odometer, and `NativeTensor`
-tracked `NativeTensorCore` throughout. The next step is **v1.16 — a
-native broadcasting design** (Phase A2): a design-first milestone for
-shape-aligned elementwise ops, the same design-then-implement cadence the
-fast path followed. After that, the rest of Phase A continues —
-reductions (A3) and dtype/device metadata (A4). Still no Tensor
-integration. CUDA experiments remain a separate future branch. The Python
-framework stays the reference implementation throughout.
+The contiguous elementwise fast path is **implemented** (v1.14) and its
+impact **measured and reported** (v1.15), and native broadcasting is now
+**designed** (v1.16, above) — the same design-first cadence the fast path
+followed. The next step is **v1.17 — the native broadcasting
+implementation** (Phase A2): shape inference plus a zero-stride broadcast
+traversal for `add`/`subtract`/`multiply`, verified against NumPy, with
+the v1.14 same-shape fast path preserved. After that, the rest of Phase A
+continues — reductions (A3) and dtype/device metadata (A4). Still no
+Tensor integration. CUDA experiments remain a separate future branch. The
+Python framework stays the reference implementation throughout.

@@ -91,23 +91,33 @@ The Python line is done; what remains is expansion on its own terms:
   on the retained odometer (~2.5–3.5×), and `NativeTensor` tracked
   `NativeTensorCore` throughout — with matmul and `contiguous_copy`
   unchanged, numbers hardware-dependent, and no test asserting a speedup
-  (see [backend_experiments.md](backend_experiments.md)). The next step
-  there is **Advanced C++ v1.16 — a native broadcasting design** (Phase
-  A2): a design-first milestone for shape-aligned elementwise ops. CUDA/
-  GPU experiments are still entirely future work. The Python framework
-  stays the reference implementation.
+  (see [backend_experiments.md](backend_experiments.md)). Building on
+  that, native broadcasting is now **designed** (v1.16, Phase A2): a
+  design-only milestone lifting the native elementwise ops from
+  exact-shape-only to NumPy-style broadcasting (scalar↔tensor, same-rank
+  size-1 stretching, left-padding with leading 1s) through a zero-stride
+  read model that never materializes an expanded operand, with the v1.14
+  fast path preserved for the same-shape case and `NativeTensor`
+  inheriting it below the wrapper
+  ([native_broadcasting_design.md](native_broadcasting_design.md)); no
+  code ships. The next step there is **Advanced C++ v1.17 — the native
+  broadcasting implementation**: shape inference plus the broadcast
+  traversal for `add`/`subtract`/`multiply`, verified against NumPy.
+  CUDA/GPU experiments are still entirely future work. The Python
+  framework stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
   - **Phase A — native CPU runtime.** A1: the contiguous elementwise
     fast path — **complete** (designed v1.13, implemented v1.14,
-    benchmark impact reported v1.15). A2 (**next, v1.16**): broadcasting
-    for elementwise ops, beginning with a design. A3: reductions
-    (sum/mean/max). A4: dtype and device metadata beyond
+    benchmark impact reported v1.15). A2: broadcasting for elementwise
+    ops — **designed (v1.16, current)**, implementation next in **v1.17**.
+    A3: reductions (sum/mean/max). A4: dtype and device metadata beyond
     float64-CPU-only.
   - **Then** native autograd, a native training stack, the CUDA runtime,
     an AMP / Tensor Core path, Transformer / text examples, distributed
-    / DDP, and a final benchmark / profiling / docs polish.
+    / DDP, and a final benchmark / profiling / docs polish (the final
+    portfolio release).
 - **A larger synthetic image example** — more classes, bigger images,
   still dependency-free.
 - **More docs** — deeper walkthroughs of individual layers, if the

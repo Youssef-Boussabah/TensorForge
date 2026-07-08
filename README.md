@@ -104,6 +104,7 @@ What each one teaches, and what to expect: [docs/examples.md](docs/examples.md).
 - [docs/dispatch_design.md](docs/dispatch_design.md) — how backends might eventually meet the Tensor
 - [docs/native_tensor_wrapper_design.md](docs/native_tensor_wrapper_design.md) — Stage-2 design for a forward-only native tensor wrapper
 - [docs/native_contiguous_fast_path_design.md](docs/native_contiguous_fast_path_design.md) — design for a contiguous elementwise fast path in the native runtime
+- [docs/native_broadcasting_design.md](docs/native_broadcasting_design.md) — design for NumPy-style broadcasting in the native elementwise runtime
 
 ## Limitations
 

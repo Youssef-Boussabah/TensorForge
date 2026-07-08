@@ -131,5 +131,18 @@ contiguous-vs-strided spread the design predicted. Matmul and
 `contiguous_copy` were unchanged (out of v1.14 scope), and `NativeTensor`
 kept tracking `NativeTensorCore` closely, reinforcing that the wrapper is
 thin. No kernels or runtime behavior changed, numbers are
-hardware-dependent, and no test asserts a speedup; the next step is v1.16,
-a native broadcasting design. CUDA/GPU experiments remain future work.
+hardware-dependent, and no test asserts a speedup. **v1.16** is
+design-only: with Phase A1 complete, it writes the design for native
+broadcasting — lifting the native elementwise ops
+(`add`/`subtract`/`multiply`) from exact-shape-only to NumPy-style
+broadcasting (scalar↔tensor, same-rank size-1 stretching, left-padding
+with leading 1s) via a zero-stride read model that never materializes an
+expanded operand and keeps a freshly allocated contiguous output. The
+v1.14 fast path is preserved for the same-shape contiguous case;
+broadcasting lives in the `NativeTensorCore`/native-kernel layer so
+`NativeTensor` will inherit it with no wrapper change; errors stay
+explicit (a mismatch names both shapes, no silent NumPy fallback); and
+the autograd implication (a broadcast forward read is a sum-reduction on
+the backward pass) is noted for later, not built
+([native_broadcasting_design.md](native_broadcasting_design.md)). No code
+ships; implementation is v1.17. CUDA/GPU experiments remain future work.

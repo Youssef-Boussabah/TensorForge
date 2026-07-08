@@ -318,6 +318,21 @@ runtime beneath it grew:
   `NativeTensorCore` or the C++ kernels) benefit `NativeTensor`
   automatically, because it only ever delegates. Numbers are
   hardware-dependent; no test asserts a speedup.
+- **v1.16 — native broadcasting design (done):** a design (no code) for
+  NumPy-style broadcasting in the native elementwise ops
+  (`add`/`subtract`/`multiply`), lifting the current exact-shape
+  restriction via a zero-stride read model with a freshly allocated
+  contiguous output — see
+  [native_broadcasting_design.md](native_broadcasting_design.md).
+  Crucially, like the fast path, **broadcasting belongs below
+  `NativeTensor`, in the `NativeTensorCore`/native-kernel layer.** The
+  wrapper's `add`/`subtract`/`multiply` already delegate straight to the
+  core (`self._require_open().<op>(other_core)`), so once the core
+  broadcasts, `NativeTensor` broadcasts too — a `(3, 1) + (1, 4)` will
+  work through the wrapper with **no wrapper edit**, exactly as the
+  contiguous fast path arrived for free. `NativeTensor` stays a thin,
+  forward-only, experimental wrapper: no new methods, no autograd, no
+  operator overloads, not `tensorforge.Tensor`. Implementation is v1.17.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision
