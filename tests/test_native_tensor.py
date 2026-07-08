@@ -154,20 +154,148 @@ def test_context_manager_closes_on_exit():
     assert t.closed is True
 
 
+# -- forward compute --------------------------------------------------
+
+
+@needs_native
+def test_relu_matches_numpy_and_returns_owning_tensor():
+    x = np.array([[1.0, -2.0], [-3.0, 4.0]])
+    src = NativeTensor.from_array(x)
+    out = src.relu()
+    assert isinstance(out, NativeTensor)
+    assert out.owns_core is True
+    assert out.shape == (2, 2)
+    assert np.array_equal(out.to_numpy(), np.maximum(x, 0.0))
+    # The input is untouched and still usable.
+    assert src.closed is False
+    assert np.array_equal(src.to_numpy(), x)
+    src.close()
+    out.close()
+
+
+@needs_native
+def test_elementwise_binary_ops_match_numpy():
+    x = np.array([[1.0, 2.0], [3.0, 4.0]])
+    y = np.array([[10.0, 20.0], [30.0, 40.0]])
+    a = NativeTensor.from_array(x)
+    b = NativeTensor.from_array(y)
+    for op, expected in (("add", x + y), ("subtract", x - y), ("multiply", x * y)):
+        out = getattr(a, op)(b)
+        assert isinstance(out, NativeTensor)
+        assert out.owns_core is True
+        assert out.shape == (2, 2)
+        assert np.array_equal(out.to_numpy(), expected)
+        out.close()
+    a.close()
+    b.close()
+
+
+@needs_native
+def test_elementwise_ops_reject_shape_mismatch_no_broadcasting():
+    # (2, 3) with (3,) broadcasts in NumPy; the native path rejects it.
+    a = NativeTensor.from_array(np.ones((2, 3)))
+    row = NativeTensor.from_array([1.0, 2.0, 3.0])
+    for op in ("add", "subtract", "multiply"):
+        with pytest.raises(ValueError, match="broadcasting|shape"):
+            getattr(a, op)(row)
+    a.close()
+    row.close()
+
+
+@needs_native
+def test_binary_ops_reject_non_native_tensor_operand():
+    a = NativeTensor.from_array([[1.0, 2.0]])
+    for op in ("add", "subtract", "multiply", "matmul"):
+        # A NumPy array is not a NativeTensor — a clear TypeError naming
+        # NativeTensor, not a mysterious error about NativeTensorCore.
+        with pytest.raises(TypeError, match="NativeTensor"):
+            getattr(a, op)(np.array([[1.0, 2.0]]))
+    a.close()
+
+
+@needs_native
+def test_binary_ops_reject_closed_operand():
+    a = NativeTensor.from_array([[1.0, 2.0], [3.0, 4.0]])
+    b = NativeTensor.from_array([[1.0, 2.0], [3.0, 4.0]])
+    b.close()
+    for op in ("add", "subtract", "multiply", "matmul"):
+        with pytest.raises(RuntimeError, match="closed"):
+            getattr(a, op)(b)
+    a.close()
+
+
+@needs_native
+def test_matmul_matches_numpy():
+    x = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    y = np.array([[7.0, 8.0], [9.0, 10.0], [11.0, 12.0]])
+    a = NativeTensor.from_array(x)
+    b = NativeTensor.from_array(y)
+    out = a.matmul(b)
+    assert isinstance(out, NativeTensor)
+    assert out.owns_core is True
+    assert out.shape == (2, 2)
+    assert np.allclose(out.to_numpy(), x @ y)
+    a.close()
+    b.close()
+    out.close()
+
+
+@needs_native
+def test_matmul_rejects_incompatible_shapes():
+    a = NativeTensor.from_array(np.ones((2, 3)))
+    b = NativeTensor.from_array(np.ones((2, 3)))  # inner dims 3 vs 2
+    with pytest.raises(ValueError, match="inner dimensions|shape"):
+        a.matmul(b)
+    a.close()
+    b.close()
+
+
+@needs_native
+def test_compute_on_closed_self_fails_clearly():
+    a = NativeTensor.zeros((2, 2))
+    b = NativeTensor.zeros((2, 2))
+    a.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        a.relu()
+    for op in ("add", "subtract", "multiply", "matmul"):
+        with pytest.raises(RuntimeError, match="closed"):
+            getattr(a, op)(b)
+    b.close()
+
+
+@needs_native
+def test_compute_ops_chain():
+    x = NativeTensor.from_array([[1.0, -1.0], [2.0, 3.0]])
+    y = NativeTensor.from_array([[1.0, 1.0], [1.0, 1.0]])
+    z = NativeTensor.from_array([[2.0, 0.0], [0.0, 2.0]])
+    out = x.relu().add(y).matmul(z)
+    expected = (np.maximum([[1.0, -1.0], [2.0, 3.0]], 0.0) + 1.0) @ [[2.0, 0.0], [0.0, 2.0]]
+    assert np.allclose(out.to_numpy(), expected)
+    for tensor in (x, y, z, out):
+        tensor.close()
+
+
 # -- guardrails -------------------------------------------------------
 
 
 @needs_native
-def test_no_compute_or_view_methods_yet():
-    """v1.8 is a shell: even though NativeTensorCore has these, the
-    wrapper must not expose them yet (compute is v1.9, views v1.10)."""
+def test_no_view_methods_yet():
+    """v1.9 adds compute ops but not view ops — those are v1.10. The
+    view methods exist on NativeTensorCore but must not be exposed on
+    the wrapper yet."""
     t = NativeTensor.zeros((2, 2))
-    for method in (
-        "relu", "add", "subtract", "multiply", "matmul",  # compute (v1.9)
-        "reshape", "transpose", "narrow", "T",            # views (v1.10)
-    ):
+    for method in ("reshape", "transpose", "narrow", "T"):
         assert not hasattr(t, method), f"NativeTensor should not expose {method} yet"
     t.close()
+
+
+def test_no_operator_overloads_yet():
+    """Compute is method-only for now — no Python operator sugar. These
+    must not be custom NativeTensor methods yet."""
+    for dunder in ("__add__", "__sub__", "__mul__", "__matmul__"):
+        assert dunder not in vars(NativeTensor), (
+            f"NativeTensor should not define {dunder} yet"
+        )
 
 
 @needs_native

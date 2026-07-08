@@ -140,6 +140,49 @@ class NativeTensor:
         """
         return self._require_open().to_numpy()
 
+    # -- forward compute (delegates to NativeTensorCore) ------------------
+
+    def relu(self):
+        """max(x, 0) elementwise, computed natively over this tensor's
+        layout. Returns a new owning NativeTensor; the original stays
+        open."""
+        return self._from_core(self._require_open().relu())
+
+    def add(self, other):
+        """self + other elementwise, natively. Exact-shape only — no
+        broadcasting. Returns a new owning NativeTensor."""
+        return self._binary("add", other)
+
+    def subtract(self, other):
+        """self - other elementwise, natively. Exact-shape only — no
+        broadcasting. Returns a new owning NativeTensor."""
+        return self._binary("subtract", other)
+
+    def multiply(self, other):
+        """self * other elementwise, natively. Exact-shape only — no
+        broadcasting. Returns a new owning NativeTensor."""
+        return self._binary("multiply", other)
+
+    def matmul(self, other):
+        """(m, n) @ (n, p) matrix multiply, natively. 2-D only, no
+        broadcasting. Returns a new owning NativeTensor."""
+        return self._binary("matmul", other)
+
+    def _binary(self, op_name, other):
+        """Shared plumbing for the binary compute ops: require self and
+        other open, require other to be a NativeTensor (a clear
+        TypeError otherwise), then delegate to the core method — which
+        enforces exact shapes / 2-D matmul and raises a clear ValueError
+        on a mismatch. The result wraps a fresh owning core."""
+        core = self._require_open()
+        if not isinstance(other, NativeTensor):
+            raise TypeError(
+                f"NativeTensor.{op_name} requires a NativeTensor operand, "
+                f"got {type(other).__name__}"
+            )
+        other_core = other._require_open()
+        return self._from_core(getattr(core, op_name)(other_core))
+
     # -- lifetime ---------------------------------------------------------
 
     def close(self):

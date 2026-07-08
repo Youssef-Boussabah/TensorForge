@@ -80,4 +80,11 @@ code ships. **v1.8** builds the shell of that wrapper —
 metadata, `to_numpy`, and an explicit ownership/lifetime story
 (idempotent `close()`, context manager, closed tensors reject access) —
 and nothing more: no compute ops, no view ops, no autograd, not
-`tensorforge.Tensor`. CUDA/GPU experiments remain future work.
+`tensorforge.Tensor`. **v1.9** gave that wrapper its forward-only
+compute methods — `relu`, `add`, `subtract`, `multiply`, `matmul` —
+each delegating to the native kernel and returning a new owning
+`NativeTensor`, preserving the runtime's exact-shape/2-D behavior (no
+broadcasting), clear `TypeError` naming `NativeTensor` for bad operands,
+and `RuntimeError` on closed tensors; no operator overloads, no view
+ops, still not `tensorforge.Tensor`. CUDA/GPU experiments remain future
+work.

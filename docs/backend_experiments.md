@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.8 (current)
+## C++ backend — v1.9 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -377,6 +377,39 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### NativeTensor — forward compute ops (v1.9)
+
+v1.9 gives `NativeTensor` its forward-only compute methods, each
+delegating to the `NativeTensorCore` kernel beneath and returning a
+**new owning** `NativeTensor`:
+
+```python
+from tensorforge.experimental import NativeTensor
+
+a = NativeTensor.from_array([[1.0, -2.0], [3.0, 4.0]])
+b = NativeTensor.from_array([[5.0, 6.0], [7.0, 8.0]])
+
+a.relu()          # max(x, 0), a new owning NativeTensor
+a.add(b)          # a + b        (also subtract, multiply)
+a.matmul(b)       # (m, n) @ (n, p)
+a.relu().add(b).matmul(b)   # ops chain
+```
+
+The behavior mirrors the native runtime exactly. Elementwise ops
+(`add`/`subtract`/`multiply`) require **identical shapes — no
+broadcasting** (a `(2, 3)` with a `(3,)` raises `ValueError`); `relu` is
+unary and takes any shape; `matmul` is strictly 2-D `(m, n) @ (n, p)`.
+Wrong operand types raise a clear `TypeError` naming `NativeTensor`
+(passing a raw NumPy array or list fails loudly), and computing on or
+with a closed tensor raises `RuntimeError`. The original operands are
+never consumed — each op allocates a fresh contiguous result.
+
+Still forward-only and still **not** `tensorforge.Tensor`: no autograd,
+no `requires_grad`/`grad`/`backward`, no Tensor integration, and no
+Python operator overloads yet (`__add__`, `__matmul__`, ... are
+deliberately absent — compute is method-only for now). View ops
+(`reshape`, `transpose`, `T`, `narrow`) are still to come in v1.10.
+
 ### NativeTensor — minimal wrapper (v1.8)
 
 v1.8 implements the *shell* of the forward-only wrapper the v1.7 design
@@ -430,9 +463,9 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 ## What might come next
 
-The next implementation step is v1.9: `NativeTensor` compute ops —
-`relu`, `add`, `subtract`, `multiply`, `matmul` — each returning a new
-owning wrapper, with view ops following in v1.10 per the design doc. A
-further-out milestone might consider wiring kernels into Tensor behind a
-flag. CUDA experiments remain a separate future branch. The Python
-framework stays the reference implementation throughout.
+The next implementation step is v1.10: `NativeTensor` view ops —
+`reshape`, `transpose`, `T`, `narrow` (and `contiguous`) — returning
+borrowing wrappers that share storage, per the design doc. A further-out
+milestone might consider wiring kernels into Tensor behind a flag. CUDA
+experiments remain a separate future branch. The Python framework stays
+the reference implementation throughout.

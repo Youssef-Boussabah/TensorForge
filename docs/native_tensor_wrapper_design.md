@@ -243,14 +243,17 @@ acceptance criteria for v1.8+ work, not tests to add now):
 The wrapper is built in small, tested milestones, mirroring how the
 runtime beneath it grew:
 
-- **v1.8 — minimal wrapper:** constructors (`from_array`, `zeros`,
-  `full`), metadata (`shape`, `strides`, `ndim`, `numel`), `to_numpy`,
-  and the full lifetime story (`close`, context manager, ownership
-  flag). No compute, no views yet. This is the next recommended step.
-- **v1.9 — compute ops:** `relu`, `add`, `subtract`, `multiply`,
+- **v1.8 — minimal wrapper (done):** constructors (`from_array`,
+  `zeros`, `full`), metadata (`shape`, `strides`, `ndim`, `numel`,
+  `contiguous`), `to_numpy`, and the full lifetime story (`close`,
+  context manager, ownership flag). No compute, no views.
+- **v1.9 — compute ops (done):** `relu`, `add`, `subtract`, `multiply`,
   `matmul`, each returning a new owning wrapper, with the exact-shape
-  and error behavior of section 7.
-- **v1.10 — view ops:** `reshape`, `transpose`, `T`, `narrow`,
+  and error behavior of section 7 (clear `TypeError` naming
+  `NativeTensor` for non-wrapper operands, `RuntimeError` for closed
+  operands, `ValueError` for shape/2-D mismatch). No operator overloads
+  yet.
+- **v1.10 — view ops (next):** `reshape`, `transpose`, `T`, `narrow`,
   `contiguous`, returning borrowing wrappers that share storage
   correctly.
 - **v1.11 — docs and examples:** a walkthrough and a small runnable
