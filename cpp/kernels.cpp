@@ -96,6 +96,26 @@ double tf_op_add(double x, double y) { return x + y; }
 double tf_op_subtract(double x, double y) { return x - y; }
 double tf_op_multiply(double x, double y) { return x * y; }
 
+// Contiguous fast path: when a logical view's strides are exactly the
+// row-major strides for its shape, the odometer's source position
+// sequence degenerates to offset, offset+1, ..., offset+numel-1. So a
+// flat, index-free pointer loop reads the same elements in the same
+// order as tf_core_binary above — bit-for-bit identical results, no
+// per-axis carry loop and no counter allocation. Nonzero offsets are
+// handled by starting from data + offset (a row slice keeps row-major
+// strides but shifts the offset). Scalars fall out as numel == 1.
+void tf_core_binary_contiguous(
+    const void* a_handle, const void* b_handle, void* dst_handle,
+    int64_t numel, int64_t a_offset, int64_t b_offset, TfBinaryOp op
+) {
+    const double* a = static_cast<const TfStorage*>(a_handle)->data + a_offset;
+    const double* b = static_cast<const TfStorage*>(b_handle)->data + b_offset;
+    double* dst = static_cast<TfStorage*>(dst_handle)->data;
+    for (int64_t i = 0; i < numel; ++i) {
+        dst[i] = op(a[i], b[i]);
+    }
+}
+
 // Walk two strided sources in lockstep (same logical shape, separate
 // strides/offsets) and write row-major contiguous output.
 void tf_core_binary(
@@ -168,6 +188,20 @@ TF_EXPORT void tf_core_relu(
     delete[] counter;
 }
 
+// Contiguous fast path for relu: a flat pointer loop equivalent to
+// tf_core_relu on a contiguous input, starting at data + offset. Same
+// reasoning as tf_core_binary_contiguous; scalars are numel == 1.
+TF_EXPORT void tf_core_relu_contiguous(
+    const void* src_handle, void* dst_handle,
+    int64_t numel, int64_t offset
+) {
+    const double* src = static_cast<const TfStorage*>(src_handle)->data + offset;
+    double* dst = static_cast<TfStorage*>(dst_handle)->data;
+    for (int64_t i = 0; i < numel; ++i) {
+        dst[i] = src[i] > 0.0 ? src[i] : 0.0;
+    }
+}
+
 TF_EXPORT void tf_core_add(
     const void* a, const void* b, void* dst,
     const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
@@ -193,6 +227,31 @@ TF_EXPORT void tf_core_multiply(
 ) {
     tf_core_binary(a, b, dst, shape, a_strides, b_strides,
                    a_offset, b_offset, ndim, tf_op_multiply);
+}
+
+// Contiguous fast-path binary kernels: flat, index-free loops used when
+// both operands are row-major contiguous. Each is the exact equivalent
+// of its odometer counterpart above (same op, same element order),
+// selected on the Python side by the contiguity metadata.
+TF_EXPORT void tf_core_add_contiguous(
+    const void* a, const void* b, void* dst,
+    int64_t numel, int64_t a_offset, int64_t b_offset
+) {
+    tf_core_binary_contiguous(a, b, dst, numel, a_offset, b_offset, tf_op_add);
+}
+
+TF_EXPORT void tf_core_subtract_contiguous(
+    const void* a, const void* b, void* dst,
+    int64_t numel, int64_t a_offset, int64_t b_offset
+) {
+    tf_core_binary_contiguous(a, b, dst, numel, a_offset, b_offset, tf_op_subtract);
+}
+
+TF_EXPORT void tf_core_multiply_contiguous(
+    const void* a, const void* b, void* dst,
+    int64_t numel, int64_t a_offset, int64_t b_offset
+) {
+    tf_core_binary_contiguous(a, b, dst, numel, a_offset, b_offset, tf_op_multiply);
 }
 
 // Matrix multiplication over tensor cores: out (m x p, contiguous

@@ -543,3 +543,161 @@ def test_backend_info_advertises_tensor_core_and_kernels_stay_kernels():
     assert info["tensor_core"] == "NativeTensorCore"
     for name in ("NativeStorage", "NativeTensorView", "NativeTensorCore"):
         assert name not in cpp.list_kernels()
+
+
+# ---------------------------------------------------------------------------
+# v1.14: contiguous elementwise fast path
+#
+# Contiguous relu/add/subtract/multiply take a flat, index-free kernel;
+# strided views keep the generic odometer kernel. The two paths must be
+# bit-for-bit equal, so these tests use exact equality (np.array_equal),
+# never a tolerance. There is no assertion about *which* kernel ran (the
+# choice is an internal traversal detail) — correctness of both the
+# contiguous and the non-contiguous case is what pins the behavior.
+# ---------------------------------------------------------------------------
+
+
+BINARY_OPS = (
+    ("add", np.add),
+    ("subtract", np.subtract),
+    ("multiply", np.multiply),
+)
+
+
+def _noncontiguous_same_values(x):
+    """An owning core plus a non-contiguous view over it that
+    materializes to exactly ``x``. Storing x.T contiguously and
+    transposing the view back yields row-major-mismatched strides (so the
+    generic odometer path runs) over the original values. The owner is
+    returned too and must be kept alive while the view is used."""
+    owner = cpp.NativeTensorCore.from_array(np.ascontiguousarray(x.T))
+    view = owner.T
+    assert view.contiguous is False
+    assert np.array_equal(view.to_numpy(), x)
+    return owner, view
+
+
+def test_relu_contiguous_fast_path_matches_numpy_exactly():
+    rng = np.random.default_rng(140)
+    x = rng.normal(size=(4, 5))
+    with cpp.NativeTensorCore.from_array(x) as a:
+        assert a.contiguous is True
+        result = a.relu()
+        assert result.contiguous is True
+        assert np.array_equal(result.to_numpy(), np.maximum(x, 0.0))
+        result.close()
+
+
+@pytest.mark.parametrize("method,numpy_op", BINARY_OPS)
+def test_binary_contiguous_fast_path_matches_numpy_exactly(method, numpy_op):
+    rng = np.random.default_rng(141)
+    x = rng.normal(size=(4, 5))
+    y = rng.normal(size=(4, 5))
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        assert a.contiguous and b.contiguous
+        result = getattr(a, method)(b)
+        assert result.contiguous is True
+        assert np.array_equal(result.to_numpy(), numpy_op(x, y))
+        result.close()
+
+
+def test_relu_fast_path_equals_generic_path_on_identical_values():
+    # The fast path (contiguous input) and the generic odometer path
+    # (a strided view with the same values) must agree exactly.
+    rng = np.random.default_rng(142)
+    x = rng.normal(size=(3, 4))
+    with cpp.NativeTensorCore.from_array(x) as contiguous:
+        owner, strided = _noncontiguous_same_values(x)
+        fast = contiguous.relu().to_numpy()
+        generic = strided.relu().to_numpy()
+        assert np.array_equal(fast, generic)
+        assert np.array_equal(fast, np.maximum(x, 0.0))
+        owner.close()
+
+
+@pytest.mark.parametrize("method,numpy_op", BINARY_OPS)
+def test_binary_fast_path_equals_generic_path_on_identical_values(method, numpy_op):
+    rng = np.random.default_rng(143)
+    x = rng.normal(size=(3, 4))
+    y = rng.normal(size=(3, 4))
+    with cpp.NativeTensorCore.from_array(x) as ca, cpp.NativeTensorCore.from_array(y) as cb:
+        owner_a, sa = _noncontiguous_same_values(x)
+        owner_b, sb = _noncontiguous_same_values(y)
+        fast = getattr(ca, method)(cb).to_numpy()
+        generic = getattr(sa, method)(sb).to_numpy()
+        assert np.array_equal(fast, generic)
+        assert np.array_equal(fast, numpy_op(x, y))
+        owner_a.close()
+        owner_b.close()
+
+
+def test_fast_path_handles_nonzero_offset_contiguous_row_slice():
+    # narrow(0, ...) keeps row-major strides but shifts the offset, so
+    # the result is contiguous with a nonzero offset — the fast path must
+    # start from data + offset, not offset 0.
+    rng = np.random.default_rng(144)
+    x = rng.normal(size=(5, 3))
+    with cpp.NativeTensorCore.from_array(x) as a:
+        rows = a.narrow(0, 1, 3)  # x[1:4], contiguous, offset 3
+        assert rows.contiguous is True
+        assert rows.offset == 3
+        assert np.array_equal(rows.relu().to_numpy(), np.maximum(x[1:4], 0.0))
+        other = a.narrow(0, 2, 3)  # x[2:5], contiguous, offset 6
+        assert other.contiguous is True and other.offset == 6
+        for method, numpy_op in BINARY_OPS:
+            got = getattr(rows, method)(other).to_numpy()
+            assert np.array_equal(got, numpy_op(x[1:4], x[2:5]))
+
+
+def test_fast_path_on_scalar_and_size_one_dimensions():
+    # Scalars (numel == 1) and size-1 dimensions are contiguous by the
+    # exact row-major stride test, so they exercise the flat kernel.
+    with cpp.NativeTensorCore.full((), -3.0) as s, cpp.NativeTensorCore.full((), 5.0) as t:
+        assert s.contiguous and t.contiguous
+        assert float(s.relu().to_numpy()) == 0.0
+        assert float(s.add(t).to_numpy()) == 2.0
+        assert float(s.subtract(t).to_numpy()) == -8.0
+        assert float(s.multiply(t).to_numpy()) == -15.0
+    x = np.array([[1.0, -2.0, 3.0, -4.0]])   # (1, 4)
+    y = np.array([[5.0, 6.0, -7.0, 8.0]])
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        assert a.contiguous and b.contiguous
+        assert np.array_equal(a.relu().to_numpy(), np.maximum(x, 0.0))
+        assert np.array_equal(a.add(b).to_numpy(), x + y)
+    col_x = x.reshape(4, 1)                   # (4, 1)
+    col_y = y.reshape(4, 1)
+    with cpp.NativeTensorCore.from_array(col_x) as a, cpp.NativeTensorCore.from_array(col_y) as b:
+        assert a.contiguous and b.contiguous
+        assert np.array_equal(a.multiply(b).to_numpy(), col_x * col_y)
+
+
+def test_generic_fallback_still_serves_noncontiguous_views():
+    # The odometer path is retained: transposed and inner-narrowed views
+    # are non-contiguous and must keep matching NumPy exactly.
+    rng = np.random.default_rng(145)
+    x = rng.normal(size=(3, 4))
+    y = rng.normal(size=(4, 3))
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        assert a.T.contiguous is False
+        assert np.array_equal(a.T.relu().to_numpy(), np.maximum(x.T, 0.0))
+        for method, numpy_op in BINARY_OPS:
+            # transposed view (non-contiguous) against a contiguous tensor
+            assert np.array_equal(getattr(a.T, method)(b).to_numpy(), numpy_op(x.T, y))
+        inner = a.narrow(1, 1, 2)  # narrowing an inner axis -> non-contiguous
+        assert inner.contiguous is False
+        assert np.array_equal(inner.relu().to_numpy(), np.maximum(x[:, 1:3], 0.0))
+
+
+def test_fast_path_output_is_independent_and_inputs_unmutated():
+    # Same ownership guarantee as the generic path: the flat kernel
+    # writes a fresh contiguous output that aliases neither input.
+    x = np.array([[1.0, -2.0], [3.0, 4.0]])
+    y = np.array([[5.0, 6.0], [-7.0, 8.0]])
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        result = a.add(b)
+        assert result.storage is not a.storage and result.storage is not b.storage
+        result.storage.fill(0.0)  # mutating the output touches no input
+        assert np.array_equal(a.to_numpy(), x)
+        assert np.array_equal(b.to_numpy(), y)
+        assert np.array_equal(a.relu().to_numpy(), np.maximum(x, 0.0))
+        assert np.array_equal(a.to_numpy(), x)  # relu didn't mutate self

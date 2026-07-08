@@ -11,7 +11,10 @@ metadata-only view ops (`reshape`/`transpose`/`T`/`narrow`) plus
 `contiguous_copy` in v1.10; v1.11 added a runnable example and a
 metadata-only `repr`; v1.12 added honest benchmark characterization of
 the wrapper's overhead (see section 9 and
-[backend_experiments.md](backend_experiments.md)). The sections below
+[backend_experiments.md](backend_experiments.md)). v1.14 added a
+contiguous elementwise fast path **below** the wrapper, in
+`NativeTensorCore`, so `NativeTensor` inherited the speedup with no
+code change of its own. The sections below
 remain the design of record — the plan the code follows — with the
 staged status tracked in section 9.
 The name `NativeTensor` was kept (the `ExperimentalNativeTensor`
@@ -291,9 +294,18 @@ runtime beneath it grew:
   the speedup automatically once the kernels improve. The v1.12
   benchmarks already confirmed the wrapper is not the bottleneck, which
   is exactly why the fix belongs one layer down.
-- **v1.14 — contiguous fast-path implementation (next):** build the flat
-  kernels and the contiguity dispatch in `NativeTensorCore`, proven
-  bit-for-bit equal to the generic path.
+- **v1.14 — contiguous fast-path implementation (done):** flat,
+  index-free kernels (`tf_core_relu_contiguous` and the
+  add/subtract/multiply variants) and the contiguity dispatch in
+  `NativeTensorCore.relu` / `_binary_core_op`, proven bit-for-bit equal
+  to the retained generic odometer path. The wrapper was **not edited**:
+  `NativeTensor` inherits the fast path because it delegates to the core
+  beneath it, confirming the v1.12/v1.13 finding that the bottleneck was
+  the runtime's traversal, not the wrapper.
+- **v1.15 — benchmark impact report (next):** run the existing suite and
+  tabulate honestly how far the contiguous rows moved toward the
+  raw-buffer loop versus the retained strided-view rows — measurement,
+  no performance assertions.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision

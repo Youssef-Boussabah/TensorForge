@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.13 (current)
+## C++ backend — v1.14 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -379,6 +379,49 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Contiguous fast-path — implementation (v1.14)
+
+v1.14 implements the fast path the v1.13 document designed. Beside the
+generic odometer kernels, `cpp/kernels.cpp` now carries flat, index-free
+loops — `tf_core_relu_contiguous`, `tf_core_add_contiguous`,
+`tf_core_subtract_contiguous`, `tf_core_multiply_contiguous` — that take
+`numel` and the operand offsets instead of shape/strides.
+`NativeTensorCore.relu` and `_binary_core_op` select them when every
+operand is row-major contiguous (the output is always freshly allocated
+contiguous storage); if any input is a strided view, the existing
+generic odometer kernel runs unchanged. The choice is driven by the
+`contiguous` flag already computed at view construction, so it costs
+nothing to make.
+
+The two paths are **bit-for-bit equivalent** — for a contiguous tensor
+the odometer's source sequence is exactly `offset, offset+1, …`, so the
+flat loop reads the same elements in the same order, with no
+reassociation, FMA, or SIMD horizontal reductions that could change
+float64 rounding. Nonzero offsets are handled by starting from
+`data + offset`, so a contiguous row slice (`narrow` along axis 0) takes
+the fast path too. Scalars and size-1 dimensions fall out naturally as
+`numel == 1` (or a plain contiguous walk). The v1.14 tests assert exact
+equality (`np.array_equal`) against both NumPy and the generic path on
+value-identical non-contiguous inputs; transposed and inner-narrowed
+views keep matching NumPy through the retained odometer path.
+
+Nothing above `NativeTensorCore` changed: `NativeTensor` inherits the
+fast path with **no wrapper edits**, exactly as the design predicted
+(the v1.12 benchmarks had already shown the wrapper was not the
+bottleneck). Semantics are untouched — exact-shape only, no
+broadcasting, no reductions, no autograd, no `Tensor` integration, no
+CUDA — and the public kernel lists (`list_kernels()`,
+`tensor_core_kernels`) are unchanged, since the new kernels are internal
+traversal variants, not new operations.
+
+The **performance impact is a benchmark question, not a claim made
+here.** Running `benchmarks/cpp_backend.py` shows the contiguous
+`tensor core` / `native tensor` elementwise rows moving toward the flat
+`cpp raw buffer` row while the `… (view)` rows stay on the odometer —
+but exact numbers are hardware-dependent and nothing asserts a speedup.
+An honest, tabulated impact report over the same suite is the next
+milestone, **v1.15**.
+
 ### Contiguous fast-path — design (v1.13)
 
 v1.13 is **design-only**: no kernels change. It follows directly from the
@@ -576,11 +619,15 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 ## What might come next
 
-The next step is v1.14: **implementing** the contiguous elementwise fast
-path designed in v1.13 — a flat, index-free loop for contiguous
-`relu`/`add`/`subtract`/`multiply`, with the generic odometer retained
-for strided views, bit-for-bit equivalent and semantics unchanged. That
-is the first step of Phase A (native CPU runtime); broadcasting,
-reductions, and dtype/device metadata follow. Still no Tensor
-integration. CUDA experiments remain a separate future branch. The Python
-framework stays the reference implementation throughout.
+The contiguous elementwise fast path is now **implemented** (v1.14):
+flat, index-free loops for contiguous `relu`/`add`/`subtract`/`multiply`,
+the generic odometer retained for strided views, bit-for-bit equivalent
+with semantics unchanged. The next step is **v1.15 — a benchmark impact
+report**: running the existing suite and tabulating, honestly, how far
+the contiguous rows moved toward the raw-buffer loop against the retained
+`… (view)` rows, with no performance assertions and the usual
+hardware-dependent caveats. After that, the rest of Phase A (native CPU
+runtime) continues — broadcasting, reductions, and dtype/device metadata.
+Still no Tensor integration. CUDA experiments remain a separate future
+branch. The Python framework stays the reference implementation
+throughout.

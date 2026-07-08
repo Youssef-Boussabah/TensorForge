@@ -78,19 +78,27 @@ The Python line is done; what remains is expansion on its own terms:
   `relu`/`add`/`subtract`/`multiply`, the odometer kept for strided
   views, placed in the `NativeTensorCore`/native-kernel layer so
   `NativeTensor` inherits it, bit-for-bit equivalent
-  ([native_contiguous_fast_path_design.md](native_contiguous_fast_path_design.md)).
-  The next step there is **Advanced C++ v1.14 — NativeTensorCore
-  contiguous elementwise fast path**: implementing that design and
-  proving it equal to the generic path. CUDA/GPU experiments are still
-  entirely future work. The Python framework stays the reference
-  implementation.
+  ([native_contiguous_fast_path_design.md](native_contiguous_fast_path_design.md))
+  — and now **implemented** (v1.14): flat, index-free kernels beside the
+  generic odometer ones, selected when every operand is row-major
+  contiguous (nonzero offsets and scalars included) and falling back to
+  the retained odometer path for strided views, proven bit-for-bit equal
+  to it; `NativeTensor` inherited the change with no wrapper edits, and
+  no broadcasting, reductions, autograd, `Tensor` integration, or CUDA
+  came with it. The next step there is **Advanced C++ v1.15 — a benchmark
+  impact report**: running the existing suite and tabulating, honestly,
+  how far the contiguous rows moved toward the raw-buffer loop versus the
+  retained strided-view rows, with no performance assertions. CUDA/GPU
+  experiments are still entirely future work. The Python framework stays
+  the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
   - **Phase A — native CPU runtime.** A1: the contiguous elementwise
-    fast path (design done in v1.13, implementation v1.14). A2:
-    broadcasting for elementwise ops. A3: reductions (sum/mean/max). A4:
-    dtype and device metadata beyond float64-CPU-only.
+    fast path (design done in v1.13, implemented in v1.14; v1.15 reports
+    its benchmark impact). A2: broadcasting for elementwise ops. A3:
+    reductions (sum/mean/max). A4: dtype and device metadata beyond
+    float64-CPU-only.
   - **Then** native autograd, a native training stack, the CUDA runtime,
     an AMP / Tensor Core path, Transformer / text examples, distributed
     / DDP, and a final benchmark / profiling / docs polish.

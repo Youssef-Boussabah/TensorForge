@@ -1,9 +1,20 @@
 # Native contiguous fast-path — design
 
-This is a **design document, not an implementation.** It specifies a
-contiguous fast path for the native elementwise kernels
-(`relu`/`add`/`subtract`/`multiply`) in the `NativeTensorCore` layer. No
-kernels change in this milestone (v1.13); the implementation is v1.14.
+This began as a **design document** (written in v1.13, ahead of any
+code) specifying a contiguous fast path for the native elementwise
+kernels (`relu`/`add`/`subtract`/`multiply`) in the `NativeTensorCore`
+layer. **Status: implemented in v1.14** exactly as specified below —
+flat, index-free kernels (`tf_core_relu_contiguous`,
+`tf_core_add_contiguous`, `tf_core_subtract_contiguous`,
+`tf_core_multiply_contiguous`) beside the generic odometer kernels, with
+`NativeTensorCore.relu` / `_binary_core_op` choosing the fast path when
+every operand is contiguous and the generic odometer path otherwise. The
+generic kernels are untouched and remain the reference/fallback; the two
+paths are bit-for-bit equal (§4), which the v1.14 tests lock down (§9).
+`NativeTensor` inherited the change with no wrapper edits. No
+broadcasting, reductions, autograd, `Tensor` integration, or CUDA were
+added, and performance is measured by the benchmark suite, not claimed
+here (§10). The sections below remain the design of record.
 
 For where this sits, see [backend_experiments.md](backend_experiments.md)
 (the native runtime and benchmarks) and
@@ -246,7 +257,9 @@ confirm or refute.
 This is the first optimization step of **Phase A — native CPU runtime**,
 which precedes any autograd or device work:
 
-- **A1 — contiguous elementwise fast path** (this design → v1.14).
+- **A1 — contiguous elementwise fast path** (this design → v1.14,
+  now implemented; the next step is v1.15, an honest benchmark impact
+  report over the same suite).
 - **A2 — broadcasting** (shape alignment for elementwise ops).
 - **A3 — reductions** (sum/mean/max and friends, with their own
   traversal and numerical-order considerations).

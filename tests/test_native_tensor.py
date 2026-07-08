@@ -380,6 +380,29 @@ def test_closing_owner_invalidates_view_data_access():
 
 
 @needs_native
+def test_wrapper_inherits_contiguous_fast_path():
+    """The v1.14 contiguous fast path lives below the wrapper in
+    NativeTensorCore, so NativeTensor gets it with no code change. Both a
+    plain contiguous tensor and a nonzero-offset contiguous view (a
+    ``narrow`` along axis 0) compute correctly through the wrapper — the
+    same values whether the fast or generic kernel runs beneath."""
+    x = np.arange(15.0).reshape(5, 3) - 7.0
+    owner = NativeTensor.from_array(x)
+    other = NativeTensor.from_array(x)
+    # Plain contiguous operands.
+    assert np.array_equal(owner.relu().to_numpy(), np.maximum(x, 0.0))
+    assert np.array_equal(owner.add(other).to_numpy(), x + x)
+    # Nonzero-offset contiguous row slices still land on the fast path.
+    rows = owner.narrow(0, 1, 3)      # x[1:4], contiguous, offset != 0
+    rows2 = other.narrow(0, 1, 3)
+    assert rows.contiguous is True
+    assert np.array_equal(rows.relu().to_numpy(), np.maximum(x[1:4], 0.0))
+    assert np.array_equal(rows.multiply(rows2).to_numpy(), x[1:4] * x[1:4])
+    for tensor in (rows, rows2, owner, other):
+        tensor.close()
+
+
+@needs_native
 def test_compute_works_on_views():
     x = np.array([[1.0, -2.0, 3.0], [4.0, 5.0, -6.0]])
     owner = NativeTensor.from_array(x)

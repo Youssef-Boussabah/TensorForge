@@ -112,4 +112,14 @@ for contiguous inputs, the odometer retained for strided views, living in
 the `NativeTensorCore`/native-kernel layer so `NativeTensor` inherits it,
 bit-for-bit equivalent with unchanged semantics
 ([native_contiguous_fast_path_design.md](native_contiguous_fast_path_design.md));
-no code ships. CUDA/GPU experiments remain future work.
+no code ships. **v1.14** implements that fast path: flat, index-free
+kernels (`tf_core_relu_contiguous` and add/subtract/multiply variants)
+sit beside the generic odometer kernels, and `NativeTensorCore.relu` /
+`_binary_core_op` pick them when every operand is row-major contiguous
+(nonzero offsets and scalars included), falling back to the retained
+odometer path for any strided view — proven bit-for-bit equal to it and
+to NumPy. `NativeTensor` inherited the change with no wrapper edits, and
+no broadcasting, reductions, autograd, `Tensor` integration, or CUDA
+were added; performance is left to the benchmark suite, not claimed. The
+next step is v1.15, an honest benchmark impact report. CUDA/GPU
+experiments remain future work.

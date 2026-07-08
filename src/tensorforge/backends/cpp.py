@@ -118,6 +118,24 @@ def _load_library():
             ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
         ]
         kernel.restype = None
+    # Contiguous fast-path kernels (v1.14): flat, index-free loops that
+    # take numel + offsets instead of shape/strides. Selected by
+    # NativeTensorCore when the operands are row-major contiguous.
+    library.tf_core_relu_contiguous.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64,
+    ]
+    library.tf_core_relu_contiguous.restype = None
+    for name in (
+        "tf_core_add_contiguous",
+        "tf_core_subtract_contiguous",
+        "tf_core_multiply_contiguous",
+    ):
+        kernel = getattr(library, name)
+        kernel.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
+            ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+        ]
+        kernel.restype = None
     library.tf_core_matmul.argtypes = [
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
     ] + [ctypes.c_int64] * 9
@@ -508,9 +526,21 @@ class NativeTensorCore:
     def relu(self):
         """max(x, 0) elementwise, computed by the native kernel reading
         this tensor's (possibly strided) view directly. Returns a new
-        row-major contiguous NativeTensorCore."""
+        row-major contiguous NativeTensorCore.
+
+        A contiguous input takes the flat fast-path kernel (a plain
+        pointer loop); a strided view takes the generic odometer kernel.
+        Both produce bit-for-bit identical results — the fast path is
+        purely a traversal choice."""
         self._require_open()
         out = NativeTensorCore.zeros(self.shape)
+        if self.contiguous:
+            self._storage._lib.tf_core_relu_contiguous(
+                self._storage._require_open(),
+                out._storage._require_open(),
+                self.numel, self.offset,
+            )
+            return out
         shape_arr, strides_arr = self._layout_arrays()
         self._storage._lib.tf_core_relu(
             self._storage._require_open(),
@@ -523,7 +553,13 @@ class NativeTensorCore:
         """Shared plumbing for add/subtract/multiply over tensor cores:
         both strided inputs are read in lockstep by the native kernel,
         which writes a fresh contiguous output. Shapes must match
-        exactly — no broadcasting."""
+        exactly — no broadcasting.
+
+        When both operands are row-major contiguous the flat fast-path
+        kernel (``<kernel_name>_contiguous``) runs a plain pointer loop
+        over numel; if either is a strided view the generic odometer
+        kernel runs instead. The two paths are bit-for-bit equivalent —
+        contiguity only selects the traversal, never the result."""
         self._require_open()
         if not isinstance(other, NativeTensorCore):
             raise TypeError(
@@ -537,6 +573,14 @@ class NativeTensorCore:
                 f"got {self.shape} and {other.shape}"
             )
         out = NativeTensorCore.zeros(self.shape)
+        if self.contiguous and other.contiguous:
+            getattr(self._storage._lib, kernel_name + "_contiguous")(
+                self._storage._require_open(),
+                other._storage._require_open(),
+                out._storage._require_open(),
+                self.numel, self.offset, other.offset,
+            )
+            return out
         shape_arr, a_strides = self._layout_arrays()
         b_strides = np.asarray(other.strides, dtype=np.int64)
         getattr(self._storage._lib, kernel_name)(
