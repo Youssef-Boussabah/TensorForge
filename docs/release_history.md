@@ -60,6 +60,9 @@ native kernels reading strided views directly. **v1.3** completed the
 compute set with TensorCore matmul over strided views. **v1.4**
 upgraded the benchmarks into a suite covering NumPy, the raw-buffer
 kernels, and the TensorCore runtime side by side — overheads
-included, honestly (see
+included, honestly. **v1.5** added the backend dispatch design
+([dispatch_design.md](dispatch_design.md)) and Stage 1 of it: an
+explicit backend API (`get_backend("numpy"|"native")`) with no
+implicit routing (see
 [backend_experiments.md](backend_experiments.md)). CUDA/GPU
 experiments remain future work.

@@ -13,6 +13,7 @@ DOCS = (
     "release_history.md",
     "project_summary.md",
     "backend_experiments.md",
+    "dispatch_design.md",
 )
 
 EXAMPLE_FILES = (

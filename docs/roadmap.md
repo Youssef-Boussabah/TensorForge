@@ -44,13 +44,17 @@ The Python line is done; what remains is expansion on its own terms:
   the two with native contiguous materialization, and NativeTensorCore
   composing it all into the first native tensor runtime object with
   metadata-only view operations (reshape, transpose, narrow), native
-  compute over strided views (elementwise ops and matmul), and a
+  compute over strided views (elementwise ops and matmul), a
   benchmark suite measuring NumPy, raw-buffer kernels, and the
-  TensorCore runtime side by side. The next step there is the backend
-  dispatch design
-  (see [backend_experiments.md](backend_experiments.md)). CUDA/GPU
-  experiments are still entirely future work. The Python framework
-  stays the reference implementation.
+  TensorCore runtime side by side, and a backend dispatch design plus
+  Stage 1 of it — an explicit `get_backend("numpy"|"native")` API with
+  no implicit routing (see
+  [backend_experiments.md](backend_experiments.md) and
+  [dispatch_design.md](dispatch_design.md)). The next step there is
+  Stage 2: an experimental forward-only native tensor wrapper, and
+  explicit conversion APIs between NumPy-backed Tensors and native
+  tensors. CUDA/GPU experiments are still entirely future work. The
+  Python framework stays the reference implementation.
 - **A larger synthetic image example** — more classes, bigger images,
   still dependency-free.
 - **More docs** — deeper walkthroughs of individual layers, if the

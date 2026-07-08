@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.4 (current)
+## C++ backend — v1.5 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -278,6 +278,41 @@ CI does not rely on that skip: the GitHub Actions workflow builds the
 backend from source on every run and smoke-tests the compiled kernel
 with a hard-failing check before running the suite — so a broken
 build or kernel fails CI instead of silently skipping.
+
+### Explicit backend API (v1.5)
+
+The safe, user-facing entry point for backend experiments: name a
+backend, get its object. Nothing selects a backend implicitly, and
+nothing here touches `tensorforge.Tensor`.
+
+```python
+from tensorforge.backends import get_backend, available_backends
+
+available_backends()             # ('numpy', 'native')
+numpy = get_backend("numpy")
+native = get_backend("native")
+
+numpy.add([1.0, 2.0], [3.0, 4.0])          # a float64 NumPy array
+t = native.tensor_from_array([[1.0, 2.0]]) # a NativeTensorCore
+native.matmul(t, t.T)                       # -> NativeTensorCore
+```
+
+Both backends expose the same small surface — `name`, `available()`,
+`backend_info()`, `tensor_from_array`, `zeros`, `full`, `add`,
+`relu`, `matmul`. The NumPy backend is always available and follows
+NumPy semantics; the native backend is constructible whether or not
+the compiled library is built (`available()` reports which), consumes
+and produces `NativeTensorCore` objects, and requires exact shapes.
+`tensor_from_array` is the explicit conversion boundary from
+NumPy/Python data — the native backend never silently accepts a
+`tensorforge.Tensor`.
+
+This is Stage 1 of a longer plan: how (and whether) backends should
+eventually meet `tensorforge.Tensor`, and the risks that gate each
+step, are laid out in [dispatch_design.md](dispatch_design.md). The
+governing rule is **no implicit fallback**: an unavailable native
+operation raises with build instructions; it never quietly falls back
+to NumPy.
 
 ### Current limitations
 
