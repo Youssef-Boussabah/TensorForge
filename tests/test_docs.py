@@ -14,6 +14,7 @@ DOCS = (
     "project_summary.md",
     "backend_experiments.md",
     "dispatch_design.md",
+    "native_tensor_wrapper_design.md",
 )
 
 EXAMPLE_FILES = (

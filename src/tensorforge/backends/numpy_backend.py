@@ -25,8 +25,20 @@ class NumpyBackend:
         }
 
     def tensor_from_array(self, values):
-        """A contiguous float64 NumPy array copy of ``values``."""
+        """The explicit conversion boundary in: a float64 NumPy array
+        copy of ``values``."""
         return np.array(values, dtype=np.float64)
+
+    def to_numpy(self, value):
+        """The explicit conversion boundary out: a fresh float64 NumPy
+        array copy of ``value``.
+
+        For this backend a tensor already *is* a NumPy array, so this
+        is (deliberately) the same copy as ``tensor_from_array`` — the
+        symmetry is the point: every backend exits through to_numpy,
+        and the copy keeps callers from relying on shared mutable
+        state."""
+        return np.array(value, dtype=np.float64)
 
     def zeros(self, shape):
         return np.zeros(shape, dtype=np.float64)

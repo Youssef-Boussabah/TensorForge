@@ -6,9 +6,10 @@ built; operations require it and raise the ``cpp`` module's helpful
 ImportError (with build instructions) at call time if it is missing.
 
 Operations produce and consume NativeTensorCore objects. Conversion
-from NumPy/Python data is explicit, through ``tensor_from_array`` —
-the native backend never silently accepts a tensorforge.Tensor. See
-docs/dispatch_design.md.
+is explicit at both boundaries: ``tensor_from_array`` copies
+NumPy/Python data *into* native storage, ``to_numpy`` materializes a
+native value back *out*. The native backend never silently accepts a
+tensorforge.Tensor. See docs/dispatch_design.md.
 """
 
 from tensorforge.backends import cpp
@@ -24,9 +25,17 @@ class NativeBackend:
         return cpp.backend_info()
 
     def tensor_from_array(self, values):
-        """The explicit conversion boundary: NumPy/Python data in, a
+        """The explicit conversion boundary in: NumPy/Python data in, a
         new NativeTensorCore out (a copy — no hidden aliasing)."""
         return cpp.NativeTensorCore.from_array(values)
+
+    def to_numpy(self, value):
+        """The explicit conversion boundary out: a NativeTensorCore in,
+        a fresh float64 NumPy array out (materialized, no shared state).
+
+        Rejects anything that is not a NativeTensorCore — including a
+        tensorforge.Tensor — with a clear TypeError."""
+        return self._require_core(value, "to_numpy").to_numpy()
 
     def zeros(self, shape):
         return cpp.NativeTensorCore.zeros(shape)

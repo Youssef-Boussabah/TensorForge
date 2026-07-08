@@ -48,13 +48,20 @@ The Python line is done; what remains is expansion on its own terms:
   benchmark suite measuring NumPy, raw-buffer kernels, and the
   TensorCore runtime side by side, and a backend dispatch design plus
   Stage 1 of it — an explicit `get_backend("numpy"|"native")` API with
-  no implicit routing (see
+  no implicit routing and a polished conversion contract
+  (`tensor_from_array` in, `to_numpy` out; see
   [backend_experiments.md](backend_experiments.md) and
-  [dispatch_design.md](dispatch_design.md)). The next step there is
-  Stage 2: an experimental forward-only native tensor wrapper, and
-  explicit conversion APIs between NumPy-backed Tensors and native
-  tensors. CUDA/GPU experiments are still entirely future work. The
-  Python framework stays the reference implementation.
+  [dispatch_design.md](dispatch_design.md)). Stage 2 — a forward-only
+  native tensor wrapper over `NativeTensorCore` — is now **designed**
+  (purpose, non-goals, ownership/lifetime, conversion contract, minimal
+  API, testing plan, and a staged build sequence; see
+  [native_tensor_wrapper_design.md](native_tensor_wrapper_design.md)),
+  though not yet implemented. The next step there is v1.8: the minimal
+  wrapper — constructors, metadata, and `to_numpy` only — with compute
+  and view ops following in later milestones, all before any conversion
+  bridge to NumPy-backed Tensors. CUDA/GPU experiments are still
+  entirely future work. The Python framework stays the reference
+  implementation.
 - **A larger synthetic image example** — more classes, bigger images,
   still dependency-free.
 - **More docs** — deeper walkthroughs of individual layers, if the

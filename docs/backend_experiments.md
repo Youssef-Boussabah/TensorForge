@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.5 (current)
+## C++ backend — v1.7 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -298,14 +298,26 @@ native.matmul(t, t.T)                       # -> NativeTensorCore
 ```
 
 Both backends expose the same small surface — `name`, `available()`,
-`backend_info()`, `tensor_from_array`, `zeros`, `full`, `add`,
-`relu`, `matmul`. The NumPy backend is always available and follows
-NumPy semantics; the native backend is constructible whether or not
-the compiled library is built (`available()` reports which), consumes
-and produces `NativeTensorCore` objects, and requires exact shapes.
-`tensor_from_array` is the explicit conversion boundary from
-NumPy/Python data — the native backend never silently accepts a
-`tensorforge.Tensor`.
+`backend_info()`, `tensor_from_array`, `to_numpy`, `zeros`, `full`,
+`add`, `relu`, `matmul`. The NumPy backend is always available and
+follows NumPy semantics; the native backend is constructible whether
+or not the compiled library is built (`available()` reports which),
+consumes and produces `NativeTensorCore` objects, and requires exact
+shapes.
+
+**Conversion boundaries (v1.6).** Data crosses a backend only by
+explicit call. `tensor_from_array` *enters* a backend (Python/NumPy
+data → a backend-native value, copied); `to_numpy` *exits* it (a
+backend-native value → a fresh float64 NumPy array, materialized).
+Copies are visible in both directions, so nothing accidentally aliases
+native storage, and the native backend rejects anything that is not a
+`NativeTensorCore` — including a `tensorforge.Tensor` — with a
+consistent TypeError across every operation. This also makes the
+Stage-1 shape asymmetry explicit rather than hidden: the NumPy
+backend's `add` broadcasts (a NumPy array already is one), while the
+native backend's `add` requires exact shapes and fails clearly
+otherwise. Aligning those semantics is a future design item, not a
+conversion detail.
 
 This is Stage 1 of a longer plan: how (and whether) backends should
 eventually meet `tensorforge.Tensor`, and the risks that gate each
@@ -365,8 +377,23 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Forward-only native tensor wrapper — design (v1.7)
+
+v1.7 is **design-only**: no code ships. It writes down the Stage-2 plan
+for a future forward-only convenience wrapper over `NativeTensorCore`
+(likely named `NativeTensor`) — its purpose, non-goals, ownership and
+lifetime rules, the v1.6 conversion contract it inherits, a minimal API
+sketch, error/shape behavior, a testing plan, and a staged v1.8–v1.11
+implementation sequence. The full design is in
+[native_tensor_wrapper_design.md](native_tensor_wrapper_design.md). It
+stays forward-only, autograd-free, float64, exact-shape, and explicitly
+**not** `tensorforge.Tensor`. Implementation does not begin until v1.8.
+
 ## What might come next
 
-A future milestone might consider wiring kernels into Tensor behind a
-flag. CUDA experiments remain a separate future branch. The Python
-framework stays the reference implementation throughout.
+The next implementation step is v1.8: the minimal wrapper —
+constructors, metadata, and `to_numpy` — with compute and view ops
+following in later milestones per the design doc. A further-out
+milestone might consider wiring kernels into Tensor behind a flag. CUDA
+experiments remain a separate future branch. The Python framework stays
+the reference implementation throughout.

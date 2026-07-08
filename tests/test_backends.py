@@ -81,6 +81,30 @@ def test_numpy_backend_operations_match_numpy():
     assert np.array_equal(backend.matmul(a, b), a @ b)
 
 
+def test_numpy_backend_to_numpy_is_a_float64_copy():
+    backend = get_backend("numpy")
+    result = backend.to_numpy([1, 2, 3])
+    assert isinstance(result, np.ndarray)
+    assert result.dtype == np.float64
+    assert result.tolist() == [1.0, 2.0, 3.0]
+    # A copy: converting an array and mutating the result must not
+    # touch the source.
+    source = np.array([1.0, 2.0])
+    out = backend.to_numpy(source)
+    out[0] = 99.0
+    assert source.tolist() == [1.0, 2.0]
+
+
+def test_numpy_backend_add_follows_numpy_broadcasting():
+    # Stage-1 asymmetry, documented: the NumPy backend broadcasts,
+    # because a NumPy array already is one. The native backend does not
+    # (see test_native_backend_requires_exact_shapes).
+    backend = get_backend("numpy")
+    matrix = np.ones((2, 3))
+    row = np.array([1.0, 2.0, 3.0])
+    assert np.array_equal(backend.add(matrix, row), matrix + row)
+
+
 # -- native backend ---------------------------------------------------
 
 
@@ -123,11 +147,48 @@ def test_native_backend_rejects_non_core_operands_clearly():
     backend = get_backend("native")
     core = backend.tensor_from_array([1.0, 2.0])
     # A helpful TypeError, not a mysterious AttributeError on ndarray.
-    with pytest.raises(TypeError, match="NativeTensorCore"):
-        backend.add(np.array([1.0, 2.0]), core)
-    with pytest.raises(TypeError, match="NativeTensorCore"):
-        backend.relu([1.0, 2.0])
+    # The message is consistent across every operation, including
+    # to_numpy, and always names NativeTensorCore.
+    for call in (
+        lambda: backend.add(np.array([1.0, 2.0]), core),
+        lambda: backend.add(core, [1.0, 2.0]),
+        lambda: backend.relu([1.0, 2.0]),
+        lambda: backend.matmul(core, np.zeros((2, 2))),
+        lambda: backend.to_numpy(np.array([1.0, 2.0])),
+    ):
+        with pytest.raises(TypeError, match="NativeTensorCore"):
+            call()
     core.close()
+
+
+@needs_native
+def test_native_backend_to_numpy_round_trips():
+    backend = get_backend("native")
+    x = np.array([[1.0, -2.0, 3.0], [4.0, 5.0, -6.0]])
+    core = backend.tensor_from_array(x)
+    result = backend.to_numpy(core)
+    assert isinstance(result, np.ndarray)
+    assert result.dtype == np.float64
+    assert np.array_equal(result, x)
+    # to_numpy is the explicit exit: converting in then out reproduces
+    # the data through a materialized copy.
+    core.close()
+
+
+@needs_native
+def test_native_backend_requires_exact_shapes():
+    # Exact matching shapes work; anything else fails clearly. No
+    # broadcasting in this milestone (contrast the NumPy backend).
+    backend = get_backend("native")
+    a = backend.tensor_from_array(np.ones((2, 3)))
+    b = backend.tensor_from_array(np.full((2, 3), 4.0))
+    assert np.array_equal(backend.add(a, b).to_numpy(), np.full((2, 3), 5.0))
+
+    row = backend.tensor_from_array([1.0, 2.0, 3.0])  # (3,)
+    with pytest.raises(ValueError, match="broadcasting|shape"):
+        backend.add(a, row)
+    for tensor in (a, b, row):
+        tensor.close()
 
 
 def test_native_backend_unavailable_raises_helpfully(monkeypatch):

@@ -51,6 +51,39 @@ while the native backend requires exact shapes. The explicit API does
 not paper over this Stage-1 asymmetry; aligning or specifying it is
 Stage 2/3 work.)
 
+## The explicit conversion contract
+
+Every backend has two named boundaries, and data crosses them only by
+explicit call — never implicitly:
+
+- **`tensor_from_array(values)` enters a backend.** Array-like or
+  NumPy data in; a backend-native value out, as a copy. For the NumPy
+  backend that value is a float64 array; for the native backend it is
+  a `NativeTensorCore` holding its own C++ storage.
+- **`to_numpy(value)` exits a backend.** A backend-native value in; a
+  fresh float64 NumPy array out. The native backend materializes
+  through `NativeTensorCore.to_numpy()`; the NumPy backend returns a
+  copy of the array. Either way the result shares no mutable state
+  with the backend value.
+
+Two properties are deliberate. First, **copies are visible**: there
+is no zero-copy view sneaking across the boundary, so a caller can
+never accidentally alias native storage from Python or vice versa —
+lifetime and ownership stay clear (which matters because
+`NativeTensorCore` has explicit `close()` semantics that a shared
+NumPy view would silently outlive). Second, **the boundaries are
+symmetric across backends**: the same `tensor_from_array` / `to_numpy`
+pair works for every backend, which is exactly the seam a future
+conversion API (Stage 3) and a data-provider abstraction (Stage 4)
+would build on. The native backend accepts only `NativeTensorCore`
+here — never a `tensorforge.Tensor` — so the frontend and the
+experimental runtime cannot entangle by accident.
+
+Broadcasting alignment sits on top of this contract as a separate
+future design item: the conversion boundaries say nothing about shape
+semantics, and the NumPy/native asymmetry noted above is left explicit
+rather than hidden inside conversion.
+
 ## Why NativeTensorCore is not tensorforge.Tensor
 
 `Tensor` carries autograd machinery: `requires_grad`, `grad`, graph
@@ -101,7 +134,10 @@ is Stage 4 material — sketched here, decided there.
   backend objects with a small common surface; no Tensor contact.
 - **Stage 2 — experimental native forward tensors**: a thin
   Tensor-like forward-only wrapper over NativeTensorCore, exercised in
-  isolation.
+  isolation. Designed in
+  [native_tensor_wrapper_design.md](native_tensor_wrapper_design.md)
+  (design complete; implementation begins at v1.8 with constructors +
+  metadata + `to_numpy`).
 - **Stage 3 — conversion APIs**: explicit, copy-visible bridges
   between NumPy-backed Tensors and native tensors.
 - **Stage 4 — native autograd design**: the provider abstraction and

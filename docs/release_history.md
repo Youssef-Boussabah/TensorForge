@@ -63,6 +63,15 @@ kernels, and the TensorCore runtime side by side — overheads
 included, honestly. **v1.5** added the backend dispatch design
 ([dispatch_design.md](dispatch_design.md)) and Stage 1 of it: an
 explicit backend API (`get_backend("numpy"|"native")`) with no
-implicit routing (see
-[backend_experiments.md](backend_experiments.md)). CUDA/GPU
-experiments remain future work.
+implicit routing. **v1.6** polished that API's conversion contract —
+`to_numpy` as the explicit exit boundary matching `tensor_from_array`,
+consistent operand errors, and tested exact-shape native behavior
+against NumPy's broadcasting (see
+[backend_experiments.md](backend_experiments.md)). **v1.7** is
+design-only: it writes the Stage-2 plan for a future forward-only
+native tensor wrapper over `NativeTensorCore` — purpose, non-goals,
+ownership/lifetime, the inherited conversion contract, a minimal API
+sketch, error/shape behavior, a testing plan, and a staged v1.8–v1.11
+sequence, all in
+[native_tensor_wrapper_design.md](native_tensor_wrapper_design.md); no
+code ships. CUDA/GPU experiments remain future work.

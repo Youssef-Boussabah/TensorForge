@@ -102,6 +102,7 @@ What each one teaches, and what to expect: [docs/examples.md](docs/examples.md).
 - [docs/release_history.md](docs/release_history.md) — how the project grew, by version
 - [docs/backend_experiments.md](docs/backend_experiments.md) — the experimental C++ backend line
 - [docs/dispatch_design.md](docs/dispatch_design.md) — how backends might eventually meet the Tensor
+- [docs/native_tensor_wrapper_design.md](docs/native_tensor_wrapper_design.md) — Stage-2 design for a forward-only native tensor wrapper
 
 ## Limitations
 
