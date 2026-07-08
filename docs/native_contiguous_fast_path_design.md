@@ -14,7 +14,18 @@ paths are bit-for-bit equal (§4), which the v1.14 tests lock down (§9).
 `NativeTensor` inherited the change with no wrapper edits. No
 broadcasting, reductions, autograd, `Tensor` integration, or CUDA were
 added, and performance is measured by the benchmark suite, not claimed
-here (§10). The sections below remain the design of record.
+here (§10).
+
+**v1.15 benchmark reporting confirmed the intended behavior.** On a local
+run of the existing suite, the contiguous elementwise rows (both
+`NativeTensorCore` and `NativeTensor`) moved to roughly raw-buffer-C++
+speed, while the non-contiguous view rows stayed on the generic odometer
+path and remained slower — exactly the contiguous-vs-strided spread this
+design predicted (§10). The full tabulated report lives in
+[backend_experiments.md](backend_experiments.md) ("Contiguous fast-path —
+benchmark impact report (v1.15)"); numbers are hardware-dependent and no
+test asserts a speedup. Broadcasting and reductions remain separate,
+later Phase A work (§12). The sections below remain the design of record.
 
 For where this sits, see [backend_experiments.md](backend_experiments.md)
 (the native runtime and benchmarks) and

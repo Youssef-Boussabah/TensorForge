@@ -379,6 +379,62 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Contiguous fast-path — benchmark impact report (v1.15)
+
+This closes the optimization loop the last four milestones opened:
+**v1.12** measured where the elementwise cost lived (the generic
+shape/stride odometer traversal in the native runtime, not the
+`NativeTensor` wrapper), **v1.13** designed a contiguous fast path,
+**v1.14** implemented it, and **v1.15** records the measured impact. It
+is a *report*, not new behavior — no kernels or runtime changed.
+
+The table below is a single local run of
+`uv run python benchmarks/cpp_backend.py` (full sizes). Numbers are
+`vs numpy` ratios (higher = slower than NumPy); the large `1000x1000`
+elementwise rows are the honest ones to read, because they are
+memory-bound and dominated by traversal cost rather than per-call ctypes
+overhead. **These figures are hardware-dependent and from one machine —
+they characterize behavior, they are not a benchmark score.**
+
+| op (1000×1000) | cpp raw buffer | tensor core (contiguous) | tensor core (view) | native tensor (contiguous) | native tensor (view) |
+|----|----|----|----|----|----|
+| add  | 1.0× | **1.5×** | 3.5× | **1.4×** | 3.4× |
+| relu | 1.0× | **1.5×** | 2.5× | **1.6×** | 2.5× |
+
+What the run shows, and only what it shows:
+
+- **Contiguous elementwise rows moved toward the raw-buffer C++ loop.**
+  On this run, contiguous `add`/`relu` on `NativeTensorCore` and
+  `NativeTensor` land around **1.5× NumPy at `1000x1000` — essentially
+  matching the flat raw-buffer kernel** (≈1.0×) and closing most of the
+  gap the odometer used to carry. The remaining margin over raw buffer
+  is output-storage allocation and Python call overhead, not traversal.
+- **Non-contiguous view rows stayed on the generic odometer path** and
+  remain slower — about **3.5×** (add) and **2.5×** (relu) at
+  `1000x1000`, versus the contiguous ~1.5×. Same op, contiguous vs
+  strided, side by side: that spread is exactly the cost the fast path
+  removes, and it is retained (not regressed) for the strided case the
+  odometer must still serve.
+- **Matmul and `contiguous_copy` are unchanged**, as intended — they
+  were out of v1.14 scope (matmul is a different triple-loop kernel;
+  `contiguous_copy` materializes a transposed view through the odometer
+  by definition). Their rows sit where they did before.
+- **`NativeTensor` still tracks `NativeTensorCore` closely** (e.g. add
+  1.4× vs 1.5×, relu 1.6× vs 1.5×), reinforcing the v1.12 conclusion
+  that the wrapper is thin — and confirming that an optimization placed
+  *below* the wrapper reaches it automatically, with no wrapper change.
+- **NumPy/BLAS remains the baseline to respect.** Nothing here is faster
+  than NumPy; the elementwise wins are about *approaching* NumPy and the
+  raw-buffer loop, and matmul stays roughly an order of magnitude behind
+  NumPy's BLAS. Small-array rows still lose to NumPy on ctypes/conversion
+  overhead, as before.
+
+As always, correctness is verified against each layer's own NumPy
+reference before any timing, timings are medians after warmup, and
+**no test asserts a speed or ratio** — timing is measured and reported,
+never gated. Broadcasting and reductions remain separate, later Phase A
+work; this milestone only reports the contiguous elementwise result.
+
 ### Contiguous fast-path — implementation (v1.14)
 
 v1.14 implements the fast path the v1.13 document designed. Beside the
@@ -619,15 +675,14 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 ## What might come next
 
-The contiguous elementwise fast path is now **implemented** (v1.14):
-flat, index-free loops for contiguous `relu`/`add`/`subtract`/`multiply`,
-the generic odometer retained for strided views, bit-for-bit equivalent
-with semantics unchanged. The next step is **v1.15 — a benchmark impact
-report**: running the existing suite and tabulating, honestly, how far
-the contiguous rows moved toward the raw-buffer loop against the retained
-`… (view)` rows, with no performance assertions and the usual
-hardware-dependent caveats. After that, the rest of Phase A (native CPU
-runtime) continues — broadcasting, reductions, and dtype/device metadata.
-Still no Tensor integration. CUDA experiments remain a separate future
-branch. The Python framework stays the reference implementation
-throughout.
+The contiguous elementwise fast path is now **implemented** (v1.14) and
+its impact is **measured and reported** (v1.15, above): on a local run
+the contiguous elementwise rows moved to roughly raw-buffer speed while
+the strided-view rows stayed on the retained odometer, and `NativeTensor`
+tracked `NativeTensorCore` throughout. The next step is **v1.16 — a
+native broadcasting design** (Phase A2): a design-first milestone for
+shape-aligned elementwise ops, the same design-then-implement cadence the
+fast path followed. After that, the rest of Phase A continues —
+reductions (A3) and dtype/device metadata (A4). Still no Tensor
+integration. CUDA experiments remain a separate future branch. The Python
+framework stays the reference implementation throughout.

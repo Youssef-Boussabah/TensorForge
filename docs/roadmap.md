@@ -85,19 +85,25 @@ The Python line is done; what remains is expansion on its own terms:
   the retained odometer path for strided views, proven bit-for-bit equal
   to it; `NativeTensor` inherited the change with no wrapper edits, and
   no broadcasting, reductions, autograd, `Tensor` integration, or CUDA
-  came with it. The next step there is **Advanced C++ v1.15 — a benchmark
-  impact report**: running the existing suite and tabulating, honestly,
-  how far the contiguous rows moved toward the raw-buffer loop versus the
-  retained strided-view rows, with no performance assertions. CUDA/GPU
-  experiments are still entirely future work. The Python framework stays
-  the reference implementation.
+  came with it. Its impact is now **measured and reported** (v1.15): on a
+  local run the contiguous elementwise rows moved to roughly raw-buffer-
+  C++ speed (~1.5× NumPy at 1000×1000) while the strided-view rows stayed
+  on the retained odometer (~2.5–3.5×), and `NativeTensor` tracked
+  `NativeTensorCore` throughout — with matmul and `contiguous_copy`
+  unchanged, numbers hardware-dependent, and no test asserting a speedup
+  (see [backend_experiments.md](backend_experiments.md)). The next step
+  there is **Advanced C++ v1.16 — a native broadcasting design** (Phase
+  A2): a design-first milestone for shape-aligned elementwise ops. CUDA/
+  GPU experiments are still entirely future work. The Python framework
+  stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
   - **Phase A — native CPU runtime.** A1: the contiguous elementwise
-    fast path (design done in v1.13, implemented in v1.14; v1.15 reports
-    its benchmark impact). A2: broadcasting for elementwise ops. A3:
-    reductions (sum/mean/max). A4: dtype and device metadata beyond
+    fast path — **complete** (designed v1.13, implemented v1.14,
+    benchmark impact reported v1.15). A2 (**next, v1.16**): broadcasting
+    for elementwise ops, beginning with a design. A3: reductions
+    (sum/mean/max). A4: dtype and device metadata beyond
     float64-CPU-only.
   - **Then** native autograd, a native training stack, the CUDA runtime,
     an AMP / Tensor Core path, Transformer / text examples, distributed

@@ -120,6 +120,16 @@ sit beside the generic odometer kernels, and `NativeTensorCore.relu` /
 odometer path for any strided view — proven bit-for-bit equal to it and
 to NumPy. `NativeTensor` inherited the change with no wrapper edits, and
 no broadcasting, reductions, autograd, `Tensor` integration, or CUDA
-were added; performance is left to the benchmark suite, not claimed. The
-next step is v1.15, an honest benchmark impact report. CUDA/GPU
-experiments remain future work.
+were added; performance is left to the benchmark suite, not claimed.
+**v1.15** closes that optimization loop with an honest benchmark impact
+report (in [backend_experiments.md](backend_experiments.md)): on a local
+run of the existing suite, contiguous elementwise `add`/`relu` on
+`NativeTensorCore` and `NativeTensor` moved to roughly raw-buffer-C++
+speed (~1.5× NumPy at 1000×1000), while the non-contiguous view rows
+stayed on the generic odometer path (~2.5–3.5×) — the exact
+contiguous-vs-strided spread the design predicted. Matmul and
+`contiguous_copy` were unchanged (out of v1.14 scope), and `NativeTensor`
+kept tracking `NativeTensorCore` closely, reinforcing that the wrapper is
+thin. No kernels or runtime behavior changed, numbers are
+hardware-dependent, and no test asserts a speedup; the next step is v1.16,
+a native broadcasting design. CUDA/GPU experiments remain future work.

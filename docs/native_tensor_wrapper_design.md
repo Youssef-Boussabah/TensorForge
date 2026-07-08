@@ -14,7 +14,9 @@ the wrapper's overhead (see section 9 and
 [backend_experiments.md](backend_experiments.md)). v1.14 added a
 contiguous elementwise fast path **below** the wrapper, in
 `NativeTensorCore`, so `NativeTensor` inherited the speedup with no
-code change of its own. The sections below
+code change of its own, and v1.15 measured it — the benchmark report
+reinforced that the wrapper is thin and that below-wrapper optimizations
+reach it automatically (section 9). The sections below
 remain the design of record — the plan the code follows — with the
 staged status tracked in section 9.
 The name `NativeTensor` was kept (the `ExperimentalNativeTensor`
@@ -302,10 +304,20 @@ runtime beneath it grew:
   `NativeTensor` inherits the fast path because it delegates to the core
   beneath it, confirming the v1.12/v1.13 finding that the bottleneck was
   the runtime's traversal, not the wrapper.
-- **v1.15 — benchmark impact report (next):** run the existing suite and
-  tabulate honestly how far the contiguous rows moved toward the
-  raw-buffer loop versus the retained strided-view rows — measurement,
-  no performance assertions.
+- **v1.15 — benchmark impact report (done):** ran the existing suite and
+  tabulated how far the contiguous rows moved toward the raw-buffer loop
+  versus the retained strided-view rows (see
+  [backend_experiments.md](backend_experiments.md), "Contiguous fast-path
+  — benchmark impact report"). The measurement **reinforced that
+  `NativeTensor` is a thin wrapper over `NativeTensorCore`**: its
+  contiguous rows tracked the core's closely (e.g. add 1.4× vs 1.5×, relu
+  1.6× vs 1.5× vs NumPy on that run), and — the point of placing the fast
+  path below the wrapper — `NativeTensor` picked up the speedup with **no
+  code change of its own**. This is the general rule the layering buys:
+  native-runtime optimizations that live beneath the wrapper (in
+  `NativeTensorCore` or the C++ kernels) benefit `NativeTensor`
+  automatically, because it only ever delegates. Numbers are
+  hardware-dependent; no test asserts a speedup.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision
