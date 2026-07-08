@@ -145,4 +145,18 @@ explicit (a mismatch names both shapes, no silent NumPy fallback); and
 the autograd implication (a broadcast forward read is a sum-reduction on
 the backward pass) is noted for later, not built
 ([native_broadcasting_design.md](native_broadcasting_design.md)). No code
-ships; implementation is v1.17. CUDA/GPU experiments remain future work.
+ships; implementation is v1.17. **v1.17** implements that design:
+`NativeTensorCore.add`/`subtract`/`multiply` now broadcast NumPy-style
+(scalar↔tensor, same-rank size-1 stretching, left-padding with leading
+1s). A pure `broadcast_shapes` helper infers the output shape (raising a
+`ValueError` naming both shapes when incompatible) and a `_broadcast_strides`
+helper feeds the **existing** generic odometer kernel zero strides on
+stretched axes — so no new C++ kernel was added, nothing is materialized,
+and the same-shape v1.14 fast path and generic odometer are untouched.
+Output stays freshly allocated row-major contiguous; `NativeTensor` (and
+the explicit native backend) inherited broadcasting with no wrapper edit;
+results match NumPy exactly, including transposed/narrowed/nonzero-offset
+operands. No reductions, autograd, `Tensor` integration, CUDA, dtype
+promotion, operator overloads, or matmul broadcasting were added; the next
+step is v1.18, a native reductions design. CUDA/GPU experiments remain
+future work.

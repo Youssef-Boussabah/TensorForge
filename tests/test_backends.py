@@ -96,9 +96,9 @@ def test_numpy_backend_to_numpy_is_a_float64_copy():
 
 
 def test_numpy_backend_add_follows_numpy_broadcasting():
-    # Stage-1 asymmetry, documented: the NumPy backend broadcasts,
-    # because a NumPy array already is one. The native backend does not
-    # (see test_native_backend_requires_exact_shapes).
+    # The NumPy backend broadcasts because a NumPy array already is one.
+    # Since v1.17 the native backend broadcasts too, inheriting it from
+    # NativeTensorCore (see test_native_backend_broadcasts_like_the_core).
     backend = get_backend("numpy")
     matrix = np.ones((2, 3))
     row = np.array([1.0, 2.0, 3.0])
@@ -176,18 +176,24 @@ def test_native_backend_to_numpy_round_trips():
 
 
 @needs_native
-def test_native_backend_requires_exact_shapes():
-    # Exact matching shapes work; anything else fails clearly. No
-    # broadcasting in this milestone (contrast the NumPy backend).
+def test_native_backend_broadcasts_like_the_core():
+    # v1.17: the native backend inherits NativeTensorCore broadcasting.
+    # Exact matching shapes work, and so do broadcast-compatible shapes;
+    # only genuinely incompatible shapes fail clearly.
     backend = get_backend("native")
     a = backend.tensor_from_array(np.ones((2, 3)))
     b = backend.tensor_from_array(np.full((2, 3), 4.0))
     assert np.array_equal(backend.add(a, b).to_numpy(), np.full((2, 3), 5.0))
 
-    row = backend.tensor_from_array([1.0, 2.0, 3.0])  # (3,)
-    with pytest.raises(ValueError, match="broadcasting|shape"):
-        backend.add(a, row)
-    for tensor in (a, b, row):
+    row = backend.tensor_from_array([1.0, 2.0, 3.0])  # (3,) broadcasts
+    assert np.array_equal(
+        backend.add(a, row).to_numpy(), np.ones((2, 3)) + np.array([1.0, 2.0, 3.0])
+    )
+
+    bad = backend.tensor_from_array(np.ones((4, 3)))  # 2 vs 4 -> incompatible
+    with pytest.raises(ValueError, match="broadcast"):
+        backend.add(a, bad)
+    for tensor in (a, b, row, bad):
         tensor.close()
 
 

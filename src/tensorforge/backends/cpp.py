@@ -550,16 +550,29 @@ class NativeTensorCore:
         return out
 
     def _binary_core_op(self, other, kernel_name, op_name):
-        """Shared plumbing for add/subtract/multiply over tensor cores:
-        both strided inputs are read in lockstep by the native kernel,
-        which writes a fresh contiguous output. Shapes must match
-        exactly — no broadcasting.
+        """Shared plumbing for add/subtract/multiply over tensor cores,
+        with a three-way traversal dispatch (v1.17):
 
-        When both operands are row-major contiguous the flat fast-path
-        kernel (``<kernel_name>_contiguous``) runs a plain pointer loop
-        over numel; if either is a strided view the generic odometer
-        kernel runs instead. The two paths are bit-for-bit equivalent —
-        contiguity only selects the traversal, never the result."""
+        A. **Same shape, both contiguous** — the v1.14 flat fast-path
+           kernel (``<kernel_name>_contiguous``): a plain pointer loop
+           over numel.
+        B. **Same shape, either strided** — the generic odometer kernel
+           (``<kernel_name>``): walks the shared shape with each
+           operand's real strides.
+        C. **Differing but broadcast-compatible shapes** — NumPy-style
+           broadcasting. The output shape is inferred by
+           ``broadcast_shapes`` and each operand is read through
+           *broadcast strides* (§ native_broadcasting_design.md): a real
+           axis keeps its stride, a stretched or left-padded size-1 axis
+           gets stride 0 so the odometer re-reads one element instead of
+           advancing. The very same generic odometer kernel from path B
+           consumes those strides — a zero stride is broadcasting, no
+           expanded operand is materialized. Incompatible shapes raise a
+           clear ``ValueError`` naming both shapes.
+
+        Paths A and B are bit-for-bit unchanged from before; only when the
+        shapes actually differ does broadcasting engage. The output is
+        always freshly allocated row-major contiguous storage."""
         self._require_open()
         if not isinstance(other, NativeTensorCore):
             raise TypeError(
@@ -567,41 +580,67 @@ class NativeTensorCore:
                 f"got {type(other).__name__}"
             )
         other._require_open()
-        if self.shape != other.shape:
-            raise ValueError(
-                f"{op_name} requires identical shapes (no broadcasting), "
-                f"got {self.shape} and {other.shape}"
-            )
-        out = NativeTensorCore.zeros(self.shape)
-        if self.contiguous and other.contiguous:
-            getattr(self._storage._lib, kernel_name + "_contiguous")(
+        lib = self._storage._lib
+
+        # Same-shape paths (A and B) — the exact-shape behavior, unchanged.
+        if self.shape == other.shape:
+            out = NativeTensorCore.zeros(self.shape)
+            if self.contiguous and other.contiguous:
+                getattr(lib, kernel_name + "_contiguous")(
+                    self._storage._require_open(),
+                    other._storage._require_open(),
+                    out._storage._require_open(),
+                    self.numel, self.offset, other.offset,
+                )
+                return out
+            shape_arr, a_strides = self._layout_arrays()
+            b_strides = np.asarray(other.strides, dtype=np.int64)
+            getattr(lib, kernel_name)(
                 self._storage._require_open(),
                 other._storage._require_open(),
                 out._storage._require_open(),
-                self.numel, self.offset, other.offset,
+                shape_arr, a_strides, b_strides,
+                self.offset, other.offset, self.ndim,
             )
             return out
-        shape_arr, a_strides = self._layout_arrays()
-        b_strides = np.asarray(other.strides, dtype=np.int64)
-        getattr(self._storage._lib, kernel_name)(
+
+        # Broadcasting path (C) — differing shapes. broadcast_shapes
+        # raises (naming both shapes) if they are incompatible, before
+        # any output is allocated.
+        out_shape = broadcast_shapes(self.shape, other.shape)
+        out = NativeTensorCore.zeros(out_shape)
+        out_ndim = len(out_shape)
+        shape_arr = np.asarray(out_shape, dtype=np.int64)
+        a_strides = np.asarray(
+            _broadcast_strides(self.shape, self.strides, out_shape),
+            dtype=np.int64,
+        )
+        b_strides = np.asarray(
+            _broadcast_strides(other.shape, other.strides, out_shape),
+            dtype=np.int64,
+        )
+        getattr(lib, kernel_name)(
             self._storage._require_open(),
             other._storage._require_open(),
             out._storage._require_open(),
             shape_arr, a_strides, b_strides,
-            self.offset, other.offset, self.ndim,
+            self.offset, other.offset, out_ndim,
         )
         return out
 
     def add(self, other):
-        """self + other elementwise, natively. Same-shape only."""
+        """self + other elementwise, natively. Identical shapes, or
+        NumPy-style broadcasting for compatible shapes (v1.17)."""
         return self._binary_core_op(other, "tf_core_add", "add")
 
     def subtract(self, other):
-        """self - other elementwise, natively. Same-shape only."""
+        """self - other elementwise, natively. Identical shapes, or
+        NumPy-style broadcasting for compatible shapes (v1.17)."""
         return self._binary_core_op(other, "tf_core_subtract", "subtract")
 
     def multiply(self, other):
-        """self * other elementwise, natively. Same-shape only."""
+        """self * other elementwise, natively. Identical shapes, or
+        NumPy-style broadcasting for compatible shapes (v1.17)."""
         return self._binary_core_op(other, "tf_core_multiply", "multiply")
 
     def matmul(self, other):
@@ -893,6 +932,61 @@ def shape_info(shape, strides=None, offset=0):
         "offset": _as_offset(offset),
         "contiguous": stride_tuple == row_major_strides(dims),
     }
+
+
+def broadcast_shapes(shape_a, shape_b):
+    """The NumPy-style broadcast of two shapes, or a clear ValueError.
+
+    Shapes are aligned from the trailing axis; the shorter one is
+    conceptually left-padded with leading 1s. Two extents are compatible
+    when they are equal or one of them is 1, and the result extent is
+    their max. The scalar shape () broadcasts against anything.
+
+        broadcast_shapes((), (3, 4))          # (3, 4)
+        broadcast_shapes((3, 1), (1, 4))      # (3, 4)
+        broadcast_shapes((4,), (3, 4))        # (3, 4)  (left-pad to (1, 4))
+        broadcast_shapes((1, 3, 1), (2, 1, 5))# (2, 3, 5)
+        broadcast_shapes((2, 3), (4, 3))      # ValueError (2 vs 4)
+
+    Pure Python — it never calls NumPy and never touches the compiled
+    library, so it is safe and testable whether or not the backend is
+    built. Incompatible shapes raise a ValueError naming both original
+    shapes and the conflicting extents.
+    """
+    a = _as_shape(shape_a)  # validates positive-int dims (v0.7 rules)
+    b = _as_shape(shape_b)
+    rank = max(len(a), len(b))
+    pa = (1,) * (rank - len(a)) + a  # left-pad with leading 1s
+    pb = (1,) * (rank - len(b)) + b
+    out = []
+    for da, db in zip(pa, pb):
+        if da == db or da == 1 or db == 1:
+            out.append(max(da, db))
+        else:
+            raise ValueError(
+                f"cannot broadcast shapes {a} and {b}: incompatible "
+                f"dimensions {da} and {db} (neither is 1)"
+            )
+    return tuple(out)
+
+
+def _broadcast_strides(shape, strides, out_shape):
+    """Read-strides that stretch a (real) ``shape``/``strides`` operand
+    over ``out_shape`` without materializing it.
+
+    For each output axis: a real axis that carries a genuine extent keeps
+    its real stride; a size-1 axis (or a leading axis introduced by
+    left-padding) gets stride 0, so the odometer re-reads the same
+    element instead of advancing — that is exactly broadcasting. Assumes
+    ``out_shape`` is the broadcast of ``shape`` with the other operand
+    (compatibility already checked by ``broadcast_shapes``)."""
+    rank = len(out_shape)
+    pad = rank - len(shape)
+    result = [0] * rank  # leading padded axes stay 0
+    for i, dim in enumerate(shape):
+        if dim != 1:  # a stretched size-1 axis keeps stride 0
+            result[pad + i] = strides[i]
+    return result
 
 
 def _binary_op(kernel_name, a, b, name):

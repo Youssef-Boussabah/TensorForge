@@ -320,19 +320,23 @@ runtime beneath it grew:
   hardware-dependent; no test asserts a speedup.
 - **v1.16 — native broadcasting design (done):** a design (no code) for
   NumPy-style broadcasting in the native elementwise ops
-  (`add`/`subtract`/`multiply`), lifting the current exact-shape
-  restriction via a zero-stride read model with a freshly allocated
-  contiguous output — see
+  (`add`/`subtract`/`multiply`), lifting the exact-shape restriction via a
+  zero-stride read model with a freshly allocated contiguous output — see
   [native_broadcasting_design.md](native_broadcasting_design.md).
   Crucially, like the fast path, **broadcasting belongs below
-  `NativeTensor`, in the `NativeTensorCore`/native-kernel layer.** The
-  wrapper's `add`/`subtract`/`multiply` already delegate straight to the
-  core (`self._require_open().<op>(other_core)`), so once the core
-  broadcasts, `NativeTensor` broadcasts too — a `(3, 1) + (1, 4)` will
-  work through the wrapper with **no wrapper edit**, exactly as the
-  contiguous fast path arrived for free. `NativeTensor` stays a thin,
-  forward-only, experimental wrapper: no new methods, no autograd, no
-  operator overloads, not `tensorforge.Tensor`. Implementation is v1.17.
+  `NativeTensor`, in the `NativeTensorCore`/native-kernel layer.**
+- **v1.17 — native broadcasting implementation (done):** the core now
+  broadcasts, and — as predicted — `NativeTensor` inherited it with **no
+  wrapper edit**. The wrapper's `add`/`subtract`/`multiply` already
+  delegate straight to the core (`self._require_open().<op>(other_core)`),
+  so `a.add(b)` on a `(2, 3)` and a `(3,)`, or `(3, 1) * (1, 4)`, now
+  works through the wrapper and matches NumPy, verified by wrapper-level
+  tests. This is the third time the layering paid off (after the
+  contiguous fast path and its benchmark story): an improvement placed in
+  `NativeTensorCore` reaches `NativeTensor` for free, because the wrapper
+  only ever delegates. `NativeTensor` stays a thin, forward-only,
+  experimental wrapper: no new methods, no autograd, no operator
+  overloads, not `tensorforge.Tensor`.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision

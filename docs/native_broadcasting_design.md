@@ -1,9 +1,30 @@
 # Native broadcasting — design
 
-This is a **design document, not an implementation.** It specifies
-broadcasting for the native elementwise kernels
-(`add`/`subtract`/`multiply`) in the `NativeTensorCore` layer. No kernels
-change in this milestone (v1.16); the implementation is v1.17.
+This began as a **design document** (written in v1.16, ahead of any code)
+specifying broadcasting for the native elementwise kernels
+(`add`/`subtract`/`multiply`) in the `NativeTensorCore` layer.
+**Status: implemented in v1.17.**
+
+The implementation followed this design with one honest simplification
+worth stating up front: **no new C++ kernel was needed.** The existing
+generic odometer kernel (`tf_core_binary`, exported as
+`tf_core_add`/`subtract`/`multiply`) already walks the *output* shape
+advancing each operand by its own per-axis stride — so it is already
+broadcast-capable when fed **zero-augmented broadcast strides**, exactly
+as §6 anticipated ("the kernel then walks the output shape with an
+odometer … a zero stride means *do not move*"). Broadcasting therefore
+lives entirely in Python: a pure `broadcast_shapes` helper (§5) infers
+the output shape, a small `_broadcast_strides` helper builds each
+operand's read-strides (real stride on genuine axes, stride 0 on
+stretched/left-padded axes), and `NativeTensorCore._binary_core_op`
+dispatches three ways (§8). The C++ layer was **not changed** — the
+same-shape fast path (v1.14) and same-shape odometer stay byte-for-byte
+as they were, and the broadcast path reuses the odometer with different
+arguments. Output is freshly allocated row-major contiguous storage;
+`NativeTensor` inherited broadcasting with no wrapper edit; results match
+NumPy exactly. No reductions, autograd, `Tensor` integration, CUDA,
+dtype promotion, operator overloads, or matmul broadcasting came with it.
+The sections below remain the design of record.
 
 For where this sits, see [backend_experiments.md](backend_experiments.md)
 (the native runtime and benchmarks),
@@ -378,7 +399,8 @@ Broadcasting is the second step of **Phase A — native CPU runtime**:
 
 - **A1 — contiguous elementwise fast path** — complete (design v1.13,
   implementation v1.14, benchmark impact v1.15).
-- **A2 — broadcasting** — this design (v1.16) → implementation (v1.17).
+- **A2 — broadcasting** — this design (v1.16) → implementation (v1.17),
+  **complete**. Next is A3, whose design milestone is v1.18.
 - **A3 — reductions** (sum/mean/max), whose backward is the mirror image
   of broadcasting's forward (§15).
 - **A4 — dtype / device metadata** (beyond float64-CPU-only).

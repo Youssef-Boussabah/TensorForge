@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from tensorforge.backends.cpp import (
+    broadcast_shapes,
     flat_offset,
     is_contiguous_shape,
     numel,
@@ -142,3 +143,62 @@ def test_numpy_integer_dimensions_are_accepted():
     shape = tuple(np.int64(v) for v in (2, 3))
     assert row_major_strides(shape) == (3, 1)
     assert numel(shape) == 6
+
+
+# ---------------------------------------------------------------------------
+# broadcast_shapes (v1.17): pure NumPy-style broadcast shape inference.
+# ---------------------------------------------------------------------------
+
+
+def test_broadcast_shapes_scalar_and_tensor():
+    assert broadcast_shapes((), (3, 4)) == (3, 4)
+    assert broadcast_shapes((3, 4), ()) == (3, 4)
+    assert broadcast_shapes((), ()) == ()
+
+
+def test_broadcast_shapes_vector_and_matrix():
+    assert broadcast_shapes((4,), (3, 4)) == (3, 4)  # left-pad (4,) -> (1, 4)
+    assert broadcast_shapes((3, 4), (4,)) == (3, 4)
+    assert broadcast_shapes((5,), (5,)) == (5,)
+
+
+def test_broadcast_shapes_same_rank_stretching():
+    assert broadcast_shapes((3, 1), (1, 4)) == (3, 4)
+    assert broadcast_shapes((3, 1), (3, 4)) == (3, 4)
+    assert broadcast_shapes((1, 4), (3, 4)) == (3, 4)
+
+
+def test_broadcast_shapes_leading_dimension():
+    assert broadcast_shapes((1, 3, 4), (2, 3, 4)) == (2, 3, 4)
+    assert broadcast_shapes((3, 4), (2, 3, 4)) == (2, 3, 4)  # left-pad
+
+
+def test_broadcast_shapes_both_operands_broadcast():
+    assert broadcast_shapes((1, 3, 1), (2, 1, 5)) == (2, 3, 5)
+    assert broadcast_shapes((2, 1, 5), (1, 3, 1)) == (2, 3, 5)  # commutative
+
+
+def test_broadcast_shapes_matches_numpy_where_defined():
+    for a, b in (((), (3, 4)), ((3, 1), (1, 4)), ((4,), (3, 4)),
+                 ((1, 3, 1), (2, 1, 5)), ((2, 1, 5), (1, 3, 1))):
+        assert broadcast_shapes(a, b) == np.broadcast_shapes(a, b)
+
+
+def test_broadcast_shapes_incompatible_raises_naming_both_shapes():
+    with pytest.raises(ValueError) as excinfo:
+        broadcast_shapes((2, 3), (4, 3))
+    message = str(excinfo.value)
+    assert "(2, 3)" in message and "(4, 3)" in message
+    # A trailing-axis conflict is caught too.
+    with pytest.raises(ValueError, match=r"\(3,\).*\(4,\)|\(4,\).*\(3,\)"):
+        broadcast_shapes((3,), (4,))
+
+
+def test_broadcast_shapes_rejects_invalid_dims():
+    # Reuses the v0.7 shape validation: zero/negative dims and non-ints.
+    with pytest.raises(ValueError, match="positive"):
+        broadcast_shapes((2, -1), (2, 3))
+    with pytest.raises(ValueError, match="not supported"):
+        broadcast_shapes((2, 0), (2, 3))
+    with pytest.raises(TypeError, match="ints"):
+        broadcast_shapes((2, 1.5), (2, 3))

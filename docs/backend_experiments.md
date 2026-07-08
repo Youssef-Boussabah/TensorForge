@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.16 (current)
+## C++ backend — v1.17 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -379,6 +379,56 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native broadcasting — implementation (v1.17)
+
+v1.17 implements native broadcasting for the elementwise binary ops
+`add`/`subtract`/`multiply`, lifting the native runtime's exact-shape
+restriction to NumPy-style broadcasting. `NativeTensorCore.add(other)` (and
+`subtract`/`multiply`) now accept identical shapes **or** any
+broadcast-compatible pair — scalar↔tensor, same-rank size-1 stretching,
+and left-padding a lower-rank operand with leading 1s:
+
+```python
+a = NativeTensorCore.from_array(np.ones((2, 3)))
+row = NativeTensorCore.from_array([10.0, 20.0, 30.0])   # (3,)
+a.add(row)                    # (2, 3): (3,) left-pads to (1, 3), stretches
+NativeTensorCore.from_array(np.ones((3, 1))).multiply(
+    NativeTensorCore.from_array(np.ones((1, 4))))        # (3, 1) * (1, 4) -> (3, 4)
+```
+
+`_binary_core_op` now dispatches **three ways**:
+
+- **same shape, both contiguous** → the v1.14 flat fast-path kernel
+  (`<op>_contiguous`), unchanged;
+- **same shape, either strided** → the generic odometer kernel (`tf_core_<op>`),
+  unchanged;
+- **differing but compatible shapes** → the **broadcast traversal**: a
+  pure-Python `broadcast_shapes(a, b)` infers the output shape (raising a
+  clear `ValueError` naming both shapes if incompatible), a small
+  `_broadcast_strides` helper builds each operand's read-strides — the
+  real stride on a genuine axis, **stride 0** on a stretched or
+  left-padded size-1 axis — and the **same generic odometer kernel**
+  consumes them. A zero stride means "re-read one element", so nothing is
+  materialized; the expanded operand never exists in memory.
+
+The key implementation note: **no new C++ kernel was added.** The existing
+`tf_core_binary` odometer already walks the output shape advancing each
+operand by its own strides, so it is already broadcast-capable once fed
+zero-augmented strides — broadcasting is entirely a Python-side stride
+computation (`broadcast_shapes` sits beside the other pure metadata
+helpers, testable without the built backend). Output is always freshly
+allocated row-major contiguous storage; operands are never mutated.
+`NativeTensor` inherited broadcasting through `NativeTensorCore` with
+**no wrapper edit** — `a.add(b)` on a `(2, 3)` and a `(3,)` now works
+through the wrapper. Same-shape correctness (fast path and odometer) is
+unchanged, verified by regression tests, and every broadcast result is
+checked exactly (`np.array_equal`) against NumPy — including transposed,
+narrowed, and nonzero-offset broadcast operands. Errors stay explicit
+(incompatible shapes raise, naming both; no silent NumPy fallback). No
+reductions, autograd, `Tensor` integration, CUDA, dtype promotion,
+operator overloads, or matmul broadcasting were added. Full design in
+[native_broadcasting_design.md](native_broadcasting_design.md).
+
 ### Native broadcasting — design (v1.16)
 
 v1.16 is **design-only**: no kernels change and broadcasting is **not
@@ -706,11 +756,12 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 The contiguous elementwise fast path is **implemented** (v1.14) and its
 impact **measured and reported** (v1.15), and native broadcasting is now
-**designed** (v1.16, above) — the same design-first cadence the fast path
-followed. The next step is **v1.17 — the native broadcasting
-implementation** (Phase A2): shape inference plus a zero-stride broadcast
-traversal for `add`/`subtract`/`multiply`, verified against NumPy, with
-the v1.14 same-shape fast path preserved. After that, the rest of Phase A
-continues — reductions (A3) and dtype/device metadata (A4). Still no
-Tensor integration. CUDA experiments remain a separate future branch. The
-Python framework stays the reference implementation throughout.
+**designed (v1.16) and implemented (v1.17, above)** — completing Phase A2.
+The next step is **v1.18 — a native reductions design** (Phase A3): a
+design-first milestone for `sum`/`mean`/`max` and friends, with their own
+traversal and numerical-order considerations (and, notably, the mirror
+image of broadcasting's forward pass — a broadcast read corresponds to a
+sum-reduction on the eventual backward pass). After that, dtype/device
+metadata (A4) closes out Phase A. Still no Tensor integration, no
+autograd. CUDA experiments remain a separate future branch. The Python
+framework stays the reference implementation throughout.

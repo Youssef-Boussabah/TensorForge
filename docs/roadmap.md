@@ -92,28 +92,30 @@ The Python line is done; what remains is expansion on its own terms:
   `NativeTensorCore` throughout — with matmul and `contiguous_copy`
   unchanged, numbers hardware-dependent, and no test asserting a speedup
   (see [backend_experiments.md](backend_experiments.md)). Building on
-  that, native broadcasting is now **designed** (v1.16, Phase A2): a
-  design-only milestone lifting the native elementwise ops from
+  that, native broadcasting is now **designed (v1.16) and implemented
+  (v1.17)**, Phase A2 complete: it lifts the native elementwise ops from
   exact-shape-only to NumPy-style broadcasting (scalar↔tensor, same-rank
   size-1 stretching, left-padding with leading 1s) through a zero-stride
   read model that never materializes an expanded operand, with the v1.14
-  fast path preserved for the same-shape case and `NativeTensor`
-  inheriting it below the wrapper
-  ([native_broadcasting_design.md](native_broadcasting_design.md)); no
-  code ships. The next step there is **Advanced C++ v1.17 — the native
-  broadcasting implementation**: shape inference plus the broadcast
-  traversal for `add`/`subtract`/`multiply`, verified against NumPy.
-  CUDA/GPU experiments are still entirely future work. The Python
-  framework stays the reference implementation.
+  fast path and generic odometer preserved for the same-shape case and
+  **no new C++ kernel** (the existing odometer consumes the broadcast
+  strides). `NativeTensor` and the explicit native backend inherited it
+  with no wrapper edit, and results match NumPy exactly
+  ([native_broadcasting_design.md](native_broadcasting_design.md)). The
+  next step there is **Advanced C++ v1.18 — a native reductions design**
+  (Phase A3): a design-first milestone for `sum`/`mean`/`max` and their
+  traversal and numerical-order considerations. CUDA/GPU experiments are
+  still entirely future work. The Python framework stays the reference
+  implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
   - **Phase A — native CPU runtime.** A1: the contiguous elementwise
     fast path — **complete** (designed v1.13, implemented v1.14,
     benchmark impact reported v1.15). A2: broadcasting for elementwise
-    ops — **designed (v1.16, current)**, implementation next in **v1.17**.
-    A3: reductions (sum/mean/max). A4: dtype and device metadata beyond
-    float64-CPU-only.
+    ops — **complete** (designed v1.16, implemented v1.17). A3: reductions
+    (sum/mean/max) — design next in **v1.18**. A4: dtype and device
+    metadata beyond float64-CPU-only.
   - **Then** native autograd, a native training stack, the CUDA runtime,
     an AMP / Tensor Core path, Transformer / text examples, distributed
     / DDP, and a final benchmark / profiling / docs polish (the final

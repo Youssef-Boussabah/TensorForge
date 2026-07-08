@@ -206,15 +206,50 @@ def test_elementwise_binary_ops_match_numpy():
 
 
 @needs_native
-def test_elementwise_ops_reject_shape_mismatch_no_broadcasting():
-    # (2, 3) with (3,) broadcasts in NumPy; the native path rejects it.
-    a = NativeTensor.from_array(np.ones((2, 3)))
-    row = NativeTensor.from_array([1.0, 2.0, 3.0])
-    for op in ("add", "subtract", "multiply"):
-        with pytest.raises(ValueError, match="broadcasting|shape"):
-            getattr(a, op)(row)
+def test_elementwise_ops_broadcast_through_wrapper():
+    # v1.17: the wrapper inherits broadcasting from NativeTensorCore with
+    # no wrapper-specific code. (2, 3) with (3,) now broadcasts (matching
+    # NumPy) rather than being rejected.
+    x = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    row = np.array([10.0, 20.0, 30.0])
+    a = NativeTensor.from_array(x)
+    b = NativeTensor.from_array(row)
+    for op, numpy_op in (("add", np.add), ("subtract", np.subtract), ("multiply", np.multiply)):
+        out = getattr(a, op)(b)
+        assert isinstance(out, NativeTensor)
+        assert out.owns_core is True       # result is a fresh owning tensor
+        assert out.shape == (2, 3)
+        assert np.array_equal(out.to_numpy(), numpy_op(x, row))
+        assert np.array_equal(a.to_numpy(), x)  # operands unchanged
+        out.close()
     a.close()
-    row.close()
+    b.close()
+
+
+@needs_native
+def test_elementwise_ops_broadcast_scalar_through_wrapper():
+    # scalar-operand broadcasting also rides through the wrapper.
+    x = np.array([[1.0, -2.0], [3.0, 4.0]])
+    a = NativeTensor.from_array(x)
+    s = NativeTensor.from_array(5.0)  # shape ()
+    assert np.array_equal(a.multiply(s).to_numpy(), x * 5.0)
+    assert np.array_equal(s.add(a).to_numpy(), 5.0 + x)  # scalar on the left too
+    a.close()
+    s.close()
+
+
+@needs_native
+def test_elementwise_ops_reject_incompatible_shapes():
+    # Genuinely incompatible shapes still raise a clear ValueError naming
+    # both shapes — no silent NumPy fallback.
+    a = NativeTensor.from_array(np.ones((2, 3)))
+    bad = NativeTensor.from_array(np.ones((4, 3)))  # 2 vs 4 on axis 0
+    for op in ("add", "subtract", "multiply"):
+        with pytest.raises(ValueError, match="broadcast") as excinfo:
+            getattr(a, op)(bad)
+        assert "(2, 3)" in str(excinfo.value) and "(4, 3)" in str(excinfo.value)
+    a.close()
+    bad.close()
 
 
 @needs_native

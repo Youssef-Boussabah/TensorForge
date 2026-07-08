@@ -391,11 +391,13 @@ def test_outputs_are_independent_and_inputs_unmutated():
 
 
 def test_binary_ops_reject_shape_mismatch():
+    # (2, 3) and (3, 2) do not broadcast (2 vs 3 on axis 0), so the
+    # broadcast path raises a ValueError naming both shapes.
     with cpp.NativeTensorCore.zeros((2, 3)) as a, cpp.NativeTensorCore.zeros((3, 2)) as b:
-        with pytest.raises(ValueError, match="no broadcasting"):
-            a.add(b)
-        with pytest.raises(ValueError, match="identical shapes"):
-            a.multiply(b)
+        for method in ("add", "subtract", "multiply"):
+            with pytest.raises(ValueError, match="broadcast") as excinfo:
+                getattr(a, method)(b)
+            assert "(2, 3)" in str(excinfo.value) and "(3, 2)" in str(excinfo.value)
 
 
 def test_binary_ops_reject_non_tensor_core_operands():
@@ -701,3 +703,111 @@ def test_fast_path_output_is_independent_and_inputs_unmutated():
         assert np.array_equal(b.to_numpy(), y)
         assert np.array_equal(a.relu().to_numpy(), np.maximum(x, 0.0))
         assert np.array_equal(a.to_numpy(), x)  # relu didn't mutate self
+
+
+# ---------------------------------------------------------------------------
+# v1.17: native broadcasting for add/subtract/multiply
+#
+# The three-way dispatch: same-shape contiguous keeps the v1.14 fast
+# path, same-shape strided keeps the generic odometer, and differing but
+# compatible shapes take the broadcast traversal (zero-stride reads over
+# a freshly allocated contiguous output). NumPy is the reference — the
+# native result must equal it exactly (np.array_equal).
+# ---------------------------------------------------------------------------
+
+
+BROADCAST_SHAPE_PAIRS = (
+    ((), (3, 4)),          # scalar + tensor
+    ((3, 4), ()),          # tensor + scalar
+    ((3, 1), (1, 4)),      # same-rank, both stretch
+    ((4,), (3, 4)),        # leading-dimension (left-pad) broadcast
+    ((3, 4), (4,)),        # symmetric
+    ((1, 3, 1), (2, 1, 5)),  # higher-rank, both stretch
+    ((2, 1), (2, 3)),      # one axis stretches
+)
+
+
+@pytest.mark.parametrize("shape_a,shape_b", BROADCAST_SHAPE_PAIRS)
+@pytest.mark.parametrize("method,numpy_op", BINARY_OPS)
+def test_broadcasting_matches_numpy(shape_a, shape_b, method, numpy_op):
+    rng = np.random.default_rng(170)
+    x = rng.normal(size=shape_a)
+    y = rng.normal(size=shape_b)
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        result = getattr(a, method)(b)
+        expected = numpy_op(x, y)
+        assert result.shape == expected.shape
+        assert result.contiguous is True  # output is row-major contiguous
+        assert np.array_equal(result.to_numpy(), expected)
+        result.close()
+
+
+def test_broadcasting_with_transposed_operand():
+    # A non-contiguous (transposed) operand broadcasting against a vector:
+    # real axes keep their strides, the broadcast axis reads stride 0.
+    rng = np.random.default_rng(171)
+    x = rng.normal(size=(3, 4))
+    y = rng.normal(size=(4,))
+    # owner laid out as x.T so that owner.T is a strided (3, 4) view == x.
+    with cpp.NativeTensorCore.from_array(np.ascontiguousarray(x.T)) as owner, \
+         cpp.NativeTensorCore.from_array(y) as b:
+        strided = owner.T
+        assert strided.contiguous is False
+        for method, numpy_op in BINARY_OPS:
+            assert np.array_equal(getattr(strided, method)(b).to_numpy(), numpy_op(x, y))
+
+
+def test_broadcasting_with_narrowed_nonzero_offset_operand():
+    # A narrowed operand with a nonzero offset and a size-1 axis is a
+    # legitimate broadcastable operand.
+    rng = np.random.default_rng(172)
+    base = rng.normal(size=(3, 4))
+    row = rng.normal(size=(1, 4))
+    with cpp.NativeTensorCore.from_array(base) as a, cpp.NativeTensorCore.from_array(row) as b:
+        col = a.narrow(1, 2, 1)  # (3, 1) view, offset 2
+        assert col.shape == (3, 1) and col.offset == 2
+        result = col.multiply(b)  # (3, 1) * (1, 4) -> (3, 4)
+        assert result.shape == (3, 4)
+        assert np.array_equal(result.to_numpy(), base[:, 2:3] * row)
+
+
+def test_broadcasting_output_is_contiguous_and_operands_unchanged():
+    x = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # (2, 3)
+    y = np.array([10.0, 20.0, 30.0])                   # (3,)
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        result = a.add(b)
+        assert result.shape == (2, 3)
+        assert result.contiguous is True
+        assert result.strides == (3, 1)
+        assert result.storage is not a.storage and result.storage is not b.storage
+        result.storage.fill(0.0)  # mutating the output...
+        assert np.array_equal(a.to_numpy(), x)  # ...leaves both operands
+        assert np.array_equal(b.to_numpy(), y)
+
+
+def test_broadcasting_rejects_incompatible_shapes_naming_both():
+    with cpp.NativeTensorCore.from_array(np.ones((2, 3))) as a, \
+         cpp.NativeTensorCore.from_array(np.ones((4, 3))) as b:
+        for method in ("add", "subtract", "multiply"):
+            with pytest.raises(ValueError, match="broadcast") as excinfo:
+                getattr(a, method)(b)
+            assert "(2, 3)" in str(excinfo.value) and "(4, 3)" in str(excinfo.value)
+
+
+def test_broadcasting_does_not_disturb_same_shape_paths():
+    # Regression guard: same-shape contiguous (fast path) and same-shape
+    # strided (generic odometer) still compute correctly after the
+    # broadcast dispatch was added.
+    rng = np.random.default_rng(173)
+    x = rng.normal(size=(3, 4))
+    y = rng.normal(size=(3, 4))
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        # A: same shape, both contiguous -> v1.14 fast path.
+        assert a.contiguous and b.contiguous
+        assert np.array_equal(a.add(b).to_numpy(), x + y)
+    # B: same shape, both strided (transposed) -> generic odometer.
+    with cpp.NativeTensorCore.from_array(np.ascontiguousarray(x.T)) as oa, \
+         cpp.NativeTensorCore.from_array(np.ascontiguousarray(y.T)) as ob:
+        sa, sb = oa.T, ob.T
+        assert sa.shape == sb.shape and not sa.contiguous
+        assert np.array_equal(sa.multiply(sb).to_numpy(), x * y)
