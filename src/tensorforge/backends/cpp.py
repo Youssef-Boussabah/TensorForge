@@ -140,6 +140,17 @@ def _load_library():
         ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
     ] + [ctypes.c_int64] * 9
     library.tf_core_matmul.restype = None
+    # Reduction kernels (v1.19): tf_core_sum scatter-accumulates a strided
+    # input into a fresh contiguous output using per-input-axis output
+    # write-strides (0 on reduced axes); tf_storage_scale does mean's
+    # in-place 1/count scaling.
+    library.tf_core_sum.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array, i64_array,
+        ctypes.c_int64, ctypes.c_int64,
+    ]
+    library.tf_core_sum.restype = None
+    library.tf_storage_scale.argtypes = [ctypes.c_void_p, ctypes.c_double]
+    library.tf_storage_scale.restype = None
     return library
 
 
@@ -686,6 +697,55 @@ class NativeTensorCore:
         )
         return out
 
+    # -- reductions (v1.19) ---------------------------------------------
+
+    def sum(self, axis=None, keepdims=False):
+        """Sum over ``axis`` (``None`` = all elements) natively, reading
+        this tensor's (possibly strided) view directly. Returns a new
+        owning row-major contiguous NativeTensorCore whose shape is
+        ``reduce_shape(self.shape, axis, keepdims)``. Single integer or
+        negative axis only; no broadcasting of the result, no autograd.
+
+        Deterministic row-major accumulation order over the input; float
+        sums are order-sensitive, so results match NumPy to a tolerance,
+        not bit-for-bit (see docs/native_reductions_design.md)."""
+        self._require_open()
+        out_shape = reduce_shape(self.shape, axis, keepdims)  # validates axis/keepdims
+        out = NativeTensorCore.zeros(out_shape)
+        if axis is None:
+            reduced = set(range(self.ndim))
+        else:
+            reduced = {_normalize_axis(axis, self.shape)}
+        out_strides = _reduce_out_strides(self.shape, reduced, bool(keepdims), out_shape)
+        self._storage._lib.tf_core_sum(
+            self._storage._require_open(),
+            out._storage._require_open(),
+            np.asarray(self.shape, dtype=np.int64),
+            np.asarray(self.strides, dtype=np.int64),
+            np.asarray(out_strides, dtype=np.int64),
+            self.offset, self.ndim,
+        )
+        return out
+
+    def mean(self, axis=None, keepdims=False):
+        """Mean over ``axis`` (``None`` = all elements) natively: the
+        native ``sum`` scaled in place by ``1/count`` in float64, where
+        ``count`` is ``numel`` for ``axis=None`` or ``shape[axis]`` for a
+        single axis. Returns a new owning row-major contiguous
+        NativeTensorCore. No NumPy touches the data; no autograd."""
+        self._require_open()
+        result = self.sum(axis=axis, keepdims=keepdims)
+        if axis is None:
+            count = self.numel
+        else:
+            count = self.shape[_normalize_axis(axis, self.shape)]
+        # In-place native scale of the freshly summed output — no copy,
+        # no NumPy round trip. count >= 1 always (dims are positive).
+        result._storage._lib.tf_storage_scale(
+            result._storage._require_open(), 1.0 / count
+        )
+        return result
+
     # -- view operations (metadata only: no data is copied) --------------
 
     def _view_core(self, shape, strides, offset):
@@ -986,6 +1046,85 @@ def _broadcast_strides(shape, strides, out_shape):
     for i, dim in enumerate(shape):
         if dim != 1:  # a stretched size-1 axis keeps stride 0
             result[pad + i] = strides[i]
+    return result
+
+
+def _normalize_axis(axis, shape):
+    """Normalize a single reduction ``axis`` against ``shape``.
+
+    Accepts a plain int (negative allowed, NumPy-style: ``axis + ndim``),
+    validates its type and bounds, and returns the non-negative axis.
+    Raises ``TypeError`` for a non-int axis and ``ValueError`` naming both
+    the axis and the shape when out of bounds (including any integer axis
+    on a scalar). Pure Python — no NumPy, no compiled library."""
+    dims = _as_shape(shape)
+    ndim = len(dims)
+    if not isinstance(axis, (int, np.integer)) or isinstance(axis, bool):
+        raise TypeError(f"axis must be None or an int, got {axis!r}")
+    value = int(axis)
+    normalized = value + ndim if value < 0 else value
+    if normalized < 0 or normalized >= ndim:
+        raise ValueError(
+            f"axis {value} is out of bounds for a tensor of shape {dims} "
+            f"(ndim {ndim})"
+        )
+    return normalized
+
+
+def reduce_shape(shape, axis=None, keepdims=False):
+    """The output shape of reducing ``shape`` over ``axis``.
+
+    ``axis=None`` reduces every element; a single integer ``axis``
+    (negative allowed) reduces one dimension. ``keepdims=True`` leaves
+    each reduced axis as size 1, ``keepdims=False`` (default) removes it.
+
+        reduce_shape((2, 3))                       # ()
+        reduce_shape((2, 3), keepdims=True)        # (1, 1)
+        reduce_shape((2, 3), axis=0)               # (3,)
+        reduce_shape((2, 3), axis=1, keepdims=True)# (2, 1)
+        reduce_shape((), axis=None)                # ()
+        reduce_shape((2, 3, 4), axis=-1)           # (2, 3)
+
+    Pure Python — never calls NumPy, never touches the compiled library,
+    so it is testable whether or not the backend is built. Tuple/multiple
+    axes are not supported yet (a single int or None only). Raises
+    ``TypeError`` for a non-bool ``keepdims`` or non-int ``axis``, and
+    ``ValueError`` naming both axis and shape for an out-of-bounds axis.
+    """
+    dims = _as_shape(shape)
+    if not isinstance(keepdims, bool):
+        raise TypeError(f"keepdims must be a bool, got {keepdims!r}")
+    ndim = len(dims)
+    if axis is None:
+        return (1,) * ndim if keepdims else ()
+    normalized = _normalize_axis(axis, dims)
+    if keepdims:
+        return tuple(1 if d == normalized else dims[d] for d in range(ndim))
+    return tuple(dims[d] for d in range(ndim) if d != normalized)
+
+
+def _reduce_out_strides(in_shape, reduced_axes, keepdims, out_shape):
+    """Per-input-axis output write-strides for the sum kernel.
+
+    For each input axis: 0 if it is reduced (so those elements
+    accumulate into one output cell), otherwise the row-major stride of
+    the axis it maps to in ``out_shape``. With ``keepdims`` the output
+    keeps the reduced axes (as size 1), so input axis ``d`` maps to
+    output axis ``d``; without it, the kept input axes map in order to the
+    surviving output axes. Assumes ``out_shape == reduce_shape(in_shape,
+    ...)`` for the same reduction."""
+    out_full = row_major_strides(out_shape)
+    result = [0] * len(in_shape)
+    if keepdims:
+        for d in range(len(in_shape)):
+            result[d] = 0 if d in reduced_axes else out_full[d]
+    else:
+        out_index = 0
+        for d in range(len(in_shape)):
+            if d in reduced_axes:
+                continue  # reduced axis: stays 0, no output axis consumed
+            result[d] = out_full[out_index]
+            out_index += 1
     return result
 
 

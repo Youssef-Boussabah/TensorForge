@@ -46,7 +46,7 @@ def test_format_time_is_readable():
 def test_quick_plan_covers_all_operations_and_tensor_core():
     groups = build_suite(cpp, quick=True)
     assert {group["operation"] for group in groups} == {
-        "add", "relu", "matmul", "contig_copy",
+        "add", "relu", "matmul", "contig_copy", "sum", "sum_axis0", "mean",
     }
     for group in groups:
         assert callable(group["baseline"])

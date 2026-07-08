@@ -456,6 +456,46 @@ def test_compute_works_on_views():
 
 
 @needs_native
+def test_reductions_inherit_through_wrapper():
+    # v1.19: NativeTensor.sum/mean delegate to NativeTensorCore, so the
+    # wrapper gets reductions with no reduction-specific logic.
+    x = np.arange(6.0).reshape(2, 3)
+    a = NativeTensor.from_array(x)
+    for method, numpy_op in (("sum", np.sum), ("mean", np.mean)):
+        for axis, keep in ((None, False), (0, False), (1, True), (-1, False)):
+            out = getattr(a, method)(axis=axis, keepdims=keep)
+            assert isinstance(out, NativeTensor)
+            assert out.owns_core is True
+            expected = numpy_op(x, axis=axis, keepdims=keep)
+            assert out.shape == np.shape(expected)
+            assert np.allclose(out.to_numpy(), expected)
+            out.close()
+    assert np.array_equal(a.to_numpy(), x)  # input unchanged
+    a.close()
+
+
+@needs_native
+def test_reductions_work_on_views_through_wrapper():
+    x = np.arange(12.0).reshape(3, 4)
+    owner = NativeTensor.from_array(x)
+    view = owner.transpose()  # (4, 3), strided
+    assert np.allclose(view.sum(axis=0).to_numpy(), x.T.sum(axis=0))
+    assert np.allclose(view.mean().to_numpy(), x.T.mean())
+    owner.close()
+    view.close()
+
+
+@needs_native
+def test_reductions_on_closed_tensor_raise():
+    a = NativeTensor.zeros((2, 2))
+    a.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        a.sum()
+    with pytest.raises(RuntimeError, match="closed"):
+        a.mean(axis=0)
+
+
+@needs_native
 def test_view_ops_reject_invalid_inputs():
     owner = NativeTensor.from_array(np.arange(6.0).reshape(2, 3))
     with pytest.raises(ValueError):

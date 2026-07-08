@@ -55,5 +55,11 @@ class NumpyBackend:
     def matmul(self, a, b):
         return np.asarray(a, dtype=np.float64) @ np.asarray(b, dtype=np.float64)
 
+    def sum(self, a, axis=None, keepdims=False):
+        return np.asarray(a, dtype=np.float64).sum(axis=axis, keepdims=keepdims)
+
+    def mean(self, a, axis=None, keepdims=False):
+        return np.asarray(a, dtype=np.float64).mean(axis=axis, keepdims=keepdims)
+
     def __repr__(self):
         return "NumpyBackend()"

@@ -159,6 +159,67 @@ def build_suite(cpp, quick):
                  lambda x=x: x.T),
             ],
         })
+        # Reductions (v1.19): sum-all and an axis-specific sum, each with a
+        # contiguous and a transposed-view row, plus mean-all. The view
+        # rows read a strided input directly (no materialization), so the
+        # layout-independence cost is visible beside the contiguous rows.
+        groups.append({
+            "operation": "sum",
+            "shape": label,
+            "baseline": lambda x=x: x.sum(),
+            "implementations": [
+                ("tensor core",
+                 lambda cx=cx: cx.sum(),
+                 lambda x=x: x.sum()),
+                ("tensor core (view)",
+                 lambda cx=cx: cx.T.sum(),
+                 lambda x=x: x.T.sum()),
+                ("native tensor",
+                 lambda nx=nx: nx.sum(),
+                 lambda x=x: x.sum()),
+                ("native tensor (view)",
+                 lambda nx=nx: nx.T.sum(),
+                 lambda x=x: x.T.sum()),
+            ],
+        })
+        groups.append({
+            "operation": "sum_axis0",
+            "shape": label,
+            "baseline": lambda x=x: x.sum(axis=0),
+            "implementations": [
+                ("tensor core",
+                 lambda cx=cx: cx.sum(axis=0),
+                 lambda x=x: x.sum(axis=0)),
+                ("tensor core (view)",
+                 lambda cx=cx: cx.T.sum(axis=0),
+                 lambda x=x: x.T.sum(axis=0)),
+                ("native tensor",
+                 lambda nx=nx: nx.sum(axis=0),
+                 lambda x=x: x.sum(axis=0)),
+                ("native tensor (view)",
+                 lambda nx=nx: nx.T.sum(axis=0),
+                 lambda x=x: x.T.sum(axis=0)),
+            ],
+        })
+        groups.append({
+            "operation": "mean",
+            "shape": label,
+            "baseline": lambda x=x: x.mean(),
+            "implementations": [
+                ("tensor core",
+                 lambda cx=cx: cx.mean(),
+                 lambda x=x: x.mean()),
+                ("tensor core (view)",
+                 lambda cx=cx: cx.T.mean(),
+                 lambda x=x: x.T.mean()),
+                ("native tensor",
+                 lambda nx=nx: nx.mean(),
+                 lambda x=x: x.mean()),
+                ("native tensor (view)",
+                 lambda nx=nx: nx.T.mean(),
+                 lambda x=x: x.T.mean()),
+            ],
+        })
 
     for n in matmul_sizes:
         m1 = rng.normal(size=(n, n))

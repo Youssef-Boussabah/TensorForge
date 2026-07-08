@@ -105,7 +105,33 @@ def test_numpy_backend_add_follows_numpy_broadcasting():
     assert np.array_equal(backend.add(matrix, row), matrix + row)
 
 
+def test_numpy_backend_reductions():
+    backend = get_backend("numpy")
+    x = np.arange(6.0).reshape(2, 3)
+    assert np.allclose(backend.sum(x), x.sum())
+    assert np.allclose(backend.sum(x, axis=0), x.sum(axis=0))
+    assert np.allclose(backend.mean(x, axis=1, keepdims=True), x.mean(axis=1, keepdims=True))
+
+
 # -- native backend ---------------------------------------------------
+
+
+@needs_native
+def test_native_backend_reductions_match_numpy():
+    # v1.19: the native backend exposes sum/mean, delegating to the core.
+    backend = get_backend("native")
+    x = np.arange(6.0).reshape(2, 3)
+    t = backend.tensor_from_array(x)
+    assert np.allclose(backend.to_numpy(backend.sum(t)), x.sum())
+    assert np.allclose(backend.to_numpy(backend.sum(t, axis=0)), x.sum(axis=0))
+    assert np.allclose(
+        backend.to_numpy(backend.mean(t, axis=1, keepdims=True)),
+        x.mean(axis=1, keepdims=True),
+    )
+    # A non-NativeTensorCore operand is rejected, like the other ops.
+    with pytest.raises(TypeError, match="NativeTensorCore"):
+        backend.sum(x)
+    t.close()
 
 
 def test_native_backend_is_constructible_and_reports_availability():

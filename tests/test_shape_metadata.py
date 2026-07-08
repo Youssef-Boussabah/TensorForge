@@ -13,6 +13,7 @@ from tensorforge.backends.cpp import (
     flat_offset,
     is_contiguous_shape,
     numel,
+    reduce_shape,
     row_major_strides,
     shape_info,
 )
@@ -202,3 +203,74 @@ def test_broadcast_shapes_rejects_invalid_dims():
         broadcast_shapes((2, 0), (2, 3))
     with pytest.raises(TypeError, match="ints"):
         broadcast_shapes((2, 1.5), (2, 3))
+
+
+# ---------------------------------------------------------------------------
+# reduce_shape (v1.19): pure reduction output-shape inference.
+# ---------------------------------------------------------------------------
+
+
+def test_reduce_shape_axis_none():
+    assert reduce_shape((2, 3)) == ()
+    assert reduce_shape((2, 3), axis=None) == ()
+    assert reduce_shape((2, 3, 4)) == ()
+    assert reduce_shape(()) == ()  # a scalar reduces to a scalar
+
+
+def test_reduce_shape_axis_none_keepdims():
+    assert reduce_shape((2, 3), keepdims=True) == (1, 1)
+    assert reduce_shape((2, 3, 4), axis=None, keepdims=True) == (1, 1, 1)
+    assert reduce_shape((5,), keepdims=True) == (1,)
+
+
+def test_reduce_shape_single_axis():
+    assert reduce_shape((2, 3), axis=0) == (3,)
+    assert reduce_shape((2, 3), axis=1) == (2,)
+    assert reduce_shape((2, 3, 4), axis=1) == (2, 4)
+
+
+def test_reduce_shape_single_axis_keepdims():
+    assert reduce_shape((2, 3), axis=1, keepdims=True) == (2, 1)
+    assert reduce_shape((2, 3, 4), axis=0, keepdims=True) == (1, 3, 4)
+
+
+def test_reduce_shape_negative_axis():
+    assert reduce_shape((2, 3, 4), axis=-1) == (2, 3)
+    assert reduce_shape((2, 3, 4), axis=-1, keepdims=True) == (2, 3, 1)
+    assert reduce_shape((2, 3), axis=-2) == (3,)
+
+
+def test_reduce_shape_matches_numpy_where_defined():
+    for shape, axis, keep in (
+        ((2, 3), None, False), ((2, 3), 0, False), ((2, 3), 1, True),
+        ((2, 3, 4), -1, False), ((2, 3, 4), 1, True), ((5,), 0, False),
+    ):
+        expected = np.sum(np.zeros(shape), axis=axis, keepdims=keep).shape
+        assert reduce_shape(shape, axis=axis, keepdims=keep) == expected
+
+
+def test_reduce_shape_invalid_axis_names_axis_and_shape():
+    with pytest.raises(ValueError) as excinfo:
+        reduce_shape((2, 3), axis=2)
+    assert "2" in str(excinfo.value) and "(2, 3)" in str(excinfo.value)
+    with pytest.raises(ValueError, match=r"-3.*\(2, 3\)"):
+        reduce_shape((2, 3), axis=-3)
+    # Any integer axis on a scalar is out of bounds.
+    with pytest.raises(ValueError, match=r"axis 0.*\(\)"):
+        reduce_shape((), axis=0)
+
+
+def test_reduce_shape_non_int_axis_raises_typeerror():
+    with pytest.raises(TypeError, match="axis"):
+        reduce_shape((2, 3), axis=1.0)
+    with pytest.raises(TypeError, match="axis"):
+        reduce_shape((2, 3), axis="0")
+    with pytest.raises(TypeError, match="axis"):
+        reduce_shape((2, 3), axis=True)  # bool is not a meaningful axis
+
+
+def test_reduce_shape_non_bool_keepdims_raises_typeerror():
+    with pytest.raises(TypeError, match="keepdims"):
+        reduce_shape((2, 3), axis=0, keepdims="yes")
+    with pytest.raises(TypeError, match="keepdims"):
+        reduce_shape((2, 3), keepdims=1)

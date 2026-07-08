@@ -66,6 +66,16 @@ TF_EXPORT void tf_storage_fill(void* handle, double value) {
     }
 }
 
+// Multiply every element by a scalar factor, in place. A small storage
+// primitive alongside tf_storage_fill; used by the mean reduction to
+// scale a freshly summed output by 1/count in float64.
+TF_EXPORT void tf_storage_scale(void* handle, double factor) {
+    TfStorage* storage = static_cast<TfStorage*>(handle);
+    for (int64_t i = 0; i < storage->size; ++i) {
+        storage->data[i] *= factor;
+    }
+}
+
 TF_EXPORT void tf_storage_copy_from(void* handle, const double* src) {
     TfStorage* storage = static_cast<TfStorage*>(handle);
     for (int64_t i = 0; i < storage->size; ++i) {
@@ -280,6 +290,54 @@ TF_EXPORT void tf_core_matmul(
             dst[i * p + j] = sum;
         }
     }
+}
+
+// Sum reduction over a tensor core: the dual of broadcasting. Where a
+// broadcast reads one element into many output positions via zero READ
+// strides, a reduction writes many input elements into one output cell
+// via zero WRITE strides. The input is walked with the usual odometer
+// (its shape/strides/offset, so transposed/narrowed/offset views work
+// without materializing); alongside the input position we advance an
+// output position by out_strides — the row-major stride of each KEPT
+// axis in the output, or 0 for each REDUCED axis, so reduced axes
+// accumulate into the same cell. dst is fresh zero-initialized storage
+// (the additive identity), so a plain += accumulates. For axis=None
+// every out_stride is 0 and everything lands in dst[0]. Deterministic
+// row-major (input) order; no SIMD/FMA/Kahan/pairwise. Python chooses
+// the output shape/strides (keepdims included) and does mean's scaling.
+TF_EXPORT void tf_core_sum(
+    const void* src_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* in_strides, const int64_t* out_strides,
+    int64_t offset, int64_t ndim
+) {
+    const double* src = static_cast<const TfStorage*>(src_handle)->data;
+    double* dst = static_cast<TfStorage*>(dst_handle)->data;
+    if (ndim == 0) {  // scalar input: its single element is the whole sum
+        dst[0] += src[offset];
+        return;
+    }
+    int64_t total = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        total *= shape[d];
+    }
+    int64_t* counter = new int64_t[ndim]();
+    int64_t in_pos = offset;
+    int64_t out_pos = 0;
+    for (int64_t i = 0; i < total; ++i) {
+        dst[out_pos] += src[in_pos];
+        for (int64_t d = ndim - 1; d >= 0; --d) {
+            ++counter[d];
+            in_pos += in_strides[d];
+            out_pos += out_strides[d];
+            if (counter[d] < shape[d]) {
+                break;
+            }
+            counter[d] = 0;
+            in_pos -= shape[d] * in_strides[d];
+            out_pos -= shape[d] * out_strides[d];
+        }
+    }
+    delete[] counter;
 }
 
 // Materialize a strided view of the storage into a contiguous output

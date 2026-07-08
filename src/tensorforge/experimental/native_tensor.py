@@ -149,24 +149,36 @@ class NativeTensor:
         return self._from_core(self._require_open().relu())
 
     def add(self, other):
-        """self + other elementwise, natively. Exact-shape only — no
-        broadcasting. Returns a new owning NativeTensor."""
+        """self + other elementwise, natively. Identical shapes or
+        NumPy-style broadcasting. Returns a new owning NativeTensor."""
         return self._binary("add", other)
 
     def subtract(self, other):
-        """self - other elementwise, natively. Exact-shape only — no
-        broadcasting. Returns a new owning NativeTensor."""
+        """self - other elementwise, natively. Identical shapes or
+        NumPy-style broadcasting. Returns a new owning NativeTensor."""
         return self._binary("subtract", other)
 
     def multiply(self, other):
-        """self * other elementwise, natively. Exact-shape only — no
-        broadcasting. Returns a new owning NativeTensor."""
+        """self * other elementwise, natively. Identical shapes or
+        NumPy-style broadcasting. Returns a new owning NativeTensor."""
         return self._binary("multiply", other)
 
     def matmul(self, other):
         """(m, n) @ (n, p) matrix multiply, natively. 2-D only, no
         broadcasting. Returns a new owning NativeTensor."""
         return self._binary("matmul", other)
+
+    def sum(self, axis=None, keepdims=False):
+        """Sum over ``axis`` (``None`` = all elements) natively, delegating
+        to NativeTensorCore. Returns a new owning NativeTensor; the
+        original stays open."""
+        return self._from_core(self._require_open().sum(axis=axis, keepdims=keepdims))
+
+    def mean(self, axis=None, keepdims=False):
+        """Mean over ``axis`` (``None`` = all elements) natively, delegating
+        to NativeTensorCore. Returns a new owning NativeTensor; the
+        original stays open."""
+        return self._from_core(self._require_open().mean(axis=axis, keepdims=keepdims))
 
     def _binary(self, op_name, other):
         """Shared plumbing for the binary compute ops: require self and

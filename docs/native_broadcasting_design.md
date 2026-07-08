@@ -398,9 +398,11 @@ relationship explicitly: broadcasting is a "copy" (zero *read* strides)
 and its adjoint is a "sum" (zero *write* strides), so `sum` over the
 broadcast axes is exactly the native operation a broadcasting backward
 will need. See
-[native_reductions_design.md](native_reductions_design.md) §8. That is
-design-only too; the broadcasting implementation described in this
-document is unchanged.
+[native_reductions_design.md](native_reductions_design.md) §8. As of
+v1.19 that native `sum` **exists** (forward-only) — so the operation a
+broadcasting backward will eventually need is now available in the
+runtime, though no backward is wired up yet. The broadcasting
+implementation described in this document is unchanged.
 
 ## 16. Fit in the Daedalus-class roadmap
 

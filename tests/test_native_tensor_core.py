@@ -811,3 +811,140 @@ def test_broadcasting_does_not_disturb_same_shape_paths():
         sa, sb = oa.T, ob.T
         assert sa.shape == sb.shape and not sa.contiguous
         assert np.array_equal(sa.multiply(sb).to_numpy(), x * y)
+
+
+# ---------------------------------------------------------------------------
+# v1.19: native sum/mean reductions
+#
+# NumPy is the reference. Float sums are order-sensitive, so reduction
+# VALUES are compared with np.allclose (not np.array_equal); output
+# SHAPES are compared exactly.
+# ---------------------------------------------------------------------------
+
+
+REDUCE_CASES = [
+    (shape, axis, keep)
+    for shape in ((2, 3), (2, 3, 4), (5,))
+    for axis in (None, 0, -1)
+    for keep in (False, True)
+]
+
+
+@pytest.mark.parametrize("shape,axis,keepdims", REDUCE_CASES)
+@pytest.mark.parametrize("method", ("sum", "mean"))
+def test_reductions_match_numpy(shape, axis, keepdims, method):
+    rng = np.random.default_rng(190)
+    x = rng.normal(size=shape)
+    numpy_op = np.sum if method == "sum" else np.mean
+    with cpp.NativeTensorCore.from_array(x) as a:
+        result = getattr(a, method)(axis=axis, keepdims=keepdims)
+        expected = numpy_op(x, axis=axis, keepdims=keepdims)
+        assert isinstance(result, cpp.NativeTensorCore)
+        assert result.shape == np.shape(expected)
+        assert result.contiguous is True  # output row-major contiguous
+        assert np.allclose(result.to_numpy(), expected)
+        result.close()
+
+
+def test_reduction_axis0_and_axis1_values():
+    x = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    with cpp.NativeTensorCore.from_array(x) as a:
+        assert np.allclose(a.sum(axis=0).to_numpy(), [5.0, 7.0, 9.0])
+        assert np.allclose(a.sum(axis=1).to_numpy(), [6.0, 15.0])
+        assert np.allclose(a.mean(axis=0).to_numpy(), [2.5, 3.5, 4.5])
+        assert np.allclose(a.mean(axis=1).to_numpy(), [2.0, 5.0])
+        assert np.allclose(a.sum().to_numpy(), 21.0)
+        assert np.allclose(a.mean().to_numpy(), 3.5)
+
+
+def test_reduction_negative_axis_equals_positive():
+    rng = np.random.default_rng(191)
+    x = rng.normal(size=(2, 3, 4))
+    with cpp.NativeTensorCore.from_array(x) as a:
+        assert np.allclose(a.sum(axis=-1).to_numpy(), a.sum(axis=2).to_numpy())
+        assert np.allclose(a.mean(axis=-2).to_numpy(), a.mean(axis=1).to_numpy())
+
+
+def test_reduction_keepdims_shapes():
+    with cpp.NativeTensorCore.zeros((2, 3, 4)) as a:
+        assert a.sum(axis=1).shape == (2, 4)
+        assert a.sum(axis=1, keepdims=True).shape == (2, 1, 4)
+        assert a.sum(keepdims=True).shape == (1, 1, 1)
+        assert a.sum().shape == ()
+
+
+def test_scalar_reductions():
+    with cpp.NativeTensorCore.full((), -3.0) as s:
+        assert s.sum().shape == ()
+        assert float(s.sum().to_numpy()) == -3.0
+        assert float(s.mean().to_numpy()) == -3.0
+        # A scalar has no axes: an integer axis is out of bounds.
+        with pytest.raises(ValueError, match=r"axis 0.*\(\)"):
+            s.sum(axis=0)
+
+
+def test_reduction_over_transposed_view():
+    # Layout independence: a strided (transposed) input reduces correctly.
+    rng = np.random.default_rng(192)
+    x = rng.normal(size=(3, 4))
+    with cpp.NativeTensorCore.from_array(np.ascontiguousarray(x.T)) as owner:
+        view = owner.T  # (3, 4), non-contiguous, materializes to x
+        assert view.contiguous is False
+        assert np.allclose(view.sum(axis=0).to_numpy(), x.sum(axis=0))
+        assert np.allclose(view.mean(axis=1).to_numpy(), x.mean(axis=1))
+        assert np.allclose(view.sum().to_numpy(), x.sum())
+
+
+def test_reduction_over_narrowed_nonzero_offset_view():
+    rng = np.random.default_rng(193)
+    x = rng.normal(size=(5, 4))
+    with cpp.NativeTensorCore.from_array(x) as a:
+        rows = a.narrow(0, 1, 3)  # x[1:4], contiguous, offset 4
+        assert rows.offset == 4
+        assert np.allclose(rows.sum(axis=1).to_numpy(), x[1:4].sum(axis=1))
+        cols = a.narrow(1, 1, 2)  # (5, 2) inner narrow -> non-contiguous
+        assert cols.contiguous is False
+        assert np.allclose(cols.mean(axis=0).to_numpy(), x[:, 1:3].mean(axis=0))
+
+
+def test_reduction_after_broadcasted_elementwise():
+    # Chains A2 (broadcasting) into A3 (reductions): sum a broadcast result.
+    rng = np.random.default_rng(194)
+    x = rng.normal(size=(2, 3))
+    bias = rng.normal(size=(3,))
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(bias) as b:
+        summed = a.add(b).sum(axis=0)
+        assert np.allclose(summed.to_numpy(), (x + bias).sum(axis=0))
+
+
+def test_reduction_output_independent_and_input_unchanged():
+    x = np.array([[1.0, 2.0], [3.0, 4.0]])
+    with cpp.NativeTensorCore.from_array(x) as a:
+        result = a.sum(axis=0)
+        assert result.storage is not a.storage
+        result.storage.fill(0.0)  # mutating the output...
+        assert np.array_equal(a.to_numpy(), x)  # ...leaves the input
+        # mean does not mutate the input either.
+        _ = a.mean(axis=1)
+        assert np.array_equal(a.to_numpy(), x)
+
+
+def test_reduction_invalid_axis_and_types_raise():
+    with cpp.NativeTensorCore.zeros((2, 3)) as a:
+        for bad in (2, -3):
+            with pytest.raises(ValueError) as excinfo:
+                a.sum(axis=bad)
+            assert str(bad) in str(excinfo.value) and "(2, 3)" in str(excinfo.value)
+        with pytest.raises(TypeError, match="axis"):
+            a.sum(axis=1.0)
+        with pytest.raises(TypeError, match="keepdims"):
+            a.mean(keepdims="yes")
+
+
+def test_reduction_on_closed_core_raises():
+    a = cpp.NativeTensorCore.zeros((2, 2))
+    a.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        a.sum()
+    with pytest.raises(RuntimeError, match="closed"):
+        a.mean(axis=0)

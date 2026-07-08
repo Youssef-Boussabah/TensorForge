@@ -1,10 +1,42 @@
 # Native reductions — design
 
-This is a **design document, not an implementation.** It specifies
-reductions (`sum`, `mean` first) for the native runtime — new
-`NativeTensorCore` / `NativeTensor` methods that collapse one axis (or
-all of them) of a tensor. No kernels change in this milestone (v1.18);
-the implementation is v1.19.
+This began as a **design document** (written in v1.18, ahead of any code)
+specifying reductions (`sum`, `mean` first) for the native runtime — new
+`NativeTensorCore` / `NativeTensor` methods that collapse one axis (or all
+of them) of a tensor. **Status: implemented in v1.19**, following this
+design.
+
+The implementation matched the plan closely:
+
+- A pure `reduce_shape(shape, axis, keepdims)` helper (plus
+  `_normalize_axis` and `_reduce_out_strides`) sits beside
+  `broadcast_shapes` in `cpp.py`, testable without the built backend.
+- One new C ABI kernel, **`tf_core_sum`**, is the scatter-accumulate
+  odometer of §6 — the exact dual of broadcasting: it walks the input
+  with its real shape/strides/offset while advancing an output position
+  by per-input-axis write-strides (0 on reduced axes), so many input
+  elements accumulate into one zero-initialized output cell. It reads
+  transposed/narrowed/nonzero-offset inputs directly, materializing
+  nothing.
+- **`mean`** reuses `sum` and scales the freshly summed output in place
+  by `1/count` via a small storage primitive, **`tf_storage_scale`** (an
+  in-place float64 multiply, sibling of `tf_storage_fill`) — staying in
+  the native path with no NumPy round trip. (This is a reciprocal-multiply
+  by `1/count`, so it can differ from NumPy's `sum/count` by a ULP; that
+  is why reduction values are tested with `np.allclose`, not
+  `np.array_equal` — see §7.)
+- `NativeTensorCore.sum`/`mean(axis=None, keepdims=False)` and the
+  delegating `NativeTensor.sum`/`mean` landed, with `sum`/`mean` also
+  added to the explicit NumPy and native backends (their surfaces are
+  kept symmetric). `NativeTensor` inherited reductions with no
+  reduction-specific logic, as predicted.
+
+Reductions ship **forward-only** — no autograd was added; the
+broadcast/backward relationship (§8) remains reserved for the future
+native-autograd phase. No `max`/`argmax`/`min`/`product`, tuple axes,
+`Tensor` integration, CUDA, dtype promotion, operator overloads,
+distributed reductions, or advanced summation came with it. The sections
+below remain the design of record.
 
 For where this sits, see [backend_experiments.md](backend_experiments.md)
 (the native runtime and benchmarks),
@@ -378,8 +410,8 @@ Reductions are the third step of **Phase A — native CPU runtime**:
   implementation v1.14, benchmark impact v1.15).
 - **A2 — broadcasting** — complete (design v1.16, implementation v1.17).
 - **A3 — reductions** — this design (v1.18) → implementation (v1.19),
-  `sum`/`mean` first; `max`/`argmax`/`min`/`product` in later reduction
-  milestones.
+  **complete** for `sum`/`mean`; `max`/`argmax`/`min`/`product` in later
+  reduction milestones. Next is A4, whose design milestone is v1.20.
 - **A4 — dtype / device metadata** (beyond float64-CPU-only) — closes out
   Phase A.
 

@@ -60,5 +60,11 @@ class NativeBackend:
     def matmul(self, a, b):
         return self._require_core(a, "matmul").matmul(self._require_core(b, "matmul"))
 
+    def sum(self, a, axis=None, keepdims=False):
+        return self._require_core(a, "sum").sum(axis=axis, keepdims=keepdims)
+
+    def mean(self, a, axis=None, keepdims=False):
+        return self._require_core(a, "mean").mean(axis=axis, keepdims=keepdims)
+
     def __repr__(self):
         return f"NativeBackend(available={self.available()})"

@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.18 (current)
+## C++ backend — v1.19 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -378,6 +378,50 @@ reference — view rows compute transposed results) before anything is
 timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
+
+### Native reductions — implementation (v1.19)
+
+v1.19 implements native `sum` and `mean` reductions for
+`NativeTensorCore` / `NativeTensor`, following the v1.18 design. Supported
+semantics are NumPy-style: `axis=None` reduces every element, a single
+integer or **negative** `axis` reduces one dimension, and `keepdims`
+controls whether the reduced axis stays as size 1.
+
+```python
+a = NativeTensorCore.from_array(np.arange(6.0).reshape(2, 3))
+a.sum()                     # () scalar total
+a.sum(axis=0)               # (3,)
+a.sum(axis=1, keepdims=True)# (2, 1)
+a.mean(axis=-1)             # (2,)  negative axis
+```
+
+A pure `reduce_shape(shape, axis, keepdims)` helper (beside
+`broadcast_shapes`) infers the output shape and validates axis/keepdims.
+The compute is one new C ABI kernel, **`tf_core_sum`**, that is the
+**dual of broadcasting**: where a broadcast reads one element into many
+output positions through zero *read*-strides, a reduction walks the input
+odometer and writes many elements into one output cell through zero
+*write*-strides (0 on reduced axes). It reads the input through its
+existing shape/stride/offset metadata, so contiguous, transposed,
+narrowed, and nonzero-offset inputs all reduce correctly **without being
+materialized**, accumulating into freshly allocated zero-initialized
+row-major contiguous output. `mean` reuses `sum` and scales the output in
+place by `1/count` via a small `tf_storage_scale` primitive — no NumPy
+touches the data. `NativeTensor.sum`/`mean` delegate to the core, so the
+wrapper inherited reductions with no reduction-specific code, and the
+explicit NumPy and native backends gained symmetric `sum`/`mean` methods.
+
+Numerical behavior is honest: float sums are order-sensitive, so the
+kernel uses a plain deterministic row-major accumulation (no
+SIMD/FMA/Kahan/pairwise), and results are checked against NumPy with a
+**tolerance** (`np.allclose`), not bit-for-bit. Reductions are
+**forward-only** — no autograd was added; the broadcast/backward
+relationship (a broadcast backward is a reduction over the broadcast
+axes) stays reserved for the future native-autograd phase. No
+`max`/`argmax`/`min`/`product`, tuple axes, `Tensor` integration, CUDA,
+dtype promotion, operator overloads, or distributed reductions came with
+it. Full design in
+[native_reductions_design.md](native_reductions_design.md).
 
 ### Native reductions — design (v1.18)
 
@@ -793,13 +837,11 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 The contiguous elementwise fast path is **implemented** (v1.14) and
 **reported** (v1.15); native broadcasting is **implemented** (v1.17); and
-native reductions are now **designed** (v1.18, above) — the same
-design-first cadence. The next step is **v1.19 — the native reductions
-implementation** (Phase A3): `sum`/`mean` with `axis`/`keepdims` over the
-scatter-accumulate traversal, verified against NumPy to a documented
-floating-point tolerance, `NativeTensor` inheriting them by delegation.
-After that, dtype/device metadata (A4) closes out Phase A, at which point
-the runtime is ready for the **native autograd** phase reductions unblock.
-Still no Tensor integration, no autograd. CUDA experiments remain a
-separate future branch. The Python framework stays the reference
-implementation throughout.
+native `sum`/`mean` reductions are now **implemented** (v1.19, above) —
+completing Phase A3's first scope. The next step is **v1.20 — a native
+dtype/device metadata design** (Phase A4): a design-first milestone for
+carrying dtype and device beyond today's float64-CPU-only assumption, the
+last Phase A step before the runtime is ready for the **native autograd**
+phase that reductions unblock. Still no Tensor integration, no autograd.
+CUDA experiments remain a separate future branch. The Python framework
+stays the reference implementation throughout.

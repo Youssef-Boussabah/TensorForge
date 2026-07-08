@@ -175,5 +175,22 @@ builds none of it. `NativeTensor` will inherit `sum`/`mean` by delegation
 with no wrapper change; no autograd, `Tensor` integration, CUDA, dtype
 promotion, operator overloads, tuple-axis, or distributed reductions come
 with it ([native_reductions_design.md](native_reductions_design.md)). No
-code ships; implementation is v1.19. CUDA/GPU experiments remain future
-work.
+code ships; implementation is v1.19. **v1.19** implements that design:
+`NativeTensorCore`/`NativeTensor` gain `sum`/`mean(axis=None,
+keepdims=False)` with NumPy-style semantics (all-elements, single integer
+or negative axis, `keepdims`). A pure `reduce_shape` helper infers the
+output shape, and one new C ABI kernel `tf_core_sum` — the **dual of
+broadcasting** (broadcasting reads through zero strides; a reduction
+writes through zero strides) — scatter-accumulates a strided input
+(contiguous/transposed/narrowed/nonzero-offset, never materialized) into
+freshly allocated zero-initialized row-major contiguous output; `mean`
+reuses `sum` and scales in place by `1/count` via a small
+`tf_storage_scale` primitive, no NumPy touching the data. `NativeTensor`
+inherited reductions by delegation with no wrapper edit, and the explicit
+NumPy/native backends gained symmetric `sum`/`mean`. Reductions are
+forward-only — no autograd — with float order-sensitivity handled
+honestly (deterministic plain loop, NumPy comparison to a tolerance, no
+Kahan/pairwise/SIMD). No `max`/`argmax`/`min`/`product`, tuple axes,
+`Tensor` integration, CUDA, dtype promotion, operator overloads, or
+distributed reductions were added; the next step is v1.20, a native
+dtype/device metadata design. CUDA/GPU experiments remain future work.

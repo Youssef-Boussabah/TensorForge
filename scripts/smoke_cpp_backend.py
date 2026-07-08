@@ -68,6 +68,11 @@ def main():
     assert signs.relu().to_numpy().tolist() == [[0.0, 2.0], [3.0, 0.0]]
     assert signs.T.multiply(signs.T).to_numpy().tolist() == [[1.0, 9.0], [4.0, 16.0]]
 
+    # TensorCore reductions, native end to end (v1.19).
+    assert tensor.sum().to_numpy().tolist() == 21.0
+    assert tensor.sum(axis=0).to_numpy().tolist() == [5.0, 7.0, 9.0]
+    assert tensor.mean(axis=1).to_numpy().tolist() == [2.0, 5.0]
+
     # TensorCore matmul, native end to end.
     right = NativeTensorCore.from_array(y)
     assert tensor.matmul(right).to_numpy().tolist() == expected

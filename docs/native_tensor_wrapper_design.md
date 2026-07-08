@@ -341,13 +341,19 @@ runtime beneath it grew:
   native `sum`/`mean` (`axis`/`keepdims`, negative axes) in the
   `NativeTensorCore`/native-kernel layer, via a scatter-accumulate
   traversal that is the dual of broadcasting — see
-  [native_reductions_design.md](native_reductions_design.md). As with the
-  fast path and broadcasting, **reductions belong below `NativeTensor`,
-  in `NativeTensorCore`.** The wrapper's future `sum`/`mean` will simply
-  delegate to the core method and re-wrap the result (like `relu`/`add`
-  do), so `NativeTensor` inherits `sum`/`mean` with no reduction-specific
-  logic and stays a thin, forward-only wrapper: no autograd, no operator
-  overloads, not `tensorforge.Tensor`. Implementation is v1.19.
+  [native_reductions_design.md](native_reductions_design.md).
+- **v1.19 — native reductions implementation (done):** `NativeTensorCore`
+  gained `sum`/`mean(axis=None, keepdims=False)` (a `tf_core_sum`
+  scatter-accumulate kernel, `mean` scaling the sum in place), and
+  `NativeTensor.sum`/`mean` are **thin delegations** that re-wrap the
+  result (`self._require_open().<op>(...)`), exactly like `relu`/`add`.
+  So the wrapper inherited reductions with **no reduction-specific
+  logic** — the fourth time an improvement placed in `NativeTensorCore`
+  reached `NativeTensor` for free (after the fast path, its benchmark
+  story, and broadcasting). Closed tensors raise the usual
+  `RuntimeError` through the existing gate. `NativeTensor` stays a thin,
+  forward-only, experimental wrapper: no autograd, no operator overloads,
+  not `tensorforge.Tensor`.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision
