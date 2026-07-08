@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.17 (current)
+## C++ backend — v1.18 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -378,6 +378,43 @@ reference — view rows compute transposed results) before anything is
 timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
+
+### Native reductions — design (v1.18)
+
+v1.18 is **design-only**: no kernels change and reductions are **not
+implemented**. With Phase A1 (contiguous fast path) and A2 (broadcasting)
+complete, the next Phase A step is reductions — collapsing an axis (or all
+of them) of a tensor — and this milestone writes their design.
+
+Reductions follow broadcasting for a concrete reason: they are the
+**prerequisite for native autograd**. Broadcasting's forward pass reads
+one element into many positions (zero read-strides); its backward pass
+must do the opposite — **sum the gradient over the broadcast axes** —
+which is a reduction. Today `NativeTensorCore` / `NativeTensor` expose no
+`sum`/`mean`, so no broadcasting op can have a native backward yet; A3
+unblocks that.
+
+The design specifies `sum` and `mean` first (`max`/`argmax`/`min`/
+`product` deferred — `max`/`argmax` complicate the zero-initialized
+accumulate and, for `argmax`, return indices rather than float64 values),
+with NumPy-style semantics: `axis=None` reduces everything, a single
+integer (or negative) `axis` reduces one dimension, and `keepdims`
+controls whether the reduced axis stays as size 1
+(`(2, 3).sum(axis=1) -> (2,)`, `... keepdims=True -> (2, 1)`,
+`().sum() -> ()`). The traversal is the **dual of broadcasting**: where
+broadcasting reads through zero strides, a reduction **writes** through
+zero strides — many input elements scatter-accumulate into one output
+cell — so the same odometer machinery drives it, reads any
+contiguous/transposed/narrowed/nonzero-offset input directly without
+materializing, and writes a freshly allocated row-major contiguous
+output. Numerical honesty is explicit: float sums are order-sensitive, so
+the design commits to a plain deterministic loop (no Kahan/pairwise/SIMD
+in first scope) and to comparing against NumPy with **tolerances**, not
+bit-for-bit. `NativeTensor` will inherit `sum`/`mean` by delegation with
+no wrapper change; no autograd, `Tensor` integration, CUDA, dtype
+promotion, operator overloads, tuple-axis, or distributed reductions come
+with it. Implementation is v1.19. Full design in
+[native_reductions_design.md](native_reductions_design.md).
 
 ### Native broadcasting — implementation (v1.17)
 
@@ -754,14 +791,15 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 ## What might come next
 
-The contiguous elementwise fast path is **implemented** (v1.14) and its
-impact **measured and reported** (v1.15), and native broadcasting is now
-**designed (v1.16) and implemented (v1.17, above)** — completing Phase A2.
-The next step is **v1.18 — a native reductions design** (Phase A3): a
-design-first milestone for `sum`/`mean`/`max` and friends, with their own
-traversal and numerical-order considerations (and, notably, the mirror
-image of broadcasting's forward pass — a broadcast read corresponds to a
-sum-reduction on the eventual backward pass). After that, dtype/device
-metadata (A4) closes out Phase A. Still no Tensor integration, no
-autograd. CUDA experiments remain a separate future branch. The Python
-framework stays the reference implementation throughout.
+The contiguous elementwise fast path is **implemented** (v1.14) and
+**reported** (v1.15); native broadcasting is **implemented** (v1.17); and
+native reductions are now **designed** (v1.18, above) — the same
+design-first cadence. The next step is **v1.19 — the native reductions
+implementation** (Phase A3): `sum`/`mean` with `axis`/`keepdims` over the
+scatter-accumulate traversal, verified against NumPy to a documented
+floating-point tolerance, `NativeTensor` inheriting them by delegation.
+After that, dtype/device metadata (A4) closes out Phase A, at which point
+the runtime is ready for the **native autograd** phase reductions unblock.
+Still no Tensor integration, no autograd. CUDA experiments remain a
+separate future branch. The Python framework stays the reference
+implementation throughout.

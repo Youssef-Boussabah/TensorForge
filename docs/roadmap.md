@@ -102,11 +102,22 @@ The Python line is done; what remains is expansion on its own terms:
   strides). `NativeTensor` and the explicit native backend inherited it
   with no wrapper edit, and results match NumPy exactly
   ([native_broadcasting_design.md](native_broadcasting_design.md)). The
-  next step there is **Advanced C++ v1.18 — a native reductions design**
-  (Phase A3): a design-first milestone for `sum`/`mean`/`max` and their
-  traversal and numerical-order considerations. CUDA/GPU experiments are
-  still entirely future work. The Python framework stays the reference
-  implementation.
+  native reductions are now **designed** (v1.18, Phase A3): a design-only
+  milestone for `sum`/`mean` (`axis`/`keepdims`, negative axes;
+  `max`/`argmax`/`min`/`product` deferred) via a scatter-accumulate
+  traversal that is the dual of broadcasting — where broadcasting reads
+  through zero strides, a reduction writes through zero strides — reading
+  any strided/offset input directly and writing a freshly allocated
+  row-major contiguous output, with honest order-sensitive floating-point
+  behavior (NumPy comparison to a tolerance, not bit-for-bit) and the
+  broadcast-backward relationship recorded as the reason reductions
+  precede native autograd
+  ([native_reductions_design.md](native_reductions_design.md)); no code
+  ships. The next step there is **Advanced C++ v1.19 — the native
+  reductions implementation**: `sum`/`mean` over that traversal, verified
+  against NumPy, with `NativeTensor` inheriting them by delegation.
+  CUDA/GPU experiments are still entirely future work. The Python
+  framework stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -114,7 +125,8 @@ The Python line is done; what remains is expansion on its own terms:
     fast path — **complete** (designed v1.13, implemented v1.14,
     benchmark impact reported v1.15). A2: broadcasting for elementwise
     ops — **complete** (designed v1.16, implemented v1.17). A3: reductions
-    (sum/mean/max) — design next in **v1.18**. A4: dtype and device
+    (sum/mean first; max/argmax/min/product later) — **designed (v1.18,
+    current)**, implementation next in **v1.19**. A4: dtype and device
     metadata beyond float64-CPU-only.
   - **Then** native autograd, a native training stack, the CUDA runtime,
     an AMP / Tensor Core path, Transformer / text examples, distributed

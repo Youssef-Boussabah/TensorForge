@@ -157,6 +157,23 @@ Output stays freshly allocated row-major contiguous; `NativeTensor` (and
 the explicit native backend) inherited broadcasting with no wrapper edit;
 results match NumPy exactly, including transposed/narrowed/nonzero-offset
 operands. No reductions, autograd, `Tensor` integration, CUDA, dtype
-promotion, operator overloads, or matmul broadcasting were added; the next
-step is v1.18, a native reductions design. CUDA/GPU experiments remain
-future work.
+promotion, operator overloads, or matmul broadcasting were added.
+**v1.18** is design-only: with Phase A2 complete, it writes the design for
+native reductions — `sum`/`mean` first (`max`/`argmax`/`min`/`product`
+deferred), with NumPy-style `axis=None`/integer/negative-axis and
+`keepdims` semantics and a scatter-accumulate traversal that is the **dual
+of broadcasting** (broadcasting reads through zero strides; a reduction
+writes through zero strides, so the existing odometer machinery drives it,
+reads any contiguous/transposed/narrowed/nonzero-offset input directly
+without materializing, and writes a freshly allocated row-major contiguous
+output). It commits to honest floating-point behavior (order-sensitive
+sums, plain deterministic loop, NumPy comparison to a **tolerance** rather
+than bit-for-bit, no Kahan/pairwise/SIMD in first scope) and records the
+autograd relationship — broadcasting's backward is a reduction over the
+broadcast axes, so reductions are a prerequisite for native autograd — but
+builds none of it. `NativeTensor` will inherit `sum`/`mean` by delegation
+with no wrapper change; no autograd, `Tensor` integration, CUDA, dtype
+promotion, operator overloads, tuple-axis, or distributed reductions come
+with it ([native_reductions_design.md](native_reductions_design.md)). No
+code ships; implementation is v1.19. CUDA/GPU experiments remain future
+work.

@@ -393,6 +393,15 @@ prerequisite for native autograd. **None of this is implemented in the
 broadcasting milestone;** it is a forward-only feature, and the note
 exists only to keep the eventual backward story coherent.
 
+The A3 reductions design (v1.18) records the other half of this
+relationship explicitly: broadcasting is a "copy" (zero *read* strides)
+and its adjoint is a "sum" (zero *write* strides), so `sum` over the
+broadcast axes is exactly the native operation a broadcasting backward
+will need. See
+[native_reductions_design.md](native_reductions_design.md) §8. That is
+design-only too; the broadcasting implementation described in this
+document is unchanged.
+
 ## 16. Fit in the Daedalus-class roadmap
 
 Broadcasting is the second step of **Phase A — native CPU runtime**:

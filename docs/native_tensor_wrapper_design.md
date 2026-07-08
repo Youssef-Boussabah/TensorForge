@@ -337,6 +337,17 @@ runtime beneath it grew:
   only ever delegates. `NativeTensor` stays a thin, forward-only,
   experimental wrapper: no new methods, no autograd, no operator
   overloads, not `tensorforge.Tensor`.
+- **v1.18 — native reductions design (done):** a design (no code) for
+  native `sum`/`mean` (`axis`/`keepdims`, negative axes) in the
+  `NativeTensorCore`/native-kernel layer, via a scatter-accumulate
+  traversal that is the dual of broadcasting — see
+  [native_reductions_design.md](native_reductions_design.md). As with the
+  fast path and broadcasting, **reductions belong below `NativeTensor`,
+  in `NativeTensorCore`.** The wrapper's future `sum`/`mean` will simply
+  delegate to the core method and re-wrap the result (like `relu`/`add`
+  do), so `NativeTensor` inherits `sum`/`mean` with no reduction-specific
+  logic and stays a thin, forward-only wrapper: no autograd, no operator
+  overloads, not `tensorforge.Tensor`. Implementation is v1.19.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision
