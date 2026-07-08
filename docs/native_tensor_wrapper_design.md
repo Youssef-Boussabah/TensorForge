@@ -281,10 +281,19 @@ runtime beneath it grew:
   conversion layer is thin), while both trail NumPy — and the generic
   strided-traversal (odometer) loop, not the wrapper, dominates
   elementwise cost. That points at the next optimization target below.
-- **v1.13 — contiguous fast-path (design next):** *design* (not yet
-  implement) a path that lets contiguous tensors skip the odometer loop,
-  honestly and without changing semantics — the divergence the
-  benchmarks surface.
+- **v1.13 — contiguous fast-path design (done):** a design (no code) for
+  a flat, index-free loop that lets contiguous elementwise ops skip the
+  odometer, honestly and without changing semantics — see
+  [native_contiguous_fast_path_design.md](native_contiguous_fast_path_design.md).
+  Crucially, that optimization lives **below `NativeTensor`**, in the
+  `NativeTensorCore`/native-kernel layer: the wrapper stays a thin
+  forward-only convenience layer with **no code change**, and inherits
+  the speedup automatically once the kernels improve. The v1.12
+  benchmarks already confirmed the wrapper is not the bottleneck, which
+  is exactly why the fix belongs one layer down.
+- **v1.14 — contiguous fast-path implementation (next):** build the flat
+  kernels and the contiguity dispatch in `NativeTensorCore`, proven
+  bit-for-bit equal to the generic path.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision

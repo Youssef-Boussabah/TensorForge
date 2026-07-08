@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.12 (current)
+## C++ backend — v1.13 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -379,6 +379,24 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Contiguous fast-path — design (v1.13)
+
+v1.13 is **design-only**: no kernels change. It follows directly from the
+v1.12 benchmark finding — that the elementwise gap to NumPy comes from the
+generic shape/stride odometer traversal in the native runtime, not from
+the `NativeTensor` wrapper (the `native tensor` rows track their `tensor
+core` rows closely). The design specifies a contiguous fast path for the
+elementwise kernels (`relu`/`add`/`subtract`/`multiply`): contiguous
+inputs and outputs use a flat, index-free pointer loop, while
+non-contiguous views keep the current odometer traversal. The branch
+lives in the `NativeTensorCore`/native-kernel layer, so `NativeTensor`
+inherits it with no wrapper changes; results stay bit-for-bit identical
+and error/shape semantics are untouched. Because nothing is implemented
+yet, **no performance gain is claimed** — the full design, scope, tests,
+and risks are in
+[native_contiguous_fast_path_design.md](native_contiguous_fast_path_design.md).
+Implementation is v1.14.
+
 ### NativeTensor — benchmark coverage (v1.12)
 
 v1.12 extends the benchmark suite to characterize the `NativeTensor`
@@ -558,11 +576,11 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 ## What might come next
 
-The next step is a v1.13 *design* (not implementation) for a
-`NativeTensor` contiguous fast-path — specifying how contiguous tensors
-could skip the generic strided-traversal (odometer) loop that the
-benchmark shows dominating elementwise cost, honestly and without
-changing semantics. Still no Tensor integration. A further-out milestone
-might consider wiring kernels into Tensor behind a flag. CUDA experiments
-remain a separate future branch. The Python framework stays the
-reference implementation throughout.
+The next step is v1.14: **implementing** the contiguous elementwise fast
+path designed in v1.13 — a flat, index-free loop for contiguous
+`relu`/`add`/`subtract`/`multiply`, with the generic odometer retained
+for strided views, bit-for-bit equivalent and semantics unchanged. That
+is the first step of Phase A (native CPU runtime); broadcasting,
+reductions, and dtype/device metadata follow. Still no Tensor
+integration. CUDA experiments remain a separate future branch. The Python
+framework stays the reference implementation throughout.

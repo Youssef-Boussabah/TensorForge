@@ -15,6 +15,7 @@ DOCS = (
     "backend_experiments.md",
     "dispatch_design.md",
     "native_tensor_wrapper_design.md",
+    "native_contiguous_fast_path_design.md",
 )
 
 EXAMPLE_FILES = (

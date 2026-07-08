@@ -71,13 +71,29 @@ The Python line is done; what remains is expansion on its own terms:
   the benchmark suite times the wrapper's ops (strided views and
   `contiguous_copy` included) across NumPy, the raw-buffer kernels,
   `NativeTensorCore`, and `NativeTensor`, overheads included and with no
-  performance assertions (v1.12). The next step there is to *design*
-  (not yet implement) a `NativeTensor` contiguous fast-path — letting
-  contiguous tensors skip the generic strided-traversal loop the
-  benchmarks show dominating elementwise cost — all before any
-  conversion bridge to NumPy-backed Tensors. CUDA/GPU experiments are
-  still entirely future work. The Python framework stays the reference
+  performance assertions (v1.12). Acting on that finding — the
+  elementwise cost is the generic shape/stride odometer traversal in the
+  native runtime, not the wrapper — the contiguous elementwise fast path
+  is now **designed** (v1.13): flat, index-free loops for contiguous
+  `relu`/`add`/`subtract`/`multiply`, the odometer kept for strided
+  views, placed in the `NativeTensorCore`/native-kernel layer so
+  `NativeTensor` inherits it, bit-for-bit equivalent
+  ([native_contiguous_fast_path_design.md](native_contiguous_fast_path_design.md)).
+  The next step there is **Advanced C++ v1.14 — NativeTensorCore
+  contiguous elementwise fast path**: implementing that design and
+  proving it equal to the generic path. CUDA/GPU experiments are still
+  entirely future work. The Python framework stays the reference
   implementation.
+- **The Daedalus-class native roadmap** — the longer arc the advanced
+  branch is building toward, in phases, each landing only when the
+  previous is tested and documented:
+  - **Phase A — native CPU runtime.** A1: the contiguous elementwise
+    fast path (design done in v1.13, implementation v1.14). A2:
+    broadcasting for elementwise ops. A3: reductions (sum/mean/max). A4:
+    dtype and device metadata beyond float64-CPU-only.
+  - **Then** native autograd, a native training stack, the CUDA runtime,
+    an AMP / Tensor Core path, Transformer / text examples, distributed
+    / DDP, and a final benchmark / profiling / docs polish.
 - **A larger synthetic image example** — more classes, bigger images,
   still dependency-free.
 - **More docs** — deeper walkthroughs of individual layers, if the

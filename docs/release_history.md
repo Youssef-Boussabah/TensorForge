@@ -104,4 +104,12 @@ are timed across four layers — NumPy, the raw-buffer kernels,
 `NativeTensorCore`, and `NativeTensor` — so the wrapper's thin
 ownership/lifetime/conversion overhead is visible beside the bare
 runtime, with correctness checked before timing and no performance
-assertions anywhere. CUDA/GPU experiments remain future work.
+assertions anywhere. **v1.13** is design-only: acting on the v1.12
+finding that the elementwise cost is the generic shape/stride odometer
+traversal (not the wrapper), it specifies a contiguous fast path for the
+native `relu`/`add`/`subtract`/`multiply` kernels — flat index-free loops
+for contiguous inputs, the odometer retained for strided views, living in
+the `NativeTensorCore`/native-kernel layer so `NativeTensor` inherits it,
+bit-for-bit equivalent with unchanged semantics
+([native_contiguous_fast_path_design.md](native_contiguous_fast_path_design.md));
+no code ships. CUDA/GPU experiments remain future work.
