@@ -74,4 +74,10 @@ ownership/lifetime, the inherited conversion contract, a minimal API
 sketch, error/shape behavior, a testing plan, and a staged v1.8–v1.11
 sequence, all in
 [native_tensor_wrapper_design.md](native_tensor_wrapper_design.md); no
-code ships. CUDA/GPU experiments remain future work.
+code ships. **v1.8** builds the shell of that wrapper —
+`tensorforge.experimental.NativeTensor`, a forward-only layer over
+`NativeTensorCore` with constructors (`from_array`/`zeros`/`full`),
+metadata, `to_numpy`, and an explicit ownership/lifetime story
+(idempotent `close()`, context manager, closed tensors reject access) —
+and nothing more: no compute ops, no view ops, no autograd, not
+`tensorforge.Tensor`. CUDA/GPU experiments remain future work.

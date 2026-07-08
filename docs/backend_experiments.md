@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.7 (current)
+## C++ backend — v1.8 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -377,6 +377,45 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### NativeTensor — minimal wrapper (v1.8)
+
+v1.8 implements the *shell* of the forward-only wrapper the v1.7 design
+laid out — constructors, metadata, conversion, and lifetime only. No
+compute ops, no view ops yet (those are v1.9 and v1.10). It lives in its
+own opt-in package; `import tensorforge` never touches it.
+
+```python
+from tensorforge.experimental import NativeTensor
+
+with NativeTensor.from_array([[1.0, 2.0], [3.0, 4.0]]) as t:
+    t.shape, t.strides, t.ndim, t.numel, t.contiguous  # layout metadata
+    t.to_numpy()                                        # fresh float64 copy
+# released on block exit; t.close() works too (idempotent)
+
+z = NativeTensor.zeros((2, 3))
+f = NativeTensor.full((2, 2), 7.0)
+z.owns_core, z.closed        # ownership / lifetime state
+z.close()
+```
+
+`NativeTensor` wraps a single `NativeTensorCore`: constructors
+(`from_array`, `zeros`, `full`) own the core they create, so `close()`
+(or a `with` block) releases the native storage. A closed tensor rejects
+metadata and `to_numpy()` with a clear `RuntimeError`, while `closed`
+and `owns_core` stay readable. Conversion crosses the native boundary
+only by explicit call — `from_array` enters, `to_numpy` exits, both as
+copies.
+
+It is deliberately **not** `tensorforge.Tensor`: no autograd, no
+`requires_grad`/`grad`/`backward`, no optimizer/Module integration, no
+CUDA. And it is only a shell — `relu`/`add`/`subtract`/`multiply`/
+`matmul` and the view ops exist on `NativeTensorCore` but are not
+exposed on `NativeTensor` yet, by design. Constructors need the compiled
+backend; if it is unbuilt they raise the same build-instructions
+`ImportError` as the rest of the native runtime. The full design,
+including the staged plan, is in
+[native_tensor_wrapper_design.md](native_tensor_wrapper_design.md).
+
 ### Forward-only native tensor wrapper — design (v1.7)
 
 v1.7 is **design-only**: no code ships. It writes down the Stage-2 plan
@@ -391,9 +430,9 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 ## What might come next
 
-The next implementation step is v1.8: the minimal wrapper —
-constructors, metadata, and `to_numpy` — with compute and view ops
-following in later milestones per the design doc. A further-out
-milestone might consider wiring kernels into Tensor behind a flag. CUDA
-experiments remain a separate future branch. The Python framework stays
-the reference implementation throughout.
+The next implementation step is v1.9: `NativeTensor` compute ops —
+`relu`, `add`, `subtract`, `multiply`, `matmul` — each returning a new
+owning wrapper, with view ops following in v1.10 per the design doc. A
+further-out milestone might consider wiring kernels into Tensor behind a
+flag. CUDA experiments remain a separate future branch. The Python
+framework stays the reference implementation throughout.

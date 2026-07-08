@@ -56,9 +56,13 @@ The Python line is done; what remains is expansion on its own terms:
   (purpose, non-goals, ownership/lifetime, conversion contract, minimal
   API, testing plan, and a staged build sequence; see
   [native_tensor_wrapper_design.md](native_tensor_wrapper_design.md)),
-  though not yet implemented. The next step there is v1.8: the minimal
-  wrapper — constructors, metadata, and `to_numpy` only — with compute
-  and view ops following in later milestones, all before any conversion
+  and its **minimal shell is now implemented** (v1.8):
+  `tensorforge.experimental.NativeTensor`, a forward-only wrapper over
+  `NativeTensorCore` with constructors, metadata, `to_numpy`, and an
+  explicit ownership/lifetime story — no compute or view ops yet, no
+  autograd, not `tensorforge.Tensor`. The next step there is v1.9:
+  `NativeTensor` compute ops (`relu`, `add`, `subtract`, `multiply`,
+  `matmul`), with view ops following in v1.10, all before any conversion
   bridge to NumPy-backed Tensors. CUDA/GPU experiments are still
   entirely future work. The Python framework stays the reference
   implementation.
