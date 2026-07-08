@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.11 (current)
+## C++ backend — v1.12 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -355,8 +355,10 @@ against a shared NumPy baseline: the **raw-buffer kernels** (naive
 loops over contiguous NumPy arrays, converted at the call boundary)
 and the **NativeTensorCore kernels** (native compute over storage +
 shape/stride metadata), including non-contiguous view rows where
-transposed inputs feed the kernels directly. It is deliberately
-**not** a performance claim — the point is what the numbers teach:
+transposed inputs feed the kernels directly — and, since v1.12, the
+**NativeTensor wrapper** rows on top of those (see below). It is
+deliberately **not** a performance claim — the point is what the numbers
+teach:
 
 - On small arrays, everything native loses to NumPy: per-call ctypes
   and conversion overhead dominates.
@@ -376,6 +378,36 @@ reference — view rows compute transposed results) before anything is
 timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
+
+### NativeTensor — benchmark coverage (v1.12)
+
+v1.12 extends the benchmark suite to characterize the `NativeTensor`
+wrapper. Each operation is now measured across up to four layers:
+**NumPy**, the **raw-buffer C++ kernels**, the **NativeTensorCore**
+runtime, and the **NativeTensor** wrapper — for `add`, `relu`, `matmul`,
+their strided-view forms (`x.T.relu()`, `x.T.matmul(y)`), and
+`contiguous_copy` (materializing a transposed view; no raw-buffer analog,
+so NumPy's `ascontiguousarray` is the baseline).
+
+The point is the gap between a `tensor core` row and its `native tensor`
+row: that difference is exactly the wrapper's extra **ownership,
+lifetime, and conversion bookkeeping** layered on top of the same native
+compute. In practice the two rows sit close together — the wrapper is
+thin — which is the honest thing to show.
+
+```
+uv run python benchmarks/cpp_backend.py          # full sizes
+uv run python benchmarks/cpp_backend.py --quick  # fast smoke run
+```
+
+As ever this is **characterization, not a performance claim**: NumPy
+wins (often dramatically for matmul), the C++ kernels are naive
+single-threaded reference loops, and nothing here asserts a speedup.
+Correctness is verified against each layer's own NumPy reference before
+any timing (view rows legitimately compute transposed results); timings
+are medians after warmup; results are hardware-dependent. The benchmark
+writes no files and is never run by pytest — a lightweight test only
+checks the plan/row structure.
 
 ### NativeTensor — runnable example and polish (v1.11)
 
@@ -526,11 +558,11 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 ## What might come next
 
-The next implementation step is v1.12: honest `NativeTensor` benchmark
-coverage — measuring the wrapper's ops (including strided views) against
-NumPy and the raw-buffer kernels, overheads included, with no
-performance assertions, per the existing benchmark discipline. Still no
-Tensor integration. A further-out milestone might consider wiring
-kernels into Tensor behind a flag. CUDA experiments remain a separate
-future branch. The Python framework stays the reference implementation
-throughout.
+The next step is a v1.13 *design* (not implementation) for a
+`NativeTensor` contiguous fast-path — specifying how contiguous tensors
+could skip the generic strided-traversal (odometer) loop that the
+benchmark shows dominating elementwise cost, honestly and without
+changing semantics. Still no Tensor integration. A further-out milestone
+might consider wiring kernels into Tensor behind a flag. CUDA experiments
+remain a separate future branch. The Python framework stays the
+reference implementation throughout.

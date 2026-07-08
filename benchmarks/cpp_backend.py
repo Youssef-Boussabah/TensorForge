@@ -1,7 +1,7 @@
 """Honest benchmarks: the experimental C++ backend vs NumPy.
 
 This script exists for honest measurement, not marketing. It compares
-three implementations of each operation:
+up to four layers of each operation:
 
 - NumPy (the baseline; optimized C, and BLAS for matmul);
 - the raw-buffer C++ kernels (naive single-threaded loops over
@@ -10,10 +10,16 @@ three implementations of each operation:
   through shape/stride metadata — their timings therefore include the
   Python wrapper, output-storage allocation, and strided traversal,
   which is exactly the overhead worth seeing. View rows feed
-  non-contiguous (transposed) inputs straight to the native kernels.
+  non-contiguous (transposed) inputs straight to the native kernels;
+- the NativeTensor wrapper (``tensorforge.experimental``), a thin
+  forward-only convenience layer over NativeTensorCore — its rows carry
+  the wrapper's extra ownership, lifetime, and conversion bookkeeping on
+  top of the same native compute, so the gap between a ``tensor core``
+  row and its ``native tensor`` row is exactly that wrapper cost.
 
-Expect NumPy to win, often dramatically for matmul. Nothing here
-asserts a speedup; numbers are hardware-dependent.
+Expect NumPy to win, often dramatically for matmul, and the wrapper to
+add a little over the bare runtime. Nothing here asserts a speedup;
+numbers are hardware-dependent.
 
 Build the backend first:
 
@@ -78,6 +84,8 @@ def build_suite(cpp, quick):
     Every implementation carries its own correctness reference because
     view cases legitimately compute transposed results.
     """
+    from tensorforge.experimental import NativeTensor
+
     core = cpp.NativeTensorCore
     rng = np.random.default_rng(0)
     elementwise_shapes = [(250, 400)] if quick else [(25, 40), (1_000, 1_000)]
@@ -89,6 +97,7 @@ def build_suite(cpp, quick):
         x = rng.normal(size=shape)
         y = rng.normal(size=shape)
         cx, cy = core.from_array(x), core.from_array(y)
+        nx, ny = NativeTensor.from_array(x), NativeTensor.from_array(y)
         label = f"({shape[0]}x{shape[1]})"
         groups.append({
             "operation": "add",
@@ -103,6 +112,12 @@ def build_suite(cpp, quick):
                  lambda x=x, y=y: x + y),
                 ("tensor core (view)",
                  lambda cx=cx, cy=cy: cx.T.add(cy.T),
+                 lambda x=x, y=y: x.T + y.T),
+                ("native tensor",
+                 lambda nx=nx, ny=ny: nx.add(ny),
+                 lambda x=x, y=y: x + y),
+                ("native tensor (view)",
+                 lambda nx=nx, ny=ny: nx.T.add(ny.T),
                  lambda x=x, y=y: x.T + y.T),
             ],
         })
@@ -120,6 +135,28 @@ def build_suite(cpp, quick):
                 ("tensor core (view)",
                  lambda cx=cx: cx.T.relu(),
                  lambda x=x: np.maximum(x.T, 0.0)),
+                ("native tensor",
+                 lambda nx=nx: nx.relu(),
+                 lambda x=x: np.maximum(x, 0.0)),
+                ("native tensor (view)",
+                 lambda nx=nx: nx.T.relu(),
+                 lambda x=x: np.maximum(x.T, 0.0)),
+            ],
+        })
+        # Materializing a non-contiguous (transposed) view into fresh
+        # contiguous storage. No raw-buffer analog exists — the NumPy
+        # baseline is ascontiguousarray, which does the same job.
+        groups.append({
+            "operation": "contig_copy",
+            "shape": label,
+            "baseline": lambda x=x: np.ascontiguousarray(x.T),
+            "implementations": [
+                ("tensor core (T view)",
+                 lambda cx=cx: cx.T.contiguous_copy(),
+                 lambda x=x: x.T),
+                ("native tensor (T view)",
+                 lambda nx=nx: nx.T.contiguous_copy(),
+                 lambda x=x: x.T),
             ],
         })
 
@@ -127,6 +164,7 @@ def build_suite(cpp, quick):
         m1 = rng.normal(size=(n, n))
         m2 = rng.normal(size=(n, n))
         cm1, cm2 = core.from_array(m1), core.from_array(m2)
+        nm1, nm2 = NativeTensor.from_array(m1), NativeTensor.from_array(m2)
         groups.append({
             "operation": "matmul",
             "shape": f"({n}x{n}) @ ({n}x{n})",
@@ -143,6 +181,12 @@ def build_suite(cpp, quick):
                  lambda m1=m1, m2=m2: m1 @ m2),
                 ("tensor core (T view)",
                  lambda cm1=cm1, cm2=cm2: cm1.T.matmul(cm2),
+                 lambda m1=m1, m2=m2: m1.T @ m2),
+                ("native tensor",
+                 lambda nm1=nm1, nm2=nm2: nm1.matmul(nm2),
+                 lambda m1=m1, m2=m2: m1 @ m2),
+                ("native tensor (T view)",
+                 lambda nm1=nm1, nm2=nm2: nm1.T.matmul(nm2),
                  lambda m1=m1, m2=m2: m1.T @ m2),
             ],
         })
@@ -190,7 +234,7 @@ def run_suite(quick=False, cpp=None):
 
 def print_report(rows):
     header = (
-        f"{'operation':<10} {'shape':<20} {'implementation':<21} "
+        f"{'operation':<12} {'shape':<20} {'implementation':<24} "
         f"{'time':>12} {'vs numpy':>10}"
     )
     print(header)
@@ -202,8 +246,8 @@ def print_report(rows):
             print()
         previous_group = group
         print(
-            f"{row['operation']:<10} {row['shape']:<20} "
-            f"{row['implementation']:<21} {_format_time(row['time_s'])} "
+            f"{row['operation']:<12} {row['shape']:<20} "
+            f"{row['implementation']:<24} {_format_time(row['time_s'])} "
             f"{row['ratio']:>9.1f}x"
         )
     print()
@@ -211,7 +255,9 @@ def print_report(rows):
     print("kernels are naive, single-threaded reference loops, while")
     print("NumPy uses optimized C and BLAS. 'tensor core' rows include")
     print("wrapper, output allocation, and strided-traversal overhead;")
-    print("small arrays also pay ctypes call + conversion overhead.")
+    print("'native tensor' rows add the experimental wrapper's ownership,")
+    print("lifetime, and conversion bookkeeping on top of that same core")
+    print("compute; small arrays also pay ctypes call + conversion cost.")
     print("Results are hardware-dependent.")
 
 

@@ -9,8 +9,11 @@ metadata, `to_numpy`, lifetime) landed in v1.8, forward compute
 (`relu`/`add`/`subtract`/`multiply`/`matmul`) in v1.9, and the
 metadata-only view ops (`reshape`/`transpose`/`T`/`narrow`) plus
 `contiguous_copy` in v1.10; v1.11 added a runnable example and a
-metadata-only `repr`. The sections below remain the design of record —
-the plan the code follows — with the staged status tracked in section 9.
+metadata-only `repr`; v1.12 added honest benchmark characterization of
+the wrapper's overhead (see section 9 and
+[backend_experiments.md](backend_experiments.md)). The sections below
+remain the design of record — the plan the code follows — with the
+staged status tracked in section 9.
 The name `NativeTensor` was kept (the `ExperimentalNativeTensor`
 fallback in [Risks](#10-risks) proved unnecessary — the
 `tensorforge.experimental` namespace carries the distinction).
@@ -269,9 +272,19 @@ runtime beneath it grew:
   the native path, a metadata-only `repr`, and the wrapper overview in
   [backend_experiments.md](backend_experiments.md). Still no Tensor
   integration.
-- **v1.12 — benchmark coverage (next):** honest timings of the wrapper's
-  ops (strided views included) against NumPy and the raw-buffer kernels,
-  overheads included, with no performance assertions.
+- **v1.12 — benchmark coverage (done):** the wrapper's ops (strided
+  views and `contiguous_copy` included) are timed beside NumPy, the
+  raw-buffer kernels, and `NativeTensorCore` in
+  `benchmarks/cpp_backend.py`, overheads included and with no performance
+  assertions. The measured story is honest: `native tensor` rows sit
+  close to their `tensor core` rows (the wrapper's ownership/lifetime/
+  conversion layer is thin), while both trail NumPy — and the generic
+  strided-traversal (odometer) loop, not the wrapper, dominates
+  elementwise cost. That points at the next optimization target below.
+- **v1.13 — contiguous fast-path (design next):** *design* (not yet
+  implement) a path that lets contiguous tensors skip the odometer loop,
+  honestly and without changing semantics — the divergence the
+  benchmarks surface.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision

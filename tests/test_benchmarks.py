@@ -45,12 +45,19 @@ def test_format_time_is_readable():
 @needs_backend
 def test_quick_plan_covers_all_operations_and_tensor_core():
     groups = build_suite(cpp, quick=True)
-    assert {group["operation"] for group in groups} == {"add", "relu", "matmul"}
+    assert {group["operation"] for group in groups} == {
+        "add", "relu", "matmul", "contig_copy",
+    }
     for group in groups:
         assert callable(group["baseline"])
         names = [name for name, _, _ in group["implementations"]]
-        assert "cpp raw buffer" in names or "cpp raw naive" in names
+        # The raw-buffer kernels only exist for add/relu/matmul;
+        # contig_copy (view materialization) has no raw-buffer analog.
+        if group["operation"] in {"add", "relu", "matmul"}:
+            assert "cpp raw buffer" in names or "cpp raw naive" in names
         assert any("tensor core" in name for name in names)
+        # Every group characterizes the NativeTensor wrapper too.
+        assert any("native tensor" in name for name in names)
         assert any("view" in name.lower() for name in names)  # non-contiguous case
     matmul_names = [
         name
@@ -73,6 +80,7 @@ def test_quick_suite_rows_are_structured_consistently():
         implementations.add(row["implementation"])
     assert "numpy" in implementations
     assert "tensor core" in implementations
+    assert "native tensor" in implementations  # wrapper is characterized
     # Every group leads with a numpy baseline row at ratio exactly 1.
     for row in rows:
         if row["implementation"] == "numpy":

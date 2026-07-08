@@ -67,10 +67,14 @@ The Python line is done; what remains is expansion on its own terms:
   operator overloads, not `tensorforge.Tensor`. It is now demonstrable
   too: a small deterministic example
   (`examples/native_tensor_demo.py`), a metadata-only `repr`, and a
-  wrapper overview in the docs (v1.11). The next step there is v1.12:
-  honest `NativeTensor` benchmark coverage — the wrapper's ops (strided
-  views included) measured against NumPy and the raw-buffer kernels,
-  overheads included and no performance assertions — all before any
+  wrapper overview in the docs (v1.11); and honestly characterized —
+  the benchmark suite times the wrapper's ops (strided views and
+  `contiguous_copy` included) across NumPy, the raw-buffer kernels,
+  `NativeTensorCore`, and `NativeTensor`, overheads included and with no
+  performance assertions (v1.12). The next step there is to *design*
+  (not yet implement) a `NativeTensor` contiguous fast-path — letting
+  contiguous tensors skip the generic strided-traversal loop the
+  benchmarks show dominating elementwise cost — all before any
   conversion bridge to NumPy-backed Tensors. CUDA/GPU experiments are
   still entirely future work. The Python framework stays the reference
   implementation.

@@ -98,4 +98,10 @@ touring construction, compute, views, `contiguous_copy`, and explicit
 lifetime, plus a metadata-only `repr` — and documented it as the
 experimental, forward-only, isolated tensor it is (no autograd, no
 dispatch, no CUDA, no operator overloads, no performance claims).
-CUDA/GPU experiments remain future work.
+**v1.12** extended the benchmark suite to characterize the wrapper:
+`add`/`relu`/`matmul`, their strided-view forms, and `contiguous_copy`
+are timed across four layers — NumPy, the raw-buffer kernels,
+`NativeTensorCore`, and `NativeTensor` — so the wrapper's thin
+ownership/lifetime/conversion overhead is visible beside the bare
+runtime, with correctness checked before timing and no performance
+assertions anywhere. CUDA/GPU experiments remain future work.
