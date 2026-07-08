@@ -154,6 +154,21 @@ def test_context_manager_closes_on_exit():
     assert t.closed is True
 
 
+# -- repr -------------------------------------------------------------
+
+
+@needs_native
+def test_repr_shows_metadata_and_is_safe_when_closed():
+    t = NativeTensor.zeros((2, 3))
+    text = repr(t)
+    # Metadata only — never the data itself.
+    assert "NativeTensor" in text
+    assert "shape=(2, 3)" in text
+    t.close()
+    # A closed tensor reprs safely, without touching released storage.
+    assert repr(t) == "NativeTensor(closed)"
+
+
 # -- forward compute --------------------------------------------------
 
 
@@ -275,18 +290,142 @@ def test_compute_ops_chain():
         tensor.close()
 
 
-# -- guardrails -------------------------------------------------------
+# -- view operations --------------------------------------------------
 
 
 @needs_native
-def test_no_view_methods_yet():
-    """v1.9 adds compute ops but not view ops — those are v1.10. The
-    view methods exist on NativeTensorCore but must not be exposed on
-    the wrapper yet."""
-    t = NativeTensor.zeros((2, 2))
-    for method in ("reshape", "transpose", "narrow", "T"):
-        assert not hasattr(t, method), f"NativeTensor should not expose {method} yet"
-    t.close()
+def test_reshape_borrows_and_matches_numpy():
+    x = np.arange(6.0).reshape(2, 3)
+    owner = NativeTensor.from_array(x)
+    v = owner.reshape((3, 2))
+    assert isinstance(v, NativeTensor)
+    assert v.owns_core is False
+    assert v.shape == (3, 2)
+    assert np.array_equal(v.to_numpy(), x.reshape(3, 2))
+    assert owner.closed is False
+    v.close()
+    owner.close()
+
+
+@needs_native
+def test_transpose_and_T_match_numpy():
+    x = np.arange(6.0).reshape(2, 3)
+    owner = NativeTensor.from_array(x)
+    for v, expected in (
+        (owner.transpose(), x.T),
+        (owner.transpose(1, 0), np.transpose(x, (1, 0))),
+        (owner.T, x.T),
+    ):
+        assert isinstance(v, NativeTensor)
+        assert v.owns_core is False
+        assert np.array_equal(v.to_numpy(), expected)
+        v.close()
+    assert owner.closed is False
+    owner.close()
+
+
+@needs_native
+def test_narrow_matches_numpy_slicing():
+    x = np.arange(12.0).reshape(3, 4)
+    owner = NativeTensor.from_array(x)
+    v = owner.narrow(1, 1, 2)  # keep columns 1..2
+    assert v.owns_core is False
+    assert v.shape == (3, 2)
+    assert np.array_equal(v.to_numpy(), x[:, 1:3])
+    assert owner.closed is False
+    v.close()
+    owner.close()
+
+
+@needs_native
+def test_contiguous_copy_owns_and_materializes_view():
+    x = np.arange(6.0).reshape(2, 3)
+    owner = NativeTensor.from_array(x)
+    view = owner.transpose()  # non-contiguous
+    assert view.contiguous is False
+    copy = view.contiguous_copy()
+    assert isinstance(copy, NativeTensor)
+    assert copy.owns_core is True
+    assert copy.contiguous is True
+    assert np.array_equal(copy.to_numpy(), x.T)
+    # Closing the independent copy leaves the original owner alive.
+    copy.close()
+    assert owner.closed is False
+    assert np.array_equal(owner.to_numpy(), x)
+    view.close()
+    owner.close()
+
+
+@needs_native
+def test_closing_a_view_does_not_close_the_owner():
+    x = np.arange(6.0).reshape(2, 3)
+    owner = NativeTensor.from_array(x)
+    view = owner.reshape((3, 2))
+    view.close()
+    assert view.closed is True
+    assert owner.closed is False
+    assert np.array_equal(owner.to_numpy(), x)  # owner still usable
+    owner.close()
+
+
+@needs_native
+def test_closing_owner_invalidates_view_data_access():
+    owner = NativeTensor.from_array(np.arange(6.0).reshape(2, 3))
+    view = owner.transpose()
+    owner.close()
+    # The shared storage is gone, so the view's data access raises.
+    with pytest.raises(RuntimeError, match="closed"):
+        view.to_numpy()
+    view.close()
+
+
+@needs_native
+def test_compute_works_on_views():
+    x = np.array([[1.0, -2.0, 3.0], [4.0, 5.0, -6.0]])
+    owner = NativeTensor.from_array(x)
+    view = owner.transpose()  # (3, 2), strided
+    # relu over a strided view
+    assert np.array_equal(view.relu().to_numpy(), np.maximum(x.T, 0.0))
+    # elementwise add of two matching strided views (hold both owners)
+    owner2 = NativeTensor.from_array(x)
+    other = owner2.transpose()
+    assert np.array_equal(view.add(other).to_numpy(), x.T + x.T)
+    # transposed view matmul: (3, 2) @ (2, 3)
+    rhs = NativeTensor.from_array(np.ones((2, 3)))
+    assert np.allclose(view.matmul(rhs).to_numpy(), x.T @ np.ones((2, 3)))
+    for tensor in (owner, view, owner2, other, rhs):
+        tensor.close()
+
+
+@needs_native
+def test_view_ops_reject_invalid_inputs():
+    owner = NativeTensor.from_array(np.arange(6.0).reshape(2, 3))
+    with pytest.raises(ValueError):
+        owner.reshape((4, 2))  # 8 elements != 6
+    with pytest.raises(ValueError):
+        owner.transpose(0, 0)  # not a permutation
+    with pytest.raises(ValueError):
+        owner.narrow(1, 2, 5)  # out of bounds for size 3
+    owner.close()
+
+
+@needs_native
+def test_view_ops_on_closed_self_fail_clearly():
+    owner = NativeTensor.from_array(np.arange(6.0).reshape(2, 3))
+    owner.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        owner.reshape((3, 2))
+    with pytest.raises(RuntimeError, match="closed"):
+        owner.transpose()
+    with pytest.raises(RuntimeError, match="closed"):
+        owner.narrow(0, 0, 1)
+    with pytest.raises(RuntimeError, match="closed"):
+        owner.contiguous_copy()
+    with pytest.raises(RuntimeError, match="closed"):
+        _ = owner.T
+
+
+# -- guardrails -------------------------------------------------------
 
 
 def test_no_operator_overloads_yet():

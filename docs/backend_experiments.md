@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.9 (current)
+## C++ backend — v1.11 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -377,6 +377,69 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### NativeTensor — runnable example and polish (v1.11)
+
+With the wrapper feature-complete as a forward-only tensor, v1.11 makes
+it demonstrable. `examples/native_tensor_demo.py` is a small, fast,
+deterministic tour — construction, `relu`/`add`/`matmul`, the views
+(`reshape`/`T`/`narrow`), `contiguous_copy`, and explicit `close()` /
+`with` — printing small NumPy-materialized outputs:
+
+```
+uv run python examples/native_tensor_demo.py
+```
+
+It needs the compiled backend; if it is not built, the script prints the
+build instructions and exits cleanly rather than raising. `NativeTensor`
+also has a metadata-only `repr` (`NativeTensor(shape=(2, 3),
+contiguous=True)`, or `NativeTensor(closed)`) that never materializes
+data and is safe on a closed tensor.
+
+To be exact about what `NativeTensor` is: it is an **experimental,
+forward-only** wrapper over the native C++ runtime, and it is
+**separate from `tensorforge.Tensor`** — the two never mix. It has **no
+autograd** (no `requires_grad`/`grad`/`backward`), **no implicit
+dispatch** and no silent NumPy fallback (data crosses only through
+`from_array` / `to_numpy`), **no CUDA**, and **no Python operator
+overloads** (compute is method-only: `a.add(b)`, not `a + b`). It makes
+**no performance claims** — it is a correctness and design experiment;
+NumPy remains the reference implementation.
+
+### NativeTensor — view ops (v1.10)
+
+v1.10 gives `NativeTensor` the metadata-only view operations, delegating
+to `NativeTensorCore`'s existing views. `reshape`, `transpose`, `T`, and
+`narrow` return **borrowing** wrappers (`owns_core` is False) that share
+the parent's storage — no data is copied — while `contiguous_copy`
+returns a fresh **owning** wrapper that materializes the data into
+row-major contiguous native storage:
+
+```python
+from tensorforge.experimental import NativeTensor
+
+t = NativeTensor.from_array(np.arange(6.0).reshape(2, 3))
+
+t.reshape((3, 2))     # borrowing view, same storage
+t.transpose()         # all axes reversed; t.transpose(1, 0) works too
+t.T                   # NumPy's .T
+t.narrow(1, 1, 2)     # keep 2 positions of dim 1 from index 1
+t.T.contiguous_copy() # a new OWNING, contiguous NativeTensor
+
+t.transpose().relu()          # compute runs over a strided view directly
+t.T.matmul(other)             # transposed view multiplies without copying
+```
+
+Lifetime follows the runtime beneath it: closing a borrowing view leaves
+the owner (and sibling views) alive, while closing the owner releases the
+shared storage — after which the views' data access (`to_numpy`,
+compute) raises `RuntimeError`. `contiguous_copy` is independent: closing
+it never touches the original. Invalid reshapes, non-permutation
+transpose axes, and out-of-bounds `narrow` raise the same clear
+`ValueError`/`TypeError` as `NativeTensorCore`.
+
+Still forward-only and still **not** `tensorforge.Tensor`: no autograd,
+no Tensor integration, no CUDA, and no Python operator overloads.
+
 ### NativeTensor — forward compute ops (v1.9)
 
 v1.9 gives `NativeTensor` its forward-only compute methods, each
@@ -463,9 +526,11 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 ## What might come next
 
-The next implementation step is v1.10: `NativeTensor` view ops —
-`reshape`, `transpose`, `T`, `narrow` (and `contiguous`) — returning
-borrowing wrappers that share storage, per the design doc. A further-out
-milestone might consider wiring kernels into Tensor behind a flag. CUDA
-experiments remain a separate future branch. The Python framework stays
-the reference implementation throughout.
+The next implementation step is v1.12: honest `NativeTensor` benchmark
+coverage — measuring the wrapper's ops (including strided views) against
+NumPy and the raw-buffer kernels, overheads included, with no
+performance assertions, per the existing benchmark discipline. Still no
+Tensor integration. A further-out milestone might consider wiring
+kernels into Tensor behind a flag. CUDA experiments remain a separate
+future branch. The Python framework stays the reference implementation
+throughout.

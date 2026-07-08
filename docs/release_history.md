@@ -86,5 +86,16 @@ each delegating to the native kernel and returning a new owning
 `NativeTensor`, preserving the runtime's exact-shape/2-D behavior (no
 broadcasting), clear `TypeError` naming `NativeTensor` for bad operands,
 and `RuntimeError` on closed tensors; no operator overloads, no view
-ops, still not `tensorforge.Tensor`. CUDA/GPU experiments remain future
-work.
+ops, still not `tensorforge.Tensor`. **v1.10** added the metadata-only
+view ops — `reshape`, `transpose`, `T`, `narrow` return borrowing
+wrappers that share the parent's storage, and `contiguous_copy` returns
+a fresh owning wrapper; compute runs over strided views directly,
+closing a view spares the owner, and closing the owner invalidates the
+views' data access. Still forward-only, no operator overloads, not
+`tensorforge.Tensor`. **v1.11** made the wrapper demonstrable — a small,
+deterministic runnable example (`examples/native_tensor_demo.py`)
+touring construction, compute, views, `contiguous_copy`, and explicit
+lifetime, plus a metadata-only `repr` — and documented it as the
+experimental, forward-only, isolated tensor it is (no autograd, no
+dispatch, no CUDA, no operator overloads, no performance claims).
+CUDA/GPU experiments remain future work.

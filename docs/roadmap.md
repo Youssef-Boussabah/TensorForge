@@ -56,17 +56,24 @@ The Python line is done; what remains is expansion on its own terms:
   (purpose, non-goals, ownership/lifetime, conversion contract, minimal
   API, testing plan, and a staged build sequence; see
   [native_tensor_wrapper_design.md](native_tensor_wrapper_design.md)),
-  and it is **now implemented through its compute ops**:
+  and it is **now feature-complete as a forward-only wrapper**:
   `tensorforge.experimental.NativeTensor`, a forward-only wrapper over
   `NativeTensorCore` with constructors, metadata, `to_numpy`, an
-  explicit ownership/lifetime story (v1.8), and forward compute —
-  `relu`, `add`, `subtract`, `multiply`, `matmul`, each returning a new
-  owning wrapper with exact-shape/2-D behavior and no broadcasting
-  (v1.9). No autograd, no operator overloads, not `tensorforge.Tensor`.
-  The next step there is v1.10: `NativeTensor` view ops (`reshape`,
-  `transpose`, `T`, `narrow`), all before any conversion bridge to
-  NumPy-backed Tensors. CUDA/GPU experiments are still entirely future
-  work. The Python framework stays the reference implementation.
+  explicit ownership/lifetime story (v1.8), forward compute — `relu`,
+  `add`, `subtract`, `multiply`, `matmul` with exact-shape/2-D behavior
+  and no broadcasting (v1.9) — and metadata-only view ops: `reshape`,
+  `transpose`, `T`, `narrow` returning borrowing wrappers, plus
+  `contiguous_copy` returning an owning one (v1.10). No autograd, no
+  operator overloads, not `tensorforge.Tensor`. It is now demonstrable
+  too: a small deterministic example
+  (`examples/native_tensor_demo.py`), a metadata-only `repr`, and a
+  wrapper overview in the docs (v1.11). The next step there is v1.12:
+  honest `NativeTensor` benchmark coverage — the wrapper's ops (strided
+  views included) measured against NumPy and the raw-buffer kernels,
+  overheads included and no performance assertions — all before any
+  conversion bridge to NumPy-backed Tensors. CUDA/GPU experiments are
+  still entirely future work. The Python framework stays the reference
+  implementation.
 - **A larger synthetic image example** — more classes, bigger images,
   still dependency-free.
 - **More docs** — deeper walkthroughs of individual layers, if the

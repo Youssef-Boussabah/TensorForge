@@ -1,13 +1,19 @@
 # Forward-only native tensor wrapper — design (Stage 2)
 
-This is a **design document, not an implementation.** It describes a
-future forward-only convenience layer over `NativeTensorCore` — a
-small, explicit, autograd-free tensor type intended for user-facing
-experiments with the native backend. Nothing here ships in this
-milestone; the milestone is the design itself and the roadmap it sets
-up. When it is built, the type will likely be named `NativeTensor` (or
-`ExperimentalNativeTensor` if the shorter name proves confusing next to
-`tensorforge.Tensor` — see [Risks](#10-risks)).
+This began as a **design document** (written in v1.7, ahead of any
+code) for a forward-only convenience layer over `NativeTensorCore` — a
+small, explicit, autograd-free tensor type for user-facing experiments
+with the native backend. **Status: implemented** as
+`tensorforge.experimental.NativeTensor`. The shell (constructors,
+metadata, `to_numpy`, lifetime) landed in v1.8, forward compute
+(`relu`/`add`/`subtract`/`multiply`/`matmul`) in v1.9, and the
+metadata-only view ops (`reshape`/`transpose`/`T`/`narrow`) plus
+`contiguous_copy` in v1.10; v1.11 added a runnable example and a
+metadata-only `repr`. The sections below remain the design of record —
+the plan the code follows — with the staged status tracked in section 9.
+The name `NativeTensor` was kept (the `ExperimentalNativeTensor`
+fallback in [Risks](#10-risks) proved unnecessary — the
+`tensorforge.experimental` namespace carries the distinction).
 
 For where this sits in the larger backend plan, see
 [dispatch_design.md](dispatch_design.md); for the runtime primitives it
@@ -253,12 +259,19 @@ runtime beneath it grew:
   `NativeTensor` for non-wrapper operands, `RuntimeError` for closed
   operands, `ValueError` for shape/2-D mismatch). No operator overloads
   yet.
-- **v1.10 — view ops (next):** `reshape`, `transpose`, `T`, `narrow`,
-  `contiguous`, returning borrowing wrappers that share storage
-  correctly.
-- **v1.11 — docs and examples:** a walkthrough and a small runnable
-  script exercising the wrapper end to end on the native path, plus a
-  benchmark note if warranted.
+- **v1.10 — view ops (done):** `reshape`, `transpose`, `T`, `narrow`
+  return borrowing wrappers (`owns_core` False) that share the parent's
+  storage; `contiguous_copy` returns a fresh owning wrapper.
+  Compute ops run over strided views directly. Closing a view spares the
+  owner; closing the owner invalidates outstanding views' data access.
+- **v1.11 — docs, examples, and polish (done):** a runnable script
+  (`examples/native_tensor_demo.py`) exercising the wrapper end to end on
+  the native path, a metadata-only `repr`, and the wrapper overview in
+  [backend_experiments.md](backend_experiments.md). Still no Tensor
+  integration.
+- **v1.12 — benchmark coverage (next):** honest timings of the wrapper's
+  ops (strided views included) against NumPy and the raw-buffer kernels,
+  overheads included, with no performance assertions.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision

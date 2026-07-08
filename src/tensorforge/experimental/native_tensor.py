@@ -183,6 +183,54 @@ class NativeTensor:
         other_core = other._require_open()
         return self._from_core(getattr(core, op_name)(other_core))
 
+    # -- view operations (metadata only: no data is copied) ---------------
+
+    def reshape(self, new_shape):
+        """A view of the same storage with ``new_shape`` (row-major).
+
+        Metadata only — the result borrows this tensor's storage
+        (``owns_core`` is False), so closing it leaves this tensor
+        alive. Requires a contiguous tensor and the same element count;
+        an incompatible layout or count raises ValueError.
+        """
+        return self._from_core(
+            self._require_open().reshape(new_shape), owns_core=False
+        )
+
+    def transpose(self, *axes):
+        """A view with permuted axes. Metadata only — the result borrows
+        this tensor's storage (``owns_core`` is False).
+
+        With no arguments, all axes are reversed (NumPy behavior).
+        Explicit axes must be a complete permutation of ``range(ndim)``.
+        """
+        return self._from_core(
+            self._require_open().transpose(*axes), owns_core=False
+        )
+
+    @property
+    def T(self):
+        """``transpose()`` with all axes reversed — NumPy's ``.T``
+        semantics. A borrowing view."""
+        return self.transpose()
+
+    def narrow(self, dim, start, length):
+        """A view keeping ``length`` positions of dimension ``dim`` from
+        ``start``. Metadata only — the result borrows this tensor's
+        storage (``owns_core`` is False). Out-of-bounds arguments raise
+        ValueError; non-int arguments raise TypeError.
+        """
+        return self._from_core(
+            self._require_open().narrow(dim, start, length), owns_core=False
+        )
+
+    def contiguous_copy(self):
+        """A new **owning** NativeTensor with the same values in
+        row-major contiguous native storage. Always copies (even when
+        this tensor is already contiguous), so the result is independent
+        of this one's lifetime."""
+        return self._from_core(self._require_open().contiguous_copy())
+
     # -- lifetime ---------------------------------------------------------
 
     def close(self):
