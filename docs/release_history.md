@@ -193,4 +193,24 @@ honestly (deterministic plain loop, NumPy comparison to a tolerance, no
 Kahan/pairwise/SIMD). No `max`/`argmax`/`min`/`product`, tuple axes,
 `Tensor` integration, CUDA, dtype promotion, operator overloads, or
 distributed reductions were added; the next step is v1.20, a native
-dtype/device metadata design. CUDA/GPU experiments remain future work.
+dtype/device metadata design. **v1.20** is design-only: with reductions
+complete, it writes the design for explicit **dtype and device metadata**,
+closing the Phase A design surface. Today the native runtime is
+float64-CPU-only *implicitly*; the design makes that explicit —
+`dtype`/`device` become inspectable, validated canonical string tags
+(`"float64"`/`"cpu"`) owned by `NativeStorage` (so views share them and a
+future CUDA branch has device-aware storage) and surfaced read-only
+through `NativeTensorCore`/`NativeTensor`, with default-preserving
+constructor arguments so every existing call is unchanged. It specifies
+operation validation (binary ops/matmul require matching dtype+device
+naming both; `sum` preserves dtype, `mean` stays float64; `to_numpy`
+matches the stored dtype once non-float64 exists), a hard
+no-promotion/no-auto-copy/no-silent-conversion rule, future explicit
+casting/device moves (`astype`/`to`/`cpu`/`cuda`, none built; `cuda()`
+deferred until a CUDA backend exists), and — because the kernels are
+float64/CPU only — **recommends rejecting** any non-`float64`/non-`cpu`
+construction so no tensor advertises a dtype it cannot compute. It
+recommends a small metadata-only implementation (float64/cpu) as v1.21 to
+close Phase A in code before the Phase B native-autograd design
+([native_dtype_device_metadata_design.md](native_dtype_device_metadata_design.md)).
+No code ships. CUDA/GPU experiments remain future work.

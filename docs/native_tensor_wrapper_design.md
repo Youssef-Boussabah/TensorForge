@@ -354,6 +354,19 @@ runtime beneath it grew:
   `RuntimeError` through the existing gate. `NativeTensor` stays a thin,
   forward-only, experimental wrapper: no autograd, no operator overloads,
   not `tensorforge.Tensor`.
+- **v1.20 — native dtype/device metadata design (done):** a design (no
+  code) giving the native runtime explicit `dtype` and `device` metadata,
+  **owned by `NativeStorage`** (the allocation owner) and validated below
+  the wrapper — see
+  [native_dtype_device_metadata_design.md](native_dtype_device_metadata_design.md).
+  Consistent with every prior improvement, dtype/device **belong below
+  `NativeTensor`**: the wrapper would expose `dtype`/`device` as thin
+  read-only properties that delegate to its core (which delegates to its
+  storage), owning and validating nothing itself. Defaults stay
+  `float64`/`cpu`, so the wrapper's surface and behavior are unchanged; it
+  remains a thin, forward-only experimental wrapper — no autograd, no
+  operator overloads, not `tensorforge.Tensor`. A metadata-only
+  implementation is proposed as v1.21.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision

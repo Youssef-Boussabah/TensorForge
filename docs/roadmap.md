@@ -114,12 +114,23 @@ The Python line is done; what remains is expansion on its own terms:
   wrapper edit, and reductions stay forward-only — the broadcast-backward
   relationship (a broadcast backward is a reduction over the broadcast
   axes) is the recorded reason reductions precede native autograd
-  ([native_reductions_design.md](native_reductions_design.md)). The next
-  step there is **Advanced C++ v1.20 — a native dtype/device metadata
-  design** (Phase A4): a design-first milestone for carrying dtype and
-  device beyond today's float64-CPU-only assumption. CUDA/GPU experiments
-  are still entirely future work. The Python framework stays the
-  reference implementation.
+  ([native_reductions_design.md](native_reductions_design.md)). Building
+  on that, the dtype/device metadata contract is now **designed** (v1.20,
+  Phase A4), closing the Phase A design surface: `dtype`/`device` become
+  explicit, inspectable, validated string tags (`"float64"`/`"cpu"`)
+  owned by `NativeStorage` and surfaced read-only through
+  `NativeTensorCore`/`NativeTensor`, with default-preserving constructor
+  arguments, matching-dtype/device operation guards, a hard
+  no-promotion/no-silent-conversion rule, and a recommendation to
+  **reject** any non-`float64`/non-`cpu` construction until kernels exist
+  ([native_dtype_device_metadata_design.md](native_dtype_device_metadata_design.md));
+  no code ships. The recommended next step there is **Advanced C++ v1.21 —
+  a metadata-only implementation** (float64/cpu: read-only `dtype`/`device`
+  properties, default-preserving constructor args, reject-on-unsupported
+  guard, no compute change), closing Phase A in code, followed by
+  **Advanced C++ v2.0 — the native autograd design** (Phase B). CUDA/GPU
+  experiments are still entirely future work. The Python framework stays
+  the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -129,8 +140,11 @@ The Python line is done; what remains is expansion on its own terms:
     ops — **complete** (designed v1.16, implemented v1.17). A3: reductions
     (sum/mean first; max/argmax/min/product later) — **complete**
     (designed v1.18, implemented v1.19). A4: dtype and device metadata
-    beyond float64-CPU-only — design next in **v1.20**.
-  - **Then** native autograd, a native training stack, the CUDA runtime,
+    beyond float64-CPU-only — **designed (v1.20, current)**, metadata-only
+    implementation (float64/cpu) recommended next in **v1.21**, which
+    closes Phase A.
+  - **Then Phase B and beyond:** native autograd (v2.0 design), a native
+    training stack, the CUDA runtime,
     an AMP / Tensor Core path, Transformer / text examples, distributed
     / DDP, and a final benchmark / profiling / docs polish (the final
     portfolio release).

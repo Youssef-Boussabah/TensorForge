@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.19 (current)
+## C++ backend — v1.20 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -378,6 +378,45 @@ reference — view rows compute transposed results) before anything is
 timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
+
+### Native dtype/device metadata — design (v1.20)
+
+v1.20 is **design-only**: no kernels change, no runtime behavior changes,
+and dtype/device metadata is **not implemented**. It follows the
+reductions milestone and **closes the Phase A design surface** — the last
+native-CPU-runtime piece before Phase B (native autograd).
+
+Today the native runtime is **float64-CPU-only, implicitly**:
+`NativeStorage` allocates a `double[]` buffer and records nothing about
+its element type or location, and `NativeTensorCore`/`NativeTensor`
+expose `shape`/`strides`/`contiguous` but no `dtype` or `device`. The
+design makes that assumption **explicit**: dtype and device become
+inspectable metadata — owned by `NativeStorage` (the allocation owner, so
+views share it and CUDA later has device-aware storage), surfaced
+read-only through `NativeTensorCore.dtype`/`.device` and
+`NativeTensor.dtype`/`.device`. They are validated canonical string tags
+(`"float64"`, `"cpu"`), JSON-friendly for future checkpoints and never
+silently inferred from NumPy; the NumPy correspondence stays explicit at
+the conversion boundaries only. Constructors gain default-preserving
+`dtype`/`device` arguments (`dtype=None`→`"float64"`, `device="cpu"`), so
+every existing call is byte-for-byte unchanged.
+
+The design specifies operation validation (binary ops and matmul require
+matching dtype and device, naming both on a mismatch; `sum` preserves
+dtype; `mean` stays float64, with future integer-mean deferred; `relu`
+requires a numeric dtype; `to_numpy` will match the stored dtype once
+non-float64 exists) and a hard **no-promotion / no-auto-copy /
+no-silent-conversion / no-NumPy-fallback** rule. Casting and device moves
+(`astype`/`to`/`cpu`/`cuda`) are reserved as future, explicit,
+copy-producing operations — `cuda()` should not exist until a CUDA
+backend does. Crucially, because the kernels are float64/CPU only, the
+design **recommends rejecting** any non-`float64`/non-`cpu` construction
+(the safer of reject-vs-inert), so no tensor ever advertises a dtype the
+kernels cannot actually compute. The contiguous fast path, broadcasting,
+reductions, and the thin wrapper are all unchanged. A metadata-only
+implementation (float64/cpu only) is proposed as **v1.21**, closing Phase
+A in code before the Phase B autograd design. Full design in
+[native_dtype_device_metadata_design.md](native_dtype_device_metadata_design.md).
 
 ### Native reductions — implementation (v1.19)
 
@@ -836,12 +875,15 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 ## What might come next
 
 The contiguous elementwise fast path is **implemented** (v1.14) and
-**reported** (v1.15); native broadcasting is **implemented** (v1.17); and
-native `sum`/`mean` reductions are now **implemented** (v1.19, above) —
-completing Phase A3's first scope. The next step is **v1.20 — a native
-dtype/device metadata design** (Phase A4): a design-first milestone for
-carrying dtype and device beyond today's float64-CPU-only assumption, the
-last Phase A step before the runtime is ready for the **native autograd**
-phase that reductions unblock. Still no Tensor integration, no autograd.
-CUDA experiments remain a separate future branch. The Python framework
-stays the reference implementation throughout.
+**reported** (v1.15); native broadcasting is **implemented** (v1.17);
+native `sum`/`mean` reductions are **implemented** (v1.19); and the
+dtype/device metadata contract is now **designed** (v1.20, above) —
+closing the Phase A design surface. The recommended next step is **v1.21
+— a metadata-only implementation** (float64/cpu only): read-only
+`dtype`/`device` properties, default-preserving constructor arguments,
+and a reject-on-unsupported guard, all backward compatible with no
+compute change — closing Phase A in code. After that comes **Phase B —
+the native autograd design (v2.0)**, which the dtype/device contract
+exists to support. Still no Tensor integration, no autograd, no CUDA
+today. CUDA experiments remain a separate future branch. The Python
+framework stays the reference implementation throughout.
