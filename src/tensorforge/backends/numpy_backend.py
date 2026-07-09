@@ -22,6 +22,8 @@ class NumpyBackend:
             "experimental": False,
             "dtype": "float64",
             "device": "cpu",
+            "supported_dtypes": ("float64",),
+            "supported_devices": ("cpu",),
         }
 
     def tensor_from_array(self, values):

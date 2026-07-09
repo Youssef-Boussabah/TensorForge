@@ -45,7 +45,55 @@ _BINARY_KERNELS = (
 # KERNELS, which lists the raw NumPy-buffer kernels.
 TENSOR_CORE_KERNELS = ("relu", "add", "subtract", "multiply", "matmul")
 
+# Supported native dtype/device metadata (v1.21). The native kernels are
+# float64 CPU only, so these are the single legal values today. The tags
+# are explicit and validated — a native tensor never claims a dtype/device
+# the kernels cannot actually compute, and unsupported values are rejected
+# at construction rather than silently coerced (see
+# docs/native_dtype_device_metadata_design.md).
+SUPPORTED_DTYPES = ("float64",)
+SUPPORTED_DEVICES = ("cpu",)
+
 _lib = None  # loaded lazily by _require_library()
+
+
+def normalize_dtype(dtype=None):
+    """Validate and canonicalize a native dtype tag.
+
+    ``None`` means the default ``"float64"`` (the only supported dtype
+    today). A non-string raises TypeError; a string outside
+    ``SUPPORTED_DTYPES`` raises ValueError naming the offending value and
+    the supported set. Pure Python — never touches the compiled library,
+    so it is safe whether or not the backend is built."""
+    if dtype is None:
+        return "float64"
+    if not isinstance(dtype, str):
+        raise TypeError(f"dtype must be a string or None, got {dtype!r}")
+    if dtype not in SUPPORTED_DTYPES:
+        raise ValueError(
+            f"unsupported dtype {dtype!r}; the native runtime supports "
+            f"{SUPPORTED_DTYPES}"
+        )
+    return dtype
+
+
+def normalize_device(device="cpu"):
+    """Validate and canonicalize a native device tag.
+
+    ``None`` means the default ``"cpu"`` (the only supported device
+    today). A non-string raises TypeError; a string outside
+    ``SUPPORTED_DEVICES`` raises ValueError naming the offending value and
+    the supported set. Pure Python — never touches the compiled library."""
+    if device is None:
+        return "cpu"
+    if not isinstance(device, str):
+        raise TypeError(f"device must be a string or None, got {device!r}")
+    if device not in SUPPORTED_DEVICES:
+        raise ValueError(
+            f"unsupported device {device!r}; the native runtime supports "
+            f"{SUPPORTED_DEVICES}"
+        )
+    return device
 
 
 def build_instructions():
@@ -192,6 +240,9 @@ def backend_info():
         "tensor_core": "NativeTensorCore",
         "tensor_core_kernels": TENSOR_CORE_KERNELS,
         "dtype": "float64",
+        "device": "cpu",
+        "supported_dtypes": SUPPORTED_DTYPES,
+        "supported_devices": SUPPORTED_DEVICES,
         "tensor_integration": False,
         "autograd_integration": False,
         "build_instructions": build_instructions(),
@@ -210,10 +261,14 @@ class NativeStorage:
     RuntimeError, and closing twice is safe.
     """
 
-    def __init__(self, size):
+    def __init__(self, size, dtype=None, device="cpu"):
         self._handle = None  # so a failed __init__ still __del__s safely
         if not isinstance(size, (int, np.integer)) or isinstance(size, bool) or size <= 0:
             raise ValueError(f"size must be a positive int, got {size!r}")
+        # dtype/device are validated *before* allocation, so an
+        # unsupported request never leaks native memory.
+        dtype = normalize_dtype(dtype)
+        device = normalize_device(device)
         lib = _require_library()
         handle = lib.tf_storage_create(int(size))
         if not handle:
@@ -221,15 +276,20 @@ class NativeStorage:
         self._lib = lib
         self._handle = handle
         self._size = int(size)
+        self._dtype = dtype
+        self._device = device
 
     @classmethod
-    def from_array(cls, values):
+    def from_array(cls, values, dtype=None, device="cpu"):
         """Create storage sized to ``values`` and copy them in.
 
-        The input is converted to contiguous float64 and flattened.
+        The input is always converted to contiguous float64 and flattened
+        (the only element type the kernels compute); ``dtype``/``device``
+        record the metadata and default to ``"float64"``/``"cpu"``.
         """
         array = np.ascontiguousarray(values, dtype=np.float64).ravel()
-        storage = cls(int(array.size))  # empty input fails size validation
+        # empty input fails size validation; dtype/device validated too
+        storage = cls(int(array.size), dtype=dtype, device=device)
         storage.copy_from(array)
         return storage
 
@@ -237,6 +297,16 @@ class NativeStorage:
     def size(self):
         """Number of float64 elements the storage holds."""
         return self._size
+
+    @property
+    def dtype(self):
+        """The element type tag (``"float64"``). Readable after close."""
+        return self._dtype
+
+    @property
+    def device(self):
+        """The device tag (``"cpu"``). Readable after close."""
+        return self._device
 
     def _require_open(self):
         if self._handle is None:
@@ -448,26 +518,32 @@ class NativeTensorCore:
     # -- constructors -------------------------------------------------
 
     @classmethod
-    def from_array(cls, values):
+    def from_array(cls, values, dtype=None, device="cpu"):
         """A contiguous tensor holding a copy of ``values``, with the
-        array's shape preserved."""
+        array's shape preserved. ``dtype``/``device`` record metadata and
+        default to ``"float64"``/``"cpu"`` (the values are still coerced to
+        float64); unsupported values are rejected."""
         array = np.ascontiguousarray(values, dtype=np.float64)
-        storage = NativeStorage.from_array(array)  # empty input fails here
+        # empty input fails here; dtype/device validated in the storage
+        storage = NativeStorage.from_array(array, dtype=dtype, device=device)
         return cls(storage, NativeTensorView(storage, array.shape))
 
     @classmethod
-    def zeros(cls, shape):
+    def zeros(cls, shape, dtype="float64", device="cpu"):
         """A row-major contiguous tensor of ``shape``, all zeros
-        (native storage is zero-initialized, so no fill pass runs)."""
+        (native storage is zero-initialized, so no fill pass runs).
+        ``dtype``/``device`` default to ``"float64"``/``"cpu"``;
+        unsupported values are rejected."""
         count = numel(shape)  # validates shape by the v0.7 rules
-        storage = NativeStorage(count)
+        storage = NativeStorage(count, dtype=dtype, device=device)
         return cls(storage, NativeTensorView(storage, shape))
 
     @classmethod
-    def full(cls, shape, value):
+    def full(cls, shape, value, dtype="float64", device="cpu"):
         """A row-major contiguous tensor of ``shape`` filled with
-        ``value`` (anything float() accepts)."""
-        tensor = cls.zeros(shape)
+        ``value`` (anything float() accepts). ``dtype``/``device`` default
+        to ``"float64"``/``"cpu"``; unsupported values are rejected."""
+        tensor = cls.zeros(shape, dtype=dtype, device=device)
         tensor._storage.fill(float(value))
         return tensor
 
@@ -496,6 +572,20 @@ class NativeTensorCore:
     @property
     def contiguous(self):
         return self._view.contiguous
+
+    @property
+    def dtype(self):
+        """The element type tag, delegated to this core's storage
+        (``"float64"``). A view shares its storage, so it reports the same
+        dtype as its owner. Readable after close, like ``shape``."""
+        return self._storage.dtype
+
+    @property
+    def device(self):
+        """The device tag, delegated to this core's storage (``"cpu"``). A
+        view shares its storage, so it reports the same device as its
+        owner. Readable after close, like ``shape``."""
+        return self._storage.device
 
     @property
     def storage(self):
@@ -544,7 +634,7 @@ class NativeTensorCore:
         Both produce bit-for-bit identical results — the fast path is
         purely a traversal choice."""
         self._require_open()
-        out = NativeTensorCore.zeros(self.shape)
+        out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
         if self.contiguous:
             self._storage._lib.tf_core_relu_contiguous(
                 self._storage._require_open(),
@@ -559,6 +649,19 @@ class NativeTensorCore:
             shape_arr, strides_arr, self.offset, self.ndim,
         )
         return out
+
+    def _require_matching_metadata(self, other, op_name):
+        """Both operands of a binary/matmul op must share dtype and
+        device; there is no implicit promotion and no automatic device
+        move (see docs/native_dtype_device_metadata_design.md §8). Raises
+        ValueError naming both dtype/device pairs on a mismatch. With only
+        float64/cpu constructible today this guard cannot yet fire, but it
+        is the enforced contract native autograd (Phase B) builds on."""
+        if self.dtype != other.dtype or self.device != other.device:
+            raise ValueError(
+                f"{op_name} requires matching dtype and device, got "
+                f"{self.dtype}/{self.device} and {other.dtype}/{other.device}"
+            )
 
     def _binary_core_op(self, other, kernel_name, op_name):
         """Shared plumbing for add/subtract/multiply over tensor cores,
@@ -591,11 +694,12 @@ class NativeTensorCore:
                 f"got {type(other).__name__}"
             )
         other._require_open()
+        self._require_matching_metadata(other, op_name)
         lib = self._storage._lib
 
         # Same-shape paths (A and B) — the exact-shape behavior, unchanged.
         if self.shape == other.shape:
-            out = NativeTensorCore.zeros(self.shape)
+            out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
             if self.contiguous and other.contiguous:
                 getattr(lib, kernel_name + "_contiguous")(
                     self._storage._require_open(),
@@ -619,7 +723,7 @@ class NativeTensorCore:
         # raises (naming both shapes) if they are incompatible, before
         # any output is allocated.
         out_shape = broadcast_shapes(self.shape, other.shape)
-        out = NativeTensorCore.zeros(out_shape)
+        out = NativeTensorCore.zeros(out_shape, dtype=self.dtype, device=self.device)
         out_ndim = len(out_shape)
         shape_arr = np.asarray(out_shape, dtype=np.int64)
         a_strides = np.asarray(
@@ -670,6 +774,7 @@ class NativeTensorCore:
                 f"got {type(other).__name__}"
             )
         other._require_open()
+        self._require_matching_metadata(other, "matmul")
         if self.ndim != 2:
             raise ValueError(
                 f"matmul requires a 2-D left operand, got shape {self.shape}"
@@ -685,7 +790,7 @@ class NativeTensorCore:
             )
         m, n = self.shape
         p = other.shape[1]
-        out = NativeTensorCore.zeros((m, p))
+        out = NativeTensorCore.zeros((m, p), dtype=self.dtype, device=self.device)
         self._storage._lib.tf_core_matmul(
             self._storage._require_open(),
             other._storage._require_open(),
@@ -711,7 +816,7 @@ class NativeTensorCore:
         not bit-for-bit (see docs/native_reductions_design.md)."""
         self._require_open()
         out_shape = reduce_shape(self.shape, axis, keepdims)  # validates axis/keepdims
-        out = NativeTensorCore.zeros(out_shape)
+        out = NativeTensorCore.zeros(out_shape, dtype=self.dtype, device=self.device)
         if axis is None:
             reduced = set(range(self.ndim))
         else:

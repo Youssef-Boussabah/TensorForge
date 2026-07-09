@@ -367,6 +367,21 @@ runtime beneath it grew:
   remains a thin, forward-only experimental wrapper — no autograd, no
   operator overloads, not `tensorforge.Tensor`. A metadata-only
   implementation is proposed as v1.21.
+- **v1.21 — native dtype/device metadata implementation (done):** exactly
+  as the v1.20 design predicted, `NativeTensor` gained `dtype`/`device` as
+  **thin read-only properties** that delegate to its core (which delegates
+  to its `NativeStorage`), owning and validating nothing — the fifth time
+  an improvement placed below the wrapper reached it for free. The
+  constructors (`from_array`/`zeros`/`full`) thread default-preserving
+  `dtype`/`device` arguments straight through to the core; unsupported
+  values are rejected below the wrapper. The one wrapper-specific choice is
+  closed-behavior: `dtype`/`device` go through the existing
+  `_require_open()` gate, so they are **rejected after close** like the
+  wrapper's other metadata (`shape`/`strides`) — even though the core keeps
+  them readable — keeping the wrapper internally consistent. Defaults stay
+  `float64`/`cpu`; it remains a thin, forward-only experimental wrapper —
+  no autograd, no operator overloads, not `tensorforge.Tensor`. This closes
+  Phase A in code; the next step is the v2.0 native autograd design.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision

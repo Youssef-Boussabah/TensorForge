@@ -55,6 +55,9 @@ def test_backend_info_shape():
         "tensor_core",
         "tensor_core_kernels",
         "dtype",
+        "device",
+        "supported_dtypes",
+        "supported_devices",
         "tensor_integration",
         "autograd_integration",
         "build_instructions",
@@ -66,6 +69,10 @@ def test_backend_info_shape():
     assert info["name"] == "cpp"
     assert info["experimental"] is True
     assert info["dtype"] == "float64"
+    # v1.21: explicit dtype/device metadata sets (float64/cpu only).
+    assert info["device"] == "cpu"
+    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_devices"] == ("cpu",)
     assert info["tensor_integration"] is False
     assert info["autograd_integration"] is False
     assert tuple(info["kernels"]) == EXPECTED_KERNELS

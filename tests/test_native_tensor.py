@@ -508,6 +508,64 @@ def test_view_ops_reject_invalid_inputs():
 
 
 @needs_native
+def test_dtype_device_defaults_and_delegate_to_core():
+    for tensor in (
+        NativeTensor.from_array([[1.0, 2.0], [3.0, 4.0]]),
+        NativeTensor.zeros((2, 3)),
+        NativeTensor.full((2,), 5.0),
+    ):
+        assert tensor.dtype == "float64"
+        assert tensor.device == "cpu"
+        tensor.close()
+
+
+@needs_native
+def test_dtype_device_explicit_args_and_from_array_default():
+    with NativeTensor.zeros((2, 2), dtype="float64", device="cpu") as z:
+        assert z.dtype == "float64" and z.device == "cpu"
+    with NativeTensor.full((3,), 1.0, dtype="float64", device="cpu") as f:
+        assert f.dtype == "float64" and f.device == "cpu"
+    with NativeTensor.from_array([1.0], dtype=None) as a:  # None -> float64
+        assert a.dtype == "float64" and a.device == "cpu"
+
+
+@needs_native
+def test_dtype_device_preserved_through_ops_and_views():
+    x = np.arange(6.0).reshape(2, 3)
+    a = NativeTensor.from_array(x)
+    b = NativeTensor.from_array(x)
+    for result in (a.relu(), a.add(b), a.sum(axis=0), a.mean(), a.transpose(), a.reshape((3, 2))):
+        assert result.dtype == "float64"
+        assert result.device == "cpu"
+        if result.owns_core:
+            result.close()
+    a.close()
+    b.close()
+
+
+@needs_native
+def test_constructors_reject_unsupported_dtype_device():
+    for ctor in (
+        lambda: NativeTensor.zeros((2, 2), dtype="float32"),
+        lambda: NativeTensor.full((2,), 0.0, device="cuda"),
+        lambda: NativeTensor.from_array([1.0], dtype="int64"),
+    ):
+        with pytest.raises(ValueError):
+            ctor()
+
+
+@needs_native
+def test_dtype_device_rejected_after_close_like_other_metadata():
+    t = NativeTensor.from_array([1.0, 2.0])
+    t.close()
+    # dtype/device follow the wrapper's other metadata: rejected on a
+    # closed tensor (unlike the core, whose metadata stays readable).
+    for attr in ("dtype", "device"):
+        with pytest.raises(RuntimeError, match="closed"):
+            getattr(t, attr)
+
+
+@needs_native
 def test_view_ops_on_closed_self_fail_clearly():
     owner = NativeTensor.from_array(np.arange(6.0).reshape(2, 3))
     owner.close()

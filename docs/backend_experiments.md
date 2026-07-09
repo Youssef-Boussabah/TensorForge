@@ -6,7 +6,7 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.20 (current)
+## C++ backend — v1.21 (current)
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -265,8 +265,11 @@ cpp.is_available()        # True only if the compiled library loads
 cpp.list_kernels()        # ('elementwise_add', ..., 'relu', 'matmul')
 cpp.build_instructions()  # how to build it, as a string
 cpp.backend_info()        # one dict with all of the above, plus
-                          # dtype='float64' and the (false) tensor/
+                          # dtype='float64', device='cpu', the supported
+                          # dtype/device sets, and the (false) tensor/
                           # autograd integration flags
+cpp.normalize_dtype("float64")  # validated tag; "float32" -> ValueError
+cpp.normalize_device("cpu")     # validated tag; "cuda"   -> ValueError
 ```
 
 `is_available()` performs a real load attempt (cached), not just a
@@ -328,7 +331,11 @@ to NumPy.
 
 ### Current limitations
 
-- float64 only (other inputs are converted).
+- float64 / CPU only. As of v1.21 this is **explicit, inspectable
+  metadata** (`dtype`/`device` on the storage, core, and wrapper) rather
+  than an unstated assumption, and unsupported dtype/device values are
+  rejected at construction — but only `"float64"`/`"cpu"` exist, and
+  other inputs are still converted to float64.
 - Binary operations require identical shapes — no broadcasting.
   `relu` is unary and accepts any shape.
 - Division follows IEEE float64 rules (inf/NaN for zero denominators,
@@ -378,6 +385,65 @@ reference — view rows compute transposed results) before anything is
 timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
+
+### Native dtype/device metadata — implementation (v1.21)
+
+v1.21 implements the metadata contract the v1.20 design specified —
+**metadata only, float64/cpu only**, no kernel and no compute behavior
+changed. Native tensors now carry explicit, inspectable `dtype` and
+`device` you can read:
+
+```python
+t = NativeTensorCore.from_array([[1.0, 2.0], [3.0, 4.0]])
+t.dtype, t.device            # ("float64", "cpu")
+t.T.dtype                    # "float64" — a view shares its storage's tags
+t.add(t).device             # "cpu"    — ops preserve dtype/device
+
+NativeTensor.zeros((2, 3)).dtype          # "float64"
+NativeTensorCore.zeros((2,), dtype="float32")  # ValueError — rejected
+```
+
+The tags are **owned by `NativeStorage`** (the allocation owner, so
+every view over one buffer reports the same dtype/device — one source of
+truth) and surfaced read-only through `NativeTensorCore.dtype`/`.device`
+and `NativeTensor.dtype`/`.device`. Two pure helpers, `normalize_dtype`
+and `normalize_device` (beside `broadcast_shapes`/`reduce_shape`, so they
+are testable without the built backend), validate and canonicalize the
+tags against `SUPPORTED_DTYPES == ("float64",)` and
+`SUPPORTED_DEVICES == ("cpu",)`. Constructors (`from_array`/`zeros`/
+`full` on both the core and the wrapper, and `tensor_from_array`/`zeros`/
+`full` on the native backend) gained **default-preserving** `dtype`/
+`device` arguments — `dtype=None`→`"float64"` on `from_array`,
+`dtype="float64"` on `zeros`/`full`, `device="cpu"` throughout — so every
+existing call is byte-for-byte unchanged and still produces a float64/cpu
+tensor. `from_array` still coerces its data to float64 exactly as before;
+the tag records intent, it does not change the bytes.
+
+Following the design's **reject-over-inert** recommendation, any
+unsupported dtype/device is rejected at construction (before native
+memory is allocated), naming the offending value and the supported set —
+so no tensor ever advertises a dtype/device the float64/CPU kernels
+cannot actually compute. The binary ops and `matmul` validate that both
+operands share dtype and device (naming both pairs on a mismatch) — a
+guard that cannot fire yet with one legal value each, but is the enforced
+contract native autograd (Phase B) will read `grad.dtype == param.dtype`
+against. Every op and view carries the metadata through: `relu`, `add`/
+`subtract`/`multiply` (broadcasting included), `matmul`, `sum`/`mean`,
+and the metadata-only views all produce float64/cpu results; `to_numpy`
+still returns float64 arrays. `backend_info()` now advertises the
+supported sets (`supported_dtypes`, `supported_devices`, and a `device`
+field) for both the native and NumPy backends.
+
+The `dtype`/`device` fields follow each object's existing metadata
+closed-behavior: readable after `close()` on `NativeStorage`/
+`NativeTensorCore` (like `size`/`shape`), rejected after `close()` on the
+`NativeTensor` wrapper (like its `shape`/`strides`). No dtype promotion,
+casting (`astype`/`to`/`cpu`/`cuda`), non-float64 kernels, CUDA,
+autograd, `Tensor` integration, or new numeric kernels came with it —
+those remain the future phases the contract enables. This **closes Phase
+A — the native CPU runtime — in code**; the next milestone is **v2.0, the
+Phase B native autograd design**. Full design in
+[native_dtype_device_metadata_design.md](native_dtype_device_metadata_design.md).
 
 ### Native dtype/device metadata — design (v1.20)
 
@@ -876,14 +942,14 @@ stays forward-only, autograd-free, float64, exact-shape, and explicitly
 
 The contiguous elementwise fast path is **implemented** (v1.14) and
 **reported** (v1.15); native broadcasting is **implemented** (v1.17);
-native `sum`/`mean` reductions are **implemented** (v1.19); and the
-dtype/device metadata contract is now **designed** (v1.20, above) —
-closing the Phase A design surface. The recommended next step is **v1.21
-— a metadata-only implementation** (float64/cpu only): read-only
-`dtype`/`device` properties, default-preserving constructor arguments,
-and a reject-on-unsupported guard, all backward compatible with no
-compute change — closing Phase A in code. After that comes **Phase B —
-the native autograd design (v2.0)**, which the dtype/device contract
-exists to support. Still no Tensor integration, no autograd, no CUDA
-today. CUDA experiments remain a separate future branch. The Python
-framework stays the reference implementation throughout.
+native `sum`/`mean` reductions are **implemented** (v1.19); the
+dtype/device metadata contract was **designed** (v1.20) and is now
+**implemented** (v1.21, above, float64/cpu only) — which **closes Phase A,
+the native CPU runtime, in code**. The next milestone is **Phase B — the
+native autograd design (v2.0)**, which the dtype/device contract exists to
+support (a backward can enforce `grad.dtype == param.dtype` and
+`grad.device == param.device` against fields that now really exist). Still
+no Tensor integration, no autograd, no CUDA today. CUDA experiments remain
+a separate future branch (where `device` gains a second value), and an
+AMP / Tensor Core path is where `dtype` later gains float16/bfloat16. The
+Python framework stays the reference implementation throughout.

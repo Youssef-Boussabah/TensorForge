@@ -213,4 +213,21 @@ construction so no tensor advertises a dtype it cannot compute. It
 recommends a small metadata-only implementation (float64/cpu) as v1.21 to
 close Phase A in code before the Phase B native-autograd design
 ([native_dtype_device_metadata_design.md](native_dtype_device_metadata_design.md)).
-No code ships. CUDA/GPU experiments remain future work.
+No code ships. **v1.21** implements that design — metadata only, float64/cpu
+only, no kernel or compute change. `dtype` and `device` become explicit,
+inspectable tags **owned by `NativeStorage`** and surfaced read-only through
+`NativeTensorCore.dtype`/`.device` and `NativeTensor.dtype`/`.device`; two
+pure helpers (`normalize_dtype`/`normalize_device`) validate them against
+`SUPPORTED_DTYPES == ("float64",)` / `SUPPORTED_DEVICES == ("cpu",)`.
+Constructors on the core, the wrapper, and the native backend gained
+default-preserving `dtype`/`device` arguments (`None`/`"float64"`,
+`"cpu"`), so every existing call is byte-for-byte unchanged; following the
+design's reject-over-inert recommendation, unsupported values are rejected
+at construction (before allocation), and binary ops/matmul validate matching
+dtype+device as the guard native autograd will build on. Every op and view
+preserves the tags, `to_numpy` still returns float64, and `backend_info`
+advertises the supported sets. No dtype promotion, casting, non-float64
+kernels, CUDA, autograd, or `Tensor` integration came with it. This
+**closes Phase A — the native CPU runtime — in code**; the next step is
+v2.0, the Phase B native-autograd design. CUDA/GPU experiments remain future
+work.

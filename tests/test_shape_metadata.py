@@ -9,9 +9,13 @@ import numpy as np
 import pytest
 
 from tensorforge.backends.cpp import (
+    SUPPORTED_DEVICES,
+    SUPPORTED_DTYPES,
     broadcast_shapes,
     flat_offset,
     is_contiguous_shape,
+    normalize_device,
+    normalize_dtype,
     numel,
     reduce_shape,
     row_major_strides,
@@ -274,3 +278,51 @@ def test_reduce_shape_non_bool_keepdims_raises_typeerror():
         reduce_shape((2, 3), axis=0, keepdims="yes")
     with pytest.raises(TypeError, match="keepdims"):
         reduce_shape((2, 3), keepdims=1)
+
+
+# ---------------------------------------------------------------------------
+# normalize_dtype / normalize_device (v1.21): pure dtype/device tag
+# validation. float64/cpu are the only supported values; the helpers never
+# touch the compiled library, so they run whether or not the backend is
+# built.
+# ---------------------------------------------------------------------------
+
+
+def test_supported_sets_are_float64_and_cpu():
+    assert SUPPORTED_DTYPES == ("float64",)
+    assert SUPPORTED_DEVICES == ("cpu",)
+
+
+def test_normalize_dtype_defaults_and_accepts_float64():
+    assert normalize_dtype() == "float64"       # no argument
+    assert normalize_dtype(None) == "float64"   # None means the default
+    assert normalize_dtype("float64") == "float64"
+
+
+def test_normalize_device_defaults_and_accepts_cpu():
+    assert normalize_device() == "cpu"
+    assert normalize_device(None) == "cpu"
+    assert normalize_device("cpu") == "cpu"
+
+
+def test_normalize_dtype_rejects_unsupported_naming_value_and_set():
+    with pytest.raises(ValueError) as excinfo:
+        normalize_dtype("float32")
+    message = str(excinfo.value)
+    assert "float32" in message and "float64" in message
+
+
+def test_normalize_device_rejects_unsupported_naming_value_and_set():
+    with pytest.raises(ValueError) as excinfo:
+        normalize_device("cuda")
+    message = str(excinfo.value)
+    assert "cuda" in message and "cpu" in message
+
+
+def test_normalize_rejects_non_string_types():
+    for bad in (5, 5.0, np.float64, ("float64",)):
+        with pytest.raises(TypeError, match="dtype"):
+            normalize_dtype(bad)
+    for bad in (0, object(), ["cpu"]):
+        with pytest.raises(TypeError, match="device"):
+            normalize_device(bad)

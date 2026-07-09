@@ -63,25 +63,35 @@ class NativeTensor:
     # -- constructors -----------------------------------------------------
 
     @classmethod
-    def from_array(cls, values):
+    def from_array(cls, values, dtype=None, device="cpu"):
         """A contiguous native tensor holding a copy of ``values``.
 
         This is the explicit *entry* boundary: array-like/NumPy data in,
         a new owning NativeTensor out, its data copied into fresh C++
-        storage.
+        storage. ``dtype``/``device`` default to ``"float64"``/``"cpu"``
+        and are rejected if unsupported.
         """
-        return cls._from_core(cpp.NativeTensorCore.from_array(values))
+        return cls._from_core(
+            cpp.NativeTensorCore.from_array(values, dtype=dtype, device=device)
+        )
 
     @classmethod
-    def zeros(cls, shape):
-        """A row-major contiguous native tensor of ``shape``, all zeros."""
-        return cls._from_core(cpp.NativeTensorCore.zeros(shape))
+    def zeros(cls, shape, dtype="float64", device="cpu"):
+        """A row-major contiguous native tensor of ``shape``, all zeros.
+        ``dtype``/``device`` default to ``"float64"``/``"cpu"`` and are
+        rejected if unsupported."""
+        return cls._from_core(
+            cpp.NativeTensorCore.zeros(shape, dtype=dtype, device=device)
+        )
 
     @classmethod
-    def full(cls, shape, fill_value):
+    def full(cls, shape, fill_value, dtype="float64", device="cpu"):
         """A row-major contiguous native tensor of ``shape`` filled with
-        ``fill_value``."""
-        return cls._from_core(cpp.NativeTensorCore.full(shape, fill_value))
+        ``fill_value``. ``dtype``/``device`` default to
+        ``"float64"``/``"cpu"`` and are rejected if unsupported."""
+        return cls._from_core(
+            cpp.NativeTensorCore.full(shape, fill_value, dtype=dtype, device=device)
+        )
 
     # -- lifetime gate ----------------------------------------------------
 
@@ -114,6 +124,18 @@ class NativeTensor:
     @property
     def contiguous(self):
         return self._require_open().contiguous
+
+    @property
+    def dtype(self):
+        """The element type tag (``"float64"``), delegated to the core.
+        Rejected after close, like the other layout metadata."""
+        return self._require_open().dtype
+
+    @property
+    def device(self):
+        """The device tag (``"cpu"``), delegated to the core. Rejected
+        after close, like the other layout metadata."""
+        return self._require_open().device
 
     # -- lifetime state (always readable) ---------------------------------
 

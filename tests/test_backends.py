@@ -57,6 +57,9 @@ def test_numpy_backend_is_available_and_describes_itself():
     assert info["name"] == "numpy"
     assert info["experimental"] is False
     assert info["dtype"] == "float64"
+    # v1.21: the supported dtype/device sets are advertised for discovery.
+    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_devices"] == ("cpu",)
 
 
 def test_numpy_backend_constructors_return_float64_arrays():
@@ -140,6 +143,31 @@ def test_native_backend_is_constructible_and_reports_availability():
     assert isinstance(backend.available(), bool)  # never raises, built or not
     info = backend.backend_info()
     assert info["name"] == "cpp"
+    # v1.21: metadata contract advertised, built or not (backend_info
+    # delegates to cpp.backend_info(), which never touches the library).
+    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_devices"] == ("cpu",)
+
+
+@needs_native
+def test_native_backend_constructors_thread_dtype_device():
+    from tensorforge.backends import cpp
+
+    backend = get_backend("native")
+    # Explicit defaults are accepted and produce float64/cpu tensors.
+    for tensor in (
+        backend.tensor_from_array([1.0, 2.0], dtype="float64", device="cpu"),
+        backend.zeros((2, 2), dtype="float64", device="cpu"),
+        backend.full((3,), 7.0, dtype="float64", device="cpu"),
+    ):
+        assert isinstance(tensor, cpp.NativeTensorCore)
+        assert tensor.dtype == "float64" and tensor.device == "cpu"
+        tensor.close()
+    # Unsupported values are rejected clearly.
+    with pytest.raises(ValueError, match="float32"):
+        backend.zeros((2, 2), dtype="float32")
+    with pytest.raises(ValueError, match="cuda"):
+        backend.tensor_from_array([1.0], device="cuda")
 
 
 @needs_native

@@ -948,3 +948,136 @@ def test_reduction_on_closed_core_raises():
         a.sum()
     with pytest.raises(RuntimeError, match="closed"):
         a.mean(axis=0)
+
+
+# ---------------------------------------------------------------------------
+# v1.21: native dtype/device metadata (float64/cpu only)
+#
+# Metadata is explicit and inspectable but does not change any compute:
+# the only supported dtype/device is float64/cpu, owned by NativeStorage
+# and surfaced read-only through NativeTensorCore. Unsupported values are
+# rejected at construction (never silently coerced), and every op/view
+# carries the metadata through unchanged.
+# ---------------------------------------------------------------------------
+
+
+def test_storage_default_dtype_device_and_readable_after_close():
+    storage = cpp.NativeStorage.from_array([1.0, 2.0, 3.0])
+    assert storage.dtype == "float64"
+    assert storage.device == "cpu"
+    storage.close()
+    # Metadata stays readable after close, like size.
+    assert storage.dtype == "float64" and storage.device == "cpu"
+
+
+def test_storage_rejects_unsupported_dtype_and_device():
+    with pytest.raises(ValueError, match="float32"):
+        cpp.NativeStorage(4, dtype="float32")
+    with pytest.raises(ValueError, match="cuda"):
+        cpp.NativeStorage(4, device="cuda")
+    with pytest.raises(TypeError, match="dtype"):
+        cpp.NativeStorage(4, dtype=object())
+    with pytest.raises(TypeError, match="device"):
+        cpp.NativeStorage(4, device=7)
+
+
+def test_core_exposes_dtype_device_and_defaults():
+    for tensor in (
+        cpp.NativeTensorCore.from_array([[1.0, 2.0], [3.0, 4.0]]),
+        cpp.NativeTensorCore.zeros((2, 3)),
+        cpp.NativeTensorCore.full((2,), 5.0),
+    ):
+        assert tensor.dtype == "float64"
+        assert tensor.device == "cpu"
+        tensor.close()
+
+
+def test_core_explicit_dtype_device_args_accept_defaults():
+    with cpp.NativeTensorCore.zeros((2, 2), dtype="float64", device="cpu") as z:
+        assert z.dtype == "float64" and z.device == "cpu"
+    with cpp.NativeTensorCore.full((3,), 1.0, dtype="float64", device="cpu") as f:
+        assert f.dtype == "float64" and f.device == "cpu"
+    with cpp.NativeTensorCore.from_array([1.0], dtype=None, device="cpu") as a:
+        assert a.dtype == "float64" and a.device == "cpu"
+
+
+def test_core_rejects_unsupported_dtype_device_before_allocation():
+    for ctor in (
+        lambda: cpp.NativeTensorCore.zeros((2, 2), dtype="float32"),
+        lambda: cpp.NativeTensorCore.full((2,), 0.0, device="cuda"),
+        lambda: cpp.NativeTensorCore.from_array([1.0], dtype="int64"),
+    ):
+        with pytest.raises(ValueError):
+            ctor()
+
+
+def test_core_dtype_device_readable_after_close():
+    tensor = cpp.NativeTensorCore.from_array([1.0, 2.0])
+    tensor.close()
+    # Like shape, metadata stays readable on a closed core.
+    assert tensor.dtype == "float64" and tensor.device == "cpu"
+
+
+def test_views_share_storage_metadata():
+    base = np.arange(12.0).reshape(3, 4)
+    with cpp.NativeTensorCore.from_array(base) as tensor:
+        for view in (
+            tensor.reshape((4, 3)),
+            tensor.transpose(),
+            tensor.T,
+            tensor.narrow(1, 1, 2),
+        ):
+            assert view.dtype == tensor.dtype  # shared storage, one truth
+            assert view.device == tensor.device
+
+
+def test_operations_preserve_dtype_device():
+    x = np.array([[1.0, -2.0], [3.0, 4.0]])
+    y = np.array([[5.0, 6.0], [7.0, 8.0]])
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(y) as b:
+        for result in (
+            a.relu(),
+            a.add(b),
+            a.subtract(b),
+            a.multiply(b),
+            a.matmul(b),
+            a.sum(),
+            a.sum(axis=0),
+            a.mean(axis=1, keepdims=True),
+        ):
+            assert result.dtype == "float64"
+            assert result.device == "cpu"
+            result.close()
+
+
+def test_broadcasting_result_preserves_dtype_device():
+    x = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # (2, 3)
+    row = np.array([10.0, 20.0, 30.0])                 # (3,)
+    with cpp.NativeTensorCore.from_array(x) as a, cpp.NativeTensorCore.from_array(row) as b:
+        result = a.add(b)  # broadcasts to (2, 3)
+        assert result.shape == (2, 3)
+        assert result.dtype == "float64" and result.device == "cpu"
+        result.close()
+
+
+def test_contiguous_copy_preserves_dtype_device():
+    with cpp.NativeTensorCore.from_array(np.arange(6.0).reshape(2, 3)) as tensor:
+        transposed = tensor.T  # non-contiguous
+        with transposed.contiguous_copy() as copy:
+            assert copy.dtype == "float64" and copy.device == "cpu"
+
+
+def test_to_numpy_still_returns_float64():
+    x = np.array([[1.5, -2.5], [3.5, 4.5]])
+    with cpp.NativeTensorCore.from_array(x) as tensor:
+        out = tensor.to_numpy()
+        assert out.dtype == np.float64
+        assert np.array_equal(out, x)
+
+
+def test_backend_info_reports_supported_dtype_device_sets():
+    info = cpp.backend_info()
+    assert info["dtype"] == "float64"
+    assert info["device"] == "cpu"
+    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_devices"] == ("cpu",)

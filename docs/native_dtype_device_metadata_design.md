@@ -1,10 +1,13 @@
 # Native dtype / device metadata — design
 
-This is a **design document, not an implementation.** It specifies
-explicit **dtype** and **device** metadata for the native runtime
-(`NativeStorage` / `NativeTensorCore` / `NativeTensor`). No kernels
-change and no compute behavior changes in this milestone (v1.20); a
-metadata-only implementation is proposed for v1.21.
+This document specifies explicit **dtype** and **device** metadata for the
+native runtime (`NativeStorage` / `NativeTensorCore` / `NativeTensor`). It
+was written as the v1.20 design; **the metadata-only implementation
+shipped in v1.21** (float64/cpu only), following this design's
+recommendations — reject-over-inert, storage-owned tags, default-preserving
+constructor arguments — and closing Phase A in code. No kernels changed and
+no compute behavior changed; see the v1.21 note in
+[backend_experiments.md](backend_experiments.md).
 
 For where this sits, see [backend_experiments.md](backend_experiments.md)
 (the native runtime), [dispatch_design.md](dispatch_design.md) (the

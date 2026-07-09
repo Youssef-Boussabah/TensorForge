@@ -24,10 +24,12 @@ class NativeBackend:
     def backend_info(self):
         return cpp.backend_info()
 
-    def tensor_from_array(self, values):
+    def tensor_from_array(self, values, dtype=None, device="cpu"):
         """The explicit conversion boundary in: NumPy/Python data in, a
-        new NativeTensorCore out (a copy — no hidden aliasing)."""
-        return cpp.NativeTensorCore.from_array(values)
+        new NativeTensorCore out (a copy — no hidden aliasing).
+        ``dtype``/``device`` default to ``"float64"``/``"cpu"`` and are
+        rejected if unsupported."""
+        return cpp.NativeTensorCore.from_array(values, dtype=dtype, device=device)
 
     def to_numpy(self, value):
         """The explicit conversion boundary out: a NativeTensorCore in,
@@ -37,11 +39,11 @@ class NativeBackend:
         tensorforge.Tensor — with a clear TypeError."""
         return self._require_core(value, "to_numpy").to_numpy()
 
-    def zeros(self, shape):
-        return cpp.NativeTensorCore.zeros(shape)
+    def zeros(self, shape, dtype="float64", device="cpu"):
+        return cpp.NativeTensorCore.zeros(shape, dtype=dtype, device=device)
 
-    def full(self, shape, fill_value):
-        return cpp.NativeTensorCore.full(shape, fill_value)
+    def full(self, shape, fill_value, dtype="float64", device="cpu"):
+        return cpp.NativeTensorCore.full(shape, fill_value, dtype=dtype, device=device)
 
     def _require_core(self, value, op):
         if not isinstance(value, cpp.NativeTensorCore):
