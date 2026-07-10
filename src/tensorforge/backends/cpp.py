@@ -158,7 +158,12 @@ def _load_library():
         ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_core_relu.restype = None
-    for name in ("tf_core_add", "tf_core_subtract", "tf_core_multiply"):
+    # tf_core_relu_backward shares the binary-kernel signature: it walks
+    # the forward input and the upstream gradient in lockstep.
+    for name in (
+        "tf_core_add", "tf_core_subtract", "tf_core_multiply",
+        "tf_core_relu_backward",
+    ):
         kernel = getattr(library, name)
         kernel.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
@@ -647,6 +652,43 @@ class NativeTensorCore:
             self._storage._require_open(),
             out._storage._require_open(),
             shape_arr, strides_arr, self.offset, self.ndim,
+        )
+        return out
+
+    def relu_backward(self, upstream):
+        """The gradient of ``relu`` at this tensor's forward value:
+        ``upstream`` where this tensor's element is ``> 0``, else ``0``
+        (``x == 0`` blocks the gradient, the Python Tensor convention).
+
+        A forward-shaped numerical kernel, not graph machinery — the core
+        stays autograd-unaware; the NativeTensor layer calls this from its
+        relu backward closure. Both operands may be strided views (each is
+        read through its own strides/offset); shapes must match exactly
+        (no broadcasting — the upstream gradient of an op always has the
+        op's output shape). Returns a new row-major contiguous
+        NativeTensorCore of this tensor's shape."""
+        self._require_open()
+        if not isinstance(upstream, NativeTensorCore):
+            raise TypeError(
+                f"relu_backward requires a NativeTensorCore upstream "
+                f"gradient, got {type(upstream).__name__}"
+            )
+        upstream._require_open()
+        self._require_matching_metadata(upstream, "relu_backward")
+        if self.shape != upstream.shape:
+            raise ValueError(
+                f"relu_backward requires the upstream gradient shape to "
+                f"match the input shape, got {upstream.shape} and {self.shape}"
+            )
+        out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
+        shape_arr, x_strides = self._layout_arrays()
+        u_strides = np.asarray(upstream.strides, dtype=np.int64)
+        self._storage._lib.tf_core_relu_backward(
+            self._storage._require_open(),
+            upstream._storage._require_open(),
+            out._storage._require_open(),
+            shape_arr, x_strides, u_strides,
+            self.offset, upstream.offset, self.ndim,
         )
         return out
 

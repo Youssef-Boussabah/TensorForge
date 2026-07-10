@@ -129,18 +129,29 @@ The Python line is done; what remains is expansion on its own terms:
   change, `to_numpy` still float64, and pure `normalize_dtype`/
   `normalize_device` helpers validate the tags
   ([native_dtype_device_metadata_design.md](native_dtype_device_metadata_design.md)).
-  **Phase B has now opened: Advanced C++ v2.0 — the native autograd design
-  — is complete** (design only), specifying a Python-managed reverse-mode
-  graph at the `NativeTensor` layer, native gradients honoring the v1.21
-  `grad.dtype == tensor.dtype` / `grad.device == tensor.device` contract,
-  broadcasting backward via A3 reductions, honest missing-kernel notes,
-  and a staged v2.1–v2.5 plan — separate from `tensorforge.Tensor`, CPU/
-  float64 only, no implicit dispatch
-  ([native_autograd_design.md](native_autograd_design.md)). The next
-  recommended milestone is **Advanced C++ v2.1 — the native autograd
-  metadata skeleton** (`requires_grad`/`grad`/`detach`/`zero_grad`, no
-  differentiable ops yet). CUDA/GPU experiments are still entirely future
-  work. The Python framework stays the reference implementation.
+  **Phase B is under way.** Advanced C++ v2.0 — the native autograd design
+  — is complete (a Python-managed reverse-mode graph at the `NativeTensor`
+  layer, native gradients honoring the v1.21 `grad.dtype == tensor.dtype`
+  / `grad.device == tensor.device` contract, broadcasting backward via A3
+  reductions). **v2.1 implemented the autograd metadata skeleton** —
+  opt-in `requires_grad`/`grad`/`is_leaf`, `zero_grad`/`detach`, and a
+  reverse-topological `backward` driver with `NativeTensor`-backed
+  gradients — and **v2.2 — Core Native Autograd Operations — is now
+  implemented**: `add`/`subtract`/`multiply`/`relu`/`sum`/`mean`/
+  `matmul`/`reshape`/`transpose`/`T`/`contiguous_copy` are differentiable
+  (graph nodes when an operand requires grad, plain forward tensors
+  otherwise), broadcasting backward runs through a native `unbroadcast`
+  reduction, sum/mean broadcast their upstream back natively, and the one
+  new C++ kernel is the fused `relu_backward` — with every rule verified
+  against finite differences and a deterministic native demo
+  (`examples/native_autograd_demo.py`). `NativeTensorCore` and the C++
+  kernels still own no graph state, and `narrow` backward waits on a
+  native scatter primitive. The next recommended milestone is **Advanced
+  C++ v2.3 — Native Autograd Completion and Characterization** (narrow
+  backward via scatter, the graph-cleanup/`retain_graph` decision,
+  autograd benchmark characterization, final Phase B polish). CUDA/GPU
+  experiments are still entirely future work. The Python framework stays
+  the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -152,13 +163,20 @@ The Python line is done; what remains is expansion on its own terms:
     (designed v1.18, implemented v1.19). A4: explicit dtype and device
     metadata (float64/cpu) — **complete** (designed v1.20, implemented
     v1.21, metadata-only), which **closes Phase A in code**.
-  - **Phase B — native autograd (current).** The v2.0 design is
-    **complete** (design only; a Python-managed reverse-mode graph at the
-    `NativeTensor` layer — see
-    [native_autograd_design.md](native_autograd_design.md)); the next
-    milestone is **v2.1, the native autograd metadata skeleton**, then
-    v2.2 basic backward (add/multiply/relu/sum), v2.3 broadcasting + mean
-    backward, v2.4 matmul backward, and v2.5 a native autograd demo.
+  - **Phase B — native autograd (current).** The v2.0 design is complete
+    (a Python-managed reverse-mode graph at the `NativeTensor` layer — see
+    [native_autograd_design.md](native_autograd_design.md)); **v2.1
+    implemented the metadata skeleton and reverse-topological backward
+    driver** (opt-in `requires_grad`/`grad`/`is_leaf`,
+    `zero_grad`/`detach`/`backward`, `NativeTensor`-backed gradients); and
+    **v2.2 implemented the core backward operations** — add, subtract,
+    multiply, relu (one new fused kernel), sum, mean, matmul,
+    reshape/transpose/T, contiguous_copy, and broadcasting backward via a
+    native `unbroadcast`, finite-difference-verified, with a
+    deterministic native autograd demo. Next is **v2.3 — native autograd
+    completion and characterization** (narrow backward through a native
+    scatter primitive, the graph-cleanup/`retain_graph` decision, and
+    autograd benchmarks).
   - **Then beyond:** a native training stack, the CUDA runtime
     (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

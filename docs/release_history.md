@@ -255,4 +255,67 @@ silent NumPy fallback, `Tensor` behavior unchanged) and CPU/float64 only
 (add/multiply/relu/sum) → v2.3 broadcasting + mean backward → v2.4 matmul
 backward → v2.5 native autograd demo, then Phase C (native training stack)
 ([native_autograd_design.md](native_autograd_design.md)). No code ships;
-the next step is v2.1, the native autograd metadata skeleton.
+the next step is v2.1, the native autograd metadata skeleton. **v2.1**
+implements that skeleton — **Phase B's first code**. `NativeTensor` gains
+an opt-in, Python-managed autograd graph: state (`_requires_grad`,
+`_grad`, `_parents`, `_backward`, `_op`, `_is_leaf`) at the wrapper layer,
+the public surface (`requires_grad`/`grad`/`is_leaf`/`zero_grad`/`detach`/
+`backward`), a default-preserving `requires_grad=False` constructor
+argument (non-`bool` rejected), an internal graph constructor `_from_op`
+(a result's `requires_grad` is the OR of its parents'), native
+`NativeTensor`-backed gradient accumulation (`_accumulate_grad` via the
+native `add` kernel — no NumPy in the gradient path), and a
+reverse-topological `backward(gradient=None)` driver (post-order DFS keyed
+by object identity so shared/duplicate parents are visited once; scalar
+outputs seed a native `1.0`, non-scalars require an explicit
+shape/dtype/device-matching `NativeTensor` gradient; only leaves retain
+grad). `zero_grad()` clears to `None`; `detach()` returns an owning
+contiguous copy detached from the graph; `retain_graph` is intentionally
+not offered (the graph is rebuilt each call, so repeated `backward()`
+accumulates until `zero_grad()`). Crucially, v2.1 is a **skeleton**: the
+forward compute ops (`add`/`multiply`/`relu`/`sum`/…) are **not** wired
+into autograd yet — their results stay `requires_grad=False` and the
+engine is exercised through `_from_op` — so `NativeTensorCore` and the C++
+kernels remain forward-only and autograd-unaware, and `tensorforge.Tensor`
+is untouched. No kernels changed and no arithmetic became differentiable.
+The next step is v2.2, basic native backward (add/multiply/relu/sum).
+**v2.2** wires the core operations into that engine — **native autograd
+becomes differentiable arithmetic**. `NativeTensor.add`/`subtract`/
+`multiply`/`relu`/`sum`/`mean`/`matmul`/`reshape`/`transpose`/`T`/
+`contiguous_copy` now build graph nodes when an operand requires grad
+(plain forward tensors otherwise — non-autograd use is unchanged), with
+every backward rule computed by **native forward kernels at the
+`NativeTensorCore` level**: add/subtract pass the upstream through
+(negation composed as a broadcast-scalar multiply by a native `-1.0` — no
+negate kernel), multiply computes `u·b`/`u·a`, matmul computes
+`u @ b.T`/`a.T @ u` over strided transpose views, sum/mean broadcast the
+upstream back natively (reduced axes reinserted as size 1, expanded by the
+existing zero-stride broadcasting; mean scaled by a native `1/count`
+scalar multiply), and reshape/transpose apply the inverse
+relabeling/permutation. Broadcasting backward is a private
+`_unbroadcast(grad, target_shape)` helper — the adjoint of broadcasting —
+built from single-axis native reductions applied in a stable order, with
+the scalar shape `()` and one-element `(1,)` distinguished exactly.
+`contiguous_copy` backward is the identity (a gradient lives at the
+logical shape, so the parent's layout is irrelevant). The **one new C++
+kernel** is the fused `tf_core_relu_backward` the v2.0 design flagged
+(`upstream` where `x > 0` else `0`; `x == 0` blocks, matching the Python
+Tensor), implemented as one more op through the existing generic binary
+odometer and surfaced as the forward-shaped
+`NativeTensorCore.relu_backward` — the core and kernels still own **no
+graph state**. Retained gradient contributions are always the upstream
+tensor itself or fresh owning contiguous storage (never a borrowing view
+over a transient), and closing an operand or intermediate before
+`backward()` raises clearly instead of reading freed storage. Everything
+is verified against exact analytical values **and central finite
+differences** (NumPy only as the test-side reference), a deterministic
+demo (`examples/native_autograd_demo.py`) runs
+`x.matmul(w).add(b).relu().mean()` natively end to end with broadcast
+bias gradients, and the CI smoke script hard-checks one scalar-loss
+backward. **`narrow` backward is deferred** until a native scatter
+primitive exists, `retain_graph` is still not offered, and there is no
+`tensorforge.Tensor` integration, no optimizer/module layer, no CUDA, and
+no performance claims. The next step is v2.3 — native autograd completion
+and characterization (narrow backward via scatter, the
+graph-cleanup/`retain_graph` decision, autograd benchmarks, final Phase B
+polish).

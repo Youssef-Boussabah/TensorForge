@@ -105,6 +105,11 @@ typedef double (*TfBinaryOp)(double, double);
 double tf_op_add(double x, double y) { return x + y; }
 double tf_op_subtract(double x, double y) { return x - y; }
 double tf_op_multiply(double x, double y) { return x * y; }
+// ReLU's backward as a binary op over (input, upstream gradient): the
+// gradient passes through where the forward input was positive and is
+// blocked where relu clamped to zero. x == 0 blocks, matching the
+// Python Tensor's (x > 0) * grad convention exactly.
+double tf_op_relu_backward(double x, double u) { return x > 0.0 ? u : 0.0; }
 
 // Contiguous fast path: when a logical view's strides are exactly the
 // row-major strides for its shape, the odometer's source position
@@ -237,6 +242,22 @@ TF_EXPORT void tf_core_multiply(
 ) {
     tf_core_binary(a, b, dst, shape, a_strides, b_strides,
                    a_offset, b_offset, ndim, tf_op_multiply);
+}
+
+// ReLU backward over tensor cores: dst = upstream where x > 0, else 0.
+// The one genuinely new kernel native autograd's first scope needs (the
+// runtime has no compare/where to compose it from). It is just the
+// generic binary odometer walking the forward input x and the upstream
+// gradient in lockstep — same logical shape, each through its own
+// strides/offset, so transposed/narrowed/nonzero-offset inputs work
+// without materializing — writing a fresh row-major contiguous output.
+TF_EXPORT void tf_core_relu_backward(
+    const void* x, const void* upstream, void* dst,
+    const int64_t* shape, const int64_t* x_strides, const int64_t* u_strides,
+    int64_t x_offset, int64_t u_offset, int64_t ndim
+) {
+    tf_core_binary(x, upstream, dst, shape, x_strides, u_strides,
+                   x_offset, u_offset, ndim, tf_op_relu_backward);
 }
 
 // Contiguous fast-path binary kernels: flat, index-free loops used when

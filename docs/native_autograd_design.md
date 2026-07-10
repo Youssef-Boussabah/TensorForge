@@ -2,11 +2,37 @@
 
 This is a **design document** (written as the Advanced C++ v2.0
 milestone, ahead of any code) for reverse-mode autograd over the native
-runtime — `NativeTensor` / `NativeTensorCore`. It is **design only: no
-autograd is implemented, no kernel changes, no runtime behavior
-changes.** It opens **Phase B** of the Daedalus-class roadmap, following
-the completed **Phase A — native CPU runtime** (contiguous fast path,
-broadcasting, reductions, dtype/device metadata; §1).
+runtime — `NativeTensor` / `NativeTensorCore`. It opens **Phase B** of the
+Daedalus-class roadmap, following the completed **Phase A — native CPU
+runtime** (contiguous fast path, broadcasting, reductions, dtype/device
+metadata; §1).
+
+> **Implementation status.** v2.0 was design only. **v2.1 implements the
+> autograd metadata skeleton and the reverse-topological backward
+> driver** on `NativeTensor` — `requires_grad`, `grad`, `is_leaf`,
+> `zero_grad()`, `detach()`, `backward()`, the internal graph constructor
+> `_from_op`, native `NativeTensor`-backed gradient accumulation
+> (`_accumulate_grad`), and the seed/validation rules of §7 — following
+> this design. **v2.2 wires the core differentiable operations into that
+> engine**: `add`, `subtract`, `multiply`, `relu`, `sum`, `mean`,
+> `matmul`, `reshape`, `transpose`/`T`, and `contiguous_copy` build graph
+> nodes when an operand requires grad, with broadcasting backward handled
+> by the `unbroadcast` reduction helper of §8 and sum/mean's
+> broadcast-back rule of §7.4 — landing the v2.2–v2.4 op scope of §16 in
+> one milestone, plus `subtract` via the §7.5 scalar-multiply negation
+> (no negate kernel) and `mean`'s 1/count as a broadcast-scalar multiply.
+> The one new kernel is the fused `tf_core_relu_backward` §7.4
+> recommended (a reuse of the generic binary odometer walker). All
+> backward math runs on native forward kernels at the `NativeTensorCore`
+> level — the core and the C++ kernels remain autograd-unaware and own no
+> graph state. `contiguous_copy` backward is the identity (the forward is
+> an elementwise logical copy, and a gradient lives at the logical shape,
+> so §9's inverse-layout concern does not arise); **`narrow` backward
+> remains deferred** until a native scatter primitive exists (§9), and
+> `retain_graph` is still not offered (§7.1). Verified against exact
+> analytical values and finite differences; demonstrated by
+> `examples/native_autograd_demo.py`. The sections below remain the
+> design of record.
 
 For where this sits, see [backend_experiments.md](backend_experiments.md)
 (the native runtime and its benchmarks),
@@ -281,6 +307,17 @@ three steps, natively:
 Reverse-topological order is what guarantees a tensor's gradient is
 complete (all downstream contributions summed) before its own `_backward`
 runs — the same reasoning as the Python engine.
+
+**`retain_graph` is deferred** (implemented as such in v2.1). The graph is
+rebuilt on every `backward()` call, and the traversal never destroys graph
+state, so a partially-working `retain_graph` flag would be misleading and
+is not exposed. The observable consequence is the Python engine's own:
+repeated `backward()` calls **accumulate** into leaf grads until
+`zero_grad()` clears them (only leaves retain grad; non-leaf grads are
+transient and dropped after each pass). Traversal is by **object
+identity** (`id()`), not `NativeTensor` hashing, so a node reached by
+several paths — or listed twice as a parent — is visited exactly once
+while its backward rule still accumulates once per logical edge.
 
 ### 7.2 Default seed gradient
 

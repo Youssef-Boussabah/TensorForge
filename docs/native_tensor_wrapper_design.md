@@ -416,6 +416,41 @@ runtime beneath it grew:
   backward) → v2.3 (broadcasting + mean backward) → v2.4 (matmul backward)
   → v2.5 (demo); implementation begins at v2.1
   ([native_autograd_design.md](native_autograd_design.md)). No code ships.
+- **v2.1 — native autograd metadata skeleton (done):** the first Phase B
+  code lands **here, on `NativeTensor`**, exactly as this design predicted
+  the graph would. `NativeTensor` gains opt-in autograd state
+  (`_requires_grad`/`_grad`/`_parents`/`_backward`/`_op`/`_is_leaf`), the
+  public surface (`requires_grad`/`grad`/`is_leaf`/`zero_grad`/`detach`/
+  `backward`), a `requires_grad=False` constructor argument
+  (default-preserving, non-`bool` rejected), an internal graph constructor
+  `_from_op`, native `NativeTensor`-backed gradient accumulation
+  (`_accumulate_grad`, no NumPy), and a reverse-topological `backward`
+  driver (identity-keyed traversal, scalar seed to `1`, explicit gradient
+  required for non-scalars and validated against the v1.21 dtype/device
+  contract). `NativeTensorCore` and the C++ kernels stay **forward-only
+  and autograd-unaware** — the graph is entirely at the wrapper layer,
+  vindicating the layer split. The v2.1 scope limit: the forward compute
+  ops (`add`/`multiply`/`relu`/`sum`/…) are **not** wired into autograd
+  yet — their results remain `requires_grad=False`, and the engine is
+  exercised through `_from_op` — so this milestone is a tested graph
+  engine, not differentiable arithmetic. Wiring the ops is v2.2.
+  `NativeTensor` remains separate from `tensorforge.Tensor`
+  ([native_autograd_design.md](native_autograd_design.md)).
+- **v2.2 — core native backward operations (done):** the wrapper's
+  compute and view ops become **differentiable**: `add`/`subtract`/
+  `multiply`/`relu`/`sum`/`mean`/`matmul`/`reshape`/`transpose`/`T`/
+  `contiguous_copy` build graph nodes through `_from_op` when an operand
+  requires grad (and stay plain forward tensors when nothing does — the
+  forward-only wrapper behavior this design specified is byte-for-byte
+  preserved for non-requiring use). Backward math is computed by native
+  forward kernels at the `NativeTensorCore` level; broadcasting backward
+  is a private `unbroadcast` over the native reductions; the one new
+  kernel is the fused `relu_backward`, surfaced as a forward-shaped
+  `NativeTensorCore.relu_backward` method — the core still records no
+  graph state. `narrow` stays outside autograd until a native scatter
+  primitive exists (v2.3). Demonstrated by
+  `examples/native_autograd_demo.py`
+  ([native_autograd_design.md](native_autograd_design.md)).
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision

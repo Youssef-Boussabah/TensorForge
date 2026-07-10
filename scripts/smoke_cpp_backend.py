@@ -81,6 +81,15 @@ def main():
     signs.close()
     tensor.close()
 
+    # Native autograd, one scalar loss and one backward (v2.2): the
+    # experimental wrapper differentiates sum(x * x), so dx must be 2x.
+    from tensorforge.experimental import NativeTensor
+
+    leaf = NativeTensor.from_array([[1.0, -2.0], [3.0, 4.0]], requires_grad=True)
+    leaf.multiply(leaf).sum().backward()
+    assert leaf.grad.to_numpy().tolist() == [[2.0, -4.0], [6.0, 8.0]]
+    leaf.close()
+
     print("cpp backend smoke ok")
 
 

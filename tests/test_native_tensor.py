@@ -594,11 +594,17 @@ def test_no_operator_overloads_yet():
 
 
 @needs_native
-def test_no_autograd_surface():
-    """A forward-only tensor carries none of Tensor's autograd machinery."""
+def test_autograd_surface_present_with_forward_only_defaults():
+    """As of v2.1 NativeTensor carries the native autograd surface, but a
+    plain constructed tensor defaults to forward-only: requires_grad
+    False, grad None, and it is a leaf. (Full autograd behavior is
+    covered in test_native_autograd.py.)"""
     t = NativeTensor.zeros((2, 2))
-    for attr in ("grad", "requires_grad", "backward", "_backward", "zero_grad"):
-        assert not hasattr(t, attr), f"NativeTensor should not have {attr}"
+    for attr in ("grad", "requires_grad", "is_leaf", "backward", "zero_grad", "detach"):
+        assert hasattr(t, attr), f"NativeTensor should expose {attr}"
+    assert t.requires_grad is False
+    assert t.grad is None
+    assert t.is_leaf is True
     t.close()
 
 
