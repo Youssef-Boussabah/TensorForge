@@ -129,10 +129,18 @@ The Python line is done; what remains is expansion on its own terms:
   change, `to_numpy` still float64, and pure `normalize_dtype`/
   `normalize_device` helpers validate the tags
   ([native_dtype_device_metadata_design.md](native_dtype_device_metadata_design.md)).
-  The next step is **Advanced C++ v2.0 — the native autograd design**
-  (Phase B), which the dtype/device contract exists to support. CUDA/GPU
-  experiments are still entirely future work. The Python framework stays
-  the reference implementation.
+  **Phase B has now opened: Advanced C++ v2.0 — the native autograd design
+  — is complete** (design only), specifying a Python-managed reverse-mode
+  graph at the `NativeTensor` layer, native gradients honoring the v1.21
+  `grad.dtype == tensor.dtype` / `grad.device == tensor.device` contract,
+  broadcasting backward via A3 reductions, honest missing-kernel notes,
+  and a staged v2.1–v2.5 plan — separate from `tensorforge.Tensor`, CPU/
+  float64 only, no implicit dispatch
+  ([native_autograd_design.md](native_autograd_design.md)). The next
+  recommended milestone is **Advanced C++ v2.1 — the native autograd
+  metadata skeleton** (`requires_grad`/`grad`/`detach`/`zero_grad`, no
+  differentiable ops yet). CUDA/GPU experiments are still entirely future
+  work. The Python framework stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -144,8 +152,14 @@ The Python line is done; what remains is expansion on its own terms:
     (designed v1.18, implemented v1.19). A4: explicit dtype and device
     metadata (float64/cpu) — **complete** (designed v1.20, implemented
     v1.21, metadata-only), which **closes Phase A in code**.
-  - **Then Phase B and beyond (current):** native autograd (v2.0 design
-    is the next milestone), a native training stack, the CUDA runtime
+  - **Phase B — native autograd (current).** The v2.0 design is
+    **complete** (design only; a Python-managed reverse-mode graph at the
+    `NativeTensor` layer — see
+    [native_autograd_design.md](native_autograd_design.md)); the next
+    milestone is **v2.1, the native autograd metadata skeleton**, then
+    v2.2 basic backward (add/multiply/relu/sum), v2.3 broadcasting + mean
+    backward, v2.4 matmul backward, and v2.5 a native autograd demo.
+  - **Then beyond:** a native training stack, the CUDA runtime
     (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,
     distributed / DDP, and a final benchmark / profiling / docs polish

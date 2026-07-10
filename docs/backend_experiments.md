@@ -386,6 +386,48 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native autograd — design (v2.0)
+
+v2.0 is **design-only**: no autograd is implemented, no kernels change,
+and no runtime behavior changes. With **Phase A — the native CPU runtime —
+complete in code** (the contiguous fast path v1.14, broadcasting v1.17,
+reductions v1.19, and dtype/device metadata v1.21), this milestone opens
+**Phase B** by writing the design for native reverse-mode autograd over
+`NativeTensor` / `NativeTensorCore`.
+
+Today the native runtime is **forward-only with no operation graph**:
+`NativeTensorCore` ops return a fresh result that records no parents, no
+operation, and no backward rule; `NativeTensor` has no `requires_grad`,
+`grad`, or `backward`. The design specifies a **Python-managed graph at
+the `NativeTensor` layer** — `NativeTensorCore` stays the raw forward
+runtime and the C++ kernels never own graph state — where each
+differentiable op records `core` + `requires_grad` + parents + a backward
+closure + an op name, leaf tensors (user-created, `requires_grad=True`)
+accumulate gradients, and `backward()` walks the graph in reverse
+topological order (scalar outputs default their seed to `1`, non-scalar
+outputs require an explicit gradient). Gradients are themselves
+**native** (`NativeTensor`-backed, lazily initialized, accumulated by
+native `add`) and honor the v1.21 metadata contract exactly
+(`grad.dtype == tensor.dtype`, `grad.device == tensor.device`) — the
+concrete reason A4 preceded autograd.
+
+The design is honest about missing kernels: first-scope backward needs a
+small fused `relu_backward` (no native compare/`where` exists), and it
+notes negation/scalar-multiply, a core-level `divide`, and a
+scatter/copy-into-view (for `narrow`/`contiguous_copy` backward) as
+deferred additions rather than silently assuming them. Broadcasting
+backward is an `unbroadcast(grad, original_shape)` helper built on native
+**reductions (A3)** — the recorded dual: a broadcast forward read is a
+sum-reduction on the backward pass. It stays **separate from
+`tensorforge.Tensor`** (no conversion, no implicit dispatch, no silent
+NumPy fallback, `Tensor` behavior unchanged) and **CPU float64 only** (no
+CUDA autograd). The staged plan is **v2.1 metadata skeleton →
+v2.2 basic backward (add/multiply/relu/sum) → v2.3 broadcasting + mean
+backward → v2.4 matmul backward → v2.5 native autograd demo**, then Phase
+C (native training stack). No code ships; the next milestone is **v2.1,
+the native autograd metadata skeleton**. Full design in
+[native_autograd_design.md](native_autograd_design.md).
+
 ### Native dtype/device metadata — implementation (v1.21)
 
 v1.21 implements the metadata contract the v1.20 design specified —
@@ -944,12 +986,15 @@ The contiguous elementwise fast path is **implemented** (v1.14) and
 **reported** (v1.15); native broadcasting is **implemented** (v1.17);
 native `sum`/`mean` reductions are **implemented** (v1.19); the
 dtype/device metadata contract was **designed** (v1.20) and is now
-**implemented** (v1.21, above, float64/cpu only) — which **closes Phase A,
-the native CPU runtime, in code**. The next milestone is **Phase B — the
-native autograd design (v2.0)**, which the dtype/device contract exists to
-support (a backward can enforce `grad.dtype == param.dtype` and
-`grad.device == param.device` against fields that now really exist). Still
-no Tensor integration, no autograd, no CUDA today. CUDA experiments remain
+**implemented** (v1.21, float64/cpu only) — which **closes Phase A,
+the native CPU runtime, in code**. **Phase B has now opened with the
+native autograd design (v2.0, above)** — a Python-managed reverse-mode
+graph at the `NativeTensor` layer, enforcing `grad.dtype == tensor.dtype`
+and `grad.device == tensor.device` against the fields v1.21 made real. The
+next milestone is **v2.1 — the native autograd metadata skeleton**
+(`requires_grad`/`grad`/`detach`/`zero_grad`, no differentiable ops yet).
+Still no Tensor integration, no autograd *implementation*, no CUDA today.
+CUDA experiments remain
 a separate future branch (where `device` gains a second value), and an
 AMP / Tensor Core path is where `dtype` later gains float16/bfloat16. The
 Python framework stays the reference implementation throughout.

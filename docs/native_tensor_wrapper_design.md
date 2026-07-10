@@ -102,6 +102,23 @@ methods delegate to core methods and re-wrap the results. It never
 reaches into layer 1 or 2 — in particular it never accepts or produces a
 `tensorforge.Tensor`.
 
+**Why `NativeTensor` is the right layer for native autograd (Phase B).**
+The native autograd design ([native_autograd_design.md](native_autograd_design.md),
+v2.0) places the first Python-managed autograd graph **here, on
+`NativeTensor`** — not in `NativeTensorCore` and never in the C++ kernels.
+`NativeTensorCore` stays the **raw forward runtime** (storage + view
+metadata + dtype/device + forward kernels, recording no provenance);
+`NativeTensor` is where the optional autograd metadata lives — a
+differentiable op produces a `NativeTensor` carrying `requires_grad`,
+`grad`, its parent `NativeTensor`s, a backward closure, and an op name.
+This keeps the split clean and mirrors the Python `Tensor` engine (ops
+build the graph, the executor beneath stays dumb): a Python-managed graph
+is far simpler to write, test, and reason about than a C++-owned one, and
+it lets every backward rule be a *composition of existing native forward
+kernels* orchestrated by Python. The wrapper remains **separate from
+`tensorforge.Tensor`** throughout — the two autograd engines never mix, no
+conversion is implicit, and `Tensor` behavior is unchanged.
+
 ## 4. Ownership and lifetime
 
 Lifetime is the hard part of any object over C++-owned memory, so the
@@ -382,6 +399,23 @@ runtime beneath it grew:
   `float64`/`cpu`; it remains a thin, forward-only experimental wrapper —
   no autograd, no operator overloads, not `tensorforge.Tensor`. This closes
   Phase A in code; the next step is the v2.0 native autograd design.
+- **v2.0 — native autograd design (done):** a design (no code) for
+  reverse-mode autograd over the native runtime, opening **Phase B**. The
+  autograd graph is **Python-managed and lives on `NativeTensor`** (this
+  wrapper), while `NativeTensorCore` stays the raw forward runtime and the
+  C++ kernels own no graph state — consistent with every prior improvement
+  belonging at the right layer. A differentiable op will produce a
+  `NativeTensor` carrying `requires_grad`/`grad`/parents/backward
+  closure/op name; `backward()` walks the graph in reverse topological
+  order; gradients are native and honor the v1.21
+  `grad.dtype == tensor.dtype` / `grad.device == tensor.device` contract.
+  It stays separate from `tensorforge.Tensor`, CPU/float64 only, with no
+  implicit dispatch and no silent NumPy fallback, and is honest about the
+  few small kernels first-scope backward needs (`relu_backward`; later
+  negation/scatter). Staged as v2.1 (metadata skeleton) → v2.2 (basic
+  backward) → v2.3 (broadcasting + mean backward) → v2.4 (matmul backward)
+  → v2.5 (demo); implementation begins at v2.1
+  ([native_autograd_design.md](native_autograd_design.md)). No code ships.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision

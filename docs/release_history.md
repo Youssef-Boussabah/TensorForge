@@ -230,4 +230,29 @@ advertises the supported sets. No dtype promotion, casting, non-float64
 kernels, CUDA, autograd, or `Tensor` integration came with it. This
 **closes Phase A — the native CPU runtime — in code**; the next step is
 v2.0, the Phase B native-autograd design. CUDA/GPU experiments remain future
-work.
+work. **v2.0** is design-only and **opens Phase B**: it writes the design
+for native reverse-mode autograd over `NativeTensor` / `NativeTensorCore`.
+The native runtime is forward-only today (`NativeTensorCore` results record
+no parents/backward; `NativeTensor` has no `requires_grad`/`grad`/
+`backward`); the design specifies a **Python-managed graph at the
+`NativeTensor` layer** — `NativeTensorCore` stays the raw forward runtime
+and the C++ kernels own no graph state — where each differentiable op
+records core + `requires_grad` + parents + a backward closure + an op name,
+leaf tensors accumulate gradients, and `backward()` walks the graph in
+reverse topological order (scalar outputs seed `1`, non-scalar outputs
+require an explicit gradient). Gradients are **native** (`NativeTensor`-
+backed, lazily initialized, accumulated by native `add`) and honor the
+v1.21 metadata contract (`grad.dtype == tensor.dtype`,
+`grad.device == tensor.device`) — the concrete reason A4 preceded autograd.
+Broadcasting backward is an `unbroadcast(grad, original_shape)` helper over
+native reductions (a broadcast forward read is a sum-reduction backward);
+the design is honest about missing kernels (a small fused `relu_backward`;
+deferred negation/scalar-multiply, core-level `divide`, and a
+scatter/copy-into-view for `narrow`/`contiguous_copy` backward). It stays
+separate from `tensorforge.Tensor` (no conversion, no implicit dispatch, no
+silent NumPy fallback, `Tensor` behavior unchanged) and CPU/float64 only
+(no CUDA autograd), staged as v2.1 metadata skeleton → v2.2 basic backward
+(add/multiply/relu/sum) → v2.3 broadcasting + mean backward → v2.4 matmul
+backward → v2.5 native autograd demo, then Phase C (native training stack)
+([native_autograd_design.md](native_autograd_design.md)). No code ships;
+the next step is v2.1, the native autograd metadata skeleton.
