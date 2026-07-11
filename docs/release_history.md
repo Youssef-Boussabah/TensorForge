@@ -423,4 +423,53 @@ one source touch is correcting a stale package docstring
 (`tensorforge.experimental` no longer claims "no autograd"); no C++ changed
 and no kernel or symbol was added. **Phase B is complete**; the next step is
 **Advanced C++ v3.1 — NativeParameter and Parameter Registration Contract**,
-the first milestone of **Phase C — a native training stack**.
+the first milestone of **Phase C — a native training stack**. **v3.1** opens
+Phase C with that foundation: `tensorforge.experimental.NativeParameter` and
+`NativeParameterRegistry` (one new module,
+`src/tensorforge/experimental/native_parameter.py`; `NativeTensor` itself,
+the C++ kernels, and `tensorforge.Tensor`/`tensorforge.nn.Parameter` are all
+untouched). `NativeParameter` subclasses `NativeTensor` (`__slots__ = ()`)
+and its instances are **graph-free owning leaves for their whole life**:
+construction copies array-like data — or the *current value* of an existing
+`NativeTensor`, leaf or non-leaf, contiguous or strided/offset view — into
+independent owning contiguous float64/cpu native storage, inheriting no
+`_parents`, `_backward`, or freed-graph state (a closed source raises;
+closing source or parameter never invalidates the other; no storage is ever
+shared, so future optimizer updates can never mutate an unrelated tensor
+through a hidden alias). `requires_grad` is a validated real bool (default
+`True`; `False` builds a frozen parameter that stays registerable and
+discoverable but accumulates no gradient). The internal graph constructors
+(`_from_core`/`_from_op`) are overridden to delegate to `NativeTensor`, so
+**parameter-ness never propagates**: math, views, `contiguous_copy`,
+reductions, and `detach()` all return plain `NativeTensor`s, and only
+calling `NativeParameter(...)` creates a parameter. Gradient behavior is the
+Phase B contract unchanged (`.grad` starts `None`, accumulates
+`NativeTensor`-backed gradients matching shape/dtype/device across fresh
+graphs, `zero_grad()` clears without touching data). Identity is **object
+identity** — no `__eq__`/`__hash__` anywhere in the hierarchy, so equal-valued
+parameters stay distinct and future optimizer state keys by `id`.
+`NativeParameterRegistry` is the minimal insertion-ordered registration
+contract the future `NativeModule` (v3.2) will embed: names are non-empty
+dot-free strings (dots reserved for hierarchical state_dict keys); slots
+accept `NativeParameter` only, with `None` unregistering (`KeyError` if
+absent) — ordinary `NativeTensor` and framework `Tensor`/`Parameter` are
+rejected, never wrapped implicitly; replacement preserves the slot's
+position and never closes, mutates, or transfers state from the old
+parameter; removal deletes the slot so re-registration appends at the end;
+aliases (one parameter under several names) are visible in
+`named_parameters()`, while `parameters()` deduplicates by identity in
+first-registration order and `unique_named_parameters()` is first-name-wins;
+the registry stores references only — it owns no storage and never closes,
+copies, or mutates a parameter. Deliberately **not** shipped: any
+`NativeModule` hierarchy, layers, losses, optimizers, training loops,
+state_dict/serialization, divide backward, operator overloads, dtype
+promotion, implicit dispatch, or NumPy fallback. 49 focused tests
+(`tests/test_native_parameter.py`, selector
+`-k "native_parameter or parameter_registration"`) lock the contract; the
+full suite passes at **972 tests**. The next milestone is **Advanced C++
+v3.2 — NativeModule Core and Recursive Registration** (child-module
+registration, automatic parameter/module assignment registration, recursive
+`parameters()`/`named_parameters()`/`modules()`/`named_modules()`,
+`zero_grad()`, deterministic traversal, shared-parameter and shared-module
+handling, and the train/eval state foundation — no layers or optimizers in
+v3.2).

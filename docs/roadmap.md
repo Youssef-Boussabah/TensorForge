@@ -180,11 +180,27 @@ The Python line is done; what remains is expansion on its own terms:
   closed-operand safety, the kernel-registry boundary, and the benchmark
   mode contract), and the final Phase B support matrix and the explicit
   divide-backward decision (deferred beyond Phase B) are documented, with no
-  operation, kernel, or optimization added. **The next milestone is Advanced
-  C++ v3.1 — NativeParameter and Parameter Registration Contract**, the first
-  step of **Phase C — a native training stack**. CUDA/GPU experiments are
-  still entirely future work. The Python framework stays the reference
-  implementation.
+  operation, kernel, or optimization added. **Phase C — a native training
+  stack — is now under way: Advanced C++ v3.1 — NativeParameter and
+  Parameter Registration Contract — is implemented**:
+  `tensorforge.experimental.NativeParameter`, a `NativeTensor` subclass
+  whose instances are always graph-free owning leaves (construction takes
+  an independent owning contiguous copy of array-like data or an existing
+  tensor's current value, inheriting no graph history; `requires_grad` is
+  a validated real bool defaulting to `True`, `False` giving a frozen but
+  registerable parameter; every operation, view, copy, and `detach()`
+  returns a plain `NativeTensor` — parameter-ness never propagates; and
+  identity is object identity, never value), plus
+  `NativeParameterRegistry`, the minimal insertion-ordered registration
+  contract the future `NativeModule` will embed (dot-free non-empty string
+  names, `NativeParameter`-only slots with `None` unregistering,
+  position-preserving replacement, alias-visible named traversal, and
+  identity-deduplicated unique traversal) — still with no module
+  hierarchy, layer, loss, optimizer, or training loop, and with
+  `tensorforge.Tensor`/`tensorforge.nn.Parameter` untouched. **The next
+  milestone is Advanced C++ v3.2 — NativeModule Core and Recursive
+  Registration.** CUDA/GPU experiments are still entirely future work. The
+  Python framework stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -226,14 +242,26 @@ The Python line is done; what remains is expansion on its own terms:
     safety, kernel-registry boundary, benchmark mode contract), the final
     Phase B support matrix, and the explicit divide-backward decision
     (deferred beyond Phase B), adding no operation, kernel, or optimization.
-    **Phase B is complete; Phase C — a native training stack — is next,
-    opening at Advanced C++ v3.1 — NativeParameter and Parameter
-    Registration Contract** (a `NativeParameter` on `NativeTensor` with clear
-    leaf/`requires_grad` invariants and parameter identity/registration
-    rules; no `NativeModule` hierarchy beyond the minimum to test
-    registration, and no optimizer or training loop yet).
-  - **Then beyond:** a native training stack, the CUDA runtime
-    (where `device` gains a second value), an AMP / Tensor Core path
+  - **Phase C — native training stack (under way).** **v3.1 —
+    NativeParameter and Parameter Registration Contract — is complete**: a
+    `NativeParameter` subclass of `NativeTensor` whose instances are
+    always graph-free owning leaves with validated `requires_grad`
+    (frozen parameters stay registerable), independent owning contiguous
+    construction from array-like data or an existing tensor's current
+    value, operation results that are always plain `NativeTensor`
+    (parameter-ness never propagates), object-identity semantics for
+    future optimizer state, and the minimal insertion-ordered
+    `NativeParameterRegistry` (dot-free names, `None` unregisters,
+    position-preserving replacement, alias and identity-deduplication
+    rules) — no `NativeModule` hierarchy, optimizer, or training loop yet.
+    **Next: v3.2 — NativeModule Core and Recursive Registration**
+    (child-module registration, automatic parameter/module assignment
+    registration, recursive `parameters()`/`named_parameters()`/
+    `modules()`/`named_modules()`, `zero_grad()`, deterministic traversal,
+    shared-parameter/-module handling, and the train/eval state
+    foundation; no layers or optimizers in v3.2).
+  - **Then beyond:** the rest of the native training stack, the CUDA
+    runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,
     distributed / DDP, and a final benchmark / profiling / docs polish
     (the final portfolio release).

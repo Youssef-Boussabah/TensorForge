@@ -855,13 +855,33 @@ is complete without it.**
   wrapper/ctypes overhead per mode, carry no speed assertions, and make no
   cross-framework claims.
 
-- **Phase C — native training stack: next.** The first Phase C milestone is
+- **Phase C — native training stack: under way.** Its first milestone,
   **Advanced C++ v3.1 — NativeParameter and Parameter Registration
-  Contract**: a `NativeParameter` abstraction built on `NativeTensor` with
-  clear leaf / `requires_grad` invariants, and parameter identity and
-  registration rules — no `NativeModule` hierarchy beyond the minimum needed
-  to define or test registration, and no optimizer or training loop yet.
-  `NativeParameter`, `NativeModule`, `NativeLinear`, losses, optimizers, and
-  training are **not** combined into one milestone; each lands only when the
-  previous is tested and documented, with the Python framework remaining the
-  reference implementation.
+  Contract, is complete**: `NativeParameter` is a `NativeTensor` subclass
+  whose instances are always graph-free owning leaves (construction copies
+  array-like data or an existing tensor's current value into independent
+  owning contiguous storage; `requires_grad` is a validated real bool,
+  default `True`, with `False` building a frozen-but-registerable
+  parameter; the internal graph constructors are overridden so every
+  operation, view, copy, and `detach()` returns a plain `NativeTensor` —
+  parameter-ness never propagates), identity is object identity (no
+  `__eq__`/`__hash__`; future optimizer state keys by `id`), and
+  `NativeParameterRegistry` is the minimal insertion-ordered registration
+  contract (dot-free non-empty string names; `NativeParameter`-only values
+  with `None` unregistering; replacement preserves position without
+  closing or mutating the old parameter; removal deletes the slot so
+  re-registration appends; aliases visible by name with identity-based
+  deduplication in `parameters()` / first-name-wins
+  `unique_named_parameters()`). Verified test count at completion: **972
+  tests** (923 at the v2.6 baseline plus the 49 v3.1
+  parameter/registration tests). The next milestone is **Advanced C++
+  v3.2 — NativeModule Core and Recursive Registration**: child-module
+  registration, automatic parameter/module assignment registration,
+  recursive `parameters()` / `named_parameters()` / `modules()` /
+  `named_modules()`, `zero_grad()`, deterministic traversal,
+  shared-parameter and shared-module handling, and the train/eval state
+  foundation — **no layers or optimizers in v3.2**. `NativeModule`,
+  `NativeLinear`, losses, optimizers, and training are **not** combined
+  into one milestone; each lands only when the previous is tested and
+  documented, with the Python framework remaining the reference
+  implementation.

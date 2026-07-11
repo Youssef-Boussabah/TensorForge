@@ -386,6 +386,124 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native training stack — NativeParameter and registration contract (v3.1)
+
+v3.1 opens **Phase C — the native training stack** — with its foundation:
+`NativeParameter`, the trainable-leaf abstraction, and
+`NativeParameterRegistry`, the minimal parameter-registration contract the
+future `NativeModule` (v3.2) will embed. It deliberately ships **no**
+module hierarchy, layer, loss, optimizer, training loop, state_dict, or
+serialization — it settles the identity, ownership, leaf, and registration
+rules everything later depends on. No C++ changed, no kernel or symbol was
+added, `NativeTensor` itself was not modified, and `tensorforge.Tensor` /
+`tensorforge.nn.Parameter` are untouched.
+
+```python
+from tensorforge.experimental import (
+    NativeParameter, NativeParameterRegistry, NativeTensor,
+)
+
+w = NativeParameter([[1.0, 2.0], [3.0, 4.0]])   # leaf, requires_grad=True
+b = NativeParameter([0.0, 0.0], requires_grad=False)  # frozen, still a parameter
+
+x = NativeTensor.from_array([[1.0, 0.0], [0.0, 1.0]])
+loss = x.matmul(w).sum()     # ordinary NativeTensor results — never parameters
+loss.backward()              # w.grad is a NativeTensor matching w
+w.zero_grad()                # grad back to None; data untouched
+
+registry = NativeParameterRegistry()
+registry.register("weight", w)
+registry.register("bias", b)
+registry.named_parameters()  # insertion-ordered (name, parameter) pairs
+registry.parameters()        # unique parameters, deduplicated by identity
+```
+
+**`NativeParameter` is a `NativeTensor` subclass** (`__slots__ = ()`), not a
+wrapper — the native ops require `NativeTensor` operands and the graph
+engine reads leaf metadata directly, so composition would need a parallel
+delegation surface for no gain. The one subclassing hazard — every op
+builds results through the `_from_core`/`_from_op` classmethods, where
+`cls` would be `NativeParameter` — is closed by overriding both to delegate
+explicitly to `NativeTensor`: **parameter-ness never propagates**. Math,
+views (`reshape`/`transpose`/`T`/`narrow`), `contiguous_copy`, `sum`/`mean`,
+and `detach()` all return plain `NativeTensor` (detach additionally
+graph-free with `requires_grad=False`); the only way to create a parameter
+is calling `NativeParameter(...)` itself (the inherited
+`from_array`/`zeros`/`full` classmethods therefore also return plain
+tensors — they are not parameter constructors). Every parameter is a
+**graph-free owning leaf for its whole life**: no `_parents`, no
+`_backward`, never marked graph-freed, and participating in an operation
+makes the *result* a non-leaf, never the parameter.
+
+**Construction always takes an independent owning contiguous copy.**
+From array-like data the values are copied into fresh float64/cpu native
+storage; from an existing `NativeTensor` — leaf or non-leaf, contiguous or
+strided/offset/borrowing view — the parameter copies the source's *current
+value* (`contiguous_copy`) and inherits none of its graph history. Closing
+the source never invalidates the parameter, closing the parameter never
+invalidates the source, a one-shot backward through the source's graph
+neither reaches nor frees the parameter, and a closed source is rejected
+with the usual `RuntimeError`. No storage is ever shared, so a future
+optimizer update can never mutate an unrelated tensor through a hidden
+alias. `requires_grad` is a validated **real bool** (default `True`;
+`requires_grad=False` builds a frozen parameter that stays registerable
+and discoverable but accumulates no gradient — there is no broad
+freeze/unfreeze API). Gradients follow the Phase B rules unchanged:
+`.grad` starts `None`, accumulates `NativeTensor`-backed native gradients
+matching the parameter's shape/dtype/device across fresh training-style
+graphs, and `zero_grad()` clears to `None` without touching data.
+`close()` follows the `NativeTensor` lifetime rules (idempotent; a closed
+parameter rejects data and gradient operations).
+
+**Identity, not value.** No `__eq__`/`__hash__` is defined anywhere in the
+hierarchy: two equal-valued parameters are distinct parameters, comparison
+never runs tensor math, and future optimizers can key state by object
+identity (`id`-keyed, the same convention `backward()`'s traversal already
+uses). Future state_dict loading is expected to copy values *into*
+existing parameters, preserving identity — never to replace registered
+objects.
+
+**`NativeParameterRegistry`** is an insertion-ordered name → parameter
+registry holding plain Python references — it owns no storage and never
+closes, copies, or mutates a parameter, never touches `requires_grad` or
+gradients, and dropping the registry leaves every parameter open. Its
+contract:
+
+- **Names** are non-empty `str` without `"."` (dots are reserved for the
+  future hierarchical state_dict keys, matching the Python framework's
+  dotted paths); invalid names raise `TypeError`/`ValueError` — nothing is
+  silently stringified.
+- **Values** are `NativeParameter` only, or `None` to **unregister**
+  (`KeyError` if the name is not registered). An ordinary `NativeTensor`
+  and the Python framework's `Tensor`/`Parameter` are rejected with a
+  clear `TypeError` — never wrapped implicitly (the same rejection the
+  `NativeParameter` constructor applies to framework objects, checked
+  lazily so the native backend still never imports the frontend).
+- **Ordering** is insertion order. **Replacing** a registered name keeps
+  its position and simply drops the reference to the previous parameter —
+  the old object is not closed or mutated and no gradient state transfers.
+  **Unregistering** deletes the slot, so registering that name again
+  appends at the end (the documented rule).
+- **Aliases**: the same parameter may be registered under several names
+  (the future shared-weight case). `named_parameters()` shows every alias;
+  `parameters()` deduplicates by object identity in first-registration
+  order (each unique parameter exactly once — the traversal an optimizer
+  iterates); `unique_named_parameters()` is the deduplicated named view
+  where the first-registered name wins. Equal-valued distinct parameters
+  are never deduplicated.
+
+Everything above is locked by `tests/test_native_parameter.py` (selector:
+`-k "native_parameter or parameter_registration"` — 49 tests), and the
+full suite passes at **972 tests**. Still `float64`/`cpu` only, still
+explicit and experimental, still no implicit dispatch and no NumPy in any
+native numerical or gradient path. The next milestone is **Advanced C++
+v3.2 — NativeModule Core and Recursive Registration**: child-module
+registration, automatic parameter/module assignment registration,
+recursive `parameters()` / `named_parameters()` / `modules()` /
+`named_modules()`, `zero_grad()`, deterministic traversal,
+shared-parameter and shared-module handling, and the train/eval state
+foundation — no layers or optimizers yet.
+
 ### Native autograd — Phase B guardrails and completion (v2.6)
 
 v2.6 is the **completion** milestone for Phase B — native autograd. It adds
@@ -1338,12 +1456,18 @@ single honest hardware snapshot; no speed assertions). Gradients are
 `NativeTensor`-backed float64/cpu and enforce `grad.dtype ==
 tensor.dtype` / `grad.device == tensor.device` against the fields v1.21
 made real. `NativeTensorCore` and the C++ kernels still own no graph
-state, and there is still no Tensor integration, no optimizer/module
-layer, no native training stack, and no CUDA today. The recommended next
-milestone is **v2.6 — Phase B Guardrails and Completion** (a final pass
-over the native-autograd guardrails and isolation invariants that closes
-Phase B), after which **Phase C — a native training stack** opens;
-`divide` backward remains separate later work. CUDA experiments remain a
-separate future branch (where `device` gains a second value), and an AMP /
-Tensor Core path is where `dtype` later gains float16/bfloat16. The Python
-framework stays the reference implementation throughout.
+state, and there is still no Tensor integration and no CUDA today.
+**v2.6 closed Phase B** with cross-cutting guardrail tests, and **Phase C —
+the native training stack — is now under way: v3.1 (above) shipped
+`NativeParameter` and the parameter-registration contract.** There is
+still no module hierarchy, layer, loss, optimizer, or training loop — the
+recommended next milestone is **v3.2 — NativeModule Core and Recursive
+Registration** (child-module registration, automatic assignment
+registration, recursive `parameters()`/`named_parameters()`/`modules()`/
+`named_modules()`, `zero_grad()`, deterministic traversal, shared
+parameter/module handling, and the train/eval state foundation — no
+layers or optimizers yet); `divide` backward remains separate later work.
+CUDA experiments remain a separate future branch (where `device` gains a
+second value), and an AMP / Tensor Core path is where `dtype` later gains
+float16/bfloat16. The Python framework stays the reference implementation
+throughout.
