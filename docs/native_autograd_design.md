@@ -57,7 +57,21 @@ metadata; §1).
 > that separates forward-native, forward+graph-construction,
 > fresh-forward+backward, and repeated retained-backward cost, with honest
 > hardware-specific results and no speed assertions (see
-> [native_autograd_benchmarks.md](native_autograd_benchmarks.md)). The
+> [native_autograd_benchmarks.md](native_autograd_benchmarks.md)). **v2.6 is
+> the Phase B completion milestone** — it adds no operation, kernel, or
+> optimization, and changes no autograd behavior. It audits and locks the
+> completed engine with cross-cutting guardrail tests
+> (`tests/test_native_autograd_guardrails.py`): a runtime NumPy-no-fallback
+> guard over representative backward passes, `NativeTensor` ↔
+> `tensorforge.Tensor` isolation, explicit-backend / no-implicit-dispatch
+> behavior, gradient-ownership and graph-lifetime invariants over realistic
+> mixed graphs, detach and view+offset invariants, closed-operand failure
+> safety, the raw-buffer kernel-registry boundary, and the v2.5 benchmark
+> mode contract. It records the **final Phase B support matrix** (§17), makes
+> the explicit **divide-backward decision** (deferred beyond Phase B, §18),
+> and **marks Phase B complete** with **Phase C — the native training stack —
+> next**, opening at **Advanced C++ v3.1 — NativeParameter and Parameter
+> Registration Contract** (§19). The
 > sections below remain the design of record.
 
 For where this sits, see [backend_experiments.md](backend_experiments.md)
@@ -737,3 +751,117 @@ the ordering is fixed by the dependencies §7/§8/§9 spell out (metadata →
 same-shape backward → broadcasting/mean → matmul → demo). Each lands only
 when the previous is tested and documented; the Python framework remains
 the reference implementation throughout.
+
+## 17. Phase B completion — final support matrix (v2.6)
+
+This is the authoritative record of what native autograd supports as Phase
+B closes. Every row is implemented and tested (the "focused correctness
+test" column names the check that verifies the rule against exact
+analytical values and, where marked FD, central finite differences — NumPy
+is the *test-side* reference only; the gradient path itself is native).
+
+| op | forward layer | backward layer | broadcasting | view / copy | dim limits | grad shape | lifetime | focused test |
+|----|---------------|----------------|--------------|-------------|-----------|-----------|----------|--------------|
+| `add` | `tf_core_add` (+ contiguous fast path) | Python closure: pass upstream to each operand, `_unbroadcast` to its shape | yes (`_unbroadcast`) | fresh owning result | any | = each requiring leaf | one-shot / retain | `test_add_backward_*` |
+| `subtract` | `tf_core_subtract` | left = upstream, right = `_negated` (broadcast-scalar ×(−1), no negate kernel), each `_unbroadcast` | yes | fresh owning | any | = leaf | one-shot / retain | `test_subtract_backward_*` |
+| `multiply` | `tf_core_multiply` | `u·b`, `u·a` (native `multiply`), each `_unbroadcast` | yes | fresh owning | any | = leaf | one-shot / retain | `test_multiply_backward_*` (FD) |
+| `relu` | `tf_core_relu` (fused fast path) | fused `tf_core_relu_backward` (`u` where `x>0`, else `0`; `x==0` blocks) | n/a (unary) | fresh owning | any | = input | one-shot / retain | `test_relu_backward_*` (FD) |
+| `sum` | `tf_core_sum` | `_broadcast_back`: reduced axes reinserted as size 1, expanded by native zero-stride broadcasting | broadcast-back | fresh owning | `axis` None / single int / negative | = input | one-shot / retain | `test_sum_backward_*` |
+| `mean` | `tf_core_sum` + `tf_storage_scale` | `sum`'s broadcast-back scaled by native `1/count` scalar multiply | broadcast-back | fresh owning | `axis` None / single / negative | = input | one-shot / retain | `test_mean_backward_*` (FD) |
+| `matmul` | `tf_core_matmul` (naive triple loop) | `u @ b.T`, `a.T @ u` (native `matmul` over strided transpose views) | none (strictly 2-D) | fresh owning | strictly 2-D `(m,n)@(n,p)` | = each operand | one-shot / retain | `test_matmul_backward_*` (FD) |
+| `reshape` | metadata-only view | inverse reshape of upstream, materialized to owning storage | n/a | borrowing view | contiguous source, equal element count | = input | one-shot / retain | `test_reshape_backward_*` |
+| `transpose` / `T` | metadata-only view | inverse permutation of upstream, materialized | n/a | borrowing view | full permutation of `range(ndim)` | = input | one-shot / retain | `test_transpose_backward_*` |
+| `contiguous_copy` | odometer materialize | identity (upstream passes through unchanged; grad lives at the logical shape) | n/a | fresh owning | any | = input | one-shot / retain | `test_contiguous_copy_backward_*` |
+| `narrow` | metadata-only view | scatter `tf_core_narrow_backward` into fresh zeros of the parent shape at the narrowed region | n/a | borrowing view | `dim ∈ [0, ndim)`, `start ≥ 0`, `start+length ≤ size` | = parent (fresh owning contiguous) | one-shot / retain | `test_narrow_backward_*` (FD) |
+
+**Cross-cutting invariants (all guardrail-tested in v2.6):**
+
+- **Architecture.** The autograd graph is Python-managed on `NativeTensor`;
+  `NativeTensorCore` and the C++ kernels compute forward/backward numerical
+  primitives and own **no** graph state. The three fused backward kernels
+  (`tf_core_relu_backward`, `tf_core_narrow_backward`, and `tf_core_sum`
+  reused for broadcast-back / `unbroadcast`) are surfaced only as
+  forward-shaped numerical methods and are **not** in
+  `list_kernels()` / `TENSOR_CORE_KERNELS`.
+- **No NumPy in the gradient path.** Backward values are computed by native
+  kernels end to end; NumPy appears only to marshal small shape/stride
+  arrays across ctypes and to materialize copies out at `to_numpy`. A
+  runtime guard replaces NumPy's numerical functions with tripwires around
+  representative backward passes (elementwise, broadcasting, reduction,
+  matmul, and a transpose→narrow→contiguous_copy→reshape view chain) and
+  confirms none is reached.
+- **Isolation.** Native ops return `NativeTensor`; native gradients are
+  `NativeTensor`-backed; `tensorforge.Tensor` stays NumPy-backed; neither
+  engine's backward touches the other; mixed operands raise clearly rather
+  than dispatch implicitly.
+- **Explicit backend.** Reached only through `tensorforge.experimental`;
+  `import tensorforge` imports neither `experimental` nor `backends`;
+  unavailability raises the build-instructions `ImportError` (no silent
+  NumPy fallback); no automatic backend selection.
+- **Gradient ownership.** Leaves retain grad; non-leaves do not; grads match
+  the leaf's shape/`float64`/`cpu`; repeated successful passes accumulate by
+  native addition; `zero_grad()` returns the leaf grad to `None` without
+  touching data or graph.
+- **Graph lifetime.** One-shot by default (a successful pass frees the
+  traversed operation graph), `retain_graph=True` reuse, deterministic
+  freed-graph errors, and snapshot-based failure rollback — verified across
+  a mixed graph (shared intermediate + broadcast + view).
+
+## 18. Divide backward — explicit decision (deferred beyond Phase B)
+
+`divide` backward is **deliberately not implemented in Phase B, and Phase B
+is complete without it.**
+
+- **Forward status.** Element-wise divide exists only as a raw-buffer
+  kernel (`tf_elementwise_divide`, in `cpp.list_kernels()`); it is **not** a
+  `NativeTensorCore` method and there is no `NativeTensor.divide`. There is
+  therefore no differentiable-op surface to attach a backward to, and adding
+  one is out of this milestone's scope (no new operations, no operator
+  overloads).
+- **Why the current set is sufficient to open the native training stack.**
+  A first native training stack — parameters, a linear layer, an MSE or
+  cross-entropy-style loss, and SGD — is fully expressible with the
+  completed operation set: `matmul` + broadcast `add` build an affine layer,
+  `relu` a nonlinearity, `subtract`/`multiply`/`sum`/`mean` a squared-error
+  loss, and the view ops reshape between stages. None of these needs
+  division on the backward path. Division's backward (`da = u/b`,
+  `db = -u·a/b²`) additionally needs a core-level `divide` method *and*
+  negation, both currently absent (§7.5) — so implementing it honestly is a
+  small feature of its own, not a guardrail fix.
+- **Roadmap placement.** Divide backward is scheduled for **Phase C**, added
+  alongside a core-level `NativeTensorCore.divide` method when a native op
+  (e.g. a softmax/normalization or a division-based loss) first needs it —
+  not speculatively. Until then, an attempt to differentiate division simply
+  does not exist to call, which is the honest state rather than a silent
+  NumPy fallback.
+
+## 19. Phase status
+
+- **Phase A — native CPU runtime: complete** (v1.14–v1.21).
+- **Phase B — native autograd: complete** (v2.0 design → v2.1 metadata
+  skeleton → v2.2 core backward → v2.3 narrow backward → v2.4 graph
+  lifetime → v2.5 benchmark characterization → **v2.6 guardrails and
+  completion**). Verified test count at completion: **923 tests** (893 at
+  the v2.5 baseline plus the 30 v2.6 cross-cutting guardrails), with the
+  native suite skipping when the compiled backend is not built.
+
+  **Current limitations (unchanged, restated for the record):** `float64` /
+  `cpu` only; no dtype promotion or casting; no CUDA; no AMP; no
+  module/parameter/optimizer/training stack yet; no `divide` backward (§18);
+  `matmul` strictly 2-D; no implicit dispatch; no `tensorforge.Tensor`
+  integration; experimental and not production-ready; not a PyTorch
+  replacement. **Benchmark interpretation** (v2.5) is unchanged:
+  measurements are hardware-specific, include Python graph management and
+  wrapper/ctypes overhead per mode, carry no speed assertions, and make no
+  cross-framework claims.
+
+- **Phase C — native training stack: next.** The first Phase C milestone is
+  **Advanced C++ v3.1 — NativeParameter and Parameter Registration
+  Contract**: a `NativeParameter` abstraction built on `NativeTensor` with
+  clear leaf / `requires_grad` invariants, and parameter identity and
+  registration rules — no `NativeModule` hierarchy beyond the minimum needed
+  to define or test registration, and no optimizer or training loop yet.
+  `NativeParameter`, `NativeModule`, `NativeLinear`, losses, optimizers, and
+  training are **not** combined into one milestone; each lands only when the
+  previous is tested and documented, with the Python framework remaining the
+  reference implementation.

@@ -393,4 +393,34 @@ sits below fresh; graph-construction overhead is small at these sizes;
 tiny tensors are wrapper/ctypes-bound) and **no** cross-framework or
 production claims. The benchmark tests validate schema and behavior, never
 speed. The next step is **v2.6 — Phase B guardrails and completion**,
-after which Phase C — a native training stack — opens.
+after which Phase C — a native training stack — opens. **v2.6 completes
+Phase B** — an audit-and-lock-down milestone that adds **no** operation,
+kernel, optimizer, training abstraction, or optimization and changes **no**
+autograd behavior. It adds cross-cutting guardrail tests
+(`tests/test_native_autograd_guardrails.py`, selector
+`-k "phase_b_guardrail or native_autograd_guardrail or native_backend_isolation"`)
+that lock several completed invariants together: a **runtime
+NumPy-no-fallback guard** that replaces NumPy's numerical functions with
+tripwires around representative backward passes (elementwise, broadcasting,
+reduction, matmul, and a transpose→narrow→contiguous_copy→reshape view
+chain) while leaving the marshalling helpers intact — proving backward
+computes gradients with native kernels, never NumPy; **`NativeTensor` ↔
+`tensorforge.Tensor` isolation** (native ops/grads stay native, `Tensor`
+stays NumPy-backed, neither backward touches the other, mixed operands raise
+clearly); **explicit-backend / no-implicit-dispatch** behavior (reached only
+through `tensorforge.experimental`, `import tensorforge` imports neither
+`experimental` nor `backends`, unavailability raises the build-instructions
+`ImportError`, no automatic selection); and **gradient-ownership,
+graph-lifetime, detach, view+offset, and closed-operand failure-safety**
+invariants over realistic mixed graphs, plus the **kernel-registry
+boundary** (the internal fused backward kernels never leak into
+`list_kernels()`) and the **v2.5 benchmark mode contract**. It records the
+**final Phase B support matrix** and the explicit **divide-backward
+decision** — deferred beyond Phase B, which is complete without it because
+the completed op set already spans a first native training stack (see
+[native_autograd_design.md](native_autograd_design.md), sections 17–19). The
+one source touch is correcting a stale package docstring
+(`tensorforge.experimental` no longer claims "no autograd"); no C++ changed
+and no kernel or symbol was added. **Phase B is complete**; the next step is
+**Advanced C++ v3.1 — NativeParameter and Parameter Registration Contract**,
+the first milestone of **Phase C — a native training stack**.

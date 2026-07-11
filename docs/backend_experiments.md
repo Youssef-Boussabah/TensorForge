@@ -386,6 +386,67 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native autograd — Phase B guardrails and completion (v2.6)
+
+v2.6 is the **completion** milestone for Phase B — native autograd. It adds
+**no** operation, kernel, optimizer, training abstraction, or performance
+optimization, and changes **no** autograd behavior; it audits, locks down,
+documents, and formally completes the engine. It is almost entirely tests
+and documentation (the one source touch is a stale docstring correction —
+`tensorforge.experimental`'s package docstring no longer claims "no
+autograd", which has been false since v2.1). No C++ changed, no kernel or
+symbol was added, and no NumPy entered the gradient path.
+
+The new cross-cutting guardrails live in
+`tests/test_native_autograd_guardrails.py` (selector:
+`-k "phase_b_guardrail or native_autograd_guardrail or native_backend_isolation"`)
+and lock several completed invariants together rather than duplicating the
+per-operation tests:
+
+- **No NumPy in the gradient path.** A runtime guard (a context manager)
+  replaces NumPy's *numerical* functions (`add`/`multiply`/`matmul`/`sum`/
+  `mean`/`maximum`/`where`/`broadcast_to`/… — the ones a NumPy-backed
+  backward would call) with tripwires that raise, while leaving the
+  marshalling helpers (`asarray`/`empty`) intact. The graph is built
+  *before* the guard and gradients are read *after* it, so a correct native
+  pass completes cleanly and only a smuggled-in NumPy computation would
+  trip a wire. It covers same-shape elementwise, genuine broadcasting,
+  reduction, matmul, and a transpose→narrow→contiguous_copy→reshape view
+  chain, and a self-check proves the guard actually bites.
+- **`NativeTensor` ↔ `tensorforge.Tensor` isolation.** Native ops return
+  `NativeTensor`; native grads are `NativeTensor`-backed; `Tensor` stays
+  NumPy-backed; neither engine's backward touches the other; mixed operands
+  raise clearly (both directions) instead of dispatching implicitly.
+- **Explicit backend / no implicit dispatch.** The wrapper is reached only
+  through `tensorforge.experimental`; a static check confirms `import
+  tensorforge` imports neither `experimental` nor `backends`; native
+  unavailability raises the build-instructions `ImportError` (no silent
+  NumPy fallback); there is no automatic backend selection.
+- **Gradient ownership, graph lifetime, detach, view+offset, and
+  closed-operand safety** are each locked over realistic mixed graphs
+  (shared intermediate + broadcast + view), including the deterministic
+  freed-graph error and snapshot-based failure rollback.
+- **Kernel-registry boundary.** `list_kernels()` and
+  `tensor_core_kernels` must not leak the internal fused backward kernels
+  (`tf_core_relu_backward`, `tf_core_narrow_backward`, `tf_core_sum`,
+  `tf_storage_scale`) — they stay forward-shaped numerical methods only.
+- **Benchmark mode contract.** The v2.5 modes keep their documented
+  meanings: `forward_native` builds no graph, the grad modes build one,
+  `forward_backward_fresh` builds and frees a fresh graph, and
+  `backward_retained` reuses one fixed graph.
+
+The **final Phase B support matrix**, the **explicit divide-backward
+decision** (deferred beyond Phase B — Phase B is complete without it,
+because the completed op set already spans a first native training stack;
+see §18 of the design), and the **Phase B-complete / Phase C-next** status
+are recorded in
+[native_autograd_design.md](native_autograd_design.md) (§17–§19). Phase B is
+**complete** at **923 tests** (893 baseline + 30 guardrails); the next
+milestone is **Advanced C++ v3.1 — NativeParameter and Parameter
+Registration Contract** (Phase C — the native training stack). No divide
+kernel/API, no operator overloads, no CUDA, no dtype promotion, and no
+implicit dispatch came with this milestone.
+
 ### Native autograd — benchmark characterization (v2.5)
 
 v2.5 is a **measurement and documentation** milestone: it changes no

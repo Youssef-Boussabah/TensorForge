@@ -482,6 +482,31 @@ runtime beneath it grew:
   and explicitly **not** full PyTorch parity (no per-node `retain_grad`, no
   double-backward). See
   [native_autograd_design.md](native_autograd_design.md) §7.1.
+- **v2.5 — native autograd benchmark characterization (done):** a
+  measurement-only milestone that adds a reproducible harness
+  (`benchmarks/benchmark_native_autograd.py`) timing four modes across five
+  workloads, with a correctness gate, median/spread reporting, JSON output,
+  and one hardware-specific snapshot — no autograd behavior changed, no
+  kernel added, no wrapper edit, and no speed assertions
+  ([native_autograd_benchmarks.md](native_autograd_benchmarks.md)).
+- **v2.6 — Phase B guardrails and completion (done):** the wrapper's
+  autograd surface is **feature-complete and formally locked down**. This
+  milestone adds cross-cutting guardrail tests
+  (`tests/test_native_autograd_guardrails.py`) — a NumPy-no-fallback runtime
+  guard, `NativeTensor`/`tensorforge.Tensor` isolation, explicit-backend /
+  no-implicit-dispatch behavior, gradient-ownership and graph-lifetime
+  invariants, detach and view+offset invariants, closed-operand failure
+  safety, the kernel-registry boundary, and the benchmark mode contract —
+  and records the final Phase B support matrix, the explicit divide-backward
+  decision (deferred beyond Phase B), and the Phase B-complete status
+  ([native_autograd_design.md](native_autograd_design.md), sections 17-19).
+  `NativeTensor` stays a native tensor wrapper with an opt-in
+  Python-managed autograd graph, separate from `tensorforge.Tensor`,
+  `float64`/`cpu` only, no operator overloads, no CUDA. The one source touch
+  is correcting this package's stale docstring (`tensorforge.experimental` no
+  longer claims "no autograd"). **Phase B is complete**; the next milestone
+  opens **Phase C** at **Advanced C++ v3.1 — NativeParameter and Parameter
+  Registration Contract**.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision

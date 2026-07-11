@@ -170,11 +170,21 @@ The Python line is done; what remains is expansion on its own terms:
   repeated retained backward — across five workloads, with a correctness
   gate, median/spread reporting, a JSON mode, and one honest
   hardware-specific snapshot carrying no speed assertions (see
-  [native_autograd_benchmarks.md](native_autograd_benchmarks.md)). The
-  recommended next milestone is **Advanced C++ v2.6 — Phase B Guardrails
-  and Completion**, after which **Phase C — a native training stack**
-  opens. CUDA/GPU experiments are still entirely future work. The Python
-  framework stays the reference implementation.
+  [native_autograd_benchmarks.md](native_autograd_benchmarks.md)). **v2.6 —
+  Phase B Guardrails and Completion — is now done, closing Phase B in
+  code**: cross-cutting guardrail tests
+  (`tests/test_native_autograd_guardrails.py`) lock the completed engine's
+  invariants (a NumPy-no-fallback runtime guard, `NativeTensor` /
+  `tensorforge.Tensor` isolation, explicit-backend / no-implicit-dispatch
+  behavior, gradient-ownership, graph-lifetime, detach, view+offset,
+  closed-operand safety, the kernel-registry boundary, and the benchmark
+  mode contract), and the final Phase B support matrix and the explicit
+  divide-backward decision (deferred beyond Phase B) are documented, with no
+  operation, kernel, or optimization added. **The next milestone is Advanced
+  C++ v3.1 — NativeParameter and Parameter Registration Contract**, the first
+  step of **Phase C — a native training stack**. CUDA/GPU experiments are
+  still entirely future work. The Python framework stays the reference
+  implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -186,7 +196,7 @@ The Python line is done; what remains is expansion on its own terms:
     (designed v1.18, implemented v1.19). A4: explicit dtype and device
     metadata (float64/cpu) — **complete** (designed v1.20, implemented
     v1.21, metadata-only), which **closes Phase A in code**.
-  - **Phase B — native autograd (current).** The v2.0 design is complete
+  - **Phase B — native autograd (complete).** The v2.0 design is complete
     (a Python-managed reverse-mode graph at the `NativeTensor` layer — see
     [native_autograd_design.md](native_autograd_design.md)); **v2.1
     implemented the metadata skeleton and reverse-topological backward
@@ -207,9 +217,21 @@ The Python line is done; what remains is expansion on its own terms:
     Python-only change; no kernel touched); and **v2.5 characterized the
     stack** with a measurement-only benchmark harness (four modes across
     five workloads, correctness gate, median/spread reporting, JSON output,
-    one hardware snapshot, no speed assertions). Next is **v2.6 — Phase B
-    guardrails and completion**, after which **Phase C — a native training
-    stack** opens.
+    one hardware snapshot, no speed assertions); and **v2.6 completed Phase
+    B** — cross-cutting guardrail tests
+    (`tests/test_native_autograd_guardrails.py`) that lock the engine's
+    invariants (NumPy-no-fallback runtime guard, `NativeTensor` /
+    `tensorforge.Tensor` isolation, explicit-backend behavior,
+    gradient-ownership, graph-lifetime, detach, view+offset, closed-operand
+    safety, kernel-registry boundary, benchmark mode contract), the final
+    Phase B support matrix, and the explicit divide-backward decision
+    (deferred beyond Phase B), adding no operation, kernel, or optimization.
+    **Phase B is complete; Phase C — a native training stack — is next,
+    opening at Advanced C++ v3.1 — NativeParameter and Parameter
+    Registration Contract** (a `NativeParameter` on `NativeTensor` with clear
+    leaf/`requires_grad` invariants and parameter identity/registration
+    rules; no `NativeModule` hierarchy beyond the minimum to test
+    registration, and no optimizer or training loop yet).
   - **Then beyond:** a native training stack, the CUDA runtime
     (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,
