@@ -195,12 +195,24 @@ The Python line is done; what remains is expansion on its own terms:
   contract the future `NativeModule` will embed (dot-free non-empty string
   names, `NativeParameter`-only slots with `None` unregistering,
   position-preserving replacement, alias-visible named traversal, and
-  identity-deduplicated unique traversal) — still with no module
-  hierarchy, layer, loss, optimizer, or training loop, and with
-  `tensorforge.Tensor`/`tensorforge.nn.Parameter` untouched. **The next
-  milestone is Advanced C++ v3.2 — NativeModule Core and Recursive
-  Registration.** CUDA/GPU experiments are still entirely future work. The
-  Python framework stays the reference implementation.
+  identity-deduplicated unique traversal). **v3.2 — NativeModule Core and
+  Recursive Registration — is implemented on top of it**:
+  `tensorforge.experimental.NativeModule`, the Python-side
+  module-hierarchy core — attribute assignment registers parameters and
+  child modules (ordinary values, plain `NativeTensor`s, and
+  stable-framework objects stay ordinary attributes; one category per
+  name, latest assignment wins, `None` unregisters), explicit
+  `register_parameter`/`add_module` mirror assignment, recursive
+  `parameters()`/`named_parameters()`/`modules()`/`named_modules()`
+  traversal is deterministic depth-first with identity deduplication,
+  first-discovered canonical dotted names, shared-parameter/-module
+  handling, and cycle safety, plus recursive `zero_grad()` and
+  bool-validated `train()`/`eval()` propagation — still with no layer,
+  loss, optimizer, state_dict, or training loop, no storage ownership,
+  and `tensorforge.Tensor`/`tensorforge.nn` untouched. **The next
+  milestone is Advanced C++ v3.3 — Native State Dictionary Contract.**
+  CUDA/GPU experiments are still entirely future work. The Python
+  framework stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -253,13 +265,23 @@ The Python line is done; what remains is expansion on its own terms:
     future optimizer state, and the minimal insertion-ordered
     `NativeParameterRegistry` (dot-free names, `None` unregisters,
     position-preserving replacement, alias and identity-deduplication
-    rules) — no `NativeModule` hierarchy, optimizer, or training loop yet.
-    **Next: v3.2 — NativeModule Core and Recursive Registration**
-    (child-module registration, automatic parameter/module assignment
-    registration, recursive `parameters()`/`named_parameters()`/
-    `modules()`/`named_modules()`, `zero_grad()`, deterministic traversal,
-    shared-parameter/-module handling, and the train/eval state
-    foundation; no layers or optimizers in v3.2).
+    rules). **v3.2 — NativeModule Core and Recursive Registration — is
+    complete**: `NativeModule` with automatic assignment registration
+    (one category per name, latest-assignment-wins collisions, `None`
+    unregistering, ordinary attributes for everything that is not a
+    `NativeParameter`/`NativeModule`), explicit
+    `register_parameter`/`add_module` mirroring assignment, recursive
+    `parameters()`/`named_parameters()`/`modules()`/`named_modules()`
+    with deterministic depth-first order, identity deduplication,
+    first-discovered canonical dotted names, shared-structure and cycle
+    safety, recursive `zero_grad()`, and bool-validated
+    `train()`/`eval()` propagation — no layers, losses, optimizers,
+    state_dict, or training loop yet. **Next: v3.3 — Native State
+    Dictionary Contract** (`state_dict()`/`load_state_dict()` over the
+    v3.2 canonical names, strict missing/unexpected-key checks,
+    shape/dtype/device validation, value copying that preserves
+    `NativeParameter` identity, shared-parameter canonical naming; no
+    file serialization and no optimizer state in v3.3).
   - **Then beyond:** the rest of the native training stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

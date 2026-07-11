@@ -472,4 +472,58 @@ registration, automatic parameter/module assignment registration, recursive
 `parameters()`/`named_parameters()`/`modules()`/`named_modules()`,
 `zero_grad()`, deterministic traversal, shared-parameter and shared-module
 handling, and the train/eval state foundation — no layers or optimizers in
-v3.2).
+v3.2). **v3.2** delivers that module core:
+`tensorforge.experimental.NativeModule` (one new module,
+`src/tensorforge/experimental/native_module.py`; the only v3.1 touch is a
+minimal read-only `NativeParameterRegistry` extension — `get`/`__contains__`
+and a shared name-validation helper with identical messages — and
+`NativeTensor`, the C++ kernels, and `tensorforge.nn` are all untouched).
+`NativeModule` is a **Python-side organizational abstraction**: it computes
+nothing, owns no native storage, and never closes, copies, or mutates what
+it registers. **Assignment registers** — a `NativeParameter` value enters
+the parameter registry, a `NativeModule` value the child registry, and
+everything else (plain `NativeTensor`, `tensorforge.Tensor`/`Parameter`/
+`nn.Module`, ordinary values) stays a normal attribute that never enters
+native traversal; registered objects live only in the registries
+(`__getattr__` resolves them), giving one source of truth. **One category
+per name; the latest assignment wins**: registration validates first (a
+failure mutates nothing), then evicts the name from the other categories;
+replacement within a registry preserves the slot position, moving between
+registries appends, `module.name = None` (and `del module.name`)
+unregisters leaving the attribute readable as `None`, and re-registering a
+removed name appends — the v3.1 ordering rules throughout, with evicted
+objects dropped, never closed or mutated, and no gradient transfer.
+`register_parameter`/`add_module` are the explicit forms with identical
+semantics (deliberately stricter: non-parameter/non-module values raise
+`TypeError`; `None` on an absent name raises `KeyError`). Names are
+non-empty dot-free strings; `"_parameters"`/`"_modules"`/`"training"` are
+reserved; `__init__` builds the registries via `object.__setattr__` so
+initialization never routes through registration, and registering before
+`super().__init__()` raises a clear `RuntimeError`. **Traversal is
+deterministic pre-order depth-first with identity deduplication and
+first-discovered canonical dotted names**: `named_modules()` yields
+`("", self)` first and never revisits a module (shared modules emit once
+under their first path; direct and indirect reference cycles terminate
+safely), and `named_parameters(prefix="", recurse=True)` yields each unique
+parameter once — direct parameters before descendants', aliases and shared
+parameters deduplicated by `id`, frozen parameters included — with
+`parameters()`/`modules()` the matching lists a future optimizer iterates
+and the dotted names exactly the keys the future state_dict will use.
+`zero_grad()` calls each unique parameter's existing `zero_grad()` and
+returns `None`; `train(mode=True)` validates `mode` as a real bool before
+touching any state, propagates `training` to every unique module, and
+returns `self` (`eval()` = `train(False)`; every module starts
+`training=True`); `forward()` raises `NotImplementedError` and `__call__`
+delegates to it — no hooks, buffers, or tracing. Deliberately **not**
+shipped: `NativeLinear`, `NativeSequential`, activations, losses,
+optimizers, state_dict, serialization, training loops, dtype/device
+expansion, implicit dispatch, or NumPy fallback. 49 focused tests
+(`tests/test_native_module.py`, selector
+`-k "native_module or recursive_registration"`) lock the contract; the full
+suite passes at **1021 tests**. The next milestone is **Advanced C++ v3.3 —
+Native State Dictionary Contract**: `state_dict()`/`load_state_dict()` over
+the v3.2 canonical hierarchical names, strict missing/unexpected-key
+checks, shape/dtype/device validation, value copying without replacing
+`NativeParameter` identity, and shared-parameter canonical naming — no file
+serialization and no optimizer state yet (state_dict, `NativeLinear`,
+serialization, and checkpointing stay separate milestones).

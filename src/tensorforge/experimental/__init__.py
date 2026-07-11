@@ -14,10 +14,13 @@ implicit, and it has no optimizer/training integration and no CUDA.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
-abstraction and the minimal parameter-registration contract the future
-``NativeModule`` will build on — no module hierarchy, optimizer, or
-training loop yet, and still fully separate from
-``tensorforge.nn.Parameter``.
+abstraction and the minimal parameter-registration contract, and
+``NativeModule`` (Advanced C++ v3.2) is the module-hierarchy core built
+on them: automatic parameter/child registration through attribute
+assignment, deterministic identity-deduplicated recursive traversal,
+recursive ``zero_grad()``, and ``train()``/``eval()`` state propagation
+— no layers, losses, optimizers, state_dict, or training loop yet, and
+still fully separate from ``tensorforge.nn``.
 
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).
@@ -25,5 +28,11 @@ this package is always safe (the library loads lazily on first use).
 
 from .native_tensor import NativeTensor
 from .native_parameter import NativeParameter, NativeParameterRegistry
+from .native_module import NativeModule
 
-__all__ = ["NativeTensor", "NativeParameter", "NativeParameterRegistry"]
+__all__ = [
+    "NativeTensor",
+    "NativeParameter",
+    "NativeParameterRegistry",
+    "NativeModule",
+]

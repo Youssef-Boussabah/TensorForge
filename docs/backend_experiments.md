@@ -386,6 +386,115 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native training stack — NativeModule core and recursive registration (v3.2)
+
+v3.2 adds the module hierarchy: `NativeModule`, the base every future
+native layer, state_dict, optimizer, and training loop will build on. It
+is a **Python-side organizational abstraction** — it performs no numerical
+computation, owns no native storage, and never closes, copies, or mutates
+what it registers. It deliberately ships **no** `NativeLinear`,
+`NativeSequential`, activations, losses, optimizers, state_dict,
+serialization, buffers, hooks, or training loop. No C++ changed,
+`NativeTensor` is untouched, and `tensorforge.nn.Module`/`Parameter` are
+untouched; the one v3.1 adjustment is a minimal read-only
+`NativeParameterRegistry` extension (`get`/`__contains__` plus a shared
+name-validation helper) with all v3.1 behavior preserved.
+
+```python
+from tensorforge.experimental import NativeModule, NativeParameter
+
+class Block(NativeModule):
+    def __init__(self):
+        super().__init__()          # required before assigning parameters
+        self.weight = NativeParameter([[1.0, 2.0], [3.0, 4.0]])
+
+root = NativeModule()
+root.block = Block()                # child registration by assignment
+root.bias = NativeParameter([0.0, 0.0])
+
+list(root.named_parameters())       # [("bias", ...), ("block.weight", ...)]
+root.parameters()                   # unique parameters, identity-deduplicated
+list(root.named_modules())          # [("", root), ("block", ...)]
+root.zero_grad()                    # each unique parameter's grad -> None
+root.eval().training                # False, propagated recursively
+```
+
+**Registration is assignment** (`__setattr__`), with registered objects
+living only in the module's registries (`__getattr__` resolves them — one
+source of truth): a `NativeParameter` value registers a parameter, a
+`NativeModule` value registers a child, and **everything else is an
+ordinary attribute** — a plain `NativeTensor`, a
+`tensorforge.Tensor`/`Parameter`/`nn.Module`, a string — which never
+enters native traversal (nothing is wrapped implicitly; stable-framework
+objects stay harmless ordinary attributes). **One category per name; the
+latest assignment wins**: registering validates first (a failure mutates
+nothing), then evicts the name from the other categories. Replacement
+within a registry preserves the slot position; moving a name between
+registries appends to the target; `module.name = None` (and `del
+module.name`) unregisters, leaving the attribute readable as `None`, and
+re-registering a removed name appends — the v3.1 ordering rules
+throughout. Evicted or replaced objects are dropped, never closed or
+mutated, and no gradient state transfers. `register_parameter(name, p)` /
+`add_module(name, m)` are the explicit forms with identical semantics
+(their one deliberate strictness: a non-parameter/non-module value raises
+`TypeError`, and `None` raises `KeyError` when nothing is registered under
+the name). Names follow the v3.1 rule — non-empty dot-free strings (dots
+reserved for hierarchical state_dict keys) — and `"_parameters"` /
+`"_modules"` / `"training"` are reserved implementation slots that can
+never be parameter or child names; `__init__` creates the registries via
+`object.__setattr__` so initialization never routes through registration,
+and registering before `NativeModule.__init__()` has run raises a clear
+`RuntimeError`.
+
+**Traversal is deterministic pre-order depth-first, deduplicated by
+object identity** (`id`-keyed — never value equality), and **first
+discovery wins**. `named_modules()` yields `("", self)` first, then each
+child under its registered name and its descendants under dot-joined
+paths, in insertion order; shared modules appear once under their first
+discovered path, which also makes **direct and indirect module cycles
+terminate safely** (cycles are allowed as references; traversal never
+revisits a module). `named_parameters(prefix="", recurse=True)` walks
+that order and yields each unique parameter once under its
+first-discovered dotted name — a module's direct parameters before its
+descendants', direct aliases and shared parameters (direct or through
+children) deduplicated by identity, frozen parameters included;
+`recurse=False` restricts to direct parameters. `parameters()` /
+`modules()` return the matching identity-deduplicated lists — exactly
+what a future optimizer iterates, and the first-discovered dotted names
+are exactly the canonical keys v3.3's state_dict will use (loading will
+copy values into existing parameters, preserving identity).
+
+**`zero_grad()`** visits each unique parameter once (shared parameters
+included) and calls its existing `zero_grad()` — grad → `None`, data /
+`requires_grad` / graphs untouched, nothing closed — and returns `None`.
+**`train(mode=True)`** validates `mode` as a real bool *before* touching
+any state (non-bool raises `TypeError` with no partial mutation), then
+sets `training` on every unique module — shared and cyclic hierarchies
+visited once — and returns `self`; `eval()` is `train(False)`; every
+module starts with `training = True` (a later mode-dependent layer will
+read the flag; none exists yet). **`forward()` raises
+`NotImplementedError` and calling the module delegates to `forward`** —
+the whole call protocol, with no hooks or tracing machinery.
+
+Lifetime: the registries store Python references only. Removing,
+replacing, or deleting a registration — or dropping the module itself —
+never invalidates an object another reference still holds; native storage
+is released only by the owner's explicit `close()`, and there is no
+`NativeModule.close()`.
+
+Everything above is locked by `tests/test_native_module.py` (selector:
+`-k "native_module or recursive_registration"` — 49 tests), and the full
+suite passes at **1021 tests**. Still `float64`/`cpu` only, still explicit
+and experimental, still no implicit dispatch and no NumPy in any native
+numerical or gradient path. The next milestone is **Advanced C++ v3.3 —
+Native State Dictionary Contract**, narrowly scoped to: `state_dict()`,
+`load_state_dict()`, deterministic hierarchical names, strict
+missing/unexpected-key checks, shape/dtype/device validation, value
+copying that never replaces `NativeParameter` identity, and
+shared-parameter canonical naming — **no file serialization and no
+optimizer state yet** (state_dict, `NativeLinear`, serialization, and
+checkpointing are not combined into one milestone).
+
 ### Native training stack — NativeParameter and registration contract (v3.1)
 
 v3.1 opens **Phase C — the native training stack** — with its foundation:
@@ -1458,15 +1567,18 @@ tensor.dtype` / `grad.device == tensor.device` against the fields v1.21
 made real. `NativeTensorCore` and the C++ kernels still own no graph
 state, and there is still no Tensor integration and no CUDA today.
 **v2.6 closed Phase B** with cross-cutting guardrail tests, and **Phase C —
-the native training stack — is now under way: v3.1 (above) shipped
-`NativeParameter` and the parameter-registration contract.** There is
-still no module hierarchy, layer, loss, optimizer, or training loop — the
-recommended next milestone is **v3.2 — NativeModule Core and Recursive
-Registration** (child-module registration, automatic assignment
-registration, recursive `parameters()`/`named_parameters()`/`modules()`/
-`named_modules()`, `zero_grad()`, deterministic traversal, shared
-parameter/module handling, and the train/eval state foundation — no
-layers or optimizers yet); `divide` backward remains separate later work.
+the native training stack — is now under way: v3.1 shipped
+`NativeParameter` and the parameter-registration contract, and v3.2
+(above) shipped `NativeModule` — automatic assignment registration,
+deterministic identity-deduplicated recursive traversal, recursive
+`zero_grad()`, and train/eval state propagation.** There is still no
+layer, loss, optimizer, state_dict, or training loop — the recommended
+next milestone is **v3.3 — Native State Dictionary Contract**
+(`state_dict()` / `load_state_dict()` over the v3.2 canonical dotted
+names, strict key checks, shape/dtype/device validation, value copying
+that preserves parameter identity, shared-parameter canonical naming — no
+file serialization and no optimizer state yet); `divide` backward remains
+separate later work.
 CUDA experiments remain a separate future branch (where `device` gains a
 second value), and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation

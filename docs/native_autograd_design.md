@@ -874,14 +874,28 @@ is complete without it.**
   deduplication in `parameters()` / first-name-wins
   `unique_named_parameters()`). Verified test count at completion: **972
   tests** (923 at the v2.6 baseline plus the 49 v3.1
-  parameter/registration tests). The next milestone is **Advanced C++
-  v3.2 — NativeModule Core and Recursive Registration**: child-module
-  registration, automatic parameter/module assignment registration,
-  recursive `parameters()` / `named_parameters()` / `modules()` /
-  `named_modules()`, `zero_grad()`, deterministic traversal,
-  shared-parameter and shared-module handling, and the train/eval state
-  foundation — **no layers or optimizers in v3.2**. `NativeModule`,
-  `NativeLinear`, losses, optimizers, and training are **not** combined
-  into one milestone; each lands only when the previous is tested and
-  documented, with the Python framework remaining the reference
-  implementation.
+  parameter/registration tests). **Its second milestone, Advanced C++
+  v3.2 — NativeModule Core and Recursive Registration, is complete**:
+  `NativeModule` is the Python-side module-hierarchy core — assignment
+  registers (`NativeParameter` → parameter registry, `NativeModule` →
+  child registry, everything else an ordinary attribute; one category per
+  name, latest assignment wins, position-preserving replacement, `None`
+  unregisters), `register_parameter`/`add_module` mirror assignment,
+  traversal (`named_modules`/`modules`/`named_parameters`/`parameters`)
+  is deterministic pre-order depth-first with identity deduplication and
+  first-discovered dotted names (shared modules/parameters emit once;
+  reference cycles terminate safely), `zero_grad()` delegates to each
+  unique parameter, and `train(mode)`/`eval()` propagate a
+  bool-validated `training` flag — with no storage ownership and nothing
+  ever closed or mutated by the module. Verified test count at
+  completion: **1021 tests** (972 plus the 49 v3.2 module tests). The
+  next milestone is **Advanced C++ v3.3 — Native State Dictionary
+  Contract**: `state_dict()` / `load_state_dict()` over the v3.2
+  canonical dotted names, deterministic hierarchical keys, strict
+  missing/unexpected-key checks, shape/dtype/device validation, value
+  copying without replacing `NativeParameter` identity, and
+  shared-parameter canonical naming — **no file serialization and no
+  optimizer state in v3.3**. `NativeLinear`, losses, optimizers, and
+  training are **not** combined into one milestone; each lands only when
+  the previous is tested and documented, with the Python framework
+  remaining the reference implementation.

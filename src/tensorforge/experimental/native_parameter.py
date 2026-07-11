@@ -75,6 +75,23 @@ from ..backends import cpp
 from .native_tensor import NativeTensor
 
 
+def _validate_registration_name(name, kind):
+    """Validate a registration name: a non-empty str without ``"."``
+    (dots are reserved for the future hierarchical state_dict keys).
+    ``kind`` names the slot family in errors (``"a parameter name"`` /
+    ``"a module name"``) — the registry and NativeModule share this one
+    rule so parameter and child-module names can never drift apart."""
+    if not isinstance(name, str):
+        raise TypeError(f"{kind} must be a str, got {type(name).__name__}")
+    if not name:
+        raise ValueError(f"{kind} must be a non-empty string")
+    if "." in name:
+        raise ValueError(
+            f"{kind} must not contain '.' (reserved for "
+            f"hierarchical state_dict keys), got {name!r}"
+        )
+
+
 def _reject_framework_object(value, where):
     """Raise TypeError if ``value`` is a tensorforge.Tensor (Parameter
     included). Checked lazily through sys.modules so the native backend
@@ -181,17 +198,7 @@ class NativeParameterRegistry:
     def register(self, name, parameter):
         """Register ``parameter`` under ``name``, replace what ``name``
         held, or unregister ``name`` (``parameter=None``)."""
-        if not isinstance(name, str):
-            raise TypeError(
-                f"a parameter name must be a str, got {type(name).__name__}"
-            )
-        if not name:
-            raise ValueError("a parameter name must be a non-empty string")
-        if "." in name:
-            raise ValueError(
-                f"a parameter name must not contain '.' (reserved for "
-                f"hierarchical state_dict keys), got {name!r}"
-            )
+        _validate_registration_name(name, "a parameter name")
         if parameter is None:
             if name not in self._parameters:
                 raise KeyError(
@@ -209,6 +216,16 @@ class NativeParameterRegistry:
                 f"NativeParameter(...) explicitly"
             )
         self._parameters[name] = parameter
+
+    def get(self, name, default=None):
+        """The parameter registered under ``name``, or ``default``.
+        Read-only lookup (added for NativeModule attribute resolution in
+        v3.2); it never mutates the registry."""
+        return self._parameters.get(name, default)
+
+    def __contains__(self, name):
+        """Whether a parameter is registered under ``name``."""
+        return name in self._parameters
 
     def named_parameters(self):
         """Every registered (name, parameter) pair, insertion-ordered.
