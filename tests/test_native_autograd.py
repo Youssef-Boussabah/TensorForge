@@ -1,4 +1,4 @@
-"""Tests for native autograd (Advanced C++ v2.1 + v2.2 + v2.3, Phase B).
+"""Tests for native autograd (Advanced C++ v2.1–v2.4, Phase B).
 
 v2.1 added the autograd *surface* and *engine* to NativeTensor —
 requires_grad, grad, is_leaf, zero_grad, detach, backward — exercised
@@ -12,9 +12,13 @@ into a fresh zeros tensor of the parent's shape via the native
 narrow_backward kernel. The per-operation sections below verify each
 backward rule against exact analytical values and, for the composite
 cases, central finite differences (NumPy is used only to compute test
-references — the gradient path itself is native). Native-backend tests
-skip when the compiled library is not built. See
-docs/native_autograd_design.md.
+references — the gradient path itself is native). v2.4 adds an explicit
+graph-lifetime policy: backward(gradient=None, retain_graph=False) is
+one-shot by default (a successful pass frees the traversed operation
+graph), retain_graph=True keeps it for another pass, leaf gradients
+accumulate across passes, reusing a freed graph raises, and a failed pass
+rolls back. Native-backend tests skip when the compiled library is not
+built. See docs/native_autograd_design.md.
 """
 
 import numpy as np
@@ -1639,3 +1643,389 @@ def test_narrow_backward_leaves_parent_open_and_unchanged():
     assert x.closed is False
     assert np.array_equal(x.to_numpy(), x_vals)  # forward value untouched
     x.close()
+
+
+# ======================================================================
+# v2.4 — graph lifetime policy (retain_graph, one-shot free, failure safety)
+# ======================================================================
+#
+# backward(gradient=None, retain_graph=False): the default is one-shot and
+# releases the traversed operation graph; retain_graph=True keeps it for
+# another pass. Leaf gradients accumulate across successful passes; a freed
+# graph raises deterministically; a failed pass rolls back. Selector:
+#   -k "graph_lifetime or retain_graph or freed_graph"
+
+
+# -- retain_graph argument validation ----------------------------------
+
+
+@needs_native
+def test_retain_graph_defaults_to_false():
+    x = NativeTensor.from_array([1.0, 2.0, 3.0], requires_grad=True)
+    out = x.multiply(x).sum()
+    out.backward()  # no retain_graph -> default False -> one-shot free
+    assert out._graph_freed is True
+    with pytest.raises(RuntimeError, match="freed"):
+        out.backward()
+    x.close()
+
+
+@needs_native
+def test_retain_graph_true_accepted():
+    x_vals = np.array([1.0, 2.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    out = x.multiply(x).sum()
+    out.backward(retain_graph=True)
+    assert out._graph_freed is False
+    assert np.allclose(_grad(x), 2.0 * x_vals)
+    x.close()
+
+
+@needs_native
+def test_retain_graph_false_accepted():
+    x_vals = np.array([1.0, 2.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    out = x.multiply(x).sum()
+    out.backward(retain_graph=False)
+    assert out._graph_freed is True
+    assert np.allclose(_grad(x), 2.0 * x_vals)
+    x.close()
+
+
+@needs_native
+def test_retain_graph_rejects_non_bool():
+    x = NativeTensor.from_array([1.0, 2.0], requires_grad=True)
+    for bad in (1, 0, "true", 1.0, None, [], object()):
+        out = x.multiply(x).sum()
+        with pytest.raises(TypeError, match="retain_graph must be a bool"):
+            out.backward(retain_graph=bad)
+    x.close()
+
+
+@needs_native
+def test_retain_graph_validated_before_any_mutation():
+    x_vals = np.array([1.0, 2.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    out = x.multiply(x).sum()
+    with pytest.raises(TypeError, match="retain_graph must be a bool"):
+        out.backward(retain_graph="yes")
+    # No gradient produced, graph still valid (nothing mutated or freed).
+    assert x.grad is None
+    assert out._graph_freed is False
+    assert callable(out._backward)
+    # A real backward still works afterward.
+    out.backward()
+    assert np.allclose(_grad(x), 2.0 * x_vals)
+    x.close()
+
+
+# -- one-shot free and freed-graph errors ------------------------------
+
+
+@needs_native
+def test_freed_graph_default_backward_computes_and_frees():
+    x_vals = np.array([1.0, -2.0, 3.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    mid = x.multiply(x)
+    out = mid.sum()
+    out.backward()
+    assert np.allclose(_grad(x), 2.0 * x_vals)      # correct gradient
+    assert out._graph_freed is True and mid._graph_freed is True
+    assert out._parents == () and mid._parents == ()
+    assert out._backward is None and mid._backward is None
+    assert x._graph_freed is False and x.requires_grad is True  # leaf untouched
+    x.close()
+
+
+@needs_native
+def test_freed_graph_second_backward_raises_and_names_retain_graph():
+    x = NativeTensor.from_array([1.0, 2.0], requires_grad=True)
+    out = x.multiply(x).sum()
+    out.backward()
+    with pytest.raises(RuntimeError) as excinfo:
+        out.backward()
+    msg = str(excinfo.value)
+    assert "freed" in msg and "retain_graph=True" in msg
+    x.close()
+
+
+@needs_native
+def test_freed_graph_second_backward_leaves_grad_unchanged():
+    x_vals = np.array([1.0, 2.0, 3.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    out = x.multiply(x).sum()
+    out.backward()
+    before = x.grad.to_numpy().copy()
+    with pytest.raises(RuntimeError, match="freed"):
+        out.backward()
+    assert np.array_equal(x.grad.to_numpy(), before)  # failed call changed nothing
+    x.close()
+
+
+@needs_native
+def test_freed_graph_shared_intermediate_detected_via_other_output():
+    x_vals = np.array([1.0, 2.0, 3.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    shared = x.multiply(x)
+    out_a = shared.sum()
+    out_b = shared.mean()
+    out_a.backward()                 # frees the shared intermediate
+    assert shared._graph_freed is True
+    before = x.grad.to_numpy().copy()
+    with pytest.raises(RuntimeError, match="freed"):
+        out_b.backward()             # reaches the freed shared node
+    assert np.array_equal(x.grad.to_numpy(), before)
+    x.close()
+
+
+@needs_native
+def test_freed_graph_new_op_from_freed_value_raises():
+    x_vals = np.array([1.0, 2.0, 3.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    shared = x.multiply(x)
+    shared.sum().backward()          # frees shared
+    # Forward still works on the freed tensor's stored value...
+    y = NativeTensor.from_array([1.0, 1.0, 1.0], requires_grad=True)
+    new_out = shared.add(y).sum()
+    assert np.allclose(new_out.to_numpy(), (x_vals ** 2 + 1.0).sum())
+    # ...but backward must not silently cross the freed history.
+    with pytest.raises(RuntimeError, match="freed"):
+        new_out.backward()
+    assert y.grad is None            # nothing committed
+    x.close()
+    y.close()
+
+
+@needs_native
+def test_freed_graph_cleanup_clears_graph_metadata():
+    a = NativeTensor.from_array([1.0, 2.0], requires_grad=True)
+    b = NativeTensor.from_array([3.0, 4.0], requires_grad=True)
+    mid = a.multiply(b)
+    out = mid.sum()
+    assert out._parents == (mid,) and mid._parents == (a, b)
+    assert callable(out._backward) and callable(mid._backward)
+    out.backward()
+    for node in (out, mid):
+        assert node._parents == ()
+        assert node._backward is None
+        assert node._graph_freed is True
+        assert node._grad is None        # transient grad dropped
+        assert node.is_leaf is False     # not converted to a leaf
+    assert np.allclose(mid.to_numpy(), [3.0, 8.0])  # value still usable forward
+    a.close()
+    b.close()
+
+
+# -- retain_graph reuse -------------------------------------------------
+
+
+@needs_native
+def test_retain_graph_two_passes_accumulate_twice():
+    x_vals = np.array([1.0, 2.0, 3.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    out = x.multiply(x).sum()        # per-pass grad = 2x
+    out.backward(retain_graph=True)
+    out.backward(retain_graph=True)
+    assert np.allclose(_grad(x), 4.0 * x_vals)   # exactly two 2x contributions
+    assert out._graph_freed is False
+    x.close()
+
+
+@needs_native
+def test_retain_graph_then_default_frees_then_reuse_raises():
+    x_vals = np.array([1.0, 2.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    out = x.multiply(x).sum()
+    out.backward(retain_graph=True)  # 2x
+    out.backward(retain_graph=True)  # 4x
+    out.backward()                   # 6x, then free
+    assert np.allclose(_grad(x), 6.0 * x_vals)
+    assert out._graph_freed is True
+    with pytest.raises(RuntimeError, match="freed"):
+        out.backward()
+    x.close()
+
+
+@needs_native
+def test_retain_graph_keeps_graph_metadata():
+    a = NativeTensor.from_array([1.0, 2.0], requires_grad=True)
+    b = NativeTensor.from_array([3.0, 4.0], requires_grad=True)
+    mid = a.multiply(b)
+    out = mid.sum()
+    out.backward(retain_graph=True)
+    assert out._parents == (mid,) and mid._parents == (a, b)
+    assert callable(out._backward) and callable(mid._backward)
+    assert out._graph_freed is False and mid._graph_freed is False
+    assert out._grad is None and mid._grad is None  # transient grads still dropped
+    a.close()
+    b.close()
+
+
+@needs_native
+def test_retain_graph_zero_grad_between_passes():
+    x_vals = np.array([1.0, 2.0, 3.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    out = x.multiply(x).sum()
+    out.backward(retain_graph=True)
+    assert np.allclose(_grad(x), 2.0 * x_vals)
+    x.zero_grad()
+    assert x.grad is None
+    assert out._graph_freed is False       # zero_grad did not damage the graph
+    out.backward(retain_graph=True)
+    assert np.allclose(_grad(x), 2.0 * x_vals)  # fresh accumulation from None
+    x.close()
+
+
+@needs_native
+def test_freed_graph_zero_grad_does_not_resurrect():
+    x = NativeTensor.from_array([1.0, 2.0], requires_grad=True)
+    out = x.multiply(x).sum()
+    out.backward()                 # frees graph
+    x.zero_grad()                  # clears leaf grad only
+    assert out._graph_freed is True
+    with pytest.raises(RuntimeError, match="freed"):
+        out.backward()
+    x.close()
+
+
+# -- leaf behavior ------------------------------------------------------
+
+
+@needs_native
+def test_graph_lifetime_scalar_leaf_repeated_backward_accumulates():
+    x = NativeTensor.full((), 5.0, requires_grad=True)  # scalar leaf, no graph
+    x.backward()                    # seed 1.0
+    x.backward()                    # +1.0
+    x.backward(retain_graph=True)   # +1.0; retain has no effect on a leaf
+    assert x.grad.shape == ()
+    assert float(_grad(x)) == 3.0
+    assert x._graph_freed is False  # a leaf is never marked freed
+    assert x.is_leaf is True
+    x.close()
+
+
+@needs_native
+def test_graph_lifetime_detach_is_graph_free():
+    x = NativeTensor.from_array([1.0, 2.0], requires_grad=True)
+    d = x.multiply(x).detach()
+    assert d.requires_grad is False
+    assert d.is_leaf is True
+    assert d._graph_freed is False  # detached leaf, never part of a graph
+    assert d._parents == ()
+    assert d._backward is None
+    x.close()
+    d.close()
+
+
+# -- graph shapes still correct under retain_graph ---------------------
+
+
+@needs_native
+def test_retain_graph_branching_accumulates():
+    x_vals = np.array([1.0, 2.0])
+    y_vals = np.array([3.0, 4.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    y = NativeTensor.from_array(y_vals, requires_grad=True)
+    h = x.add(y)
+    out = h.multiply(h).sum()       # per-pass grad = 2h into both leaves
+    out.backward(retain_graph=True)
+    out.backward(retain_graph=True)
+    expected = 2.0 * 2.0 * (x_vals + y_vals)
+    assert np.allclose(_grad(x), expected)
+    assert np.allclose(_grad(y), expected)
+    x.close()
+    y.close()
+
+
+@needs_native
+def test_retain_graph_duplicate_parent_accumulates():
+    x_vals = np.array([1.0, 2.0, 3.0])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    out = x.add(x).sum()            # parents (x, x); per-pass grad = 2
+    out.backward(retain_graph=True)
+    out.backward(retain_graph=True)
+    assert np.allclose(_grad(x), np.full(3, 4.0))  # 2 per pass, twice
+    x.close()
+
+
+@needs_native
+def test_retain_graph_explicit_gradient():
+    a_vals = np.array([[1.0, 2.0], [3.0, 4.0]])
+    a = NativeTensor.from_array(a_vals, requires_grad=True)
+    out = a.multiply(a)            # non-scalar output -> explicit gradient
+    seed = np.array([[1.0, 1.0], [1.0, 1.0]])
+    out.backward(gradient=NativeTensor.from_array(seed), retain_graph=True)
+    out.backward(gradient=NativeTensor.from_array(seed), retain_graph=True)
+    assert np.allclose(_grad(a), 2.0 * 2.0 * a_vals)  # d(a^2)=2a, ones seed, twice
+    a.close()
+
+
+@needs_native
+def test_retain_graph_broadcasting():
+    bias_vals = np.array([1.0, 2.0, 3.0])
+    x_vals = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    bias = NativeTensor.from_array(bias_vals, requires_grad=True)
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    out = x.add(bias).sum()
+    out.backward(retain_graph=True)
+    out.backward(retain_graph=True)
+    assert np.allclose(_grad(bias), np.full(3, 4.0))  # (3,) grad summed rows, twice
+    assert np.allclose(_grad(x), np.full((2, 3), 2.0))
+    bias.close()
+    x.close()
+
+
+@needs_native
+def test_retain_graph_matmul():
+    a_vals = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])    # (2, 3)
+    b_vals = np.array([[1.0, 0.0], [0.0, 1.0], [1.0, 1.0]])  # (3, 2)
+    a = NativeTensor.from_array(a_vals, requires_grad=True)
+    b = NativeTensor.from_array(b_vals, requires_grad=True)
+    out = a.matmul(b).sum()
+    out.backward(retain_graph=True)
+    out.backward(retain_graph=True)
+    ones = np.ones((2, 2))
+    assert np.allclose(_grad(a), 2.0 * (ones @ b_vals.T))
+    assert np.allclose(_grad(b), 2.0 * (a_vals.T @ ones))
+    a.close()
+    b.close()
+
+
+@needs_native
+def test_graph_lifetime_view_chain_reshape_transpose_contiguous_narrow():
+    x_vals = np.arange(6.0).reshape(2, 3)
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    # A chain mixing every view op; obeys the same lifetime policy.
+    out = x.T.contiguous_copy().reshape((6,)).narrow(0, 1, 4).sum()
+    expected_pass = np.array([[0.0, 1.0, 1.0], [1.0, 1.0, 0.0]])
+    out.backward(retain_graph=True)
+    assert np.allclose(_grad(x), expected_pass)
+    out.backward()                 # default -> accumulate once more, then free
+    assert np.allclose(_grad(x), 2.0 * expected_pass)
+    assert out._graph_freed is True
+    with pytest.raises(RuntimeError, match="freed"):
+        out.backward()
+    x.close()
+
+
+# -- failure safety -----------------------------------------------------
+
+
+@needs_native
+def test_freed_graph_failed_backward_does_not_free_or_partially_commit():
+    a = NativeTensor.from_array([1.0, 2.0], requires_grad=True)
+    b = NativeTensor.from_array([3.0, 4.0], requires_grad=True)
+    add = a.add(b)
+    out = add.sum()
+    assert a.grad is None
+    # add's backward commits a's contribution, then b's branch raises
+    # (b closed) — the staged pass must roll a's back and leave the graph.
+    b.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        out.backward()
+    assert a.grad is None                         # no partial commit
+    assert out._graph_freed is False              # no partial free
+    assert add._graph_freed is False
+    assert out._parents == (add,) and add._parents == (a, b)
+    assert callable(out._backward) and callable(add._backward)
+    a.close()

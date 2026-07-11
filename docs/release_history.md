@@ -339,8 +339,58 @@ finite-difference check (NumPy test-side only), and the CI smoke script
 hard-checks one narrow-backward pattern. `NativeTensorCore` and the C++
 kernels still own no graph state; there is no `divide` backward, no
 `retain_graph`, no `tensorforge.Tensor` integration, no optimizer/module
-layer, no CUDA, and no performance claims. The next step is **v2.4 —
-native autograd graph lifetime policy** (the graph-cleanup/`retain_graph`
-decision, defined repeated-backward behavior, protection against stale
-callback/lifetime state, and focused graph-lifetime tests — no new
-mathematical backward operations).
+layer, no CUDA, and no performance claims. **v2.4** gives the native
+autograd graph an explicit **lifetime policy**. `backward` gains a flag —
+`backward(gradient=None, retain_graph=False)` — validated as a real `bool`
+first (non-bool raises `TypeError` before anything is traversed or
+mutated; never coerced). The default is **one-shot**: a successful pass
+releases the operation graph of every traversed non-leaf node — clearing
+its `_parents` and `_backward` closure (so nothing keeps the parents
+alive) and marking it freed — and a later `backward()` reaching it raises
+a clear `RuntimeError` naming `retain_graph=True` as the remedy, rather
+than silently treating the freed node as a leaf and truncating history.
+That one rule covers a repeated backward on the same output, a **second
+output over a shared intermediate**, and a **new op built from a freed
+value** (whose forward still works on the intact stored value — only
+backward refuses to cross the freed history). `retain_graph=True` keeps
+the graph for another pass; leaf gradients accumulate across successful
+passes until `zero_grad()` (which clears a leaf grad without resurrecting
+a freed graph or damaging a retained one); a genuine leaf has no graph to
+free and is never marked freed, so repeated `backward()` on a scalar leaf
+keeps accumulating. The pass is **failure-safe** — staged against a
+snapshot of every node's gradient (gradients are immutable, so
+accumulation replaces the reference with a fresh native `add`), so if a
+callback raises mid-traversal the references are restored, leaving no
+partial commit and no partial free; cleanup runs only after the pass fully
+succeeds. This is a **Python-only** `NativeTensor` change — no C++ touched,
+no kernel added, no NumPy in the gradient path, `NativeTensorCore` still
+graph-unaware — and it is explicitly **not** full PyTorch parity (no
+per-node `retain_grad`, no double-backward). **v2.5** is a
+**measurement-only** milestone — it changes no autograd behavior and adds
+no kernel — that **characterizes** the native autograd stack with a
+reproducible harness (`benchmarks/benchmark_native_autograd.py`). Five
+workloads (a same-shape elementwise chain, a genuine-broadcast chain, a
+3-D reduction chain, a 2-D matmul chain, and a transpose→narrow→
+contiguous_copy→reshape view chain) run in four modes that separate the
+layers: `forward_native` (grad off, no graph), `forward_graph` (graph
+built, no backward), `forward_backward_fresh` (fresh graph + one-shot
+`backward()`, cleanup included), and `backward_retained` (one graph built
+outside the loop, `backward(retain_graph=True)` repeatedly — isolating
+repeated backward, explicitly not a training-step estimate). Timing uses
+`time.perf_counter_ns()` with configurable warmup/iterations/repeats,
+median as the primary statistic plus min/max spread, and a correctness
+gate (output shape, finite output, and — for backward modes — that each
+leaf gradient exists, has the right shape, and is finite) before any
+timing; NumPy is used only to *inspect* copied gradient values, never to
+compute a benchmarked result. A CLI
+(`--case --mode --warmup --iterations --repeats --json --smoke`) runs all
+cases/modes by default, rejects unknown selections and non-positive
+counts, and emits pure JSON (raw samples included) under `--json`. One
+honest hardware-specific snapshot is recorded in
+[native_autograd_benchmarks.md](native_autograd_benchmarks.md), with
+cautious observations only (adding backward dominates; retained backward
+sits below fresh; graph-construction overhead is small at these sizes;
+tiny tensors are wrapper/ctypes-bound) and **no** cross-framework or
+production claims. The benchmark tests validate schema and behavior, never
+speed. The next step is **v2.6 — Phase B guardrails and completion**,
+after which Phase C — a native training stack — opens.

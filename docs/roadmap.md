@@ -154,12 +154,26 @@ The Python line is done; what remains is expansion on its own terms:
   gradient lives at the logical shape, so transposed, narrowed, and
   nonzero-offset parents all differentiate correctly, and there is no
   NumPy in the gradient path; `NativeTensorCore` and the C++ kernels still
-  own no graph state. The next recommended milestone is **Advanced C++
-  v2.4 — Native Autograd Graph Lifetime Policy** (the
-  graph-cleanup/`retain_graph` decision, defined repeated-backward
-  behavior on the same graph, protection against stale callback/lifetime
-  state, and focused graph-lifetime tests — no new backward math).
-  CUDA/GPU experiments are still entirely future work. The Python
+  own no graph state. **v2.4 — Native Autograd Graph Lifetime Policy — is
+  now implemented** (a Python-only `NativeTensor` change): `backward` takes
+  a `retain_graph` flag (validated as a real bool first), the default
+  `backward(retain_graph=False)` is one-shot and releases the traversed
+  operation graph on success, a later backward through a freed graph raises
+  a clear error (never silently truncating history), `retain_graph=True`
+  keeps the graph for another pass, leaf gradients accumulate until
+  `zero_grad()`, and a failed pass rolls back with no partial commit or
+  partial free — explicitly not full PyTorch parity. **v2.5 — Native
+  Autograd Benchmark Characterization — is now done** (a measurement-only
+  milestone that changes no behavior): a reproducible harness
+  (`benchmarks/benchmark_native_autograd.py`) times four modes —
+  forward-native, forward+graph-construction, fresh forward+backward, and
+  repeated retained backward — across five workloads, with a correctness
+  gate, median/spread reporting, a JSON mode, and one honest
+  hardware-specific snapshot carrying no speed assertions (see
+  [native_autograd_benchmarks.md](native_autograd_benchmarks.md)). The
+  recommended next milestone is **Advanced C++ v2.6 — Phase B Guardrails
+  and Completion**, after which **Phase C — a native training stack**
+  opens. CUDA/GPU experiments are still entirely future work. The Python
   framework stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
@@ -182,15 +196,20 @@ The Python line is done; what remains is expansion on its own terms:
     multiply, relu (one new fused kernel), sum, mean, matmul,
     reshape/transpose/T, contiguous_copy, and broadcasting backward via a
     native `unbroadcast`, finite-difference-verified, with a
-    deterministic native autograd demo; and **v2.3 implemented native
-    narrow backward** — the scatter that was v2.2's one deferral — through
-    a second new fused kernel (`tf_core_narrow_backward`, the odometer dual
+    deterministic native autograd demo; **v2.3 implemented native narrow
+    backward** — the scatter that was v2.2's one deferral — through a
+    second new fused kernel (`tf_core_narrow_backward`, the odometer dual
     of `sum`), completing the view-backward set with transposed / narrowed
-    / nonzero-offset parents all handled. Next is **v2.4 — native autograd
-    graph lifetime policy** (the graph-cleanup/`retain_graph` decision,
-    defined repeated-backward behavior, protection against stale
-    callback/lifetime state, and focused graph-lifetime tests — no new
-    backward math).
+    / nonzero-offset parents all handled; and **v2.4 implemented the graph
+    lifetime policy** — a one-shot `backward(retain_graph=False)` that frees
+    the traversed graph on success, opt-in `retain_graph=True` reuse,
+    deterministic freed-graph errors, and snapshot-based failure safety (a
+    Python-only change; no kernel touched); and **v2.5 characterized the
+    stack** with a measurement-only benchmark harness (four modes across
+    five workloads, correctness gate, median/spread reporting, JSON output,
+    one hardware snapshot, no speed assertions). Next is **v2.6 — Phase B
+    guardrails and completion**, after which **Phase C — a native training
+    stack** opens.
   - **Then beyond:** a native training stack, the CUDA runtime
     (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

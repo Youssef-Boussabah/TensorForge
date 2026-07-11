@@ -386,6 +386,99 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native autograd — benchmark characterization (v2.5)
+
+v2.5 is a **measurement and documentation** milestone: it changes no
+autograd behavior, adds no kernel, and makes no cross-framework claim. It
+adds a reproducible harness,
+[`benchmarks/benchmark_native_autograd.py`](../benchmarks/benchmark_native_autograd.py),
+that characterizes where time goes in the native autograd stack, and one
+honest hardware-specific snapshot. Full write-up (cases, modes, methodology,
+results, and interpretation limits) is in
+[native_autograd_benchmarks.md](native_autograd_benchmarks.md).
+
+Five workloads — a same-shape elementwise chain, a genuine-broadcast chain,
+a 3-D reduction chain, a 2-D matmul chain, and a transpose→narrow→
+contiguous_copy→reshape view chain — are each run in four modes that
+separate the layers as far as the architecture permits:
+`forward_native` (grad off, no graph), `forward_graph` (graph built, no
+backward), `forward_backward_fresh` (fresh graph + one-shot `backward()`,
+including cleanup), and `backward_retained` (one graph built outside the
+loop, `backward(retain_graph=True)` repeatedly — isolating repeated
+backward, explicitly *not* a training-step estimate). Timing uses
+`time.perf_counter_ns()`, configurable warmup/iterations/repeats, median
+as the primary statistic with min/max spread, and a correctness gate
+(output shape, finite output, and — for backward modes — that each leaf
+gradient exists, has the right shape, and is finite) before any timing. A
+CLI (`--case --mode --warmup --iterations --repeats --json --smoke`) runs
+all cases/modes by default, rejects unknown cases/modes and non-positive
+counts, and emits pure JSON (raw samples included) under `--json`.
+
+On the recorded snapshot (one Windows/AMD64 machine, float64/cpu), adding a
+backward pass is the dominant cost (fresh forward+backward ≈ 2.5×–5× the
+forward), retained backward sits below fresh backward everywhere (it drops
+the forward rebuild from the loop), graph-construction overhead is small
+relative to compute at these sizes (clearest on matmul), and the smoke
+shapes are dominated by wrapper/ctypes cost — all machine-specific
+observations, with no speed assertions anywhere. The benchmark tests
+(`tests/test_native_autograd_benchmark.py`) validate schema and behavior
+only, never speed.
+
+### Native autograd — graph lifetime policy (v2.4)
+
+v2.4 gives the native autograd graph an explicit, PyTorch-like
+**lifetime**. `backward` now takes a flag — `backward(gradient=None,
+retain_graph=False)` — and the default is **one-shot**: after a
+successful pass, the operation graph of every traversed non-leaf node is
+released.
+
+```python
+from tensorforge.experimental import NativeTensor
+
+x = NativeTensor.from_array([1.0, 2.0, 3.0], requires_grad=True)
+out = x.multiply(x).sum()
+out.backward()          # computes dx = 2x, then frees the graph
+out.backward()          # RuntimeError: graph already freed — use retain_graph=True
+
+y = NativeTensor.from_array([1.0, 2.0, 3.0], requires_grad=True)
+loss = y.multiply(y).sum()
+loss.backward(retain_graph=True)   # keeps the graph
+loss.backward(retain_graph=True)   # runs again; y.grad accumulates to 4y
+```
+
+Releasing a graph clears each traversed non-leaf node's `_parents` and
+`_backward` closure (so nothing keeps the parents alive) and marks the
+node **freed**. A later `backward()` that reaches a freed node raises a
+clear `RuntimeError` naming `retain_graph=True` as the remedy — and
+crucially it does *not* silently treat the freed node as a leaf, which
+would truncate history. That covers three cases with one flag: a repeated
+backward on the same output, a **second output over a shared
+intermediate** (`a = shared.sum(); b = shared.mean(); a.backward()` frees
+`shared`, so `b.backward()` raises), and a **new op built from a freed
+value** (`shared.add(y)` still computes forward — the stored value is
+intact — but its backward refuses to cross the freed history). A genuine
+leaf has no graph to free and is never marked freed, so repeated
+`backward()` on a scalar leaf keeps accumulating.
+
+`retain_graph` is validated as a real `bool` **first** — before traversal,
+callbacks, cleanup, or any gradient mutation, and never coerced with
+`bool(...)` — so a bad value (`"true"`, `1`, `None`, …) raises `TypeError`
+and changes nothing. Whether or not the graph is freed, only leaves retain
+grad; non-leaf grads stay transient and are dropped after each pass, so a
+retained second pass recomputes them cleanly and leaf gradients accumulate
+across passes until `zero_grad()` (which clears a leaf grad without
+resurrecting a freed graph or damaging a retained one). The pass is
+**failure-safe**: it is staged against a snapshot of every node's gradient
+(gradients are immutable — accumulation replaces the reference with a
+fresh native `add`), so if a callback raises mid-traversal — for instance
+one branch commits a leaf and another hits a closed operand — the
+references are restored, leaving no partial commit and no partial free, and
+cleanup runs only after the pass fully succeeds. This is **not** full
+PyTorch parity: there is no per-node `retain_grad` and no double-backward.
+No C++ changed, no kernel was added, and no NumPy entered the gradient
+path; `NativeTensorCore` still owns no graph state. Full status in
+[native_autograd_design.md](native_autograd_design.md).
+
 ### Native autograd — narrow backward (v2.3)
 
 v2.3 makes the last view op differentiable: `narrow(dim, start, length)`
@@ -1171,20 +1264,25 @@ operations into that engine** — `add`/`subtract`/`multiply`/`relu`/`sum`/
 `mean`/`matmul`/`reshape`/`transpose`/`T`/`contiguous_copy` are
 differentiable, broadcasting backward runs through the native
 `unbroadcast` reduction, and its one new kernel is the fused
-`relu_backward` — and **v2.3 (above) completes the view-backward set**
-with `narrow` backward through the native `tf_core_narrow_backward`
-scatter kernel (the odometer dual of `sum`). Gradients are
+`relu_backward` — **v2.3 completed the view-backward set** with `narrow`
+backward through the native `tf_core_narrow_backward` scatter kernel (the
+odometer dual of `sum`), **v2.4 gave the graph an explicit lifetime** —
+one-shot `backward(retain_graph=False)` by default, opt-in
+`retain_graph=True` reuse, deterministic freed-graph errors, and
+snapshot-based failure safety (a Python-only change; no kernel touched) —
+and **v2.5 (above) characterized the whole stack** with a measurement-only
+benchmark harness (four modes separating forward-native, graph
+construction, fresh forward+backward, and repeated retained backward; a
+single honest hardware snapshot; no speed assertions). Gradients are
 `NativeTensor`-backed float64/cpu and enforce `grad.dtype ==
 tensor.dtype` / `grad.device == tensor.device` against the fields v1.21
 made real. `NativeTensorCore` and the C++ kernels still own no graph
 state, and there is still no Tensor integration, no optimizer/module
-layer, no native training stack, and no CUDA today. The next milestone is
-**v2.4 — Native Autograd Graph Lifetime Policy**: the graph-cleanup /
-`retain_graph` decision, defined repeated-backward behavior on the same
-graph, protection against stale callback/lifetime state, and focused
-graph-lifetime tests — no new mathematical backward operations. (Autograd
-benchmark characterization and `divide` backward remain separate later
-work.) CUDA experiments remain a separate future branch (where `device`
-gains a second value), and an AMP / Tensor Core path is where `dtype`
-later gains float16/bfloat16. The
-Python framework stays the reference implementation throughout.
+layer, no native training stack, and no CUDA today. The recommended next
+milestone is **v2.6 — Phase B Guardrails and Completion** (a final pass
+over the native-autograd guardrails and isolation invariants that closes
+Phase B), after which **Phase C — a native training stack** opens;
+`divide` backward remains separate later work. CUDA experiments remain a
+separate future branch (where `device` gains a second value), and an AMP /
+Tensor Core path is where `dtype` later gains float16/bfloat16. The Python
+framework stays the reference implementation throughout.

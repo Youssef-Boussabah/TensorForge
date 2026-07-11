@@ -38,12 +38,27 @@ metadata; §1).
 > Because the gradient lives at the logical shape, the scatter output is
 > always fresh owning row-major contiguous storage, so transposed,
 > narrowed, and nonzero-offset parents all work (each is a preceding node
-> whose own backward handles its layout). `retain_graph` is still not
-> offered (§7.1), and the graph-lifetime policy is the v2.4 milestone.
-> Verified against exact analytical values, an independent NumPy
-> zero-padding reference, and finite differences; demonstrated by
-> `examples/native_autograd_demo.py`. The sections below remain the
-> design of record.
+> whose own backward handles its layout). **v2.4 implements the graph
+> lifetime policy** (§7.1): `backward(gradient=None, retain_graph=False)`
+> is one-shot by default (a successful pass releases the traversed
+> operation graph — parents/backward cleared, node marked freed — and a
+> later backward reaching it raises a clear error rather than silently
+> truncating history), `retain_graph=True` keeps the graph for another
+> pass, leaf gradients accumulate across passes until `zero_grad()`,
+> `retain_graph` is validated as a real bool before any mutation, and a
+> failed pass rolls back with no partial commit or partial free. It is not
+> full PyTorch parity (no per-node `retain_grad`, no double-backward). No
+> new C++ kernel, no NumPy in the gradient path, and `NativeTensorCore`
+> still owns no graph state. Verified against exact analytical values, an
+> independent NumPy zero-padding reference, and finite differences;
+> demonstrated by `examples/native_autograd_demo.py`. **v2.5 is a
+> measurement milestone** — it changes no autograd behavior and adds a
+> characterization benchmark (`benchmarks/benchmark_native_autograd.py`)
+> that separates forward-native, forward+graph-construction,
+> fresh-forward+backward, and repeated retained-backward cost, with honest
+> hardware-specific results and no speed assertions (see
+> [native_autograd_benchmarks.md](native_autograd_benchmarks.md)). The
+> sections below remain the design of record.
 
 For where this sits, see [backend_experiments.md](backend_experiments.md)
 (the native runtime and its benchmarks),
@@ -319,16 +334,32 @@ Reverse-topological order is what guarantees a tensor's gradient is
 complete (all downstream contributions summed) before its own `_backward`
 runs — the same reasoning as the Python engine.
 
-**`retain_graph` is deferred** (implemented as such in v2.1). The graph is
-rebuilt on every `backward()` call, and the traversal never destroys graph
-state, so a partially-working `retain_graph` flag would be misleading and
-is not exposed. The observable consequence is the Python engine's own:
-repeated `backward()` calls **accumulate** into leaf grads until
-`zero_grad()` clears them (only leaves retain grad; non-leaf grads are
-transient and dropped after each pass). Traversal is by **object
-identity** (`id()`), not `NativeTensor` hashing, so a node reached by
-several paths — or listed twice as a parent — is visited exactly once
-while its backward rule still accumulates once per logical edge.
+**`retain_graph` was deferred through v2.3 and is implemented in v2.4.**
+`backward(gradient=None, retain_graph=False)` is now **one-shot by
+default**: after a successful pass the operation graph of every traversed
+non-leaf node is released — its `_parents`/`_backward` cleared (so the
+captured closures cannot keep parents alive) and the node marked freed —
+and a later `backward()` reaching it raises a clear `RuntimeError` naming
+`retain_graph=True` as the remedy (this catches both a repeated backward
+on the same output and a new op built from a freed non-leaf value; the
+freed node is *not* silently treated as a leaf, which would truncate
+history). `retain_graph=True` keeps the graph for another pass. `retain_graph`
+is validated as a real `bool` first — before traversal, callbacks, cleanup,
+or any gradient mutation — and never coerced. It is **not** full PyTorch
+parity: no per-node `retain_grad`, no double-backward. Whether or not the
+graph is freed, only leaves retain grad (non-leaf grads are transient and
+dropped after each pass, so a retained second pass recomputes them
+cleanly), and repeated `backward()` calls **accumulate** into leaf grads
+until `zero_grad()`. A genuine leaf has no graph to free and is never
+marked freed. The whole pass is **failure-safe**: it is staged against a
+snapshot of every node's gradient (gradients are immutable — accumulation
+replaces the reference with a fresh native `add`), so if traversal or a
+callback raises, the references are restored and neither a leaf gradient
+nor the graph is left partially changed; cleanup runs only after the pass
+fully succeeds. Traversal is by **object identity** (`id()`), not
+`NativeTensor` hashing, so a node reached by several paths — or listed
+twice as a parent — is visited exactly once while its backward rule still
+accumulates once per logical edge.
 
 ### 7.2 Default seed gradient
 

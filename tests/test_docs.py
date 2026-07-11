@@ -20,6 +20,7 @@ DOCS = (
     "native_reductions_design.md",
     "native_dtype_device_metadata_design.md",
     "native_autograd_design.md",
+    "native_autograd_benchmarks.md",
 )
 
 EXAMPLE_FILES = (

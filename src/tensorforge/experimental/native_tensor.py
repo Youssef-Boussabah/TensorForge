@@ -30,7 +30,14 @@ graph of its own and never touching NumPy. As of v2.3, ``narrow`` is
 differentiable too: its backward **scatters** the upstream gradient into
 a fresh zeros tensor of the parent's shape via the native
 ``narrow_backward`` kernel (the one new C++ kernel this milestone adds),
-completing the view-backward set. See docs/native_autograd_design.md.
+completing the view-backward set. As of v2.4, ``backward`` takes an
+explicit ``retain_graph`` flag and the graph has a defined **lifetime**:
+the default ``backward(retain_graph=False)`` is one-shot and releases the
+traversed operation graph on success (a later backward through it raises
+clearly), ``retain_graph=True`` keeps it for another pass, leaf gradients
+accumulate across passes until ``zero_grad()``, and a failed pass rolls
+back cleanly (no partial commit, no partial free). See
+docs/native_autograd_design.md.
 
 A note on mutation: there are no in-place user arithmetic operations,
 so the forward values the graph captures for backward (e.g. the
@@ -75,6 +82,11 @@ class NativeTensor:
         "_core", "_owns_core", "_closed",
         # -- autograd metadata (opt-in; see docs/native_autograd_design.md)
         "_requires_grad", "_grad", "_parents", "_backward", "_op", "_is_leaf",
+        # -- graph-lifetime state (v2.4): True once a one-shot backward has
+        # released this non-leaf node's operation graph. Distinct from
+        # _is_leaf so a freed non-leaf, a live non-leaf, and a genuine leaf
+        # stay tellable apart.
+        "_graph_freed",
     )
 
     def __init__(self, core, owns_core=True):
@@ -99,6 +111,7 @@ class NativeTensor:
         self._backward = None
         self._op = ""
         self._is_leaf = True
+        self._graph_freed = False
 
     @classmethod
     def _from_core(cls, core, owns_core=True):
@@ -653,7 +666,7 @@ class NativeTensor:
         core = self._require_open()
         return self._from_core(core.contiguous_copy())
 
-    def backward(self, gradient=None):
+    def backward(self, gradient=None, retain_graph=False):
         """Run reverse-mode autodiff from this tensor back to the leaves.
 
         Mirrors the Python Tensor engine (docs/autograd.md) natively:
@@ -673,11 +686,39 @@ class NativeTensor:
         output's shape, dtype, and device (errors name expected vs.
         actual). No NumPy array ever enters the gradient path.
 
-        Raises RuntimeError on a tensor that does not require grad, or that
-        has been closed. ``retain_graph`` is intentionally not offered yet
-        (see docs/native_autograd_design.md): the graph is rebuilt every
-        call, so repeated ``backward()`` accumulates into leaf grads until
-        ``zero_grad()`` clears them."""
+        **Graph lifetime (v2.4).** ``retain_graph`` must be a real ``bool``
+        (validated *first*, before any traversal or gradient mutation; not
+        coerced) — the default ``False`` makes ``backward()`` **one-shot**:
+        after a successful pass the operation graph of every traversed
+        non-leaf node is released (its ``_parents``/``_backward`` cleared so
+        captured closures cannot keep parents alive, and the node marked
+        freed), and a later ``backward()`` that reaches it raises a clear
+        RuntimeError naming ``retain_graph=True`` as the remedy. Pass
+        ``retain_graph=True`` to keep the graph for another pass; leaf
+        gradients accumulate across passes until ``zero_grad()``. This is
+        *not* full PyTorch parity — there is no per-node ``retain_grad`` and
+        no double-backward. A genuine leaf has no graph to free (repeated
+        ``backward()`` on a scalar leaf keeps accumulating) and is never
+        marked freed. The tensor's stored value stays usable for forward
+        computation after its graph is freed; only backward refuses to
+        cross freed history.
+
+        **Failure safety.** The whole pass is staged against a snapshot of
+        every node's gradient (gradients are immutable — accumulation
+        replaces the reference with a fresh native ``add``, never mutating
+        in place), so if traversal or a callback raises, the references are
+        restored: no leaf gradient is partially committed and no graph is
+        partially freed. Cleanup runs only after the pass fully succeeds.
+
+        Raises TypeError for a non-bool ``retain_graph``, and RuntimeError
+        on a tensor that does not require grad, that has been closed, or
+        whose graph has already been freed by a prior one-shot backward."""
+        # Validate retain_graph before touching the graph or any gradient —
+        # a bad value must not leave partial state, and it is never coerced.
+        if not isinstance(retain_graph, bool):
+            raise TypeError(
+                f"retain_graph must be a bool, got {type(retain_graph).__name__}"
+            )
         self._require_open()
         if not self._requires_grad:
             raise RuntimeError(
@@ -704,23 +745,60 @@ class NativeTensor:
 
         build_topo(self)
 
-        # Seed this output, then push gradients backward. Reverse
-        # topological order guarantees each node's grad is fully
-        # accumulated before its own backward rule runs.
-        self._grad = seed
-        for node in reversed(topo):
-            if (
-                node._requires_grad
-                and node._backward is not None
-                and node._grad is not None
-            ):
-                node._backward(node._grad)
-
-        # Only leaves retain gradients; drop the transient non-leaf grads
-        # (dropped, not closed — see zero_grad).
+        # Freed-graph detection: a one-shot backward releases the operation
+        # graph, so any later traversal reaching a released non-leaf must
+        # raise rather than silently treat it as a leaf and truncate
+        # history (this catches both a repeated backward on the same output
+        # and a new op built from a freed non-leaf value). Checked before
+        # seeding, before any callback, and before any gradient is touched,
+        # so a raise here changes nothing.
         for node in topo:
-            if not node._is_leaf:
-                node._grad = None
+            if node._graph_freed:
+                raise RuntimeError(
+                    "backward() cannot traverse a freed autograd graph: this "
+                    "graph was already released by a previous one-shot "
+                    "backward() call. Pass retain_graph=True to that earlier "
+                    "backward() if you need to run backward through the same "
+                    "graph more than once."
+                )
+
+        # Stage the whole pass against a snapshot of every node's gradient,
+        # so a mid-traversal failure rolls back cleanly (see the docstring's
+        # failure-safety note) and never partially commits or partially
+        # frees.
+        snapshot = [(node, node._grad) for node in topo]
+        try:
+            # Seed this output. Going through _accumulate_grad means a
+            # non-leaf root adopts the seed as its transient start, while a
+            # leaf root accumulates it — so repeated backward on a scalar
+            # leaf keeps summing. Reverse topological order then guarantees
+            # each node's grad is complete before its own rule runs.
+            self._accumulate_grad(seed)
+            for node in reversed(topo):
+                grad = node._grad
+                if node._backward is not None and grad is not None:
+                    node._backward(grad)
+        except BaseException:
+            for node, grad in snapshot:
+                node._grad = grad
+            raise
+
+        # The pass succeeded. Drop the transient non-leaf gradients (only
+        # leaves retain grad, both here and under retain_graph). With
+        # retain_graph=False, also release the operation graph of every
+        # traversed non-leaf node: clear its parents and backward closure
+        # (so nothing keeps the parents alive) and mark it freed for
+        # deterministic reuse errors. Never touched: tensor data, shape,
+        # dtype/device, requires_grad, is_leaf, or any leaf gradient — a
+        # freed non-leaf stays a non-leaf whose value is still usable.
+        for node in topo:
+            if node._is_leaf:
+                continue
+            node._grad = None
+            if not retain_graph:
+                node._parents = ()
+                node._backward = None
+                node._graph_freed = True
 
     def _seed_gradient(self, gradient):
         """Validate an explicit ``gradient`` or synthesize the default

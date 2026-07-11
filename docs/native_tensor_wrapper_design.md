@@ -463,6 +463,25 @@ runtime beneath it grew:
   and there is no NumPy in the gradient path. This completes the
   view-backward set. `retain_graph` and the graph-lifetime policy are the
   next milestone (v2.4).
+- **v2.4 — native autograd graph lifetime policy (done):** `backward`
+  gains a `retain_graph` flag — `backward(gradient=None,
+  retain_graph=False)` — and the graph gets an explicit lifetime. The
+  default is **one-shot**: a successful pass releases the traversed
+  operation graph (each non-leaf node's `_parents`/`_backward` cleared, the
+  node marked freed), so a later backward through it raises a clear
+  `RuntimeError` instead of silently truncating history (covering a
+  repeated backward, a second output over a shared intermediate, and a new
+  op built from a freed value). `retain_graph=True` keeps the graph for
+  another pass; leaf gradients accumulate across passes until
+  `zero_grad()`; a genuine leaf is never marked freed. `retain_graph` is
+  validated as a real `bool` before any mutation, and the pass is
+  failure-safe (staged against an immutable-gradient snapshot, so a
+  mid-traversal error rolls back with no partial commit or partial free).
+  A Python-only `NativeTensor` change — no C++ touched, no kernel added,
+  no NumPy in the gradient path, `NativeTensorCore` still graph-unaware —
+  and explicitly **not** full PyTorch parity (no per-node `retain_grad`, no
+  double-backward). See
+  [native_autograd_design.md](native_autograd_design.md) §7.1.
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision
