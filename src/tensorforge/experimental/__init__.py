@@ -21,9 +21,13 @@ assignment, deterministic identity-deduplicated recursive traversal,
 recursive ``zero_grad()``, and ``train()``/``eval()`` state propagation
 — plus the in-memory state dictionary contract (Advanced C++ v3.3):
 ``state_dict()`` snapshots and atomic identity-preserving
-``load_state_dict()``, parameters only. No layers, losses, optimizers,
-file serialization, or training loop yet, and still fully separate from
-``tensorforge.nn``.
+``load_state_dict()``, parameters only. ``NativeLinear`` (Advanced C++
+v3.4) is the first concrete native layer: a fully connected
+``y = x @ weight (+ bias)`` on NativeModule/NativeParameter with
+deterministic seeded initialization, strictly 2-D input semantics, and
+backward supplied entirely by the existing native autograd. No other
+layers, losses, optimizers, file serialization, or training loop yet,
+and still fully separate from ``tensorforge.nn``.
 
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).
@@ -32,10 +36,12 @@ this package is always safe (the library loads lazily on first use).
 from .native_tensor import NativeTensor
 from .native_parameter import NativeParameter, NativeParameterRegistry
 from .native_module import NativeModule
+from .native_linear import NativeLinear
 
 __all__ = [
     "NativeTensor",
     "NativeParameter",
     "NativeParameterRegistry",
     "NativeModule",
+    "NativeLinear",
 ]

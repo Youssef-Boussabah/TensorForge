@@ -224,9 +224,23 @@ The Python line is done; what remains is expansion on its own terms:
   with rollback) while preserving parameter identity, registration,
   shared aliases, `requires_grad`/frozen state, gradients, and training
   flags — still with no layer, loss, optimizer, file serialization,
-  checkpoint, or training loop. **The next milestone is Advanced C++
-  v3.4 — NativeLinear.** CUDA/GPU experiments are still entirely future
-  work. The Python framework stays the reference implementation.
+  checkpoint, or training loop. **v3.4 — NativeLinear — is implemented
+  on top of all of it**: the first concrete native layer,
+  `tensorforge.experimental.NativeLinear` — a `NativeModule` with a
+  `(in_features, out_features)` `NativeParameter` weight (the
+  `x @ weight` orientation) and optional `(out_features,)` bias,
+  deterministic fan-in uniform initialization from a local seeded
+  generator (global random state untouched), full argument validation before
+  native allocation, strictly 2-D input semantics, forward as pure
+  existing native operations (`matmul` + broadcast `add`) so the
+  existing autograd supplies backward (verified analytically and by
+  central finite differences), frozen-parameter support, deterministic
+  `["weight", "bias"]` registration and state-dict keys, and full v3.3
+  load compatibility — still with no activation modules, containers,
+  losses, optimizers, or training loop. **The next milestone is
+  Advanced C++ v3.5 — NativeReLU and NativeSequential.** CUDA/GPU
+  experiments are still entirely future work. The Python framework
+  stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -297,16 +311,24 @@ The Python line is done; what remains is expansion on its own terms:
     missing/unexpected-keys result, exact shape/dtype/device validation,
     stage-then-commit atomicity with rollback, and full preservation of
     parameter identity, shared aliases, gradients, `requires_grad`, and
-    training state — no file serialization, checkpoints, optimizer
-    state, layers, losses, optimizers, or training loop yet. **Next:
-    v3.4 — NativeLinear** (a first native layer on `NativeModule`:
-    `NativeParameter` weight, optional `NativeParameter` bias,
-    deterministic initialization, input validation, strictly 2-D forward
-    semantics initially over native `matmul` plus broadcast `add`,
-    registration through assignment, forward/backward and
-    finite-difference tests, state_dict compatibility; no optimizer or
-    training loop in v3.4, and no `NativeSequential`, activations, or
-    losses combined with it).
+    training state — no file serialization, checkpoints, or optimizer
+    state yet. **v3.4 — NativeLinear — is complete**: the first concrete
+    native layer — `(in_features, out_features)` weight orientation,
+    optional `(out_features,)` bias, deterministic seeded fan-in uniform
+    initialization (local generator, global random state untouched), validated
+    constructor and strictly 2-D input contract, forward as pure
+    existing native `matmul` + broadcast `add` so the existing autograd
+    is the backward implementation (exact analytical and
+    finite-difference verified), frozen-parameter support, deterministic
+    `["weight", "bias"]` keys, and full v3.3 state-dict compatibility —
+    no losses, optimizers, containers, activations, or training loop
+    yet. **Next: v3.5 — NativeReLU and NativeSequential** (a NativeReLU
+    module wrapping the existing `NativeTensor.relu()`; a
+    NativeSequential ordered child-module container with integer-string
+    child names, deterministic recursive traversal, forward composition,
+    shared-module behavior, train/eval propagation, and state_dict
+    compatibility, with replacement/indexing only if tightly justified;
+    no loss, optimizer, or training loop in v3.5).
   - **Then beyond:** the rest of the native training stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

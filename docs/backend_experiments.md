@@ -386,6 +386,103 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native training stack — NativeLinear (v3.4)
+
+v3.4 adds the first concrete native layer:
+`tensorforge.experimental.NativeLinear`, a fully connected layer built
+entirely on the completed contracts — `NativeModule` (v3.2) holding
+`NativeParameter`s (v3.1), forward as pure existing `NativeTensor`
+operations, backward supplied by the existing Phase B autograd, and
+state handled by the v3.3 state dictionary. It deliberately ships **no**
+`NativeSequential`, activation modules, losses, optimizers, training
+loops, mutation-version counters, or serialization. No C++ changed, no
+kernel or symbol was added, `NativeTensor`/`NativeParameter`/
+`NativeModule` are untouched, and `tensorforge.nn.Linear` is untouched.
+
+```python
+from tensorforge.experimental import NativeLinear, NativeTensor
+
+layer = NativeLinear(in_features, out_features, bias=True,
+                     *, seed=None, requires_grad=True)
+output = layer(x)   # x: 2-D NativeTensor (batch_size, in_features)
+```
+
+**Weight orientation** (load-bearing for future checkpoints): `weight`
+is `(in_features, out_features)` — the same `x @ weight` orientation as
+the stable framework's Linear — so the strictly 2-D native matmul
+applies directly; `bias` is `(out_features,)`, broadcast over the batch
+by the existing zero-stride broadcast. The forward is exactly::
+
+    output = input.matmul(weight)            # bias=False
+    output = input.matmul(weight).add(bias)  # bias=True
+
+Because forward is a composition of existing differentiable operations,
+**the existing autograd engine is the backward implementation** — there
+is no manual or fused NativeLinear backward, and graph lifetime
+(one-shot default, `retain_graph=True`, freed-history errors) is
+unchanged. Gradient shapes: `input.grad` `(batch, in)`, `weight.grad`
+`(in, out)`, `bias.grad` `(out,)` (the broadcast-add backward reduces
+over the batch via the native `unbroadcast`). Every gradient is verified
+against exact analytical formulas **and central finite differences**
+(`eps=1e-6`, float64-appropriate tolerances; NumPy is the test-side
+reference only).
+
+**Constructor.** Every Python argument is validated before any native
+allocation: `in_features`/`out_features` are real positive ints (bools
+and integer-like objects rejected), `bias` and `requires_grad` are real
+bools, `seed` is `None` or a real int. `requires_grad=False` freezes
+both parameters — they stay registered, traversable, and in
+`state_dict()`, accumulate no gradients, and a requiring input still
+receives its gradient. **Initialization** is deterministic and
+self-contained: weight and bias sampled uniformly from
+`[-1/sqrt(in_features), +1/sqrt(in_features)]` (a basic fan-in bound) by
+a **local** `numpy.random.default_rng(seed)` — an int seed reproduces
+values exactly, `None` draws fresh entropy, and the global NumPy RNG is
+never read or mutated. NumPy appears only as host-side initialization
+data preparation (the established `from_array` entry boundary) — never
+in forward or backward computation (guarded by a tripwire test).
+Parameters are created by assignment (`self.weight = NativeParameter(...)`,
+then `self.bias = ...` or `None`), exercising v3.2 registration and
+fixing the deterministic order `["weight", "bias"]` everywhere
+(`named_parameters()`, `parameters()`, `state_dict()`; nested as
+`"layer.weight"`/`"layer.bias"`). With `bias=False` the attribute reads
+as `None` and only `"weight"` exists.
+
+**Input contract** (strictly 2-D for now): an open `NativeTensor` of
+shape `(batch_size, in_features)` with matching dtype/device
+(float64/cpu). Nothing is wrapped, reshaped, flattened, or broadcast
+implicitly — the stable framework's `Tensor`, NumPy arrays, lists,
+scalars, closed inputs, and wrong ranks/feature sizes are rejected with
+errors naming the expected 2-D shape, the expected feature count, and
+the actual shape. The output is an ordinary `NativeTensor` (never a
+parameter), requiring grad exactly when a participating operand does;
+forward does not depend on `training` mode.
+
+**State compatibility** follows v3.3 exactly: loading a compatible state
+changes values while weight/bias identity, gradients, `requires_grad`,
+and frozen status survive; loading a biased state into a bias-free layer
+reports `"bias"` *unexpected*, the reverse reports it *missing* (strict
+raises before mutation; non-strict returns the key lists);
+shape-incompatible states fail atomically. **The v3.3 mutation boundary
+applies unchanged**: the supported sequence is forward → backward →
+(optionally) load/update after the graph completes; loading between
+forward and backward is memory-safe but mathematically inconsistent (no
+version counter — deliberately out of scope).
+
+Everything above is locked by `tests/test_native_linear.py` (selector:
+`-k "native_linear"` — 42 tests), and the full suite passes at **1117
+tests**. Still float64/cpu only, still explicit and experimental, still
+no implicit dispatch and no NumPy compute in any native forward,
+backward, or state path. The next milestone is **Advanced C++ v3.5 —
+NativeReLU and NativeSequential**, narrowly scoped to: a `NativeReLU`
+module wrapping the existing `NativeTensor.relu()`, a `NativeSequential`
+ordered child-module container with integer-string child names,
+deterministic recursive traversal, forward composition, shared-module
+behavior, train/eval propagation, and state_dict compatibility
+(replacement/indexing only if tightly justified) — **no loss, optimizer,
+or training loop yet** (v3.5 is not combined with losses, SGD, or model
+training).
+
 ### Native training stack — native state dictionary contract (v3.3)
 
 v3.3 adds the deterministic **in-memory** model-state contract:
@@ -1671,16 +1768,17 @@ the native training stack — is now under way: v3.1 shipped
 `NativeParameter` and the parameter-registration contract, v3.2 shipped
 `NativeModule` — automatic assignment registration, deterministic
 identity-deduplicated recursive traversal, recursive `zero_grad()`, and
-train/eval state propagation — and v3.3 (above) shipped the in-memory
-state dictionary contract: `state_dict()` snapshots and atomic
-identity-preserving `load_state_dict()`.** There is still no layer, loss,
-optimizer, file serialization, or training loop — the recommended next
-milestone is **v3.4 — NativeLinear** (a first native layer on
-`NativeModule`: `NativeParameter` weight, optional bias, deterministic
-initialization, strictly 2-D forward over native `matmul` + broadcast
-`add`, forward/backward/finite-difference tests, state_dict
-compatibility — no optimizer or training loop yet); `divide` backward
-remains separate later work.
+train/eval state propagation — v3.3 shipped the in-memory state
+dictionary contract: `state_dict()` snapshots and atomic
+identity-preserving `load_state_dict()` — and v3.4 (above) shipped the
+first concrete layer, `NativeLinear`, its backward supplied entirely by
+the existing autograd.** There is still no activation module, container,
+loss, optimizer, file serialization, or training loop — the recommended
+next milestone is **v3.5 — NativeReLU and NativeSequential** (a NativeReLU
+module over the existing `relu()`, and an ordered NativeSequential
+container with integer-string child names, forward composition, and
+state_dict compatibility — no loss, optimizer, or training loop yet);
+`divide` backward remains separate later work.
 CUDA experiments remain a separate future branch (where `device` gains a
 second value), and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation

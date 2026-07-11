@@ -578,4 +578,55 @@ input validation, strictly 2-D forward semantics initially (native
 `matmul` plus broadcast `add`), registration through assignment,
 forward/backward and finite-difference tests, and state_dict compatibility
 — no optimizer or training loop yet, and not combined with
-`NativeSequential`, activations, or losses.
+`NativeSequential`, activations, or losses. **v3.4** delivers that layer:
+`tensorforge.experimental.NativeLinear` (one new module,
+`src/tensorforge/experimental/native_linear.py`; `NativeTensor`,
+`NativeParameter`, `NativeModule`, the C++ kernels, and
+`tensorforge.nn.Linear` are all untouched). `NativeLinear(in_features,
+out_features, bias=True, *, seed=None, requires_grad=True)` validates
+every Python argument **before any native allocation** (features are real
+positive ints, bools and integer-like objects rejected; `bias` and
+`requires_grad` real bools; `seed` `None` or a real int) and creates its
+parameters by assignment — `self.weight` first, then `self.bias` (or
+`None`, leaving only `"weight"` registered) — so v3.2 registration fixes
+the deterministic `["weight", "bias"]` order across `named_parameters()`,
+`parameters()`, and `state_dict()` (nested:
+`"layer.weight"`/`"layer.bias"`). The **weight orientation is
+`(in_features, out_features)`** — the same `x @ weight` orientation as the
+stable Linear, applied directly by the strictly 2-D native matmul — with
+`(out_features,)` bias broadcast over the batch. **Initialization** is
+deterministic and self-contained: fan-in uniform on
+`[-1/sqrt(in_features), +1/sqrt(in_features)]` from a **local**
+`numpy.random.default_rng(seed)` (an int seed reproduces exact values,
+`None` draws fresh entropy, the global NumPy RNG is never touched; NumPy
+is host-side initialization data preparation only). **Forward** requires
+an open 2-D `(batch, in_features)` `NativeTensor` with matching
+dtype/device — the stable framework's `Tensor`, arrays, lists, scalars,
+closed tensors, and wrong shapes are rejected with errors naming the
+expected contract and actual shape; nothing is wrapped or reshaped — and
+computes `input.matmul(weight)` plus `add(bias)`, returning an ordinary
+`NativeTensor`. **Backward is the existing autograd** — no manual or
+fused path exists; input/weight/bias gradients (`(batch, in)`,
+`(in, out)`, `(out,)` batch-reduced by the native unbroadcast) are
+verified against exact analytical formulas and central finite differences
+(`eps=1e-6`, float64 tolerances), including no-bias, frozen-parameter
+(registered, snapshot-visible, gradient-free, requiring inputs still
+differentiated), branching, repeated fresh cycles, one-shot cleanup, and
+`retain_graph`. A tripwire test proves no NumPy compute reaches
+forward/backward. **State compatibility** follows v3.3 exactly: loads
+change values while identity, gradients, `requires_grad`, and frozen
+state survive; bias/no-bias mismatches follow the strict key rules and
+fail before mutation; shape-incompatible states fail atomically; the
+forward → backward → load-after-completion mutation boundary is unchanged
+(no version counters). Deliberately **not** shipped: `NativeSequential`,
+activation modules, losses, optimizers, training loops, serialization,
+buffers, hooks, or fused kernels. 42 focused tests
+(`tests/test_native_linear.py`, selector `-k "native_linear"`) lock the
+contract; the full suite passes at **1117 tests**. The next milestone is
+**Advanced C++ v3.5 — NativeReLU and NativeSequential**: a `NativeReLU`
+module wrapping the existing `NativeTensor.relu()`, and a
+`NativeSequential` ordered child-module container with integer-string
+child names, deterministic recursive traversal, forward composition,
+shared-module behavior, train/eval propagation, and state_dict
+compatibility (replacement/indexing only if tightly justified) — no loss,
+optimizer, or training loop yet.

@@ -909,14 +909,29 @@ is complete without it.**
   not yet the optimizer update API); a graph built before loading stays
   memory-safe and reads the newly loaded values. Verified test count at
   completion: **1075 tests** (1021 plus the 54 v3.3 state-dict tests).
-  The next milestone is **Advanced C++ v3.4 — NativeLinear**: a first
-  native layer on `NativeModule` — `NativeParameter` weight, optional
-  `NativeParameter` bias, deterministic initialization, input
-  validation, strictly 2-D forward semantics initially (native `matmul`
-  plus broadcast `add`), registration through assignment,
-  forward/backward and finite-difference tests, and state_dict
-  compatibility — **no optimizer or training loop in v3.4**.
-  `NativeSequential`, activations, losses, optimizers, and training are
-  **not** combined into one milestone; each lands only when the previous
-  is tested and documented, with the Python framework remaining the
-  reference implementation.
+  **Its fourth milestone, Advanced C++ v3.4 — NativeLinear, is
+  complete**: the first concrete native layer — a `NativeModule` with a
+  `NativeParameter` weight of shape `(in_features, out_features)` (the
+  `x @ weight` orientation) and optional `(out_features,)` bias,
+  deterministic fan-in uniform initialization from a local seeded
+  generator (global RNG untouched), full constructor validation before
+  native allocation, strictly 2-D `(batch, in_features)` input
+  validation, forward as pure existing operations
+  (`input.matmul(weight)` + broadcast `add(bias)`) so **the existing
+  autograd is the backward implementation** (no manual or fused path;
+  gradients verified analytically and by central finite differences),
+  frozen-parameter support, deterministic `["weight", "bias"]`
+  registration, and full v3.3 state-dict compatibility (identity,
+  gradients, and frozen state survive loads; bias/no-bias mismatches
+  follow the strict key rules; the forward→backward→load-after-completion
+  mutation boundary is unchanged). Verified test count at completion:
+  **1117 tests** (1075 plus the 42 v3.4 layer tests). The next milestone
+  is **Advanced C++ v3.5 — NativeReLU and NativeSequential**: a
+  `NativeReLU` module wrapping the existing `relu()`, and a
+  `NativeSequential` ordered container with integer-string child names,
+  deterministic recursive traversal, forward composition, shared-module
+  behavior, train/eval propagation, and state_dict compatibility —
+  **no loss, optimizer, or training loop in v3.5**. Losses, optimizers,
+  and training are **not** combined into one milestone; each lands only
+  when the previous is tested and documented, with the Python framework
+  remaining the reference implementation.
