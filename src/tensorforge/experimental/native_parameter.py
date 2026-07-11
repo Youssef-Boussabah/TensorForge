@@ -141,6 +141,44 @@ class NativeParameter(NativeTensor):
         super().__init__(core, owns_core=True)
         self._requires_grad = requires_grad
 
+    def _adopt_value_core(self, new_core):
+        """Internal — controlled value replacement for state-dict
+        loading (v3.3). **Not yet the optimizer update API.**
+
+        Swap this parameter's core for ``new_core`` — which must be a
+        fresh, independently owned, contiguous NativeTensorCore
+        matching this parameter's shape/dtype/device (the caller has
+        preflighted this; it is re-checked defensively so a contract
+        break cannot corrupt a parameter) — and return the previously
+        owned core. The **caller** owns the release of that returned
+        core: closing it exactly once after a fully successful commit,
+        or restoring it (``parameter._core = old_core``) on rollback.
+
+        Nothing else changes: Python identity, ``grad`` (by identity
+        and value), ``requires_grad``, leaf/graph-free state, ownership
+        (``owns_core`` stays True), and every registration keep
+        referring to this same object — only the numerical value is
+        replaced."""
+        old_core = self._require_open()
+        if not isinstance(new_core, cpp.NativeTensorCore):
+            raise TypeError(
+                f"_adopt_value_core requires a NativeTensorCore, got "
+                f"{type(new_core).__name__}"
+            )
+        if (
+            new_core.shape != old_core.shape
+            or new_core.dtype != old_core.dtype
+            or new_core.device != old_core.device
+        ):
+            raise ValueError(
+                f"_adopt_value_core metadata mismatch: parameter is "
+                f"{old_core.shape}/{old_core.dtype}/{old_core.device}, "
+                f"replacement is "
+                f"{new_core.shape}/{new_core.dtype}/{new_core.device}"
+            )
+        self._core = new_core
+        return old_core
+
     # -- parameter-ness never propagates -----------------------------------
     #
     # Every NativeTensor operation builds its result through these two

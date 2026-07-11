@@ -5,8 +5,9 @@ docs/backend_experiments.md and docs/native_autograd_design.md §19).
 ``NativeModule`` is a **Python-side organizational abstraction**: it
 holds references to ``NativeParameter`` leaves and child ``NativeModule``
 instances, and gives every future native layer (v3.4's ``NativeLinear``
-onward), state_dict (v3.3), optimizer, and training loop one
-deterministic, identity-based hierarchy contract. It performs no
+onward), optimizer, and training loop one deterministic, identity-based
+hierarchy contract — including the in-memory state-dictionary contract
+(v3.3: ``state_dict()`` / ``load_state_dict()``, parameters only). It performs no
 numerical computation itself, owns no native storage, and never closes,
 copies, or mutates what it registers — it is the native analog of
 ``tensorforge.nn.Module`` translated to the native identity/ownership
@@ -70,7 +71,15 @@ Traversal (the future state_dict/optimizer contract):
   no value equality anywhere. ``recurse=False`` restricts to direct
   parameters. ``parameters(recurse=True)`` returns the deduplicated
   parameter list an optimizer would iterate. These first-discovered
-  canonical names are exactly the keys v3.3's state_dict will use.
+  canonical names are exactly the keys ``state_dict()`` /
+  ``load_state_dict()`` use (v3.3): ``state_dict()`` snapshots each
+  unique parameter's value into an independent owning graph-free
+  ``NativeTensor``, and ``load_state_dict(state_dict, strict=True)``
+  copies values back into the existing parameter objects — atomically,
+  with strict/non-strict key handling and exact shape/dtype/device
+  validation, preserving parameter identity, gradients,
+  ``requires_grad``, and training state (see the method docstrings for
+  the full contract).
 - ``zero_grad()`` calls each unique parameter's existing
   ``zero_grad()`` (grad → ``None``; data, ``requires_grad``, and graphs
   untouched) and returns ``None``. ``train(mode=True)`` validates
@@ -80,9 +89,9 @@ Traversal (the future state_dict/optimizer contract):
   Every module starts with ``training = True``; a later mode-dependent
   layer may read the flag — none exists yet.
 - ``forward`` raises ``NotImplementedError``; calling the module
-  delegates to ``forward``. No hooks, buffers, state_dict,
-  serialization, layers, losses, optimizers, or training in this
-  milestone.
+  delegates to ``forward``. No hooks, buffers, file serialization,
+  checkpoints, optimizer state, layers, losses, optimizers, or
+  training yet.
 
 Lifetime: registries store Python references only. Removing, replacing,
 or deleting a registration never invalidates the object — external
@@ -90,10 +99,23 @@ references stay usable, and native storage is released only by the
 owner's explicit ``close()`` (there is no ``NativeModule.close()``).
 """
 
+from collections import namedtuple
+from collections.abc import Mapping
+
 from .native_parameter import (
     NativeParameter,
     NativeParameterRegistry,
     _validate_registration_name,
+)
+from .native_tensor import NativeTensor, _native_copy
+
+# What load_state_dict returns: the key-compatibility report, immutable.
+# ``missing_keys`` are canonical parameter names the input did not
+# provide (in canonical traversal order); ``unexpected_keys`` are input
+# keys no parameter answers to (in the input mapping's own order). Both
+# are always empty under a successful strict=True load.
+LoadStateDictResult = namedtuple(
+    "LoadStateDictResult", ("missing_keys", "unexpected_keys")
 )
 
 # Implementation slots of NativeModule itself. They can never be
@@ -316,6 +338,204 @@ class NativeModule:
         named_parameters() order — the identity-deduplicated traversal
         a future optimizer iterates. Returns a list."""
         return [parameter for _, parameter in self.named_parameters(recurse=recurse)]
+
+    # -- state dictionary (v3.3: in-memory, parameters only) -----------
+    #
+    # The state dictionary is the deterministic in-memory snapshot/load
+    # contract future file serialization and checkpoints will consume.
+    # This milestone's scope is parameters only: no buffers, optimizer
+    # state, training flags, RNG state, files, or archives.
+
+    def state_dict(self):
+        """An insertion-ordered ``{canonical_name: NativeTensor}``
+        snapshot of every unique parameter's current value.
+
+        Keys are exactly the v3.2 canonical ``named_parameters()``
+        names: dot-separated, direct parameters before descendants,
+        shared parameters once under their first-discovered path,
+        frozen parameters included, cycle-safe, deterministic. Values
+        are ordinary graph-free ``requires_grad=False`` NativeTensors,
+        each an **independent owning contiguous copy** (computed by the
+        native copy path — no NumPy): mutating, replacing, or closing
+        the model's parameter afterwards never affects a snapshot, and
+        closing a snapshot never affects the model — the snapshot
+        outlives the model if the caller keeps it, and the caller
+        releases it (``close()`` each value) when done. Gradients,
+        ``requires_grad``, training flags, and registrations are
+        neither included nor touched.
+
+        A closed registered parameter raises RuntimeError naming the
+        key; snapshots already built inside the failed call are closed
+        before the error propagates, so a failure never leaks native
+        memory or returns a partial mapping. Snapshots returned by
+        *earlier* calls are unaffected."""
+        state = {}
+        try:
+            for name, parameter in self.named_parameters():
+                if parameter.closed:
+                    raise RuntimeError(
+                        f"cannot snapshot parameter {name!r}: it has been "
+                        f"closed"
+                    )
+                state[name] = NativeTensor._from_core(
+                    _native_copy(parameter._require_open())
+                )
+        except BaseException:
+            for snapshot in state.values():
+                snapshot.close()
+            raise
+        return state
+
+    def load_state_dict(self, state_dict, strict=True):
+        """Load parameter values from ``state_dict`` **in place** and
+        return a ``LoadStateDictResult(missing_keys, unexpected_keys)``.
+
+        Values are copied *into* the existing NativeParameter objects —
+        never assigned over them — so every identity-derived contract
+        survives loading unchanged: ``id(parameter)``, registrations
+        and canonical names, shared-parameter aliasing (one canonical
+        key updates the single shared object once; every alias observes
+        it; a supplied alias key is *unexpected*), ``requires_grad``
+        and frozen state, leaf/graph-free status, and each parameter's
+        existing ``grad`` (by identity **and** value; ``None`` stays
+        ``None`` — loading never clears, replaces, or accumulates
+        gradients). ``training`` flags and traversal order are
+        untouched. A graph built *before* loading stays memory-safe: a
+        later backward through it reads the parameter's current
+        (newly loaded) value — the documented in-place policy.
+
+        Validation happens entirely **before** any mutation, in this
+        order: (1) ``strict`` must be a real bool; (2) ``state_dict``
+        must be a mapping (snapshotted once, so exotic mappings cannot
+        change mid-load); (3) canonical keys are taken from
+        ``named_parameters()``; (4) every provided key must be a str;
+        (5) missing/unexpected keys are computed; (6) under
+        ``strict=True`` any missing or unexpected key raises ValueError
+        reporting **both** lists; (7) every matching value must be an
+        open NativeTensor (a NativeParameter is accepted purely as a
+        value source — it is copied, and no identity or graph state is
+        inherited; ``tensorforge.Tensor``/``Parameter`` and arbitrary
+        arrays are rejected) whose shape/dtype/device exactly match the
+        open destination parameter — no broadcasting, reshaping,
+        casting, or device movement, every error naming the key; (8)
+        independent native copies of all matching values are **staged**
+        (a failure here closes the staged copies and changes nothing);
+        (9) the **commit** swaps each parameter's core for its staged
+        copy — pure reference assignments, guarded by a rollback that
+        restores every original core if anything interrupts — and only
+        after every swap succeeds are the old cores released, exactly
+        once. No failure at any stage leaves the model partially
+        updated, closes an input tensor, or invalidates existing
+        snapshots.
+
+        Under ``strict=False`` matching keys load (with the same full
+        validation and atomicity), missing parameters keep their values,
+        and unexpected keys are ignored; both lists are returned in
+        deterministic order (missing: canonical order; unexpected: the
+        input mapping's iteration order)."""
+        if not isinstance(strict, bool):
+            raise TypeError(
+                f"strict must be a bool, got {type(strict).__name__}"
+            )
+        if not isinstance(state_dict, Mapping):
+            raise TypeError(
+                f"state_dict must be a mapping, got {type(state_dict).__name__}"
+            )
+        expected = list(self.named_parameters())
+        provided_keys = list(state_dict.keys())
+        for key in provided_keys:
+            if not isinstance(key, str):
+                raise TypeError(
+                    f"state_dict keys must be str, got {type(key).__name__}"
+                )
+        provided = {key: state_dict[key] for key in provided_keys}
+        expected_names = {name for name, _ in expected}
+        missing = tuple(
+            name for name, _ in expected if name not in provided
+        )
+        unexpected = tuple(
+            key for key in provided_keys if key not in expected_names
+        )
+        if strict and (missing or unexpected):
+            raise ValueError(
+                f"state_dict keys do not match the module: "
+                f"missing {list(missing)}, unexpected {list(unexpected)}"
+            )
+
+        # Preflight every matching value completely before staging.
+        matching = [
+            (name, parameter, provided[name])
+            for name, parameter in expected
+            if name in provided
+        ]
+        for name, parameter, value in matching:
+            if not isinstance(value, NativeTensor):
+                raise TypeError(
+                    f"state_dict value for {name!r} must be a NativeTensor, "
+                    f"got {type(value).__name__}"
+                )
+            if value.closed:
+                raise RuntimeError(
+                    f"state_dict value for {name!r} has been closed"
+                )
+            if parameter.closed:
+                raise RuntimeError(
+                    f"cannot load into parameter {name!r}: it has been closed"
+                )
+            if value.shape != parameter.shape:
+                raise ValueError(
+                    f"shape mismatch for {name!r}: the module expects "
+                    f"{parameter.shape}, the state_dict value has "
+                    f"{value.shape}"
+                )
+            if value.dtype != parameter.dtype:
+                raise ValueError(
+                    f"dtype mismatch for {name!r}: the module expects "
+                    f"{parameter.dtype}, the state_dict value has "
+                    f"{value.dtype}"
+                )
+            if value.device != parameter.device:
+                raise ValueError(
+                    f"device mismatch for {name!r}: the module expects "
+                    f"{parameter.device}, the state_dict value has "
+                    f"{value.device}"
+                )
+
+        # Stage an independent owning contiguous native copy of every
+        # matching value (any strided/offset view source materializes at
+        # its logical shape). Nothing has mutated yet, so a staging
+        # failure only has staged copies to release.
+        staged = []
+        try:
+            for name, parameter, value in matching:
+                staged.append(
+                    (parameter, _native_copy(value._require_open()))
+                )
+        except BaseException:
+            for _, new_core in staged:
+                new_core.close()
+            raise
+
+        # Commit: swap every parameter's core for its staged copy.
+        # Each swap is a pure reference assignment, but the rollback
+        # guard still restores the original cores if anything (even a
+        # KeyboardInterrupt between swaps) interrupts — atomicity never
+        # relies on "the commit probably will not fail".
+        adopted = []
+        try:
+            for parameter, new_core in staged:
+                old_core = parameter._adopt_value_core(new_core)
+                adopted.append((parameter, old_core))
+        except BaseException:
+            for parameter, old_core in adopted:
+                parameter._core = old_core
+            for _, new_core in staged:
+                new_core.close()
+            raise
+        # Fully committed: release each replaced core exactly once.
+        for _, old_core in adopted:
+            old_core.close()
+        return LoadStateDictResult(missing, unexpected)
 
     # -- gradients and mode -----------------------------------------------
 

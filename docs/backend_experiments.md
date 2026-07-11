@@ -386,6 +386,106 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native training stack — native state dictionary contract (v3.3)
+
+v3.3 adds the deterministic **in-memory** model-state contract:
+`NativeModule.state_dict()` and `NativeModule.load_state_dict()`. The
+scope is deliberately narrow — **parameters only, in memory only**: no
+buffers, optimizer state, training/RNG state, file formats, archives, or
+checkpoint metadata (file serialization and checkpoints are later
+milestones that will consume this contract). No C++ changed;
+`NativeTensor` is untouched; `tensorforge.nn` is untouched.
+
+```python
+state = model.state_dict()      # {canonical_name: independent NativeTensor}
+result = model.load_state_dict(state)          # strict=True by default
+result.missing_keys, result.unexpected_keys    # immutable, deterministic
+model.load_state_dict(partial_state, strict=False)
+```
+
+**`state_dict()`** returns an insertion-ordered `dict[str, NativeTensor]`
+whose keys are exactly the v3.2 canonical `named_parameters()` names:
+dot-separated, direct parameters before descendants, **shared parameters
+once under their first-discovered path**, frozen parameters included,
+cycle-safe, deterministic across calls (an empty module returns an empty
+mapping). Every value is an ordinary **graph-free, `requires_grad=False`
+NativeTensor holding an independent owning contiguous copy**, computed by
+the native copy path (`zeros` + native `add` — no NumPy computes or
+copies state values). Snapshot and model share no mutable native storage
+in either direction: mutating, replacing, or closing a model parameter
+never affects an existing snapshot, closing a snapshot never affects the
+model, and a snapshot outlives the model if the caller keeps it (the
+caller releases snapshot values with `close()` when done). Gradients,
+`requires_grad`, training flags, aliases, and registrations are neither
+included nor touched. A closed registered parameter makes `state_dict()`
+raise clearly (naming the key) — snapshots half-built inside the failed
+call are closed before the error propagates, never returned, and earlier
+snapshots stay valid.
+
+**`load_state_dict(state_dict, strict=True)`** copies values **into the
+existing `NativeParameter` objects** — never assigning new objects — so
+every identity-derived contract survives loading: `id(parameter)`,
+registration, canonical names and traversal order, shared-parameter
+aliasing (one canonical key updates the single shared object once and
+every alias observes it; a supplied alias key is *unexpected*),
+`requires_grad`/frozen state, leaf/graph-free status, and each existing
+`grad` **by identity and value** (`None` stays `None`; loading never
+clears, replaces, or accumulates gradients — the exact-shape rule keeps
+an existing gradient compatible). `training` flags are untouched. It
+returns an immutable `LoadStateDictResult(missing_keys, unexpected_keys)`
+(missing in canonical order, unexpected in input order; both empty on a
+strict success).
+
+Validation happens **entirely before mutation**, in a documented order:
+`strict` must be a real bool (TypeError otherwise); the input must be a
+mapping (snapshotted once, so exotic mapping subclasses cannot shift
+mid-load); keys must be strings; missing/unexpected keys are computed
+and, under `strict=True`, any incompatibility raises one ValueError
+reporting **both** lists; then every matching value is preflighted — it
+must be an open `NativeTensor` (a `NativeParameter` is accepted purely as
+a value source and copied, inheriting no identity or graph state;
+`tensorforge.Tensor`/`Parameter`, arrays, lists, and scalars are rejected
+— nothing is converted silently) whose shape/dtype/device **exactly**
+match the open destination parameter, with every error naming the key.
+There is no broadcasting, reshaping, casting, truncation, partial
+copying, or device movement. **Atomicity**: independent native copies of
+all matching values are *staged* before anything changes (a staging
+failure closes the staged copies and changes nothing); the *commit* then
+swaps each parameter's core for its staged copy — pure reference
+assignments guarded by a rollback that restores every original core if
+anything interrupts — and only after every swap succeeds are the replaced
+cores released, exactly once. No failure at any stage leaves the model
+partially updated, closes an input tensor, or invalidates existing
+snapshots. Under `strict=False`, matching keys load with the same full
+validation and atomicity, missing parameters keep their values, and
+unexpected keys are ignored.
+
+The value-replacement primitive is a narrowly scoped **internal**
+`NativeParameter._adopt_value_core(new_core)` — it swaps the owned core
+(defensively re-validating metadata) and returns the old core for the
+caller to release exactly once or restore on rollback, changing nothing
+else. It exists for controlled state-dict loading and is **not yet the
+optimizer update API**. This is the framework's first in-place value
+mutation, so the graph policy is explicit: a graph built *before* loading
+stays **memory-safe** — a later backward through it reads the parameter's
+current (newly loaded) value through the normal open-core path; new
+forward graphs simply use the loaded values.
+
+Everything above is locked by `tests/test_native_state_dict.py`
+(selector: `-k "native_state_dict or load_state_dict"` — 54 new tests),
+and the full suite passes at **1075 tests**. Still `float64`/`cpu` only,
+still explicit and experimental, still no implicit dispatch and no NumPy
+compute in any native numerical, gradient, or state-copy path. The next
+milestone is **Advanced C++ v3.4 — NativeLinear**, narrowly scoped to:
+a `NativeLinear` built on `NativeModule` with a `NativeParameter` weight
+and optional `NativeParameter` bias, deterministic initialization, input
+validation, strictly 2-D forward semantics initially (native `matmul`
+plus broadcast `add`), parameter registration through assignment,
+forward/backward and finite-difference tests, and state_dict
+compatibility — **no optimizer or training loop yet** (`NativeLinear` is
+not combined with `NativeSequential`, activations, losses, optimizers, or
+training).
+
 ### Native training stack — NativeModule core and recursive registration (v3.2)
 
 v3.2 adds the module hierarchy: `NativeModule`, the base every future
@@ -1568,17 +1668,19 @@ made real. `NativeTensorCore` and the C++ kernels still own no graph
 state, and there is still no Tensor integration and no CUDA today.
 **v2.6 closed Phase B** with cross-cutting guardrail tests, and **Phase C —
 the native training stack — is now under way: v3.1 shipped
-`NativeParameter` and the parameter-registration contract, and v3.2
-(above) shipped `NativeModule` — automatic assignment registration,
-deterministic identity-deduplicated recursive traversal, recursive
-`zero_grad()`, and train/eval state propagation.** There is still no
-layer, loss, optimizer, state_dict, or training loop — the recommended
-next milestone is **v3.3 — Native State Dictionary Contract**
-(`state_dict()` / `load_state_dict()` over the v3.2 canonical dotted
-names, strict key checks, shape/dtype/device validation, value copying
-that preserves parameter identity, shared-parameter canonical naming — no
-file serialization and no optimizer state yet); `divide` backward remains
-separate later work.
+`NativeParameter` and the parameter-registration contract, v3.2 shipped
+`NativeModule` — automatic assignment registration, deterministic
+identity-deduplicated recursive traversal, recursive `zero_grad()`, and
+train/eval state propagation — and v3.3 (above) shipped the in-memory
+state dictionary contract: `state_dict()` snapshots and atomic
+identity-preserving `load_state_dict()`.** There is still no layer, loss,
+optimizer, file serialization, or training loop — the recommended next
+milestone is **v3.4 — NativeLinear** (a first native layer on
+`NativeModule`: `NativeParameter` weight, optional bias, deterministic
+initialization, strictly 2-D forward over native `matmul` + broadcast
+`add`, forward/backward/finite-difference tests, state_dict
+compatibility — no optimizer or training loop yet); `divide` backward
+remains separate later work.
 CUDA experiments remain a separate future branch (where `device` gains a
 second value), and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation

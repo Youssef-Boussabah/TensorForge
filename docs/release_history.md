@@ -526,4 +526,56 @@ the v3.2 canonical hierarchical names, strict missing/unexpected-key
 checks, shape/dtype/device validation, value copying without replacing
 `NativeParameter` identity, and shared-parameter canonical naming — no file
 serialization and no optimizer state yet (state_dict, `NativeLinear`,
-serialization, and checkpointing stay separate milestones).
+serialization, and checkpointing stay separate milestones). **v3.3**
+delivers that contract — **in-memory and parameters-only** (no buffers,
+optimizer state, training/RNG state, file formats, archives, or checkpoint
+metadata; the two source touches are `NativeModule.state_dict()`/
+`load_state_dict()` and one narrowly scoped internal
+`NativeParameter._adopt_value_core`; `NativeTensor`, the C++ kernels, and
+`tensorforge.nn` are untouched). **`state_dict()`** returns an
+insertion-ordered `{canonical_name: NativeTensor}` mapping: keys are
+exactly the v3.2 canonical `named_parameters()` names (dotted,
+direct-before-descendants, shared parameters once under their
+first-discovered path, frozen included, cycle-safe), and every value is an
+ordinary graph-free `requires_grad=False` NativeTensor holding an
+**independent owning contiguous copy** made by the native copy path (zeros
++ native add — NumPy neither computes nor copies state values). Snapshot
+and model share no storage in either direction: mutating/replacing/closing
+a parameter never affects an existing snapshot and vice versa; a closed
+registered parameter raises clearly naming the key, with half-built
+snapshots closed rather than returned. **`load_state_dict(state_dict,
+strict=True)`** copies values **into** the existing parameters — never
+assigning new objects — preserving `id(parameter)`, registration and
+canonical traversal, shared aliasing (one canonical key updates the shared
+object once; every alias observes it; a supplied alias key is unexpected),
+`requires_grad`/frozen state, gradients **by identity and value** (`None`
+stays `None`; never cleared, replaced, or accumulated), and training
+flags. Validation is entirely pre-mutation in a documented order: `strict`
+a real bool → mapping input (snapshotted once) → string keys →
+missing/unexpected computed (strict raises one ValueError reporting
+**both**; non-strict returns them in an immutable
+`LoadStateDictResult(missing_keys, unexpected_keys)`, missing in canonical
+order, unexpected in input order) → per-key preflight (open NativeTensor
+values — a NativeParameter source is accepted purely by copy;
+`tensorforge.Tensor`/`Parameter`, arrays, and scalars rejected; exact
+shape/dtype/device match with the failing key named; no
+broadcasting/reshaping/casting/device movement) → **stage** independent
+native copies (failure closes them, mutates nothing) → **commit** by
+swapping cores (pure reference assignments guarded by rollback restoring
+the original cores), releasing each replaced core exactly once only after
+full success. No failure leaves the model partially updated, closes an
+input, or invalidates existing snapshots. The internal primitive is
+documented as controlled value replacement, **not yet the optimizer update
+API**; and the first in-place mutation gets an explicit graph policy — a
+graph built before loading stays memory-safe and a later backward through
+it reads the newly loaded values. 54 focused tests
+(`tests/test_native_state_dict.py`, selector
+`-k "native_state_dict or load_state_dict"`) lock the contract; the full
+suite passes at **1075 tests**. The next milestone is **Advanced C++ v3.4 —
+NativeLinear**: a first native layer on `NativeModule` — `NativeParameter`
+weight, optional `NativeParameter` bias, deterministic initialization,
+input validation, strictly 2-D forward semantics initially (native
+`matmul` plus broadcast `add`), registration through assignment,
+forward/backward and finite-difference tests, and state_dict compatibility
+— no optimizer or training loop yet, and not combined with
+`NativeSequential`, activations, or losses.

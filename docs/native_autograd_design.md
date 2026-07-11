@@ -888,14 +888,35 @@ is complete without it.**
   unique parameter, and `train(mode)`/`eval()` propagate a
   bool-validated `training` flag — with no storage ownership and nothing
   ever closed or mutated by the module. Verified test count at
-  completion: **1021 tests** (972 plus the 49 v3.2 module tests). The
-  next milestone is **Advanced C++ v3.3 — Native State Dictionary
-  Contract**: `state_dict()` / `load_state_dict()` over the v3.2
-  canonical dotted names, deterministic hierarchical keys, strict
-  missing/unexpected-key checks, shape/dtype/device validation, value
-  copying without replacing `NativeParameter` identity, and
-  shared-parameter canonical naming — **no file serialization and no
-  optimizer state in v3.3**. `NativeLinear`, losses, optimizers, and
-  training are **not** combined into one milestone; each lands only when
-  the previous is tested and documented, with the Python framework
-  remaining the reference implementation.
+  completion: **1021 tests** (972 plus the 49 v3.2 module tests). **Its
+  third milestone, Advanced C++ v3.3 — Native State Dictionary Contract,
+  is complete**: `state_dict()` returns an insertion-ordered
+  `{canonical_name: NativeTensor}` snapshot (the v3.2 first-discovered
+  dotted keys; every value an independent owning contiguous graph-free
+  `requires_grad=False` copy made by the native copy path, sharing no
+  storage with the model in either direction), and
+  `load_state_dict(state_dict, strict=True)` copies values back **into**
+  the existing parameters atomically — strict as a real bool, mapping
+  and string-key validation, missing/unexpected keys reported together
+  under `strict=True` (returned as an immutable result under
+  `strict=False`), exact shape/dtype/device preflight naming the failing
+  key, stage-then-commit with rollback so no failure leaves the model
+  partially updated — preserving parameter identity, registration,
+  shared aliases (one canonical key updates the shared object once),
+  `requires_grad`/frozen state, gradients by identity and value, and
+  training flags. The internal primitive is
+  `NativeParameter._adopt_value_core` (controlled value replacement —
+  not yet the optimizer update API); a graph built before loading stays
+  memory-safe and reads the newly loaded values. Verified test count at
+  completion: **1075 tests** (1021 plus the 54 v3.3 state-dict tests).
+  The next milestone is **Advanced C++ v3.4 — NativeLinear**: a first
+  native layer on `NativeModule` — `NativeParameter` weight, optional
+  `NativeParameter` bias, deterministic initialization, input
+  validation, strictly 2-D forward semantics initially (native `matmul`
+  plus broadcast `add`), registration through assignment,
+  forward/backward and finite-difference tests, and state_dict
+  compatibility — **no optimizer or training loop in v3.4**.
+  `NativeSequential`, activations, losses, optimizers, and training are
+  **not** combined into one milestone; each lands only when the previous
+  is tested and documented, with the Python framework remaining the
+  reference implementation.

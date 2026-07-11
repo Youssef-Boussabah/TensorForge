@@ -209,10 +209,24 @@ The Python line is done; what remains is expansion on its own terms:
   handling, and cycle safety, plus recursive `zero_grad()` and
   bool-validated `train()`/`eval()` propagation — still with no layer,
   loss, optimizer, state_dict, or training loop, no storage ownership,
-  and `tensorforge.Tensor`/`tensorforge.nn` untouched. **The next
-  milestone is Advanced C++ v3.3 — Native State Dictionary Contract.**
-  CUDA/GPU experiments are still entirely future work. The Python
-  framework stays the reference implementation.
+  and `tensorforge.Tensor`/`tensorforge.nn` untouched. **v3.3 — Native
+  State Dictionary Contract — is implemented on top of that**: the
+  in-memory, parameters-only state contract — `state_dict()` snapshots
+  each unique parameter's value under its canonical dotted name into an
+  independent owning graph-free `NativeTensor` (shared parameters once,
+  first-discovered path wins, frozen included, no storage shared with
+  the model in either direction), and
+  `load_state_dict(state_dict, strict=True)` copies values back into the
+  existing `NativeParameter` objects atomically (full preflight
+  validation naming the failing key, strict/non-strict key handling with
+  an immutable missing/unexpected result, exact shape/dtype/device
+  matching with no casting/reshaping/broadcasting, stage-then-commit
+  with rollback) while preserving parameter identity, registration,
+  shared aliases, `requires_grad`/frozen state, gradients, and training
+  flags — still with no layer, loss, optimizer, file serialization,
+  checkpoint, or training loop. **The next milestone is Advanced C++
+  v3.4 — NativeLinear.** CUDA/GPU experiments are still entirely future
+  work. The Python framework stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -275,13 +289,24 @@ The Python line is done; what remains is expansion on its own terms:
     with deterministic depth-first order, identity deduplication,
     first-discovered canonical dotted names, shared-structure and cycle
     safety, recursive `zero_grad()`, and bool-validated
-    `train()`/`eval()` propagation — no layers, losses, optimizers,
-    state_dict, or training loop yet. **Next: v3.3 — Native State
-    Dictionary Contract** (`state_dict()`/`load_state_dict()` over the
-    v3.2 canonical names, strict missing/unexpected-key checks,
-    shape/dtype/device validation, value copying that preserves
-    `NativeParameter` identity, shared-parameter canonical naming; no
-    file serialization and no optimizer state in v3.3).
+    `train()`/`eval()` propagation. **v3.3 — Native State Dictionary
+    Contract — is complete**: in-memory, parameters-only
+    `state_dict()`/`load_state_dict()` — canonical deterministic dotted
+    keys, independent owning graph-free snapshot values (native copy
+    path, no NumPy), strict/non-strict loading with an immutable
+    missing/unexpected-keys result, exact shape/dtype/device validation,
+    stage-then-commit atomicity with rollback, and full preservation of
+    parameter identity, shared aliases, gradients, `requires_grad`, and
+    training state — no file serialization, checkpoints, optimizer
+    state, layers, losses, optimizers, or training loop yet. **Next:
+    v3.4 — NativeLinear** (a first native layer on `NativeModule`:
+    `NativeParameter` weight, optional `NativeParameter` bias,
+    deterministic initialization, input validation, strictly 2-D forward
+    semantics initially over native `matmul` plus broadcast `add`,
+    registration through assignment, forward/backward and
+    finite-difference tests, state_dict compatibility; no optimizer or
+    training loop in v3.4, and no `NativeSequential`, activations, or
+    losses combined with it).
   - **Then beyond:** the rest of the native training stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

@@ -19,8 +19,11 @@ abstraction and the minimal parameter-registration contract, and
 on them: automatic parameter/child registration through attribute
 assignment, deterministic identity-deduplicated recursive traversal,
 recursive ``zero_grad()``, and ``train()``/``eval()`` state propagation
-— no layers, losses, optimizers, state_dict, or training loop yet, and
-still fully separate from ``tensorforge.nn``.
+— plus the in-memory state dictionary contract (Advanced C++ v3.3):
+``state_dict()`` snapshots and atomic identity-preserving
+``load_state_dict()``, parameters only. No layers, losses, optimizers,
+file serialization, or training loop yet, and still fully separate from
+``tensorforge.nn``.
 
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).
