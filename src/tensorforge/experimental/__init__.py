@@ -25,9 +25,17 @@ recursive ``zero_grad()``, and ``train()``/``eval()`` state propagation
 v3.4) is the first concrete native layer: a fully connected
 ``y = x @ weight (+ bias)`` on NativeModule/NativeParameter with
 deterministic seeded initialization, strictly 2-D input semantics, and
-backward supplied entirely by the existing native autograd. No other
-layers, losses, optimizers, file serialization, or training loop yet,
-and still fully separate from ``tensorforge.nn``.
+backward supplied entirely by the existing native autograd.
+``NativeReLU`` and ``NativeSequential`` (Advanced C++ v3.5) complete
+the first composable model surface: a parameter-free activation module
+over the existing ``relu()`` autograd, and an ordered container with
+contiguous integer-string execution slots, position-based execution,
+and identity-deduplicated traversal/state. ``NativeMSELoss`` (Advanced
+C++ v3.6) is the first native loss: a parameter-free scalar
+mean/sum-reduced MSE composed from existing native operations, its
+gradients supplied entirely by the existing autograd. No optimizers,
+file serialization, or training loop yet, and still fully separate
+from ``tensorforge.nn``.
 
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).
@@ -37,6 +45,9 @@ from .native_tensor import NativeTensor
 from .native_parameter import NativeParameter, NativeParameterRegistry
 from .native_module import NativeModule
 from .native_linear import NativeLinear
+from .native_relu import NativeReLU
+from .native_sequential import NativeSequential
+from .native_mse_loss import NativeMSELoss
 
 __all__ = [
     "NativeTensor",
@@ -44,4 +55,7 @@ __all__ = [
     "NativeParameterRegistry",
     "NativeModule",
     "NativeLinear",
+    "NativeReLU",
+    "NativeSequential",
+    "NativeMSELoss",
 ]

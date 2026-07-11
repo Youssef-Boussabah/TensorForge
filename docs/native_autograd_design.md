@@ -925,13 +925,51 @@ is complete without it.**
   gradients, and frozen state survive loads; bias/no-bias mismatches
   follow the strict key rules; the forward→backward→load-after-completion
   mutation boundary is unchanged). Verified test count at completion:
-  **1117 tests** (1075 plus the 42 v3.4 layer tests). The next milestone
-  is **Advanced C++ v3.5 — NativeReLU and NativeSequential**: a
-  `NativeReLU` module wrapping the existing `relu()`, and a
-  `NativeSequential` ordered container with integer-string child names,
-  deterministic recursive traversal, forward composition, shared-module
-  behavior, train/eval propagation, and state_dict compatibility —
-  **no loss, optimizer, or training loop in v3.5**. Losses, optimizers,
-  and training are **not** combined into one milestone; each lands only
+  **1117 tests** (1075 plus the 42 v3.4 layer tests). **Its fifth
+  milestone, Advanced C++ v3.5 — NativeReLU and NativeSequential, is
+  complete**: `NativeReLU` is a parameter-free, shape-generic module
+  delegating to the existing `relu()` and its existing fused backward
+  (zero blocks, unchanged; no in-place mode), and `NativeSequential` is
+  the ordered composition container — children in contiguous
+  integer-string slots `"0"..len-1` where execution order *is* the
+  registered order (enforced at the registration funnel: replacement
+  preserves position, appends take the next index; gaps, non-slot child
+  names, direct parameters, slot removal, and self-insertion are
+  rejected), a minimal `len`/`iter`/`getitem`/`setitem`/`append`
+  surface, **position-based execution versus identity-deduplicated
+  traversal/state for shared modules** (a shared child executes once
+  per slot; ownership, state keys, train, and zero_grad visit it once
+  under the first-discovered path), empty-sequence identity forward,
+  nested composition (`"0.0.weight"`), and full v3.3 state
+  compatibility — with a Linear→ReLU→Linear model verified end to end
+  by exact analytical references and central finite differences for
+  input, weights, and biases, away from ReLU's zero boundary. Verified
+  test count at completion: **1169 tests** (1117 plus the 52 v3.5
+  tests). **Its sixth milestone, Advanced C++ v3.6 — NativeMSELoss, is
+  complete**: a parameter-free loss module composing existing
+  operations — `subtract` → `multiply(diff, diff)` → `mean`/`sum` — so
+  the existing engine supplies every gradient (duplicate-parent
+  accumulation gives the factor 2, subtract's backward the target's
+  sign, mean's existing native backward the `1/N` scaling; no division
+  needed, no manual backward). Exactly `"mean"` (default) and `"sum"`
+  reductions, both scalar; exact shape/dtype/device validation with no
+  broadcasting, checked before graph construction; empty
+  `state_dict()`; train/eval-independent; verified by exact references
+  and central finite differences for prediction and target under both
+  reductions plus an exact end-to-end
+  Linear→ReLU→Linear→MSE integration (input, all parameters, ReLU
+  mask, and target gradients). Verified test count at completion:
+  **1196 tests** (1169 plus the 27 v3.6 loss tests). The next
+  milestone is **Advanced C++ v3.7 — Native Parameter Mutation Safety
+  and Versioning Contract**: version counters on mutable native
+  parameter values, forward-time expected-version capture where
+  backward needs saved parameter values, state loading incrementing
+  versions, clear stale-forward backward errors, a controlled no-grad
+  parameter mutation primitive, the identity-preserving update
+  foundation for `NativeSGD`, and rollback/shared-parameter behavior —
+  **no optimizer and no training loop in v3.7** (it must precede
+  `NativeSGD`, because optimizer updates cannot safely mutate parameter
+  values while old graphs remain capable of backward). Optimizers and
+  training are **not** combined into one milestone; each lands only
   when the previous is tested and documented, with the Python framework
   remaining the reference implementation.

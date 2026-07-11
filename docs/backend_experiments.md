@@ -386,6 +386,205 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native training stack — NativeMSELoss (v3.6)
+
+v3.6 adds the first native loss:
+`tensorforge.experimental.NativeMSELoss`, a **parameter-free**
+`NativeModule` computing mean squared error as a pure composition of
+existing differentiable operations — no new C++ work, no fused loss
+kernel, no manual backward, and no NumPy in the analytical forward or
+backward (tripwire-tested). Deliberately **not** shipped: other losses,
+optimizers, `NativeSGD`, parameter updates, mutation-version counters,
+training loops, or serialization. `NativeTensor`, `NativeModule`, the
+existing layers, and the stable framework's `mse_loss` are all
+untouched.
+
+```python
+from tensorforge.experimental import NativeMSELoss
+
+loss_fn = NativeMSELoss()                 # reduction="mean" (default)
+loss_fn = NativeMSELoss(reduction="sum")  # the only other option
+loss = loss_fn(prediction, target)        # scalar NativeTensor, shape ()
+loss.backward()                           # existing autograd end to end
+```
+
+**Forward is exactly** `difference = prediction.subtract(target)`;
+`squared = difference.multiply(difference)`; then `squared.mean()` or
+`squared.sum()`. Both reductions are **scalar**, so the existing default
+backward seed applies (an explicit scalar upstream gradient scales both
+input gradients per the engine's normal rules). The analytical gradients
+— `dL/dprediction = 2(prediction−target)/N` and its negation for the
+target under `mean` (drop `/N` under `sum`) — are supplied entirely by
+the existing graph: `multiply`'s **duplicate-parent accumulation** on
+the shared difference node produces the factor 2, `subtract`'s backward
+produces the target's sign, and **`mean`'s existing native backward
+produces the `1/N` scaling** — no division operation exists or is
+needed. Verified by exact references (1-D, multidimensional
+total-element scaling, zero-difference, positive/negative differences,
+explicit upstream scaling, one-sided and both-frozen operands,
+branching, duplicate-parent identity in the graph) **and central finite
+differences** for prediction and target under both reductions
+(`eps=1e-6`, `atol=1e-6`).
+
+**Reduction contract** (deliberately small): exactly `"mean"` and
+`"sum"`, validated in the constructor by exact string match — case
+variants, whitespace variants, non-strings, and unsupported strings are
+rejected, nothing is normalized — and stored as constructor
+configuration, never model state. No `"none"` in this milestone: both
+supported reductions are scalar, which is sufficient for the first
+native training loop; unreduced losses belong to a later, broader loss
+API.
+
+**Input contract**: two open `NativeTensor`s (a `NativeParameter` is
+accepted as the subclass it is and accumulates native-backed gradients;
+the stable framework's `Tensor`, NumPy arrays, lists, scalars, and
+closed tensors are rejected with errors naming *which* argument is
+invalid) of **exactly equal shape — no broadcasting** (checked before
+any graph node is built, even though `subtract` could broadcast; a
+silently broadcast loss hides target-shape bugs; the error names both
+shapes), with exact dtype/device equality via the metadata contract.
+Shape-generic across every supported rank; zero-element tensors cannot
+be constructed by the native runtime (`NativeStorage` requires positive
+size), a limitation NativeMSELoss simply inherits. Inputs are never
+mutated, reshaped, cast, or copied; the module stores no temporary
+tensors and owns no storage; `state_dict()` is empty (unexpected keys
+follow the v3.3 strict/non-strict rules; `reduction` never appears);
+`training` propagates normally and never affects numerics; graph
+lifetime (one-shot, `retain_graph`, freed-history errors, unchanged
+gradients after a failed reuse) holds through the loss.
+
+**Model integration** is verified end to end against an exact reference:
+`NativeSequential(NativeLinear → NativeReLU → NativeLinear)` +
+`NativeMSELoss` produces the correct scalar loss and exact gradients for
+the input, every weight and bias (ReLU masking included), and a
+gradient-requiring target; recursive `model.zero_grad()` clears the
+model while the target's gradient stays independent; repeated fresh
+forward → loss → backward → `zero_grad` cycles reproduce bit-identical
+gradients; frozen models leave a trainable input learning. The
+v3.3–v3.5 **mutation boundary is unchanged**: parameter mutation or
+state loading between forward and backward remains mathematically
+inconsistent (no version counters yet — exactly what v3.7 addresses).
+
+Everything above is locked by `tests/test_native_mse_loss.py`
+(selector: `-k "native_mse_loss"` — 27 tests), and the full suite
+passes at **1196 tests**. Still float64/cpu only, still explicit and
+experimental. The next milestone is **Advanced C++ v3.7 — Native
+Parameter Mutation Safety and Versioning Contract**, narrowly scoped
+to: version counters on mutable native parameter values, forward-time
+expected-version capture where backward needs saved parameter values,
+state loading incrementing parameter versions, clear stale-forward
+backward errors, a controlled no-grad parameter mutation primitive, the
+identity-preserving update foundation for `NativeSGD`, and rollback and
+shared-parameter behavior — **no optimizer and no training loop yet**.
+v3.7 must precede `NativeSGD` because optimizer updates cannot safely
+mutate parameter values while old graphs remain capable of backward;
+mutation versioning is not combined with SGD.
+
+### Native training stack — NativeReLU and NativeSequential (v3.5)
+
+v3.5 completes the first composable native model surface with one
+parameter-free activation module and one ordered composition container:
+`tensorforge.experimental.NativeReLU` and
+`tensorforge.experimental.NativeSequential`. Both subclass
+`NativeModule` and compose only existing APIs — no new C++ work, no
+fused kernels, no manual backward anywhere, and no NumPy in forward or
+backward (tripwire-tested). Deliberately **not** shipped: losses,
+optimizers, training loops, serialization, mutation-version counters,
+other activations, or other layers. `NativeModule`, `NativeTensor`,
+`NativeParameter`, `NativeLinear`, and the stable framework are all
+untouched.
+
+```python
+from tensorforge.experimental import (
+    NativeLinear, NativeReLU, NativeSequential, NativeTensor,
+)
+
+model = NativeSequential(
+    NativeLinear(3, 4, seed=0),
+    NativeReLU(),
+    NativeLinear(4, 2, seed=1),
+)
+out = model(x)                     # (batch, 3) -> (batch, 2)
+out.sum().backward()               # existing autograd end to end
+model.zero_grad(); model.eval()    # inherited recursive contracts
+model.state_dict()                 # {"0.weight", "0.bias", "2.weight", "2.bias"}
+```
+
+**NativeReLU** is a parameter-free module whose `forward(input)`
+validates an open `NativeTensor` (framework `Tensor`, arrays, lists,
+scalars, and closed tensors rejected; `NativeParameter` accepted as the
+subclass it is, returning a plain `NativeTensor`) and delegates to the
+existing `NativeTensor.relu()` — **shape-generic** (every rank and
+strided/offset layout `relu()` supports), no in-place mode or `inplace`
+argument, no copies or reshapes, dtype/device preserved. Its backward is
+entirely the existing fused native relu autograd, including the existing
+gradient-at-exactly-zero rule (blocked — tested, not changed); graph
+lifetime is untouched; `state_dict()` is empty; `training` propagates
+normally but never affects numerics.
+
+**NativeSequential(*modules)** chains children registered under
+**contiguous integer-string slots** `"0"`..`"len-1"` — execution order
+*is* the registered order (a single source of truth; no separate child
+list). The constructor accepts zero or more `NativeModule`s (nested
+sequences and custom subclasses included), validates **all** entries
+before registering any, and rejects tensors, parameters, stable-framework
+modules, callables, `None`, and lists. The container surface is
+deliberately minimal: `len()`, iteration in execution order (shared
+modules **not** deduplicated — iteration mirrors execution),
+`seq[i]` with real ints (bool rejected, Python-style negatives,
+IndexError out of range, exact object returned), `seq[i] = module`
+(replacement keeps the slot's name and position), and `append(module)`
+(next contiguous slot; returns `self` for chaining). The slot invariant
+is enforced at the registration funnel, so **the registry and the
+execution order can never silently diverge**: gap-producing indices,
+non-canonical digit strings (`"01"`), non-slot child names (which would
+register a child that never executes), direct `NativeParameter`
+assignment (a sequence composes modules — parameters live in children),
+slot removal in any form (`None` assignment, ordinary-value overwrite,
+`del`, `add_module(name, None)`), and direct self-insertion are all
+rejected with clear errors; ordinary non-module attributes stay normal
+attributes. Module traversal remains cycle-safe by v3.2, but *executing*
+a deliberately cyclic composition is meaningless and unsupported.
+
+**Shared modules — the load-bearing distinction: execution is
+position-based, ownership is identity-based.** The same child in two
+slots executes twice in `forward`, while `modules()` /
+`named_modules()` / `named_parameters()` / `state_dict()` / `train()` /
+`zero_grad()` keep the v3.2/v3.3 identity-deduplicated contracts — the
+first slot is the canonical path, shared parameters appear once, and a
+duplicate alias key in a loaded state is *unexpected* under the strict
+rules.
+
+**Forward is pure composition**: each child is called through its normal
+`__call__`/`forward` contract and validates its own input (a
+`NativeLinear` slot enforces its strictly 2-D contract when reached;
+child exceptions propagate unchanged); the container adds no node, copy,
+or graph machinery of its own, and an **empty sequence returns the input
+by identity**. The composed graph is exactly the children's own autograd
+graphs, so one-shot cleanup, `retain_graph`, freed-history errors, and
+the v3.3/v3.4 mutation boundary (forward → backward → zero_grad/state
+update after graph completion) hold end to end — verified through a
+Linear→ReLU→Linear model with exact analytical references **and central
+finite differences** for the input, both weights, and both biases
+(`eps=1e-6`, `atol=1e-6`, all hidden pre-activations kept ≥ 0.1 from
+ReLU's zero boundary). State keys derive from slot names
+(`"0.weight"`, `"0.bias"`, `"2.weight"`, `"2.bias"`; nested sequences
+nest: `"0.0.weight"`; ReLU contributes none; bias-free layers omit bias
+keys), and loading preserves every v3.3 guarantee.
+
+Everything above is locked by `tests/test_native_relu.py` and
+`tests/test_native_sequential.py` (selector:
+`-k "native_relu or native_sequential"` — 52 tests), and the full suite
+passes at **1169 tests**. Still float64/cpu only, still explicit and
+experimental. The next milestone is **Advanced C++ v3.6 —
+NativeMSELoss**, narrowly scoped to: an MSE loss as a `NativeModule`
+with prediction/target `NativeTensor` validation, an exact-shape
+contract initially, the smallest justified reduction surface (scalar
+mean by default), forward composed from the existing native
+`subtract`/`multiply`/`sum`/`mean`, exact and finite-difference
+gradient tests — **no optimizer or training loop yet** (NativeMSELoss
+is not combined with SGD or model training).
+
 ### Native training stack — NativeLinear (v3.4)
 
 v3.4 adds the first concrete native layer:
@@ -1770,15 +1969,18 @@ the native training stack — is now under way: v3.1 shipped
 identity-deduplicated recursive traversal, recursive `zero_grad()`, and
 train/eval state propagation — v3.3 shipped the in-memory state
 dictionary contract: `state_dict()` snapshots and atomic
-identity-preserving `load_state_dict()` — and v3.4 (above) shipped the
-first concrete layer, `NativeLinear`, its backward supplied entirely by
-the existing autograd.** There is still no activation module, container,
-loss, optimizer, file serialization, or training loop — the recommended
-next milestone is **v3.5 — NativeReLU and NativeSequential** (a NativeReLU
-module over the existing `relu()`, and an ordered NativeSequential
-container with integer-string child names, forward composition, and
-state_dict compatibility — no loss, optimizer, or training loop yet);
-`divide` backward remains separate later work.
+identity-preserving `load_state_dict()` — v3.4 shipped the first
+concrete layer, `NativeLinear`, its backward supplied entirely by the
+existing autograd — v3.5 completed the first composable model surface
+with `NativeReLU` and `NativeSequential` — and v3.6 (above) added the
+first native loss, `NativeMSELoss`, closing the forward side of the
+training story: model → loss → backward now runs natively end to
+end.** There is still no optimizer, parameter-update primitive, file
+serialization, or training loop — the recommended next milestone is
+**v3.7 — Native Parameter Mutation Safety and Versioning Contract**
+(version counters and stale-forward errors so optimizer updates cannot
+silently corrupt backward through old graphs; the required foundation
+before `NativeSGD`); `divide` backward remains separate later work.
 CUDA experiments remain a separate future branch (where `device` gains a
 second value), and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation

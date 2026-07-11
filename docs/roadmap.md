@@ -236,11 +236,37 @@ The Python line is done; what remains is expansion on its own terms:
   existing autograd supplies backward (verified analytically and by
   central finite differences), frozen-parameter support, deterministic
   `["weight", "bias"]` registration and state-dict keys, and full v3.3
-  load compatibility — still with no activation modules, containers,
-  losses, optimizers, or training loop. **The next milestone is
-  Advanced C++ v3.5 — NativeReLU and NativeSequential.** CUDA/GPU
-  experiments are still entirely future work. The Python framework
-  stays the reference implementation.
+  load compatibility. **v3.5 — NativeReLU and NativeSequential — is
+  implemented, completing the first composable native model surface**:
+  `NativeReLU`, a parameter-free shape-generic activation module over
+  the existing native `relu()` and its existing backward, and
+  `NativeSequential`, an ordered composition container whose children
+  live in contiguous integer-string execution slots (`"0"`, `"1"`, ...)
+  where execution order is the registered order — replacement preserves
+  position, `append` takes the next slot, and gaps, non-slot child
+  names, direct parameters, slot removal, and self-insertion are
+  rejected — with position-based execution versus identity-deduplicated
+  traversal/state for shared children, empty-sequence identity forward,
+  nested composition, slot-derived state keys (`"0.weight"`,
+  `"2.bias"`, nested `"0.0.weight"`), and a Linear→ReLU→Linear model
+  verified end to end by exact references and central finite
+  differences. **v3.6 — NativeMSELoss — is implemented, closing the
+  forward side of the native training story**: a parameter-free loss
+  module composing existing native operations (`subtract` →
+  `multiply(diff, diff)` → `mean`/`sum`) into a scalar loss whose
+  gradients come entirely from the existing autograd
+  (duplicate-parent accumulation, subtract's sign split, and the
+  existing native mean backward's `1/N` — no division, no manual
+  backward), with exactly `"mean"`/`"sum"` reductions, strict
+  exact-shape/no-broadcasting validation, empty state, and exact plus
+  finite-difference verification through a full
+  Linear→ReLU→Linear→MSE chain — still with no optimizer,
+  parameter-update primitive, or training loop. **The next milestone
+  is Advanced C++ v3.7 — Native Parameter Mutation Safety and
+  Versioning Contract** (the foundation NativeSGD requires before any
+  optimizer can safely mutate parameters). CUDA/GPU experiments are
+  still entirely future work. The Python framework stays the reference
+  implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -322,13 +348,39 @@ The Python line is done; what remains is expansion on its own terms:
     finite-difference verified), frozen-parameter support, deterministic
     `["weight", "bias"]` keys, and full v3.3 state-dict compatibility —
     no losses, optimizers, containers, activations, or training loop
-    yet. **Next: v3.5 — NativeReLU and NativeSequential** (a NativeReLU
-    module wrapping the existing `NativeTensor.relu()`; a
-    NativeSequential ordered child-module container with integer-string
-    child names, deterministic recursive traversal, forward composition,
-    shared-module behavior, train/eval propagation, and state_dict
-    compatibility, with replacement/indexing only if tightly justified;
-    no loss, optimizer, or training loop in v3.5).
+    yet. **v3.5 — NativeReLU and NativeSequential — is complete**: the
+    parameter-free shape-generic `NativeReLU` over the existing native
+    relu autograd (no in-place mode), and the `NativeSequential`
+    ordered container — contiguous integer-string execution slots with
+    the registration funnel enforcing that registered children and
+    execution order never diverge (position-preserving replacement,
+    contiguous `append`, rejection of gaps, non-slot names, direct
+    parameters, slot removal, and self-insertion), a minimal
+    `len`/`iter`/indexing/`append` surface, position-based execution
+    with identity-deduplicated traversal and state for shared children,
+    empty-sequence identity forward, nested composition, and exact plus
+    finite-difference verified backward through a full
+    Linear→ReLU→Linear model. **v3.6 — NativeMSELoss — is complete**:
+    the first native loss — a parameter-free NativeModule composing
+    native `subtract`/`multiply`/`mean`/`sum` into a scalar loss (mean
+    default, sum the only alternative; exact string validation), with
+    strict exact-shape/no-broadcasting and dtype/device validation
+    before any graph construction, gradients supplied entirely by the
+    existing autograd (duplicate-parent factor 2, subtract's target
+    sign, the existing native mean backward's `1/N` — no division and
+    no manual backward), empty state, train/eval independence, and
+    exact plus finite-difference verification for both operands under
+    both reductions and through a full Linear→ReLU→Linear→MSE model —
+    no optimizer, update primitive, or training loop yet. **Next:
+    v3.7 — Native Parameter Mutation Safety and Versioning Contract**
+    (version counters on mutable native parameter values, forward-time
+    expected-version capture where backward needs saved values, state
+    loading incrementing versions, clear stale-forward backward errors,
+    a controlled no-grad mutation primitive, the identity-preserving
+    update foundation for NativeSGD, and rollback/shared-parameter
+    behavior; no optimizer and no training loop in v3.7 — it must land
+    before NativeSGD, because optimizer updates cannot safely mutate
+    parameters while old graphs remain capable of backward).
   - **Then beyond:** the rest of the native training stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,
