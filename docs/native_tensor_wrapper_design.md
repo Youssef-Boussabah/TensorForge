@@ -447,10 +447,22 @@ runtime beneath it grew:
   is a private `unbroadcast` over the native reductions; the one new
   kernel is the fused `relu_backward`, surfaced as a forward-shaped
   `NativeTensorCore.relu_backward` method — the core still records no
-  graph state. `narrow` stays outside autograd until a native scatter
-  primitive exists (v2.3). Demonstrated by
-  `examples/native_autograd_demo.py`
+  graph state. `narrow` stayed outside autograd in v2.2 until a native
+  scatter primitive existed (that primitive is v2.3, below). Demonstrated
+  by `examples/native_autograd_demo.py`
   ([native_autograd_design.md](native_autograd_design.md)).
+- **v2.3 — native narrow backward (done):** the last view op becomes
+  differentiable. `narrow(dim, start, length)` builds a graph node when
+  its parent requires grad, whose backward **scatters** the upstream
+  gradient into a fresh owning row-major contiguous zeros tensor of the
+  parent's shape at the narrowed region, via one new C++ kernel
+  `tf_core_narrow_backward` (the odometer dual of `tf_core_sum`), surfaced
+  as `NativeTensorCore.narrow_backward(dim, start, original_shape)`. The
+  gradient lives at the logical shape, so transposed, narrowed, and
+  nonzero-offset parents all work; the core still records no graph state,
+  and there is no NumPy in the gradient path. This completes the
+  view-backward set. `retain_graph` and the graph-lifetime policy are the
+  next milestone (v2.4).
 - **Later — integration decision:** only after the wrapper is complete
   and trusted in isolation, *decide whether* to design a
   `Tensor` ↔ native bridge (Stage 3 in the dispatch plan). That decision

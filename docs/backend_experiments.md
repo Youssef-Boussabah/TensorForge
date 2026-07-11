@@ -386,6 +386,60 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native autograd — narrow backward (v2.3)
+
+v2.3 makes the last view op differentiable: `narrow(dim, start, length)`
+now records a graph node when its parent requires grad. Its backward is a
+**scatter** — the adjoint of a slice — placing the upstream gradient into
+a fresh zeros tensor of the parent's shape at the narrowed region, so
+every un-narrowed position gets zero gradient and the narrowed region
+gets exactly the upstream.
+
+```python
+from tensorforge.experimental import NativeTensor
+
+x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                            requires_grad=True)
+x.narrow(1, 0, 2).sum().backward()   # keep columns 0..1, sum, differentiate
+x.grad.to_numpy()                    # [[1, 1, 0], [1, 1, 0]]
+```
+
+The scatter runs through **one new C++ kernel**, `tf_core_narrow_backward`
+— the odometer dual of `tf_core_sum`. Where a sum walks the input and
+folds many elements into one output cell through zero *write* strides, a
+narrow-backward walks the (smaller) narrowed shape and writes each
+upstream element into its own output cell: the write position advances by
+the parent's full row-major strides from a base offset that skips the
+leading `start` slabs along the narrowed dimension
+(`start * row_major_stride[dim]`). The upstream is read through its own
+shape/strides/offset, so a strided gradient works without materializing,
+and the output is fresh **owning** row-major contiguous storage — zero
+everywhere outside the window. It is surfaced as
+`NativeTensorCore.narrow_backward(dim, start, original_shape)`, a
+forward-shaped numerical method (the core and the kernels still own no
+graph state); it is not added to `list_kernels()`/`TENSOR_CORE_KERNELS`,
+matching the `tf_core_relu_backward`/`tf_core_sum` convention.
+
+Because the gradient lives at the *logical* shape, the scatter always
+allocates a fresh contiguous buffer of the parent's shape (offset 0)
+regardless of the parent's own layout — so **transposed, narrowed, and
+nonzero-offset parents** all work: each is simply a preceding graph node
+whose own backward (transpose-inverse, another narrow-scatter, …) handles
+its layout, and narrow backward only needs the immediate parent's shape.
+Nested narrows, `narrow` under `sum`/`mean`/`multiply`, and `narrow`
+feeding `transpose`/`reshape` (via `contiguous_copy`) all compose. The
+lifetime rules are unchanged: the retained contribution owns its storage,
+closing the parent or output before `backward()` raises a clear
+`RuntimeError`, repeated backward accumulates until `zero_grad()`. Rules
+are verified against an independent NumPy zero-padding reference and a
+finite-difference check (NumPy test-side only), and the CI smoke script
+hard-checks one narrow-backward pattern. This closes the view-backward
+set; `retain_graph` is still not offered (v2.4), and there is still no
+`divide` backward, no `tensorforge.Tensor` integration, no implicit
+dispatch, no optimizer/training stack, no CUDA, and no performance
+claims. Full status in
+[native_autograd_design.md](native_autograd_design.md).
+
 ### Native autograd — core backward operations (v2.2)
 
 v2.2 turns the v2.1 skeleton into a working reverse-mode engine: the
@@ -444,11 +498,12 @@ intermediate before `backward()` raises a clear `RuntimeError` (the
 graph never reads freed storage), and with no in-place arithmetic the
 forward values captured for backward stay valid for the life of the
 graph. Only leaves retain grad; repeated `backward()` accumulates until
-`zero_grad()`; `detach()` still cuts the graph. **`narrow` remains
-outside autograd** — its backward needs a native scatter primitive
-(upstream scattered into zeros of the original shape), deferred to v2.3
-rather than faked through NumPy — and `retain_graph` is still not
-offered. The rules are verified against exact analytical values and
+`zero_grad()`; `detach()` still cuts the graph. **`narrow` remained
+outside autograd in v2.2** — its backward needs a native scatter
+primitive (upstream scattered into zeros of the original shape), which
+landed in v2.3 (above) rather than being faked through NumPy — and
+`retain_graph` is still not offered. The rules are verified against exact
+analytical values and
 central finite differences (NumPy only as the test-side reference), the
 deterministic `examples/native_autograd_demo.py` shows one full native
 forward + backward (`demo()` returns NumPy copies for its tests), and
@@ -1111,20 +1166,25 @@ dtype/device metadata contract was **designed** (v1.20) and is now
 **implemented** (v1.21, float64/cpu only) — which **closes Phase A,
 the native CPU runtime, in code**. **Phase B is under way**: the native
 autograd design (v2.0) is complete, v2.1 implemented its metadata
-skeleton and reverse-topological backward driver, and **v2.2 (above)
-wires the core operations into that engine** — `add`/`subtract`/
-`multiply`/`relu`/`sum`/`mean`/`matmul`/`reshape`/`transpose`/`T`/
-`contiguous_copy` are differentiable, broadcasting backward runs through
-the native `unbroadcast` reduction, and the one new kernel is the fused
-`relu_backward`. Gradients are `NativeTensor`-backed float64/cpu and
-enforce `grad.dtype == tensor.dtype` / `grad.device == tensor.device`
-against the fields v1.21 made real. `NativeTensorCore` and the C++
-kernels still own no graph state, and there is still no Tensor
-integration, no optimizer/module layer, no native training stack, and no
-CUDA today. The next milestone is **v2.3 — Native Autograd Completion
-and Characterization**: `narrow` backward through a native scatter
-primitive, the graph-cleanup / `retain_graph` decision, autograd
-benchmark characterization, and the final Phase B guardrails. CUDA experiments remain
-a separate future branch (where `device` gains a second value), and an
-AMP / Tensor Core path is where `dtype` later gains float16/bfloat16. The
+skeleton and reverse-topological backward driver, **v2.2 wired the core
+operations into that engine** — `add`/`subtract`/`multiply`/`relu`/`sum`/
+`mean`/`matmul`/`reshape`/`transpose`/`T`/`contiguous_copy` are
+differentiable, broadcasting backward runs through the native
+`unbroadcast` reduction, and its one new kernel is the fused
+`relu_backward` — and **v2.3 (above) completes the view-backward set**
+with `narrow` backward through the native `tf_core_narrow_backward`
+scatter kernel (the odometer dual of `sum`). Gradients are
+`NativeTensor`-backed float64/cpu and enforce `grad.dtype ==
+tensor.dtype` / `grad.device == tensor.device` against the fields v1.21
+made real. `NativeTensorCore` and the C++ kernels still own no graph
+state, and there is still no Tensor integration, no optimizer/module
+layer, no native training stack, and no CUDA today. The next milestone is
+**v2.4 — Native Autograd Graph Lifetime Policy**: the graph-cleanup /
+`retain_graph` decision, defined repeated-backward behavior on the same
+graph, protection against stale callback/lifetime state, and focused
+graph-lifetime tests — no new mathematical backward operations. (Autograd
+benchmark characterization and `divide` backward remain separate later
+work.) CUDA experiments remain a separate future branch (where `device`
+gains a second value), and an AMP / Tensor Core path is where `dtype`
+later gains float16/bfloat16. The
 Python framework stays the reference implementation throughout.

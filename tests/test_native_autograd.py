@@ -1,4 +1,4 @@
-"""Tests for native autograd (Advanced C++ v2.1 + v2.2, Phase B).
+"""Tests for native autograd (Advanced C++ v2.1 + v2.2 + v2.3, Phase B).
 
 v2.1 added the autograd *surface* and *engine* to NativeTensor —
 requires_grad, grad, is_leaf, zero_grad, detach, backward — exercised
@@ -6,13 +6,15 @@ here through the internal graph constructor NativeTensor._from_op. v2.2
 wired the core differentiable operations into that engine:
 add/subtract/multiply/relu/sum/mean/matmul/reshape/transpose/T/
 contiguous_copy build graph nodes when an operand requires grad, with
-broadcasting handled on the way back by the _unbroadcast reduction. The
-per-operation sections below verify each backward rule against exact
-analytical values and, for the composite cases, central finite
-differences (NumPy is used only to compute test references — the
-gradient path itself is native). narrow stays outside autograd (needs a
-native scatter; v2.3). Native-backend tests skip when the compiled
-library is not built. See docs/native_autograd_design.md.
+broadcasting handled on the way back by the _unbroadcast reduction. v2.3
+makes narrow differentiable: its backward scatters the upstream gradient
+into a fresh zeros tensor of the parent's shape via the native
+narrow_backward kernel. The per-operation sections below verify each
+backward rule against exact analytical values and, for the composite
+cases, central finite differences (NumPy is used only to compute test
+references — the gradient path itself is native). Native-backend tests
+skip when the compiled library is not built. See
+docs/native_autograd_design.md.
 """
 
 import numpy as np
@@ -453,7 +455,7 @@ def test_forward_ops_stay_forward_only_without_requiring_inputs():
     for result in (
         a.relu(), a.add(b), a.subtract(b), a.multiply(b), a.sum(),
         a.mean(), a.matmul(b), a.reshape((4,)), a.transpose(), a.T,
-        a.contiguous_copy(),
+        a.narrow(1, 0, 1), a.contiguous_copy(),
     ):
         assert result.requires_grad is False
         assert result.is_leaf is True
@@ -481,6 +483,7 @@ def test_compute_ops_build_graphs_when_an_input_requires_grad():
         (a.matmul(b), "matmul", (a, b)),
         (a.reshape((4,)), "reshape", (a,)),
         (a.T, "transpose", (a,)),
+        (a.narrow(1, 0, 1), "narrow", (a,)),
         (a.contiguous_copy(), "contiguous_copy", (a,)),
     )
     for result, op, parents in cases:
@@ -496,15 +499,16 @@ def test_compute_ops_build_graphs_when_an_input_requires_grad():
 
 
 @needs_native
-def test_narrow_stays_outside_autograd():
-    # narrow backward needs a native scatter primitive (v2.3); until
-    # then narrow results are plain forward tensors even for requiring
-    # inputs — documented, not silently wrong math.
-    x = NativeTensor.from_array([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+def test_narrow_on_non_requiring_parent_stays_graph_free():
+    # With a non-requiring parent, narrow is still a plain forward view —
+    # no graph metadata, borrowing storage — exactly as before v2.3.
+    x = NativeTensor.from_array([[1.0, 2.0], [3.0, 4.0]])  # requires_grad False
     n = x.narrow(1, 0, 1)
     assert n.requires_grad is False
     assert n.is_leaf is True
     assert n._parents == ()
+    assert n._backward is None
+    assert n.owns_core is False  # borrowing view, unchanged
     x.close()
 
 
@@ -1271,3 +1275,367 @@ def test_leaf_operands_stay_open_and_unchanged_after_backward():
     assert a.closed is False and b.closed is False
     a.close()
     b.close()
+
+
+# ======================================================================
+# v2.3 — narrow backward
+# ======================================================================
+#
+# narrow(dim, start, length) is a view; its backward scatters the upstream
+# gradient into a fresh zeros tensor of the parent's shape at the narrowed
+# region (via the native tf_core_narrow_backward kernel). References below
+# are built with NumPy zero-padding; every gradient under test is native.
+
+
+def _narrow_reference(parent_shape, dim, start, upstream):
+    """A NumPy ``zeros(parent_shape)`` with ``upstream`` written into the
+    narrowed region — the independent reference for narrow backward."""
+    grad = np.zeros(parent_shape, dtype=np.float64)
+    index = [slice(None)] * len(parent_shape)
+    index[dim] = slice(start, start + upstream.shape[dim])
+    grad[tuple(index)] = upstream
+    return grad
+
+
+# -- basic scatter -----------------------------------------------------
+
+
+@needs_native
+def test_narrow_backward_1d():
+    x = NativeTensor.from_array([1.0, 2.0, 3.0, 4.0, 5.0], requires_grad=True)
+    seed = np.array([10.0, 20.0])
+    x.narrow(0, 1, 2).backward(gradient=NativeTensor.from_array(seed))
+    assert x.grad.shape == (5,)
+    assert np.array_equal(_grad(x), [0.0, 10.0, 20.0, 0.0, 0.0])
+    x.close()
+
+
+@needs_native
+def test_narrow_backward_2d_axis0():
+    x = NativeTensor.from_array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]],
+                                requires_grad=True)
+    seed = np.array([[7.0, 8.0], [9.0, 10.0]])
+    x.narrow(0, 0, 2).backward(gradient=NativeTensor.from_array(seed))
+    assert np.array_equal(_grad(x), _narrow_reference((3, 2), 0, 0, seed))
+    assert np.array_equal(_grad(x), [[7.0, 8.0], [9.0, 10.0], [0.0, 0.0]])
+    x.close()
+
+
+@needs_native
+def test_narrow_backward_2d_axis1():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    seed = np.array([[7.0], [8.0]])
+    x.narrow(1, 2, 1).backward(gradient=NativeTensor.from_array(seed))
+    assert np.array_equal(_grad(x), [[0.0, 0.0, 7.0], [0.0, 0.0, 8.0]])
+    x.close()
+
+
+@needs_native
+def test_narrow_backward_full_length_covers_everything():
+    # start=0, length=full: the gradient equals the upstream everywhere.
+    x = NativeTensor.from_array([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+    seed = np.array([[5.0, 6.0], [7.0, 8.0]])
+    x.narrow(0, 0, 2).backward(gradient=NativeTensor.from_array(seed))
+    assert np.array_equal(_grad(x), seed)
+    x.close()
+
+
+@needs_native
+def test_narrow_backward_length_one():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    x.narrow(1, 1, 1).sum().backward()
+    assert np.array_equal(_grad(x), [[0.0, 1.0, 0.0], [0.0, 1.0, 0.0]])
+    x.close()
+
+
+@needs_native
+def test_narrow_backward_nonzero_start_3d():
+    values = np.arange(24.0).reshape(2, 3, 4)
+    x = NativeTensor.from_array(values, requires_grad=True)
+    seed = np.arange(1.0, 9.0).reshape(2, 1, 4)
+    x.narrow(1, 2, 1).backward(gradient=NativeTensor.from_array(seed))
+    assert np.array_equal(_grad(x), _narrow_reference((2, 3, 4), 1, 2, seed))
+    x.close()
+
+
+@needs_native
+def test_narrow_backward_zeros_outside_and_equals_upstream_inside():
+    x = NativeTensor.from_array(np.arange(20.0).reshape(4, 5),
+                                requires_grad=True)
+    seed = np.array([[1.0, 2.0], [3.0, 4.0], [5.0, 6.0], [7.0, 8.0]])
+    x.narrow(1, 2, 2).backward(gradient=NativeTensor.from_array(seed))
+    g = _grad(x)
+    # Inside the [:, 2:4] window: exactly the upstream. Everywhere else: 0.
+    assert np.array_equal(g[:, 2:4], seed)
+    outside = np.ones((4, 5), dtype=bool)
+    outside[:, 2:4] = False
+    assert np.array_equal(g[outside], np.zeros(outside.sum()))
+    x.close()
+
+
+@needs_native
+def test_narrow_backward_explicit_nonscalar_gradient():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    out = x.narrow(0, 1, 1)  # (1, 3)
+    assert out.shape == (1, 3)
+    out.backward(gradient=NativeTensor.from_array([[10.0, 20.0, 30.0]]))
+    assert np.array_equal(_grad(x), [[0.0, 0.0, 0.0], [10.0, 20.0, 30.0]])
+    x.close()
+
+
+# -- autograd integration ----------------------------------------------
+
+
+@needs_native
+def test_narrow_sum_backward():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    x.narrow(1, 0, 2).sum().backward()
+    assert np.array_equal(_grad(x), [[1.0, 1.0, 0.0], [1.0, 1.0, 0.0]])
+    x.close()
+
+
+@needs_native
+def test_narrow_mean_backward():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    # mean over the (2, 2) narrowed window: 4 elements, each gets 1/4.
+    x.narrow(1, 1, 2).mean().backward()
+    assert np.allclose(_grad(x), [[0.0, 0.25, 0.25], [0.0, 0.25, 0.25]])
+    x.close()
+
+
+@needs_native
+def test_narrow_multiply_sum_backward():
+    x_vals = np.array([[1.0, -2.0, 3.0], [4.0, 5.0, -6.0]])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    # narrow -> square -> sum: grad is 2x inside the window, 0 outside.
+    n = x.narrow(1, 1, 2)
+    n.multiply(n).sum().backward()
+    expected = np.zeros((2, 3))
+    expected[:, 1:3] = 2.0 * x_vals[:, 1:3]
+    assert np.allclose(_grad(x), expected)
+    x.close()
+
+
+@needs_native
+def test_narrow_of_non_requiring_parent_contributes_no_gradient():
+    const = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # no grad
+    w = NativeTensor.from_array([[10.0, 20.0], [30.0, 40.0]], requires_grad=True)
+    sliced = const.narrow(1, 0, 2)         # (2, 2), no grad
+    sliced.multiply(w).sum().backward()
+    assert sliced.grad is None             # narrow of a constant: no grad
+    assert np.array_equal(_grad(w), [[1.0, 2.0], [4.0, 5.0]])
+    const.close()
+    w.close()
+
+
+@needs_native
+def test_narrow_backward_repeated_accumulates_and_zero_grad_resets():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    x.narrow(1, 0, 2).sum().backward()
+    x.narrow(1, 0, 2).sum().backward()
+    assert np.array_equal(_grad(x), [[2.0, 2.0, 0.0], [2.0, 2.0, 0.0]])
+    x.zero_grad()
+    x.narrow(1, 0, 2).sum().backward()
+    assert np.array_equal(_grad(x), [[1.0, 1.0, 0.0], [1.0, 1.0, 0.0]])
+    x.close()
+
+
+# -- views: narrow over / under other view ops -------------------------
+
+
+@needs_native
+def test_narrow_on_transposed_parent():
+    x_vals = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])  # (2, 3)
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    # x.T is (3, 2); narrow keeps its first 2 rows -> (2, 2).
+    x.T.narrow(0, 0, 2).sum().backward()
+    grad_xt = np.zeros((3, 2))
+    grad_xt[0:2, :] = 1.0
+    assert np.array_equal(_grad(x), grad_xt.T)  # transpose backward inverts
+    x.close()
+
+
+@needs_native
+def test_nested_narrow_backward():
+    x = NativeTensor.from_array(np.arange(20.0).reshape(4, 5), requires_grad=True)
+    # narrow rows 1..2, then cols 1..2 of that -> the x[1:3, 1:3] window.
+    inner = x.narrow(0, 1, 2).narrow(1, 1, 2)
+    seed = np.array([[1.0, 2.0], [3.0, 4.0]])
+    inner.backward(gradient=NativeTensor.from_array(seed))
+    expected = np.zeros((4, 5))
+    expected[1:3, 1:3] = seed
+    assert np.array_equal(_grad(x), expected)
+    x.close()
+
+
+@needs_native
+def test_narrow_on_nonzero_offset_parent():
+    x = NativeTensor.from_array(np.arange(15.0).reshape(3, 5), requires_grad=True)
+    # The first narrow gives a nonzero-offset parent (rows 1..2, offset 5);
+    # narrowing it again must still scatter into the right x positions.
+    rows = x.narrow(0, 1, 2)               # x[1:3], offset 5, shape (2, 5)
+    rows.narrow(1, 3, 2).sum().backward()  # cols 3..4 of that window
+    expected = np.zeros((3, 5))
+    expected[1:3, 3:5] = 1.0
+    assert np.array_equal(_grad(x), expected)
+    x.close()
+
+
+@needs_native
+def test_narrow_then_transpose_backward():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    x.narrow(1, 0, 2).T.sum().backward()  # (2, 2) window -> transpose -> sum
+    assert np.array_equal(_grad(x), [[1.0, 1.0, 0.0], [1.0, 1.0, 0.0]])
+    x.close()
+
+
+@needs_native
+def test_narrow_then_reshape_backward():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0, 4.0], [5.0, 6.0, 7.0, 8.0]],
+                                requires_grad=True)
+    # The narrowed (2, 2) view is non-contiguous, so reshape goes through a
+    # (differentiable) contiguous_copy first — narrow feeding two more views.
+    x.narrow(1, 0, 2).contiguous_copy().reshape((4,)).sum().backward()
+    assert np.array_equal(_grad(x), [[1.0, 1.0, 0.0, 0.0], [1.0, 1.0, 0.0, 0.0]])
+    x.close()
+
+
+@needs_native
+def test_narrow_backward_leaf_grad_owns_contiguous_storage():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    x.narrow(1, 1, 2).sum().backward()
+    assert x.grad.owns_core is True     # fresh owning storage, not a view
+    assert x.grad.contiguous is True    # row-major contiguous
+    assert x.grad.shape == (2, 3)
+    assert np.array_equal(_grad(x), [[0.0, 1.0, 1.0], [0.0, 1.0, 1.0]])
+    x.close()
+
+
+# -- correctness: NumPy reference and finite differences ---------------
+
+
+@needs_native
+def test_narrow_backward_matches_numpy_reference():
+    values = np.arange(24.0).reshape(4, 6)
+    x = NativeTensor.from_array(values, requires_grad=True)
+    seed = np.arange(1.0, 9.0).reshape(4, 2)
+    x.narrow(1, 3, 2).backward(gradient=NativeTensor.from_array(seed))
+    assert np.array_equal(_grad(x), _narrow_reference((4, 6), 1, 3, seed))
+    x.close()
+
+
+@needs_native
+def test_narrow_sum_matches_finite_differences():
+    values = np.array([[0.5, -1.0, 2.0, 1.0], [1.5, 0.5, -0.5, 3.0]])
+
+    def pipeline(t):
+        n = t.narrow(1, 1, 2)
+        return n.multiply(n).sum()
+
+    analytic = _backward_grad(pipeline, values)
+    numeric = _numeric_grad(lambda v: _native_scalar(pipeline, v), values)
+    assert np.allclose(analytic, numeric, atol=1e-6)
+    expected = np.zeros_like(values)
+    expected[:, 1:3] = 2.0 * values[:, 1:3]  # 2x inside, 0 outside
+    assert np.allclose(analytic, expected)
+
+
+# -- errors / lifetime -------------------------------------------------
+
+
+@needs_native
+def test_narrow_backward_closed_parent_raises():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    out = x.narrow(1, 0, 2).sum()
+    x.close()  # the narrow node borrows x's storage
+    with pytest.raises(RuntimeError, match="closed"):
+        out.backward()
+
+
+@needs_native
+def test_narrow_backward_closed_output_raises():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    out = x.narrow(1, 0, 2)
+    out.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        out.backward(gradient=NativeTensor.from_array([[1.0, 1.0], [1.0, 1.0]]))
+    x.close()
+
+
+@needs_native
+def test_narrow_backward_wrong_upstream_shape_raises():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    out = x.narrow(1, 0, 2)  # output shape (2, 2)
+    bad = NativeTensor.from_array([1.0, 2.0, 3.0])  # (3,)
+    with pytest.raises(ValueError) as excinfo:
+        out.backward(gradient=bad)
+    assert "(2, 2)" in str(excinfo.value)
+    x.close()
+    bad.close()
+
+
+@needs_native
+def test_narrow_backward_core_validates_shape_compatibility():
+    # Direct core-level check: a non-narrowed extent that disagrees with
+    # the original shape is rejected before any scatter runs.
+    upstream = cpp.NativeTensorCore.from_array([[1.0, 2.0]])  # (1, 2)
+    with pytest.raises(ValueError, match="compatible"):
+        upstream.narrow_backward(1, 0, (2, 3))  # axis-0 extent 1 != 2
+    upstream.close()
+
+
+@needs_native
+def test_narrow_backward_core_validates_bounds():
+    upstream = cpp.NativeTensorCore.from_array([[1.0, 2.0], [3.0, 4.0]])  # (2, 2)
+    with pytest.raises(ValueError, match="out of bounds"):
+        upstream.narrow_backward(1, 2, (2, 3))  # start 2 + length 2 > 3
+    upstream.close()
+
+
+@needs_native
+def test_narrow_forward_errors_unchanged_for_requiring_input():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    with pytest.raises(ValueError, match="out of bounds"):
+        x.narrow(1, 2, 5)          # start + length > size
+    with pytest.raises(ValueError, match="dim must be in"):
+        x.narrow(-1, 0, 1)         # negative dim unsupported (forward error)
+    with pytest.raises(TypeError, match="must be an int"):
+        x.narrow(0, 0.5, 1)        # non-int start
+    x.close()
+
+
+# -- isolation ---------------------------------------------------------
+
+
+@needs_native
+def test_narrow_backward_grad_is_native_not_numpy():
+    x = NativeTensor.from_array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+                                requires_grad=True)
+    x.narrow(1, 0, 2).sum().backward()
+    assert isinstance(x.grad, NativeTensor)
+    assert not isinstance(x.grad, np.ndarray)
+    assert x.grad.dtype == x.dtype == "float64"
+    assert x.grad.device == x.device == "cpu"
+    x.close()
+
+
+@needs_native
+def test_narrow_backward_leaves_parent_open_and_unchanged():
+    x_vals = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+    x = NativeTensor.from_array(x_vals, requires_grad=True)
+    x.narrow(1, 0, 2).sum().backward()
+    assert x.closed is False
+    assert np.array_equal(x.to_numpy(), x_vals)  # forward value untouched
+    x.close()

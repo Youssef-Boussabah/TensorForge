@@ -361,6 +361,56 @@ TF_EXPORT void tf_core_sum(
     delete[] counter;
 }
 
+// Narrow's backward: scatter an upstream gradient into a zero output —
+// the odometer dual of tf_core_sum. Where a sum walks the input and folds
+// many elements into one output cell through zero WRITE strides, a
+// narrow-backward walks the (smaller) narrowed shape and places each
+// upstream element into its own output cell: the output write position
+// advances by out_strides (the row-major strides of the FULL parent shape,
+// none reduced) from a base out_offset that skips the leading `start` slabs
+// along the narrowed dimension (out_offset = start * row_major_stride[dim]).
+// The upstream is read through its own shape/strides/offset, so a strided
+// gradient works without materializing. dst is fresh zero-initialized
+// storage of the parent shape; each upstream element maps to exactly one
+// distinct cell (narrow regions never overlap), so a plain assignment is
+// correct and every un-narrowed cell keeps its zero. Deterministic
+// row-major (upstream) order; no SIMD/FMA. Python chooses the shapes,
+// strides, and offsets.
+TF_EXPORT void tf_core_narrow_backward(
+    const void* upstream_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* u_strides, const int64_t* out_strides,
+    int64_t u_offset, int64_t out_offset, int64_t ndim
+) {
+    const double* upstream = static_cast<const TfStorage*>(upstream_handle)->data;
+    double* dst = static_cast<TfStorage*>(dst_handle)->data;
+    if (ndim == 0) {  // scalar upstream: one element at the base offset
+        dst[out_offset] = upstream[u_offset];
+        return;
+    }
+    int64_t total = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        total *= shape[d];
+    }
+    int64_t* counter = new int64_t[ndim]();
+    int64_t u_pos = u_offset;
+    int64_t out_pos = out_offset;
+    for (int64_t i = 0; i < total; ++i) {
+        dst[out_pos] = upstream[u_pos];
+        for (int64_t d = ndim - 1; d >= 0; --d) {
+            ++counter[d];
+            u_pos += u_strides[d];
+            out_pos += out_strides[d];
+            if (counter[d] < shape[d]) {
+                break;
+            }
+            counter[d] = 0;
+            u_pos -= shape[d] * u_strides[d];
+            out_pos -= shape[d] * out_strides[d];
+        }
+    }
+    delete[] counter;
+}
+
 // Materialize a strided view of the storage into a contiguous output
 // buffer — the canonical tensor-runtime loop. The logical indices are
 // walked like an odometer (last dimension fastest, i.e. row-major

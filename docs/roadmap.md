@@ -144,14 +144,23 @@ The Python line is done; what remains is expansion on its own terms:
   reduction, sum/mean broadcast their upstream back natively, and the one
   new C++ kernel is the fused `relu_backward` — with every rule verified
   against finite differences and a deterministic native demo
-  (`examples/native_autograd_demo.py`). `NativeTensorCore` and the C++
-  kernels still own no graph state, and `narrow` backward waits on a
-  native scatter primitive. The next recommended milestone is **Advanced
-  C++ v2.3 — Native Autograd Completion and Characterization** (narrow
-  backward via scatter, the graph-cleanup/`retain_graph` decision,
-  autograd benchmark characterization, final Phase B polish). CUDA/GPU
-  experiments are still entirely future work. The Python framework stays
-  the reference implementation.
+  (`examples/native_autograd_demo.py`). **v2.3 — Native Narrow Backward —
+  is now implemented**, completing the view-backward set: `narrow(dim,
+  start, length)` builds a graph node when its parent requires grad, and
+  its backward **scatters** the upstream gradient into a fresh owning
+  row-major contiguous zeros tensor of the parent's shape at the narrowed
+  region (un-narrowed positions stay zero) through the one new C++ kernel
+  `tf_core_narrow_backward`, the odometer dual of `tf_core_sum`. The
+  gradient lives at the logical shape, so transposed, narrowed, and
+  nonzero-offset parents all differentiate correctly, and there is no
+  NumPy in the gradient path; `NativeTensorCore` and the C++ kernels still
+  own no graph state. The next recommended milestone is **Advanced C++
+  v2.4 — Native Autograd Graph Lifetime Policy** (the
+  graph-cleanup/`retain_graph` decision, defined repeated-backward
+  behavior on the same graph, protection against stale callback/lifetime
+  state, and focused graph-lifetime tests — no new backward math).
+  CUDA/GPU experiments are still entirely future work. The Python
+  framework stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -173,10 +182,15 @@ The Python line is done; what remains is expansion on its own terms:
     multiply, relu (one new fused kernel), sum, mean, matmul,
     reshape/transpose/T, contiguous_copy, and broadcasting backward via a
     native `unbroadcast`, finite-difference-verified, with a
-    deterministic native autograd demo. Next is **v2.3 — native autograd
-    completion and characterization** (narrow backward through a native
-    scatter primitive, the graph-cleanup/`retain_graph` decision, and
-    autograd benchmarks).
+    deterministic native autograd demo; and **v2.3 implemented native
+    narrow backward** — the scatter that was v2.2's one deferral — through
+    a second new fused kernel (`tf_core_narrow_backward`, the odometer dual
+    of `sum`), completing the view-backward set with transposed / narrowed
+    / nonzero-offset parents all handled. Next is **v2.4 — native autograd
+    graph lifetime policy** (the graph-cleanup/`retain_graph` decision,
+    defined repeated-backward behavior, protection against stale
+    callback/lifetime state, and focused graph-lifetime tests — no new
+    backward math).
   - **Then beyond:** a native training stack, the CUDA runtime
     (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

@@ -26,9 +26,11 @@ graph nodes when an operand requires grad (plain forward tensors
 otherwise, exactly as before), with broadcasting handled on the way
 back by an ``unbroadcast`` reduction. Backward math runs entirely on
 native forward kernels at the ``NativeTensorCore`` level — building no
-graph of its own and never touching NumPy. ``narrow`` stays outside
-autograd (its backward needs a native scatter primitive; deferred to
-v2.3). See docs/native_autograd_design.md.
+graph of its own and never touching NumPy. As of v2.3, ``narrow`` is
+differentiable too: its backward **scatters** the upstream gradient into
+a fresh zeros tensor of the parent's shape via the native
+``narrow_backward`` kernel (the one new C++ kernel this milestone adds),
+completing the view-backward set. See docs/native_autograd_design.md.
 
 A note on mutation: there are no in-place user arithmetic operations,
 so the forward values the graph captures for backward (e.g. the
@@ -553,16 +555,33 @@ class NativeTensor:
         storage (``owns_core`` is False). Out-of-bounds arguments raise
         ValueError; non-int arguments raise TypeError.
 
-        **Not differentiable yet**: narrow's backward must scatter the
-        upstream gradient into zeros of the original shape (un-narrowed
-        positions get zero gradient), which needs a native scatter
-        primitive the runtime does not have — deferred to the v2.3
-        autograd-completion milestone rather than faked through NumPy.
-        The result is always a plain forward tensor.
+        Differentiable (v2.3): the backward **scatters** the upstream
+        gradient into a fresh zeros tensor of this tensor's shape at the
+        narrowed region (un-narrowed positions get zero gradient), via the
+        native ``narrow_backward`` scatter kernel — no NumPy. The retained
+        contribution is fresh owning contiguous storage; the parent's own
+        layout is irrelevant because the gradient lives at the logical
+        shape.
         """
-        return self._from_core(
-            self._require_open().narrow(dim, start, length), owns_core=False
-        )
+        out_core = self._require_open().narrow(dim, start, length)  # validates
+        if not self._requires_grad:
+            return self._from_core(out_core, owns_core=False)
+        # narrow's forward has already validated dim/start/length; capture
+        # the normalized dim and start for the scatter (length is recovered
+        # from the upstream's extent, and the original shape is read live so
+        # a closed parent raises rather than reading freed layout).
+        narrowed_dim = int(dim)
+        narrowed_start = int(start)
+
+        def _backward(upstream):
+            original_shape = self._require_open().shape
+            contribution = upstream._require_open().narrow_backward(
+                narrowed_dim, narrowed_start, original_shape
+            )
+            self._accumulate_grad(NativeTensor._from_core(contribution))
+
+        return self._from_op(out_core, (self,), _backward, "narrow",
+                             owns_core=False)
 
     def contiguous_copy(self):
         """A new **owning** NativeTensor with the same values in

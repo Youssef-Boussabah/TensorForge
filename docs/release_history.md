@@ -312,10 +312,35 @@ differences** (NumPy only as the test-side reference), a deterministic
 demo (`examples/native_autograd_demo.py`) runs
 `x.matmul(w).add(b).relu().mean()` natively end to end with broadcast
 bias gradients, and the CI smoke script hard-checks one scalar-loss
-backward. **`narrow` backward is deferred** until a native scatter
-primitive exists, `retain_graph` is still not offered, and there is no
+backward. **`narrow` backward is deferred to v2.3** (it needs a native
+scatter primitive), `retain_graph` is still not offered, and there is no
 `tensorforge.Tensor` integration, no optimizer/module layer, no CUDA, and
-no performance claims. The next step is v2.3 — native autograd completion
-and characterization (narrow backward via scatter, the
-graph-cleanup/`retain_graph` decision, autograd benchmarks, final Phase B
-polish).
+no performance claims. **v2.3** delivers that scatter and makes **`narrow`
+differentiable**, completing the view-backward set. When its parent
+requires grad, `narrow(dim, start, length)` builds a graph node whose
+backward **scatters** the upstream gradient into a fresh owning row-major
+contiguous zeros tensor of the parent's shape at the narrowed region —
+un-narrowed positions stay zero, the narrowed region equals the upstream.
+The **one new C++ kernel** is `tf_core_narrow_backward`, the odometer dual
+of `tf_core_sum`: where a sum folds many inputs into one cell through zero
+write-strides, a narrow-backward writes each input into its own cell at
+the parent's full row-major strides from a `start`-shifted base offset. It
+reads the upstream through its own strides/offset (so strided gradients
+need no materialization), is surfaced as
+`NativeTensorCore.narrow_backward(dim, start, original_shape)`, and — like
+`relu_backward`/`sum` — is not added to `list_kernels()`. Because the
+gradient lives at the logical shape, the scatter output is always fresh
+contiguous storage of the parent's shape, so **transposed, narrowed, and
+nonzero-offset parents all differentiate correctly** (each is a preceding
+node whose own backward handles its layout); nested narrows and `narrow`
+under `sum`/`mean`/`multiply`/`transpose`/`reshape` all compose. Rules are
+verified against an independent NumPy zero-padding reference and a
+finite-difference check (NumPy test-side only), and the CI smoke script
+hard-checks one narrow-backward pattern. `NativeTensorCore` and the C++
+kernels still own no graph state; there is no `divide` backward, no
+`retain_graph`, no `tensorforge.Tensor` integration, no optimizer/module
+layer, no CUDA, and no performance claims. The next step is **v2.4 —
+native autograd graph lifetime policy** (the graph-cleanup/`retain_graph`
+decision, defined repeated-backward behavior, protection against stale
+callback/lifetime state, and focused graph-lifetime tests — no new
+mathematical backward operations).

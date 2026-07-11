@@ -90,6 +90,13 @@ def main():
     assert leaf.grad.to_numpy().tolist() == [[2.0, -4.0], [6.0, 8.0]]
     leaf.close()
 
+    # Native narrow backward (v2.3): summing a single-column slice scatters
+    # the gradient back, so dx is 1 in that column and 0 elsewhere.
+    sliced = NativeTensor.from_array([[1.0, 2.0], [3.0, 4.0]], requires_grad=True)
+    sliced.narrow(1, 1, 1).sum().backward()
+    assert sliced.grad.to_numpy().tolist() == [[0.0, 1.0], [0.0, 1.0]]
+    sliced.close()
+
     print("cpp backend smoke ok")
 
 

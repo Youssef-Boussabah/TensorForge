@@ -27,10 +27,21 @@ metadata; §1).
 > level — the core and the C++ kernels remain autograd-unaware and own no
 > graph state. `contiguous_copy` backward is the identity (the forward is
 > an elementwise logical copy, and a gradient lives at the logical shape,
-> so §9's inverse-layout concern does not arise); **`narrow` backward
-> remains deferred** until a native scatter primitive exists (§9), and
-> `retain_graph` is still not offered (§7.1). Verified against exact
-> analytical values and finite differences; demonstrated by
+> so §9's inverse-layout concern does not arise). **v2.3 completes the
+> view-backward set with `narrow` backward** (§9): a graph node when the
+> parent requires grad, whose backward **scatters** the upstream gradient
+> into a fresh zeros tensor of the parent's shape at the narrowed region
+> via the one new C++ kernel `tf_core_narrow_backward` — the odometer dual
+> of `tf_core_sum` (a sum folds many inputs into one cell through zero
+> write-strides; a narrow-backward writes each input into its own cell at
+> the parent's full row-major strides from a `start`-shifted base offset).
+> Because the gradient lives at the logical shape, the scatter output is
+> always fresh owning row-major contiguous storage, so transposed,
+> narrowed, and nonzero-offset parents all work (each is a preceding node
+> whose own backward handles its layout). `retain_graph` is still not
+> offered (§7.1), and the graph-lifetime policy is the v2.4 milestone.
+> Verified against exact analytical values, an independent NumPy
+> zero-padding reference, and finite differences; demonstrated by
 > `examples/native_autograd_demo.py`. The sections below remain the
 > design of record.
 
@@ -463,8 +474,12 @@ starts with same-shape operands (no broadcasting), and v2.3 adds
   positions get zero gradient). **Missing kernel note:** the runtime has
   no scatter/pad primitive; this needs either a new `tf_core_scatter`-style
   kernel or an allocate-zeros-then-copy-into-a-narrowed-view step (which
-  needs a native *copy-into-view* the runtime also lacks). So **`narrow`
-  backward is deferred** until that primitive is designed.
+  needs a native *copy-into-view* the runtime also lacks). So `narrow`
+  backward was deferred at v2.2 and **implemented in v2.3** as
+  `tf_core_narrow_backward` — the smallest such primitive (a focused
+  scatter walking the narrowed shape, writing each upstream element to the
+  parent's full row-major stride from a `start`-shifted base offset; the
+  odometer dual of `tf_core_sum`). See the status note at the top.
 - **`contiguous_copy()` backward** → pass `grad` back to the original view
   layout. A `contiguous_copy` materializes a (possibly strided) view into
   a fresh contiguous buffer; its backward must map the contiguous
@@ -479,7 +494,12 @@ ops and no new kernel), and **defers `narrow`/`contiguous_copy`** until a
 native scatter/copy-into-view primitive is designed. This keeps v2.x
 tight and avoids inventing a kernel under autograd pressure. View
 lifetimes and shared storage follow §5.5 — a view's backward references
-its parent, which the graph keeps alive.
+its parent, which the graph keeps alive. *(As implemented:
+`contiguous_copy` backward landed in v2.2 as the identity — the forward
+is an elementwise logical copy and gradients live at the logical shape,
+so the strided-source concern above never arises — and `narrow` backward
+landed in v2.3 via `tf_core_narrow_backward`, the focused scatter above,
+completing the view-backward set.)*
 
 ## 10. dtype / device rules
 

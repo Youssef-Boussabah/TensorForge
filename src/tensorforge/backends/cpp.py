@@ -204,6 +204,14 @@ def _load_library():
     library.tf_core_sum.restype = None
     library.tf_storage_scale.argtypes = [ctypes.c_void_p, ctypes.c_double]
     library.tf_storage_scale.restype = None
+    # Narrow backward (v2.3): scatter the upstream gradient into a fresh
+    # zero output of the parent shape. Same odometer as tf_core_sum plus a
+    # base output offset (start * row-major stride of the narrowed axis).
+    library.tf_core_narrow_backward.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array, i64_array,
+        ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
+    ]
+    library.tf_core_narrow_backward.restype = None
     return library
 
 
@@ -974,6 +982,72 @@ class NativeTensorCore:
         )
         new_offset = self.offset + start * self.strides[dim]
         return self._view_core(new_shape, self.strides, new_offset)
+
+    def narrow_backward(self, dim, start, original_shape):
+        """Scatter this upstream gradient into a fresh zero tensor of
+        ``original_shape``, placing each element at its narrowed logical
+        position — the adjoint of ``narrow(dim, start, length)``, where
+        ``length`` is this gradient's own extent along ``dim``.
+
+        A forward-shaped numerical method, not graph machinery — the core
+        stays autograd-unaware; the NativeTensor layer calls this from its
+        narrow backward closure (``self`` is the upstream gradient there,
+        the data being scattered). This gradient may be a strided view (it
+        is read through its own strides/offset); the result is a new
+        **owning** row-major contiguous NativeTensorCore of
+        ``original_shape``, zero everywhere outside the narrowed region and
+        carrying this gradient's dtype/device. No NumPy touches the data.
+
+        Validates the scatter arguments the way ``narrow`` validates its
+        forward ones: ``dim`` a non-bool int in ``[0, ndim)``, ``start``
+        non-negative, the gradient's rank equal to the original rank, its
+        non-``dim`` extents equal to the original's, and
+        ``start + length <= original_shape[dim]``."""
+        self._require_open()
+        original = _as_shape(original_shape)  # validates positive-int dims
+        ndim = len(original)
+        for name, value in (("dim", dim), ("start", start)):
+            if not isinstance(value, (int, np.integer)) or isinstance(value, bool):
+                raise TypeError(f"{name} must be an int, got {value!r}")
+        dim = int(dim)
+        start = int(start)
+        if not 0 <= dim < ndim:
+            raise ValueError(f"dim must be in [0, {ndim}), got {dim}")
+        if self.ndim != ndim:
+            raise ValueError(
+                f"narrow_backward gradient rank {self.ndim} does not match "
+                f"the original rank {ndim} (shape {original})"
+            )
+        length = self.shape[dim]
+        if start < 0 or start + length > original[dim]:
+            raise ValueError(
+                f"narrow_backward(dim={dim}, start={start}, length={length}) "
+                f"is out of bounds for dimension size {original[dim]}"
+            )
+        for axis in range(ndim):
+            if axis != dim and self.shape[axis] != original[axis]:
+                raise ValueError(
+                    f"narrow_backward gradient shape {self.shape} is not "
+                    f"compatible with original shape {original} along axis "
+                    f"{axis}"
+                )
+        out = NativeTensorCore.zeros(original, dtype=self.dtype, device=self.device)
+        # The gradient lives at the logical shape, so the output is always a
+        # fresh row-major contiguous buffer (offset 0) regardless of the
+        # narrowed parent's own layout. Each narrowed axis maps 1:1 to the
+        # same output axis, so the write-strides are just the parent's full
+        # row-major strides; the base offset skips the leading `start` slabs.
+        out_full = row_major_strides(original)
+        out_offset = start * out_full[dim]
+        self._storage._lib.tf_core_narrow_backward(
+            self._storage._require_open(),
+            out._storage._require_open(),
+            np.asarray(self.shape, dtype=np.int64),
+            np.asarray(self.strides, dtype=np.int64),
+            np.asarray(out_full, dtype=np.int64),
+            self.offset, out_offset, self.ndim,
+        )
+        return out
 
     # -- lifetime -------------------------------------------------------
 
