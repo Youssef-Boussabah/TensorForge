@@ -1,14 +1,27 @@
 # Native support matrix
 
-The canonical statement of what the **experimental native C++ CPU
-line** supports today, as of Advanced C++ v3.14 (native checkpointing
-and deterministic file resume). The stable Python framework's features (see
+The canonical, authoritative statement of what the **experimental
+native C++ CPU line** supports today, as of Advanced C++ v3.15 —
+**Phase C (the native training stack) is complete**, closing the
+Phase A (native CPU runtime) → Phase B (native autograd) → Phase C
+arc in code. The stable Python framework's features (see
 [architecture.md](architecture.md)) are **not** listed here — a feature
 appears as supported only if the native stack itself provides it.
 Everything below is float64/cpu only, explicit, and experimental; see
 [backend_experiments.md](backend_experiments.md) for the full story and
 [native_autograd_design.md](native_autograd_design.md) for the autograd
 design.
+
+**Phase status.** Phase A — **complete** (runtime, ownership, shapes/
+strides/offsets/views, broadcasting, reductions, float64/cpu metadata).
+Phase B — **complete** (Python-managed reverse-mode autograd, graph
+lifetime, view and broadcasting gradients, parameter-version
+stale-graph safety). Phase C — **complete** (parameters, modules,
+Linear/ReLU/Sequential, MSE loss, `sqrt`/`reciprocal` optimizer
+primitives, SGD, Adam, optimizer state snapshots, checkpoint files,
+deterministic training and in-memory/file resume, and the failure/
+lifetime/ownership guardrails). The next major native phase is the
+**native CNN stack**, which has not started.
 
 ## Runtime and metadata
 
@@ -85,8 +98,8 @@ in the stable Python framework — that does not make them native.
 - scheduler state, random-state capture/restoration, or dataloader
   state in native checkpoints; `map_location`, partial or name-remapped
   loading, checkpoint merging, sharding, compression, or encryption
-- weight decay, AMSGrad, parameter groups, per-parameter learning
-  rates, or schedulers on the native optimizers
+- weight decay, AdamW, AMSGrad, parameter groups, per-parameter
+  learning rates, or schedulers on the native optimizers
 - native `Conv2d`, `MaxPool2d`, `Flatten`, or any CNN stack
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP

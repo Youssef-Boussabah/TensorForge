@@ -1218,6 +1218,55 @@ round-trip/validation, the locked archive schema, atomic overwrite
 and failure cleanup, the corruption matrix with recovery, presence/
 compatibility/shared-parameter behavior, the bit-identical Adam file
 resume, a NumPy tripwire, and source-level security guardrails) lock
-the contract; the full suite passes at **1353 tests**. The next
-milestone is **Advanced C++ v3.15 — Phase C guardrails and
-completion**.
+the contract; the full suite passes at **1353 tests**. **v3.15** is the
+**Phase C completion milestone** — native training stack guardrails and
+hardening — which **closes Phase C in code**, completing the Phase A →
+Phase B → Phase C arc, and adds **no numerical behavior** (no new
+operations, kernels, layers, losses, or optimizer features, and no
+source change to the native compute stack). It delivers one
+cross-cutting completion test file (`tests/test_native_phase_c.py`,
+selector `-k "native_phase_c"` — 10 integrated tests) that complements
+the per-component suites by locking the invariants that span several
+components at once: the full NativeSGD and NativeAdam training
+lifecycles under a NumPy tripwire (finite loss, meaningful reduction,
+version deltas equal to the active update count, graph-free
+independently-owned optimizer state, and `close()` releasing only
+optimizer-owned moments while the model stays trainable); the
+shared-parameter story end to end (one `NativeParameter` through two
+registered aliases and two forward paths, verified to be one entry
+across module registration, backward accumulation, both optimizers,
+state snapshots, and checkpoints, with an alias-preserving restore
+whose continuation matches bit for bit); mixed
+active/frozen/`grad=None`/zero-gradient collections and late parameter
+activation; repeated optimizer-state and checkpoint-resume cycles (old
+internal state closed after replacement, no caller snapshot aliasing
+any live storage, no parameter version moved by optimizer loading, and
+bit-identical two-lineage continuation); failure recovery at the
+step-staging, state-load-staging, checkpoint-save, and
+checkpoint-corruption boundaries (each leaving values, versions,
+moments, counters, and gradients unchanged, temporaries and temporary
+files cleaned up, and a later valid operation succeeding); the
+four-way graph-staleness distinction (an optimizer step and a
+model-state load make an old value-sensitive graph stale; an
+optimizer-state load and a *failed* checkpoint load do not; a
+*successful* checkpoint restoration does — gradients untouched whenever
+the detector raises); lifetime/close discipline with no reliance on
+garbage collection; and the public surface (exactly the twelve
+intentional `tensorforge.experimental` exports, no leak into the stable
+namespace, no optimizer base class, no checkpoint leak into stable
+serialization, no unsupported optimizer feature, and no native CNN or
+CUDA/dtype surface). It also finalizes the
+[native support matrix](native_support_matrix.md) as the authoritative
+Phase A–C snapshot, marks Phase C complete across the README, project
+summary, architecture doc, roadmap, and design doc, and adds
+documentation guardrails (`tests/test_docs.py`) preventing Phase C from
+silently reverting to "in progress" and preventing optimizer state or
+file resume from being described as future work — with CI, `.gitignore`,
+the examples, and the benchmark audited and found already correct (no
+change needed). The full suite passes at **1365 tests** (1353 plus the
+10 cross-cutting completion tests and 2 new documentation guardrails).
+**Phase C is complete.** The next major
+native phase is the **native CNN stack** (`NativeConv2d`,
+`NativeMaxPool2d`, `NativeFlatten`), which has not started, followed by
+the CUDA runtime, dtype/AMP work, Transformer/text experiments,
+distributed training, and the final portfolio release.

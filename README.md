@@ -71,7 +71,7 @@ reached explicitly through `tensorforge.experimental` and
   `transpose`/`T`, `narrow`, `contiguous_copy`), broadcasting and view
   gradients, a native scatter backward for `narrow`, one-shot graph
   release with `retain_graph` opt-in, and failure rollback.
-- **Native training stack (Phase C, in progress)**: `NativeParameter`
+- **Native training stack (Phase C, complete)**: `NativeParameter`
   (value versioning and a controlled mutation path with stale-graph
   detection), `NativeModule` with atomic `state_dict`/
   `load_state_dict`, `NativeLinear`, `NativeReLU`, `NativeSequential`,
@@ -212,15 +212,19 @@ Honest expectations:
 ## Status
 
 **v3.0 — the stable Python framework line is complete**, covered by the
-test suite and documented. **The advanced branch has reached its first
-major native checkpoint (Advanced C++ v3.10)**: Phase A (native CPU
-runtime) and Phase B (native autograd) are complete, and Phase C (the
-native training stack) has shipped parameters, modules, state
-dictionaries, Linear/ReLU/Sequential, MSE loss, SGD, parameter
-versioning with stale-graph safety, and an end-to-end deterministic MLP
-training proof — 1264 tests pass. CUDA/GPU experiments have not
-started and remain future work. See [docs/roadmap.md](docs/roadmap.md)
-and [docs/release_history.md](docs/release_history.md).
+test suite and documented. **The advanced branch has completed Phase C
+of its native line (Advanced C++ v3.15)**: Phase A (native CPU runtime),
+Phase B (native autograd), and Phase C (the native training stack) are
+all complete. Phase C shipped parameters, modules, state dictionaries,
+Linear/ReLU/Sequential, MSE loss, parameter versioning with stale-graph
+safety, `sqrt`/`reciprocal` optimizer primitives, SGD and adaptive Adam,
+in-memory optimizer state snapshots, pickle-free native checkpoint files,
+end-to-end deterministic MLP training, and deterministic in-memory and
+file resume — with cross-cutting failure, lifetime, and ownership
+guardrails. The full suite passes at 1365 tests. The next major native
+phase is the CNN stack; CUDA/GPU experiments have not started. Both
+remain future work. See [docs/roadmap.md](docs/roadmap.md) and
+[docs/release_history.md](docs/release_history.md).
 
 TensorForge is a from-scratch look at how a deep learning framework
 works under the hood — not a PyTorch replacement. Start reading at

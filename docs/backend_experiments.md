@@ -386,6 +386,90 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native training stack — guardrails and Phase C completion (v3.15)
+
+v3.15 is the **Phase C completion milestone**: a hardening,
+integration, verification, and documentation pass that **adds no
+numerical behavior** — no new operations, kernels, layers, losses, or
+optimizer features, and no source change to the native compute stack.
+It closes **Phase C — the native training stack — in code**, completing
+the Phase A → Phase B → Phase C arc.
+
+What it delivered:
+
+- **One cross-cutting completion test file**
+  (`tests/test_native_phase_c.py`, selector `-k "native_phase_c"` — 10
+  integrated tests) that complements rather than duplicates the
+  per-component suites (`test_native_sgd`/`adam`/`optimizer_state`/
+  `checkpoint`/...). Each test spans several components and locks an
+  invariant no single unit test covers: the full **NativeSGD** and
+  **NativeAdam** training lifecycles under a NumPy tripwire (finite
+  loss, meaningful reduction, version deltas equal to the active
+  update count, graph-free independently-owned optimizer state,
+  `close()` releasing only optimizer-owned moments while the model
+  stays trainable); the **shared-parameter** story end to end (one
+  `NativeParameter` through two registered aliases and two forward
+  paths → one `parameters()` entry, one `state_dict` key, accumulated
+  backward, one SGD update, one Adam moment pair and counter, one
+  optimizer-snapshot entry, one checkpoint entry, and an
+  alias-preserving restore whose continuation matches bit for bit);
+  **mixed active/frozen/`grad=None`/zero-gradient** collections across
+  both optimizers (active and present-zero-gradient parameters advance
+  version/counter, frozen and gradient-less ones never age, a frozen
+  parameter's closed/invalid gradient is never inspected, and a
+  later-activated parameter takes its correct first or resumed step);
+  **repeated optimizer-state** and **checkpoint-resume** cycles (old
+  internal state closed after replacement, no caller snapshot aliasing
+  any live storage, no parameter version moved by optimizer loading,
+  and bit-identical two-lineage continuation); **failure recovery** at
+  the step-staging, state-load-staging, checkpoint-save, and
+  checkpoint-corruption boundaries (each leaving values, versions,
+  moments, counters, and gradients unchanged, temporaries and
+  temporary files cleaned up, and a later valid operation succeeding);
+  the **four-way graph-staleness distinction** (an optimizer step and a
+  model-state load make an old value-sensitive graph stale; an
+  optimizer-state load and a *failed* checkpoint load do not; a
+  *successful* checkpoint restoration does — with gradients untouched
+  whenever the stale detector raises); **lifetime/close discipline**
+  (caller-owned model and optimizer snapshots, optimizer-owned
+  moments, idempotent close, no reliance on garbage collection); and
+  the **public surface** (exactly the twelve intentional
+  `tensorforge.experimental` exports, no leak into the stable
+  namespace, no optimizer base class, no checkpoint leak into stable
+  serialization, no unsupported optimizer feature, no native CNN or
+  CUDA/dtype surface).
+- **Documentation completion**: this page, the README, the project
+  summary, the architecture doc, the roadmap, the release history, and
+  the design doc all mark Phase C **complete**; the
+  [native support matrix](native_support_matrix.md) is finalized as the
+  authoritative Phase A–C snapshot with an explicit phase-status
+  header; and the documentation guardrails (`tests/test_docs.py`) gain
+  checks that Phase C can never silently revert to "in progress", that
+  the README keeps presenting native training and checkpointing, and
+  that optimizer state and file resume are never described as future
+  work — while CNN and CUDA stay in the unsupported/future sections.
+- **Audits with no change needed**: CI already builds the backend from
+  source every run, hard-fails the smoke check before pytest, and runs
+  the full suite (so the native tests execute rather than skip);
+  `.gitignore` already covers the compiled library, caches, and build
+  output; the examples (`native_mlp_training.py`,
+  `native_checkpoint_resume.py`) use only public APIs, close what they
+  own, and leave no artifacts (the checkpoint example writes into a
+  self-cleaning temporary directory); the benchmark remains a
+  characterization with no speed assertion and still runs after Phase
+  C. No genuine correctness defect was found — nothing blocks the
+  completion.
+
+The verified suite stands at **1365 tests** (1353 plus the 10
+cross-cutting completion tests and 2 new documentation guardrails).
+Phase A, Phase B, and **Phase C are complete**; the
+next major native phase is the **native CNN stack** (`NativeConv2d`,
+`NativeMaxPool2d`, `NativeFlatten`), which has not started, followed by
+the CUDA runtime, dtype/AMP work, Transformer/text experiments,
+distributed training, and the final portfolio release. Still
+float64/cpu only, still explicit and experimental, and no production
+performance is claimed.
+
 ### Native training stack — checkpoint files and deterministic resume (v3.14)
 
 v3.14 makes native training runs **persistable**:
@@ -2724,11 +2808,14 @@ optimizer math primitives: differentiable native `sqrt` and
 `reciprocal` through kernels → core → wrapper → autograd, with
 saved-forward-result backwards that record no parameter versions and
 IEEE float64 exceptional-value semantics — the reusable math NativeAdam
-needs.** Phase C continues from here: v3.12 — NativeAdam, v3.13 —
+needs.** Phase C then completed: v3.12 — NativeAdam, v3.13 —
 native optimizer state, v3.14 — native checkpointing and deterministic
-resume, v3.15 — Phase C guardrails and completion; a general `divide`
-operation remains deliberately unshipped (`reciprocal` + `multiply`
-compose what the stack needs).
+file resume, and **v3.15 — native training stack guardrails and Phase C
+completion** (the integrated completion test suite, documentation
+completion, and build/CI/hygiene verification), which **closes Phase C
+in code**. A general `divide` operation remains deliberately unshipped
+(`reciprocal` + `multiply` compose what the stack needs). The next
+major native phase is the **native CNN stack**, which has not started.
 CUDA experiments remain a separate future branch (where `device` gains a
 second value), and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation

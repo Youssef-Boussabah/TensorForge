@@ -54,6 +54,9 @@ src/tensorforge/
     native_sequential.py NativeSequential
     native_mse_loss.py   NativeMSELoss
     native_sgd.py        NativeSGD
+    native_adam.py       NativeAdam (persistent moment state)
+    native_optimizer_state.py  optimizer state_dict schema helpers
+    native_checkpoint.py save/load_native_checkpoint (pickle-free NPZ)
 cpp/                 C++ kernel sources + build.py (nothing compiled
                      is checked in; CI builds from source)
 examples/            runnable training scripts (stable + native)
@@ -132,13 +135,19 @@ explicit layer at a time:
   `narrow`), one-shot graph release with `retain_graph` opt-in, and
   failure rollback. Backward math runs at the core level, so the graph
   never leaks into C++.
-- **The native training stack** builds on that: `NativeParameter`
-  (graph-free trainable leaves with value versioning, a controlled
-  mutation path, and stale-graph detection), `NativeModule`
+- **The native training stack (Phase C, complete)** builds on that:
+  `NativeParameter` (graph-free trainable leaves with value versioning,
+  a controlled mutation path, and stale-graph detection), `NativeModule`
   (registration by assignment, recursive traversal, atomic in-memory
   `state_dict`/`load_state_dict`), `NativeLinear` / `NativeReLU` /
-  `NativeSequential`, `NativeMSELoss`, and `NativeSGD` — proven end to
-  end by `examples/native_mlp_training.py`.
+  `NativeSequential`, `NativeMSELoss`, `NativeSGD` and the adaptive
+  `NativeAdam` (persistent native moment state, per-parameter bias
+  correction, explicit `close()` lifetime), in-memory optimizer
+  `state_dict`/`load_state_dict`, and pickle-free native checkpoint
+  files (`save_native_checkpoint`/`load_native_checkpoint`) with
+  deterministic in-memory and file resume — proven end to end by
+  `examples/native_mlp_training.py` and
+  `examples/native_checkpoint_resume.py`.
 
 The execution path for a native training step is:
 

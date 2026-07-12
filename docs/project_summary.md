@@ -63,8 +63,8 @@ ctypes-loaded C++ kernels. **Phase B (native autograd) is complete** —
 a Python-managed reverse-mode graph over autograd-unaware kernels,
 with fourteen differentiable operations (the v3.11 optimizer math
 primitives sqrt and reciprocal included), view/broadcast gradients, and a
-defined graph lifetime. **Phase C (the native training stack) is in
-progress** and already trains end to end: `NativeParameter` (value
+defined graph lifetime. **Phase C (the native training stack) is
+complete** and trains end to end: `NativeParameter` (value
 versioning, stale-graph safety), `NativeModule` with atomic state
 dictionaries, `NativeLinear`/`NativeReLU`/`NativeSequential`,
 `NativeMSELoss`, `NativeSGD`, `NativeAdam` (persistent native moment
@@ -81,13 +81,16 @@ dispatch. The exact per-operation status lives in the
 
 ## Testing and reliability (both lines)
 
-1353 pytest tests cover every feature of both lines: known-value
+1365 pytest tests cover every feature of both lines: known-value
 checks against hand-computed math, finite-difference gradient
 verification (stable and native), exact resume-equivalence tests for
 checkpointing, NumPy-tripwire tests proving the native paths never
-fall back, and guardrail tests keeping docs, examples, and the public
-API from drifting. Native tests skip cleanly when the backend is not
-built; CI builds it from source and runs everything.
+fall back, cross-cutting Phase C integration guardrails (shared/frozen/
+late-active parameters, failure recovery at every boundary, graph-
+version interactions, and lifetime discipline), and guardrail tests
+keeping docs, examples, and the public API from drifting. Native tests
+skip cleanly when the backend is not built; CI builds it from source
+and runs everything.
 
 ## Current limitations
 
@@ -107,10 +110,9 @@ the native line milestone by milestone (v1.x runtime, v2.x autograd,
 v3.1–v3.9 training stack) to its first major checkpoint, v3.10, then
 the optimizer math primitives (v3.11), the adaptive NativeAdam
 optimizer (v3.12), the in-memory optimizer state contract (v3.13),
-and native checkpoint files with deterministic file resume (v3.14).
-Next on the native line: Phase C
-guardrails and completion — then
-the native CNN stack, the CUDA runtime, dtype/AMP work, and
-Transformer/text and distributed experiments. See
-[roadmap.md](roadmap.md) and [release_history.md](release_history.md)
-for the full arc.
+native checkpoint files with deterministic file resume (v3.14), and
+the Phase C guardrails-and-completion milestone (v3.15) — which
+**closes Phase C**. Next on the native line: the native CNN stack,
+then the CUDA runtime, dtype/AMP work, and Transformer/text and
+distributed experiments. See [roadmap.md](roadmap.md) and
+[release_history.md](release_history.md) for the full arc.

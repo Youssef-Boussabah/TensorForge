@@ -333,10 +333,21 @@ The Python line is done; what remains is expansion on its own terms:
   presence/type matching, atomic temporary-file replacement,
   deterministic bit-identical file resume
   (`examples/native_checkpoint_resume.py`), and no scheduler or
-  random-state capture and no `map_location`. Phase C is **not**
-  complete; the intended sequence continues with
-  **v3.15 — Phase C guardrails and completion**,
-  then the native CNN stack, the CUDA runtime, dtype/AMP work,
+  random-state capture and no `map_location`. **v3.15 — Phase C
+  guardrails and completion — is complete, closing Phase C in code**:
+  a cross-cutting completion test suite (`tests/test_native_phase_c.py`)
+  locks the integrated invariants that span several components — full
+  NativeSGD and NativeAdam training lifecycles under a NumPy tripwire,
+  the shared-parameter story end to end (registration → backward
+  accumulation → optimizers → snapshots → checkpoints), mixed
+  active/frozen/`grad=None`/zero-gradient collections, late parameter
+  activation, repeated optimizer-state and checkpoint-resume cycles,
+  failure recovery at every boundary, the four-way graph-staleness
+  distinction, lifetime/close discipline, and the public surface — plus
+  documentation completion, the finalized support matrix, and
+  build/CI/hygiene verification, with **no new numerical behavior**.
+  Phase C is **complete**; the intended sequence continues with
+  the native CNN stack, the CUDA runtime, dtype/AMP work,
   Transformer/text experiments, distributed training, and the final
   portfolio release. CUDA/GPU experiments are still entirely future
   work. The Python framework stays the reference implementation.
@@ -381,7 +392,7 @@ The Python line is done; what remains is expansion on its own terms:
     safety, kernel-registry boundary, benchmark mode contract), the final
     Phase B support matrix, and the explicit divide-backward decision
     (deferred beyond Phase B), adding no operation, kernel, or optimization.
-  - **Phase C — native training stack (under way).** **v3.1 —
+  - **Phase C — native training stack (complete).** **v3.1 —
     NativeParameter and Parameter Registration Contract — is complete**: a
     `NativeParameter` subclass of `NativeTensor` whose instances are
     always graph-free owning leaves with validated `requires_grad`
@@ -555,8 +566,17 @@ The Python line is done; what remains is expansion on its own terms:
     resume example. No scheduler state, random-state
     capture/restoration, `map_location`, partial loading, merging,
     sharding, compression, or encryption.
-    **Next: v3.15 — Phase C guardrails and completion.**
-  - **Then beyond:** the rest of the native training stack, the CUDA
+    **v3.15 — Phase C guardrails and completion — is complete,
+    closing Phase C**: a cross-cutting completion test file
+    (`tests/test_native_phase_c.py`) proving the components compose
+    correctly under normal training, shared/frozen/`grad=None`/
+    zero-gradient parameters, late activation, repeated snapshot/load
+    and checkpoint-resume cycles, failure and corruption at every
+    boundary, explicit native lifetime management, and the four-way
+    stale-graph distinction; documentation completion and support-
+    matrix finalization; and build/CI/hygiene verification — no new
+    numerical behavior.
+  - **Then beyond (not started):** the native CNN stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,
     distributed / DDP, and a final benchmark / profiling / docs polish

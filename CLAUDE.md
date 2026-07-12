@@ -8,10 +8,12 @@ framework internals, inspired by Daedalus ML but not a copy. It was
 developed milestone by milestone (v0.1 … v3.0), each one small,
 tested, and readable. The Python framework line is complete as of
 v3.0; work continues on advanced branches (the experimental C++
-backend is underway; CUDA experiments are future work). Position the
-project as serious and systems-focused — never "educational", "toy",
-or "mini" — while staying honest: not production-ready, not a PyTorch
-replacement.
+native line has completed Phase A — CPU runtime, Phase B — native
+autograd, and Phase C — the native training stack, through Advanced
+C++ v3.15; the native CNN stack and CUDA experiments are future work).
+Position the project as serious and systems-focused — never
+"educational", "toy", or "mini" — while staying honest: not
+production-ready, not a PyTorch replacement.
 
 ## Tech stack
 

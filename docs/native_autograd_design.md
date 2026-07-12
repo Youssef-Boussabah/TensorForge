@@ -855,7 +855,8 @@ is complete without it.**
   wrapper/ctypes overhead per mode, carry no speed assertions, and make no
   cross-framework claims.
 
-- **Phase C — native training stack: under way.** Its first milestone,
+- **Phase C — native training stack: complete** (v3.1 → v3.15). Its
+  first milestone,
   **Advanced C++ v3.1 — NativeParameter and Parameter Registration
   Contract, is complete**: `NativeParameter` is a `NativeTensor` subclass
   whose instances are always graph-free owning leaves (construction copies
@@ -1175,9 +1176,29 @@ is complete without it.**
   capture/restoration, dataloader state, partial or name-remapped
   loading, `map_location`, merging/sharding/compression/encryption,
   or pickle in any form. Verified test count at completion: **1353
-  tests** (1336 plus the 17 v3.14 tests).
-  The next milestone is **Advanced C++ v3.15 — Phase C guardrails and
-  completion**.
+  tests** (1336 plus the 17 v3.14 tests). **Its fifteenth and final
+  Phase C milestone, Advanced C++ v3.15 — native training stack
+  guardrails and Phase C completion, is complete**: a cross-cutting
+  completion test file (`tests/test_native_phase_c.py`) that
+  complements the per-component suites by locking the **integrated**
+  invariants spanning several components — full SGD and Adam training
+  lifecycles under a NumPy tripwire; the shared-parameter story end to
+  end (one object through registration, backward accumulation, both
+  optimizers, state snapshots, and checkpoints); mixed
+  active/frozen/`grad=None`/zero-gradient collections and late
+  parameter activation; repeated optimizer-state and checkpoint-resume
+  cycles; failure recovery at the step, state-load, checkpoint-save,
+  and checkpoint-load boundaries; the four-way graph-staleness
+  distinction (optimizer step and model-state load make an old
+  value-sensitive graph stale; optimizer-state load and a failed
+  checkpoint load do not; a successful checkpoint restoration does);
+  and lifetime/close discipline — together with documentation
+  completion, support-matrix finalization, and build/CI/hygiene
+  verification, adding **no operation, kernel, layer, or optimizer
+  feature**. This **closes Phase C in code**; the next major native
+  phase is the **native CNN stack**, which has not started. Verified
+  test count at completion: **1365 tests** (1353 plus the 10
+  cross-cutting completion tests and 2 new documentation guardrails).
   Optimizers and training are **not** combined into
   one milestone; each lands only when the previous is tested and
   documented, with the Python framework remaining the reference
