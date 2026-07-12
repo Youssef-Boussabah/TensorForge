@@ -914,7 +914,51 @@ stability, exact-equality determinism, hand-driven gradient lifecycle,
 cross-iteration accumulation control, the stale-graph guard, a NumPy
 tripwire over a full training run, a source-level contract guardrail,
 and the executable report) lock the proof; the full suite passes at
-**1262 tests**. The next milestone is **Advanced C++ v3.10 —
-NativeAdam**: a second native optimizer with per-parameter adaptive
-state, committed through the same v3.7 mutation contract; the training
-proof stays SGD-based.
+**1262 tests**. **v3.10** is the **Native CPU Training Stack
+Integration Checkpoint** — the branch's first major usable native
+training checkpoint and its merge-readiness milestone, adding **no
+numerical behavior** (no new operations, kernels, layers, losses, or
+optimizer features; no native-source, CI, export, or .gitignore
+changes were needed). It corrected every stale public claim found in
+the audit: the README no longer says "no C++ backend yet" or that the
+experiment merely "started" — it now presents the stable NumPy line
+and the experimental native line side by side, with a native
+capability section, a verified native quickstart, and honest
+limitations (float64/cpu only, no CUDA, no dtype promotion, no native
+CNN stack, no adaptive native optimizer, no native optimizer
+state/checkpointing, no dispatch into `tensorforge.Tensor`, no
+universal speed claims); docs/project_summary.md and
+docs/architecture.md now cover both lines, including the native
+execution path (Python native modules → NativeTensor + Python-managed
+graph → NativeTensorCore → ctypes → C++ CPU kernels) and the absolute
+engine separation. One canonical
+**[native support matrix](native_support_matrix.md)** now states the
+exact supported surface — runtime/metadata and lifetime rules, all
+twelve differentiable operations, the autograd guarantees
+(broadcast/view/scatter backwards, graph release, `retain_graph`,
+stale-version detection, rollback), and the full training stack
+through the MLP proof — and the exact unsupported/future list (no
+native divide/sqrt/reciprocal/exp/log/tanh/sigmoid/softmax, NativeAdam
+planned as v3.12, no optimizer state or checkpoints, no native
+Conv2d/MaxPool2d/Flatten, no CUDA, no float32/float16/bfloat16 or AMP,
+no Transformers or distributed training, no Tensor integration).
+Documentation guardrails were added or corrected in tests/test_docs.py:
+the inverted README check (it must *never again* claim the backend is
+absent, and must keep marking CUDA as future), support-matrix coverage
+and unsupported-section honesty checks, an experimental-export lock
+(exactly the nine intentional names, proven not to leak into the
+stable top-level namespace), and a precision fix exempting the literal
+`NativeAdam` from the roadmap's shipped-features-as-future ban (the
+stable framework's Adam stays banned). Audits confirming no change was
+needed: CI already builds the backend from source each run, hard-fails
+`scripts/smoke_cpp_backend.py` before pytest, and runs the full suite;
+`.gitignore` already covers the compiled library, caches, and build
+output; the experimental exports were already complete. Full suite at
+the checkpoint: **1264 tests**. Phase A and Phase B are complete;
+**Phase C deliberately is not** — the intended sequence is **v3.11 —
+native optimizer math primitives**, **v3.12 — NativeAdam**, **v3.13 —
+native optimizer state**, **v3.14 — native checkpointing and
+deterministic resume**, and **v3.15 — Phase C guardrails and
+completion**, followed by the native CNN stack, the CUDA runtime,
+dtype/AMP work, Transformer/text experiments, distributed training,
+and the final portfolio release.

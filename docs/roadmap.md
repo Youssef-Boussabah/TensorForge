@@ -288,10 +288,22 @@ The Python line is done; what remains is expansion on its own terms:
   a fresh graph every iteration, one version increment per parameter
   per step, stable identities, explicit lifetime handling, and a
   monotonic 99.5% loss reduction, all bit-reproducible across runs.
-  **The next milestone is Advanced C++ v3.10 — a second native
-  optimizer with per-parameter adaptive state** over the same mutation
-  contract. CUDA/GPU experiments are still entirely future work. The
-  Python framework stays the reference implementation.
+  **v3.10 — the integration checkpoint — is complete**: the branch's
+  first major usable native training checkpoint, adding no numerical
+  behavior — honest README/summary/architecture presentation of both
+  framework lines, the canonical
+  [native support matrix](native_support_matrix.md), documentation and
+  export guardrails, and CI/repository-hygiene audits — leaving
+  `advanced/cpp-backend` ready for its first pull request into `main`
+  after validation. Phase C is **not** complete at this checkpoint;
+  the intended sequence continues with **v3.11 — native optimizer math
+  primitives, v3.12 — NativeAdam, v3.13 — native optimizer state,
+  v3.14 — native checkpointing and deterministic resume, v3.15 —
+  Phase C guardrails and completion**, then the native CNN stack, the
+  CUDA runtime, dtype/AMP work, Transformer/text experiments,
+  distributed training, and the final portfolio release. CUDA/GPU
+  experiments are still entirely future work. The Python framework
+  stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -440,9 +452,14 @@ The Python line is done; what remains is expansion on its own terms:
     end-of-run tensor release, a NumPy-compute tripwire over a full
     run, and a monotonic deterministic loss trajectory (2.107864 →
     0.009529, a 99.5% reduction) that repeats bit-identically.
-    **Next: v3.10 — a second native optimizer with per-parameter
-    adaptive state**, committed through the same v3.7 mutation
-    contract; the training proof stays SGD-based.
+    **v3.10 — the integration checkpoint — is complete**: no numerical
+    changes — the canonical support matrix, corrected README/summary/
+    architecture docs, documentation/export guardrails, and CI and
+    hygiene audits, marking the first major usable native training
+    checkpoint and PR readiness. **Next: v3.11 — native optimizer math
+    primitives**, then v3.12 — NativeAdam, v3.13 — native optimizer
+    state, v3.14 — native checkpointing and deterministic resume, and
+    v3.15 — Phase C guardrails and completion.
   - **Then beyond:** the rest of the native training stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

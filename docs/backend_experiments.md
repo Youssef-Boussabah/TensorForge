@@ -386,6 +386,58 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native training stack — integration checkpoint (v3.10)
+
+v3.10 is the **first major native CPU training checkpoint** — an
+integration, documentation, CI-audit, and public-surface milestone
+that adds **no numerical behavior**: no new operations, kernels,
+layers, losses, or optimizer features, and no source change to the
+native stack. It prepares `advanced/cpp-backend` for its first
+reviewable pull request into `main`.
+
+What it delivered:
+
+- **One canonical [native support matrix](native_support_matrix.md)**
+  stating exactly what the native line supports (runtime/metadata, the
+  twelve differentiable operations, the autograd engine's guarantees,
+  the training stack) and exactly what it does not (no native divide/
+  sqrt/reciprocal/exp/log/tanh/sigmoid/softmax, no adaptive optimizer,
+  no optimizer state or checkpointing, no native CNN stack, no CUDA,
+  float64/cpu only, no dispatch into the stable Tensor) — linked from
+  the README, project summary, and architecture docs.
+- **README, project summary, and architecture corrections**: the
+  README no longer claims "no C++ backend yet" or that the experiment
+  merely "started" — it now presents both lines honestly, with a
+  native capability section, a native quickstart, and an accurate
+  limitations section; docs/architecture.md documents the native
+  execution path (Python native modules → NativeTensor + Python-managed
+  graph → NativeTensorCore → ctypes → C++ CPU kernels) and the absolute
+  stable/native separation; docs/project_summary.md covers both lines
+  in two minutes.
+- **Documentation guardrails** (tests/test_docs.py): the README can
+  never again claim the native backend is absent while still being
+  required to mark CUDA as future work; the support matrix must keep
+  covering the shipped surface and keep unshipped work in its
+  unsupported section; the experimental exports are locked to the nine
+  intentional names and proven never to leak into the stable top-level
+  namespace.
+- **Audits with no change needed**: CI already builds the backend from
+  source every run, hard-fails a smoke check before pytest, and runs
+  the full suite (so native tests execute rather than skip);
+  `.gitignore` already covers the compiled library, caches, and build
+  directories; the experimental exports were already complete and
+  intentional. No genuine defect was found — nothing blocks the PR.
+
+The verified suite stands at **1264 tests** (1262 plus the net new
+documentation/export guardrails). Phase A and Phase B are complete;
+**Phase C is *not* complete at this checkpoint** — it continues with
+v3.11 (native optimizer math primitives), v3.12 (NativeAdam), v3.13
+(native optimizer state), v3.14 (native checkpointing and
+deterministic resume), and v3.15 (Phase C guardrails and completion),
+followed by the native CNN stack, the CUDA runtime, dtype/AMP work,
+Transformer/text experiments, distributed training, and the final
+portfolio release.
+
 ### Native training stack — the MLP training proof (v3.9)
 
 v3.9 is the first complete multi-iteration **native CPU training
@@ -2252,11 +2304,15 @@ commits them through `copy_value_`, plus `zero_grad()` — and v3.9
 (above) completed **the first end-to-end native CPU training proof**:
 a deterministic 25-step MLP regression whose loss falls monotonically
 by 99.5%, built entirely from fresh per-iteration graphs over the
-existing stack.** There is still no file serialization for the native
-stack — the recommended next milestone is **v3.10 — NativeAdam** (a
-second native optimizer with per-parameter adaptive state over the
-same mutation contract); `divide` backward remains separate later
-work.
+existing stack — and v3.10 (above) is the integration checkpoint:
+honest README/summary/architecture presentation, the canonical
+[native support matrix](native_support_matrix.md), documentation and
+export guardrails, and CI/hygiene audits, making the branch ready for
+its first pull request into `main`.** Phase C continues from here:
+v3.11 — native optimizer math primitives, v3.12 — NativeAdam, v3.13 —
+native optimizer state, v3.14 — native checkpointing and deterministic
+resume, v3.15 — Phase C guardrails and completion; `divide` backward
+remains separate later work.
 CUDA experiments remain a separate future branch (where `device` gains a
 second value), and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation

@@ -21,6 +21,7 @@ DOCS = (
     "native_dtype_device_metadata_design.md",
     "native_autograd_design.md",
     "native_autograd_benchmarks.md",
+    "native_support_matrix.md",
 )
 
 EXAMPLE_FILES = (
@@ -71,9 +72,12 @@ def test_all_example_files_are_documented():
 def test_roadmap_does_not_list_shipped_features_as_future():
     text = (REPO_ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
     # Split at the future-work heading; shipped features must not appear
-    # in the future section.
+    # in the future section. "NativeAdam" is exempted by name: the
+    # *native* adaptive optimizer genuinely is future work (v3.12),
+    # while the stable framework's Adam stays banned as future work.
     future = text.split("## Practical next steps", 1)[1]
     future = future.split("## What this project is not", 1)[0]
+    future = future.replace("NativeAdam", "")
     shipped_features = (
         "Dropout",
         "BatchNorm",
@@ -96,10 +100,77 @@ def test_project_summary_covers_the_essentials():
         assert topic in text, f"docs/project_summary.md does not mention {topic!r}"
 
 
-def test_readme_marks_backends_as_future_work():
+def test_readme_presents_backends_accurately():
+    """As of the Advanced C++ v3.10 checkpoint the native C++ CPU line
+    exists and trains end to end, and CUDA still does not: the README
+    must not regress to claiming the backend is absent or merely
+    started, and must keep marking CUDA as future work."""
     readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    assert re.search(r"no C\+\+ backend yet", readme, re.IGNORECASE)
-    assert re.search(r"no CUDA backend yet", readme, re.IGNORECASE)
+    assert not re.search(r"no C\+\+ backend yet", readme, re.IGNORECASE), (
+        "README claims the C++ backend does not exist; the native line "
+        "shipped in Phases A-C"
+    )
+    assert re.search(r"no CUDA backend\s+yet", readme, re.IGNORECASE), (
+        "README must keep marking CUDA as future work"
+    )
+    # The native line's presence must be stated, not implied.
+    for term in ("NativeTensor", "NativeSGD", "native_mlp_training.py",
+                 "native_support_matrix.md", "tensorforge.experimental"):
+        assert term in readme, f"README does not present {term!r}"
+
+
+def test_native_support_matrix_is_canonical_and_honest():
+    """The support matrix must cover the shipped native surface and
+    keep unshipped work in its unsupported section."""
+    text = (REPO_ROOT / "docs" / "native_support_matrix.md").read_text(
+        encoding="utf-8"
+    )
+    shipped = (
+        "NativeStorage", "NativeTensorView", "NativeTensorCore",
+        "NativeTensor",
+        "add", "subtract", "multiply", "relu", "matmul", "sum", "mean",
+        "reshape", "transpose", "narrow", "contiguous_copy",
+        "retain_graph", "Stale parameter-version detection",
+        "NativeParameter", "NativeModule", "state_dict", "NativeLinear",
+        "NativeReLU", "NativeSequential", "NativeMSELoss", "NativeSGD",
+        "native_mlp_training.py",
+    )
+    for term in shipped:
+        assert term in text, f"support matrix does not cover {term!r}"
+    # Unshipped native work must appear only after the unsupported
+    # heading — never marked supported above it.
+    assert "## Unsupported or future" in text
+    supported_part = text.split("## Unsupported or future", 1)[0]
+    future_part = text.split("## Unsupported or future", 1)[1]
+    for term in ("NativeAdam", "CUDA", "sqrt", "reciprocal", "float32",
+                 "Conv2d", "MaxPool2d", "AMP"):
+        assert term in future_part, (
+            f"support matrix does not list {term!r} as unsupported/future"
+        )
+        assert term not in supported_part, (
+            f"support matrix mentions unshipped {term!r} outside the "
+            f"unsupported section"
+        )
+
+
+def test_experimental_exports_stay_intentional():
+    """The native public surface is explicit: exactly these names from
+    tensorforge.experimental, and none of them leaking into the stable
+    top-level namespace. Importing experimental is always safe (the
+    compiled library loads lazily)."""
+    import tensorforge
+    import tensorforge.experimental as experimental
+
+    assert set(experimental.__all__) == {
+        "NativeTensor", "NativeParameter", "NativeParameterRegistry",
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeSequential",
+        "NativeMSELoss", "NativeSGD",
+    }
+    for name in experimental.__all__:
+        assert hasattr(experimental, name)
+        assert not hasattr(tensorforge, name), (
+            f"{name} leaked into the stable top-level tensorforge namespace"
+        )
 
 
 def test_roadmap_does_not_list_v3_as_upcoming():

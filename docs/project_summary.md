@@ -51,27 +51,57 @@ dropout MLP (train mode vs eval mode), and a tiny CNN (convolution,
 pooling, and flattening on synthetic images). All are seeded,
 dependency-free, and finish in seconds.
 
-## Testing and reliability
+## The experimental native line
 
-370+ pytest tests cover every feature: known-value checks against
-hand-computed math, finite-difference gradient verification, exact
-resume-equivalence tests for checkpointing, and guardrail tests that
-keep docs, examples, and the public API from drifting apart. The suite
-runs in a few seconds.
+The advanced branch adds a second, strictly separate framework line: a
+native C++ CPU backend reached explicitly through
+`tensorforge.experimental`. **Phase A (native CPU runtime) is
+complete** — `NativeStorage` → `NativeTensorView` → `NativeTensorCore`
+→ `NativeTensor`, with explicit ownership/lifetime, strided views,
+broadcasting, sum/mean reductions, and float64/cpu metadata over
+ctypes-loaded C++ kernels. **Phase B (native autograd) is complete** —
+a Python-managed reverse-mode graph over autograd-unaware kernels,
+with twelve differentiable operations, view/broadcast gradients, and a
+defined graph lifetime. **Phase C (the native training stack) is in
+progress** and already trains end to end: `NativeParameter` (value
+versioning, stale-graph safety), `NativeModule` with atomic state
+dictionaries, `NativeLinear`/`NativeReLU`/`NativeSequential`,
+`NativeMSELoss`, `NativeSGD`, and a deterministic MLP training proof
+(`examples/native_mlp_training.py` — 25 native SGD steps, monotonic
+99.5% loss reduction). The two engines never mix: explicit entry via
+`NativeTensor.from_array`, explicit exit via `to_numpy()`, no implicit
+dispatch. The exact per-operation status lives in the
+[native support matrix](native_support_matrix.md).
+
+## Testing and reliability (both lines)
+
+1262 pytest tests cover every feature of both lines: known-value
+checks against hand-computed math, finite-difference gradient
+verification (stable and native), exact resume-equivalence tests for
+checkpointing, NumPy-tripwire tests proving the native paths never
+fall back, and guardrail tests keeping docs, examples, and the public
+API from drifting. Native tests skip cleanly when the backend is not
+built; CI builds it from source and runs everything.
 
 ## Current limitations
 
-Not production-ready and not a PyTorch replacement. NumPy on CPU
-only; `Conv2d` and `MaxPool2d` use deliberately naive loops. No real
-datasets, no external ML libraries. The native C++ backend is an
-experimental research line (elementwise kernels, a naive matmul,
-honest benchmarks) and is not wired into Tensor/autograd; there is no
-CUDA backend.
+Not production-ready and not a PyTorch replacement. The stable
+framework is NumPy on CPU; `Conv2d` and `MaxPool2d` use deliberately
+naive loops. The native line is float64/cpu only — no CUDA backend,
+no dtype promotion or casting, no native CNN stack, no adaptive native
+optimizer, no native optimizer state or checkpointing yet, and no
+dispatch into `tensorforge.Tensor`. Benchmarks are hardware-specific
+characterizations, never universal speed claims. No real datasets, no
+external ML libraries.
 
 ## What comes after v3.0
 
-v3.0 closes the Python framework line. Work continues on advanced
-branches: the experimental C++ backend is underway (compiled kernels,
-CI-verified builds, honest benchmarks, an introspection API), and
-CUDA/GPU experiments remain future work. See
-[release_history.md](release_history.md) for the full arc.
+v3.0 closed the Python framework line. The advanced branch then built
+the native line milestone by milestone (v1.x runtime, v2.x autograd,
+v3.1–v3.9 training stack) to its first major checkpoint, v3.10. Next
+on the native line: optimizer math primitives, an adaptive optimizer,
+optimizer state, native checkpointing, and Phase C completion — then
+the native CNN stack, the CUDA runtime, dtype/AMP work, and
+Transformer/text and distributed experiments. See
+[roadmap.md](roadmap.md) and [release_history.md](release_history.md)
+for the full arc.
