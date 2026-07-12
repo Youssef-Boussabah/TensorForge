@@ -46,10 +46,33 @@ minimal stochastic gradient descent over identity-deduplicated
 NativeParameter objects — graph-free native update staging committed
 through ``copy_value_``, frozen and gradient-less parameters skipped,
 gradients retained until ``zero_grad()`` — with no momentum, weight
-decay, parameter groups, optimizer state, or schedulers. No file
-serialization or training loop yet (the end-to-end training proof is
-v3.9), and still fully separate from ``tensorforge.nn`` and
-``tensorforge.optim``.
+decay, parameter groups, optimizer state, or schedulers.
+``NativeAdam`` (Advanced C++ v3.12) is the native adaptive optimizer:
+persistent optimizer-owned native first/second-moment buffers,
+per-parameter step counters, bias correction via the v3.11
+``sqrt``/``reciprocal`` primitives (no division), graph-free staged
+updates committed through ``copy_value_``, validated
+``lr``/``betas``/``eps``, and an explicit state lifetime
+(``close()``) — with no weight decay, AMSGrad, parameter groups,
+schedulers, or checkpointing. As of Advanced C++ v3.13 both native
+optimizers carry the in-memory **optimizer state contract**:
+``state_dict()``/``load_state_dict()`` over one versioned schema
+(format 1, exact optimizer type tag, ordered positional
+shape/dtype/device parameter metadata — no ids, names, values, or
+gradients), with caller-owned independent NativeTensor moment
+snapshots and per-parameter step counts for NativeAdam, exact
+validation, staged atomic loading that never touches parameter
+values/versions/gradients, and proven deterministic in-memory training
+continuation. ``save_native_checkpoint``/``load_native_checkpoint``
+(Advanced C++ v3.14) persist a NativeModule plus optionally one native
+optimizer's state and JSON-compatible metadata to one explicit,
+pickle-free NPZ archive (format ``"tensorforge.native_checkpoint"``,
+version 1) — strict validation before any mutation, atomic
+temporary-file replacement, strict optimizer presence/type matching,
+deterministic file resume, and ``allow_pickle=False`` loading — fully
+separate from the stable ``tensorforge.serialization`` (no scheduler
+or random-state capture, no ``map_location``). Still fully separate
+from ``tensorforge.nn`` and ``tensorforge.optim``.
 
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).
@@ -63,6 +86,8 @@ from .native_relu import NativeReLU
 from .native_sequential import NativeSequential
 from .native_mse_loss import NativeMSELoss
 from .native_sgd import NativeSGD
+from .native_adam import NativeAdam
+from .native_checkpoint import load_native_checkpoint, save_native_checkpoint
 
 __all__ = [
     "NativeTensor",
@@ -74,4 +99,7 @@ __all__ = [
     "NativeSequential",
     "NativeMSELoss",
     "NativeSGD",
+    "NativeAdam",
+    "save_native_checkpoint",
+    "load_native_checkpoint",
 ]

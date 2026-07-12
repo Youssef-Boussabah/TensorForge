@@ -153,11 +153,16 @@ def _load_library():
         ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_storage_materialize.restype = None
-    library.tf_core_relu.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array,
-        ctypes.c_int64, ctypes.c_int64,
-    ]
-    library.tf_core_relu.restype = None
+    # Unary core kernels share tf_core_relu's signature (one strided
+    # source, one contiguous destination); sqrt/reciprocal are the
+    # v3.11 optimizer math primitives.
+    for name in ("tf_core_relu", "tf_core_sqrt", "tf_core_reciprocal"):
+        kernel = getattr(library, name)
+        kernel.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array,
+            ctypes.c_int64, ctypes.c_int64,
+        ]
+        kernel.restype = None
     # tf_core_relu_backward shares the binary-kernel signature: it walks
     # the forward input and the upstream gradient in lockstep.
     for name in (
@@ -174,10 +179,13 @@ def _load_library():
     # Contiguous fast-path kernels (v1.14): flat, index-free loops that
     # take numel + offsets instead of shape/strides. Selected by
     # NativeTensorCore when the operands are row-major contiguous.
-    library.tf_core_relu_contiguous.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64,
-    ]
-    library.tf_core_relu_contiguous.restype = None
+    for name in ("tf_core_relu_contiguous", "tf_core_sqrt_contiguous",
+                 "tf_core_reciprocal_contiguous"):
+        kernel = getattr(library, name)
+        kernel.argtypes = [
+            ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64,
+        ]
+        kernel.restype = None
     for name in (
         "tf_core_add_contiguous",
         "tf_core_subtract_contiguous",
@@ -662,6 +670,46 @@ class NativeTensorCore:
             shape_arr, strides_arr, self.offset, self.ndim,
         )
         return out
+
+    def _unary_compute(self, odometer_name, contiguous_name):
+        """Shared plumbing for the unary compute ops (v3.11): require
+        open, allocate the fresh contiguous output, then dispatch to
+        the contiguous fast-path kernel or the generic odometer kernel
+        by this tensor's contiguity — exactly relu's strategy, and the
+        two paths are bit-for-bit identical."""
+        self._require_open()
+        out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
+        if self.contiguous:
+            getattr(self._storage._lib, contiguous_name)(
+                self._storage._require_open(),
+                out._storage._require_open(),
+                self.numel, self.offset,
+            )
+            return out
+        shape_arr, strides_arr = self._layout_arrays()
+        getattr(self._storage._lib, odometer_name)(
+            self._storage._require_open(),
+            out._storage._require_open(),
+            shape_arr, strides_arr, self.offset, self.ndim,
+        )
+        return out
+
+    def sqrt(self):
+        """Elementwise square root, computed by the native kernel
+        reading this tensor's (possibly strided) view directly. Returns
+        a new row-major contiguous NativeTensorCore. IEEE float64
+        semantics: negative inputs give NaN (no exception), signed
+        zeros are preserved, +inf gives +inf, NaN propagates."""
+        return self._unary_compute("tf_core_sqrt", "tf_core_sqrt_contiguous")
+
+    def reciprocal(self):
+        """Elementwise 1/x, computed by the native kernel reading this
+        tensor's (possibly strided) view directly. Returns a new
+        row-major contiguous NativeTensorCore. IEEE float64 semantics:
+        ±0.0 gives ±inf (no exception, no warning), ±inf gives ±0.0,
+        NaN propagates — the same values NumPy produces."""
+        return self._unary_compute("tf_core_reciprocal",
+                                   "tf_core_reciprocal_contiguous")
 
     def relu_backward(self, upstream):
         """The gradient of ``relu`` at this tensor's forward value:

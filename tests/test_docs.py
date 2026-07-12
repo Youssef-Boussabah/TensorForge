@@ -129,10 +129,15 @@ def test_native_support_matrix_is_canonical_and_honest():
         "NativeStorage", "NativeTensorView", "NativeTensorCore",
         "NativeTensor",
         "add", "subtract", "multiply", "relu", "matmul", "sum", "mean",
+        "sqrt", "reciprocal",  # v3.11 optimizer math primitives
         "reshape", "transpose", "narrow", "contiguous_copy",
         "retain_graph", "Stale parameter-version detection",
         "NativeParameter", "NativeModule", "state_dict", "NativeLinear",
         "NativeReLU", "NativeSequential", "NativeMSELoss", "NativeSGD",
+        "NativeAdam",  # v3.12 adaptive optimizer
+        "load_state_dict",  # v3.13 optimizer state contract
+        "save_native_checkpoint", "load_native_checkpoint",  # v3.14
+        "native_checkpoint_resume.py",
         "native_mlp_training.py",
     )
     for term in shipped:
@@ -142,14 +147,67 @@ def test_native_support_matrix_is_canonical_and_honest():
     assert "## Unsupported or future" in text
     supported_part = text.split("## Unsupported or future", 1)[0]
     future_part = text.split("## Unsupported or future", 1)[1]
-    for term in ("NativeAdam", "CUDA", "sqrt", "reciprocal", "float32",
-                 "Conv2d", "MaxPool2d", "AMP"):
+    for term in ("CUDA", "float32",
+                 "Conv2d", "MaxPool2d", "AMP",
+                 "AdamW", "AMSGrad", "weight decay", "distributed"):
         assert term in future_part, (
             f"support matrix does not list {term!r} as unsupported/future"
         )
         assert term not in supported_part, (
             f"support matrix mentions unshipped {term!r} outside the "
             f"unsupported section"
+        )
+
+
+def _normalized_doc(relative_path):
+    """A doc's text with runs of whitespace collapsed, so status
+    guardrails survive line rewrapping instead of locking exact wraps."""
+    text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    return re.sub(r"\s+", " ", text)
+
+
+def test_phase_c_marked_complete_not_in_progress():
+    """Phase C (the native training stack) is complete as of Advanced
+    C++ v3.15. The project-facing docs must state that and must never
+    silently revert to 'in progress'/'under way', nor describe shipped
+    optimizer state or file resume as future work."""
+    readme = _normalized_doc("README.md")
+    summary = _normalized_doc("docs/project_summary.md")
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    # The exact regression phrases earlier milestones used (whitespace
+    # normalized so rewrapping cannot defeat the guard).
+    assert "(Phase C, in progress)" not in readme
+    assert "Phase C (the native training stack) is in progress" not in summary
+    assert "native training stack (under way)" not in matrix
+    # Completion is positively stated in the summary and matrix.
+    assert re.search(r"Phase C[^.]{0,90}complete", summary), (
+        "docs/project_summary.md no longer states Phase C is complete"
+    )
+    assert "Phase C" in matrix and "complete" in matrix
+    # NativeAdam and checkpointing are shipped native capabilities the
+    # README must present, never omit.
+    assert "NativeAdam" in readme
+    assert re.search(r"checkpoint", readme, re.IGNORECASE), (
+        "README no longer presents native checkpointing"
+    )
+    # The native CNN stack is the next phase and has not started.
+    roadmap = _normalized_doc("docs/roadmap.md")
+    assert "native CNN stack" in roadmap
+    assert "not started" in roadmap
+
+
+def test_native_checkpoint_apis_stay_out_of_stable_serialization():
+    """The native checkpoint APIs live only in tensorforge.experimental
+    — the stable serialization module must not reference, import, or
+    re-export them (the two lines never mix)."""
+    stable = (
+        REPO_ROOT / "src" / "tensorforge" / "serialization.py"
+    ).read_text(encoding="utf-8")
+    for banned in ("native", "experimental",
+                   "save_native_checkpoint", "load_native_checkpoint"):
+        assert banned not in stable, (
+            f"stable serialization.py references {banned!r}; the native "
+            f"checkpoint APIs must stay in tensorforge.experimental"
         )
 
 
@@ -164,7 +222,8 @@ def test_experimental_exports_stay_intentional():
     assert set(experimental.__all__) == {
         "NativeTensor", "NativeParameter", "NativeParameterRegistry",
         "NativeModule", "NativeLinear", "NativeReLU", "NativeSequential",
-        "NativeMSELoss", "NativeSGD",
+        "NativeMSELoss", "NativeSGD", "NativeAdam",
+        "save_native_checkpoint", "load_native_checkpoint",
     }
     for name in experimental.__all__:
         assert hasattr(experimental, name)

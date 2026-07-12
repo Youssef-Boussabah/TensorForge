@@ -6,9 +6,12 @@ docs/native_autograd_design.md §19).
 gradient descent over ``NativeParameter`` objects — ``value ← value -
 lr * grad`` — committed through the v3.7 controlled mutation contract.
 No momentum, dampening, Nesterov, weight decay, parameter groups,
-per-parameter learning rates, schedulers, optimizer ``state_dict``,
-or checkpointing, and no training loop (the multi-iteration MLP
-training proof is v3.9). It is fully separate from the stable
+per-parameter learning rates, schedulers, or checkpointing, and no
+training loop (the multi-iteration MLP training proof is v3.9). As of
+Advanced C++ v3.13 it carries the in-memory optimizer state contract —
+``state_dict()``/``load_state_dict()``, pure Python metadata since SGD
+owns no tensor state (see the two method docstrings) — but no file
+serialization. It is fully separate from the stable
 ``tensorforge.optim`` package: neither accepts the other's objects.
 
 The contract (all tested in tests/test_native_sgd.py):
@@ -82,8 +85,34 @@ import math
 import numbers
 
 from ..backends import cpp
+from .native_optimizer_state import (
+    FORMAT_VERSION,
+    parameter_metadata,
+    validate_parameter_metadata,
+    validate_state_schema,
+)
 from .native_parameter import NativeParameter
 from .native_tensor import NativeTensor
+
+# The exact key set of a NativeSGD state dict (format version 1).
+_STATE_KEYS = ("format_version", "optimizer", "lr", "parameters")
+
+
+def _validated_lr(lr):
+    """Validate a learning rate — real, non-bool, finite, strictly
+    positive — and return it as a Python float. The constructor's
+    contract, shared with ``load_state_dict`` so a loaded lr can never
+    be weaker than a constructed one."""
+    if isinstance(lr, bool) or not isinstance(lr, numbers.Real):
+        raise TypeError(
+            f"lr must be a real number, got {type(lr).__name__}"
+        )
+    lr = float(lr)
+    if not math.isfinite(lr):
+        raise ValueError(f"lr must be finite, got {lr}")
+    if lr <= 0.0:
+        raise ValueError(f"lr must be strictly positive, got {lr}")
+    return lr
 
 
 class NativeSGD:
@@ -98,15 +127,7 @@ class NativeSGD:
     def __init__(self, parameters, lr):
         # Validate the learning rate first — cheap, and a bad lr must
         # never depend on whether the parameter iterable was consumable.
-        if isinstance(lr, bool) or not isinstance(lr, numbers.Real):
-            raise TypeError(
-                f"lr must be a real number, got {type(lr).__name__}"
-            )
-        lr = float(lr)
-        if not math.isfinite(lr):
-            raise ValueError(f"lr must be finite, got {lr}")
-        if lr <= 0.0:
-            raise ValueError(f"lr must be strictly positive, got {lr}")
+        lr = _validated_lr(lr)
 
         # Materialize the iterable exactly once (model.parameters()
         # lists and one-shot generators alike), then validate every
@@ -270,6 +291,73 @@ class NativeSGD:
                 )
         for parameter in self._parameters:
             parameter.zero_grad()
+
+    # -- optimizer state (v3.13: in-memory only; files are v3.14) ----------
+
+    def state_dict(self):
+        """The optimizer's restorable in-memory state, as a plain
+        independent dict (format version 1)::
+
+            {"format_version": 1, "optimizer": "NativeSGD",
+             "lr": <float>,
+             "parameters": ({"shape", "dtype", "device"}, ...)}
+
+        NativeSGD keeps no tensor-valued optimizer state, so the dict
+        is pure Python metadata: the validated learning rate plus one
+        shape/dtype/device entry per unique stored parameter, in the
+        optimizer's deterministic first-occurrence order (shared
+        aliases appear once — the optimizer already deduplicated).
+        Restoration across instances is purely positional; no object
+        identity, name, parameter value, or gradient is included, and
+        no parameter object is exposed. Every stored parameter is
+        preflighted as open (a closed parameter raises naming its
+        index); nothing is created, mutated, or graphed. Each call
+        returns fresh containers the caller may mutate freely."""
+        for index, parameter in enumerate(self._parameters):
+            if parameter.closed:
+                raise RuntimeError(
+                    f"NativeSGD.state_dict(): parameters[{index}] has "
+                    f"been closed"
+                )
+        return {
+            "format_version": FORMAT_VERSION,
+            "optimizer": "NativeSGD",
+            "lr": self._lr,
+            "parameters": parameter_metadata(self._parameters),
+        }
+
+    def load_state_dict(self, state):
+        """Restore optimizer behavior from a ``state_dict()`` dict —
+        for NativeSGD, the learning rate.
+
+        The complete state is validated before anything changes: every
+        stored parameter open, ``state`` a plain dict with exactly the
+        schema keys, ``format_version == 1``, the ``"NativeSGD"`` tag,
+        the lr under the constructor's full contract, and the ordered
+        parameter metadata matching this optimizer's stored parameters
+        position by position (exact count and exact shape/dtype/device
+        — no casting, reshaping, broadcasting, or device movement;
+        sequence fields accept tuple or list). Only then is ``lr``
+        replaced — a single assignment, so ordinary failure leaves the
+        learning rate and every parameter (identity, value, version,
+        gradient, alias, registration) exactly unchanged, and success
+        touches parameters not at all (loading the same lr is still a
+        successful load and changes no version). The supplied state is
+        caller-owned and read-only: never mutated, retained, or
+        consumed. Returns None."""
+        where = "NativeSGD.load_state_dict()"
+        for index, parameter in enumerate(self._parameters):
+            if parameter.closed:
+                raise RuntimeError(
+                    f"{where}: parameters[{index}] has been closed"
+                )
+        validate_state_schema(state, "NativeSGD", _STATE_KEYS, where)
+        lr = _validated_lr(state["lr"])
+        validate_parameter_metadata(
+            state["parameters"], self._parameters, where
+        )
+        # Commit: one attribute assignment, after all validation.
+        self._lr = lr
 
     def __repr__(self):
         return (

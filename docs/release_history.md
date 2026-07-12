@@ -961,4 +961,312 @@ native optimizer state**, **v3.14 — native checkpointing and
 deterministic resume**, and **v3.15 — Phase C guardrails and
 completion**, followed by the native CNN stack, the CUDA runtime,
 dtype/AMP work, Transformer/text experiments, distributed training,
-and the final portfolio release.
+and the final portfolio release. **v3.11** delivers the optimizer math
+primitives: native differentiable **`sqrt`** and **`reciprocal`**
+through the complete stack — four new C++ kernels (`tf_core_sqrt`,
+`tf_core_reciprocal`, and their contiguous fast paths, built on a new
+generic `TfUnaryOp` odometer walker that generalizes relu exactly as
+the binary walker generalizes add/subtract/multiply; both traversal
+paths bit-for-bit identical), ctypes bindings sharing relu's
+signatures, `NativeTensorCore.sqrt()`/`.reciprocal()` (open-tensor
+gate, fresh owning row-major contiguous outputs, arbitrary
+strided/offset views read directly), and differentiable
+`NativeTensor.sqrt()`/`.reciprocal()`. The operations exist because
+**NativeAdam (v3.12) needs a square-root denominator and reciprocal
+scaling** — and general division stays deliberately unshipped, because
+`reciprocal` + `multiply` compose both derivatives and the future Adam
+denominator (`grad · reciprocal(sqrt(v) + eps)`). **Backwards use
+saved forward results**: `d(sqrt(x))/dx = 1/(2·sqrt(x))` is computed
+as `0.5 · reciprocal(saved output)` and `d(1/x)/dx = −1/x²` as
+`−(saved output)²`, entirely at the autograd-unaware core level with
+transients closed as consumed — each callback reads the recorded
+output, never the parent's current value, so under the v3.7 rule
+**neither operation records an expected parameter version**: mutating
+a direct parameter input after forward leaves these edges valid with
+gradients correct for the recorded forward (mixed graphs stay guarded
+by their sensitive edges; no existing classification changed), and a
+closed saved output fails backward deterministically with the graph
+intact. **IEEE float64 exceptional values are documented and locked**:
+sqrt of negatives is NaN (no exception), signed zeros are preserved,
++inf → +inf; reciprocal maps ±0 → ±inf and ±inf → ±0 (no exception,
+no warning — NumPy's values), NaN propagates through both. The
+raw-kernel registry boundary is untouched (the sum/mean precedent: no
+raw-buffer wrappers, no registry-tuple changes). Deliberately **not**
+shipped: NativeAdam, general division, exp/log/tanh/sigmoid/softmax,
+rsqrt/abs/power, operator overloads, in-place arithmetic, optimizer
+state, checkpointing, or dtype expansion. 18 focused tests
+(`tests/test_native_optimizer_math.py`, selector
+`-k "native_optimizer_math"`: kernel symbols and registry boundary,
+core forward across contiguous/scalar/strided/offset/combined views,
+the exceptional-value tables, wrapper graph construction, exact and
+finite-difference gradients, explicit upstreams, chain and
+shared-subgraph accumulation, graph lifetime with the
+closed-saved-output failure, version independence plus the
+still-guarded sensitive edge, a NumPy tripwire, and scope boundaries)
+lock the contract; the full suite passes at **1282 tests**. **v3.12**
+delivers **NativeAdam** — the native adaptive optimizer:
+`tensorforge.experimental.NativeAdam(parameters, lr=0.001,
+betas=(0.9, 0.999), eps=1e-8)`, minimal correct Adam over
+`NativeParameter` objects with **no new C++ work and no new
+operations** — the v3.7 mutation contract and the v3.11
+`sqrt`/`reciprocal` primitives compose everything. The NativeSGD
+parameter contract carries over unchanged (one materialization,
+position-named validation of open `NativeParameter` entries, strict
+identity deduplication in first-occurrence order, strong references,
+nothing owned); `lr`/`eps` must be real, non-bool, finite, and
+strictly positive and each beta real, non-bool, finite, and in
+`[0, 1)` (exactly two, tuple or list; normalized to floats after
+validation; read-only properties). **State is optimizer-owned and
+eager**: per unique parameter, first/second moments as plain
+graph-free `NativeTensor` zeros of exactly the parameter's
+shape/dtype/device (never `NativeParameter`, never registered, never
+in `model.state_dict()`) plus a per-parameter step counter (read-only
+`step_counts`) driving bias correction — skipped frozen/`grad=None`
+parameters never age moments or counters, a later-activated parameter
+takes its first bias-corrected update at `t = 1`, a present
+zero-valued gradient is active, and shared aliases advance once. A
+constructor failure mid-allocation releases every buffer created so
+far and touches nothing of the caller's. **`step()` extends the
+two-phase mutation-atomic design with state**: preflight (optimizer
+open, parameters open, every entry's m/v open and metadata-matched,
+frozen skipped before gradient inspection, active gradients exactly
+validated) → graph-free core-level staging of `m_new = β₁m + (1−β₁)g`,
+`v_new = β₂v + (1−β₂)g²`, and `parameter_new = parameter − lr·m_hat·
+reciprocal(sqrt(v_hat) + eps)` with bias corrections as native
+reciprocals of scalar `1 − βᵗ` cores (Python exponentiation only for
+the scalar coefficients; no division; `eps > 0` keeps the denominator
+positive) → ordered commits through `copy_value_` (identity,
+registration, `requires_grad`, and gradients preserved; one version
+and one counter increment per updated parameter; staged moments
+installed before the old buffers are closed; the staged parameter
+value always released). Any public failure — later bad/closed
+gradient, closed parameter, corrupted moment state, staging failure —
+changes no value, version, moment, counter, or gradient, and the same
+optimizer recovers; the two honest asynchronous-interruption windows
+(between commits, and within an entry between parameter commit and
+state installation) are documented rather than papered over with
+private rollback. Gradients persist until the preflighted
+`zero_grad()`; v3.7 staleness applies unchanged (old sensitive graphs
+raise after `step()`, fresh forwards train on the updated values —
+verified by a 20-iteration deterministic Sequential/Linear/ReLU/MSE
+Adam training run with >50% loss reduction). **Lifetime is
+explicit**: idempotent `close()` (context managers supported)
+releases the owned moments exactly once and makes
+`step()`/`zero_grad()` reject deterministically, while parameters,
+gradients, and the plain-Python introspection surface stay untouched.
+Deliberately **not** shipped: weight decay, AMSGrad, parameter
+groups, per-parameter learning rates, schedulers, optimizer
+`state_dict`/`load_state_dict`, checkpointing/resume, general tensor
+division, fused kernels, in-place arithmetic, or a global no-grad
+context; the stable `Adam` is untouched. 33 focused tests
+(`tests/test_native_adam.py`, selector `-k "native_adam"`:
+constructor/dedup/rejection behavior, constructor-failure state
+release, full hyperparameter validation, state
+initialization/aliasing/ownership, exact one-step and multi-step
+oracle trajectories, determinism, skipping and late-activation
+semantics, zero_grad preservation, failure atomicity with recovery,
+stale-graph integration, lifetime/close, NumPy tripwire and scope
+boundaries, and the end-to-end MLP run) lock the contract; the full
+suite passes at **1315 tests**. **v3.13** delivers the **native
+optimizer state contract** — in-memory
+`state_dict()`/`load_state_dict()` on both native optimizers, with
+**no new C++ work, no new operations, and no file I/O of any kind**
+(native checkpoint archives are v3.14). One small versioned schema
+(private shared helpers in
+`src/tensorforge/experimental/native_optimizer_state.py` — plain
+functions, deliberately not an optimizer base class): every state is
+a plain dict carrying `format_version` (the int 1), the exact
+`optimizer` type tag (`"NativeSGD"`/`"NativeAdam"` — a state can
+never load into the wrong optimizer), the validated hyperparameters,
+and ordered `{"shape", "dtype", "device"}` parameter metadata in the
+optimizer's deterministic identity-deduplicated first-occurrence
+order — restoration across instances is purely **positional**, and no
+Python `id()`, pointer, module name, repr, parameter value, gradient,
+graph data, or closed-state flag is ever serialized. NativeSGD's
+state is pure Python metadata (`lr` + schema; its whole commit is one
+validated assignment). NativeAdam's adds `betas`, `eps`,
+`step_counts`, and `m`/`v` — **caller-owned snapshots**: plain
+graph-free `requires_grad=False` NativeTensors (never
+`NativeParameter`), each an independent owning contiguous native copy
+sharing storage with nothing (not the optimizer's moments, not
+parameters or gradients, not each other); repeated calls return
+independently owned snapshots, closing a snapshot never affects the
+optimizer, and the caller releases them when done. `state_dict()`
+preflights everything (open optimizer, open parameters, intact
+metadata-matched internal moments, valid counters) before creating
+anything, and a snapshot failure partway closes every copy that call
+created — never left to garbage collection — leaving the optimizer
+usable. `load_state_dict(state)` treats the input as read-only
+(never mutated, adopted, retained, or consumed) and runs
+validate → stage → commit: exact key set (missing/unexpected reported
+together), exact format version and tag, hyperparameters under the
+constructors' full contracts, per-position metadata validation (exact
+count and shape/dtype/device — no casting, reshaping, broadcasting,
+or device movement), non-bool non-negative step counts, and every
+moment entry an open **plain** NativeTensor of exactly the
+parameter's metadata (NativeParameter and stable-Tensor entries
+rejected; sequence fields accept tuple or list; deterministic errors
+name stable field paths like `state['m'][1]`); then independent
+optimizer-owned native copies of every input moment are staged (a
+staging failure closes them all and changes nothing); then scalars,
+counters, and moments commit together, the replaced internal buffers
+closing only after installation — with the honest documented caveat
+that NativeAdam's multi-assignment commit is not indivisible under an
+asynchronous interruption. **Optimizer-state loading never touches a
+parameter**: no value, version, gradient (by identity or value),
+`requires_grad`, registration, alias, or model state key moves, so
+the v3.7 stale guard never fires from loading alone and a retained
+valid graph stays valid (proven by a focused test). Deterministic
+**in-memory continuation** is proven end to end with the module state
+contract: an uninterrupted N+M-step NativeAdam training run and an
+N-step → snapshot → restore → M-step run produce bit-identical
+losses, parameter values, moments, and step counts (model loading
+increments each version exactly once per its existing contract;
+optimizer loading increments none), and
+frozen/`grad=None`/shared-alias/zero-state/late-activated parameters
+round-trip exactly (a restored counter of 0 takes its first
+bias-corrected update at t = 1). Deliberately **not** shipped:
+`save_checkpoint`/`load_checkpoint`, `.npz`/JSON/pickle/metadata
+files, paths, `map_location`, RNG or scheduler state, model
+checkpoint wrappers, `strict=False`/compatibility modes, name-based
+remapping, parameter groups, or dtype/device movement; the stable
+optimizers are untouched. 21 focused tests
+(`tests/test_native_optimizer_state.py`, selector
+`-k "optimizer_state"`: exact schemas, independence of returned
+containers, shared/frozen/late-active round-trips, full load
+validation matrices, caller-ownership and non-aliasing proofs, atomic
+failure with recovery, snapshot-failure cleanup,
+parameter/autograd-isolation including the retained-graph proof, the
+SGD next-step and Adam N+M continuation equivalences, a NumPy
+tripwire, and source-level no-file/no-pickle guardrails) lock the
+contract; the full suite passes at **1336 tests**. **v3.14** delivers
+**native checkpointing and deterministic file resume** —
+`tensorforge.experimental.save_native_checkpoint(path, model,
+optimizer=None, metadata=None)` and `load_native_checkpoint(path,
+model, optimizer=None)` over the existing v3.3 module and v3.13
+optimizer state contracts, with **no new C++ work, no new operations,
+and NumPy strictly as the explicit file-format boundary**
+(`to_numpy`/`from_array`, `np.savez`, `np.load(...,
+allow_pickle=False)`; tripwire-tested). **One pickle-free archive
+format** (`"tensorforge.native_checkpoint"`, format version 1): a
+`manifest` entry holding a JSON document as UTF-8 bytes in a 1-D
+uint8 array (never an object array) that maps canonical model state
+keys and the positional optimizer schema to deterministic zero-padded
+indexed float64 array entries (`model::000000`…,
+`optimizer::m::000000`…, `optimizer::v::000000`…), carries validated
+hyperparameters, Adam step counts, and user metadata, and never
+contains Python ids, pointers, reprs, gradients, parameter versions,
+autograd graphs, or closed flags; duplicate references, missing
+arrays, and unreferenced extras are rejected. **Metadata** is
+recursively JSON-compatible (exact-type scalars — NumPy scalars
+rejected — finite floats only, tuples normalized to lists per the
+stable `json.dumps` convention, str-keyed dicts, cycles rejected) and
+returns from loading as an independent plain dict. **Saving**
+validates path/model/optimizer/compatibility/metadata first (the
+optimizer's unique parameter sequence must be positionally identical
+by object identity to the model's), snapshots through the existing
+`state_dict()` contracts with every caller-owned snapshot closed in a
+`finally`, then writes through a collision-safe temporary file in the
+destination directory (`np.savez` onto an explicitly opened handle,
+so NumPy can never silently rename it) and commits with one
+`os.replace` — existing destinations are replaced atomically on
+success and stay byte-intact on failure, no temporary file survives
+either way, and pre-write failures create nothing and touch nothing
+live. **Loading** enforces **strict optimizer presence/type
+matching** (archive optimizer state requires a compatible same-type
+optimizer, and vice versa — never silently discarded; a deliberate,
+documented divergence from the stable loader's ignore-if-absent
+behavior) and is validate → stage → commit: complete pre-mutation
+validation under `allow_pickle=False` — manifest representation,
+UTF-8, JSON, root type, exact format/version/fields, model keys and
+every array's exact float64 dtype/shape against both manifest and
+live destination, and the optimizer section through the same
+validators the optimizer constructors use — then independent staged
+`NativeTensor`s (failures close them all), then commits **only**
+through `NativeModule.load_state_dict()` and
+`optimizer.load_state_dict()`, with every staged tensor closed on all
+paths and no live state aliasing archive arrays or staging tensors.
+Committed behavior is exactly the components' documented contracts —
+model loading increments each parameter version once and makes old
+value-sensitive retained graphs stale; optimizer loading moves no
+versions — and every ordinary failure (a locked corruption matrix:
+invalid ZIP data, missing/malformed/non-UTF-8/non-JSON manifests,
+wrong format/version/fields, key mismatches, duplicate or missing or
+unexpected arrays, object dtypes, wrong dtypes/shapes,
+presence/type/compatibility mismatches, invalid optimizer scalars and
+counters, closed objects) happens before any mutation with model
+values/versions/gradients and optimizer moments/counters/usability
+preserved. The honest documented window: the model and optimizer
+commits are two separate Python operations under asynchronous
+interruption. **Deterministic file resume is proven bit-for-bit**
+(N-step train → save → fresh pair → load → M-step continuation equals
+the uninterrupted run in losses, values, moments, and counters, with
+matching version deltas), NativeSGD round-trips lr to an identical
+next step, shared aliases persist once, and
+`examples/native_checkpoint_resume.py` demonstrates the whole flow in
+a self-cleaning temporary directory. Deliberately **not** shipped:
+scheduler state, random-state capture/restoration, dataloader state,
+multiple models/optimizers, partial or name-remapped loading,
+`strict=False`, `map_location`, merging, incremental or sharded
+checkpoints, compression, encryption, URLs, pickle, or arbitrary
+object metadata; the stable `tensorforge.serialization` is untouched.
+17 focused tests (`tests/test_native_checkpoint.py`, selector
+`-k "native_checkpoint"`: exports/signatures, argument and
+closed-object rejection, model-only round-trip with the
+retained-graph staleness proof, SGD and Adam restoration, metadata
+round-trip/validation, the locked archive schema, atomic overwrite
+and failure cleanup, the corruption matrix with recovery, presence/
+compatibility/shared-parameter behavior, the bit-identical Adam file
+resume, a NumPy tripwire, and source-level security guardrails) lock
+the contract; the full suite passes at **1353 tests**. **v3.15** is the
+**Phase C completion milestone** — native training stack guardrails and
+hardening — which **closes Phase C in code**, completing the Phase A →
+Phase B → Phase C arc, and adds **no numerical behavior** (no new
+operations, kernels, layers, losses, or optimizer features, and no
+source change to the native compute stack). It delivers one
+cross-cutting completion test file (`tests/test_native_phase_c.py`,
+selector `-k "native_phase_c"` — 10 integrated tests) that complements
+the per-component suites by locking the invariants that span several
+components at once: the full NativeSGD and NativeAdam training
+lifecycles under a NumPy tripwire (finite loss, meaningful reduction,
+version deltas equal to the active update count, graph-free
+independently-owned optimizer state, and `close()` releasing only
+optimizer-owned moments while the model stays trainable); the
+shared-parameter story end to end (one `NativeParameter` through two
+registered aliases and two forward paths, verified to be one entry
+across module registration, backward accumulation, both optimizers,
+state snapshots, and checkpoints, with an alias-preserving restore
+whose continuation matches bit for bit); mixed
+active/frozen/`grad=None`/zero-gradient collections and late parameter
+activation; repeated optimizer-state and checkpoint-resume cycles (old
+internal state closed after replacement, no caller snapshot aliasing
+any live storage, no parameter version moved by optimizer loading, and
+bit-identical two-lineage continuation); failure recovery at the
+step-staging, state-load-staging, checkpoint-save, and
+checkpoint-corruption boundaries (each leaving values, versions,
+moments, counters, and gradients unchanged, temporaries and temporary
+files cleaned up, and a later valid operation succeeding); the
+four-way graph-staleness distinction (an optimizer step and a
+model-state load make an old value-sensitive graph stale; an
+optimizer-state load and a *failed* checkpoint load do not; a
+*successful* checkpoint restoration does — gradients untouched whenever
+the detector raises); lifetime/close discipline with no reliance on
+garbage collection; and the public surface (exactly the twelve
+intentional `tensorforge.experimental` exports, no leak into the stable
+namespace, no optimizer base class, no checkpoint leak into stable
+serialization, no unsupported optimizer feature, and no native CNN or
+CUDA/dtype surface). It also finalizes the
+[native support matrix](native_support_matrix.md) as the authoritative
+Phase A–C snapshot, marks Phase C complete across the README, project
+summary, architecture doc, roadmap, and design doc, and adds
+documentation guardrails (`tests/test_docs.py`) preventing Phase C from
+silently reverting to "in progress" and preventing optimizer state or
+file resume from being described as future work — with CI, `.gitignore`,
+the examples, and the benchmark audited and found already correct (no
+change needed). The full suite passes at **1365 tests** (1353 plus the
+10 cross-cutting completion tests and 2 new documentation guardrails).
+**Phase C is complete.** The next major
+native phase is the **native CNN stack** (`NativeConv2d`,
+`NativeMaxPool2d`, `NativeFlatten`), which has not started, followed by
+the CUDA runtime, dtype/AMP work, Transformer/text experiments,
+distributed training, and the final portfolio release.
