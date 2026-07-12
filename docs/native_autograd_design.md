@@ -1137,10 +1137,47 @@ is complete without it.**
   scheduler state, `strict=False`, name-based remapping, or an
   optimizer base class (the shared schema helpers are plain private
   functions). Verified test count at completion: **1336 tests** (1315
-  plus the 21 v3.13 tests).
-  The next milestone is **Advanced C++ v3.14 — native checkpointing
-  and deterministic resume**, with v3.15 — Phase C guardrails and
-  completion after it.
+  plus the 21 v3.13 tests). **Its fourteenth milestone, Advanced C++
+  v3.14 — native checkpointing and deterministic file resume, is
+  complete**: `save_native_checkpoint(path, model, optimizer=None,
+  metadata=None)` / `load_native_checkpoint(path, model,
+  optimizer=None)` persist a `NativeModule` plus optionally one native
+  optimizer's v3.13 state and JSON-compatible metadata to **one
+  explicit pickle-free NPZ archive** (format
+  `"tensorforge.native_checkpoint"`, version 1: a UTF-8/JSON uint8
+  `manifest` mapping canonical model keys and positional optimizer
+  entries to deterministic indexed float64 array names — no ids,
+  reprs, gradients, parameter versions, or graph data). Saving
+  validates everything, snapshots through the existing `state_dict()`
+  contracts (every caller-owned snapshot closed in a `finally`,
+  `to_numpy()` as the explicit boundary), and writes atomically
+  through a collision-safe temporary file and one `os.replace` — an
+  existing destination survives any failure and no temporary remains.
+  Loading is validate → stage → commit with **strict optimizer
+  presence/type matching** (archive optimizer state requires a
+  compatible same-type optimizer and vice versa — never silently
+  discarded) and full pre-mutation validation under
+  `allow_pickle=False`, replicating both component loaders' checks so
+  the final commits — `NativeModule.load_state_dict()` then
+  `optimizer.load_state_dict()`, the only mutation paths used — have
+  no ordinary public failure left; every staged tensor is closed on
+  all paths, and no live state aliases archive arrays or staging
+  tensors. Committed behavior is exactly the components' contracts:
+  model loading increments each parameter version once and makes old
+  value-sensitive retained graphs stale; optimizer loading moves no
+  versions. The honest documented window: the two commits are separate
+  Python operations under asynchronous interruption. Deterministic
+  file resume is proven bit-for-bit (losses, values, moments,
+  counters, and version deltas across an uninterrupted run versus a
+  save/restore run; `examples/native_checkpoint_resume.py`), with
+  metadata round-tripping as independent plain-Python data.
+  Deliberately not shipped: scheduler state, random-state
+  capture/restoration, dataloader state, partial or name-remapped
+  loading, `map_location`, merging/sharding/compression/encryption,
+  or pickle in any form. Verified test count at completion: **1353
+  tests** (1336 plus the 17 v3.14 tests).
+  The next milestone is **Advanced C++ v3.15 — Phase C guardrails and
+  completion**.
   Optimizers and training are **not** combined into
   one milestone; each lands only when the previous is tested and
   documented, with the Python framework remaining the reference

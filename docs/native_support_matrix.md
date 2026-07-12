@@ -1,8 +1,8 @@
 # Native support matrix
 
 The canonical statement of what the **experimental native C++ CPU
-line** supports today, as of Advanced C++ v3.13 (the native optimizer
-state contract). The stable Python framework's features (see
+line** supports today, as of Advanced C++ v3.14 (native checkpointing
+and deterministic file resume). The stable Python framework's features (see
 [architecture.md](architecture.md)) are **not** listed here — a feature
 appears as supported only if the native stack itself provides it.
 Everything below is float64/cpu only, explicit, and experimental; see
@@ -69,7 +69,8 @@ design.
 | `NativeMSELoss` | Supported | `"mean"` / `"sum"` reductions; exact shapes, no broadcasting |
 | `NativeSGD` | Supported | Minimal `value ← value − lr·grad`; identity-deduplicated; two-phase mutation-atomic `step()`; `zero_grad()`; in-memory `state_dict`/`load_state_dict` (v3.13: lr + positional parameter metadata) |
 | `NativeAdam` | Supported | Adaptive optimizer (v3.12): validated `lr`/`betas`/`eps`; persistent optimizer-owned native m/v moments and per-parameter step counts; bias correction via `sqrt`/`reciprocal` (no division); graph-free staged updates committed through `copy_value_`; skipped frozen/`grad=None` parameters never age state; explicit state lifetime — `close()` releases the moments; in-memory `state_dict`/`load_state_dict` (v3.13) |
-| Optimizer state (in-memory) | Supported | v3.13: one versioned schema (format 1, exact optimizer type tag), ordered positional shape/dtype/device parameter metadata — no object ids, names, values, or gradients — caller-owned independent NativeTensor m/v snapshots and per-parameter step counts (NativeAdam), exact validation with no casting or device movement, staged atomic loading that never touches parameter values, versions, gradients, or retained graphs; deterministic in-memory training continuation with the module state contract; **no file format** |
+| Optimizer state (in-memory) | Supported | v3.13: one versioned schema (format 1, exact optimizer type tag), ordered positional shape/dtype/device parameter metadata — no object ids, names, values, or gradients — caller-owned independent NativeTensor m/v snapshots and per-parameter step counts (NativeAdam), exact validation with no casting or device movement, staged atomic loading that never touches parameter values, versions, gradients, or retained graphs; deterministic in-memory training continuation with the module state contract |
+| Checkpoint files / resume | Supported | v3.14: `save_native_checkpoint` / `load_native_checkpoint` — one pickle-free NPZ archive (format `"tensorforge.native_checkpoint"`, version 1) holding the model state, optionally one native optimizer's v3.13 state, and JSON-compatible metadata; UTF-8/JSON uint8 manifest, indexed float64 array entries, strict full-archive validation before any live mutation, strict optimizer presence/type matching, atomic temporary-file replacement, `allow_pickle=False` loading, deterministic bit-identical file resume (`examples/native_checkpoint_resume.py`); no scheduler or random-state capture, no `map_location` |
 | End-to-end MLP training | Proven | `examples/native_mlp_training.py`: 25 deterministic steps, monotonic 99.5% loss reduction |
 
 ## Unsupported or future (native line)
@@ -81,11 +82,9 @@ in the stable Python framework — that does not make them native.
   kernel exists at the kernel layer, but no tensor op and no backward;
   `reciprocal` + `multiply` compose what the training stack needs)
 - `exp`, `log`, `tanh`, `sigmoid`, `softmax`
-- file checkpointing / archive resume (the in-memory optimizer state
-  contract exists as of v3.13; native checkpoint files, path handling,
-  and deterministic file resume are planned as v3.14 — there is no
-  `save_checkpoint`/`load_checkpoint`, no `.npz`/JSON/pickle, and no
-  `map_location` on the native line)
+- scheduler state, random-state capture/restoration, or dataloader
+  state in native checkpoints; `map_location`, partial or name-remapped
+  loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AMSGrad, parameter groups, per-parameter learning
   rates, or schedulers on the native optimizers
 - native `Conv2d`, `MaxPool2d`, `Flatten`, or any CNN stack
@@ -107,6 +106,7 @@ uv run python scripts/smoke_cpp_backend.py             # hard-failing smoke chec
 uv run python examples/native_tensor_demo.py           # runtime and views
 uv run python examples/native_autograd_demo.py         # native backward
 uv run python examples/native_mlp_training.py          # end-to-end training proof
+uv run python examples/native_checkpoint_resume.py     # save, restore, resume bit-for-bit
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run pytest                                          # full suite (native tests skip if unbuilt)
 ```

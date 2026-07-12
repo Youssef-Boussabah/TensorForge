@@ -322,12 +322,20 @@ The Python line is done; what remains is expansion on its own terms:
   snapshots and per-parameter step counts for NativeAdam, exact
   validation with staged atomic loading that never touches parameter
   values, versions, gradients, or retained graphs, and a proven
-  deterministic in-memory training continuation — with no file
-  format, checkpoint archive, `map_location`, or random-state and
-  scheduler capture yet. Phase C is **not** complete;
-  the intended sequence continues with **v3.14 — native
-  checkpointing and
-  deterministic resume, v3.15 — Phase C guardrails and completion**,
+  deterministic in-memory training continuation. **v3.14 — native
+  checkpointing and deterministic file resume — is complete**:
+  `save_native_checkpoint`/`load_native_checkpoint` persist the model
+  plus optionally one native optimizer's state and JSON metadata to
+  one explicit pickle-free NPZ archive (a versioned UTF-8/JSON
+  manifest plus indexed float64 arrays; `allow_pickle=False` loading;
+  no ids, gradients, versions, or graph data serialized), with strict
+  full-archive validation before any live mutation, strict optimizer
+  presence/type matching, atomic temporary-file replacement,
+  deterministic bit-identical file resume
+  (`examples/native_checkpoint_resume.py`), and no scheduler or
+  random-state capture and no `map_location`. Phase C is **not**
+  complete; the intended sequence continues with
+  **v3.15 — Phase C guardrails and completion**,
   then the native CNN stack, the CUDA runtime, dtype/AMP work,
   Transformer/text experiments, distributed training, and the final
   portfolio release. CUDA/GPU experiments are still entirely future
@@ -524,12 +532,30 @@ The Python line is done; what remains is expansion on its own terms:
     closed only after installation, and mutation-atomic ordinary
     failures — never touching parameter values, versions, gradients,
     registrations, or retained graphs, with deterministic in-memory
-    continuation proven against an uninterrupted run. No file
-    serialization, checkpoint archives, paths, `map_location`,
-    random-state or scheduler capture, or compatibility modes.
-    **Next: v3.14 — native checkpointing and
-    deterministic resume**, then v3.15 — Phase C guardrails and
-    completion.
+    continuation proven against an uninterrupted run.
+    **v3.14 — native checkpointing and deterministic file resume — is
+    complete**: `save_native_checkpoint`/`load_native_checkpoint`
+    over the existing state contracts — one pickle-free NPZ archive
+    per checkpoint (format `"tensorforge.native_checkpoint"`,
+    version 1) holding a UTF-8/JSON uint8 manifest (canonical model
+    keys and positional optimizer metadata mapped explicitly to
+    deterministic indexed float64 array names; user metadata
+    included; nothing volatile serialized) plus the model parameter
+    and optimizer moment arrays; validated save with every snapshot closed in a
+    `finally` and an atomic collision-safe temporary-file
+    `os.replace` (existing destinations survive failures, no
+    temporary residue); validate → stage → commit loading under
+    `allow_pickle=False` with strict optimizer presence/type
+    matching, full pre-mutation validation of thirty-plus corruption
+    cases, commits only through the existing module/optimizer
+    loaders (model versions +1 each and retained sensitive graphs
+    stale, per the existing contracts; optimizer loading moves no
+    versions), deterministic bit-identical file resume for NativeAdam
+    and next-step equivalence for NativeSGD, and a focused
+    resume example. No scheduler state, random-state
+    capture/restoration, `map_location`, partial loading, merging,
+    sharding, compression, or encryption.
+    **Next: v3.15 — Phase C guardrails and completion.**
   - **Then beyond:** the rest of the native training stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

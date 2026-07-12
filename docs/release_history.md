@@ -1139,6 +1139,85 @@ failure with recovery, snapshot-failure cleanup,
 parameter/autograd-isolation including the retained-graph proof, the
 SGD next-step and Adam N+M continuation equivalences, a NumPy
 tripwire, and source-level no-file/no-pickle guardrails) lock the
-contract; the full suite passes at **1336 tests**. The next milestone
-is **Advanced C++ v3.14 — native checkpointing and deterministic
-resume**.
+contract; the full suite passes at **1336 tests**. **v3.14** delivers
+**native checkpointing and deterministic file resume** —
+`tensorforge.experimental.save_native_checkpoint(path, model,
+optimizer=None, metadata=None)` and `load_native_checkpoint(path,
+model, optimizer=None)` over the existing v3.3 module and v3.13
+optimizer state contracts, with **no new C++ work, no new operations,
+and NumPy strictly as the explicit file-format boundary**
+(`to_numpy`/`from_array`, `np.savez`, `np.load(...,
+allow_pickle=False)`; tripwire-tested). **One pickle-free archive
+format** (`"tensorforge.native_checkpoint"`, format version 1): a
+`manifest` entry holding a JSON document as UTF-8 bytes in a 1-D
+uint8 array (never an object array) that maps canonical model state
+keys and the positional optimizer schema to deterministic zero-padded
+indexed float64 array entries (`model::000000`…,
+`optimizer::m::000000`…, `optimizer::v::000000`…), carries validated
+hyperparameters, Adam step counts, and user metadata, and never
+contains Python ids, pointers, reprs, gradients, parameter versions,
+autograd graphs, or closed flags; duplicate references, missing
+arrays, and unreferenced extras are rejected. **Metadata** is
+recursively JSON-compatible (exact-type scalars — NumPy scalars
+rejected — finite floats only, tuples normalized to lists per the
+stable `json.dumps` convention, str-keyed dicts, cycles rejected) and
+returns from loading as an independent plain dict. **Saving**
+validates path/model/optimizer/compatibility/metadata first (the
+optimizer's unique parameter sequence must be positionally identical
+by object identity to the model's), snapshots through the existing
+`state_dict()` contracts with every caller-owned snapshot closed in a
+`finally`, then writes through a collision-safe temporary file in the
+destination directory (`np.savez` onto an explicitly opened handle,
+so NumPy can never silently rename it) and commits with one
+`os.replace` — existing destinations are replaced atomically on
+success and stay byte-intact on failure, no temporary file survives
+either way, and pre-write failures create nothing and touch nothing
+live. **Loading** enforces **strict optimizer presence/type
+matching** (archive optimizer state requires a compatible same-type
+optimizer, and vice versa — never silently discarded; a deliberate,
+documented divergence from the stable loader's ignore-if-absent
+behavior) and is validate → stage → commit: complete pre-mutation
+validation under `allow_pickle=False` — manifest representation,
+UTF-8, JSON, root type, exact format/version/fields, model keys and
+every array's exact float64 dtype/shape against both manifest and
+live destination, and the optimizer section through the same
+validators the optimizer constructors use — then independent staged
+`NativeTensor`s (failures close them all), then commits **only**
+through `NativeModule.load_state_dict()` and
+`optimizer.load_state_dict()`, with every staged tensor closed on all
+paths and no live state aliasing archive arrays or staging tensors.
+Committed behavior is exactly the components' documented contracts —
+model loading increments each parameter version once and makes old
+value-sensitive retained graphs stale; optimizer loading moves no
+versions — and every ordinary failure (a locked corruption matrix:
+invalid ZIP data, missing/malformed/non-UTF-8/non-JSON manifests,
+wrong format/version/fields, key mismatches, duplicate or missing or
+unexpected arrays, object dtypes, wrong dtypes/shapes,
+presence/type/compatibility mismatches, invalid optimizer scalars and
+counters, closed objects) happens before any mutation with model
+values/versions/gradients and optimizer moments/counters/usability
+preserved. The honest documented window: the model and optimizer
+commits are two separate Python operations under asynchronous
+interruption. **Deterministic file resume is proven bit-for-bit**
+(N-step train → save → fresh pair → load → M-step continuation equals
+the uninterrupted run in losses, values, moments, and counters, with
+matching version deltas), NativeSGD round-trips lr to an identical
+next step, shared aliases persist once, and
+`examples/native_checkpoint_resume.py` demonstrates the whole flow in
+a self-cleaning temporary directory. Deliberately **not** shipped:
+scheduler state, random-state capture/restoration, dataloader state,
+multiple models/optimizers, partial or name-remapped loading,
+`strict=False`, `map_location`, merging, incremental or sharded
+checkpoints, compression, encryption, URLs, pickle, or arbitrary
+object metadata; the stable `tensorforge.serialization` is untouched.
+17 focused tests (`tests/test_native_checkpoint.py`, selector
+`-k "native_checkpoint"`: exports/signatures, argument and
+closed-object rejection, model-only round-trip with the
+retained-graph staleness proof, SGD and Adam restoration, metadata
+round-trip/validation, the locked archive schema, atomic overwrite
+and failure cleanup, the corruption matrix with recovery, presence/
+compatibility/shared-parameter behavior, the bit-identical Adam file
+resume, a NumPy tripwire, and source-level security guardrails) lock
+the contract; the full suite passes at **1353 tests**. The next
+milestone is **Advanced C++ v3.15 — Phase C guardrails and
+completion**.

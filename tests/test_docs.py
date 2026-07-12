@@ -167,6 +167,7 @@ def test_experimental_exports_stay_intentional():
         "NativeTensor", "NativeParameter", "NativeParameterRegistry",
         "NativeModule", "NativeLinear", "NativeReLU", "NativeSequential",
         "NativeMSELoss", "NativeSGD", "NativeAdam",
+        "save_native_checkpoint", "load_native_checkpoint",
     }
     for name in experimental.__all__:
         assert hasattr(experimental, name)

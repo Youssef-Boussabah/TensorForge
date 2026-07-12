@@ -69,8 +69,9 @@ versioning, stale-graph safety), `NativeModule` with atomic state
 dictionaries, `NativeLinear`/`NativeReLU`/`NativeSequential`,
 `NativeMSELoss`, `NativeSGD`, `NativeAdam` (persistent native moment
 state with bias correction and an explicit state lifetime), in-memory
-optimizer `state_dict`/`load_state_dict` for deterministic training
-continuation, and a
+optimizer `state_dict`/`load_state_dict`, pickle-free native
+checkpoint files with deterministic bit-identical file resume
+(`save_native_checkpoint`/`load_native_checkpoint`), and a
 deterministic MLP training proof
 (`examples/native_mlp_training.py` — 25 native SGD steps, monotonic
 99.5% loss reduction). The two engines never mix: explicit entry via
@@ -80,7 +81,7 @@ dispatch. The exact per-operation status lives in the
 
 ## Testing and reliability (both lines)
 
-1336 pytest tests cover every feature of both lines: known-value
+1353 pytest tests cover every feature of both lines: known-value
 checks against hand-computed math, finite-difference gradient
 verification (stable and native), exact resume-equivalence tests for
 checkpointing, NumPy-tripwire tests proving the native paths never
@@ -93,8 +94,8 @@ built; CI builds it from source and runs everything.
 Not production-ready and not a PyTorch replacement. The stable
 framework is NumPy on CPU; `Conv2d` and `MaxPool2d` use deliberately
 naive loops. The native line is float64/cpu only — no CUDA backend,
-no dtype promotion or casting, no native CNN stack, no native file
-checkpointing yet (model and optimizer state are in-memory only), and
+no dtype promotion or casting, no native CNN stack, no scheduler or
+random-state capture in native checkpoints, and
 no dispatch into `tensorforge.Tensor`. Benchmarks are hardware-specific
 characterizations, never universal speed claims. No real datasets, no
 external ML libraries.
@@ -105,10 +106,10 @@ v3.0 closed the Python framework line. The advanced branch then built
 the native line milestone by milestone (v1.x runtime, v2.x autograd,
 v3.1–v3.9 training stack) to its first major checkpoint, v3.10, then
 the optimizer math primitives (v3.11), the adaptive NativeAdam
-optimizer (v3.12), and the in-memory optimizer state contract
-(v3.13). Next on the native line:
-native checkpointing and deterministic resume, then Phase C
-completion — then
+optimizer (v3.12), the in-memory optimizer state contract (v3.13),
+and native checkpoint files with deterministic file resume (v3.14).
+Next on the native line: Phase C
+guardrails and completion — then
 the native CNN stack, the CUDA runtime, dtype/AMP work, and
 Transformer/text and distributed experiments. See
 [roadmap.md](roadmap.md) and [release_history.md](release_history.md)

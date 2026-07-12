@@ -386,6 +386,132 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native training stack — checkpoint files and deterministic resume (v3.14)
+
+v3.14 makes native training runs **persistable**:
+`tensorforge.experimental.save_native_checkpoint(path, model,
+optimizer=None, metadata=None)` and `load_native_checkpoint(path,
+model, optimizer=None)` write and restore **one explicit, pickle-free
+NPZ archive** over the existing state contracts (the v3.3 module state
+dictionary and the v3.13 optimizer state), following the stable
+framework's no-pickle serialization philosophy. No new C++ work and no
+new operations — NumPy appears strictly as the file-format boundary
+(`to_numpy`/`from_array`, `np.savez`, `np.load(...,
+allow_pickle=False)`); the framework's numerical computation stays
+native (tripwire-tested). Deliberately **not** shipped: scheduler
+state, random-state capture or restoration, dataloader state, multiple
+models/optimizers, partial or name-remapped loading, `strict=False`,
+`map_location`, checkpoint merging, incremental/sharded checkpoints,
+compression, encryption, URLs, pickle, arbitrary object metadata, or
+graph/gradient serialization. The stable `tensorforge.serialization`
+is untouched and neither line accepts the other's objects.
+
+```python
+from tensorforge.experimental import (
+    save_native_checkpoint, load_native_checkpoint,
+)
+
+save_native_checkpoint(path, model, optimizer=optimizer,
+                       metadata={"steps": 6})
+metadata = load_native_checkpoint(path, fresh_model,
+                                  optimizer=fresh_optimizer)
+```
+
+**The archive** (format `"tensorforge.native_checkpoint"`, format
+version 1) holds one `manifest` entry — a JSON document encoded as
+UTF-8 bytes in a 1-D uint8 array, never an object array and never
+pickled — plus one float64 array per model parameter and per Adam
+moment under deterministic zero-padded indexed names
+(`model::000000`…, `optimizer::m::000000`…, `optimizer::v::000000`…).
+The manifest maps each canonical model state key to its array name and
+exact shape/dtype/device, reproduces the optimizer's v3.13 schema
+(type tag, state format version, hyperparameters, positional parameter
+metadata, Adam step counts and moment array names), and carries the
+user metadata. Nothing volatile is written: no Python `id()`, pointer,
+repr, gradient, parameter version, autograd graph, or closed flag.
+Duplicate array references, missing arrays, and unreferenced extra
+entries are all rejected on load. **Metadata** must be recursively
+JSON-compatible (`None`, `bool`, `int`, finite `float`, `str`, lists —
+tuples normalize to lists, the stable `json.dumps` convention — and
+str-keyed dicts); NaN/infinity, bytes, sets, NumPy scalars and arrays,
+tensors, modules, optimizers, non-string keys, and cyclic containers
+are rejected before any file is created, and
+`load_native_checkpoint()` returns an independent plain-Python dict.
+
+**Saving is validate → snapshot → write-atomically.** Path, open
+`NativeModule`, optimizer (`None`, `NativeSGD`, or open `NativeAdam`
+whose unique parameter sequence is positionally *identical by object
+identity* to the model's — an unrelated optimizer is rejected), and
+metadata are validated first; the model and optimizer are snapshotted
+through their existing `state_dict()` contracts and converted through
+the explicit `to_numpy()` boundary, with every caller-owned snapshot
+closed in a `finally`; then the archive is written to a
+collision-safe temporary file in the destination directory
+(`np.savez` onto an explicitly opened handle, so NumPy can never
+silently rename it) and committed with one `os.replace` — an existing
+destination is replaced atomically on success and stays byte-intact
+on failure, no temporary file survives either way, and a pre-write
+failure leaves no destination created and every live object untouched
+and usable. Same-filesystem atomicity only; no directory creation.
+
+**Loading is validate → stage → commit**, with **strict optimizer
+presence**: an archive holding optimizer state requires a compatible
+optimizer of the same type, and an archive without one rejects a
+supplied optimizer — a resume can never silently discard or invent
+optimizer state (a deliberate divergence from the stable
+`load_checkpoint`, which ignores archive optimizer state when none is
+passed; there is no `model_only` flag). Phase 1 validates everything
+with no live mutation: the live model and optimizer, then the archive
+under `allow_pickle=False` — manifest presence/representation/UTF-8/
+JSON/root type, exact format identity and version, exact field sets
+at every level, model keys against the live model's canonical names,
+every array's exact float64 dtype and shape against both manifest and
+live destination (object dtype is impossible to read), and the
+optimizer section through the same validators the optimizer
+constructors use — so after preflight and staging, neither component
+loader has an ordinary public failure path left. Phase 2 stages
+independent `NativeTensor` copies (a failure closes them all); Phase 3
+commits through the existing public loaders only —
+`NativeModule.load_state_dict()`, then `optimizer.load_state_dict()` —
+and closes every staged tensor in a `finally`. Committed behavior is
+exactly the components' documented contracts: model loading increments
+each parameter version once and makes old value-sensitive retained
+graphs stale; optimizer loading moves no versions, and `NativeAdam`
+installs its own additional independent internal copies, so no live
+state ever aliases an archive array or staged tensor. Every ordinary
+failure — thirty-plus corruption cases are locked by tests, from
+invalid ZIP data and malformed UTF-8/JSON through wrong dtypes,
+duplicate references, presence/type mismatches, and invalid optimizer
+scalars — happens before any mutation, preserving model values,
+versions, gradients, optimizer moments (by identity and value),
+counters, and usability. One narrow, honest limitation: the model
+commit and the optimizer commit are two separate Python operations —
+an asynchronous interruption between them can leave the model restored
+while optimizer state remains old, and an interruption inside either
+component keeps that component's own documented window; no private
+rollback is manufactured.
+
+**Deterministic file resume is proven end to end**
+(`examples/native_checkpoint_resume.py`): train the native MLP with
+NativeAdam for N steps → save → restore into a completely fresh
+model/optimizer pair → continue both runs on identical data —
+bit-identical losses, parameter values, m/v moments, and step counts,
+with version deltas matching (model loading adds its one documented
+increment; optimizer loading adds none) and no residue beyond the
+checkpoint file. NativeSGD round-trips its lr to an identical next
+step, shared-alias models round-trip once per unique parameter, and
+model-only checkpoints work with `optimizer=None` on both sides.
+
+Everything above is locked by `tests/test_native_checkpoint.py`
+(selector: `-k "native_checkpoint"` — 17 tests, including the
+corruption matrix, atomic-overwrite and cleanup proofs, a NumPy
+tripwire over save/load, and source-level no-pickle/no-eval/no-exec
+guardrails with `allow_pickle=False` asserted), and the full suite
+passes at **1353 tests**. Still float64/cpu only, still explicit and
+experimental, and no cross-device, cross-dtype, or general
+checkpoint-compatibility claims are made. The next milestone is
+**Advanced C++ v3.15 — Phase C guardrails and completion**.
+
 ### Native training stack — the optimizer state contract (v3.13)
 
 v3.13 makes native optimizer state **snapshot-able and restorable in

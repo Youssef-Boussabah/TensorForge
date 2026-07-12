@@ -78,8 +78,11 @@ reached explicitly through `tensorforge.experimental` and
   `NativeMSELoss`, the minimal `NativeSGD` optimizer, and the
   adaptive `NativeAdam` optimizer (persistent native moment state,
   per-parameter bias correction, explicit state lifetime) — both with
-  in-memory `state_dict`/`load_state_dict` for deterministic
-  training continuation (no file checkpointing yet).
+  in-memory `state_dict`/`load_state_dict`, plus pickle-free native
+  checkpoint files (`save_native_checkpoint` /
+  `load_native_checkpoint`: model + optional optimizer state + JSON
+  metadata, atomic writes, strict validation, deterministic
+  bit-identical file resume).
 - **A native MLP training proof**: `examples/native_mlp_training.py`
   trains a 2→8→ReLU→1 MLP for 25 deterministic native SGD steps with a
   monotonic 99.5% loss reduction — model, loss, gradients, and updates
@@ -127,6 +130,7 @@ uv run python scripts/smoke_cpp_backend.py        # hard-failing backend check
 uv run python examples/native_tensor_demo.py      # the native runtime and views
 uv run python examples/native_autograd_demo.py    # native backward
 uv run python examples/native_mlp_training.py     # end-to-end native training
+uv run python examples/native_checkpoint_resume.py # save, restore, resume bit-for-bit
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 ```
 
@@ -164,7 +168,7 @@ uv run python examples/train_tiny_cnn.py             # convolution and pooling
 ```
 
 What each one teaches, and what to expect: [docs/examples.md](docs/examples.md).
-The three native examples are listed in the native quickstart above.
+The four native examples are listed in the native quickstart above.
 
 ## Documentation
 
@@ -196,8 +200,8 @@ Honest expectations:
   experimental C++ **CPU** backend: float64/cpu only, no CUDA backend
   yet, no dtype promotion or casting, and no implicit dispatch into
   `tensorforge.Tensor`.
-- The native stack has no CNN layers and no file checkpointing yet
-  (optimizer state is in-memory only) — see the
+- The native stack has no CNN layers, and native checkpoints capture
+  no scheduler or random state — see the
   [native support matrix](docs/native_support_matrix.md).
 - `Conv2d` and `MaxPool2d` (stable line) use deliberately naive loops.
 - Benchmarks are hardware-specific characterizations with no universal

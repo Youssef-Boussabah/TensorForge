@@ -63,9 +63,16 @@ gradients), with caller-owned independent NativeTensor moment
 snapshots and per-parameter step counts for NativeAdam, exact
 validation, staged atomic loading that never touches parameter
 values/versions/gradients, and proven deterministic in-memory training
-continuation. No file serialization (native checkpoint archives are
-v3.14), and still fully separate from ``tensorforge.nn`` and
-``tensorforge.optim``.
+continuation. ``save_native_checkpoint``/``load_native_checkpoint``
+(Advanced C++ v3.14) persist a NativeModule plus optionally one native
+optimizer's state and JSON-compatible metadata to one explicit,
+pickle-free NPZ archive (format ``"tensorforge.native_checkpoint"``,
+version 1) — strict validation before any mutation, atomic
+temporary-file replacement, strict optimizer presence/type matching,
+deterministic file resume, and ``allow_pickle=False`` loading — fully
+separate from the stable ``tensorforge.serialization`` (no scheduler
+or random-state capture, no ``map_location``). Still fully separate
+from ``tensorforge.nn`` and ``tensorforge.optim``.
 
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).
@@ -80,6 +87,7 @@ from .native_sequential import NativeSequential
 from .native_mse_loss import NativeMSELoss
 from .native_sgd import NativeSGD
 from .native_adam import NativeAdam
+from .native_checkpoint import load_native_checkpoint, save_native_checkpoint
 
 __all__ = [
     "NativeTensor",
@@ -92,4 +100,6 @@ __all__ = [
     "NativeMSELoss",
     "NativeSGD",
     "NativeAdam",
+    "save_native_checkpoint",
+    "load_native_checkpoint",
 ]
