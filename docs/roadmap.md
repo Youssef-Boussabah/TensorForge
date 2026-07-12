@@ -273,12 +273,20 @@ The Python line is done; what remains is expansion on its own terms:
   deterministic stale-graph error — before any callback or gradient
   commit — when such a parameter was mutated after forward, while
   value-independent graphs (add/subtract/reductions/views) stay valid
-  with correct gradients. Still no optimizer or training loop. **The
-  next milestone is Advanced C++ v3.8 — NativeSGD** (a minimal
-  optimizer whose `step()` commits graph-free native updates through
-  the v3.7 mutation path; no momentum, weight decay, or training loop
-  initially). CUDA/GPU experiments are still entirely future work. The
-  Python framework stays the reference implementation.
+  with correct gradients. **v3.8 — NativeSGD — is implemented**: the
+  first native optimizer — minimal SGD over identity-deduplicated
+  `NativeParameter` objects with a strictly validated learning rate
+  and a two-phase mutation-atomic `step()` that stages graph-free
+  native updates and commits them through `copy_value_` (frozen and
+  gradient-less parameters skipped, identities and gradients
+  preserved, one version increment per updated parameter), plus
+  preflighted `zero_grad()` — no momentum, weight decay, parameter
+  groups, optimizer state, or training loop. **The next milestone is
+  Advanced C++ v3.9 — the first end-to-end native training proof** (a
+  small deterministic multi-iteration regression over the existing
+  model/loss/optimizer surface, asserting learning without fragile
+  exact-loss values). CUDA/GPU experiments are still entirely future
+  work. The Python framework stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -397,17 +405,25 @@ The Python line is done; what remains is expansion on its own terms:
     stale-graph backward error raised before any callback or gradient
     commit — while value-independent graphs (add/subtract/reductions/
     views) stay valid across mutation with correct gradients; shared
-    parameters expose one version through every alias — no optimizer
-    or training loop yet. **Next: v3.8 — NativeSGD** (an optimizer over
-    identity-deduplicated NativeParameter objects: real positive finite
-    learning-rate validation, `step()` committing graph-free native
-    updates through the v3.7 mutation path — `grad=None` and frozen
-    parameters skipped, identity preserved, one version increment per
-    updated parameter — `zero_grad()`, duplicate/shared-parameter
-    protection, and deterministic update tests; no momentum, weight
-    decay, or parameter groups initially, no training loop, and SGD is
-    not combined with the full MLP training example — the first
-    end-to-end model-training proof may remain v3.9).
+    parameters expose one version through every alias. **v3.8 —
+    NativeSGD — is complete**: the first native optimizer — minimal
+    SGD (`value ← value - lr * grad`) over identity-deduplicated open
+    NativeParameter objects stored by strong reference in
+    first-occurrence order (duplicate references and shared aliases:
+    one entry, one update, one version increment per step), a strictly
+    validated learning rate (real, non-bool, finite, strictly
+    positive), and a two-phase mutation-atomic `step()` — preflight,
+    frozen/`grad=None` skipping, exact gradient validation, graph-free
+    native staging at the core level, and commits through the v3.7
+    `copy_value_` path with gradients retained until a preflighted
+    `zero_grad()` — verified through a one-step
+    Sequential/Linear/ReLU/MSE integration; no momentum, weight decay,
+    parameter groups, optimizer state, schedulers, or training loop.
+    **Next: v3.9 — the first end-to-end native training proof** (a
+    small deterministic multi-iteration forward → loss → backward →
+    `step()` → `zero_grad()` regression over the existing surface,
+    asserting learning without fragile exact-loss values; no new
+    operations, layers, losses, or optimizer features).
   - **Then beyond:** the rest of the native training stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

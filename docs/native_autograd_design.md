@@ -989,16 +989,39 @@ is complete without it.**
   autograd never imports the module stack and no global graph registry
   exists. Verified test count at completion: **1230 tests** (1196 plus
   the 34 v3.7 tests, with one v3.3 assertion intentionally tightened to
-  the stale-error contract). The next milestone is **Advanced C++ v3.8
-  — NativeSGD**: an optimizer over identity-deduplicated
-  `NativeParameter` objects with real positive finite learning-rate
-  validation, `step()` committing graph-free native updates through the
-  v3.7 mutation path (skipping `grad=None` and frozen parameters,
-  preserving identity, one version increment per updated parameter),
-  `zero_grad()`, duplicate/shared-parameter protection, and
-  deterministic update tests — **no momentum, weight decay, or
-  parameter groups initially, and no training loop** (the first
-  end-to-end model-training proof may remain v3.9). Optimizers and
-  training are **not** combined into one milestone; each lands only
-  when the previous is tested and documented, with the Python framework
-  remaining the reference implementation.
+  the stale-error contract). **Its eighth milestone, Advanced C++ v3.8
+  — NativeSGD, is complete**: the first native optimizer — minimal SGD
+  (`value ← value - lr * grad`) over identity-deduplicated open
+  `NativeParameter` objects stored by strong reference in
+  first-occurrence order (duplicates and shared aliases: one entry, one
+  update, one version increment per step), a validated learning rate
+  (`numbers.Real`, `bool`/strings/coercibles rejected, finite, strictly
+  positive, normalized to float after validation), and a **two-phase
+  mutation-atomic `step()`**: preflight every stored parameter open →
+  skip frozen parameters before examining their gradients and skip
+  `grad=None` → validate every active gradient (open, exact
+  shape/dtype/device, index-named errors) → stage every updated value
+  natively at the autograd-unaware `NativeTensorCore` level (no graph
+  node possible, no NumPy, fresh owning temporaries; any failure
+  releases them and changes no value/version/gradient) → commit in
+  stored order through `copy_value_` (identity, registration,
+  `requires_grad`, and gradients preserved by identity and value; one
+  version increment per updated parameter, zero-gradient updates
+  included; staged temporaries released on every path; the one honest
+  caveat — an asynchronous interruption between commits after a fully
+  successful preflight — is documented rather than papered over with
+  private rollback). Gradients persist until `zero_grad()`, which
+  preflights all parameters open before clearing anything. The v3.7
+  staleness contract applies unchanged: sensitive graphs built before
+  `step()` raise the existing deterministic stale error afterwards, and
+  a fresh forward/backward trains on the updated values — verified
+  through a one-step Sequential/Linear/ReLU/MSE integration. Verified
+  test count at completion: **1249 tests** (1230 plus the 19 v3.8
+  tests). The next milestone is **Advanced C++ v3.9 — the first
+  end-to-end native training proof**: a small deterministic
+  multi-iteration forward → loss → backward → `step()` → `zero_grad()`
+  regression over the existing surface, asserting learning without
+  fragile exact-loss values — no new operations or optimizer features.
+  Optimizers and training are **not** combined into one milestone; each
+  lands only when the previous is tested and documented, with the
+  Python framework remaining the reference implementation.

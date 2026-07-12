@@ -386,6 +386,111 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native training stack — NativeSGD (v3.8)
+
+v3.8 adds the first native optimizer:
+`tensorforge.experimental.NativeSGD`, minimal stochastic gradient
+descent — `value ← value - lr * grad` — over `NativeParameter` objects,
+committed entirely through the v3.7 mutation contract. Pure Python over
+existing kernels: no new C++ work, no new operations. Deliberately
+**not** shipped: momentum, dampening, Nesterov, weight decay, parameter
+groups, per-parameter learning rates, schedulers, optimizer
+`state_dict`/checkpointing, `NativeAdam`, a training loop, or the
+multi-iteration MLP training proof (that is v3.9). Fully separate from
+the stable `tensorforge.optim` — neither accepts the other's objects,
+and the stable framework is untouched.
+
+```python
+from tensorforge.experimental import NativeSGD
+
+optimizer = NativeSGD(model.parameters(), lr=0.01)
+loss.backward()
+optimizer.step()       # value ← value - lr * grad, via copy_value_
+optimizer.zero_grad()  # gradients persist until this
+```
+
+**Parameter storage.** The constructor materializes the iterable
+exactly once (lists, `model.parameters()`, generators), validates every
+entry as an open `NativeParameter` (position-named errors; plain
+tensors, stable-framework objects, non-iterables, and empty collections
+rejected), and deduplicates **strictly by object identity** in
+first-occurrence order — duplicate references and shared-module aliases
+become one stored entry, one update, and one version increment per
+step; equal values are never merged. The optimizer stores strong
+references and owns nothing: it never copies, replaces, or closes a
+parameter, and constructor failure touches nothing. `parameters()`
+returns a snapshot list of the exact stored objects; `lr` is a
+read-only float.
+
+**Learning rate.** `lr` must be a real number (`numbers.Real`; `bool`
+explicitly rejected even though it subclasses `int`, as are strings and
+arbitrary float-coercible objects), finite, and strictly positive —
+NaN, ±infinity, zero, and negatives raise; nothing is clamped or
+rewritten; the accepted value is normalized to a Python float only
+after validation.
+
+**`step()` is two-phase and mutation-atomic on its public failure
+surface.** Phase 1: every stored parameter is preflighted as still
+open; the active set is selected (frozen `requires_grad=False`
+parameters are skipped *before* their gradients are examined — a frozen
+parameter with a stale gradient never updates; `grad is None`
+parameters are skipped); every active gradient is validated as an open
+`NativeTensor` of exactly the parameter's shape/dtype/device (no
+broadcasting, reshaping, casting, or device movement; index-named
+deterministic errors); and every updated value is staged **natively at
+the NativeTensorCore level** — the same autograd-unaware layer the
+engine's backward math uses, so `step()` can never build a graph node,
+never touches NumPy, and produces fresh owning staged tensors
+independent of every parameter and gradient. Any phase-1 failure
+(closed parameter, closed/mismatched gradient, native staging failure)
+releases all staged temporaries and changes **no value, no version, and
+no gradient** — the same optimizer recovers completely afterwards.
+Phase 2 commits each staged value through
+`NativeParameter.copy_value_()` in stored order: parameter identity,
+registrations, aliases, `requires_grad`, and the gradient (by identity
+and value) are preserved, each updated parameter's version increments
+exactly once (a numerically unchanged update — a zero gradient — still
+increments: the owned value was replaced), and staged temporaries are
+released on every exit path. One narrow, honest limitation: after a
+fully successful preflight the commits cannot fail through any public
+surface, but an asynchronous interruption (e.g. KeyboardInterrupt)
+between two commits would leave earlier parameters updated and later
+ones not — each individual commit stays atomic and version-consistent,
+and no private rollback is manufactured for that window.
+
+**Gradients and `zero_grad()`.** `step()` never clears, replaces,
+mutates, or closes a gradient — gradients persist until `zero_grad()`,
+which preflights every stored parameter as open (failing before any
+clearing; never a partial clear) and then delegates to each parameter's
+own `zero_grad()` — values, versions, identities, `requires_grad`, and
+registrations untouched; frozen parameters included harmlessly. No
+`set_to_none` option in this milestone.
+
+**v3.7 integration.** An optimizer step is exactly the mutation the
+version contract guards: a value-sensitive graph (multiply/matmul/relu
+edges) built before `step()` becomes stale after it — the next
+`backward()` raises the existing deterministic stale-value error with
+every gradient untouched — and a fresh forward/backward trains on
+against the updated values. The staleness classification is unchanged.
+Verified end to end through
+`NativeSequential(NativeLinear → NativeReLU → NativeLinear)` +
+`NativeMSELoss`: one forward → loss → backward → `step()` (exact SGD
+arithmetic on all four parameters, identities stable, versions +1,
+gradients retained by identity and value) → `zero_grad()` → a fresh
+forward/backward — deliberately **one** verified step, not a training
+loop.
+
+Everything above is locked by `tests/test_native_sgd.py` (selector:
+`-k "native_sgd"` — 19 tests, tripwire-tested NumPy-free step and
+zero_grad paths), and the full suite passes at **1249 tests**. Still
+float64/cpu only, still explicit and experimental. The next milestone
+is **Advanced C++ v3.9 — the first end-to-end native training proof**:
+a small deterministic multi-iteration forward → loss → backward →
+`step()` → `zero_grad()` regression over the existing
+Sequential/Linear/ReLU/MSE/SGD surface, asserting learning without
+fragile exact-loss values — no new operations, layers, losses, or
+optimizer features.
+
 ### Native training stack — parameter mutation safety and versioning (v3.7)
 
 v3.7 makes identity-preserving parameter mutation **safe**: it adds
@@ -2079,17 +2184,20 @@ concrete layer, `NativeLinear`, its backward supplied entirely by the
 existing autograd — v3.5 completed the first composable model surface
 with `NativeReLU` and `NativeSequential` — v3.6 added the first native
 loss, `NativeMSELoss`, closing the forward side of the training story:
-model → loss → backward now runs natively end to end — and v3.7
-(above) made parameter mutation safe: value-version counters, the
-controlled `copy_value_` no-grad mutation primitive, version-
-incrementing state loads, and deterministic stale-graph errors where a
-mutated parameter's forward value is needed by backward.** There is
-still no optimizer, file serialization, or training loop — the
-recommended next milestone is **v3.8 — NativeSGD** (an optimizer over
-identity-deduplicated parameters whose `step()` commits graph-free
-native updates through the v3.7 mutation path; no momentum, weight
-decay, or training loop initially); `divide` backward remains separate
-later work.
+model → loss → backward now runs natively end to end — v3.7 made
+parameter mutation safe: value-version counters, the controlled
+`copy_value_` no-grad mutation primitive, version-incrementing state
+loads, and deterministic stale-graph errors where a mutated
+parameter's forward value is needed by backward — and v3.8 (above)
+added the first native optimizer, `NativeSGD`: identity-deduplicated
+parameter storage, a validated learning rate, and a two-phase
+mutation-atomic `step()` that stages graph-free native updates and
+commits them through `copy_value_`, plus `zero_grad()`.** There is
+still no file serialization or training loop — the recommended next
+milestone is **v3.9 — the first end-to-end native training proof** (a
+small deterministic multi-iteration regression over the existing
+model/loss/optimizer surface, asserting learning without fragile
+exact-loss values); `divide` backward remains separate later work.
 CUDA experiments remain a separate future branch (where `device` gains a
 second value), and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation

@@ -40,9 +40,16 @@ the one controlled no-grad mutation primitive (the future NativeSGD
 commit path), ``load_state_dict`` increments each loaded parameter's
 version atomically, and ``backward()`` raises a deterministic
 stale-graph error when a parameter whose forward value backward must
-read (multiply/matmul/relu edges) was mutated after forward. No
-optimizers, file serialization, or training loop yet, and still fully
-separate from ``tensorforge.nn``.
+read (multiply/matmul/relu edges) was mutated after forward.
+``NativeSGD`` (Advanced C++ v3.8) is the first native optimizer:
+minimal stochastic gradient descent over identity-deduplicated
+NativeParameter objects — graph-free native update staging committed
+through ``copy_value_``, frozen and gradient-less parameters skipped,
+gradients retained until ``zero_grad()`` — with no momentum, weight
+decay, parameter groups, optimizer state, or schedulers. No file
+serialization or training loop yet (the end-to-end training proof is
+v3.9), and still fully separate from ``tensorforge.nn`` and
+``tensorforge.optim``.
 
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).
@@ -55,6 +62,7 @@ from .native_linear import NativeLinear
 from .native_relu import NativeReLU
 from .native_sequential import NativeSequential
 from .native_mse_loss import NativeMSELoss
+from .native_sgd import NativeSGD
 
 __all__ = [
     "NativeTensor",
@@ -65,4 +73,5 @@ __all__ = [
     "NativeReLU",
     "NativeSequential",
     "NativeMSELoss",
+    "NativeSGD",
 ]

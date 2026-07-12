@@ -811,4 +811,64 @@ version increment per updated parameter), `zero_grad()`,
 duplicate/shared-parameter protection, and deterministic update tests —
 with no momentum, weight decay, or parameter groups initially, no
 training loop, and no combination with the full MLP training example
-(the first end-to-end model-training proof may remain v3.9).
+(the first end-to-end model-training proof may remain v3.9). **v3.8**
+delivers that optimizer (one new module,
+`src/tensorforge/experimental/native_sgd.py`; `NativeTensor`,
+`NativeParameter`, `NativeModule`, the layers, the loss, the C++
+kernels, and the stable framework — `tensorforge.optim` included — are
+all untouched). `NativeSGD(parameters, lr)` materializes the parameter
+iterable exactly once (lists, `model.parameters()`, generators),
+validates every entry as an open `NativeParameter` (position-named
+errors; plain tensors, stable-framework objects, non-iterables, and
+empty collections rejected), stores strong references
+**identity-deduplicated in first-occurrence order** (duplicates and
+shared-module aliases: one entry, one update, one version increment per
+step; never value equality; the optimizer owns nothing and never
+closes, copies, or replaces a parameter), and validates `lr` as a real
+number (`bool` explicitly rejected, as are strings and float-coercible
+objects), finite, and strictly positive — normalized to a Python float
+only after validation, never clamped. **`step()` is two-phase and
+mutation-atomic on its public failure surface**: phase 1 preflights
+every stored parameter open, skips frozen parameters *before* examining
+their gradients (a frozen parameter with a stale gradient never
+updates) and skips `grad=None`, validates every active gradient (an
+open NativeTensor of exactly the parameter's shape/dtype/device,
+index-named deterministic errors), and stages every `value - lr * grad`
+natively at the autograd-unaware `NativeTensorCore` level — no graph
+node possible, no NumPy (tripwire-tested), fresh owning temporaries
+independent of every parameter and gradient — with any failure
+releasing all staged temporaries and changing no value, version, or
+gradient (the same optimizer recovers completely); phase 2 commits in
+stored order through `copy_value_()` — identity, registration, aliases,
+`requires_grad`, and gradients preserved by identity and value, one
+version increment per updated parameter (zero-gradient updates still
+increment: the owned value was replaced), staged temporaries released
+on every exit path. One narrow documented limitation: after a fully
+successful preflight the commits cannot fail through any public
+surface, but an asynchronous interruption (e.g. KeyboardInterrupt)
+between two commits would leave earlier parameters updated — each
+individual commit stays atomic and version-consistent, and no private
+rollback is manufactured. Gradients persist until **`zero_grad()`**,
+which preflights all stored parameters open before clearing anything
+(never a partial clear), then delegates to each parameter's own
+`zero_grad()` — values, versions, identities, and registrations
+untouched, frozen parameters included. The **v3.7 staleness contract
+applies unchanged**: value-sensitive graphs built before `step()` raise
+the existing deterministic stale error afterwards with gradients
+untouched, and a fresh forward/backward trains on the updated values —
+verified through a one-step
+`NativeSequential(Linear → ReLU → Linear)` + `NativeMSELoss`
+integration (exact SGD arithmetic on all four parameters, stable
+identities, versions +1, gradients retained, `zero_grad`, fresh pass).
+Deliberately **not** shipped: momentum, dampening, Nesterov, weight
+decay, parameter groups, per-parameter learning rates, schedulers,
+optimizer `state_dict`, checkpointing, `NativeAdam`, a training loop,
+or the multi-iteration MLP proof. 19 focused tests
+(`tests/test_native_sgd.py`, selector `-k "native_sgd"`) lock the
+contract; the full suite passes at **1249 tests**. The next milestone
+is **Advanced C++ v3.9 — the first end-to-end native training proof**:
+a small deterministic multi-iteration forward → loss → backward →
+`step()` → `zero_grad()` regression over the existing
+Sequential/Linear/ReLU/MSE/SGD surface, asserting learning without
+fragile exact-loss values — no new operations, layers, losses, or
+optimizer features.
