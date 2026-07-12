@@ -6,7 +6,7 @@ stack: C++ kernels (odometer + contiguous fast path, sharing the relu
 signature) → ctypes bindings → NativeTensorCore.sqrt()/reciprocal() →
 NativeTensor.sqrt()/reciprocal() → native autograd. They exist because
 NativeAdam (v3.12) needs a square-root denominator and reciprocal
-scaling; NativeAdam itself is not implemented.
+scaling; NativeAdam itself landed separately in v3.12.
 
 The autograd design is **saved forward results**: d(sqrt(x))/dx =
 1/(2*sqrt(x)) is computed as 0.5 * reciprocal(saved output) and
@@ -360,12 +360,13 @@ def test_native_optimizer_math_uses_no_numpy_compute(monkeypatch):
 
 @needs_native
 def test_native_optimizer_math_scope_boundaries_hold():
-    # No general division API, no NativeAdam, no operator overloads.
+    # No general division API and no operator overloads — NativeAdam
+    # shipped in v3.12 without adding either.
     x = NativeTensor.from_array(VALUES)
     assert not hasattr(x, "divide") and not hasattr(x, "__truediv__")
     assert not hasattr(cpp.NativeTensorCore.from_array(VALUES), "divide")
     import tensorforge.experimental as experimental
-    assert not hasattr(experimental, "NativeAdam")
+    assert hasattr(experimental, "NativeAdam")
     # The stable Tensor is untouched and still has its own sqrt-free
     # native isolation: the native ops reject nothing new from it
     # because they are methods, not dispatchers.

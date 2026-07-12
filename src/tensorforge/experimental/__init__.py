@@ -46,10 +46,17 @@ minimal stochastic gradient descent over identity-deduplicated
 NativeParameter objects — graph-free native update staging committed
 through ``copy_value_``, frozen and gradient-less parameters skipped,
 gradients retained until ``zero_grad()`` — with no momentum, weight
-decay, parameter groups, optimizer state, or schedulers. No file
-serialization or training loop yet (the end-to-end training proof is
-v3.9), and still fully separate from ``tensorforge.nn`` and
-``tensorforge.optim``.
+decay, parameter groups, optimizer state, or schedulers.
+``NativeAdam`` (Advanced C++ v3.12) is the native adaptive optimizer:
+persistent optimizer-owned native first/second-moment buffers,
+per-parameter step counters, bias correction via the v3.11
+``sqrt``/``reciprocal`` primitives (no division), graph-free staged
+updates committed through ``copy_value_``, validated
+``lr``/``betas``/``eps``, and an explicit state lifetime
+(``close()``) — with no weight decay, AMSGrad, parameter groups,
+schedulers, or optimizer ``state_dict``/checkpointing (optimizer-state
+serialization is v3.13). No file serialization, and still fully
+separate from ``tensorforge.nn`` and ``tensorforge.optim``.
 
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).
@@ -63,6 +70,7 @@ from .native_relu import NativeReLU
 from .native_sequential import NativeSequential
 from .native_mse_loss import NativeMSELoss
 from .native_sgd import NativeSGD
+from .native_adam import NativeAdam
 
 __all__ = [
     "NativeTensor",
@@ -74,4 +82,5 @@ __all__ = [
     "NativeSequential",
     "NativeMSELoss",
     "NativeSGD",
+    "NativeAdam",
 ]

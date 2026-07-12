@@ -304,8 +304,18 @@ The Python line is done; what remains is expansion on its own terms:
   after forward leaves those edges valid — IEEE float64
   exceptional-value semantics locked by tests, and no general
   division (`reciprocal` + `multiply` compose what the stack needs):
-  the reusable math NativeAdam requires. Phase C is **not** complete;
-  the intended sequence continues with **v3.12 — NativeAdam, v3.13 —
+  the reusable math NativeAdam requires. **v3.12 — NativeAdam — is
+  complete**: the native adaptive optimizer — validated
+  `lr`/`betas`/`eps`, identity-deduplicated parameters, eagerly
+  allocated optimizer-owned native first/second-moment buffers and
+  per-parameter step counters, bias-corrected graph-free updates
+  staged at the core level (reciprocal + sqrt, no division) and
+  committed through `copy_value_`, gradients retained until
+  `zero_grad()`, mutation-atomic public failures, and an explicit
+  state lifetime (`close()`) — with no weight decay, AMSGrad,
+  parameter groups, schedulers, or optimizer
+  state_dict/checkpointing yet. Phase C is **not** complete;
+  the intended sequence continues with **v3.13 —
   native optimizer state, v3.14 — native checkpointing and
   deterministic resume, v3.15 — Phase C guardrails and completion**,
   then the native CNN stack, the CUDA runtime, dtype/AMP work,
@@ -472,9 +482,25 @@ The Python line is done; what remains is expansion on its own terms:
     view support with fresh owning contiguous outputs, and finite-
     difference-verified gradients — the reusable math for the native
     adaptive optimizer, with general division still deliberately
-    unshipped. **Next: v3.12 — NativeAdam**, then v3.13 — native
-    optimizer state, v3.14 — native checkpointing and deterministic
-    resume, and v3.15 — Phase C guardrails and completion.
+    unshipped. **v3.12 — NativeAdam — is complete**: the native
+    adaptive optimizer over the v3.7 mutation contract and the v3.11
+    primitives — the NativeSGD parameter contract unchanged
+    (identity-deduplicated open NativeParameters, position-named
+    errors), strictly validated `lr`/`betas`/`eps`, eagerly allocated
+    optimizer-owned graph-free moment buffers and per-parameter step
+    counters (skipped parameters never age; late activation starts at
+    t = 1; shared aliases advance once), bias-corrected updates staged
+    entirely at the autograd-unaware core level and committed through
+    `copy_value_` (one version increment per update, old moments
+    closed only after their replacements are installed), preflighted
+    `zero_grad()`, mutation-atomic public failure behavior with the
+    documented asynchronous-interruption windows, and an explicit
+    idempotent `close()` for the optimizer-owned state — with no
+    weight decay, AMSGrad, parameter groups, schedulers, optimizer
+    state_dict, or checkpointing. **Next: v3.13 — native
+    optimizer state**, then v3.14 — native checkpointing and
+    deterministic resume, and v3.15 — Phase C guardrails and
+    completion.
   - **Then beyond:** the rest of the native training stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

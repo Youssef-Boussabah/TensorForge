@@ -134,6 +134,7 @@ def test_native_support_matrix_is_canonical_and_honest():
         "retain_graph", "Stale parameter-version detection",
         "NativeParameter", "NativeModule", "state_dict", "NativeLinear",
         "NativeReLU", "NativeSequential", "NativeMSELoss", "NativeSGD",
+        "NativeAdam",  # v3.12 adaptive optimizer
         "native_mlp_training.py",
     )
     for term in shipped:
@@ -143,7 +144,7 @@ def test_native_support_matrix_is_canonical_and_honest():
     assert "## Unsupported or future" in text
     supported_part = text.split("## Unsupported or future", 1)[0]
     future_part = text.split("## Unsupported or future", 1)[1]
-    for term in ("NativeAdam", "CUDA", "float32",
+    for term in ("CUDA", "float32",
                  "Conv2d", "MaxPool2d", "AMP"):
         assert term in future_part, (
             f"support matrix does not list {term!r} as unsupported/future"
@@ -165,7 +166,7 @@ def test_experimental_exports_stay_intentional():
     assert set(experimental.__all__) == {
         "NativeTensor", "NativeParameter", "NativeParameterRegistry",
         "NativeModule", "NativeLinear", "NativeReLU", "NativeSequential",
-        "NativeMSELoss", "NativeSGD",
+        "NativeMSELoss", "NativeSGD", "NativeAdam",
     }
     for name in experimental.__all__:
         assert hasattr(experimental, name)

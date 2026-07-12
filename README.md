@@ -75,7 +75,9 @@ reached explicitly through `tensorforge.experimental` and
   (value versioning and a controlled mutation path with stale-graph
   detection), `NativeModule` with atomic `state_dict`/
   `load_state_dict`, `NativeLinear`, `NativeReLU`, `NativeSequential`,
-  `NativeMSELoss`, and the minimal `NativeSGD` optimizer.
+  `NativeMSELoss`, the minimal `NativeSGD` optimizer, and the
+  adaptive `NativeAdam` optimizer (persistent native moment state,
+  per-parameter bias correction, explicit state lifetime).
 - **A native MLP training proof**: `examples/native_mlp_training.py`
   trains a 2→8→ReLU→1 MLP for 25 deterministic native SGD steps with a
   monotonic 99.5% loss reduction — model, loss, gradients, and updates
@@ -192,8 +194,8 @@ Honest expectations:
   experimental C++ **CPU** backend: float64/cpu only, no CUDA backend
   yet, no dtype promotion or casting, and no implicit dispatch into
   `tensorforge.Tensor`.
-- The native stack has no CNN layers, no adaptive optimizer, and no
-  optimizer state or checkpointing yet — see the
+- The native stack has no CNN layers and no optimizer state
+  serialization or checkpointing yet — see the
   [native support matrix](docs/native_support_matrix.md).
 - `Conv2d` and `MaxPool2d` (stable line) use deliberately naive loops.
 - Benchmarks are hardware-specific characterizations with no universal

@@ -1064,12 +1064,50 @@ is complete without it.**
   ±inf, ±inf → ±0; NaN propagates), and general division remains
   unshipped — `reciprocal` + `multiply` compose everything the stack
   (and the future NativeAdam denominator) needs. Verified test count
-  at completion: **1282 tests** (1264 plus the 18 v3.11 tests). The
-  next milestone is **Advanced C++ v3.12 — NativeAdam**: the adaptive
-  optimizer over the v3.7 mutation contract and these primitives, with
-  v3.13 — native optimizer state, v3.14 — native checkpointing and
-  deterministic resume, and v3.15 — Phase C guardrails and completion
-  after it. Optimizers and training are **not** combined into
+  at completion: **1282 tests** (1264 plus the 18 v3.11 tests). **Its
+  twelfth milestone, Advanced C++ v3.12 — NativeAdam, is complete**:
+  the native adaptive optimizer — minimal correct Adam over
+  identity-deduplicated open `NativeParameter` objects (the NativeSGD
+  parameter contract unchanged) with strictly validated
+  `lr`/`betas`/`eps` (real, non-bool, finite; `lr`/`eps` strictly
+  positive; each beta in `[0, 1)`; normalized to floats, read-only),
+  **eagerly allocated optimizer-owned state** — per unique parameter,
+  first/second moments as plain graph-free `NativeTensor` zeros of
+  exactly the parameter's metadata (never registered, never in
+  `model.state_dict()`) plus a per-parameter step counter driving bias
+  correction (skipped frozen/`grad=None` parameters never age moments
+  or counters; a later-activated parameter starts at `t = 1`; a
+  present zero gradient is active) — and a two-phase mutation-atomic
+  `step()`: full preflight (optimizer open, parameters open, m/v open
+  and metadata-matched, frozen skipped before their gradients are
+  inspected, active gradients exactly validated), graph-free staging
+  at the autograd-unaware core level of `m_new = β₁m + (1−β₁)g`,
+  `v_new = β₂v + (1−β₂)g²`, and `parameter_new = parameter − lr ·
+  m_hat · reciprocal(sqrt(v_hat) + eps)` with the bias corrections as
+  native reciprocals of scalar `1 − βᵗ` cores (Python exponentiation
+  only for the scalar coefficients; no division operation; any
+  staging failure closes every temporary and changes no value,
+  version, moment, counter, or gradient), then ordered commits
+  through `copy_value_` — version +1 per updated parameter, staged
+  moments installed before the replaced old buffers are closed, the
+  staged parameter value always released. Gradients persist until the
+  preflighted `zero_grad()`; the v3.7 staleness classification is
+  unchanged (old sensitive graphs raise after `step()`, fresh
+  forwards train on). Lifetime is explicit: idempotent `close()`
+  (context managers supported) releases the owned moments exactly
+  once, `step()`/`zero_grad()` reject afterwards, parameters and
+  gradients stay caller-owned, and the honest asynchronous-
+  interruption windows (between commits, and within an entry between
+  the parameter commit and the state installation) are documented
+  rather than papered over with private rollback. Deliberately not
+  shipped: weight decay, AMSGrad, parameter groups, schedulers,
+  optimizer `state_dict`/checkpointing (v3.13/v3.14), general
+  division, fused kernels, or in-place arithmetic. Verified test
+  count at completion: **1315 tests** (1282 plus the 33 v3.12 tests).
+  The next milestone is **Advanced C++ v3.13 — native optimizer
+  state**, with v3.14 — native checkpointing and deterministic
+  resume, and v3.15 — Phase C guardrails and completion after it.
+  Optimizers and training are **not** combined into
   one milestone; each lands only when the previous is tested and
   documented, with the Python framework remaining the reference
   implementation.

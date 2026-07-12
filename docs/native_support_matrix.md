@@ -1,8 +1,7 @@
 # Native support matrix
 
 The canonical statement of what the **experimental native C++ CPU
-line** supports today, as of Advanced C++ v3.11 (optimizer math
-primitives). The stable Python framework's features (see
+line** supports today, as of Advanced C++ v3.12 (NativeAdam). The stable Python framework's features (see
 [architecture.md](architecture.md)) are **not** listed here — a feature
 appears as supported only if the native stack itself provides it.
 Everything below is float64/cpu only, explicit, and experimental; see
@@ -68,6 +67,7 @@ design.
 | `NativeSequential` | Supported | Ordered container with contiguous integer-string slots |
 | `NativeMSELoss` | Supported | `"mean"` / `"sum"` reductions; exact shapes, no broadcasting |
 | `NativeSGD` | Supported | Minimal `value ← value − lr·grad`; identity-deduplicated; two-phase mutation-atomic `step()`; `zero_grad()` |
+| `NativeAdam` | Supported | Adaptive optimizer (v3.12): validated `lr`/`betas`/`eps`; persistent optimizer-owned native m/v moments and per-parameter step counts; bias correction via `sqrt`/`reciprocal` (no division); graph-free staged updates committed through `copy_value_`; skipped frozen/`grad=None` parameters never age state; explicit state lifetime — `close()` releases the moments; in-memory only, no `state_dict` |
 | End-to-end MLP training | Proven | `examples/native_mlp_training.py`: 25 deterministic steps, monotonic 99.5% loss reduction |
 
 ## Unsupported or future (native line)
@@ -79,9 +79,12 @@ in the stable Python framework — that does not make them native.
   kernel exists at the kernel layer, but no tensor op and no backward;
   `reciprocal` + `multiply` compose what the training stack needs)
 - `exp`, `log`, `tanh`, `sigmoid`, `softmax`
-- an adaptive optimizer (NativeAdam is planned as v3.12)
-- optimizer state and its serialization
+- optimizer state serialization (`state_dict`/`load_state_dict` for the
+  native optimizers — planned as v3.13; the in-memory moment state
+  exists but cannot be exported or restored)
 - checkpointing / resume
+- weight decay, AMSGrad, parameter groups, per-parameter learning
+  rates, or schedulers on the native optimizers
 - native `Conv2d`, `MaxPool2d`, `Flatten`, or any CNN stack
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP

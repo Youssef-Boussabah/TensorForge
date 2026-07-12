@@ -1003,5 +1003,69 @@ finite-difference gradients, explicit upstreams, chain and
 shared-subgraph accumulation, graph lifetime with the
 closed-saved-output failure, version independence plus the
 still-guarded sensitive edge, a NumPy tripwire, and scope boundaries)
-lock the contract; the full suite passes at **1282 tests**. The next
-milestone is **Advanced C++ v3.12 — NativeAdam**.
+lock the contract; the full suite passes at **1282 tests**. **v3.12**
+delivers **NativeAdam** — the native adaptive optimizer:
+`tensorforge.experimental.NativeAdam(parameters, lr=0.001,
+betas=(0.9, 0.999), eps=1e-8)`, minimal correct Adam over
+`NativeParameter` objects with **no new C++ work and no new
+operations** — the v3.7 mutation contract and the v3.11
+`sqrt`/`reciprocal` primitives compose everything. The NativeSGD
+parameter contract carries over unchanged (one materialization,
+position-named validation of open `NativeParameter` entries, strict
+identity deduplication in first-occurrence order, strong references,
+nothing owned); `lr`/`eps` must be real, non-bool, finite, and
+strictly positive and each beta real, non-bool, finite, and in
+`[0, 1)` (exactly two, tuple or list; normalized to floats after
+validation; read-only properties). **State is optimizer-owned and
+eager**: per unique parameter, first/second moments as plain
+graph-free `NativeTensor` zeros of exactly the parameter's
+shape/dtype/device (never `NativeParameter`, never registered, never
+in `model.state_dict()`) plus a per-parameter step counter (read-only
+`step_counts`) driving bias correction — skipped frozen/`grad=None`
+parameters never age moments or counters, a later-activated parameter
+takes its first bias-corrected update at `t = 1`, a present
+zero-valued gradient is active, and shared aliases advance once. A
+constructor failure mid-allocation releases every buffer created so
+far and touches nothing of the caller's. **`step()` extends the
+two-phase mutation-atomic design with state**: preflight (optimizer
+open, parameters open, every entry's m/v open and metadata-matched,
+frozen skipped before gradient inspection, active gradients exactly
+validated) → graph-free core-level staging of `m_new = β₁m + (1−β₁)g`,
+`v_new = β₂v + (1−β₂)g²`, and `parameter_new = parameter − lr·m_hat·
+reciprocal(sqrt(v_hat) + eps)` with bias corrections as native
+reciprocals of scalar `1 − βᵗ` cores (Python exponentiation only for
+the scalar coefficients; no division; `eps > 0` keeps the denominator
+positive) → ordered commits through `copy_value_` (identity,
+registration, `requires_grad`, and gradients preserved; one version
+and one counter increment per updated parameter; staged moments
+installed before the old buffers are closed; the staged parameter
+value always released). Any public failure — later bad/closed
+gradient, closed parameter, corrupted moment state, staging failure —
+changes no value, version, moment, counter, or gradient, and the same
+optimizer recovers; the two honest asynchronous-interruption windows
+(between commits, and within an entry between parameter commit and
+state installation) are documented rather than papered over with
+private rollback. Gradients persist until the preflighted
+`zero_grad()`; v3.7 staleness applies unchanged (old sensitive graphs
+raise after `step()`, fresh forwards train on the updated values —
+verified by a 20-iteration deterministic Sequential/Linear/ReLU/MSE
+Adam training run with >50% loss reduction). **Lifetime is
+explicit**: idempotent `close()` (context managers supported)
+releases the owned moments exactly once and makes
+`step()`/`zero_grad()` reject deterministically, while parameters,
+gradients, and the plain-Python introspection surface stay untouched.
+Deliberately **not** shipped: weight decay, AMSGrad, parameter
+groups, per-parameter learning rates, schedulers, optimizer
+`state_dict`/`load_state_dict`, checkpointing/resume, general tensor
+division, fused kernels, in-place arithmetic, or a global no-grad
+context; the stable `Adam` is untouched. 33 focused tests
+(`tests/test_native_adam.py`, selector `-k "native_adam"`:
+constructor/dedup/rejection behavior, constructor-failure state
+release, full hyperparameter validation, state
+initialization/aliasing/ownership, exact one-step and multi-step
+oracle trajectories, determinism, skipping and late-activation
+semantics, zero_grad preservation, failure atomicity with recovery,
+stale-graph integration, lifetime/close, NumPy tripwire and scope
+boundaries, and the end-to-end MLP run) lock the contract; the full
+suite passes at **1315 tests**. The next milestone is **Advanced C++
+v3.13 — native optimizer state**.
