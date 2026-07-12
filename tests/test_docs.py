@@ -129,6 +129,7 @@ def test_native_support_matrix_is_canonical_and_honest():
         "NativeStorage", "NativeTensorView", "NativeTensorCore",
         "NativeTensor",
         "add", "subtract", "multiply", "relu", "matmul", "sum", "mean",
+        "sqrt", "reciprocal",  # v3.11 optimizer math primitives
         "reshape", "transpose", "narrow", "contiguous_copy",
         "retain_graph", "Stale parameter-version detection",
         "NativeParameter", "NativeModule", "state_dict", "NativeLinear",
@@ -142,7 +143,7 @@ def test_native_support_matrix_is_canonical_and_honest():
     assert "## Unsupported or future" in text
     supported_part = text.split("## Unsupported or future", 1)[0]
     future_part = text.split("## Unsupported or future", 1)[1]
-    for term in ("NativeAdam", "CUDA", "sqrt", "reciprocal", "float32",
+    for term in ("NativeAdam", "CUDA", "float32",
                  "Conv2d", "MaxPool2d", "AMP"):
         assert term in future_part, (
             f"support matrix does not list {term!r} as unsupported/future"

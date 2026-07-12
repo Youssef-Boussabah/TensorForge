@@ -1,8 +1,8 @@
 # Native support matrix
 
 The canonical statement of what the **experimental native C++ CPU
-line** supports today, as of the Advanced C++ v3.10 integration
-checkpoint. The stable Python framework's features (see
+line** supports today, as of Advanced C++ v3.11 (optimizer math
+primitives). The stable Python framework's features (see
 [architecture.md](architecture.md)) are **not** listed here — a feature
 appears as supported only if the native stack itself provides it.
 Everything below is float64/cpu only, explicit, and experimental; see
@@ -30,6 +30,8 @@ design.
 | `subtract` | Yes | Yes | Broadcasting; right operand's gradient negated |
 | `multiply` | Yes | Yes | Broadcasting; each gradient reads the other operand |
 | `relu` | Yes | Yes | Fused native `relu_backward` mask kernel |
+| `sqrt` | Yes | Yes | v3.11 optimizer math primitive; backward `1/(2·sqrt(x))` from the **saved forward output** — IEEE: negatives → NaN, signed zeros preserved |
+| `reciprocal` | Yes | Yes | v3.11 optimizer math primitive; backward `−1/x²` from the **saved forward output** — IEEE: ±0 → ±inf, ±inf → ±0, NaN propagates |
 | `matmul` | Yes | Yes | 2-D only, no batching/broadcasting |
 | `sum` | Yes | Yes | All elements or one axis; `keepdims` |
 | `mean` | Yes | Yes | All elements or one axis; `keepdims` |
@@ -49,7 +51,8 @@ design.
 | Gradient accumulation | Supported | Multiple paths sum; leaves retain `.grad` |
 | One-shot graph release | Supported | Default `backward()` frees the traversed graph deterministically |
 | `retain_graph=True` | Supported | Repeated passes accumulate until `zero_grad()` |
-| Stale parameter-version detection | Supported | Mutated-after-forward parameters raise before any gradient changes (v3.7) |
+| Stale parameter-version detection | Supported | Mutated-after-forward parameters raise before any gradient changes (v3.7) — recorded only where backward reads a direct parent's current value |
+| Saved-forward-result backwards | Supported | `sqrt`/`reciprocal` backward reads the recorded output, never the parent — parameter mutation after forward leaves those edges valid (v3.11) |
 | Failure rollback | Supported | A failed pass commits no partial gradients and frees nothing |
 | Double backward / higher-order | Not supported | No graph is built through backward math |
 
@@ -73,8 +76,9 @@ None of the following exists on the native stack today. Several exist
 in the stable Python framework — that does not make them native.
 
 - `divide` as a NativeTensor operation (a raw ctypes `elementwise_divide`
-  kernel exists at the kernel layer, but no tensor op and no backward)
-- `sqrt`, `reciprocal`, `exp`, `log`, `tanh`, `sigmoid`, `softmax`
+  kernel exists at the kernel layer, but no tensor op and no backward;
+  `reciprocal` + `multiply` compose what the training stack needs)
+- `exp`, `log`, `tanh`, `sigmoid`, `softmax`
 - an adaptive optimizer (NativeAdam is planned as v3.12)
 - optimizer state and its serialization
 - checkpointing / resume

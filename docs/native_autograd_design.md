@@ -1037,10 +1037,39 @@ is complete without it.**
   values, and version history `[N, N, N, N]`), a tripwire proves the
   training computation never touches NumPy, and everything the run
   creates is closed on the way out. Verified test count at completion:
-  **1262 tests** (1249 plus the 13 v3.9 tests). The next milestone is
-  **Advanced C++ v3.10 — NativeAdam**: a second native optimizer with
-  per-parameter adaptive state committed through the same v3.7
-  mutation contract. Optimizers and training are **not** combined into
+  **1262 tests** (1249 plus the 13 v3.9 tests). **Its tenth milestone,
+  Advanced C++ v3.10, became the integration checkpoint** (honest
+  presentation, the canonical support matrix, documentation/export
+  guardrails, CI/hygiene audits — no numerical behavior; **1264
+  tests**), re-sequencing the adaptive optimizer to v3.12. **Its
+  eleventh milestone, Advanced C++ v3.11 — native optimizer math
+  primitives, is complete**: differentiable native `sqrt` and
+  `reciprocal` through the whole stack — new unary C++ kernels (a
+  generic strided odometer plus a contiguous fast path, generalizing
+  relu exactly as `tf_core_binary` generalizes the binary set), ctypes
+  bindings, core methods, and wrapper methods whose backwards use
+  **saved forward results**: `d(sqrt(x))/dx = 0.5 · reciprocal(out)`
+  and `d(1/x)/dx = −out²`, computed at the autograd-unaware core level
+  from the recorded output — never the parent's current value — so
+  under the v3.7 rule **neither operation records an expected
+  parameter version**: parameter mutation after forward leaves these
+  edges valid with gradients correct for the recorded forward, while
+  mixed graphs stay guarded by their genuinely sensitive edges, and no
+  existing classification changed. The saved output is graph-owned
+  (the closure that holds it is released by one-shot cleanup,
+  preserved under `retain_graph=True`; a closed saved output fails
+  backward deterministically with the graph intact and no partial
+  gradients). IEEE float64 exceptional values are locked by tests
+  (sqrt: negatives → NaN, signed zeros preserved; reciprocal: ±0 →
+  ±inf, ±inf → ±0; NaN propagates), and general division remains
+  unshipped — `reciprocal` + `multiply` compose everything the stack
+  (and the future NativeAdam denominator) needs. Verified test count
+  at completion: **1282 tests** (1264 plus the 18 v3.11 tests). The
+  next milestone is **Advanced C++ v3.12 — NativeAdam**: the adaptive
+  optimizer over the v3.7 mutation contract and these primitives, with
+  v3.13 — native optimizer state, v3.14 — native checkpointing and
+  deterministic resume, and v3.15 — Phase C guardrails and completion
+  after it. Optimizers and training are **not** combined into
   one milestone; each lands only when the previous is tested and
   documented, with the Python framework remaining the reference
   implementation.

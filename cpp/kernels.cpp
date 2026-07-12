@@ -5,6 +5,7 @@
 // no NumPy headers — the wrapper on the Python side handles arrays,
 // shapes, and validation; this file only does the arithmetic.
 
+#include <cmath>
 #include <cstdint>
 #include <new>
 
@@ -111,6 +112,67 @@ double tf_op_multiply(double x, double y) { return x * y; }
 // Python Tensor's (x > 0) * grad convention exactly.
 double tf_op_relu_backward(double x, double u) { return x > 0.0 ? u : 0.0; }
 
+// Unary counterparts of the binary walkers (v3.11): the same odometer
+// and contiguous fast-path strategy over a single strided source.
+// Both new operations follow IEEE float64 semantics: std::sqrt gives
+// NaN for negative inputs, preserves signed zeros, and maps +inf to
+// +inf; 1.0/x gives signed infinities for signed zeros and signed
+// zeros for signed infinities, and NaN propagates through both. These
+// are the same values NumPy produces (NumPy additionally warns on
+// divide-by-zero; these kernels do not).
+typedef double (*TfUnaryOp)(double);
+double tf_op_sqrt(double x) { return std::sqrt(x); }
+double tf_op_reciprocal(double x) { return 1.0 / x; }
+
+// Walk one strided source with the standard odometer and write
+// row-major contiguous output — tf_core_relu generalized to any
+// unary op, exactly like tf_core_binary generalizes the binary set.
+void tf_core_unary(
+    const void* src_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim, TfUnaryOp op
+) {
+    const double* src = static_cast<const TfStorage*>(src_handle)->data;
+    double* dst = static_cast<TfStorage*>(dst_handle)->data;
+    if (ndim == 0) {
+        dst[0] = op(src[offset]);
+        return;
+    }
+    int64_t total = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        total *= shape[d];
+    }
+    int64_t* counter = new int64_t[ndim]();
+    int64_t src_pos = offset;
+    for (int64_t out = 0; out < total; ++out) {
+        dst[out] = op(src[src_pos]);
+        for (int64_t d = ndim - 1; d >= 0; --d) {
+            ++counter[d];
+            src_pos += strides[d];
+            if (counter[d] < shape[d]) {
+                break;
+            }
+            counter[d] = 0;
+            src_pos -= shape[d] * strides[d];
+        }
+    }
+    delete[] counter;
+}
+
+// Contiguous fast path for the unary walker — the flat equivalent of
+// tf_core_unary, same reasoning as tf_core_binary_contiguous; scalars
+// fall out as numel == 1.
+void tf_core_unary_contiguous(
+    const void* src_handle, void* dst_handle,
+    int64_t numel, int64_t offset, TfUnaryOp op
+) {
+    const double* src = static_cast<const TfStorage*>(src_handle)->data + offset;
+    double* dst = static_cast<TfStorage*>(dst_handle)->data;
+    for (int64_t i = 0; i < numel; ++i) {
+        dst[i] = op(src[i]);
+    }
+}
+
 // Contiguous fast path: when a logical view's strides are exactly the
 // row-major strides for its shape, the odometer's source position
 // sequence degenerates to offset, offset+1, ..., offset+numel-1. So a
@@ -215,6 +277,39 @@ TF_EXPORT void tf_core_relu_contiguous(
     for (int64_t i = 0; i < numel; ++i) {
         dst[i] = src[i] > 0.0 ? src[i] : 0.0;
     }
+}
+
+// The v3.11 optimizer math primitives: elementwise square root and
+// reciprocal over tensor cores, in odometer and contiguous-fast-path
+// forms. Added ahead of NativeAdam, whose update needs a square-root
+// denominator and reciprocal scaling; the exceptional-value contract
+// is documented at TfUnaryOp above.
+TF_EXPORT void tf_core_sqrt(
+    const void* src, void* dst,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim
+) {
+    tf_core_unary(src, dst, shape, strides, offset, ndim, tf_op_sqrt);
+}
+
+TF_EXPORT void tf_core_sqrt_contiguous(
+    const void* src, void* dst, int64_t numel, int64_t offset
+) {
+    tf_core_unary_contiguous(src, dst, numel, offset, tf_op_sqrt);
+}
+
+TF_EXPORT void tf_core_reciprocal(
+    const void* src, void* dst,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim
+) {
+    tf_core_unary(src, dst, shape, strides, offset, ndim, tf_op_reciprocal);
+}
+
+TF_EXPORT void tf_core_reciprocal_contiguous(
+    const void* src, void* dst, int64_t numel, int64_t offset
+) {
+    tf_core_unary_contiguous(src, dst, numel, offset, tf_op_reciprocal);
 }
 
 TF_EXPORT void tf_core_add(

@@ -4,10 +4,13 @@ opt-in Python-managed autograd graph.
 This is the Stage-2 wrapper described in
 docs/native_tensor_wrapper_design.md. Its forward surface is complete —
 constructors, metadata, ``to_numpy``, forward compute
-(``relu``/``add``/``subtract``/``multiply``/``matmul``/``sum``/``mean``),
+(``relu``/``add``/``subtract``/``multiply``/``matmul``/``sum``/``mean``,
+plus the v3.11 optimizer math primitives ``sqrt``/``reciprocal``),
 metadata-only views (``reshape``/``transpose``/``T``/``narrow``) and
 ``contiguous_copy`` — and an explicit ownership/lifetime story sits under
-all of it.
+all of it. The v3.11 unary pair is differentiable through **saved
+forward results**: their backwards read the recorded output, never the
+parent's current value, so they record no expected parameter versions.
 
 As of v2.1 (Phase B), NativeTensor also carries the **native autograd
 metadata skeleton and the reverse-topological backward driver**:
@@ -359,6 +362,81 @@ class NativeTensor:
             out_core, (self,), _backward, "relu",
             expected_versions=_versioned_value_reads("relu", (self,)),
         )
+
+    def sqrt(self):
+        """Elementwise square root, computed natively over this tensor's
+        layout (v3.11 — an optimizer math primitive ahead of NativeAdam).
+        Returns a new owning NativeTensor; the original stays open. IEEE
+        float64 semantics: negative inputs give NaN, signed zeros are
+        preserved, +inf gives +inf, NaN propagates.
+
+        Differentiable: d(sqrt(x))/dx = 1 / (2*sqrt(x)), computed as
+        ``0.5 * reciprocal(saved forward result)`` — the backward reads
+        the **saved output**, never the parent's current value, so the
+        graph records no expected parameter version (v3.7): mutating a
+        direct parameter input after forward leaves this edge valid, and
+        the gradient stays correct for the forward that was recorded. A
+        closed saved output makes backward raise deterministically."""
+        core = self._require_open()
+        out_core = core.sqrt()
+        if not self._requires_grad:
+            return self._from_core(out_core)
+
+        def _backward(upstream):
+            # 1/(2*sqrt(x)) from the saved forward result: reciprocal
+            # then a broadcast 0.5 scale — native cores only, and the
+            # transient cores are closed as soon as they are consumed.
+            result_core = result._require_open()
+            inverse = result_core.reciprocal()
+            half = cpp.NativeTensorCore.full(
+                (), 0.5, dtype=result_core.dtype, device=result_core.device
+            )
+            local = inverse.multiply(half)
+            half.close()
+            inverse.close()
+            contribution = upstream._require_open().multiply(local)
+            local.close()
+            self._accumulate_grad(NativeTensor._from_core(contribution))
+
+        result = self._from_op(out_core, (self,), _backward, "sqrt")
+        return result
+
+    def reciprocal(self):
+        """Elementwise 1/x, computed natively over this tensor's layout
+        (v3.11 — an optimizer math primitive ahead of NativeAdam).
+        Returns a new owning NativeTensor; the original stays open. IEEE
+        float64 semantics: ±0.0 gives ±inf, ±inf gives ±0.0, NaN
+        propagates — no exception and no warning.
+
+        Differentiable: d(1/x)/dx = -1/x², computed as ``-(saved
+        forward result)²`` — the backward reads the **saved output**,
+        never the parent's current value, so the graph records no
+        expected parameter version (v3.7): mutating a direct parameter
+        input after forward leaves this edge valid, and the gradient
+        stays correct for the forward that was recorded. A closed saved
+        output makes backward raise deterministically."""
+        core = self._require_open()
+        out_core = core.reciprocal()
+        if not self._requires_grad:
+            return self._from_core(out_core)
+
+        def _backward(upstream):
+            # -(1/x)^2 from the saved forward result: square it, then a
+            # broadcast -1.0 scale — native cores only.
+            result_core = result._require_open()
+            squared = result_core.multiply(result_core)
+            neg_one = cpp.NativeTensorCore.full(
+                (), -1.0, dtype=result_core.dtype, device=result_core.device
+            )
+            local = squared.multiply(neg_one)
+            neg_one.close()
+            squared.close()
+            contribution = upstream._require_open().multiply(local)
+            local.close()
+            self._accumulate_grad(NativeTensor._from_core(contribution))
+
+        result = self._from_op(out_core, (self,), _backward, "reciprocal")
+        return result
 
     def add(self, other):
         """self + other elementwise, natively. Identical shapes or

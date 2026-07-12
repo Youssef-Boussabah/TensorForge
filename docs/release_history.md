@@ -961,4 +961,47 @@ native optimizer state**, **v3.14 — native checkpointing and
 deterministic resume**, and **v3.15 — Phase C guardrails and
 completion**, followed by the native CNN stack, the CUDA runtime,
 dtype/AMP work, Transformer/text experiments, distributed training,
-and the final portfolio release.
+and the final portfolio release. **v3.11** delivers the optimizer math
+primitives: native differentiable **`sqrt`** and **`reciprocal`**
+through the complete stack — four new C++ kernels (`tf_core_sqrt`,
+`tf_core_reciprocal`, and their contiguous fast paths, built on a new
+generic `TfUnaryOp` odometer walker that generalizes relu exactly as
+the binary walker generalizes add/subtract/multiply; both traversal
+paths bit-for-bit identical), ctypes bindings sharing relu's
+signatures, `NativeTensorCore.sqrt()`/`.reciprocal()` (open-tensor
+gate, fresh owning row-major contiguous outputs, arbitrary
+strided/offset views read directly), and differentiable
+`NativeTensor.sqrt()`/`.reciprocal()`. The operations exist because
+**NativeAdam (v3.12) needs a square-root denominator and reciprocal
+scaling** — and general division stays deliberately unshipped, because
+`reciprocal` + `multiply` compose both derivatives and the future Adam
+denominator (`grad · reciprocal(sqrt(v) + eps)`). **Backwards use
+saved forward results**: `d(sqrt(x))/dx = 1/(2·sqrt(x))` is computed
+as `0.5 · reciprocal(saved output)` and `d(1/x)/dx = −1/x²` as
+`−(saved output)²`, entirely at the autograd-unaware core level with
+transients closed as consumed — each callback reads the recorded
+output, never the parent's current value, so under the v3.7 rule
+**neither operation records an expected parameter version**: mutating
+a direct parameter input after forward leaves these edges valid with
+gradients correct for the recorded forward (mixed graphs stay guarded
+by their sensitive edges; no existing classification changed), and a
+closed saved output fails backward deterministically with the graph
+intact. **IEEE float64 exceptional values are documented and locked**:
+sqrt of negatives is NaN (no exception), signed zeros are preserved,
++inf → +inf; reciprocal maps ±0 → ±inf and ±inf → ±0 (no exception,
+no warning — NumPy's values), NaN propagates through both. The
+raw-kernel registry boundary is untouched (the sum/mean precedent: no
+raw-buffer wrappers, no registry-tuple changes). Deliberately **not**
+shipped: NativeAdam, general division, exp/log/tanh/sigmoid/softmax,
+rsqrt/abs/power, operator overloads, in-place arithmetic, optimizer
+state, checkpointing, or dtype expansion. 18 focused tests
+(`tests/test_native_optimizer_math.py`, selector
+`-k "native_optimizer_math"`: kernel symbols and registry boundary,
+core forward across contiguous/scalar/strided/offset/combined views,
+the exceptional-value tables, wrapper graph construction, exact and
+finite-difference gradients, explicit upstreams, chain and
+shared-subgraph accumulation, graph lifetime with the
+closed-saved-output failure, version independence plus the
+still-guarded sensitive edge, a NumPy tripwire, and scope boundaries)
+lock the contract; the full suite passes at **1282 tests**. The next
+milestone is **Advanced C++ v3.12 — NativeAdam**.

@@ -386,6 +386,69 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native training stack — optimizer math primitives (v3.11)
+
+v3.11 adds the two reusable native unary operations **NativeAdam
+(v3.12) will need for its square-root denominator and reciprocal
+scaling** — `sqrt` and `reciprocal` — through the complete stack: two
+new C++ kernels per operation (a generic strided odometer and a
+contiguous fast path, sharing relu's signature and dispatched by the
+same contiguity rule, bit-for-bit identical), ctypes bindings,
+`NativeTensorCore.sqrt()`/`.reciprocal()`, and differentiable
+`NativeTensor.sqrt()`/`.reciprocal()`. Deliberately **not** shipped:
+NativeAdam itself, general tensor `divide` (a raw ctypes
+`elementwise_divide` kernel still exists at the kernel layer only —
+`reciprocal` + `multiply` compose everything the training stack
+needs, so no division operation was added), `exp`/`log`/`tanh`/
+`sigmoid`/`softmax`, `rsqrt`/`abs`/`power`, operator overloads,
+optimizer state, checkpointing, or dtype expansion. The raw-kernel
+registry boundary is untouched (like sum/mean before them, the new
+core kernels join neither the raw-buffer kernel list nor the locked
+`tensor_core_kernels` tuple).
+
+Forward contract: shape/dtype/device-preserving, scalars through
+arbitrary strided/offset views read directly (transposes, narrows,
+nonzero offsets — never materialized), fresh owning row-major
+contiguous outputs, inputs never mutated or aliased, closed inputs
+rejected, float64/cpu only. **Exceptional values follow IEEE float64**
+(documented in the kernels and locked by tests): `sqrt` of a negative
+is NaN (no exception), signed zeros are preserved (`sqrt(-0.0)` is
+`-0.0`), `+inf → +inf`, NaN propagates; `reciprocal` maps `±0.0 →
+±inf` and `±inf → ±0.0` (no exception, no warning — the same values
+NumPy produces), NaN propagates.
+
+**Autograd via saved forward results.** Both derivatives are functions
+of the output — `d(sqrt(x))/dx = 1/(2·sqrt(x)) = 0.5 ·
+reciprocal(out)` and `d(1/x)/dx = −1/x² = −out²` — so each backward
+closure reads the **recorded forward output** (a closed saved output
+fails deterministically with the graph intact) and never the parent's
+current value, computing entirely at the autograd-unaware core level
+with transient cores closed as they are consumed. The v3.7
+classification follows from what the callbacks actually read: **both
+operations record no expected parameter versions** — mutating a direct
+`NativeParameter` input after forward leaves these edges valid, and
+the gradient remains mathematically correct for the forward that was
+recorded (a mixed graph is still guarded by its sensitive edges:
+`sqrt(p) * p` goes stale through the multiply). No existing
+classification changed. Saved outputs are graph-owned: one-shot
+cleanup releases the closure that holds them, `retain_graph=True`
+preserves them for repeated passes, and failed backwards free nothing.
+
+Everything above is locked by `tests/test_native_optimizer_math.py`
+(selector: `-k "native_optimizer_math"` — 18 tests: kernel symbols and
+the untouched registry boundary, core forward over
+contiguous/scalar/transposed/narrowed/offset/combined views, the
+exceptional-value table, wrapper graph construction, exact analytical
+gradients, explicit upstreams, chain and shared-subgraph accumulation,
+central finite differences on domain-safe inputs (contiguous and
+strided), graph lifetime including the closed-saved-output failure,
+the version-independence contract and the still-guarded sensitive
+edge, a NumPy tripwire, and scope boundaries), and the full suite
+passes at **1282 tests**. The next milestone is **Advanced C++ v3.12 —
+NativeAdam**, followed by v3.13 — native optimizer state, v3.14 —
+native checkpointing and deterministic resume, and v3.15 — Phase C
+guardrails and completion.
+
 ### Native training stack — integration checkpoint (v3.10)
 
 v3.10 is the **first major native CPU training checkpoint** — an
@@ -2304,15 +2367,20 @@ commits them through `copy_value_`, plus `zero_grad()` — and v3.9
 (above) completed **the first end-to-end native CPU training proof**:
 a deterministic 25-step MLP regression whose loss falls monotonically
 by 99.5%, built entirely from fresh per-iteration graphs over the
-existing stack — and v3.10 (above) is the integration checkpoint:
+existing stack — v3.10 is the integration checkpoint:
 honest README/summary/architecture presentation, the canonical
 [native support matrix](native_support_matrix.md), documentation and
 export guardrails, and CI/hygiene audits, making the branch ready for
-its first pull request into `main`.** Phase C continues from here:
-v3.11 — native optimizer math primitives, v3.12 — NativeAdam, v3.13 —
+its first pull request into `main` — and v3.11 (above) added the
+optimizer math primitives: differentiable native `sqrt` and
+`reciprocal` through kernels → core → wrapper → autograd, with
+saved-forward-result backwards that record no parameter versions and
+IEEE float64 exceptional-value semantics — the reusable math NativeAdam
+needs.** Phase C continues from here: v3.12 — NativeAdam, v3.13 —
 native optimizer state, v3.14 — native checkpointing and deterministic
-resume, v3.15 — Phase C guardrails and completion; `divide` backward
-remains separate later work.
+resume, v3.15 — Phase C guardrails and completion; a general `divide`
+operation remains deliberately unshipped (`reciprocal` + `multiply`
+compose what the stack needs).
 CUDA experiments remain a separate future branch (where `device` gains a
 second value), and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation

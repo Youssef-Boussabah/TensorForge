@@ -61,7 +61,8 @@ complete** — `NativeStorage` → `NativeTensorView` → `NativeTensorCore`
 broadcasting, sum/mean reductions, and float64/cpu metadata over
 ctypes-loaded C++ kernels. **Phase B (native autograd) is complete** —
 a Python-managed reverse-mode graph over autograd-unaware kernels,
-with twelve differentiable operations, view/broadcast gradients, and a
+with fourteen differentiable operations (the v3.11 optimizer math
+primitives sqrt and reciprocal included), view/broadcast gradients, and a
 defined graph lifetime. **Phase C (the native training stack) is in
 progress** and already trains end to end: `NativeParameter` (value
 versioning, stale-graph safety), `NativeModule` with atomic state

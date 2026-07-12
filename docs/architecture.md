@@ -127,7 +127,7 @@ explicit layer at a time:
   executing in C++ kernels behind a plain C ABI, loaded with ctypes.
   The core and the kernels are completely autograd-unaware.
 - **`NativeTensor`** wraps one core and adds the **Python-managed
-  native autograd graph**: twelve differentiable operations, gradient
+  native autograd graph**: fourteen differentiable operations, gradient
   un-broadcasting, view backwards (including a native scatter for
   `narrow`), one-shot graph release with `retain_graph` opt-in, and
   failure rollback. Backward math runs at the core level, so the graph

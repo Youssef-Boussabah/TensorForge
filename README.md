@@ -65,12 +65,12 @@ reached explicitly through `tensorforge.experimental` and
   tracking, NumPy-style broadcasting, sum/mean reductions, and
   float64/cpu dtype/device metadata over ctypes-loaded C++ kernels.
 - **Native autograd (Phase B, complete)**: a Python-managed
-  reverse-mode graph over autograd-unaware kernels — twelve
+  reverse-mode graph over autograd-unaware kernels — fourteen
   differentiable operations (`add`, `subtract`, `multiply`, `relu`,
-  `matmul`, `sum`, `mean`, `reshape`, `transpose`/`T`, `narrow`,
-  `contiguous_copy`), broadcasting and view gradients, a native
-  scatter backward for `narrow`, one-shot graph release with
-  `retain_graph` opt-in, and failure rollback.
+  `sqrt`, `reciprocal`, `matmul`, `sum`, `mean`, `reshape`,
+  `transpose`/`T`, `narrow`, `contiguous_copy`), broadcasting and view
+  gradients, a native scatter backward for `narrow`, one-shot graph
+  release with `retain_graph` opt-in, and failure rollback.
 - **Native training stack (Phase C, in progress)**: `NativeParameter`
   (value versioning and a controlled mutation path with stale-graph
   detection), `NativeModule` with atomic `state_dict`/
