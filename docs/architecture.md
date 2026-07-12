@@ -1,15 +1,22 @@
 # Architecture
 
-TensorForge is a mini deep learning framework written in Python and
-NumPy. It exists to show how a framework like PyTorch works under the
-hood, so every piece is deliberately small and readable. There is no
-C++, no GPU code, and no dependency besides NumPy.
+TensorForge is a from-scratch deep learning and ML systems framework
+with **two strictly separate lines**. The **stable Python framework**
+reimplements how a framework like PyTorch works under the hood in
+Python + NumPy, with every piece kept deliberately small and readable.
+The **experimental native line** (the advanced branch) is a
+ctypes-loaded C++ CPU runtime with its own explicit tensor, a
+Python-managed native autograd graph, and a native training stack —
+living in its own namespaces (`tensorforge.backends`,
+`tensorforge.experimental`) that the stable framework never imports
+(see [backend_experiments.md](backend_experiments.md) and the
+[native support matrix](native_support_matrix.md)).
 
 ## Package layout
 
 ```
 src/tensorforge/
-  tensor.py          Tensor + the autograd engine
+  tensor.py          Tensor + the stable autograd engine
   data.py            batches() and train_test_split()
   serialization.py   save/load parameters, save/load checkpoints
   nn/                everything model-related
@@ -32,7 +39,26 @@ src/tensorforge/
     adam.py          Adam
     clip.py          clip_grad_norm, clip_grad_value
     lr_scheduler.py  StepLR
-examples/            runnable training scripts
+  backends/          the explicit backend boundary (never imported
+                     by the stable framework)
+    cpp.py           ctypes loader + NativeStorage / NativeTensorView /
+                     NativeTensorCore + raw kernel entry points
+    registry.py      get_backend()/available_backends() — explicit only
+    numpy_backend.py, native_backend.py
+  experimental/      the native training line (explicit import only)
+    native_tensor.py     NativeTensor + Python-managed native autograd
+    native_parameter.py  NativeParameter + versioning + registry
+    native_module.py     NativeModule + state_dict/load_state_dict
+    native_linear.py     NativeLinear
+    native_relu.py       NativeReLU
+    native_sequential.py NativeSequential
+    native_mse_loss.py   NativeMSELoss
+    native_sgd.py        NativeSGD
+cpp/                 C++ kernel sources + build.py (nothing compiled
+                     is checked in; CI builds from source)
+examples/            runnable training scripts (stable + native)
+scripts/             smoke_cpp_backend.py — hard-failing backend check
+benchmarks/          measurement-only characterization harnesses
 tests/               pytest suite (one test file per feature area)
 ```
 
@@ -84,6 +110,56 @@ sit alongside them in `optim/`.
 **Examples** tie it all together. Each one is a standalone script with
 a `train()` function (so tests can import and run it) and a `main()`
 that prints progress. See [examples.md](examples.md).
+
+## The experimental native line
+
+The native line rebuilds the same ideas against real memory, one
+explicit layer at a time:
+
+- **`NativeStorage`** owns a raw native allocation with an explicit
+  `close()` lifetime.
+- **`NativeTensorView`** adds shape/strides/offset layout over a
+  storage — views are metadata, not copies.
+- **`NativeTensorCore`** is the forward runtime: elementwise ops with
+  NumPy-style broadcasting, `relu`, a 2-D `matmul`, `sum`/`mean`
+  reductions, reshape/transpose/narrow views, contiguous
+  materialization, and float64/cpu dtype/device metadata — all
+  executing in C++ kernels behind a plain C ABI, loaded with ctypes.
+  The core and the kernels are completely autograd-unaware.
+- **`NativeTensor`** wraps one core and adds the **Python-managed
+  native autograd graph**: twelve differentiable operations, gradient
+  un-broadcasting, view backwards (including a native scatter for
+  `narrow`), one-shot graph release with `retain_graph` opt-in, and
+  failure rollback. Backward math runs at the core level, so the graph
+  never leaks into C++.
+- **The native training stack** builds on that: `NativeParameter`
+  (graph-free trainable leaves with value versioning, a controlled
+  mutation path, and stale-graph detection), `NativeModule`
+  (registration by assignment, recursive traversal, atomic in-memory
+  `state_dict`/`load_state_dict`), `NativeLinear` / `NativeReLU` /
+  `NativeSequential`, `NativeMSELoss`, and `NativeSGD` — proven end to
+  end by `examples/native_mlp_training.py`.
+
+The execution path for a native training step is:
+
+```
+Python native modules (NativeSequential → NativeLinear → NativeMSELoss)
+  → NativeTensor operations + the Python-managed autograd graph
+    → NativeTensorCore forward calls
+      → ctypes boundary
+        → C++ CPU kernels over strided native memory
+```
+
+**The separation is absolute and deliberate.** There is no implicit
+conversion between `tensorforge.Tensor` and `NativeTensor`, no shared
+autograd graph, and no automatic backend dispatch. The native world is
+entered only explicitly (`NativeTensor.from_array`, or the
+`tensorforge.backends` APIs) and exited only explicitly
+(`to_numpy()`), both as copies. Stable and native parameters,
+modules, and optimizers reject each other's objects. CUDA does not
+exist anywhere in the current architecture — it remains a future
+experiment, as does any dispatch integration (see
+[dispatch_design.md](dispatch_design.md)).
 
 ## Design habits
 

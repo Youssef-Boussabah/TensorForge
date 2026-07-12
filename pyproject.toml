@@ -1,7 +1,7 @@
 [project]
 name = "tensorforge"
 version = "0.1.0"
-description = "Add your description here"
+description = "A from-scratch deep learning framework in Python + NumPy, with an experimental native C++ backend"
 readme = "README.md"
 authors = [
     { name = "Youssef Boussabah", email = "youssefboussabah2007@gmail.com" }
@@ -18,6 +18,12 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",
+]
+# Opt-in group for building the experimental C++ backend on machines
+# without a system C++ compiler: ziglang bundles a clang-based one.
+# Normal Python development never needs this.
+cpp = [
+    "ziglang>=0.13",
 ]
 
 [tool.pytest.ini_options]

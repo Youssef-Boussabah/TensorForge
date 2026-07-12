@@ -11,4 +11,23 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       # uv reads .python-version and installs the right Python itself.
-      - run: uv run pytest
+
+      # Build the experimental C++ backend from source (the runner's
+      # g++ is used; cpp/build.py falls back to the ziglang package if
+      # no system compiler exists). Nothing compiled is checked in.
+      - name: Build the experimental C++ backend
+        run: uv run python cpp/build.py
+
+      # Prove the compiled kernels and runtime objects import and
+      # compute — this step fails hard, unlike the pytest suite, whose
+      # backend tests skip when the library is missing.
+      - name: Smoke-test the C++ backend
+        run: uv run python scripts/smoke_cpp_backend.py
+
+      # Prove the benchmark script itself runs; no performance is
+      # asserted (the kernels are naive reference loops; NumPy may win).
+      - name: Quick benchmark smoke run
+        run: uv run python benchmarks/cpp_backend.py --quick
+
+      - name: Run the test suite
+        run: uv run pytest
