@@ -824,10 +824,15 @@ def test_native_adam_step_builds_no_graph_and_uses_no_numpy(monkeypatch):
 def test_native_adam_scope_boundaries_hold():
     parameter = _param_with_grad()
     optimizer = NativeAdam([parameter], lr=LR)
-    # No optimizer serialization, no PyTorch-style extras, no division.
-    for absent in ("state_dict", "load_state_dict", "add_param_group",
-                   "param_groups", "weight_decay", "amsgrad"):
+    # No PyTorch-style extras and no division. In-memory
+    # state_dict/load_state_dict shipped in v3.13 (see
+    # tests/test_native_optimizer_state.py); file checkpointing has not.
+    for absent in ("add_param_group", "param_groups", "weight_decay",
+                   "amsgrad", "save", "load", "save_checkpoint",
+                   "load_checkpoint"):
         assert not hasattr(optimizer, absent)
+    assert hasattr(optimizer, "state_dict")
+    assert hasattr(optimizer, "load_state_dict")
     assert not hasattr(NativeTensor.from_array(P_VALUES), "divide")
     assert not hasattr(parameter, "add_")  # no in-place arithmetic
     # zero_grad has no set_to_none (or any other) option.

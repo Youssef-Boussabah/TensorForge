@@ -54,9 +54,18 @@ per-parameter step counters, bias correction via the v3.11
 updates committed through ``copy_value_``, validated
 ``lr``/``betas``/``eps``, and an explicit state lifetime
 (``close()``) — with no weight decay, AMSGrad, parameter groups,
-schedulers, or optimizer ``state_dict``/checkpointing (optimizer-state
-serialization is v3.13). No file serialization, and still fully
-separate from ``tensorforge.nn`` and ``tensorforge.optim``.
+schedulers, or checkpointing. As of Advanced C++ v3.13 both native
+optimizers carry the in-memory **optimizer state contract**:
+``state_dict()``/``load_state_dict()`` over one versioned schema
+(format 1, exact optimizer type tag, ordered positional
+shape/dtype/device parameter metadata — no ids, names, values, or
+gradients), with caller-owned independent NativeTensor moment
+snapshots and per-parameter step counts for NativeAdam, exact
+validation, staged atomic loading that never touches parameter
+values/versions/gradients, and proven deterministic in-memory training
+continuation. No file serialization (native checkpoint archives are
+v3.14), and still fully separate from ``tensorforge.nn`` and
+``tensorforge.optim``.
 
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).

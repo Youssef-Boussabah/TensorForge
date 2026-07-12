@@ -313,10 +313,20 @@ The Python line is done; what remains is expansion on its own terms:
   committed through `copy_value_`, gradients retained until
   `zero_grad()`, mutation-atomic public failures, and an explicit
   state lifetime (`close()`) — with no weight decay, AMSGrad,
-  parameter groups, schedulers, or optimizer
-  state_dict/checkpointing yet. Phase C is **not** complete;
-  the intended sequence continues with **v3.13 —
-  native optimizer state, v3.14 — native checkpointing and
+  parameter groups, or schedulers. **v3.13 — the native optimizer
+  state contract — is complete**: in-memory
+  `state_dict()`/`load_state_dict()` on both native optimizers — one
+  versioned schema (format 1, exact optimizer type tag, ordered
+  positional shape/dtype/device parameter metadata; no ids, names,
+  values, or gradients), caller-owned independent NativeTensor m/v
+  snapshots and per-parameter step counts for NativeAdam, exact
+  validation with staged atomic loading that never touches parameter
+  values, versions, gradients, or retained graphs, and a proven
+  deterministic in-memory training continuation — with no file
+  format, checkpoint archive, `map_location`, or random-state and
+  scheduler capture yet. Phase C is **not** complete;
+  the intended sequence continues with **v3.14 — native
+  checkpointing and
   deterministic resume, v3.15 — Phase C guardrails and completion**,
   then the native CNN stack, the CUDA runtime, dtype/AMP work,
   Transformer/text experiments, distributed training, and the final
@@ -496,10 +506,29 @@ The Python line is done; what remains is expansion on its own terms:
     `zero_grad()`, mutation-atomic public failure behavior with the
     documented asynchronous-interruption windows, and an explicit
     idempotent `close()` for the optimizer-owned state — with no
-    weight decay, AMSGrad, parameter groups, schedulers, optimizer
-    state_dict, or checkpointing. **Next: v3.13 — native
-    optimizer state**, then v3.14 — native checkpointing and
-    deterministic resume, and v3.15 — Phase C guardrails and
+    weight decay, AMSGrad, parameter groups, or schedulers.
+    **v3.13 — the native optimizer state contract — is complete**:
+    `state_dict()`/`load_state_dict()` on NativeSGD and NativeAdam —
+    a shared format-1 schema with an exact optimizer type tag,
+    validated hyperparameters, and ordered positional
+    shape/dtype/device parameter metadata (mapping across instances
+    is positional over the deterministic identity-deduplicated
+    parameter order; no object ids, names, parameter values,
+    gradients, or graph data are serialized); NativeAdam adds
+    per-parameter step counts plus caller-owned independent
+    graph-free NativeTensor moment snapshots; loading is
+    validate → stage → commit with exact validation (no casting,
+    reshaping, broadcasting, or device movement), independent
+    optimizer-owned copies of every input moment (caller state
+    read-only, never adopted or consumed), replaced internal buffers
+    closed only after installation, and mutation-atomic ordinary
+    failures — never touching parameter values, versions, gradients,
+    registrations, or retained graphs, with deterministic in-memory
+    continuation proven against an uninterrupted run. No file
+    serialization, checkpoint archives, paths, `map_location`,
+    random-state or scheduler capture, or compatibility modes.
+    **Next: v3.14 — native checkpointing and
+    deterministic resume**, then v3.15 — Phase C guardrails and
     completion.
   - **Then beyond:** the rest of the native training stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path

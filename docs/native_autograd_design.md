@@ -1104,9 +1104,43 @@ is complete without it.**
   optimizer `state_dict`/checkpointing (v3.13/v3.14), general
   division, fused kernels, or in-place arithmetic. Verified test
   count at completion: **1315 tests** (1282 plus the 33 v3.12 tests).
-  The next milestone is **Advanced C++ v3.13 — native optimizer
-  state**, with v3.14 — native checkpointing and deterministic
-  resume, and v3.15 — Phase C guardrails and completion after it.
+  **Its thirteenth milestone, Advanced C++ v3.13 — the native
+  optimizer state contract, is complete**: in-memory
+  `state_dict()`/`load_state_dict()` on both native optimizers over
+  one versioned schema (format 1; an exact `"NativeSGD"`/
+  `"NativeAdam"` type tag; validated hyperparameters; ordered
+  **positional** `{shape, dtype, device}` parameter metadata in the
+  optimizer's deterministic identity-deduplicated order — no ids,
+  names, values, gradients, or graph data serialized), NativeAdam
+  adding per-parameter step counts and caller-owned independent
+  graph-free NativeTensor m/v snapshots (fresh owning contiguous
+  native copies sharing storage with nothing; snapshot failure closes
+  every partial copy). Loading is validate → stage → commit: full
+  exact-schema and per-position metadata/count/moment validation with
+  no mutation, independent optimizer-owned native copies of every
+  input moment (the caller's read-only state is never adopted,
+  retained, mutated, or closed; a staging failure closes every staged
+  copy and changes nothing), then a commit that installs scalars,
+  counters, and moments and closes the replaced internal buffers only
+  after installation — with the honest documented caveat that the
+  multi-assignment commit is not indivisible under asynchronous
+  interruption. Optimizer-state loading never touches a parameter:
+  no value, version, gradient, registration, or alias moves, so the
+  v3.7 stale guard — keyed on versions — never fires from loading
+  alone, and a retained valid graph stays valid. Deterministic
+  in-memory continuation is proven end to end with the module state
+  contract (bit-identical losses, values, moments, and counters
+  across an uninterrupted run versus a snapshot/restore run), and
+  frozen/`grad=None`/shared/zero-state/late-activated parameters
+  round-trip exactly. Deliberately not shipped: file serialization of
+  any kind, checkpoint archives, paths, `map_location`, RNG or
+  scheduler state, `strict=False`, name-based remapping, or an
+  optimizer base class (the shared schema helpers are plain private
+  functions). Verified test count at completion: **1336 tests** (1315
+  plus the 21 v3.13 tests).
+  The next milestone is **Advanced C++ v3.14 — native checkpointing
+  and deterministic resume**, with v3.15 — Phase C guardrails and
+  completion after it.
   Optimizers and training are **not** combined into
   one milestone; each lands only when the previous is tested and
   documented, with the Python framework remaining the reference

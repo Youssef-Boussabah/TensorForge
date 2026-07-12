@@ -1067,5 +1067,78 @@ oracle trajectories, determinism, skipping and late-activation
 semantics, zero_grad preservation, failure atomicity with recovery,
 stale-graph integration, lifetime/close, NumPy tripwire and scope
 boundaries, and the end-to-end MLP run) lock the contract; the full
-suite passes at **1315 tests**. The next milestone is **Advanced C++
-v3.13 — native optimizer state**.
+suite passes at **1315 tests**. **v3.13** delivers the **native
+optimizer state contract** — in-memory
+`state_dict()`/`load_state_dict()` on both native optimizers, with
+**no new C++ work, no new operations, and no file I/O of any kind**
+(native checkpoint archives are v3.14). One small versioned schema
+(private shared helpers in
+`src/tensorforge/experimental/native_optimizer_state.py` — plain
+functions, deliberately not an optimizer base class): every state is
+a plain dict carrying `format_version` (the int 1), the exact
+`optimizer` type tag (`"NativeSGD"`/`"NativeAdam"` — a state can
+never load into the wrong optimizer), the validated hyperparameters,
+and ordered `{"shape", "dtype", "device"}` parameter metadata in the
+optimizer's deterministic identity-deduplicated first-occurrence
+order — restoration across instances is purely **positional**, and no
+Python `id()`, pointer, module name, repr, parameter value, gradient,
+graph data, or closed-state flag is ever serialized. NativeSGD's
+state is pure Python metadata (`lr` + schema; its whole commit is one
+validated assignment). NativeAdam's adds `betas`, `eps`,
+`step_counts`, and `m`/`v` — **caller-owned snapshots**: plain
+graph-free `requires_grad=False` NativeTensors (never
+`NativeParameter`), each an independent owning contiguous native copy
+sharing storage with nothing (not the optimizer's moments, not
+parameters or gradients, not each other); repeated calls return
+independently owned snapshots, closing a snapshot never affects the
+optimizer, and the caller releases them when done. `state_dict()`
+preflights everything (open optimizer, open parameters, intact
+metadata-matched internal moments, valid counters) before creating
+anything, and a snapshot failure partway closes every copy that call
+created — never left to garbage collection — leaving the optimizer
+usable. `load_state_dict(state)` treats the input as read-only
+(never mutated, adopted, retained, or consumed) and runs
+validate → stage → commit: exact key set (missing/unexpected reported
+together), exact format version and tag, hyperparameters under the
+constructors' full contracts, per-position metadata validation (exact
+count and shape/dtype/device — no casting, reshaping, broadcasting,
+or device movement), non-bool non-negative step counts, and every
+moment entry an open **plain** NativeTensor of exactly the
+parameter's metadata (NativeParameter and stable-Tensor entries
+rejected; sequence fields accept tuple or list; deterministic errors
+name stable field paths like `state['m'][1]`); then independent
+optimizer-owned native copies of every input moment are staged (a
+staging failure closes them all and changes nothing); then scalars,
+counters, and moments commit together, the replaced internal buffers
+closing only after installation — with the honest documented caveat
+that NativeAdam's multi-assignment commit is not indivisible under an
+asynchronous interruption. **Optimizer-state loading never touches a
+parameter**: no value, version, gradient (by identity or value),
+`requires_grad`, registration, alias, or model state key moves, so
+the v3.7 stale guard never fires from loading alone and a retained
+valid graph stays valid (proven by a focused test). Deterministic
+**in-memory continuation** is proven end to end with the module state
+contract: an uninterrupted N+M-step NativeAdam training run and an
+N-step → snapshot → restore → M-step run produce bit-identical
+losses, parameter values, moments, and step counts (model loading
+increments each version exactly once per its existing contract;
+optimizer loading increments none), and
+frozen/`grad=None`/shared-alias/zero-state/late-activated parameters
+round-trip exactly (a restored counter of 0 takes its first
+bias-corrected update at t = 1). Deliberately **not** shipped:
+`save_checkpoint`/`load_checkpoint`, `.npz`/JSON/pickle/metadata
+files, paths, `map_location`, RNG or scheduler state, model
+checkpoint wrappers, `strict=False`/compatibility modes, name-based
+remapping, parameter groups, or dtype/device movement; the stable
+optimizers are untouched. 21 focused tests
+(`tests/test_native_optimizer_state.py`, selector
+`-k "optimizer_state"`: exact schemas, independence of returned
+containers, shared/frozen/late-active round-trips, full load
+validation matrices, caller-ownership and non-aliasing proofs, atomic
+failure with recovery, snapshot-failure cleanup,
+parameter/autograd-isolation including the retained-graph proof, the
+SGD next-step and Adam N+M continuation equivalences, a NumPy
+tripwire, and source-level no-file/no-pickle guardrails) lock the
+contract; the full suite passes at **1336 tests**. The next milestone
+is **Advanced C++ v3.14 — native checkpointing and deterministic
+resume**.

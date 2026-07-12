@@ -8,8 +8,9 @@ first- and second-moment estimates with bias correction, every update
 computed graph-free at the ``NativeTensorCore`` level and committed
 through the v3.7 controlled mutation contract (``copy_value_``). No
 weight decay, AMSGrad, parameter groups, per-parameter learning rates,
-schedulers, optimizer ``state_dict``/``load_state_dict``, or
-checkpointing (optimizer-state serialization is v3.13), and no general
+schedulers, or checkpointing (in-memory
+``state_dict``/``load_state_dict`` landed in v3.13 — see below; file
+checkpoint archives are v3.14), and no general
 tensor division — ``reciprocal`` + ``multiply`` compose the bias
 corrections and the denominator. Fully separate from the stable
 ``tensorforge.optim.Adam``: neither accepts the other's objects.
@@ -97,6 +98,16 @@ The contract (all tested in tests/test_native_adam.py):
   deterministic error, gradients untouched — and a fresh
   forward/backward trains on the updated values. No classification
   changes.
+- **Optimizer state is snapshot-able and restorable in memory
+  (v3.13).** ``state_dict()`` returns a plain versioned dict — scalar
+  hyperparameters, ordered positional parameter metadata, per-parameter
+  step counts, and independent caller-owned NativeTensor moment
+  snapshots — and ``load_state_dict(state)`` restores it into a
+  compatible optimizer through full validation, staged independent
+  copies, and an ordered commit, never touching a parameter's value,
+  version, or gradient and never aliasing or consuming caller state.
+  No file format exists (native checkpoint archives are v3.14). See
+  the two method docstrings for the complete contract.
 - **Lifetime is explicit.** ``close()`` (idempotent; ``with`` blocks
   work) releases every owned m/v buffer exactly once and makes
   ``step()``/``zero_grad()`` raise deterministically. It never closes
@@ -112,8 +123,21 @@ import math
 import numbers
 
 from ..backends import cpp
+from .native_optimizer_state import (
+    FORMAT_VERSION,
+    parameter_metadata,
+    validate_parameter_metadata,
+    validate_state_schema,
+    validate_step_counts,
+)
 from .native_parameter import NativeParameter
-from .native_tensor import NativeTensor
+from .native_tensor import NativeTensor, _native_copy
+
+# The exact key set of a NativeAdam state dict (format version 1).
+_STATE_KEYS = (
+    "format_version", "optimizer", "lr", "betas", "eps",
+    "parameters", "step_counts", "m", "v",
+)
 
 
 def _validated_positive_real(value, name):
@@ -130,6 +154,40 @@ def _validated_positive_real(value, name):
     if value <= 0.0:
         raise ValueError(f"{name} must be strictly positive, got {value}")
     return value
+
+
+def _validated_betas(betas):
+    """Validate ``betas`` — a tuple or list of exactly two real,
+    non-bool, finite values in ``[0.0, 1.0)`` — and return it as a
+    tuple of Python floats. The constructor's contract, shared with
+    ``load_state_dict`` so loaded betas can never be weaker than
+    constructed ones."""
+    if isinstance(betas, bool) or not isinstance(betas, (tuple, list)):
+        raise TypeError(
+            f"betas must be a tuple or list of two real numbers, "
+            f"got {type(betas).__name__}"
+        )
+    if len(betas) != 2:
+        raise ValueError(
+            f"betas must contain exactly two values, got {len(betas)}"
+        )
+    validated = []
+    for index, beta in enumerate(betas):
+        if isinstance(beta, bool) or not isinstance(beta, numbers.Real):
+            raise TypeError(
+                f"betas[{index}] must be a real number, got "
+                f"{type(beta).__name__}"
+            )
+        beta = float(beta)
+        if not math.isfinite(beta):
+            raise ValueError(f"betas[{index}] must be finite, got {beta}")
+        if not 0.0 <= beta < 1.0:
+            raise ValueError(
+                f"betas[{index}] must satisfy 0.0 <= beta < 1.0, "
+                f"got {beta}"
+            )
+        validated.append(beta)
+    return tuple(validated)
 
 
 class NativeAdam:
@@ -150,31 +208,7 @@ class NativeAdam:
         # must never depend on whether the parameter iterable was
         # consumable, and must never allocate native state.
         lr = _validated_positive_real(lr, "lr")
-        if isinstance(betas, bool) or not isinstance(betas, (tuple, list)):
-            raise TypeError(
-                f"betas must be a tuple or list of two real numbers, "
-                f"got {type(betas).__name__}"
-            )
-        if len(betas) != 2:
-            raise ValueError(
-                f"betas must contain exactly two values, got {len(betas)}"
-            )
-        validated_betas = []
-        for index, beta in enumerate(betas):
-            if isinstance(beta, bool) or not isinstance(beta, numbers.Real):
-                raise TypeError(
-                    f"betas[{index}] must be a real number, got "
-                    f"{type(beta).__name__}"
-                )
-            beta = float(beta)
-            if not math.isfinite(beta):
-                raise ValueError(f"betas[{index}] must be finite, got {beta}")
-            if not 0.0 <= beta < 1.0:
-                raise ValueError(
-                    f"betas[{index}] must satisfy 0.0 <= beta < 1.0, "
-                    f"got {beta}"
-                )
-            validated_betas.append(beta)
+        betas = _validated_betas(betas)
         eps = _validated_positive_real(eps, "eps")
 
         # Materialize the iterable exactly once, validate every entry,
@@ -234,7 +268,7 @@ class NativeAdam:
 
         self._parameters = tuple(unique)
         self._lr = lr
-        self._betas = tuple(validated_betas)
+        self._betas = betas
         self._eps = eps
         self._m = m_buffers
         self._v = v_buffers
@@ -287,6 +321,49 @@ class NativeAdam:
         if self._closed:
             raise RuntimeError("this NativeAdam optimizer has been closed")
 
+    def _require_parameters_open(self, where):
+        """Preflight every stored parameter as still open — checked for
+        the whole collection first, so a closed parameter fails
+        deterministically regardless of earlier entries' state."""
+        for index, parameter in enumerate(self._parameters):
+            if parameter.closed:
+                raise RuntimeError(
+                    f"{where}: parameters[{index}] has been closed"
+                )
+
+    def _validate_state_buffers(self, where):
+        """Preflight every entry's persistent m/v as open and still
+        matching its parameter's metadata, and every step count as a
+        non-bool non-negative int — the optimizer-owned invariants,
+        verified before anything mutates or is exposed. The caller has
+        already preflighted the parameters as open."""
+        for index, parameter in enumerate(self._parameters):
+            for label, state in (("m", self._m[index]), ("v", self._v[index])):
+                if state.closed:
+                    raise RuntimeError(
+                        f"{where}: the {label} state for "
+                        f"parameters[{index}] has been closed"
+                    )
+                if (
+                    state.shape != parameter.shape
+                    or state.dtype != parameter.dtype
+                    or state.device != parameter.device
+                ):
+                    raise ValueError(
+                        f"{where}: the {label} state for "
+                        f"parameters[{index}] is "
+                        f"{state.shape}/{state.dtype}/{state.device}, "
+                        f"the parameter is "
+                        f"{parameter.shape}/{parameter.dtype}/"
+                        f"{parameter.device}"
+                    )
+            count = self._steps[index]
+            if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+                raise ValueError(
+                    f"{where}: the step count for parameters[{index}] "
+                    f"is not a non-negative int: {count!r}"
+                )
+
     def close(self):
         """Release every optimizer-owned m/v buffer exactly once and
         mark the optimizer closed: ``step()`` and ``zero_grad()``
@@ -321,39 +398,13 @@ class NativeAdam:
         counter, or gradient. Returns None."""
         self._require_open()
 
-        # Phase 1a: every stored parameter must still be open — checked
-        # for the whole collection first, so a closed parameter fails
-        # deterministically regardless of earlier entries' grad state.
-        for index, parameter in enumerate(self._parameters):
-            if parameter.closed:
-                raise RuntimeError(
-                    f"NativeAdam.step(): parameters[{index}] has been "
-                    f"closed"
-                )
+        # Phase 1a: every stored parameter must still be open.
+        self._require_parameters_open("NativeAdam.step()")
 
         # Phase 1b (state): every entry's persistent m/v must be open
         # and still match its parameter's metadata — optimizer-owned
         # invariants, verified before anything mutates.
-        for index, parameter in enumerate(self._parameters):
-            for label, state in (("m", self._m[index]), ("v", self._v[index])):
-                if state.closed:
-                    raise RuntimeError(
-                        f"NativeAdam.step(): the {label} state for "
-                        f"parameters[{index}] has been closed"
-                    )
-                if (
-                    state.shape != parameter.shape
-                    or state.dtype != parameter.dtype
-                    or state.device != parameter.device
-                ):
-                    raise ValueError(
-                        f"NativeAdam.step(): the {label} state for "
-                        f"parameters[{index}] is "
-                        f"{state.shape}/{state.dtype}/{state.device}, "
-                        f"the parameter is "
-                        f"{parameter.shape}/{parameter.dtype}/"
-                        f"{parameter.device}"
-                    )
+        self._validate_state_buffers("NativeAdam.step()")
 
         # Phase 1b (gradients): select the active set and validate every
         # gradient completely before anything is staged or mutated.
@@ -535,6 +586,207 @@ class NativeAdam:
             NativeTensor._from_core(parameter_new_core),
             next_step,
         )
+
+    # -- optimizer state (v3.13: in-memory only; files are v3.14) ----------
+
+    def state_dict(self):
+        """The optimizer's restorable in-memory state, as a plain
+        independent dict (format version 1)::
+
+            {"format_version": 1, "optimizer": "NativeAdam",
+             "lr": <float>, "betas": (<float>, <float>), "eps": <float>,
+             "parameters": ({"shape", "dtype", "device"}, ...),
+             "step_counts": (<int>, ...),
+             "m": [<NativeTensor>, ...], "v": [<NativeTensor>, ...]}
+
+        Everything is positional, in the optimizer's deterministic
+        identity-deduplicated first-occurrence parameter order (shared
+        aliases appear once); no object identity, name, parameter
+        value, gradient, or graph data is included. The ``m``/``v``
+        entries are **caller-owned snapshots**: plain graph-free
+        ``requires_grad=False`` NativeTensors (never NativeParameter),
+        each an independent owning contiguous native copy of the
+        optimizer's moment — sharing no storage with the optimizer, the
+        parameters, the gradients, or each other. Closing a snapshot
+        never affects the optimizer; the caller releases the snapshots
+        (``close()`` each) when done, and repeated calls return
+        independently owned snapshots.
+
+        Preflight: the optimizer must be open, every stored parameter
+        open, every internal m/v open and metadata-matched, and every
+        step count a valid non-negative int — a violation raises
+        deterministically before anything is created. If snapshotting
+        fails partway, every snapshot created by this call is closed
+        before the error propagates (never left to garbage collection),
+        internal state and parameters are untouched, and the optimizer
+        remains usable. No autograd graph is built and no NumPy touches
+        the copies (the native copy path)."""
+        where = "NativeAdam.state_dict()"
+        self._require_open()
+        self._require_parameters_open(where)
+        self._validate_state_buffers(where)
+        snapshots = {"m": [], "v": []}
+        try:
+            for label, buffers in (("m", self._m), ("v", self._v)):
+                for buffer in buffers:
+                    snapshots[label].append(NativeTensor._from_core(
+                        _native_copy(buffer._require_open())
+                    ))
+        except BaseException:
+            for label in ("m", "v"):
+                for snapshot in snapshots[label]:
+                    snapshot.close()
+            raise
+        return {
+            "format_version": FORMAT_VERSION,
+            "optimizer": "NativeAdam",
+            "lr": self._lr,
+            "betas": self._betas,
+            "eps": self._eps,
+            "parameters": parameter_metadata(self._parameters),
+            "step_counts": tuple(self._steps),
+            "m": snapshots["m"],
+            "v": snapshots["v"],
+        }
+
+    def _validate_moment_entries(self, entries, label, where):
+        """Validate one input moment collection for loading: a
+        tuple/list of exactly one **open plain NativeTensor** per
+        stored parameter — a NativeParameter (or anything else,
+        the stable framework's Tensor included) is rejected — each
+        exactly matching its parameter's shape/dtype/device, with no
+        casting, reshaping, broadcasting, or device transfer. Raises
+        naming the failing entry; touches nothing."""
+        if not isinstance(entries, (tuple, list)):
+            raise TypeError(
+                f"{where}: state[{label!r}] must be a tuple or list of "
+                f"NativeTensor, got {type(entries).__name__}"
+            )
+        if len(entries) != len(self._parameters):
+            raise ValueError(
+                f"{where}: state[{label!r}] holds {len(entries)} "
+                f"tensors, this optimizer stores "
+                f"{len(self._parameters)} parameters"
+            )
+        for index, (entry, parameter) in enumerate(
+            zip(entries, self._parameters)
+        ):
+            if not isinstance(entry, NativeTensor) or isinstance(
+                entry, NativeParameter
+            ):
+                raise TypeError(
+                    f"{where}: state[{label!r}][{index}] must be a plain "
+                    f"NativeTensor, got {type(entry).__name__}"
+                )
+            if entry.closed:
+                raise RuntimeError(
+                    f"{where}: state[{label!r}][{index}] has been closed"
+                )
+            if entry.shape != parameter.shape:
+                raise ValueError(
+                    f"{where}: state[{label!r}][{index}] has shape "
+                    f"{entry.shape}, the stored parameter is "
+                    f"{parameter.shape}"
+                )
+            if (
+                entry.dtype != parameter.dtype
+                or entry.device != parameter.device
+            ):
+                raise ValueError(
+                    f"{where}: state[{label!r}][{index}] is "
+                    f"{entry.dtype}/{entry.device}, the stored parameter "
+                    f"is {parameter.dtype}/{parameter.device}"
+                )
+
+    def load_state_dict(self, state):
+        """Restore optimizer state from a ``state_dict()`` dict:
+        hyperparameters, per-parameter step counts, and both moment
+        collections — mapped positionally onto this optimizer's stored
+        parameters.
+
+        **Phase 1 — validation, no mutation.** The optimizer must be
+        open (loading never reopens a closed one), every stored
+        parameter open, and the current internal state intact; then the
+        complete input is validated: a plain dict with exactly the
+        schema keys, ``format_version == 1``, the ``"NativeAdam"`` tag,
+        lr/betas/eps under the constructors' full contracts, parameter
+        metadata matching position by position, step counts (non-bool
+        non-negative ints, one per parameter), and every ``m``/``v``
+        entry an open plain NativeTensor of exactly the parameter's
+        shape/dtype/device (sequence fields accept tuple or list).
+
+        **Phase 2 — staging.** Every input moment is copied into a
+        fresh optimizer-owned NativeTensor by the native copy path —
+        the caller's tensors are never adopted, retained, closed, or
+        mutated, and the supplied dict is read-only throughout. A
+        staging failure closes every staged copy and changes nothing.
+
+        **Phase 3 — commit.** lr, betas, eps, the step counters, and
+        the m/v state are replaced, and the replaced old moment buffers
+        are closed only after the new state is installed. Parameters
+        are untouched at every phase: no value, version, gradient
+        (identity or value), ``requires_grad``, registration, or alias
+        changes, and no retained autograd graph becomes stale — the
+        v3.7 guard keys on parameter versions, which this method never
+        moves. After success the caller's snapshots remain open and
+        share no storage with the optimizer (closing either side never
+        affects the other).
+
+        One narrow, honest limitation: the commit is several Python
+        attribute assignments that cannot be made indivisible, so an
+        asynchronous interruption (e.g. KeyboardInterrupt) landing
+        mid-commit could leave the scalars replaced but the moments
+        not (each installed piece stays internally consistent, and the
+        GC safety net eventually reclaims any not-yet-closed old
+        buffer). No ordinary public failure reaches the commit.
+        Returns None."""
+        where = "NativeAdam.load_state_dict()"
+        self._require_open()
+        self._require_parameters_open(where)
+        self._validate_state_buffers(where)
+        validate_state_schema(state, "NativeAdam", _STATE_KEYS, where)
+        lr = _validated_positive_real(state["lr"], "lr")
+        betas = _validated_betas(state["betas"])
+        eps = _validated_positive_real(state["eps"], "eps")
+        validate_parameter_metadata(
+            state["parameters"], self._parameters, where
+        )
+        validate_step_counts(
+            state["step_counts"], len(self._parameters), where
+        )
+        self._validate_moment_entries(state["m"], "m", where)
+        self._validate_moment_entries(state["v"], "v", where)
+        step_counts = [int(count) for count in state["step_counts"]]
+
+        # Phase 2: stage independent optimizer-owned copies of every
+        # input moment. Nothing has mutated yet, so a failure only has
+        # staged copies to release.
+        staged = {"m": [], "v": []}
+        try:
+            for label in ("m", "v"):
+                for entry in state[label]:
+                    staged[label].append(NativeTensor._from_core(
+                        _native_copy(entry._require_open())
+                    ))
+        except BaseException:
+            for label in ("m", "v"):
+                for copy in staged[label]:
+                    copy.close()
+            raise
+
+        # Phase 3: commit, then release the replaced old buffers.
+        old_m = self._m
+        old_v = self._v
+        self._lr = lr
+        self._betas = betas
+        self._eps = eps
+        self._steps = step_counts
+        self._m = staged["m"]
+        self._v = staged["v"]
+        for buffer in old_m:
+            buffer.close()
+        for buffer in old_v:
+            buffer.close()
 
     def zero_grad(self):
         """Clear every stored parameter's gradient to ``None`` via the
