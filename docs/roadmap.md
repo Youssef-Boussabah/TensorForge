@@ -281,12 +281,17 @@ The Python line is done; what remains is expansion on its own terms:
   gradient-less parameters skipped, identities and gradients
   preserved, one version increment per updated parameter), plus
   preflighted `zero_grad()` — no momentum, weight decay, parameter
-  groups, optimizer state, or training loop. **The next milestone is
-  Advanced C++ v3.9 — the first end-to-end native training proof** (a
-  small deterministic multi-iteration regression over the existing
-  model/loss/optimizer surface, asserting learning without fragile
-  exact-loss values). CUDA/GPU experiments are still entirely future
-  work. The Python framework stays the reference implementation.
+  groups, optimizer state, or training loop. **v3.9 — the native MLP
+  training proof — is implemented**: `examples/native_mlp_training.py`
+  trains a 2→8→ReLU→1 native MLP on fixed synthetic regression data
+  for 25 deterministic SGD steps entirely through the native stack —
+  a fresh graph every iteration, one version increment per parameter
+  per step, stable identities, explicit lifetime handling, and a
+  monotonic 99.5% loss reduction, all bit-reproducible across runs.
+  **The next milestone is Advanced C++ v3.10 — a second native
+  optimizer with per-parameter adaptive state** over the same mutation
+  contract. CUDA/GPU experiments are still entirely future work. The
+  Python framework stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -419,11 +424,25 @@ The Python line is done; what remains is expansion on its own terms:
     `zero_grad()` — verified through a one-step
     Sequential/Linear/ReLU/MSE integration; no momentum, weight decay,
     parameter groups, optimizer state, schedulers, or training loop.
-    **Next: v3.9 — the first end-to-end native training proof** (a
-    small deterministic multi-iteration forward → loss → backward →
-    `step()` → `zero_grad()` regression over the existing surface,
-    asserting learning without fragile exact-loss values; no new
-    operations, layers, losses, or optimizer features).
+    **v3.9 — the native MLP training proof — is complete**: the first
+    complete multi-iteration native CPU training run, as an example
+    plus integration tests with zero changes to the stack —
+    `examples/native_mlp_training.py` trains
+    `NativeSequential(NativeLinear(2, 8, seed=0), NativeReLU(),
+    NativeLinear(8, 1, seed=1))` on 8 fixed synthetic regression
+    samples for 25 steps of `NativeSGD(lr=0.1)`, with a completely
+    fresh graph each iteration (no retained graphs — the v3.7 stale
+    guard never fires in the loop, and deliberate retention across a
+    step still raises), gradients confirmed present after backward,
+    retained through `step()`, and cleared by `zero_grad()`, exactly
+    one version increment per parameter per step, stable parameter
+    identities/names/state keys, explicit per-iteration and
+    end-of-run tensor release, a NumPy-compute tripwire over a full
+    run, and a monotonic deterministic loss trajectory (2.107864 →
+    0.009529, a 99.5% reduction) that repeats bit-identically.
+    **Next: v3.10 — a second native optimizer with per-parameter
+    adaptive state**, committed through the same v3.7 mutation
+    contract; the training proof stays SGD-based.
   - **Then beyond:** the rest of the native training stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

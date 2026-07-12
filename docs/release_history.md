@@ -871,4 +871,50 @@ a small deterministic multi-iteration forward → loss → backward →
 `step()` → `zero_grad()` regression over the existing
 Sequential/Linear/ReLU/MSE/SGD surface, asserting learning without
 fragile exact-loss values — no new operations, layers, losses, or
-optimizer features.
+optimizer features. **v3.9** delivers that proof — the first complete
+multi-iteration **native CPU training run**, as an example and
+integration tests with **zero source changes** to the native runtime,
+autograd engine, layers, loss, module system, parameter system, or
+NativeSGD. `examples/native_mlp_training.py` trains
+`NativeSequential(NativeLinear(2, 8, seed=0), NativeReLU(),
+NativeLinear(8, 1, seed=1))` on a fixed synthetic regression dataset —
+8 samples, 2 features → 1 target, Python literals handed once to
+`NativeTensor.from_array` (data construction at the explicit entry
+boundary, deliberately distinguished from native computation) — for
+**25 steps of `NativeSGD(lr=0.1)`**. Every iteration follows the
+fresh-graph lifecycle: gradients confirmed cleared → fresh forward →
+scalar `NativeMSELoss` → loss recorded through `to_numpy()` (the
+established inspection exit, the only NumPy anywhere) → one-shot
+`backward()` releasing the iteration's graph → every parameter
+confirmed holding a finite gradient → `step()` (identities stable,
+exactly one version increment per parameter, gradients retained) →
+`zero_grad()` → the per-iteration prediction and loss tensors closed.
+No `retain_graph` and no graph reuse, so the v3.7 stale guard never
+fires in the loop — and a concise negative test proves deliberately
+retaining an old sensitive graph across `step()` still raises the
+existing deterministic stale error. The loss decreases
+**monotonically every step**: 2.107864 → 0.396467 (step 5) → 0.086739
+(step 10) → 0.032133 (step 15) → 0.016505 (step 20) → **0.009529** — a
+99.5% reduction — and the run is bit-deterministic: repeated runs in
+one process reproduce the exact loss history, final parameter values,
+and version history (`[N, N, N, N]` after N steps; the final
+evaluation pass and `zero_grad()` add nothing). Lifetime is explicit
+throughout: model parameters, optimizer, and fixed data live for the
+whole run; per-iteration tensors are closed each iteration; everything
+the run created is closed on the way out (success or failure), and
+`train()` returns plain Python scalars/lists only — never live native
+tensors. Deliberately **not** shipped: `NativeAdam`, momentum, weight
+decay, parameter groups, schedulers, optimizer state, checkpointing or
+resume, batching, shuffling, validation sets, metrics, classification
+losses, new operations or kernels, or any performance claim. 13
+focused tests (`tests/test_native_mlp_training.py`, selector
+`-k "native_mlp_training"`: end-to-end loss behavior, per-parameter
+learning, exact version progression, identity/name/state-key
+stability, exact-equality determinism, hand-driven gradient lifecycle,
+cross-iteration accumulation control, the stale-graph guard, a NumPy
+tripwire over a full training run, a source-level contract guardrail,
+and the executable report) lock the proof; the full suite passes at
+**1262 tests**. The next milestone is **Advanced C++ v3.10 —
+NativeAdam**: a second native optimizer with per-parameter adaptive
+state, committed through the same v3.7 mutation contract; the training
+proof stays SGD-based.

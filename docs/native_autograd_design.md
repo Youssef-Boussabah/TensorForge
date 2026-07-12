@@ -1017,11 +1017,30 @@ is complete without it.**
   a fresh forward/backward trains on the updated values — verified
   through a one-step Sequential/Linear/ReLU/MSE integration. Verified
   test count at completion: **1249 tests** (1230 plus the 19 v3.8
-  tests). The next milestone is **Advanced C++ v3.9 — the first
-  end-to-end native training proof**: a small deterministic
-  multi-iteration forward → loss → backward → `step()` → `zero_grad()`
-  regression over the existing surface, asserting learning without
-  fragile exact-loss values — no new operations or optimizer features.
-  Optimizers and training are **not** combined into one milestone; each
-  lands only when the previous is tested and documented, with the
-  Python framework remaining the reference implementation.
+  tests). **Its ninth milestone, Advanced C++ v3.9 — the native MLP
+  training proof, is complete**: an integration milestone with zero
+  source changes to the stack —
+  `examples/native_mlp_training.py` trains
+  `NativeSequential(NativeLinear(2, 8, seed=0), NativeReLU(),
+  NativeLinear(8, 1, seed=1))` on 8 fixed synthetic regression samples
+  for 25 steps of `NativeSGD(lr=0.1)`, following the fresh-graph
+  iteration lifecycle this design prescribes: gradients confirmed
+  cleared → fresh forward → scalar `NativeMSELoss` → one-shot
+  `backward()` (which releases the iteration's operation graph) →
+  `step()` (identities stable, exactly one version increment per
+  parameter, gradients retained) → `zero_grad()` → per-iteration
+  prediction/loss tensors closed. No `retain_graph` and no graph reuse
+  — the v3.7 stale guard never fires in the loop, and a negative test
+  proves deliberate retention across `step()` still raises. The loss
+  falls monotonically every step (2.107864 → 0.009529, 99.5%), the run
+  is bit-deterministic across repeats (exact loss history, final
+  values, and version history `[N, N, N, N]`), a tripwire proves the
+  training computation never touches NumPy, and everything the run
+  creates is closed on the way out. Verified test count at completion:
+  **1262 tests** (1249 plus the 13 v3.9 tests). The next milestone is
+  **Advanced C++ v3.10 — NativeAdam**: a second native optimizer with
+  per-parameter adaptive state committed through the same v3.7
+  mutation contract. Optimizers and training are **not** combined into
+  one milestone; each lands only when the previous is tested and
+  documented, with the Python framework remaining the reference
+  implementation.

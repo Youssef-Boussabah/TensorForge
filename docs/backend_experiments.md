@@ -386,6 +386,62 @@ timed, and timings are medians over repeated runs after warmup.
 Results are hardware-dependent and should not be oversold; expect
 exact numbers to vary, the *shape* of the story shouldn't.
 
+### Native training stack — the MLP training proof (v3.9)
+
+v3.9 is the first complete multi-iteration **native CPU training
+proof** — an integration milestone, not a framework-feature milestone:
+`examples/native_mlp_training.py` trains a genuine MLP end to end
+through the existing experimental native training stack, with **zero
+changes to the native runtime, autograd engine, layers, loss, module
+system, parameter system, or NativeSGD**. Deliberately **not** shipped:
+`NativeAdam`, momentum, weight decay, schedulers, optimizer state,
+checkpointing/resume, batching, shuffling, validation sets, metrics,
+classification losses, new operations, or performance claims.
+
+```
+uv run python examples/native_mlp_training.py
+```
+
+**The proof.** `NativeSequential(NativeLinear(2, 8, seed=0),
+NativeReLU(), NativeLinear(8, 1, seed=1))` trains on 8 fixed synthetic
+regression samples (2 features → 1 target; Python literals handed once
+to `NativeTensor.from_array` — data construction at the explicit entry
+boundary, deliberately distinguished from native computation) for **25
+steps of `NativeSGD(lr=0.1)`**. Every iteration follows the fresh-graph
+lifecycle: confirm gradients cleared → fresh forward through the model
+→ scalar `NativeMSELoss` → record via `to_numpy()` (the established
+inspection exit — the only NumPy anywhere) → one-shot `backward()` →
+confirm every parameter has a finite gradient → `optimizer.step()`
+(identities stable, one version increment each, gradients retained) →
+`optimizer.zero_grad()` → close the per-iteration prediction and loss
+tensors. No `retain_graph`, no graph reuse — so the v3.7 stale guard
+never triggers in the loop (one concise negative test proves
+deliberately retaining an old sensitive graph across `step()` still
+raises the existing stale error). The loss decreases **monotonically
+every step**, from 2.107864 to 0.009529 — a 99.5% reduction — and the
+whole run is bit-deterministic: repeated runs in one process reproduce
+the exact loss history, final parameter values, and version history
+(`[N, N, N, N]` after N steps, `zero_grad` and evaluation passes adding
+nothing). Lifetime is explicit: the model parameters, optimizer, and
+fixed data live for the whole run; per-iteration tensors are closed
+every iteration; and everything the run created — parameters and data
+included — is closed on the way out, success or failure, with
+`train()` returning plain Python values only (never live tensors).
+
+Everything above is locked by `tests/test_native_mlp_training.py`
+(selector: `-k "native_mlp_training"` — 13 tests: end-to-end loss
+behavior, per-parameter learning, exact version progression,
+identity/name/state-key stability, exact-equality determinism across
+runs, hand-driven gradient lifecycle, cross-iteration accumulation
+control, the stale-graph negative guard, a NumPy-compute tripwire over
+a full training run, a source-level guardrail keeping the example
+inside the contract, and the executable report itself), and the full
+suite passes at **1262 tests**. Still float64/cpu only, still explicit
+and experimental, and no performance is claimed. The next milestone is
+**Advanced C++ v3.10 — NativeAdam**: a second native optimizer with
+per-parameter adaptive state over the same v3.7 mutation contract —
+scope to be pinned when it begins; the training proof stays SGD-based.
+
 ### Native training stack — NativeSGD (v3.8)
 
 v3.8 adds the first native optimizer:
@@ -2192,12 +2248,15 @@ parameter's forward value is needed by backward — and v3.8 (above)
 added the first native optimizer, `NativeSGD`: identity-deduplicated
 parameter storage, a validated learning rate, and a two-phase
 mutation-atomic `step()` that stages graph-free native updates and
-commits them through `copy_value_`, plus `zero_grad()`.** There is
-still no file serialization or training loop — the recommended next
-milestone is **v3.9 — the first end-to-end native training proof** (a
-small deterministic multi-iteration regression over the existing
-model/loss/optimizer surface, asserting learning without fragile
-exact-loss values); `divide` backward remains separate later work.
+commits them through `copy_value_`, plus `zero_grad()` — and v3.9
+(above) completed **the first end-to-end native CPU training proof**:
+a deterministic 25-step MLP regression whose loss falls monotonically
+by 99.5%, built entirely from fresh per-iteration graphs over the
+existing stack.** There is still no file serialization for the native
+stack — the recommended next milestone is **v3.10 — NativeAdam** (a
+second native optimizer with per-parameter adaptive state over the
+same mutation contract); `divide` backward remains separate later
+work.
 CUDA experiments remain a separate future branch (where `device` gains a
 second value), and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation
