@@ -33,9 +33,16 @@ contiguous integer-string execution slots, position-based execution,
 and identity-deduplicated traversal/state. ``NativeMSELoss`` (Advanced
 C++ v3.6) is the first native loss: a parameter-free scalar
 mean/sum-reduced MSE composed from existing native operations, its
-gradients supplied entirely by the existing autograd. No optimizers,
-file serialization, or training loop yet, and still fully separate
-from ``tensorforge.nn``.
+gradients supplied entirely by the existing autograd. Parameter
+mutation is safe as of Advanced C++ v3.7: every ``NativeParameter``
+carries a read-only monotonic value ``version``, ``copy_value_`` is
+the one controlled no-grad mutation primitive (the future NativeSGD
+commit path), ``load_state_dict`` increments each loaded parameter's
+version atomically, and ``backward()`` raises a deterministic
+stale-graph error when a parameter whose forward value backward must
+read (multiply/matmul/relu edges) was mutated after forward. No
+optimizers, file serialization, or training loop yet, and still fully
+separate from ``tensorforge.nn``.
 
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).

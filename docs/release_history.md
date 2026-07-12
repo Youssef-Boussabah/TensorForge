@@ -747,4 +747,68 @@ foundation for `NativeSGD`, and rollback/shared-parameter behavior — no
 optimizer and no training loop yet; v3.7 must precede `NativeSGD`
 because optimizer updates cannot safely mutate parameter values while
 old graphs remain capable of backward, and mutation versioning is not
-combined with SGD.
+combined with SGD. **v3.7** delivers that contract (Python-only changes
+to `NativeParameter`, the `NativeTensor` autograd metadata, and
+`load_state_dict`; no C++ change, no new operation, and the stable
+framework untouched). Every `NativeParameter` now carries a **read-only,
+monotonically increasing value `version`** — an ordinary non-negative
+int, 0 at construction — that counts **replacements of the owned
+numerical value** and nothing else: gradient accumulation, `zero_grad`,
+registration/aliasing/removal, train/eval, and `state_dict()` snapshots
+never move it. Two things increment it: **`copy_value_(source)`**, the
+one controlled no-grad mutation primitive (an open NativeTensor source —
+a NativeParameter, the parameter itself, or a snapshot accepted purely
+as a value source; stable-framework objects, arrays, lists, and scalars
+rejected; exact shape/dtype/device, no broadcasting/casting/transfer;
+the staged copy is native, owning, contiguous, and never aliased; Python
+identity, registrations, `requires_grad`, leaf/graph-free state, and the
+existing gradient are preserved by identity and value; old storage
+released exactly once; any failure changes nothing — and this is the
+exact path `NativeSGD.step()` will commit updates through), and a
+**successful `load_state_dict`** (exactly once per matched canonical
+parameter — shared parameters once, observed through every alias;
+identical values still increment because replacement, not value
+equality, is what counts; increments land only after the whole atomic
+commit, so every failure/rollback path leaves values *and* versions
+exactly unchanged). A **per-operation dependency audit** classifies the
+differentiable set: `multiply`, `matmul`, and `relu` backwards read
+direct-parent forward values; `add`, `subtract`, `sum`, `mean`,
+`reshape`, `transpose`/`T`, `contiguous_copy`, and `narrow` read only
+metadata. Graph construction therefore records `(op, parameter,
+expected_version)` for every direct NativeParameter operand of a
+value-sensitive op (the documented **op-level policy**: guarded even in
+the corner where sibling `requires_grad` flags mean the value would not
+actually be read — safety and independence from gradient-flow details
+over that corner), and `backward()` validates every recorded version
+after the freed-graph scan and **before any seed, callback, or gradient
+commit**: a stale graph raises a deterministic RuntimeError naming the
+operation and expected/current versions — distinct from freed-graph and
+closed-tensor errors, leaving gradients, graph structure, and versions
+untouched (the graph is *not* freed), unrepairable by `retain_graph` or
+by reloading the old numerical value (versions are monotonic) — the
+remedy is a fresh forward pass. Value-independent graphs (bias through
+`add`, view/reduction chains) stay valid across mutation with
+mathematically correct gradients. The version metadata is Python graph
+metadata on the node (absent on leaves), freed with one-shot cleanup,
+revalidated on every retained-graph pass; autograd never imports the
+module stack, and there is no global active-graph registry — mutation
+itself is never blocked. Deliberately **not** shipped: `NativeSGD`, any
+optimizer, training loops, momentum, weight decay, general in-place
+arithmetic, operator overloads, a global no-grad context, checkpointing,
+or serialization. 34 focused tests
+(`tests/test_native_parameter_versioning.py`, selector
+`-k "native_parameter_version or stale_parameter_graph or mutation_safety"`,
+NumPy-tripwired mutation/loading/preflight/fresh-pass paths) lock the
+contract, one v3.3 assertion is intentionally tightened (a graph built
+before loading now raises the stale error instead of silently reading
+the new value — still memory-safe), and the full suite passes at
+**1230 tests**. The next milestone is **Advanced C++ v3.8 —
+NativeSGD**: an optimizer over identity-deduplicated `NativeParameter`
+objects — real positive finite learning-rate validation, `step()`
+committing graph-free native updates through the v3.7 mutation path
+(`grad=None` and frozen parameters skipped, identity preserved, one
+version increment per updated parameter), `zero_grad()`,
+duplicate/shared-parameter protection, and deterministic update tests —
+with no momentum, weight decay, or parameter groups initially, no
+training loop, and no combination with the full MLP training example
+(the first end-to-end model-training proof may remain v3.9).

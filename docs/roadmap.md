@@ -260,13 +260,25 @@ The Python line is done; what remains is expansion on its own terms:
   backward), with exactly `"mean"`/`"sum"` reductions, strict
   exact-shape/no-broadcasting validation, empty state, and exact plus
   finite-difference verification through a full
-  Linear→ReLU→Linear→MSE chain — still with no optimizer,
-  parameter-update primitive, or training loop. **The next milestone
-  is Advanced C++ v3.7 — Native Parameter Mutation Safety and
-  Versioning Contract** (the foundation NativeSGD requires before any
-  optimizer can safely mutate parameters). CUDA/GPU experiments are
-  still entirely future work. The Python framework stays the reference
-  implementation.
+  Linear→ReLU→Linear→MSE chain. **v3.7 — Native Parameter Mutation
+  Safety and Versioning — is implemented**: every `NativeParameter`
+  carries a read-only monotonic value version counting replacements of
+  the owned value; `copy_value_(source)` is the one controlled no-grad
+  mutation primitive (identity, gradients, `requires_grad`, and
+  registrations preserved; native never-aliased copies; failure changes
+  nothing); `load_state_dict` increments each matched canonical
+  parameter once, after its atomic commit; and graphs record expected
+  versions where backward reads a direct parameter operand's forward
+  value (`multiply`/`matmul`/`relu`), so `backward()` raises a
+  deterministic stale-graph error — before any callback or gradient
+  commit — when such a parameter was mutated after forward, while
+  value-independent graphs (add/subtract/reductions/views) stay valid
+  with correct gradients. Still no optimizer or training loop. **The
+  next milestone is Advanced C++ v3.8 — NativeSGD** (a minimal
+  optimizer whose `step()` commits graph-free native updates through
+  the v3.7 mutation path; no momentum, weight decay, or training loop
+  initially). CUDA/GPU experiments are still entirely future work. The
+  Python framework stays the reference implementation.
 - **The Daedalus-class native roadmap** — the longer arc the advanced
   branch is building toward, in phases, each landing only when the
   previous is tested and documented:
@@ -370,17 +382,32 @@ The Python line is done; what remains is expansion on its own terms:
     sign, the existing native mean backward's `1/N` — no division and
     no manual backward), empty state, train/eval independence, and
     exact plus finite-difference verification for both operands under
-    both reductions and through a full Linear→ReLU→Linear→MSE model —
-    no optimizer, update primitive, or training loop yet. **Next:
-    v3.7 — Native Parameter Mutation Safety and Versioning Contract**
-    (version counters on mutable native parameter values, forward-time
-    expected-version capture where backward needs saved values, state
-    loading incrementing versions, clear stale-forward backward errors,
-    a controlled no-grad mutation primitive, the identity-preserving
-    update foundation for NativeSGD, and rollback/shared-parameter
-    behavior; no optimizer and no training loop in v3.7 — it must land
-    before NativeSGD, because optimizer updates cannot safely mutate
-    parameters while old graphs remain capable of backward).
+    both reductions and through a full Linear→ReLU→Linear→MSE model.
+    **v3.7 — Native Parameter Mutation Safety and Versioning Contract —
+    is complete**: a read-only monotonic value version on every
+    NativeParameter counting replacements of the owned value, the
+    controlled no-grad `copy_value_` mutation primitive (identity,
+    gradients, `requires_grad`, and registrations preserved; native
+    never-aliased owning copies; atomic failure behavior), state
+    loading incrementing each matched canonical parameter exactly once
+    after its atomic commit (rollback restores values and versions),
+    forward-time expected-version capture on the value-sensitive
+    operations (`multiply`/`matmul`/`relu` — the audited set whose
+    backward reads direct-parent forward values), and a deterministic
+    stale-graph backward error raised before any callback or gradient
+    commit — while value-independent graphs (add/subtract/reductions/
+    views) stay valid across mutation with correct gradients; shared
+    parameters expose one version through every alias — no optimizer
+    or training loop yet. **Next: v3.8 — NativeSGD** (an optimizer over
+    identity-deduplicated NativeParameter objects: real positive finite
+    learning-rate validation, `step()` committing graph-free native
+    updates through the v3.7 mutation path — `grad=None` and frozen
+    parameters skipped, identity preserved, one version increment per
+    updated parameter — `zero_grad()`, duplicate/shared-parameter
+    protection, and deterministic update tests; no momentum, weight
+    decay, or parameter groups initially, no training loop, and SGD is
+    not combined with the full MLP training example — the first
+    end-to-end model-training proof may remain v3.9).
   - **Then beyond:** the rest of the native training stack, the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

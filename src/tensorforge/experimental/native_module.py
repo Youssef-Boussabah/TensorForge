@@ -400,9 +400,17 @@ class NativeModule:
         existing ``grad`` (by identity **and** value; ``None`` stays
         ``None`` — loading never clears, replaces, or accumulates
         gradients). ``training`` flags and traversal order are
-        untouched. A graph built *before* loading stays memory-safe: a
-        later backward through it reads the parameter's current
-        (newly loaded) value — the documented in-place policy.
+        untouched. Each matched canonical parameter's value ``version``
+        increments by exactly one on success (v3.7) — a shared
+        parameter loads once under its canonical key, so it increments
+        once; loading numerically identical values still increments
+        (the owned value was replaced); a failed load leaves every
+        version unchanged. A graph built *before* loading stays
+        memory-safe, and where its backward must read a loaded
+        parameter's forward value (multiply/matmul/relu edges) the next
+        ``backward()`` raises a deterministic stale-value RuntimeError
+        instead of silently using the new value — run forward again
+        after loading. Value-independent graph edges remain valid.
 
         Validation happens entirely **before** any mutation, in this
         order: (1) ``strict`` must be a real bool; (2) ``state_dict``
@@ -532,7 +540,15 @@ class NativeModule:
             for _, new_core in staged:
                 new_core.close()
             raise
-        # Fully committed: release each replaced core exactly once.
+        # Fully committed. Count one value replacement per loaded
+        # parameter (v3.7) — pure int increments that cannot fail, done
+        # before the closes so versions and released storage can never
+        # disagree — then release each replaced core exactly once.
+        # Versions move only here, after every swap has succeeded, so
+        # the rollback above never has anything to decrement: a failed
+        # load leaves every version exactly as it was.
+        for parameter, _ in adopted:
+            parameter._version += 1
         for _, old_core in adopted:
             old_core.close()
         return LoadStateDictResult(missing, unexpected)

@@ -43,7 +43,18 @@ A note on mutation: there are no in-place user arithmetic operations,
 so the forward values the graph captures for backward (e.g. the
 operands of ``multiply``) remain stable for the life of the graph —
 unless a tensor is explicitly closed, in which case ``backward()``
-raises clearly rather than reading freed storage.
+raises clearly rather than reading freed storage. The one sanctioned
+mutation is the v3.7 NativeParameter value replacement
+(``copy_value_`` / ``load_state_dict``), and it is version-guarded:
+an operation whose backward reads a parameter's forward value
+(``multiply``/``matmul``/``relu``) records the parameter's value
+version at construction, and ``backward()`` validates every recorded
+version *before* running any callback or touching any gradient — a
+mutated-since-forward parameter raises a clear stale-graph
+RuntimeError instead of silently computing gradients against the
+wrong value. Value-independent backwards (``add``/``subtract``/
+reductions/views) record nothing and stay valid across parameter
+mutation, with mathematically correct gradients.
 
 NativeTensor is still **not** tensorforge.Tensor: the two autograd
 engines never mix, no conversion is implicit, and the framework frontend
@@ -87,6 +98,13 @@ class NativeTensor:
         # _is_leaf so a freed non-leaf, a live non-leaf, and a genuine leaf
         # stay tellable apart.
         "_graph_freed",
+        # -- stale-value guard (v3.7): on a non-leaf whose backward reads a
+        # direct NativeParameter parent's forward value, a tuple of
+        # (op_name, parameter, expected_version) entries recorded at
+        # construction. backward() validates them before running anything;
+        # graph cleanup releases them with _parents/_backward. Always ()
+        # on leaves and value-independent results.
+        "_expected_versions",
     )
 
     def __init__(self, core, owns_core=True):
@@ -112,6 +130,7 @@ class NativeTensor:
         self._op = ""
         self._is_leaf = True
         self._graph_freed = False
+        self._expected_versions = ()
 
     @classmethod
     def _from_core(cls, core, owns_core=True):
@@ -122,7 +141,8 @@ class NativeTensor:
         return cls(core, owns_core=owns_core)
 
     @classmethod
-    def _from_op(cls, core, parents, backward, op, owns_core=True):
+    def _from_op(cls, core, parents, backward, op, owns_core=True,
+                 expected_versions=()):
         """Internal: build a **non-leaf** autograd graph node over
         ``core``.
 
@@ -133,6 +153,10 @@ class NativeTensor:
         a short debug name. ``requires_grad`` is the OR of the parents' —
         if no parent needs grad, the result is a plain forward leaf with
         no recorded graph, matching the Python Tensor.
+        ``expected_versions`` (v3.7) carries the stale-value guard: the
+        ``(op_name, parameter, expected_version)`` entries for every
+        direct NativeParameter parent whose forward value this op's
+        backward reads — recorded only when a graph is actually built.
 
         This is the single internal entry for graph construction: the
         differentiable ops (v2.2) and the autograd tests use it, and it
@@ -146,6 +170,7 @@ class NativeTensor:
             node._parents = tuple(parents)
             node._backward = backward
             node._op = op
+            node._expected_versions = tuple(expected_versions)
         return node
 
     # -- constructors -----------------------------------------------------
@@ -328,7 +353,12 @@ class NativeTensor:
             )
             self._accumulate_grad(NativeTensor._from_core(contribution))
 
-        return self._from_op(out_core, (self,), _backward, "relu")
+        # relu's backward reads the input's forward value (the mask), so
+        # a direct parameter input is stale-guarded (v3.7).
+        return self._from_op(
+            out_core, (self,), _backward, "relu",
+            expected_versions=_versioned_value_reads("relu", (self,)),
+        )
 
     def add(self, other):
         """self + other elementwise, natively. Identical shapes or
@@ -396,7 +426,14 @@ class NativeTensor:
                 )
                 b._accumulate_grad(_unbroadcast(contribution, b.shape))
 
-        return self._from_op(out_core, (a, b), _backward, "multiply")
+        # Each parent's gradient reads the *other* parent's forward
+        # value, so both direct parameter operands are stale-guarded
+        # (v3.7). A duplicate parent (a is b) simply records twice —
+        # the check is idempotent.
+        return self._from_op(
+            out_core, (a, b), _backward, "multiply",
+            expected_versions=_versioned_value_reads("multiply", (a, b)),
+        )
 
     def matmul(self, other):
         """(m, n) @ (n, p) matrix multiply, natively. 2-D only, no
@@ -419,7 +456,12 @@ class NativeTensor:
                     a._require_open().T.matmul(u_core)
                 ))
 
-        return self._from_op(out_core, (a, b), _backward, "matmul")
+        # da reads b's forward value and db reads a's, so both direct
+        # parameter operands are stale-guarded (v3.7).
+        return self._from_op(
+            out_core, (a, b), _backward, "matmul",
+            expected_versions=_versioned_value_reads("matmul", (a, b)),
+        )
 
     def sum(self, axis=None, keepdims=False):
         """Sum over ``axis`` (``None`` = all elements) natively, delegating
@@ -703,6 +745,20 @@ class NativeTensor:
         computation after its graph is freed; only backward refuses to
         cross freed history.
 
+        **Stale parameter values (v3.7).** Where an operation's backward
+        must read a direct NativeParameter operand's forward value
+        (``multiply``/``matmul``/``relu``), the graph records that
+        parameter's value version at construction; this method validates
+        every recorded version *before* any callback runs or any gradient
+        changes. A parameter mutated after forward (``copy_value_`` or
+        ``load_state_dict``) makes the old graph raise a distinct
+        stale-value RuntimeError — deterministically, leaving gradients,
+        graph structure, and versions untouched (the graph is *not*
+        freed). ``retain_graph`` does not help; the remedy is a fresh
+        forward pass. Value-independent backwards (add/subtract/
+        reductions/views) record nothing and remain valid across
+        parameter mutation.
+
         **Failure safety.** The whole pass is staged against a snapshot of
         every node's gradient (gradients are immutable — accumulation
         replaces the reference with a fresh native ``add``, never mutating
@@ -762,6 +818,31 @@ class NativeTensor:
                     "graph more than once."
                 )
 
+        # Stale-value detection (v3.7): every recorded expected version
+        # must still match its parameter's current value version. Checked
+        # for the whole traversal *before* the snapshot, the seed, any
+        # callback, and any gradient commit — so a stale graph raises
+        # deterministically with every gradient, every graph edge, and
+        # every version untouched, and the failure repeats identically.
+        # Versions are monotonic, so loading the old numerical value back
+        # can never make a stale graph valid again: the fix is a new
+        # forward pass. (This is deliberately *not* the freed-graph error,
+        # and retain_graph does not help here.)
+        for node in topo:
+            for op_name, parameter, expected in node._expected_versions:
+                current = parameter._version
+                if current != expected:
+                    raise RuntimeError(
+                        f"backward() found a stale parameter value: a "
+                        f"NativeParameter whose forward value {op_name!r} "
+                        f"backward must read was modified after the forward "
+                        f"pass (expected version {expected}, current version "
+                        f"{current}). This graph cannot safely be reused — "
+                        f"run the forward pass again after mutating or "
+                        f"loading parameter values, then call backward() on "
+                        f"the new output."
+                    )
+
         # Stage the whole pass against a snapshot of every node's gradient,
         # so a mid-traversal failure rolls back cleanly (see the docstring's
         # failure-safety note) and never partially commits or partially
@@ -798,6 +879,7 @@ class NativeTensor:
             if not retain_graph:
                 node._parents = ()
                 node._backward = None
+                node._expected_versions = ()
                 node._graph_freed = True
 
     def _seed_gradient(self, gradient):
@@ -882,6 +964,26 @@ class NativeTensor:
 # owning contiguous tensor, so a retained grad can never be a borrowing
 # view over a transient whose owner is about to be dropped and closed.
 # ---------------------------------------------------------------------------
+
+
+def _versioned_value_reads(op_name, tensors):
+    """The stale-value guard entries for one operation (v3.7):
+    ``(op_name, tensor, current_version)`` for each tensor in
+    ``tensors`` that carries a value version — i.e. each direct
+    NativeParameter operand whose forward value the operation's
+    backward will read. Detection is by the ``_version`` slot rather
+    than an isinstance check so this module never imports the
+    NativeParameter subclass (autograd stays independent of the module
+    stack); NativeParameter is the only class that defines the slot.
+    Plain tensors have no version and record nothing — they are
+    immutable for the life of a graph (no in-place arithmetic exists),
+    so only the controlled parameter mutation path needs guarding."""
+    entries = []
+    for tensor in tensors:
+        version = getattr(tensor, "_version", None)
+        if version is not None:
+            entries.append((op_name, tensor, version))
+    return tuple(entries)
 
 
 def _native_copy(core):

@@ -720,13 +720,20 @@ def test_load_state_dict_forward_after_loading_uses_new_values():
 
 @needs_native
 def test_load_state_dict_graph_built_before_loading_stays_memory_safe():
-    # The documented in-place policy: a graph built before loading is
-    # never invalidated — a later backward through it reads the
-    # parameter's current (newly loaded) value.
+    # The documented in-place policy, tightened by v3.7: a graph built
+    # before loading stays memory-safe (no use-after-close — backward
+    # never reads the released old storage), and where its backward
+    # must read the loaded parameter's forward value it raises a
+    # deterministic stale-value error instead of silently computing
+    # gradients against the new value. A fresh forward works normally.
     root, _ = _pair()
     loss = root.w.multiply(root.w).sum()  # graph over the OLD values
     root.load_state_dict(_new_state())
-    loss.backward()  # memory-safe: no use-after-close
+    with pytest.raises(RuntimeError, match="stale"):
+        loss.backward()
+    assert root.w.grad is None  # nothing was committed
+    fresh = root.w.multiply(root.w).sum()  # graph over the NEW values
+    fresh.backward()
     assert np.array_equal(root.w.grad.to_numpy(), 2.0 * np.asarray(NEW_W))
 
 

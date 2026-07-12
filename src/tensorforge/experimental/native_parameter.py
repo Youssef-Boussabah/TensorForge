@@ -41,6 +41,17 @@ Design invariants (all tested in tests/test_native_parameter.py):
   deduplication and (future) optimizer state use object identity, so two
   equal-valued parameters are always distinct and comparing parameters
   never runs tensor math.
+- **Versioned value, controlled mutation (v3.7).** Every parameter
+  carries a monotonically increasing value ``version`` (read-only, 0 at
+  construction) that counts replacements of the owned numerical value —
+  by ``copy_value_(source)``, the one controlled no-grad mutation
+  primitive (the future NativeSGD's commit path), or by a successful
+  ``load_state_dict``. Mutation preserves identity, registrations,
+  leaf/graph-free state, ``requires_grad``, and the existing gradient;
+  autograd graphs whose backward reads the parameter's forward value
+  record the version at forward time and raise a clear stale-value error
+  if it changed before backward (see native_tensor.py). There is no
+  general in-place arithmetic — ``copy_value_`` is the whole surface.
 
 ``NativeParameterRegistry`` is the minimal registration contract v3.2's
 ``NativeModule`` will build on — deliberately *not* a module hierarchy:
@@ -72,7 +83,7 @@ Design invariants (all tested in tests/test_native_parameter.py):
 import sys
 
 from ..backends import cpp
-from .native_tensor import NativeTensor
+from .native_tensor import NativeTensor, _native_copy
 
 
 def _validate_registration_name(name, kind):
@@ -119,7 +130,11 @@ class NativeParameter(NativeTensor):
     full contract.
     """
 
-    __slots__ = ()
+    # The one subclass slot (v3.7): the monotonically increasing value
+    # version. NativeTensor also uses __slots__, so this adds exactly one
+    # attribute and no __dict__ appears; every construction path runs
+    # this class's __init__, so the slot is always initialized.
+    __slots__ = ("_version",)
 
     def __init__(self, data, requires_grad=True):
         # Validate the flag before any native allocation, so a bad call
@@ -140,6 +155,26 @@ class NativeParameter(NativeTensor):
             core = cpp.NativeTensorCore.from_array(data)
         super().__init__(core, owns_core=True)
         self._requires_grad = requires_grad
+        # Construction is not a mutation: the value version counts
+        # *replacements* of the owned value, starting at 0.
+        self._version = 0
+
+    @property
+    def version(self):
+        """The parameter's value version (v3.7): an ordinary
+        non-negative int, ``0`` at construction, incremented by exactly
+        one each time the owned numerical value is **replaced** — by
+        ``copy_value_`` or by a successful ``load_state_dict`` (once
+        per matched canonical parameter, even when the loaded values
+        are numerically identical: replacement, never value equality,
+        is what counts). Nothing else moves it: gradient accumulation,
+        ``zero_grad()``, registration/aliasing/removal, train/eval,
+        and ``state_dict()`` snapshots all leave it unchanged, and a
+        failed mutation or failed load restores/never changes it.
+        Read-only (no setter); rejected after close like the other
+        autograd metadata."""
+        self._require_open()
+        return self._version
 
     def _adopt_value_core(self, new_core):
         """Internal — controlled value replacement for state-dict
@@ -158,7 +193,12 @@ class NativeParameter(NativeTensor):
         and value), ``requires_grad``, leaf/graph-free state, ownership
         (``owns_core`` stays True), and every registration keep
         referring to this same object — only the numerical value is
-        replaced."""
+        replaced. The **value version is not touched here** (v3.7): the
+        swap is raw so a transactional caller can roll back by plain
+        core restoration; the caller increments ``_version`` exactly
+        once per parameter after its whole transaction has committed
+        (``copy_value_`` immediately, ``load_state_dict`` after every
+        swap in the load has succeeded)."""
         old_core = self._require_open()
         if not isinstance(new_core, cpp.NativeTensorCore):
             raise TypeError(
@@ -179,6 +219,74 @@ class NativeParameter(NativeTensor):
         self._core = new_core
         return old_core
 
+    def copy_value_(self, source):
+        """Replace this parameter's numerical value with an independent
+        owning contiguous copy of ``source``'s current value — the
+        controlled no-grad mutation primitive (v3.7) the future
+        ``NativeSGD.step()`` commits updates through.
+
+        ``source`` must be an **open NativeTensor** of exactly this
+        parameter's shape, dtype, and device — no broadcasting,
+        reshaping, casting, or device transfer, and arbitrary
+        arrays/lists/scalars and the stable framework's
+        ``Tensor``/``Parameter`` are rejected. A ``NativeParameter``
+        (this parameter itself, or a ``state_dict`` snapshot, included)
+        is accepted purely as a *value source*: its value is copied
+        natively (never NumPy, never aliased — any strided/offset view
+        materializes at its logical shape), and the source's own value,
+        version, gradients, and graph are untouched.
+
+        This runs entirely outside autograd: no graph node is built, no
+        parents or backward callback are installed, the parameter stays
+        a graph-free leaf, and its Python identity, registrations and
+        aliases, ``requires_grad``/frozen state, and existing ``grad``
+        (by identity and value) are all preserved — only the owned value
+        is replaced, the old storage released exactly once, and the
+        value ``version`` incremented by exactly one. On any failure
+        nothing changes: value, core, identity, gradient, and version
+        are exactly as before. Note the v3.7 staleness rule: a graph
+        built *before* this mutation whose backward must read this
+        parameter's forward value (multiply/matmul/relu edges) will
+        deterministically raise a stale-value RuntimeError — run forward
+        again after mutating. Returns ``self``."""
+        _reject_framework_object(source, "copy_value_")
+        if not isinstance(source, NativeTensor):
+            raise TypeError(
+                f"copy_value_ requires a NativeTensor source, got "
+                f"{type(source).__name__}"
+            )
+        destination_core = self._require_open()
+        source_core = source._require_open()
+        if source_core.shape != destination_core.shape:
+            raise ValueError(
+                f"copy_value_ shape mismatch: the parameter is "
+                f"{destination_core.shape}, the source is "
+                f"{source_core.shape} (no broadcasting or reshaping)"
+            )
+        if (
+            source_core.dtype != destination_core.dtype
+            or source_core.device != destination_core.device
+        ):
+            raise ValueError(
+                f"copy_value_ dtype/device mismatch: the parameter is "
+                f"{destination_core.dtype}/{destination_core.device}, the "
+                f"source is {source_core.dtype}/{source_core.device} "
+                f"(no casting or device transfer)"
+            )
+        # Stage the independent native copy first (reading the *current*
+        # cores, so self-copy works), then commit. A staging failure
+        # changes nothing; a commit failure releases only the staged
+        # copy. Old storage is released exactly once, after success.
+        new_core = _native_copy(source_core)
+        try:
+            old_core = self._adopt_value_core(new_core)
+        except BaseException:
+            new_core.close()
+            raise
+        old_core.close()
+        self._version += 1
+        return self
+
     # -- parameter-ness never propagates -----------------------------------
     #
     # Every NativeTensor operation builds its result through these two
@@ -193,9 +301,11 @@ class NativeParameter(NativeTensor):
         return NativeTensor._from_core(core, owns_core=owns_core)
 
     @classmethod
-    def _from_op(cls, core, parents, backward, op, owns_core=True):
+    def _from_op(cls, core, parents, backward, op, owns_core=True,
+                 expected_versions=()):
         return NativeTensor._from_op(
-            core, parents, backward, op, owns_core=owns_core
+            core, parents, backward, op, owns_core=owns_core,
+            expected_versions=expected_versions,
         )
 
     def __repr__(self):
