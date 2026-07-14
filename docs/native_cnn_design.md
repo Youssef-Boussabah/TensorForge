@@ -898,10 +898,22 @@ New translation units under the existing split layout (`cpp/src/*.cpp`,
 globbed by `CMakeLists.txt`'s `file(GLOB …)` — a new `.cpp` is picked up
 automatically):
 
-- **`cpp/src/conv2d.cpp`** — `tf_core_conv2d_forward`,
-  `tf_core_conv2d_input_backward`, `tf_core_conv2d_weight_backward`.
+- **`cpp/src/conv2d.cpp`** — the internal compute kernels and (from D3)
+  the exported wrappers. **D2 shipped** the internal
+  `tf::conv2d_forward_contiguous` (pure arithmetic, hidden symbol),
+  declared in the focused internal header
+  **`cpp/include/tf_conv2d_internal.h`** (non-ABI); the exported
+  `tf_core_conv2d_forward` and the backward kernels
+  (`tf_core_conv2d_input_backward`, `tf_core_conv2d_weight_backward`)
+  join in D3/D4/D5.
 - **`cpp/src/pooling.cpp`** — `tf_core_maxpool2d_forward`,
   `tf_core_maxpool2d_backward`.
+
+The internal compute kernels are exercised by dependency-free CTest
+binaries under **`cpp/tests/`** (e.g. `test_conv2d_forward.cpp`), built
+only when `-DTF_BUILD_TESTS=ON`; each compiles the internal source it
+tests directly, because the shared library exports only `TF_EXPORT`
+symbols.
 
 Guidelines:
 
@@ -1062,16 +1074,32 @@ mergeable. Milestones are **not** merged to reduce the count.
   primitive, checkpoint schema, dtype, or dispatch. Convolution and
   pooling remain unimplemented.
 
-### D2 — Conv2d CPU forward kernel
-- **Scope:** `tf_core_conv2d_forward` (C++) + fault-injection safety;
-  direct nested loops; nullable bias.
-- **Excludes:** any backward; the wrapper/module/autograd.
-- **Files:** `cpp/src/conv2d.cpp`; a kernel-level smoke test.
-- **Tests:** kernel-level numeric checks (via a temporary low-level
-  harness) + ABI error path.
-- **Acceptance:** correct against hand-computed values; sanitizer-clean.
+### D2 — Conv2d CPU forward kernel — **implemented**
+- **Scope:** the **internal** CPU float64 compute kernel only —
+  `tf::conv2d_forward_contiguous` (direct nested loops, nullable bias,
+  symmetric zero padding by skipping out-of-bounds coordinates). **Not
+  exported**: the `extern "C" tf_core_conv2d_forward` wrapper,
+  fault-injection/ABI error path, ctypes registration, and Core/Python
+  validation + allocation are **D3**, not D2.
+- **Excludes:** any backward; the C ABI export; the wrapper/module/
+  autograd; anything reachable from Python.
+- **Files:** `cpp/src/conv2d.cpp` (definition),
+  `cpp/include/tf_conv2d_internal.h` (internal, non-ABI declaration),
+  `cpp/tests/test_conv2d_forward.cpp` (dependency-free CTest binary,
+  built via the new `TF_BUILD_TESTS` CMake option; it compiles
+  `conv2d.cpp` directly since the symbol is hidden).
+- **Tests:** hand-computed C++ cases (single/multi channel, multi
+  out-channel, bias, padding, stride, rectangular, combined, batch,
+  negatives/fractions, null-bias, immutability, determinism) plus a
+  stable-`tensorforge.nn.Conv2d` parity case (values generated once,
+  compared to `1e-9`). No Python at runtime.
+- **Acceptance:** correct against hand-computed values and stable parity;
+  Release **and** Debug builds warning-clean.
 - **Dependencies:** D0. **Risks:** index arithmetic bugs (mitigated by
-  explicit indexing + ASan/UBSan).
+  explicit signed-`int64_t` indexing and skip-on-out-of-bounds) —
+  resolved. Full ASan/UBSan validation remains the D12 checkpoint.
+- **Status:** **done** (internal compute kernel). Conv2d is still
+  **unreachable from Python**; the C ABI export is D3.
 
 ### D3 — Conv2d `NativeTensorCore` wrapper + ctypes
 - **Scope:** argtypes registration; `NativeTensorCore.conv2d_forward`;

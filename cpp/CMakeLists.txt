@@ -91,3 +91,34 @@ if(TF_SANITIZE AND NOT MSVC)
 elseif(TF_SANITIZE AND MSVC)
   message(WARNING "TF_SANITIZE is not supported with MSVC; building without sanitizers")
 endif()
+
+# ---------------------------------------------------------------------------
+# Optional native C++ tests (CTest). Off by default, so the ordinary package
+# build and cpp/build.py (which never sets this option) are unaffected;
+# enable with -DTF_BUILD_TESTS=ON. Each test executable compiles the
+# internal kernel source(s) it exercises *directly* — the shared library
+# exports only the TF_EXPORT symbols, and these internal compute functions
+# are intentionally hidden, so they are not reachable through the library.
+# ---------------------------------------------------------------------------
+option(TF_BUILD_TESTS "Build the native C++ test executables (CTest)" OFF)
+
+if(TF_BUILD_TESTS)
+  enable_testing()
+
+  # Conv2d forward (D2): links the internal kernel source directly.
+  add_executable(test_conv2d_forward
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_conv2d_forward.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp")
+  target_include_directories(test_conv2d_forward PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_conv2d_forward PRIVATE -Wall -Wextra)
+  endif()
+  # Honor the same optional sanitizers as the library (Clang/GCC only).
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_conv2d_forward PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_conv2d_forward PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME conv2d_forward COMMAND test_conv2d_forward)
+endif()

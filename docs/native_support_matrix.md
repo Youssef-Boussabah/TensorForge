@@ -121,14 +121,19 @@ in the stable Python framework — that does not make them native.
 
 The native CNN stack's **architecture contract is locked** in
 [native_cnn_design.md](native_cnn_design.md) (milestone **D0**). **D1
-(`NativeFlatten`) has shipped**; every remaining row below is **planned,
-not supported**, and stays in this section until its milestone lands. The
-backend registry still advertises `conv2d` and `maxpool2d` as unsupported.
+(`NativeFlatten`) has shipped**, and **D2 has shipped the internal
+convolution forward compute kernel** (`tf::conv2d_forward_contiguous`, a
+hidden C++ symbol exercised only by a C++ CTest binary — **not** reachable
+from Python). Every remaining row below is **planned, not supported**, and
+stays in this section until its milestone lands. The backend registry
+still advertises `conv2d` and `maxpool2d` as unsupported: user-facing
+Conv2d does not exist until the D3 C ABI / Core wrapper lands.
 
 | Capability | Milestone | Status |
 |---|---|---|
 | `NativeFlatten` (batch-preserving; existing reshape/copy autograd) | D1 | **Implemented** |
-| Native convolution forward kernel | D2–D3 | Planned |
+| Internal convolution forward compute kernel (C++, not exposed) | D2 | **Implemented (internal)** |
+| Convolution C ABI export, Core wrapper, ctypes, Python forward access | D3 | Planned |
 | Native convolution input/weight/bias gradients | D4–D6 | Planned |
 | `NativeConv2d` module | D7 | Planned |
 | Native max-pooling forward + winner-index buffer | D8 | Planned |

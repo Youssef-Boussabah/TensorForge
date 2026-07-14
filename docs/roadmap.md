@@ -593,11 +593,17 @@ The Python line is done; what remains is expansion on its own terms:
     Python-composed from the existing `reshape`/`contiguous_copy`
     operations and their autograd (no new kernel, no custom backward),
     returning an independent owning result so it composes safely in a
-    `NativeSequential`. The native convolution and pooling layers are
-    **still unimplemented** and marked unsupported in the
-    [support matrix](native_support_matrix.md); the backend advertises no
-    convolution or pooling capability. This design guides the remaining
-    Phase-D milestones.
+    `NativeSequential`. **D2 has shipped** the first native convolution
+    code: an **internal** CPU float64 forward compute kernel
+    (`tf::conv2d_forward_contiguous` — direct nested-loop
+    cross-correlation, symmetric zero padding, optional bias), verified
+    by a dependency-free C++ CTest binary against hand-computed cases and
+    stable-framework parity. It is deliberately **not exposed to Python**
+    (no C ABI export, no ctypes, no wrapper) — that is D3. The native
+    convolution and pooling **layers** remain **unimplemented** and marked
+    unsupported in the [support matrix](native_support_matrix.md); the
+    backend advertises no convolution or pooling capability. This design
+    guides the remaining Phase-D milestones.
   - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,
