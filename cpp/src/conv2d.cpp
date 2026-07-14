@@ -168,6 +168,73 @@ void conv2d_input_backward_contiguous(
     }
 }
 
+void conv2d_weight_backward_contiguous(
+    const double* grad_output,
+    const double* input,
+    double* grad_weight,
+    int64_t batch,
+    int64_t in_channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t out_channels,
+    int64_t kernel_height,
+    int64_t kernel_width,
+    int64_t stride_height,
+    int64_t stride_width,
+    int64_t pad_height,
+    int64_t pad_width,
+    int64_t output_height,
+    int64_t output_width) noexcept {
+    // Pairs each upstream value with the input pixel it multiplied in the
+    // forward (docs/native_cnn_design.md §7.2). The output is fully defined
+    // here: zero the entire grad_weight span first, so the caller need not
+    // pre-zero it and every (n, i, j) accumulates with a plain +=.
+    const int64_t weight_count =
+        out_channels * in_channels * kernel_height * kernel_width;
+    for (int64_t idx = 0; idx < weight_count; ++idx) {
+        grad_weight[idx] = 0.0;
+    }
+    // Deterministic n -> o -> i -> j -> c -> p -> q order. The upstream value
+    // g at (n, o, i, j) is hoisted out of the kernel-tap loops; the padded
+    // source coordinate is computed in *signed* int64 so an out-of-bounds
+    // (pad) position is genuinely negative and skipped, never an unsigned
+    // wrap — a padded tap contributed 0 in the forward, so it adds 0 here.
+    for (int64_t n = 0; n < batch; ++n) {
+        for (int64_t o = 0; o < out_channels; ++o) {
+            for (int64_t i = 0; i < output_height; ++i) {
+                for (int64_t j = 0; j < output_width; ++j) {
+                    const double g = grad_output[index4d(
+                        n, o, i, j,
+                        out_channels, output_height, output_width)];
+                    for (int64_t c = 0; c < in_channels; ++c) {
+                        for (int64_t p = 0; p < kernel_height; ++p) {
+                            const int64_t ih =
+                                i * stride_height + p - pad_height;
+                            if (ih < 0 || ih >= input_height) {
+                                continue;  // whole kernel row is padding
+                            }
+                            for (int64_t q = 0; q < kernel_width; ++q) {
+                                const int64_t iw =
+                                    j * stride_width + q - pad_width;
+                                if (iw < 0 || iw >= input_width) {
+                                    continue;  // padded column: no input cell
+                                }
+                                grad_weight[index4d(
+                                    o, c, p, q,
+                                    in_channels, kernel_height, kernel_width)]
+                                    += g * input[index4d(
+                                           n, c, ih, iw,
+                                           in_channels, input_height,
+                                           input_width)];
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 }  // namespace tf
 
 // ---------------------------------------------------------------------------

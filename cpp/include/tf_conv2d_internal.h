@@ -141,4 +141,75 @@ void conv2d_input_backward_contiguous(
     int64_t output_height,
     int64_t output_width) noexcept;
 
+// Gradient of the Conv2d forward with respect to its weight (Phase D,
+// milestone D5). The internal CPU float64 accumulation that pairs each
+// upstream value with the input pixel it multiplied in the forward; pure
+// arithmetic only. Like the forward and input-gradient kernels this is
+// deliberately NOT part of the public C ABI: a plain C++ function in
+// ``namespace tf`` with hidden visibility. The exported
+// ``tf_core_conv2d_weight_backward`` wrapper (TF_GUARD error contract +
+// Storage handles), its ctypes registration, the NativeTensorCore backward
+// method, and the NativeTensor.conv2d autograd node are all later
+// milestones (D6) — none of that lives here.
+//
+// Given the forward relation
+//   out[n,o,i,j] = bias[o] + sum_{c,p,q} in[n,c, i*sh+p-ph, j*sw+q-pw]
+//                                          * weight[o,c,p,q],
+// the weight gradient accumulates, for every valid forward contribution,
+//   grad_weight[o,c,p,q] += grad_output[n,o,i,j]
+//                           * in[n,c, i*sh+p-ph, j*sw+q-pw]
+// summed over n, i, j (matching the stable einsum "no,nckl->ockl"), with
+// padded source coordinates that fall outside the real input skipped (they
+// contributed 0 in the forward, so they contribute 0 to the gradient — the
+// pad border never accumulates into grad_weight). Accumulation runs in
+// deterministic n -> o -> i -> j -> c -> p -> q order into the output span.
+//
+// Layouts (all row-major contiguous float64):
+//   grad_output : NCHW  (batch, out_channels, output_height, output_width)
+//   input       : NCHW  (batch, in_channels, input_height, input_width)
+//   grad_weight : OIHW  (out_channels, in_channels, kernel_height, kernel_width) — written
+//
+// Output initialization: the routine **zero-initializes the entire
+// grad_weight span itself** (out_channels*in_channels*kernel_height*
+// kernel_width doubles) before accumulating, so the caller need NOT pre-zero
+// it; any prior contents are fully overwritten/defined.
+//
+// Bias does not appear in the weight gradient, so this kernel neither
+// receives nor reads a bias, and grad_weight is independent of whether the
+// forward used a bias.
+//
+// Preconditions (guaranteed by the future D6 wrapper; NOT re-validated here
+// — this routine is the inner math, not a validation boundary):
+//   * grad_output / input / grad_weight are non-null and each point to
+//     contiguous storage of exactly
+//     batch*out_channels*output_height*output_width,
+//     batch*in_channels*input_height*input_width, and
+//     out_channels*in_channels*kernel_height*kernel_width doubles;
+//   * every dimension is positive; stride/kernel >= 1; padding >= 0;
+//   * output_height / output_width equal the floor formula
+//       floor((input_dim + 2*pad - kernel) / stride) + 1
+//     so every output coordinate maps inside the padded grid;
+//   * all integer products and offsets are representable in int64.
+//
+// The routine allocates no heap memory and cannot throw (noexcept): it is
+// pure arithmetic over caller-owned buffers. It reads grad_output and input
+// without modifying them and writes only inside the grad_weight span.
+void conv2d_weight_backward_contiguous(
+    const double* grad_output,
+    const double* input,
+    double* grad_weight,
+    int64_t batch,
+    int64_t in_channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t out_channels,
+    int64_t kernel_height,
+    int64_t kernel_width,
+    int64_t stride_height,
+    int64_t stride_width,
+    int64_t pad_height,
+    int64_t pad_width,
+    int64_t output_height,
+    int64_t output_width) noexcept;
+
 }  // namespace tf

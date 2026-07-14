@@ -149,4 +149,26 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME conv2d_input_backward COMMAND test_conv2d_input_backward)
+
+  # Conv2d weight-gradient (D5): links the same internal kernel source
+  # (conv2d.cpp) directly, plus error.cpp for the identical reason as the
+  # other backward target (conv2d.cpp carries the D3 guarded wrapper). The
+  # test exercises only the internal tf::conv2d_weight_backward_contiguous
+  # kernel (and the internal forward kernel for its finite-difference and
+  # padded-reference oracles).
+  add_executable(test_conv2d_weight_backward
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_conv2d_weight_backward.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_conv2d_weight_backward PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_conv2d_weight_backward PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_conv2d_weight_backward PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_conv2d_weight_backward PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME conv2d_weight_backward COMMAND test_conv2d_weight_backward)
 endif()

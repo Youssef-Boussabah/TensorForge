@@ -472,6 +472,15 @@ out_w)`; it is made contiguous by Policy B before any kernel runs.
 - **This callback runs only when `weight` requires grad**, and when it
   runs it **rereads the input's forward value** — so a direct-parameter
   input is version-guarded **only in that case** (§8).
+- **Status (D5 — implemented, internal):** the numerical accumulation ships
+  as `tf::conv2d_weight_backward_contiguous` in `cpp/src/conv2d.cpp`
+  (declared in `cpp/include/tf_conv2d_internal.h`) — a hidden C++ symbol
+  exercised only by the `conv2d_weight_backward` CTest, **not** reachable
+  from Python. It **zero-initializes the whole grad-weight span itself**
+  before the deterministic `n → o → i → j → c → p → q` `+=` accumulation,
+  reads `grad_output`/`input` without mutation, reads no bias, and allocates
+  nothing. The exported `tf_core_conv2d_weight_backward` wrapper, its Core
+  method, and the autograd node remain **D6**.
 
 ### 7.3 Gradient w.r.t. bias — `∂L/∂b`
 
@@ -482,6 +491,21 @@ out_w)`; it is made contiguous by Policy B before any kernel runs.
   `sum` reductions** (`g.sum(axis=0)` then reduce the two spatial axes),
   reusing tested kernels — no new C++ code. Reads only `g` (no bias
   value), so it is **not** version-sensitive.
+- **Locked sequence (D5, validated):** `NativeTensorCore.sum` reduces one
+  axis at a time, so `∂L/∂b` over `g = (N, O, oh, ow)` is the deterministic
+  chain **`g.sum(axis=0)` → `(O, oh, ow)`, then `.sum(axis=1)` → `(O, ow)`,
+  then `.sum(axis=1)` → `(O,)`** (`keepdims=False` throughout). Each step is
+  a fresh **owning** contiguous core; the two intermediates are **closed**
+  after use, only the final `(O,)` result survives — so a failed
+  intermediate reduction (e.g. an allocation failure) raises through the
+  existing status contract with no leak, and the future D6 `backward()`
+  snapshot/rollback restores grads (§7 shared properties). Because the chain
+  reads only `g`, a **bias-only backward records no input/weight version**
+  and never raises stale-graph on an input/weight mutated after forward
+  (§8). **Status (D5):** proved reachable and correct via existing
+  reductions in `tests/test_native_conv2d_gradient_contract.py` — **no
+  dedicated bias kernel, no new public operation, no inventory change.** The
+  D6 autograd node will invoke exactly this sequence.
 
 ### Shared backward properties
 
@@ -1238,13 +1262,60 @@ registry advertises `conv2d` as unsupported while listing the Core-level
   parity, and finite differences; Release **and** Debug CTests warning-
   clean. **Done** (internal kernel). **Dependencies:** D2, D3.
 
-### D5 — Conv2d weight- and bias-gradient
-- **Scope:** `tf_core_conv2d_weight_backward` + Core wrapper; **bias grad
-  via existing `sum` reductions** (no kernel).
-- **Excludes:** autograd graph node.
-- **Files:** `cpp/src/conv2d.cpp`; `backends/cpp.py`; tests.
-- **Tests:** weight/bias-grad finite differences.
-- **Acceptance:** `∂L/∂W`, `∂L/∂b` correct. **Dependencies:** D4.
+### D5 — Conv2d weight- and bias-gradient — **implemented (internal weight kernel; bias-grad reduction sequence locked & validated)**
+- **Scope:** the **internal** CPU float64 weight-gradient compute kernel
+  `tf::conv2d_weight_backward_contiguous` (direct nested-loop accumulation
+  pairing each upstream value with the input pixel it multiplied in the
+  forward; symmetric zero padding by skipping out-of-bounds coordinates;
+  **zero-initializes its own `(O,C,kh,kw)` output span**; deterministic
+  `n → o → i → j → c → p → q` accumulation), **plus** the locked, validated
+  **bias-gradient reduction sequence** — computed with **no dedicated C++
+  kernel** by reusing the existing native `sum` reduction (see §7.3).
+- **Excludes — deferred:** the `extern "C" tf_core_conv2d_weight_backward`
+  export, ctypes registration, the `NativeTensorCore` backward wrapper,
+  fresh-storage allocation, error mapping, and the `NativeTensor.conv2d`
+  autograd node are all **D6**. D5 adds **nothing reachable from Python**
+  as a Conv2d backward operation (the bias-grad proof reuses the existing
+  public `sum` op and adds no new capability).
+- **Files:** `cpp/src/conv2d.cpp` (weight-gradient definition),
+  `cpp/include/tf_conv2d_internal.h` (internal, non-ABI declaration + the
+  zero-init/accumulation/precondition contract),
+  `cpp/tests/test_conv2d_weight_backward.cpp` (dependency-free CTest),
+  `cpp/CMakeLists.txt` (the new `conv2d_weight_backward` CTest target),
+  `tests/test_native_conv2d_gradient_contract.py` (the bias-grad
+  reduction-sequence proof). **No `backends/cpp.py` change** — no Python
+  surface, no inventory change.
+- **Internal weight-gradient signature:**
+  `void tf::conv2d_weight_backward_contiguous(const double* grad_output,
+  const double* input, double* grad_weight, int64_t batch, in_channels,
+  input_height, input_width, out_channels, kernel_height, kernel_width,
+  stride_height, stride_width, pad_height, pad_width, output_height,
+  output_width) noexcept` — reads `grad_output` (NCHW) and `input` (NCHW)
+  without mutation, writes only the `grad_weight` (OIHW) span, allocates
+  nothing, reads no bias.
+- **Bias-gradient sequence (locked for D6):** over grad_output
+  `(N, O, oh, ow)`, `sum(axis=0) → (O, oh, ow)`, then
+  `sum(axis=1) → (O, ow)`, then `sum(axis=1) → (O,)` — three deterministic
+  single-axis native `sum` reductions (`keepdims=False`), each a fresh
+  owning contiguous core, the two intermediates closed after use. Reads
+  **only** `grad_output` (never input or weight), so a bias-only backward
+  records **no** input/weight version snapshot (§8).
+- **Tests:** 21 dependency-free C++ weight-gradient cases (hand-computed
+  1×1/2×2, batch and output-position accumulation, multi-input/output
+  channels, stride, symmetric padding, rectangular input/kernel, asymmetric
+  stride/padding, combined stride+padding, negative/fractional, output
+  zero-init from garbage, immutability, determinism, stable parity `1e-9`,
+  central finite differences `eps 1e-5`/`atol 1e-6`, bias independence,
+  no-bias equivalence, and padding-only boundary contributions — the last
+  group cross-checked against an independent explicit-zero padded
+  materialization oracle), plus the Python bias-grad reduction proof
+  (hand-computed, multi-batch/channel, negative/fractional, stable-Conv2d
+  parity, grad_output immutability, intermediate release, no-new-capability).
+- **Acceptance:** `∂L/∂W` correct against hand-computed values, stable
+  parity, and finite differences; `∂L/∂b` reduction sequence produces the
+  correct `(O,)` values; Release **and** Debug CTests warning-clean.
+  **Done** (internal weight kernel + bias reduction contract).
+  **Dependencies:** D4.
 
 ### D6 — Conv2d `NativeTensor` autograd integration
 - **Scope:** `NativeTensor.conv2d(...)` fused primitive — graph node,

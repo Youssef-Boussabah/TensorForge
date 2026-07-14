@@ -613,11 +613,20 @@ The Python line is done; what remains is expansion on its own terms:
     by a dependency-free C++ CTest against hand-computed cases, stable
     parity, and central finite differences). Like D2 it is deliberately
     **not exposed to Python** — the exported backward C ABI wrapper, its
-    Core method, and the autograd node are D6, after D5 adds the
-    weight/bias gradients. The *differentiable* native convolution op, the
-    remaining convolution gradient kernels, the native convolution module,
-    and all of pooling remain **unimplemented** and marked unsupported in
-    the
+    Core method, and the autograd node are D6. **D5 has shipped** the
+    **internal** CPU float64 convolution weight-gradient compute kernel
+    (`tf::conv2d_weight_backward_contiguous` — a hidden C++ symbol,
+    deterministic zero-initialized accumulation, verified against
+    hand-computed cases, an explicit-zero padded-materialization oracle,
+    stable parity, and central finite differences) and **locked and
+    validated the bias-gradient path as a reuse of the existing native
+    `sum` reduction** (`g.sum(0).sum(1).sum(1) → (O,)`, no dedicated
+    kernel), proved in a focused Python contract test. Neither adds any
+    Python-visible native convolution backward operation. The
+    *differentiable* native convolution op (and its exported backward C
+    ABI/Core surface), the
+    native convolution module, and all of pooling remain **unimplemented**
+    and marked unsupported in the
     [support matrix](native_support_matrix.md); the backend advertises no
     differentiable convolution, no convolution module, and no pooling
     capability. This design guides the remaining Phase-D milestones.
