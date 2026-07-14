@@ -222,7 +222,8 @@ def test_experimental_exports_stay_intentional():
 
     assert set(experimental.__all__) == {
         "NativeTensor", "NativeParameter", "NativeParameterRegistry",
-        "NativeModule", "NativeLinear", "NativeReLU", "NativeSequential",
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeSequential",
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
     }
@@ -341,26 +342,46 @@ def test_native_cnn_design_is_honest_about_being_unimplemented():
         "native_cnn_design.md must state that Phase D is not implemented"
     )
 
-    # The backend capability registry still lists the CNN ops as
-    # unsupported and does not advertise them anywhere else.
+    # The backend capability registry still lists the unimplemented CNN
+    # ops (convolution and pooling) as unsupported and does not advertise
+    # them anywhere else. NativeFlatten (D1) is intentionally NOT here — it
+    # is implemented and is checked separately, below.
     from tensorforge.backends import cpp
 
-    for op in ("conv2d", "maxpool2d", "flatten"):
+    for op in ("conv2d", "maxpool2d"):
         assert op in cpp.UNSUPPORTED, f"cpp backend no longer lists {op!r} unsupported"
         assert op not in cpp.AUTOGRAD_OPS, f"cpp backend advertises {op!r} as autograd op"
         assert op not in cpp.TENSOR_CORE_OPS, f"cpp backend advertises {op!r} as core op"
-    for module in ("NativeConv2d", "NativeMaxPool2d", "NativeFlatten"):
+    for module in ("NativeConv2d", "NativeMaxPool2d"):
         assert module not in cpp.NATIVE_MODULES, (
             f"cpp backend advertises unimplemented {module!r}"
         )
 
-    # The native public surface must not yet export the CNN modules.
+    # The native public surface must not yet export the unimplemented CNN
+    # modules (convolution and pooling).
     import tensorforge.experimental as experimental
 
-    for module in ("NativeConv2d", "NativeMaxPool2d", "NativeFlatten"):
+    for module in ("NativeConv2d", "NativeMaxPool2d"):
         assert module not in experimental.__all__, (
-            f"{module} is exported before Phase D is implemented"
+            f"{module} is exported before its milestone is implemented"
         )
+
+
+def test_native_flatten_is_implemented_as_a_native_module():
+    """D1: NativeFlatten is a shipped native module, present in the modern
+    native-module inventory and public surface, and is NOT a raw C++
+    kernel. Convolution and pooling stay unimplemented."""
+    from tensorforge.backends import cpp
+    import tensorforge.experimental as experimental
+
+    assert "NativeFlatten" in cpp.NATIVE_MODULES
+    assert "NativeFlatten" in experimental.__all__
+    assert hasattr(experimental, "NativeFlatten")
+    # Not a raw C++ kernel and not a lingering "unsupported" entry.
+    assert "NativeFlatten" not in cpp.RAW_KERNELS
+    assert "flatten" not in cpp.UNSUPPORTED
+    # Convolution/pooling remain unimplemented.
+    assert "conv2d" in cpp.UNSUPPORTED and "maxpool2d" in cpp.UNSUPPORTED
 
 
 def test_native_cnn_design_is_linked_and_referenced():

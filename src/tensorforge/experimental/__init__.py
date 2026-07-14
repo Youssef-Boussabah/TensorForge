@@ -12,10 +12,11 @@ graph (Phase B, complete as of Advanced C++ v2.6). It is **not**
 tensorforge.Tensor: the two autograd engines never mix, no conversion is
 implicit, and it shares no state with the stable framework. A full native
 training stack — parameters, modules, layers, a loss, optimizers, and
-pickle-free checkpoints — is built on it and described below; only CUDA
-and the Phase-D numerical layers (native Conv2d/MaxPool2d/Flatten, new
-activations, softmax/classification losses, BatchNorm/LayerNorm/Dropout)
-remain future work.
+pickle-free checkpoints — is built on it and described below. The native
+CNN stack (Phase D) has begun with ``NativeFlatten`` (milestone D1); only
+CUDA and the remaining Phase-D numerical layers (native Conv2d/MaxPool2d,
+new activations, softmax/classification losses, BatchNorm/LayerNorm/
+Dropout) remain future work.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
@@ -35,7 +36,12 @@ backward supplied entirely by the existing native autograd.
 the first composable model surface: a parameter-free activation module
 over the existing ``relu()`` autograd, and an ordered container with
 contiguous integer-string execution slots, position-based execution,
-and identity-deduplicated traversal/state. ``NativeMSELoss`` (Advanced
+and identity-deduplicated traversal/state. ``NativeFlatten`` (Phase D,
+milestone D1) is a parameter-free, buffer-free batch-preserving flatten
+Python-composed from the existing ``reshape``/``contiguous_copy``
+operations and their autograd (no new kernel, no custom backward); it
+returns an independent owning ``(N, features)`` tensor so it composes
+safely in a ``NativeSequential``. ``NativeMSELoss`` (Advanced
 C++ v3.6) is the first native loss: a parameter-free scalar
 mean/sum-reduced MSE composed from existing native operations, its
 gradients supplied entirely by the existing autograd. Parameter
@@ -88,6 +94,7 @@ from .native_parameter import NativeParameter, NativeParameterRegistry
 from .native_module import NativeModule
 from .native_linear import NativeLinear
 from .native_relu import NativeReLU
+from .native_flatten import NativeFlatten
 from .native_sequential import NativeSequential
 from .native_mse_loss import NativeMSELoss
 from .native_sgd import NativeSGD
@@ -101,6 +108,7 @@ __all__ = [
     "NativeModule",
     "NativeLinear",
     "NativeReLU",
+    "NativeFlatten",
     "NativeSequential",
     "NativeMSELoss",
     "NativeSGD",

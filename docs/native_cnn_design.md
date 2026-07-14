@@ -174,12 +174,22 @@ Contract:
   dimensions everywhere (`_as_shape` rejects non-positive dims), so
   Flatten inherits that — every axis is ≥ 1, and the flattened feature
   count is the product of the trailing axes.
-- **View vs copy:** result is a **view when the input is contiguous**
-  (`NativeTensor.reshape` returns a borrowing view), and a **fresh owning
-  copy** when the input is non-contiguous (Flatten first materializes via
-  `contiguous_copy()` because `reshape` requires contiguity — the same
-  rule the runtime already enforces). This is the only place Flatten
-  touches the contiguity rule, and it does so through existing ops.
+- **View vs copy — refined in D1 to an owning result.** The forward uses
+  a reshape *view* internally — directly for a contiguous input, and after
+  a `contiguous_copy()` for a non-contiguous one (`reshape` requires
+  contiguity, the same rule the runtime already enforces) — but the
+  module's **output always owns its storage** (a final `contiguous_copy()`
+  materializes the reshaped view). The original D0 sketch returned the
+  bare reshape *view* for a contiguous input; D1 implementation showed
+  that is unsafe for a composable module: `NativeTensor.reshape` returns a
+  **borrowing** view valid only while its source storage stays open, and
+  inside a `NativeSequential` each layer's input is a transient dropped as
+  the loop rebinds — so a bare view dangles (storage freed) the moment the
+  next layer runs, reproducibly, in the no-grad/eval path. Returning an
+  independent owning tensor (as `NativeReLU`/`NativeLinear` already do)
+  removes that hazard while still touching the contiguity rule only
+  through existing ops and copying data at most once for a contiguous
+  input.
 - **Backward:** entirely the existing `reshape` (and, on the
   non-contiguous path, `contiguous_copy`) backward — the inverse reshape
   of the upstream gradient. `NativeFlatten` adds **no** new backward and
@@ -948,9 +958,10 @@ backend is unbuilt (existing pattern).
 
 ### `tests/test_native_flatten.py`
 
-Forward shapes (4-D→2-D, already-2-D pass-through); view when contiguous /
-copy when non-contiguous; rank < 2 rejected; backward reshape correctness;
-`NativeSequential` integration (Conv/Pool→Flatten→Linear).
+Forward shapes (4-D→2-D, already-2-D preserved); owning result on both the
+contiguous and non-contiguous paths (independent of the input's lifetime —
+see §3.1); rank < 2 rejected; backward reshape correctness;
+`NativeSequential` integration (Pool→Flatten→Linear).
 
 ### `tests/test_native_conv2d.py` (forward)
 
@@ -1033,7 +1044,7 @@ mergeable. Milestones are **not** merged to reduce the count.
 - **Dependencies:** none. **Risks:** ambiguity leaking into later
   milestones (mitigated by this doc's specificity).
 
-### D1 — `NativeFlatten`
+### D1 — `NativeFlatten` — **implemented**
 - **Scope:** batch-preserving flatten via existing `reshape`/
   `contiguous_copy` autograd; new module + exports.
 - **Excludes:** `start_dim`/`end_dim`; any kernel.
@@ -1041,10 +1052,15 @@ mergeable. Milestones are **not** merged to reduce the count.
   `tests/test_native_flatten.py`; support-matrix + `NATIVE_MODULES`
   update.
 - **Tests:** §16 Flatten group.
-- **Acceptance:** forward/backward correct; view/copy rule honored;
-  Sequential integration.
+- **Acceptance:** forward/backward correct; **owning result** (the D1
+  refinement of the D0 view/copy rule — see §3.1); Sequential integration.
 - **Dependencies:** existing reshape autograd. **Risks:** contiguity edge
-  cases (mitigated by copy-then-reshape).
+  cases (mitigated by copy-then-reshape) — resolved.
+- **Status:** **done.** `NativeFlatten` ships as a parameter-free,
+  buffer-free module Python-composed from `reshape`/`contiguous_copy`;
+  no new C++ kernel, C ABI symbol, ctypes declaration, autograd
+  primitive, checkpoint schema, dtype, or dispatch. Convolution and
+  pooling remain unimplemented.
 
 ### D2 — Conv2d CPU forward kernel
 - **Scope:** `tf_core_conv2d_forward` (C++) + fault-injection safety;

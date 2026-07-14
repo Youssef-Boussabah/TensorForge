@@ -490,12 +490,19 @@ What it delivered:
 The verified suite stands at **1365 tests** (1353 plus the 10
 cross-cutting completion tests and 2 new documentation guardrails).
 Phase A, Phase B, and **Phase C are complete**; the
-next major native phase is the **native CNN stack** (`NativeConv2d`,
-`NativeMaxPool2d`, `NativeFlatten`), which has not started, followed by
-the CUDA runtime, dtype/AMP work, Transformer/text experiments,
-distributed training, and the final portfolio release. Still
-float64/cpu only, still explicit and experimental, and no production
-performance is claimed.
+next major native phase is the **native CNN stack** (Phase D), whose
+architecture contract is locked in
+[native_cnn_design.md](native_cnn_design.md) (milestone D0) and whose
+first milestone **D1 has shipped**: `NativeFlatten`, a parameter-free,
+buffer-free batch-preserving flatten Python-composed from the existing
+`reshape`/`contiguous_copy` operations and their autograd (no new C++
+kernel, no custom backward), returning an independent owning result so
+it composes safely in a `NativeSequential`. The native convolution
+(`NativeConv2d`) and pooling (`NativeMaxPool2d`) layers remain
+unimplemented, followed by the CUDA runtime, dtype/AMP work,
+Transformer/text experiments, distributed training, and the final
+portfolio release. Still float64/cpu only, still explicit and
+experimental, and no production performance is claimed.
 
 ### Native training stack — checkpoint files and deterministic resume (v3.14)
 

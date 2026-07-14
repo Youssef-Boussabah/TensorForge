@@ -92,7 +92,10 @@ AUTOGRAD_OPS = (
 # The native training stack composed on the autograd layer (Phase C),
 # reported by name only so this module stays decoupled from the
 # experimental package (the guardrail test verifies each name imports).
-NATIVE_MODULES = ("NativeModule", "NativeLinear", "NativeReLU", "NativeSequential")
+NATIVE_MODULES = (
+    "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+    "NativeSequential",
+)
 NATIVE_LOSSES = ("NativeMSELoss",)
 NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
 STATE_SUPPORT = (
@@ -104,8 +107,11 @@ STATE_SUPPORT = (
 
 # Explicitly NOT implemented (Phase D and beyond) — listed so
 # introspection is honest about the boundary; none of these exist yet.
+# As of Phase D milestone D1, batch-preserving flatten IS implemented as
+# the NativeFlatten module (see NATIVE_MODULES), so "flatten" is no longer
+# listed here; native conv2d/maxpool2d remain unimplemented.
 UNSUPPORTED = (
-    "conv2d", "maxpool2d", "flatten",
+    "conv2d", "maxpool2d",
     "exp", "log", "softmax", "cross_entropy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",

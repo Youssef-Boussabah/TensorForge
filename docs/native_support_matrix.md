@@ -21,10 +21,13 @@ Linear/ReLU/Sequential, MSE loss, `sqrt`/`reciprocal` optimizer
 primitives, SGD, Adam, optimizer state snapshots, checkpoint files,
 deterministic training and in-memory/file resume, and the failure/
 lifetime/ownership guardrails). The next major native phase is the
-**native CNN stack**, whose **architecture contract is now written**
-([native_cnn_design.md](native_cnn_design.md), Phase D / milestone D0) but
-whose **implementation has not started** — no convolution or pooling code
-exists, and the section below still lists it as unsupported.
+**native CNN stack** (Phase D), whose **architecture contract is locked**
+([native_cnn_design.md](native_cnn_design.md), milestone D0) and whose
+**first implementation milestone D1 has shipped** — `NativeFlatten`, a
+batch-preserving flatten Python-composed from the existing
+`reshape`/`contiguous_copy` operations (no new kernel). Native
+**convolution and pooling remain unimplemented** and are listed as
+unsupported below.
 
 ## Runtime and metadata
 
@@ -82,6 +85,7 @@ exists, and the section below still lists it as unsupported.
 | `state_dict` / `load_state_dict` | Supported | In-memory, parameters and persistent buffers, atomic validate-then-commit with rollback (buffer identity preserved on restore) |
 | `NativeLinear` | Supported | Seeded deterministic init; strictly 2-D input |
 | `NativeReLU` | Supported | Parameter-free activation module |
+| `NativeFlatten` | Supported | D1 (Phase D): parameter-free, buffer-free batch-preserving flatten `(N, …) → (N, features)`, Python-composed from the existing `reshape`/`contiguous_copy` ops and their autograd — no new kernel, no custom backward; returns an independent owning result so it composes safely in `NativeSequential` |
 | `NativeSequential` | Supported | Ordered container with contiguous integer-string slots |
 | `NativeMSELoss` | Supported | `"mean"` / `"sum"` reductions; exact shapes, no broadcasting |
 | `NativeSGD` | Supported | Minimal `value ← value − lr·grad`; identity-deduplicated; two-phase mutation-atomic `step()`; `zero_grad()`; in-memory `state_dict`/`load_state_dict` (v3.13: lr + positional parameter metadata) |
@@ -104,25 +108,26 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- native `Conv2d`, `MaxPool2d`, `Flatten`, or any CNN stack
+- native `Conv2d` or `MaxPool2d`, or the rest of the CNN stack
+  (batch-preserving `NativeFlatten` **is** implemented — see the training
+  stack table above and the Phase-D section below)
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP
 - Transformers / text models
 - distributed training
 - integration or implicit dispatch into the stable `tensorforge.Tensor`
 
-## Upcoming — Phase D (native CNN stack), designed but not implemented
+## Upcoming — Phase D (native CNN stack), in progress
 
 The native CNN stack's **architecture contract is locked** in
-[native_cnn_design.md](native_cnn_design.md) (milestone **D0**), but
-**none of it is implemented** — every row below is **planned, not
-supported**, and stays in this section until its milestone lands. The
-backend registry still advertises `conv2d`, `maxpool2d`, and `flatten` as
-unsupported.
+[native_cnn_design.md](native_cnn_design.md) (milestone **D0**). **D1
+(`NativeFlatten`) has shipped**; every remaining row below is **planned,
+not supported**, and stays in this section until its milestone lands. The
+backend registry still advertises `conv2d` and `maxpool2d` as unsupported.
 
-| Planned capability | Milestone | Status |
+| Capability | Milestone | Status |
 |---|---|---|
-| `NativeFlatten` (batch-preserving; existing reshape autograd) | D1 | Planned |
+| `NativeFlatten` (batch-preserving; existing reshape/copy autograd) | D1 | **Implemented** |
 | Native convolution forward kernel | D2–D3 | Planned |
 | Native convolution input/weight/bias gradients | D4–D6 | Planned |
 | `NativeConv2d` module | D7 | Planned |
