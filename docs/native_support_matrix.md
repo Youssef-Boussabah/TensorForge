@@ -74,8 +74,9 @@ lifetime/ownership guardrails). The next major native phase is the
 | Component | Status | Notes |
 |---|---|---|
 | `NativeParameter` | Supported | Graph-free trainable leaf; value versioning; controlled `copy_value_` mutation |
-| `NativeModule` | Supported | Registration by assignment, recursive traversal, train/eval, `zero_grad()` |
-| `state_dict` / `load_state_dict` | Supported | In-memory, parameters only, atomic with rollback |
+| `NativeModule` | Supported | Registration by assignment, recursive identity-deduplicated cycle-safe traversal, train/eval, `zero_grad()` |
+| Buffers | Supported | v3.15: `register_buffer(name, tensor, persistent=True)`, `buffers()` / `named_buffers()`; NativeTensor-backed non-`Parameter` persistent state (infrastructure for future BatchNorm/RNG state — no algorithm yet); identity-deduplicated, cycle-safe traversal; persistent buffers join `state_dict`/`load_state_dict` and checkpoints, non-persistent buffers are never serialized |
+| `state_dict` / `load_state_dict` | Supported | In-memory, parameters and persistent buffers, atomic validate-then-commit with rollback (buffer identity preserved on restore) |
 | `NativeLinear` | Supported | Seeded deterministic init; strictly 2-D input |
 | `NativeReLU` | Supported | Parameter-free activation module |
 | `NativeSequential` | Supported | Ordered container with contiguous integer-string slots |
@@ -109,12 +110,19 @@ in the stable Python framework — that does not make them native.
 
 ## How to build and verify
 
-All commands are verified against this repository:
+The native backend is built with CMake (`cpp/CMakeLists.txt`), wrapped by
+the cross-platform `cpp/build.py` (which falls back to a direct compiler
+invocation — `g++`/`clang++`/`ziglang` — when CMake is unavailable, as on
+CI). Every fallible native export is exception-guarded so no C++ exception
+crosses the ABI; native failures surface as `MemoryError` / `ValueError` /
+`RuntimeError` (see docs/native_abi_error_contract.md). All commands are
+verified against this repository:
 
 ```
 uv sync                                                # dependencies
 uv sync --group cpp                                    # only if no system C++ compiler
-uv run python cpp/build.py                             # build the native backend
+uv run python cpp/build.py                             # build the native backend (Release)
+uv run python cpp/build.py --debug                     # unoptimized debug build
 uv run python scripts/smoke_cpp_backend.py             # hard-failing smoke check
 uv run python examples/native_tensor_demo.py           # runtime and views
 uv run python examples/native_autograd_demo.py         # native backward

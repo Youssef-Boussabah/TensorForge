@@ -1,5 +1,18 @@
 """TensorForge — a from-scratch deep learning framework in Python + NumPy."""
 
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
+# The distributable package version — the single source of truth is
+# pyproject.toml's [project].version, read back from the installed
+# metadata so the two can never drift. This is deliberately distinct from
+# the project's *milestone* labels (v0.1 … v3.0 for the Python line,
+# "Advanced C++ v3.x" for the native line), which track development
+# history, not the package release number. See docs/release_history.md.
+try:
+    __version__ = _pkg_version("tensorforge")
+except PackageNotFoundError:  # not installed (e.g. running from a raw checkout)
+    __version__ = "0.1.0"
+
 from tensorforge.data import batches, train_test_split
 from tensorforge.nn.losses import binary_cross_entropy, cross_entropy
 from tensorforge.nn.metrics import (

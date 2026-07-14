@@ -11,11 +11,16 @@ before.
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
 
-- `cpp/kernels.cpp` — plain C-ABI functions over float64 buffers:
-  elementwise add, subtract, multiply, divide, ReLU, a naive 2-D
-  matmul (the textbook triple loop, kept as the reference kernel),
-  and a tiled matmul (the cache-blocking optimization experiment).
-  No Python C-API, no pybind11, no NumPy headers.
+- `cpp/src/*.cpp` (+ `cpp/include/tf_internal.h`) — plain C-ABI functions
+  over float64 buffers, split into coherent translation units
+  (`error.cpp`, `storage.cpp`, `elementwise.cpp`, `reduction.cpp`,
+  `matmul.cpp`): elementwise add, subtract, multiply, divide, ReLU, a
+  naive 2-D matmul (the textbook triple loop, kept as the reference
+  kernel), and a tiled matmul (the cache-blocking optimization
+  experiment), plus the strided tensor-core kernels, reductions, and the
+  thread-local error contract. No Python C-API, no pybind11, no NumPy
+  headers. Every fallible export is exception-guarded so no C++ exception
+  crosses the ABI (see docs/native_abi_error_contract.md).
 - `src/tensorforge/backends/cpp.py` — a ctypes wrapper that loads the
   compiled shared library and exposes the kernels as Python functions,
   handling array conversion and validation on the Python side.
@@ -184,11 +189,16 @@ a.T.multiply(b.T)   # strided views compute directly — no copy first
 a.relu()
 ```
 
-Binary operations require exactly matching shapes — no broadcasting
-yet. Outputs are always new row-major contiguous tensor cores,
-independent of their inputs. `backend_info()` lists these under
-``tensor_core_kernels``, separate from the raw NumPy-buffer kernels
-in `list_kernels()`.
+Binary tensor-core operations support NumPy-style **broadcasting** (added
+in v1.17; see docs/native_broadcasting_design.md) — compatible shapes are
+read through zero-stride broadcast views, nothing is materialized, and
+incompatible shapes raise a clear `ValueError`. (The *raw* NumPy-buffer
+kernels in `list_kernels()` still require identical shapes; that lower
+layer never broadcasts.) Outputs are always new row-major contiguous
+tensor cores, independent of their inputs. `backend_info()` reports the
+frozen historical five under `tensor_core_kernels` and the complete op
+inventory under `tensor_core_ops`, both separate from the raw kernels in
+`list_kernels()`.
 
 ### TensorCore matmul (v1.3)
 
@@ -239,20 +249,38 @@ still be faster. Neither matmul is connected to Tensor or autograd.
 uv run python cpp/build.py
 ```
 
-The build script uses `g++` or `clang++` if you have one. If not,
-install the bundled-compiler fallback first (the `ziglang` package
-ships a clang-based C++ compiler that works anywhere uv works):
+`cpp/build.py` is a thin wrapper around the canonical CMake build
+(`cpp/CMakeLists.txt`). When `cmake` is on PATH it configures and builds
+through CMake (which owns the compilation architecture — C++17, per-config
+flags, optional sanitizers). When CMake is absent — as on CI, and on
+machines with only the bundled `ziglang` compiler — it falls back to a
+single direct compiler invocation over the same `cpp/src/*.cpp` sources
+(`g++`/`clang++`/`ziglang`). If you have no system compiler, install the
+bundled one first:
 
 ```
 uv sync --group cpp
 uv run python cpp/build.py
 ```
 
+Options: `--debug` builds unoptimized with assertions (`-O0 -g`);
+`--no-cmake` forces the direct fallback. CMake developers can also build
+with sanitizers (Clang/GCC; not MSVC):
+
+```
+cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Debug -DTF_SANITIZE=address
+cmake -S cpp -B cpp/build -DCMAKE_BUILD_TYPE=Debug -DTF_SANITIZE=undefined
+cmake --build cpp/build
+```
+
 The compiled library lands next to the wrapper and is gitignored.
 Importing `tensorforge.backends.cpp` always succeeds — the library
 loads lazily on first use. If the backend is not built, calling a
 math kernel raises ImportError with these instructions, and the
-backend tests skip.
+backend tests skip. Native failures (e.g. an allocation failure) surface
+as ordinary Python exceptions — `MemoryError`, `ValueError`, or
+`RuntimeError` — through the ABI error contract
+(docs/native_abi_error_contract.md).
 
 ### Inspecting the backend
 
@@ -304,9 +332,9 @@ Both backends expose the same small surface — `name`, `available()`,
 `backend_info()`, `tensor_from_array`, `to_numpy`, `zeros`, `full`,
 `add`, `relu`, `matmul`. The NumPy backend is always available and
 follows NumPy semantics; the native backend is constructible whether
-or not the compiled library is built (`available()` reports which),
-consumes and produces `NativeTensorCore` objects, and requires exact
-shapes.
+or not the compiled library is built (`available()` reports which), and
+consumes and produces `NativeTensorCore` objects (its binary ops
+broadcast NumPy-style, matching the NumPy backend).
 
 **Conversion boundaries (v1.6).** Data crosses a backend only by
 explicit call. `tensor_from_array` *enters* a backend (Python/NumPy
@@ -315,12 +343,11 @@ backend-native value → a fresh float64 NumPy array, materialized).
 Copies are visible in both directions, so nothing accidentally aliases
 native storage, and the native backend rejects anything that is not a
 `NativeTensorCore` — including a `tensorforge.Tensor` — with a
-consistent TypeError across every operation. This also makes the
-Stage-1 shape asymmetry explicit rather than hidden: the NumPy
-backend's `add` broadcasts (a NumPy array already is one), while the
-native backend's `add` requires exact shapes and fails clearly
-otherwise. Aligning those semantics is a future design item, not a
-conversion detail.
+consistent TypeError across every operation. Both backends' `add` now
+broadcast NumPy-style (the native tensor-core broadcasting landed in
+v1.17), so the earlier Stage-1 shape asymmetry between them is resolved;
+only the raw NumPy-buffer kernels in `list_kernels()` still require exact
+shapes.
 
 This is Stage 1 of a longer plan: how (and whether) backends should
 eventually meet `tensorforge.Tensor`, and the risks that gate each
@@ -2512,7 +2539,7 @@ work; this milestone only reports the contiguous elementwise result.
 ### Contiguous fast-path — implementation (v1.14)
 
 v1.14 implements the fast path the v1.13 document designed. Beside the
-generic odometer kernels, `cpp/kernels.cpp` now carries flat, index-free
+generic odometer kernels, `cpp/src/` now carries flat, index-free
 loops — `tf_core_relu_contiguous`, `tf_core_add_contiguous`,
 `tf_core_subtract_contiguous`, `tf_core_multiply_contiguous` — that take
 `numel` and the operand offsets instead of shape/strides.

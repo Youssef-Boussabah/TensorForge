@@ -1270,3 +1270,30 @@ native phase is the **native CNN stack** (`NativeConv2d`,
 `NativeMaxPool2d`, `NativeFlatten`), which has not started, followed by
 the CUDA runtime, dtype/AMP work, Transformer/text experiments,
 distributed training, and the final portfolio release.
+
+### A hardening milestone before Phase D
+
+Between Phase C and the native CNN stack, a repair-and-hardening pass
+(no new numerical features) tightened the Phase A–C foundation: a
+coherent native C-ABI error contract (no C++ exception may cross
+`extern "C"`; failures surface as `MemoryError`/`ValueError`/
+`RuntimeError` — see `docs/native_abi_error_contract.md`), RAII
+allocation safety with deterministic fault-injection tests, the C++
+sources split into coherent components built through CMake (with a
+direct-compile fallback), native-module **buffer infrastructure**
+(`register_buffer`, persistent/non-persistent, in `state_dict` and
+checkpoints), identity-aware cycle-safe stable-`Module` traversal with
+Boolean-validated `train()` and fully atomic `load_state_dict`, and
+accurate backend introspection.
+
+### Versioning note
+
+Two version concepts run in parallel and are deliberately kept
+separate. **Milestone labels** — `v0.1 … v3.0` for the Python framework
+line and `Advanced C++ v3.x` for the native line — track development
+history and are what this document and the design docs use. The
+**distributable package version** is a single number in
+`pyproject.toml` (`0.1.0`), surfaced as `tensorforge.__version__` from
+the installed metadata (`tests/test_version.py` pins the two together).
+The package version is intentionally *not* bumped per milestone; it will
+move when the project is first published.

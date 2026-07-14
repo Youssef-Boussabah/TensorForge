@@ -59,7 +59,7 @@ Today the native runtime is **float64-CPU-only, implicitly**:
 - `NativeStorage.from_array` / `NativeTensorCore.from_array` call
   `np.ascontiguousarray(values, dtype=np.float64)`, coercing any input to
   float64 with no dtype argument and no record of intent.
-- Every kernel in `cpp/kernels.cpp` takes `double*`; there is no
+- Every kernel in `cpp/src/` takes `double*`; there is no
   float32/int64/bool code path.
 - Nothing has a `device`; the buffer is heap CPU memory, unstated.
 - `NativeTensorCore` / `NativeTensor` expose `shape`, `strides`,
@@ -266,7 +266,7 @@ explicit, named, copy-producing calls.
 
 ## 10. Relation to the current C++ kernels
 
-- The kernels in `cpp/kernels.cpp` are **float64 CPU kernels**, full
+- The kernels in `cpp/src/` are **float64 CPU kernels**, full
   stop: `double*` buffers, heap CPU memory. There is no non-float64 and
   no non-CPU code path.
 - v1.21 must **not pretend** non-float64/non-CPU compute exists. Metadata

@@ -52,7 +52,7 @@ targets.
 
 ## 2. Why the generic odometer traversal is general but slower
 
-The native kernels (`tf_core_relu`, `tf_core_binary` in `cpp/kernels.cpp`)
+The native kernels (`tf_core_relu`, `tf_core_binary` in `cpp/src/`)
 walk a logical tensor with an **odometer loop**: they keep a per-axis
 counter, and for every output element they advance the counter from the
 innermost axis, add each axis's stride to the source position(s), and

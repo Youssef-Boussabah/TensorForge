@@ -1,0 +1,321 @@
+// Elementwise kernels: the unary and binary walkers over native tensor
+// cores (odometer + contiguous fast paths), ReLU and its backward, the
+// v3.11 optimizer-math primitives (sqrt / reciprocal), and the legacy
+// raw-buffer elementwise kernels the v0.x benchmarks still call.
+//
+// The walkers read strided views directly from Storage and write into
+// fresh contiguous output, so contiguous and non-contiguous inputs
+// (transposes, narrows) work identically. Ownership boundary: the caller
+// (Python) owns every Storage handle and the fresh output; these kernels
+// only compute.
+
+#include <cmath>
+
+#include "tf_internal.h"
+
+using tf::Storage;
+using tf::as_storage;
+
+namespace {
+
+// Plain function pointers keep the walkers generic without templates.
+typedef double (*BinaryOp)(double, double);
+double op_add(double x, double y) { return x + y; }
+double op_subtract(double x, double y) { return x - y; }
+double op_multiply(double x, double y) { return x * y; }
+// ReLU's backward as a binary op over (input, upstream gradient): the
+// gradient passes through where the forward input was positive and is
+// blocked where relu clamped to zero. x == 0 blocks, matching the Python
+// Tensor's (x > 0) * grad convention exactly.
+double op_relu_backward(double x, double u) { return x > 0.0 ? u : 0.0; }
+
+// Unary ops. IEEE float64 semantics: std::sqrt gives NaN for negatives,
+// preserves signed zeros, maps +inf to +inf; 1.0/x gives signed
+// infinities for signed zeros and signed zeros for signed infinities,
+// and NaN propagates — the same values NumPy produces (NumPy also warns
+// on divide-by-zero; these kernels do not).
+typedef double (*UnaryOp)(double);
+double op_sqrt(double x) { return std::sqrt(x); }
+double op_reciprocal(double x) { return 1.0 / x; }
+
+// Walk one strided source with the standard odometer and write row-major
+// contiguous output.
+void core_unary(
+    const void* src_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim, UnaryOp op
+) {
+    const double* src = as_storage(src_handle)->data;
+    double* dst = as_storage(dst_handle)->data;
+    if (ndim == 0) {
+        dst[0] = op(src[offset]);
+        return;
+    }
+    int64_t total = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        total *= shape[d];
+    }
+    std::vector<int64_t> counter = tf::make_counter(ndim);
+    int64_t src_pos = offset;
+    for (int64_t out = 0; out < total; ++out) {
+        dst[out] = op(src[src_pos]);
+        for (int64_t d = ndim - 1; d >= 0; --d) {
+            ++counter[d];
+            src_pos += strides[d];
+            if (counter[d] < shape[d]) {
+                break;
+            }
+            counter[d] = 0;
+            src_pos -= shape[d] * strides[d];
+        }
+    }
+}
+
+// Contiguous fast path: flat, index-free loop. Scalars fall out as
+// numel == 1; a nonzero offset starts from data + offset.
+void core_unary_contiguous(
+    const void* src_handle, void* dst_handle,
+    int64_t numel, int64_t offset, UnaryOp op
+) {
+    const double* src = as_storage(src_handle)->data + offset;
+    double* dst = as_storage(dst_handle)->data;
+    for (int64_t i = 0; i < numel; ++i) {
+        dst[i] = op(src[i]);
+    }
+}
+
+// Walk two strided sources in lockstep (same logical shape, separate
+// strides/offsets) and write row-major contiguous output.
+void core_binary(
+    const void* a_handle, const void* b_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
+    int64_t a_offset, int64_t b_offset, int64_t ndim, BinaryOp op
+) {
+    const double* a = as_storage(a_handle)->data;
+    const double* b = as_storage(b_handle)->data;
+    double* dst = as_storage(dst_handle)->data;
+    if (ndim == 0) {
+        dst[0] = op(a[a_offset], b[b_offset]);
+        return;
+    }
+    int64_t total = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        total *= shape[d];
+    }
+    std::vector<int64_t> counter = tf::make_counter(ndim);
+    int64_t a_pos = a_offset;
+    int64_t b_pos = b_offset;
+    for (int64_t out = 0; out < total; ++out) {
+        dst[out] = op(a[a_pos], b[b_pos]);
+        for (int64_t d = ndim - 1; d >= 0; --d) {
+            ++counter[d];
+            a_pos += a_strides[d];
+            b_pos += b_strides[d];
+            if (counter[d] < shape[d]) {
+                break;
+            }
+            counter[d] = 0;
+            a_pos -= shape[d] * a_strides[d];
+            b_pos -= shape[d] * b_strides[d];
+        }
+    }
+}
+
+// Contiguous fast path for a binary op: when both logical views are
+// row-major contiguous, the odometer source sequence degenerates to a
+// flat run, so an index-free pointer loop reads the same elements in the
+// same order — bit-for-bit identical, no counter allocation.
+void core_binary_contiguous(
+    const void* a_handle, const void* b_handle, void* dst_handle,
+    int64_t numel, int64_t a_offset, int64_t b_offset, BinaryOp op
+) {
+    const double* a = as_storage(a_handle)->data + a_offset;
+    const double* b = as_storage(b_handle)->data + b_offset;
+    double* dst = as_storage(dst_handle)->data;
+    for (int64_t i = 0; i < numel; ++i) {
+        dst[i] = op(a[i], b[i]);
+    }
+}
+
+}  // namespace
+
+// -- ReLU over tensor cores --------------------------------------------------
+
+TF_EXPORT void tf_core_relu(
+    const void* src, void* dst,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    core_unary(src, dst, shape, strides, offset, ndim,
+               [](double x) { return x > 0.0 ? x : 0.0; });
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_relu_contiguous(
+    const void* src, void* dst, int64_t numel, int64_t offset
+) {
+    TF_GUARD_BEGIN
+    core_unary_contiguous(src, dst, numel, offset,
+                          [](double x) { return x > 0.0 ? x : 0.0; });
+    TF_GUARD_END_VOID()
+}
+
+// -- optimizer math primitives (v3.11) --------------------------------------
+
+TF_EXPORT void tf_core_sqrt(
+    const void* src, void* dst,
+    const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    core_unary(src, dst, shape, strides, offset, ndim, op_sqrt);
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_sqrt_contiguous(
+    const void* src, void* dst, int64_t numel, int64_t offset
+) {
+    TF_GUARD_BEGIN
+    core_unary_contiguous(src, dst, numel, offset, op_sqrt);
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_reciprocal(
+    const void* src, void* dst,
+    const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    core_unary(src, dst, shape, strides, offset, ndim, op_reciprocal);
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_reciprocal_contiguous(
+    const void* src, void* dst, int64_t numel, int64_t offset
+) {
+    TF_GUARD_BEGIN
+    core_unary_contiguous(src, dst, numel, offset, op_reciprocal);
+    TF_GUARD_END_VOID()
+}
+
+// -- binary ops over tensor cores -------------------------------------------
+
+TF_EXPORT void tf_core_add(
+    const void* a, const void* b, void* dst,
+    const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
+    int64_t a_offset, int64_t b_offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    core_binary(a, b, dst, shape, a_strides, b_strides,
+                a_offset, b_offset, ndim, op_add);
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_subtract(
+    const void* a, const void* b, void* dst,
+    const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
+    int64_t a_offset, int64_t b_offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    core_binary(a, b, dst, shape, a_strides, b_strides,
+                a_offset, b_offset, ndim, op_subtract);
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_multiply(
+    const void* a, const void* b, void* dst,
+    const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
+    int64_t a_offset, int64_t b_offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    core_binary(a, b, dst, shape, a_strides, b_strides,
+                a_offset, b_offset, ndim, op_multiply);
+    TF_GUARD_END_VOID()
+}
+
+// ReLU backward over tensor cores: dst = upstream where x > 0, else 0.
+// The one genuinely new kernel native autograd's first scope needed (the
+// runtime has no compare/where to compose it from): the generic binary
+// odometer walking the forward input x and the upstream gradient in
+// lockstep, each through its own strides/offset.
+TF_EXPORT void tf_core_relu_backward(
+    const void* x, const void* upstream, void* dst,
+    const int64_t* shape, const int64_t* x_strides, const int64_t* u_strides,
+    int64_t x_offset, int64_t u_offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    core_binary(x, upstream, dst, shape, x_strides, u_strides,
+                x_offset, u_offset, ndim, op_relu_backward);
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_add_contiguous(
+    const void* a, const void* b, void* dst,
+    int64_t numel, int64_t a_offset, int64_t b_offset
+) {
+    TF_GUARD_BEGIN
+    core_binary_contiguous(a, b, dst, numel, a_offset, b_offset, op_add);
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_subtract_contiguous(
+    const void* a, const void* b, void* dst,
+    int64_t numel, int64_t a_offset, int64_t b_offset
+) {
+    TF_GUARD_BEGIN
+    core_binary_contiguous(a, b, dst, numel, a_offset, b_offset, op_subtract);
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_multiply_contiguous(
+    const void* a, const void* b, void* dst,
+    int64_t numel, int64_t a_offset, int64_t b_offset
+) {
+    TF_GUARD_BEGIN
+    core_binary_contiguous(a, b, dst, numel, a_offset, b_offset, op_multiply);
+    TF_GUARD_END_VOID()
+}
+
+// -- legacy raw-buffer kernels (the v0.x benchmark reference set) ------------
+//
+// These operate over plain float64 arrays Python passes directly (no
+// Storage handle) and cannot allocate, so they need no guard.
+
+TF_EXPORT void tf_elementwise_add(
+    const double* a, const double* b, double* out, int64_t n
+) {
+    for (int64_t i = 0; i < n; ++i) {
+        out[i] = a[i] + b[i];
+    }
+}
+
+TF_EXPORT void tf_elementwise_subtract(
+    const double* a, const double* b, double* out, int64_t n
+) {
+    for (int64_t i = 0; i < n; ++i) {
+        out[i] = a[i] - b[i];
+    }
+}
+
+TF_EXPORT void tf_elementwise_multiply(
+    const double* a, const double* b, double* out, int64_t n
+) {
+    for (int64_t i = 0; i < n; ++i) {
+        out[i] = a[i] * b[i];
+    }
+}
+
+// IEEE float64 division: x/0 gives +-inf and 0/0 gives NaN, the same
+// values NumPy produces (NumPy additionally warns; this kernel does not).
+TF_EXPORT void tf_elementwise_divide(
+    const double* a, const double* b, double* out, int64_t n
+) {
+    for (int64_t i = 0; i < n; ++i) {
+        out[i] = a[i] / b[i];
+    }
+}
+
+TF_EXPORT void tf_relu(const double* a, double* out, int64_t n) {
+    for (int64_t i = 0; i < n; ++i) {
+        out[i] = a[i] > 0.0 ? a[i] : 0.0;
+    }
+}

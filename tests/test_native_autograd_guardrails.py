@@ -590,11 +590,13 @@ def test_native_backend_isolation_registry_excludes_internal_backward_kernels():
 
 
 def test_native_backend_isolation_backend_info_advertises_no_integration():
-    # Native autograd stays experimental and unintegrated with the
-    # framework: backend_info() advertises no Tensor/autograd integration.
+    # Native autograd stays experimental and unintegrated with the STABLE
+    # framework: backend_info() advertises no wiring into tensorforge.Tensor
+    # (the deliberate architectural separation). It does, accurately, report
+    # that the native line has its own autograd and optimizers.
     info = cpp.backend_info()
-    assert info["tensor_integration"] is False
-    assert info["autograd_integration"] is False
+    assert info["stable_framework_integration"] is False
+    assert info["native_autograd"] is True
 
 
 # ======================================================================
