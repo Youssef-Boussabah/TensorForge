@@ -802,28 +802,34 @@ def test_raw_symbol_registered_in_error_contract_only():
     assert callable(getattr(lib, "tf_core_conv2d_forward"))
 
 
-def test_conv2d_autograd_and_module_remain_unsupported():
-    # The differentiable op and the module are later milestones. "conv2d"
-    # (the public/differentiable operation) stays unsupported and out of the
-    # op/autograd inventories; only the layer-qualified "conv2d_forward"
-    # Core op exists.
-    assert "conv2d" not in cpp.AUTOGRAD_OPS
-    assert "conv2d" not in cpp.TENSOR_CORE_OPS
-    assert "conv2d" in cpp.UNSUPPORTED
+def test_conv2d_operation_supported_but_module_unsupported():
+    # As of D6 the differentiable "conv2d" *operation* is supported (it is
+    # an autograd op) and the layer-qualified Core forward/backward ops
+    # exist; the "conv2d" bare name is therefore NOT in UNSUPPORTED, but the
+    # NativeConv2d *module* (D7) still is — operation support and module
+    # support are distinct.
+    assert "conv2d" in cpp.AUTOGRAD_OPS
+    assert "conv2d_forward" in cpp.TENSOR_CORE_OPS
+    assert "conv2d_input_backward" in cpp.TENSOR_CORE_OPS
+    assert "conv2d_weight_backward" in cpp.TENSOR_CORE_OPS
+    assert "conv2d" not in cpp.UNSUPPORTED
+    assert "NativeConv2d" in cpp.UNSUPPORTED
     assert "NativeConv2d" not in cpp.NATIVE_MODULES
     import tensorforge.experimental as experimental
 
     assert "NativeConv2d" not in experimental.__all__
 
 
-def test_conv2d_backward_and_maxpool2d_remain_unsupported():
-    # No backward kernel and no pooling are exposed by D3, at any layer.
+def test_maxpool2d_remains_unsupported_at_every_layer():
+    # No pooling is exposed at any layer (D8–D10).
     assert "maxpool2d" in cpp.UNSUPPORTED
     assert "maxpool2d" not in cpp.TENSOR_CORE_OPS
     assert "maxpool2d" not in cpp.AUTOGRAD_OPS
-    for name in cpp.TENSOR_CORE_OPS + cpp.AUTOGRAD_OPS:
-        assert "backward" not in name  # no backward op advertised as a capability
     assert "NativeMaxPool2d" not in cpp.NATIVE_MODULES
+    # Conv2d backward is exposed only as layer-qualified Core ops, never as
+    # an autograd op name or a NumPy-buffer raw kernel.
+    for name in cpp.AUTOGRAD_OPS + cpp.RAW_KERNELS:
+        assert "backward" not in name
 
 
 def test_native_flatten_remains_supported():

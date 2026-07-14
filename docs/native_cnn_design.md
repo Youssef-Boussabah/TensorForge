@@ -454,9 +454,11 @@ out_w)`; it is made contiguous by Policy B before any kernel runs.
   exercised only by the `conv2d_input_backward` CTest, **not** reachable
   from Python. It **zero-initializes the whole grad-input span itself**
   before the deterministic `n → o → i → j → c → p → q` `+=` accumulation,
-  reads `grad_output`/`weight` without mutation, and allocates nothing. The
-  exported `tf_core_conv2d_input_backward` wrapper, its Core method, and the
-  autograd node remain **D6**.
+  reads `grad_output`/`weight` without mutation, and allocates nothing.
+  **D6 exposed it** through the exported guarded `tf_core_conv2d_input_backward`
+  wrapper, `NativeTensorCore.conv2d_input_backward`, and the
+  `NativeTensor.conv2d` input-grad callback (which records the weight's
+  version iff the input requires grad).
 
 ### 7.2 Gradient w.r.t. weight — `∂L/∂W`
 
@@ -479,8 +481,11 @@ out_w)`; it is made contiguous by Policy B before any kernel runs.
   from Python. It **zero-initializes the whole grad-weight span itself**
   before the deterministic `n → o → i → j → c → p → q` `+=` accumulation,
   reads `grad_output`/`input` without mutation, reads no bias, and allocates
-  nothing. The exported `tf_core_conv2d_weight_backward` wrapper, its Core
-  method, and the autograd node remain **D6**.
+  nothing. **D6 exposed it** through the exported guarded
+  `tf_core_conv2d_weight_backward` wrapper,
+  `NativeTensorCore.conv2d_weight_backward`, and the `NativeTensor.conv2d`
+  weight-grad callback (which records the input's version iff the weight
+  requires grad).
 
 ### 7.3 Gradient w.r.t. bias — `∂L/∂b`
 
@@ -504,8 +509,11 @@ out_w)`; it is made contiguous by Policy B before any kernel runs.
   and never raises stale-graph on an input/weight mutated after forward
   (§8). **Status (D5):** proved reachable and correct via existing
   reductions in `tests/test_native_conv2d_gradient_contract.py` — **no
-  dedicated bias kernel, no new public operation, no inventory change.** The
-  D6 autograd node will invoke exactly this sequence.
+  dedicated bias kernel and no bias C ABI symbol.** **D6 wired it in:** the
+  `NativeTensor.conv2d` bias-grad callback runs exactly this sequence
+  (closing both intermediates), reading only the upstream — so a bias-only
+  backward records no input/weight version and is unaffected by input/weight
+  mutation after forward.
 
 ### Shared backward properties
 
@@ -1317,17 +1325,103 @@ registry advertises `conv2d` as unsupported while listing the Core-level
   **Done** (internal weight kernel + bias reduction contract).
   **Dependencies:** D4.
 
-### D6 — Conv2d `NativeTensor` autograd integration
-- **Scope:** `NativeTensor.conv2d(...)` fused primitive — graph node,
-  parent set, version recording (§8), backward closure calling D4/D5.
-- **Excludes:** the module.
-- **Files:** `native_tensor.py`; `AUTOGRAD_OPS`/`TENSOR_CORE_OPS` update;
-  `tests/test_native_conv2d_backward.py`.
-- **Tests:** §16 backward group (finite diff, subset-grad, stale
-  mutation, atomicity).
-- **Acceptance:** end-to-end differentiable native conv.
-- **Dependencies:** D5. **Risks:** version/stale-graph correctness
-  (mitigated by reusing the audited `_versioned_value_reads` path).
+### D6 — Conv2d backward exposure + `NativeTensor` autograd integration — **implemented**
+- **Scope:** the exported, exception-guarded **backward C ABI wrappers**
+  `tf_core_conv2d_input_backward` / `tf_core_conv2d_weight_backward` (over
+  the D4/D5 internal kernels); their ctypes + `errcheck` registration; the
+  **Core backward methods** `NativeTensorCore.conv2d_input_backward` /
+  `conv2d_weight_backward` (Policy-B contiguity, output allocation, full
+  shape validation); the **bias gradient composed from existing native
+  `sum` reductions** (no C ABI symbol, no kernel); and the differentiable
+  **`NativeTensor.conv2d(...)`** fused primitive — graph node, deterministic
+  parent set, conditional version recording (§8), and the Python-managed
+  backward closure calling the Core backward ops (input/weight) and the
+  reduction chain (bias).
+- **Excludes — deferred:** the `NativeConv2d` module (D7) and all of
+  pooling (D8–D10). No bias-gradient C ABI symbol is added.
+- **Files:** `cpp/src/conv2d.cpp` (the two exported backward wrappers, over
+  the existing internal kernels); `backends/cpp.py` (argtypes,
+  `_CHECKED_KERNELS`, the two Core backward methods; `TENSOR_CORE_OPS` gains
+  `conv2d_input_backward`/`conv2d_weight_backward`, `AUTOGRAD_OPS` gains
+  `conv2d`, `UNSUPPORTED` swaps the bare `conv2d` op for the still-absent
+  `NativeConv2d` module); `experimental/native_tensor.py`
+  (`NativeTensor.conv2d`); `tests/test_native_conv2d_backward_core.py`,
+  `tests/test_native_conv2d_autograd.py`.
+- **Exported ABI signatures (D6).** Both `void`, guarded, in
+  `_CHECKED_KERNELS`, taking **no stride arrays** (contiguous caller
+  precondition, span-bounds validated exactly like the D3 forward wrapper):
+  ```c
+  void tf_core_conv2d_input_backward(
+      const void* grad_output_handle, int64_t grad_output_offset,
+      const void* weight_handle,      int64_t weight_offset,
+      void*       grad_input_handle,   // caller-allocated (N,C,H,W), offset 0
+      int64_t N, C, H, W, O, kh, kw, sh, sw, ph, pw, out_h, out_w);
+  void tf_core_conv2d_weight_backward(
+      const void* grad_output_handle, int64_t grad_output_offset,
+      const void* input_handle,       int64_t input_offset,
+      void*       grad_weight_handle,  // caller-allocated (O,C,kh,kw), offset 0
+      int64_t N, C, H, W, O, kh, kw, sh, sw, ph, pw, out_h, out_w);
+  ```
+- **Core backward APIs (D6).**
+  `NativeTensorCore.conv2d_input_backward(weight, *, input_shape, stride=1,
+  padding=0)` (receiver = grad_output → grad_input `(N,C,H,W)`) and
+  `NativeTensorCore.conv2d_weight_backward(input, *, weight_shape, stride=1,
+  padding=0)` (receiver = grad_output → grad_weight `(O,C,kh,kw)`). Each
+  validates ranks/channels/spatial relationships and the recomputed
+  grad_output shape before allocating, copies any non-contiguous operand
+  (Policy B) into a private core closed after the call, returns a fresh
+  **owning** row-major contiguous CPU-float64 result, closes the output on
+  failure, and never mutates its inputs.
+- **`NativeTensor.conv2d` API (D6).** `conv2d(weight, bias=None, *,
+  stride=1, padding=0)` — `self` NCHW, `weight` OIHW NativeTensor, `bias`
+  `None` or a rank-1 NativeTensor; int/2-tuple stride & padding (bools
+  rejected); CPU float64 open NativeTensors only (no stable `Tensor`, no
+  implicit conversion). Forward reuses `conv2d_forward`; returns a fresh
+  owning `(N, O, out_h, out_w)` NativeTensor.
+- **Graph ownership & parent set.** One Python-managed node via `_from_op`
+  with parents `(input, weight)` or `(input, weight, bias)` (deterministic
+  order). `requires_grad` is the OR of parents; when none requires grad the
+  op returns a plain forward leaf with no graph. Only small ints
+  (`input_shape`, `weight_shape`, stride, padding) live in the closure — **no
+  forward output or full operand values are duplicated into Python**; the
+  backward rereads the parents' live values, and graph ownership stays in
+  Python (never moves into C++). Repeated-backward / one-shot-free /
+  `retain_graph` follow the existing engine unchanged.
+- **Backward callbacks.** Input-grad runs iff `input.requires_grad` (rereads
+  the weight value, via `conv2d_input_backward`); weight-grad runs iff
+  `weight.requires_grad` (rereads the input value, via
+  `conv2d_weight_backward`); bias-grad runs iff bias present and
+  `bias.requires_grad` (reads only the upstream: `sum(0).sum(1).sum(1) →
+  (O,)`, both intermediates closed, only the final core kept). Each
+  contribution is fresh owning storage accumulated via `_accumulate_grad`;
+  a non-contiguous upstream is copied by the Core layer.
+- **Conditional version tracking (§8).** Built through the existing
+  `_versioned_value_reads`: `weight` is recorded **iff `input.requires_grad`**
+  (input-grad rereads it), `input` is recorded **iff `weight.requires_grad`**
+  (weight-grad rereads it), and a **bias-only** backward records nothing — so
+  mutating input or weight after forward never makes a bias-only backward
+  raise, while a direct-parameter value an active callback rereads raises the
+  deterministic stale-graph `RuntimeError`. Bias is never versioned.
+- **Failure rollback.** The existing `backward()` snapshot/rollback engine
+  is reused unchanged: gradients are staged against a per-node snapshot, so a
+  mid-pass allocation failure (`MemoryError` via the status contract) rolls
+  back every leaf gradient, commits nothing partially, frees no graph, leaves
+  inputs open/unchanged, and a subsequent backward succeeds with the native
+  error slot clear. The raw ABI never allocates or frees caller storage.
+- **Tests:** 29 Core-backward cases (stable parity for input/weight grad;
+  multi-channel/batch/padding/stride/rectangular; non-contiguous operands;
+  output ownership/layout; validation; allocation failure; and direct-ctypes
+  ABI checks — null handle, negative offset, invalid dims, output-shape
+  mismatch, undersized span → `ValueError`) plus 33 autograd cases (forward +
+  input/weight/bias gradient parity; finite differences; int/tuple
+  stride/padding; all `requires_grad` combinations; no-grad graph avoidance;
+  parent ordering; shared-graph accumulation; scalar loss through reductions;
+  conditional version tracking incl. bias-only-ignores-mutation; explicit
+  non-scalar / wrong-shape / non-contiguous gradient validation; failure
+  rollback; lifetime / `zero_grad` / one-shot-free).
+- **Acceptance:** end-to-end differentiable native conv correct against
+  stable parity and finite differences; Release **and** Debug CTests
+  warning-clean. **Done.** **Dependencies:** D5.
 
 ### D7 — `NativeConv2d` module
 - **Scope:** module (§9) — parameters, init, registration, state/

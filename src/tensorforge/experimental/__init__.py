@@ -13,9 +13,13 @@ tensorforge.Tensor: the two autograd engines never mix, no conversion is
 implicit, and it shares no state with the stable framework. A full native
 training stack — parameters, modules, layers, a loss, optimizers, and
 pickle-free checkpoints — is built on it and described below. The native
-CNN stack (Phase D) has begun with ``NativeFlatten`` (milestone D1); only
-CUDA and the remaining Phase-D numerical layers (native Conv2d/MaxPool2d,
-new activations, softmax/classification losses, BatchNorm/LayerNorm/
+CNN stack (Phase D) has begun with ``NativeFlatten`` (milestone D1) and,
+as of milestone D6, the differentiable **``NativeTensor.conv2d``** operation
+(NCHW/OIHW cross-correlation with int/tuple stride and padding and optional
+bias; input, weight, and bias gradients through native backward kernels and
+the existing ``sum`` reduction); the trainable ``NativeConv2d`` **module**
+(D7), ``MaxPool2d`` (D8–D10), CUDA, and the remaining Phase-D numerical
+layers (new activations, softmax/classification losses, BatchNorm/LayerNorm/
 Dropout) remain future work.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,

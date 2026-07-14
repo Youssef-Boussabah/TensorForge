@@ -621,15 +621,22 @@ The Python line is done; what remains is expansion on its own terms:
     stable parity, and central finite differences) and **locked and
     validated the bias-gradient path as a reuse of the existing native
     `sum` reduction** (`g.sum(0).sum(1).sum(1) → (O,)`, no dedicated
-    kernel), proved in a focused Python contract test. Neither adds any
-    Python-visible native convolution backward operation. The
-    *differentiable* native convolution op (and its exported backward C
-    ABI/Core surface), the
-    native convolution module, and all of pooling remain **unimplemented**
-    and marked unsupported in the
-    [support matrix](native_support_matrix.md); the backend advertises no
-    differentiable convolution, no convolution module, and no pooling
-    capability. This design guides the remaining Phase-D milestones.
+    kernel), proved in a focused Python contract test. **D6 completed the
+    differentiable native convolution operation**: the exported guarded
+    backward C ABI wrappers (`tf_core_conv2d_input_backward`,
+    `tf_core_conv2d_weight_backward`), the Core backward methods, the bias
+    gradient composed from the existing native `sum` reduction (no dedicated
+    kernel), and the Python-managed **`NativeTensor.conv2d`** autograd
+    primitive — forward reuse of the D3 wrapper, input/weight/bias
+    gradients, deterministic `(input, weight[, bias])` parent ordering,
+    conditional stale-value version tracking, and reuse of the existing
+    backward snapshot/rollback engine — verified against stable parity,
+    finite differences, and all `requires_grad` combinations. The trainable
+    native convolution **module (D7)** and all of pooling (D8–D10) remain
+    **unimplemented** and marked unsupported in the
+    [support matrix](native_support_matrix.md); the backend advertises the
+    differentiable `conv2d` operation but no convolution *module* and no
+    pooling. This design guides the remaining Phase-D milestones.
   - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

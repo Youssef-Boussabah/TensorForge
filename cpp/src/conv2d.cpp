@@ -441,3 +441,215 @@ TF_EXPORT void tf_core_conv2d_forward(
         output_height, output_width);
     TF_GUARD_END_VOID()
 }
+
+// ---------------------------------------------------------------------------
+// Exported C ABI backward wrappers (Phase D, milestone D6).
+//
+// ``tf_core_conv2d_input_backward`` and ``tf_core_conv2d_weight_backward``
+// are the exception-guarded boundaries over the D4/D5 internal noexcept
+// gradient kernels. They share the forward wrapper's contract exactly (same
+// file-local checked-arithmetic helpers, same validation classes, same
+// error style): the raw ABI takes storage handles + per-operand offsets +
+// the integer dimensions, **never stride arrays**, so it interprets each
+// span as canonical contiguous data and bounds-checks it — logical
+// contiguity remains the caller precondition the NativeTensorCore layer
+// guarantees by Policy-B copy-then-compute. Neither allocates or frees
+// caller-owned storage, and neither mutates its read-only operands. There
+// is **no** bias-gradient C ABI symbol — that gradient composes from the
+// existing native ``sum`` reduction (docs/native_cnn_design.md §7.3).
+// ---------------------------------------------------------------------------
+
+// Shared validation for both backward wrappers: the dimension/kernel/stride/
+// padding/offset bounds and the output-shape agreement identical to the
+// forward wrapper. Returns nullptr on success, else an error message. The
+// caller checks required handles and storage spans separately (the operand
+// roles differ between the two backward directions).
+namespace {
+
+const char* validate_conv2d_backward_dims(
+    int64_t batch, int64_t in_channels,
+    int64_t input_height, int64_t input_width,
+    int64_t out_channels, int64_t kernel_height, int64_t kernel_width,
+    int64_t stride_height, int64_t stride_width,
+    int64_t pad_height, int64_t pad_width,
+    int64_t output_height, int64_t output_width,
+    int64_t grad_output_offset, int64_t other_offset) {
+    if (batch < 1 || in_channels < 1 || input_height < 1 || input_width < 1 ||
+        out_channels < 1 || kernel_height < 1 || kernel_width < 1 ||
+        stride_height < 1 || stride_width < 1) {
+        return "conv2d backward: batch, channels, spatial, kernel, and stride "
+               "extents must each be >= 1";
+    }
+    if (pad_height < 0 || pad_width < 0) {
+        return "conv2d backward: padding must be >= 0";
+    }
+    if (grad_output_offset < 0 || other_offset < 0 ||
+        output_height < 1 || output_width < 1) {
+        return "conv2d backward: negative offset or non-positive output extent";
+    }
+    if (const char* err = check_output_dim(
+            input_height, kernel_height, stride_height, pad_height,
+            output_height)) {
+        return err;
+    }
+    if (const char* err = check_output_dim(
+            input_width, kernel_width, stride_width, pad_width,
+            output_width)) {
+        return err;
+    }
+    return nullptr;
+}
+
+}  // namespace
+
+// Gradient w.r.t. the Conv2d input. grad_output (NCHW) + weight (OIHW) ->
+// grad_input (NCHW, caller-allocated, offset 0).
+TF_EXPORT void tf_core_conv2d_input_backward(
+    const void* grad_output_handle, int64_t grad_output_offset,
+    const void* weight_handle, int64_t weight_offset,
+    void* grad_input_handle,
+    int64_t batch,
+    int64_t in_channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t out_channels,
+    int64_t kernel_height,
+    int64_t kernel_width,
+    int64_t stride_height,
+    int64_t stride_width,
+    int64_t pad_height,
+    int64_t pad_width,
+    int64_t output_height,
+    int64_t output_width) {
+    TF_GUARD_BEGIN
+    if (grad_output_handle == nullptr || weight_handle == nullptr ||
+        grad_input_handle == nullptr) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "conv2d_input_backward: null required storage handle");
+        return;
+    }
+    if (const char* err = validate_conv2d_backward_dims(
+            batch, in_channels, input_height, input_width,
+            out_channels, kernel_height, kernel_width,
+            stride_height, stride_width, pad_height, pad_width,
+            output_height, output_width, grad_output_offset, weight_offset)) {
+        tf::set_error(TF_ERROR_INVALID, err);
+        return;
+    }
+    int64_t grad_output_count, weight_count, grad_input_count;
+    if (!numel4(batch, out_channels, output_height, output_width,
+                grad_output_count) ||
+        !numel4(out_channels, in_channels, kernel_height, kernel_width,
+                weight_count) ||
+        !numel4(batch, in_channels, input_height, input_width,
+                grad_input_count)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "conv2d_input_backward: shape product overflows int64");
+        return;
+    }
+    if (!span_within(grad_output_offset, grad_output_count,
+                     as_storage(grad_output_handle)->size)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "conv2d_input_backward: grad_output span exceeds storage");
+        return;
+    }
+    if (!span_within(weight_offset, weight_count,
+                     as_storage(weight_handle)->size)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "conv2d_input_backward: weight span exceeds storage");
+        return;
+    }
+    if (!span_within(0, grad_input_count,
+                     as_storage(grad_input_handle)->size)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "conv2d_input_backward: grad_input span exceeds storage");
+        return;
+    }
+    const double* grad_output =
+        as_storage(grad_output_handle)->data + grad_output_offset;
+    const double* weight = as_storage(weight_handle)->data + weight_offset;
+    double* grad_input = as_storage(grad_input_handle)->data;
+    tf::conv2d_input_backward_contiguous(
+        grad_output, weight, grad_input,
+        batch, in_channels, input_height, input_width,
+        out_channels, kernel_height, kernel_width,
+        stride_height, stride_width, pad_height, pad_width,
+        output_height, output_width);
+    TF_GUARD_END_VOID()
+}
+
+// Gradient w.r.t. the Conv2d weight. grad_output (NCHW) + input (NCHW) ->
+// grad_weight (OIHW, caller-allocated, offset 0).
+TF_EXPORT void tf_core_conv2d_weight_backward(
+    const void* grad_output_handle, int64_t grad_output_offset,
+    const void* input_handle, int64_t input_offset,
+    void* grad_weight_handle,
+    int64_t batch,
+    int64_t in_channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t out_channels,
+    int64_t kernel_height,
+    int64_t kernel_width,
+    int64_t stride_height,
+    int64_t stride_width,
+    int64_t pad_height,
+    int64_t pad_width,
+    int64_t output_height,
+    int64_t output_width) {
+    TF_GUARD_BEGIN
+    if (grad_output_handle == nullptr || input_handle == nullptr ||
+        grad_weight_handle == nullptr) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "conv2d_weight_backward: null required storage handle");
+        return;
+    }
+    if (const char* err = validate_conv2d_backward_dims(
+            batch, in_channels, input_height, input_width,
+            out_channels, kernel_height, kernel_width,
+            stride_height, stride_width, pad_height, pad_width,
+            output_height, output_width, grad_output_offset, input_offset)) {
+        tf::set_error(TF_ERROR_INVALID, err);
+        return;
+    }
+    int64_t grad_output_count, input_count, grad_weight_count;
+    if (!numel4(batch, out_channels, output_height, output_width,
+                grad_output_count) ||
+        !numel4(batch, in_channels, input_height, input_width,
+                input_count) ||
+        !numel4(out_channels, in_channels, kernel_height, kernel_width,
+                grad_weight_count)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "conv2d_weight_backward: shape product overflows int64");
+        return;
+    }
+    if (!span_within(grad_output_offset, grad_output_count,
+                     as_storage(grad_output_handle)->size)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "conv2d_weight_backward: grad_output span exceeds storage");
+        return;
+    }
+    if (!span_within(input_offset, input_count,
+                     as_storage(input_handle)->size)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "conv2d_weight_backward: input span exceeds storage");
+        return;
+    }
+    if (!span_within(0, grad_weight_count,
+                     as_storage(grad_weight_handle)->size)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "conv2d_weight_backward: grad_weight span exceeds storage");
+        return;
+    }
+    const double* grad_output =
+        as_storage(grad_output_handle)->data + grad_output_offset;
+    const double* input = as_storage(input_handle)->data + input_offset;
+    double* grad_weight = as_storage(grad_weight_handle)->data;
+    tf::conv2d_weight_backward_contiguous(
+        grad_output, input, grad_weight,
+        batch, in_channels, input_height, input_width,
+        out_channels, kernel_height, kernel_width,
+        stride_height, stride_width, pad_height, pad_width,
+        output_height, output_width);
+    TF_GUARD_END_VOID()
+}

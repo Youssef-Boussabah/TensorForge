@@ -342,16 +342,20 @@ def test_native_cnn_design_is_honest_about_being_unimplemented():
         "native_cnn_design.md must state that Phase D is not implemented"
     )
 
-    # The backend capability registry still lists the unimplemented CNN
-    # ops (convolution and pooling) as unsupported and does not advertise
-    # them anywhere else. NativeFlatten (D1) is intentionally NOT here — it
-    # is implemented and is checked separately, below.
+    # The backend capability registry keeps the still-unimplemented CNN
+    # surface honest. As of D6 the differentiable "conv2d" *operation* is
+    # implemented (autograd op + Core forward/backward), so it is NOT in
+    # UNSUPPORTED; but the NativeConv2d *module* (D7) and all of pooling
+    # (D8–D10) remain unsupported. Operation support and module support are
+    # distinct. NativeFlatten (D1) is checked separately, below.
     from tensorforge.backends import cpp
 
-    for op in ("conv2d", "maxpool2d"):
-        assert op in cpp.UNSUPPORTED, f"cpp backend no longer lists {op!r} unsupported"
-        assert op not in cpp.AUTOGRAD_OPS, f"cpp backend advertises {op!r} as autograd op"
-        assert op not in cpp.TENSOR_CORE_OPS, f"cpp backend advertises {op!r} as core op"
+    # maxpool2d is unimplemented at every layer.
+    assert "maxpool2d" in cpp.UNSUPPORTED
+    assert "maxpool2d" not in cpp.AUTOGRAD_OPS
+    assert "maxpool2d" not in cpp.TENSOR_CORE_OPS
+    # The Conv2d module is unsupported even though the operation is supported.
+    assert "NativeConv2d" in cpp.UNSUPPORTED
     for module in ("NativeConv2d", "NativeMaxPool2d"):
         assert module not in cpp.NATIVE_MODULES, (
             f"cpp backend advertises unimplemented {module!r}"
@@ -380,8 +384,9 @@ def test_native_flatten_is_implemented_as_a_native_module():
     # Not a raw C++ kernel and not a lingering "unsupported" entry.
     assert "NativeFlatten" not in cpp.RAW_KERNELS
     assert "flatten" not in cpp.UNSUPPORTED
-    # Convolution/pooling remain unimplemented.
-    assert "conv2d" in cpp.UNSUPPORTED and "maxpool2d" in cpp.UNSUPPORTED
+    # The Conv2d module and pooling remain unimplemented (the differentiable
+    # conv2d operation itself is implemented as of D6).
+    assert "NativeConv2d" in cpp.UNSUPPORTED and "maxpool2d" in cpp.UNSUPPORTED
 
 
 def test_native_cnn_design_is_linked_and_referenced():

@@ -733,6 +733,112 @@ class NativeTensor:
 
         return self._from_op(out_core, (self,), _backward, "contiguous_copy")
 
+    def conv2d(self, weight, bias=None, *, stride=1, padding=0):
+        """2-D cross-correlation of this NCHW input against an OIHW
+        ``weight`` (+ optional rank-1 ``bias``), natively and
+        differentiably (Phase D, D6 — a **new fused primitive**, like
+        ``matmul``, not a composition of existing ops).
+
+        ``self`` is the ``(N, C, H, W)`` input; ``weight`` is an
+        ``(O, C, kh, kw)`` NativeTensor; ``bias`` is ``None`` or a rank-1
+        ``(O,)`` NativeTensor. ``stride``/``padding`` are an int or a
+        length-2 ``(height, width)`` tuple (bools rejected). No dilation,
+        groups, or channels-last; operands must be open CPU float64
+        NativeTensors (stable ``Tensor`` and implicit conversion are
+        rejected). Returns a fresh **owning** ``(N, O, out_h, out_w)``
+        NativeTensor.
+
+        The forward reuses ``NativeTensorCore.conv2d_forward`` (no forward
+        kernel is duplicated in Python). Differentiable when any of
+        input/weight/bias requires grad — otherwise a plain forward leaf.
+        The Python-managed backward computes each gradient only for the
+        parents that require it: the input gradient (rereading the weight
+        value) and weight gradient (rereading the input value) run through
+        the native ``conv2d_input_backward``/``conv2d_weight_backward`` Core
+        ops, and the bias gradient reduces the upstream over batch and
+        spatial axes via the existing native ``sum`` (no dedicated kernel).
+        Conditional stale-value version tracking follows
+        docs/native_cnn_design.md §8: a direct-parameter operand's version
+        is recorded only when an *active* callback rereads its value."""
+        core = self._require_open()
+        if not isinstance(weight, NativeTensor):
+            raise TypeError(
+                f"conv2d requires a NativeTensor weight, got "
+                f"{type(weight).__name__}"
+            )
+        weight_core = weight._require_open()
+        has_bias = bias is not None
+        if has_bias:
+            if not isinstance(bias, NativeTensor):
+                raise TypeError(
+                    f"conv2d requires a NativeTensor bias or None, got "
+                    f"{type(bias).__name__}"
+                )
+            bias_core = bias._require_open()
+        else:
+            bias_core = None
+        # Forward via the Core wrapper — it validates ranks, channel
+        # compatibility, dtype/device, output shape, and stride/padding
+        # (bools rejected) before any allocation.
+        out_core = core.conv2d_forward(
+            weight_core, bias_core, stride=stride, padding=padding
+        )
+        parents = (self, weight) + ((bias,) if has_bias else ())
+        if not any(p._requires_grad for p in parents):
+            return self._from_core(out_core)
+
+        input_t, weight_t, bias_t = self, weight, bias
+        input_shape = core.shape
+        weight_shape = weight_core.shape
+
+        def _backward(upstream):
+            u_core = upstream._require_open()
+            # Input gradient — rereads the weight's forward value.
+            if input_t._requires_grad:
+                grad_in = u_core.conv2d_input_backward(
+                    weight_t._require_open(), input_shape=input_shape,
+                    stride=stride, padding=padding,
+                )
+                input_t._accumulate_grad(NativeTensor._from_core(grad_in))
+            # Weight gradient — rereads the input's forward value.
+            if weight_t._requires_grad:
+                grad_w = u_core.conv2d_weight_backward(
+                    input_t._require_open(), weight_shape=weight_shape,
+                    stride=stride, padding=padding,
+                )
+                weight_t._accumulate_grad(NativeTensor._from_core(grad_w))
+            # Bias gradient — reads only the upstream: sum over batch (axis
+            # 0) then the two spatial axes, via existing native reductions
+            # (no dedicated kernel). Both intermediates are closed; only the
+            # final (O,) core survives to become the gradient.
+            if has_bias and bias_t._requires_grad:
+                reduced_batch = u_core.sum(axis=0)       # (O, out_h, out_w)
+                try:
+                    reduced_h = reduced_batch.sum(axis=1)  # (O, out_w)
+                    try:
+                        grad_b = reduced_h.sum(axis=1)     # (O,)
+                    finally:
+                        reduced_h.close()
+                finally:
+                    reduced_batch.close()
+                bias_t._accumulate_grad(NativeTensor._from_core(grad_b))
+
+        # Conditional version tracking (§8): record a value's version only
+        # when an *active* callback rereads it. input-grad (runs iff input
+        # needs grad) rereads the weight; weight-grad (runs iff weight needs
+        # grad) rereads the input; bias-grad rereads neither.
+        value_read_operands = []
+        if input_t._requires_grad:
+            value_read_operands.append(weight_t)
+        if weight_t._requires_grad:
+            value_read_operands.append(input_t)
+        expected_versions = _versioned_value_reads("conv2d", value_read_operands)
+
+        return self._from_op(
+            out_core, parents, _backward, "conv2d",
+            expected_versions=expected_versions,
+        )
+
     # -- autograd (opt-in; Python-managed graph over native ops) ----------
 
     def _accumulate_grad(self, grad):

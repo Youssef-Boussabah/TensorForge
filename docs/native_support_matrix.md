@@ -58,6 +58,7 @@ unsupported below.
 | `transpose` / `T` | Yes | Yes | Borrowing view; inverse-permutation backward |
 | `narrow` | Yes | Yes | Borrowing view; native scatter backward |
 | `contiguous_copy` | Yes | Yes | Owning materialization; pass-through backward |
+| `conv2d` | Yes | Yes | D6: fused NCHW/OIHW cross-correlation primitive (int/tuple stride & padding, optional bias); input/weight gradients via native backward kernels, bias gradient via existing `sum`; conditional stale-value versioning. **The trainable convolution *module* (D7) is separate and not yet implemented.** |
 
 ## Autograd engine
 
@@ -108,12 +109,11 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- differentiable native `Conv2d` (the `NativeTensor.conv2d` autograd op),
-  `NativeConv2d`, `MaxPool2d`, or the rest of the CNN stack
-  (batch-preserving `NativeFlatten` **is** implemented, and the
-  forward-only `NativeTensorCore.conv2d_forward` Core method **is**
-  implemented as of D3 — see the Phase-D section below; convolution
-  gradients, autograd, and the module remain future work)
+- the `NativeConv2d` **module** (D7), `MaxPool2d`, or the rest of the CNN
+  stack (batch-preserving `NativeFlatten` **is** implemented, and the
+  differentiable **`NativeTensor.conv2d` operation** — forward, input/weight/
+  bias gradients, and autograd — **is** implemented as of D6; only the
+  trainable `NativeConv2d` module and pooling remain future work)
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP
 - Transformers / text models
@@ -129,15 +129,17 @@ forward compute kernel** (`tf::conv2d_forward_contiguous`, a hidden C++
 symbol), and **D3 has shipped the forward-only convolution *layer***: the
 exported, exception-guarded C ABI wrapper `tf_core_conv2d_forward`, its
 ctypes/`errcheck` registration, and `NativeTensorCore.conv2d_forward` (a
-Python-reachable, forward-only, autograd-unaware Core method). **D4 and D5
-have shipped the internal convolution input- and weight-gradient compute
-kernels** (`tf::conv2d_input_backward_contiguous`,
-`tf::conv2d_weight_backward_contiguous` — hidden C++ symbols exercised only
-by C++ CTests, **not** reachable from Python), and **D5 locked and
-validated the bias-gradient path as a reuse of the existing native `sum`
-reduction** (no dedicated kernel). Their exported wrappers, Core methods,
-and the autograd node are D6. Every remaining row below is **planned, not
-supported**, and stays in this
+Python-reachable, forward-only, autograd-unaware Core method). **D4/D5
+shipped the internal convolution input/weight-gradient kernels**, and **D6
+completed the differentiable native convolution operation**: the exported
+guarded backward C ABI wrappers (`tf_core_conv2d_input_backward`,
+`tf_core_conv2d_weight_backward`), the Core backward methods
+(`NativeTensorCore.conv2d_input_backward`/`conv2d_weight_backward`), the
+bias gradient composed from the existing native `sum` reduction (no
+dedicated kernel), and the Python-managed **`NativeTensor.conv2d`** autograd
+primitive (input/weight/bias gradients, conditional stale-value version
+tracking, failure rollback). The **`NativeConv2d` module (D7)** and all of
+pooling (D8–D10) remain **planned, not supported**, and stay in this
 section until its milestone lands. The backend registry still advertises
 the *differentiable* `conv2d` op and the `NativeConv2d` module as
 unsupported — D3 provides only the layer-qualified Core forward
@@ -151,9 +153,10 @@ unsupported — D3 provides only the layer-qualified Core forward
 | Convolution forward Core wrapper (`NativeTensorCore.conv2d_forward`) — ctypes, Policy-B copy, output allocation, Python forward access | D3 | **Implemented (Core, forward-only)** |
 | Internal convolution input-gradient compute kernel (`tf::conv2d_input_backward_contiguous`, C++, not exposed) | D4 | **Implemented (internal)** |
 | Internal convolution weight-gradient compute kernel (`tf::conv2d_weight_backward_contiguous`, C++, not exposed) | D5 | **Implemented (internal)** |
-| Convolution bias-gradient numerical path (reuse of the existing native `sum` reduction: `g.sum(0).sum(1).sum(1) → (O,)`; no dedicated kernel) | D5 | **Designed & validated (existing-reduction composition)** |
-| Convolution input/weight/bias-gradient C ABI export, Core wrappers, Python access | D6 | Planned |
-| Convolution `NativeTensor` autograd op (differentiable `conv2d`) | D6 | Planned (unsupported) |
+| Convolution input/weight-gradient C ABI export (`tf_core_conv2d_input_backward`, `tf_core_conv2d_weight_backward`) + Core wrappers (`NativeTensorCore.conv2d_input_backward`/`conv2d_weight_backward`) | D6 | **Implemented (raw + Core)** |
+| Convolution bias-gradient numerical path (reuse of the existing native `sum` reduction: `g.sum(0).sum(1).sum(1) → (O,)`; no dedicated kernel, no C ABI symbol) | D5–D6 | **Implemented (existing-reduction composition, wired into the autograd node)** |
+| Convolution `NativeTensor` autograd op — differentiable `NativeTensor.conv2d(weight, bias=None, *, stride, padding)` | D6 | **Implemented** |
+| `NativeConv2d` module | D7 | Planned (unsupported) |
 | `NativeConv2d` module | D7 | Planned |
 | Native max-pooling forward + winner-index buffer | D8 | Planned |
 | Native max-pooling backward (scatter) | D9 | Planned |

@@ -79,19 +79,28 @@ TENSOR_CORE_OPS = (
     "add", "subtract", "multiply", "matmul",
     "sum", "mean",
     "reshape", "transpose", "T", "narrow", "contiguous_copy",
-    # Phase D, D3: forward-only native Conv2d at the Core layer. This is
-    # NOT the public differentiable "conv2d" op (that autograd primitive,
-    # D6, stays in UNSUPPORTED) — it is the layer-qualified forward wrapper
-    # over the exported tf_core_conv2d_forward kernel.
-    "conv2d_forward",
+    # Phase D native Conv2d at the Core layer — layer-qualified forward and
+    # (D6) backward wrappers over the exported tf_core_conv2d_* kernels.
+    # These are Core operations, distinct from the differentiable
+    # "conv2d" NativeTensor autograd op (in AUTOGRAD_OPS) and from the
+    # NativeConv2d module (D7, still unsupported). The bias gradient has no
+    # Core op — it composes from the existing "sum" reduction.
+    "conv2d_forward",          # D3
+    "conv2d_input_backward",   # D6
+    "conv2d_weight_backward",  # D6
 )
 
 # Operations the NativeTensor autograd layer (Phase B) differentiates.
+# Phase D adds the differentiable "conv2d" fused primitive (D6): its
+# backward composes the input/weight-gradient Core ops and the existing
+# "sum" reduction (bias). This is the operation; the NativeConv2d module
+# (D7) is separate and still unsupported.
 AUTOGRAD_OPS = (
     "add", "subtract", "multiply", "relu",
     "sum", "mean", "matmul",
     "reshape", "transpose", "T", "narrow", "contiguous_copy",
     "sqrt", "reciprocal",
+    "conv2d",
 )
 
 # The native training stack composed on the autograd layer (Phase C),
@@ -110,13 +119,19 @@ STATE_SUPPORT = (
     "load_native_checkpoint",
 )
 
-# Explicitly NOT implemented (Phase D and beyond) — listed so
-# introspection is honest about the boundary; none of these exist yet.
+# Explicitly NOT implemented — listed so introspection is honest about the
+# boundary. These names are layer-qualified where an operation and its
+# module diverge, so support is never over- or under-claimed:
+#   - the differentiable "conv2d" *operation* IS implemented (D3–D6:
+#     forward + input/weight/bias gradients + NativeTensor autograd), so it
+#     is NOT listed here — it lives in AUTOGRAD_OPS / TENSOR_CORE_OPS.
+#   - "NativeConv2d" (the Conv2d *module*, D7) is still unsupported.
+#   - "maxpool2d" (the operation and the NativeMaxPool2d module, D8–D10)
+#     is still unsupported at every layer.
 # As of Phase D milestone D1, batch-preserving flatten IS implemented as
-# the NativeFlatten module (see NATIVE_MODULES), so "flatten" is no longer
-# listed here; native conv2d/maxpool2d remain unimplemented.
+# the NativeFlatten module (see NATIVE_MODULES), so "flatten" is not listed.
 UNSUPPORTED = (
-    "conv2d", "maxpool2d",
+    "NativeConv2d", "maxpool2d",
     "exp", "log", "softmax", "cross_entropy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",
@@ -309,6 +324,22 @@ def _load_library():
         ctypes.c_void_p,                   # output handle
     ] + [ctypes.c_int64] * 13
     library.tf_core_conv2d_forward.restype = None
+    # Conv2d backward wrappers (Phase D, D6): input- and weight-gradient
+    # exports over the D4/D5 internal kernels. Contiguous storage only
+    # (Policy B copies at the Core level); caller-allocated output; no bias
+    # gradient symbol (that composes from the existing `sum` reduction). The
+    # handle pairs differ by direction but both take the same 13 trailing
+    # int64 dims as the forward wrapper (N, C, H, W, O, kh, kw, sh, sw, ph,
+    # pw, out_h, out_w).
+    for name in ("tf_core_conv2d_input_backward",
+                 "tf_core_conv2d_weight_backward"):
+        kernel = getattr(library, name)
+        kernel.argtypes = [
+            ctypes.c_void_p, ctypes.c_int64,   # grad_output handle, offset
+            ctypes.c_void_p, ctypes.c_int64,   # weight/input handle, offset
+            ctypes.c_void_p,                   # grad_input/grad_weight handle
+        ] + [ctypes.c_int64] * 13
+        kernel.restype = None
 
     _configure_error_contract(library)
     return library
@@ -356,6 +387,8 @@ _CHECKED_KERNELS = (
     "tf_core_sum",
     "tf_core_narrow_backward",
     "tf_core_conv2d_forward",
+    "tf_core_conv2d_input_backward",
+    "tf_core_conv2d_weight_backward",
 )
 
 
@@ -1298,6 +1331,170 @@ class NativeTensorCore:
         finally:
             # Close every private contiguous copy exactly once, whether the
             # call succeeded or raised — the caller's operands are untouched.
+            for temp in temporaries:
+                temp.close()
+
+    def conv2d_input_backward(self, weight, *, input_shape, stride=1, padding=0):
+        """Gradient of Conv2d w.r.t. its input, natively (Phase D, D6).
+
+        ``self`` is the upstream gradient ``grad_output`` with shape
+        ``(N, O, out_h, out_w)``; ``weight`` is the ``(O, C, kh, kw)`` OIHW
+        tensor core; ``input_shape`` is the parent input's ``(N, C, H, W)``.
+        Returns a fresh **owning** row-major contiguous ``(N, C, H, W)``
+        NativeTensorCore — the input gradient.
+
+        Forward-only and autograd-unaware (the ``NativeTensor.conv2d``
+        node calls this from its input-gradient callback). Validates ranks,
+        channel/spatial relationships, and the recomputed grad_output shape
+        before allocating; feeds the raw C ABI **contiguous storage only**
+        via Policy B (any non-contiguous grad_output/weight is copied into a
+        private core closed as soon as the call returns); the caller's
+        tensors are never mutated. A failure allocates no output and leaks no
+        temporary."""
+        self._require_open()
+        if not isinstance(weight, NativeTensorCore):
+            raise TypeError(
+                f"conv2d_input_backward requires a NativeTensorCore weight, "
+                f"got {type(weight).__name__}"
+            )
+        weight._require_open()
+        self._require_matching_metadata(weight, "conv2d_input_backward")
+        if self.ndim != 4:
+            raise ValueError(
+                f"conv2d_input_backward requires a 4-D NCHW grad_output, got "
+                f"shape {self.shape}"
+            )
+        if weight.ndim != 4:
+            raise ValueError(
+                f"conv2d_input_backward requires a 4-D OIHW weight, got shape "
+                f"{weight.shape}"
+            )
+        input_shape = _as_shape(input_shape)
+        if len(input_shape) != 4:
+            raise ValueError(
+                f"conv2d_input_backward input_shape must be 4-D NCHW, got "
+                f"{input_shape}"
+            )
+        n, c, h, w = input_shape
+        o, weight_in, kh, kw = weight.shape
+        if c != weight_in:
+            raise ValueError(
+                f"conv2d_input_backward input channels {c} do not match the "
+                f"weight's input channels {weight_in} (input_shape "
+                f"{input_shape}, weight {weight.shape})"
+            )
+        sh, sw = _spatial_pair(stride, "stride", minimum=1)
+        ph, pw = _spatial_pair(padding, "padding", minimum=0)
+        out_h, out_w = conv_output_shape((h, w), (kh, kw), (sh, sw), (ph, pw))
+        if self.shape != (n, o, out_h, out_w):
+            raise ValueError(
+                f"conv2d_input_backward grad_output shape {self.shape} does "
+                f"not match the expected {(n, o, out_h, out_w)} for input "
+                f"{input_shape}, weight {weight.shape}, stride {(sh, sw)}, "
+                f"padding {(ph, pw)}"
+            )
+        temporaries = []
+        try:
+            go = self if self.contiguous else self._contiguous_temp(temporaries)
+            wt = (
+                weight if weight.contiguous
+                else weight._contiguous_temp(temporaries)
+            )
+            out = NativeTensorCore.zeros(
+                (n, c, h, w), dtype=self.dtype, device=self.device
+            )
+            try:
+                self._storage._lib.tf_core_conv2d_input_backward(
+                    go._storage._require_open(), go.offset,
+                    wt._storage._require_open(), wt.offset,
+                    out._storage._require_open(),
+                    n, c, h, w, o, kh, kw, sh, sw, ph, pw, out_h, out_w,
+                )
+            except BaseException:
+                out.close()
+                raise
+            return out
+        finally:
+            for temp in temporaries:
+                temp.close()
+
+    def conv2d_weight_backward(self, input, *, weight_shape, stride=1, padding=0):
+        """Gradient of Conv2d w.r.t. its weight, natively (Phase D, D6).
+
+        ``self`` is the upstream gradient ``grad_output`` with shape
+        ``(N, O, out_h, out_w)``; ``input`` is the parent's ``(N, C, H, W)``
+        NCHW input; ``weight_shape`` is the weight's ``(O, C, kh, kw)`` OIHW
+        shape. Returns a fresh **owning** row-major contiguous
+        ``(O, C, kh, kw)`` NativeTensorCore — the weight gradient.
+
+        Forward-only and autograd-unaware. Same validation/Policy-B/failure
+        contract as ``conv2d_input_backward`` (any non-contiguous
+        grad_output/input is copied into a private core closed after the
+        call); the caller's tensors are never mutated."""
+        self._require_open()
+        if not isinstance(input, NativeTensorCore):
+            raise TypeError(
+                f"conv2d_weight_backward requires a NativeTensorCore input, "
+                f"got {type(input).__name__}"
+            )
+        input._require_open()
+        self._require_matching_metadata(input, "conv2d_weight_backward")
+        if self.ndim != 4:
+            raise ValueError(
+                f"conv2d_weight_backward requires a 4-D NCHW grad_output, got "
+                f"shape {self.shape}"
+            )
+        if input.ndim != 4:
+            raise ValueError(
+                f"conv2d_weight_backward requires a 4-D NCHW input, got shape "
+                f"{input.shape}"
+            )
+        weight_shape = _as_shape(weight_shape)
+        if len(weight_shape) != 4:
+            raise ValueError(
+                f"conv2d_weight_backward weight_shape must be 4-D OIHW, got "
+                f"{weight_shape}"
+            )
+        o, c, kh, kw = weight_shape
+        n, input_c, h, w = input.shape
+        if input_c != c:
+            raise ValueError(
+                f"conv2d_weight_backward input channels {input_c} do not match "
+                f"the weight's input channels {c} (input {input.shape}, "
+                f"weight_shape {weight_shape})"
+            )
+        sh, sw = _spatial_pair(stride, "stride", minimum=1)
+        ph, pw = _spatial_pair(padding, "padding", minimum=0)
+        out_h, out_w = conv_output_shape((h, w), (kh, kw), (sh, sw), (ph, pw))
+        if self.shape != (n, o, out_h, out_w):
+            raise ValueError(
+                f"conv2d_weight_backward grad_output shape {self.shape} does "
+                f"not match the expected {(n, o, out_h, out_w)} for input "
+                f"{input.shape}, weight_shape {weight_shape}, stride "
+                f"{(sh, sw)}, padding {(ph, pw)}"
+            )
+        temporaries = []
+        try:
+            go = self if self.contiguous else self._contiguous_temp(temporaries)
+            inp = (
+                input if input.contiguous
+                else input._contiguous_temp(temporaries)
+            )
+            out = NativeTensorCore.zeros(
+                (o, c, kh, kw), dtype=self.dtype, device=self.device
+            )
+            try:
+                self._storage._lib.tf_core_conv2d_weight_backward(
+                    go._storage._require_open(), go.offset,
+                    inp._storage._require_open(), inp.offset,
+                    out._storage._require_open(),
+                    n, c, h, w, o, kh, kw, sh, sw, ph, pw, out_h, out_w,
+                )
+            except BaseException:
+                out.close()
+                raise
+            return out
+        finally:
             for temp in temporaries:
                 temp.close()
 

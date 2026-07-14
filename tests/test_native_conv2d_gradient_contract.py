@@ -155,18 +155,17 @@ def test_reduction_intermediates_are_released(monkeypatch):
     core.close()
 
 
-def test_bias_gradient_reuse_adds_no_new_capability():
-    # D5's bias path is pure reuse of the existing sum reduction — no new
-    # Conv2d backward operation is advertised at any layer.
+def test_bias_gradient_reuse_adds_no_dedicated_capability():
+    # The bias path is pure reuse of the existing sum reduction — no
+    # dedicated bias-gradient kernel, Core op, or C ABI symbol exists at any
+    # layer (D6 exposes input/weight backward, but bias stays a composition).
     assert "sum" in cpp.TENSOR_CORE_OPS  # the reused, existing op
-    for absent in (
-        "conv2d_bias_backward", "conv2d_weight_backward",
-        "conv2d_input_backward", "conv2d_backward",
-    ):
+    for absent in ("conv2d_bias_backward", "conv2d_backward"):
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp._CHECKED_KERNELS
-    # The differentiable conv2d op and the module stay unsupported.
-    assert "conv2d" not in cpp.AUTOGRAD_OPS
-    assert "conv2d" in cpp.UNSUPPORTED
+    # No bias-gradient C ABI symbol is registered.
+    assert not any("bias" in name for name in cpp._CHECKED_KERNELS)
+    # The NativeConv2d module remains unsupported (the op itself is now D6).
+    assert "NativeConv2d" in cpp.UNSUPPORTED
     assert "NativeConv2d" not in cpp.NATIVE_MODULES
