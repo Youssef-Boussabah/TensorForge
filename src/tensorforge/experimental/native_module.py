@@ -89,9 +89,21 @@ Traversal (the future state_dict/optimizer contract):
   Every module starts with ``training = True``; a later mode-dependent
   layer may read the flag — none exists yet.
 - ``forward`` raises ``NotImplementedError``; calling the module
-  delegates to ``forward``. No hooks, buffers, file serialization,
-  checkpoints, optimizer state, layers, losses, optimizers, or
-  training yet.
+  delegates to ``forward``.
+
+Buffers (v3.15): a module may hold non-``Parameter`` persistent state
+through ``register_buffer(name, tensor, persistent=True)`` — the native
+analog of ``tensorforge.nn`` buffers, for the future native BatchNorm
+running statistics, RNG state, and similar. Buffers are ordinary owning
+``NativeTensor`` objects discovered by ``buffers()`` / ``named_buffers()``
+on the same identity-deduplicated, cycle-safe traversal as parameters,
+but they are never parameters (absent from ``parameters()``, invisible to
+optimizers, gradient-free). Persistent buffers join ``state_dict()`` /
+``load_state_dict()`` (and native checkpoints) under their canonical
+dotted names, in the same atomic transaction as the parameters and with
+their object identity preserved across an in-place restore; non-persistent
+buffers are traversed but never serialized. This milestone adds the buffer
+*infrastructure* only — no BatchNorm, Dropout, or RNG algorithm.
 
 Lifetime: registries store Python references only. Removing, replacing,
 or deleting a registration never invalidates the object — external
@@ -118,10 +130,16 @@ LoadStateDictResult = namedtuple(
     "LoadStateDictResult", ("missing_keys", "unexpected_keys")
 )
 
+# One registered buffer: the NativeTensor plus whether it is persistent
+# (serialized in state_dict/checkpoints) or transient (traversed but
+# never saved). Stored by the buffer registry (an insertion-ordered
+# ``name -> _BufferEntry`` dict) on each module.
+_BufferEntry = namedtuple("_BufferEntry", ("tensor", "persistent"))
+
 # Implementation slots of NativeModule itself. They can never be
-# parameter or child-module names — a parameter registered as
+# parameter, buffer, or child-module names — a parameter registered as
 # "training" would otherwise shadow the mode flag train() writes.
-_RESERVED_NAMES = frozenset({"_parameters", "_modules", "training"})
+_RESERVED_NAMES = frozenset({"_parameters", "_modules", "_buffers", "training"})
 
 
 class NativeModule:
@@ -140,6 +158,7 @@ class NativeModule:
         # them to exist.
         object.__setattr__(self, "_parameters", NativeParameterRegistry())
         object.__setattr__(self, "_modules", {})  # name -> NativeModule, insertion-ordered
+        object.__setattr__(self, "_buffers", {})  # name -> _BufferEntry, insertion-ordered
         object.__setattr__(self, "training", True)
 
     # -- registration -------------------------------------------------
@@ -171,6 +190,7 @@ class NativeModule:
             )
         parameters.register(name, parameter)  # validates name and type
         modules.pop(name, None)
+        self._buffers.pop(name, None)
         self.__dict__.pop(name, None)
 
     def _register_module_slot(self, name, module):
@@ -186,6 +206,7 @@ class NativeModule:
         _validate_registration_name(name, "a module name")
         if name in parameters:
             parameters.register(name, None)
+        self._buffers.pop(name, None)
         modules[name] = module  # replacement keeps the slot's position
         self.__dict__.pop(name, None)
 
@@ -210,15 +231,21 @@ class NativeModule:
             modules = d.get("_modules")
             if modules is not None:
                 modules.pop(name, None)
+            buffers = d.get("_buffers")
+            if buffers is not None:
+                buffers.pop(name, None)
             object.__setattr__(self, name, value)
 
     def __getattr__(self, name):
-        # Reached only when normal lookup fails: registered parameters
-        # and children live in the registries, not in __dict__.
+        # Reached only when normal lookup fails: registered parameters,
+        # buffers, and children live in the registries, not in __dict__.
         d = self.__dict__
         parameters = d.get("_parameters")
         if parameters is not None and name in parameters:
             return parameters.get(name)
+        buffers = d.get("_buffers")
+        if buffers is not None and name in buffers:
+            return buffers[name].tensor
         modules = d.get("_modules")
         if modules is not None and name in modules:
             return modules[name]
@@ -233,6 +260,10 @@ class NativeModule:
         parameters = self.__dict__.get("_parameters")
         if parameters is not None and name in parameters:
             parameters.register(name, None)
+            return
+        buffers = self.__dict__.get("_buffers")
+        if buffers is not None and name in buffers:
+            del buffers[name]
             return
         modules = self.__dict__.get("_modules")
         if modules is not None and name in modules:
@@ -282,6 +313,86 @@ class NativeModule:
                 f"as a child module, got {type(module).__name__}"
             )
         self._register_module_slot(name, module)
+
+    def register_buffer(self, name, tensor, persistent=True):
+        """Register ``tensor`` as a **buffer** under ``name`` — the native
+        analog of ``tensorforge.nn`` buffers (BatchNorm running stats, RNG
+        state, and other non-``Parameter`` persistent state a future
+        layer will hold).
+
+        A buffer is an ordinary owning ``NativeTensor`` that is discovered
+        by ``buffers()`` / ``named_buffers()`` and, when ``persistent``,
+        saved and restored by ``state_dict()`` / ``load_state_dict()`` and
+        native checkpoints — but it is **never** a parameter: it does not
+        appear in ``parameters()``, an optimizer never sees it, and no
+        gradient flows through it. Unlike ``NativeParameter`` /
+        ``NativeModule`` (which register on plain attribute assignment),
+        buffers register only through this explicit call — a plain
+        ``NativeTensor`` assigned as an attribute stays an ordinary
+        attribute, exactly as before.
+
+        ``tensor`` must be an **open, owning, gradient-free**
+        ``NativeTensor`` (``requires_grad=False``); the exact object is
+        stored (identity preserved), never a copy, so an in-place
+        ``load_state_dict`` restore keeps the same object. ``persistent``
+        must be a real bool. ``tensor=None`` unregisters the buffer
+        (``KeyError`` if nothing is registered under ``name``), leaving the
+        attribute readable as ``None`` — mirroring ``register_parameter``.
+        Registration validates everything first (an invalid call mutates
+        nothing), then evicts ``name`` from the parameter and child-module
+        registries so a name stays one category. The reserved internal
+        names are rejected, as for parameters and modules."""
+        parameters, modules = self._registries()
+        if name in _RESERVED_NAMES:
+            raise ValueError(
+                f"{name!r} is reserved for NativeModule internals and "
+                f"cannot be a buffer name"
+            )
+        _validate_registration_name(name, "a buffer name")
+        if tensor is None:
+            if name not in self._buffers:
+                raise KeyError(
+                    f"cannot unregister {name!r}: no buffer is registered "
+                    f"under that name"
+                )
+            del self._buffers[name]
+            object.__setattr__(self, name, None)
+            return
+        if not isinstance(persistent, bool):
+            raise TypeError(
+                f"persistent must be a bool, got {type(persistent).__name__}"
+            )
+        # A NativeParameter is a NativeTensor subclass, but it belongs in
+        # the parameter registry — a buffer is deliberately non-trainable.
+        if isinstance(tensor, NativeParameter) or not isinstance(
+            tensor, NativeTensor
+        ):
+            raise TypeError(
+                f"a buffer must be a plain NativeTensor (not a "
+                f"NativeParameter), got {type(tensor).__name__}"
+            )
+        if tensor.closed:
+            raise RuntimeError(
+                f"cannot register a closed NativeTensor as buffer {name!r}"
+            )
+        if not tensor.owns_core:
+            raise ValueError(
+                f"a buffer must own its storage (got a borrowing view for "
+                f"{name!r}); pass an owning NativeTensor, e.g. via "
+                f"contiguous_copy()"
+            )
+        if tensor.requires_grad:
+            raise ValueError(
+                f"a buffer must not require grad (buffers are "
+                f"non-trainable), got requires_grad=True for {name!r}"
+            )
+        # Validation passed — commit the registration and evict the name
+        # from the other categories so it stays exactly one category.
+        if name in parameters:
+            parameters.register(name, None)
+        modules.pop(name, None)
+        self.__dict__.pop(name, None)
+        self._buffers[name] = _BufferEntry(tensor, persistent)
 
     # -- traversal ------------------------------------------------------
     #
@@ -339,6 +450,65 @@ class NativeModule:
         a future optimizer iterates. Returns a list."""
         return [parameter for _, parameter in self.named_parameters(recurse=recurse)]
 
+    # -- buffers (v3.15) ------------------------------------------------
+    #
+    # Buffers follow the same identity-deduplicated, cycle-safe traversal
+    # as parameters (they ride the same named_modules() walk), so a
+    # shared buffer is yielded once under its first-discovered dotted
+    # name and reference cycles terminate. Persistence is orthogonal to
+    # discovery: named_buffers() yields every buffer; only persistent
+    # buffers enter state_dict()/checkpoints.
+
+    def _named_buffer_entries(self, prefix="", recurse=True):
+        """Yield ``(dotted_name, tensor, persistent)`` for each unique
+        buffer once, in module-then-registration order — the internal
+        walk both ``named_buffers`` and ``state_dict`` build on."""
+        if recurse:
+            module_items = self.named_modules(prefix)
+        else:
+            module_items = ((prefix, self),)
+        seen = set()
+        for module_prefix, module in module_items:
+            for name, entry in module._buffers.items():
+                if id(entry.tensor) in seen:
+                    continue
+                seen.add(id(entry.tensor))
+                full_name = f"{module_prefix}.{name}" if module_prefix else name
+                yield full_name, entry.tensor, entry.persistent
+
+    def named_buffers(self, prefix="", recurse=True):
+        """Yield ``(dotted_name, tensor)`` for each unique buffer once —
+        persistent and non-persistent alike — under its first-discovered
+        canonical name, deduplicated by identity and cycle-safe.
+        ``recurse=False`` restricts to this module's direct buffers."""
+        for name, tensor, _ in self._named_buffer_entries(prefix, recurse):
+            yield name, tensor
+
+    def buffers(self, recurse=True):
+        """Each unique buffer tensor exactly once, in the
+        named_buffers() order. Returns a list. Buffers never appear in
+        ``parameters()``."""
+        return [tensor for _, tensor in self.named_buffers(recurse=recurse)]
+
+    def _persistent_named_buffers(self):
+        """Ordered ``(canonical_name, tensor)`` for the persistent
+        buffers only — the ones state_dict()/checkpoints serialize."""
+        return [
+            (name, tensor)
+            for name, tensor, persistent in self._named_buffer_entries()
+            if persistent
+        ]
+
+    def _state_named_tensors(self):
+        """Ordered ``(canonical_name, live_tensor)`` for everything
+        ``state_dict()`` snapshots: every unique parameter first, then
+        every unique **persistent** buffer. Parameters and persistent
+        buffers never share a canonical name (a name is one category
+        within its owning module), so the merged key space is unique.
+        The single source of truth the native checkpoint validates
+        against."""
+        return list(self.named_parameters()) + self._persistent_named_buffers()
+
     # -- state dictionary (v3.3: in-memory, parameters only) -----------
     #
     # The state dictionary is the deterministic in-memory snapshot/load
@@ -364,21 +534,26 @@ class NativeModule:
         ``requires_grad``, training flags, and registrations are
         neither included nor touched.
 
-        A closed registered parameter raises RuntimeError naming the
-        key; snapshots already built inside the failed call are closed
-        before the error propagates, so a failure never leaks native
-        memory or returns a partial mapping. Snapshots returned by
-        *earlier* calls are unaffected."""
+        Persistent buffers (v3.15) are snapshotted the same way and
+        appended after the parameters under their canonical
+        ``named_buffers()`` names; non-persistent buffers are skipped.
+        A model with no buffers produces exactly the parameter-only
+        mapping it always did, so existing consumers are unaffected.
+
+        A closed registered parameter or persistent buffer raises
+        RuntimeError naming the key; snapshots already built inside the
+        failed call are closed before the error propagates, so a failure
+        never leaks native memory or returns a partial mapping. Snapshots
+        returned by *earlier* calls are unaffected."""
         state = {}
         try:
-            for name, parameter in self.named_parameters():
-                if parameter.closed:
+            for name, tensor in self._state_named_tensors():
+                if tensor.closed:
                     raise RuntimeError(
-                        f"cannot snapshot parameter {name!r}: it has been "
-                        f"closed"
+                        f"cannot snapshot {name!r}: it has been closed"
                     )
                 state[name] = NativeTensor._from_core(
-                    _native_copy(parameter._require_open())
+                    _native_copy(tensor._require_open())
                 )
         except BaseException:
             for snapshot in state.values():
@@ -436,8 +611,17 @@ class NativeModule:
         updated, closes an input tensor, or invalidates existing
         snapshots.
 
+        Persistent buffers (v3.15) participate on equal footing: their
+        canonical ``named_buffers()`` keys join the expected set, their
+        values are validated, staged, and committed in the **same**
+        atomic transaction as the parameters (one rollback covers both),
+        and an in-place restore preserves each buffer object's identity.
+        Buffers carry no value version, so loading a buffer moves no
+        version and makes no graph stale. Non-persistent buffers are
+        neither expected nor loaded.
+
         Under ``strict=False`` matching keys load (with the same full
-        validation and atomicity), missing parameters keep their values,
+        validation and atomicity), missing entries keep their values,
         and unexpected keys are ignored; both lists are returned in
         deterministic order (missing: canonical order; unexpected: the
         input mapping's iteration order)."""
@@ -449,7 +633,7 @@ class NativeModule:
             raise TypeError(
                 f"state_dict must be a mapping, got {type(state_dict).__name__}"
             )
-        expected = list(self.named_parameters())
+        expected = self._state_named_tensors()
         provided_keys = list(state_dict.keys())
         for key in provided_keys:
             if not isinstance(key, str):
@@ -471,12 +655,14 @@ class NativeModule:
             )
 
         # Preflight every matching value completely before staging.
+        # ``destination`` is a NativeParameter or a persistent buffer
+        # (a plain NativeTensor); both expose the metadata checked here.
         matching = [
-            (name, parameter, provided[name])
-            for name, parameter in expected
+            (name, destination, provided[name])
+            for name, destination in expected
             if name in provided
         ]
-        for name, parameter, value in matching:
+        for name, destination, value in matching:
             if not isinstance(value, NativeTensor):
                 raise TypeError(
                     f"state_dict value for {name!r} must be a NativeTensor, "
@@ -486,26 +672,26 @@ class NativeModule:
                 raise RuntimeError(
                     f"state_dict value for {name!r} has been closed"
                 )
-            if parameter.closed:
+            if destination.closed:
                 raise RuntimeError(
-                    f"cannot load into parameter {name!r}: it has been closed"
+                    f"cannot load into {name!r}: it has been closed"
                 )
-            if value.shape != parameter.shape:
+            if value.shape != destination.shape:
                 raise ValueError(
                     f"shape mismatch for {name!r}: the module expects "
-                    f"{parameter.shape}, the state_dict value has "
+                    f"{destination.shape}, the state_dict value has "
                     f"{value.shape}"
                 )
-            if value.dtype != parameter.dtype:
+            if value.dtype != destination.dtype:
                 raise ValueError(
                     f"dtype mismatch for {name!r}: the module expects "
-                    f"{parameter.dtype}, the state_dict value has "
+                    f"{destination.dtype}, the state_dict value has "
                     f"{value.dtype}"
                 )
-            if value.device != parameter.device:
+            if value.device != destination.device:
                 raise ValueError(
                     f"device mismatch for {name!r}: the module expects "
-                    f"{parameter.device}, the state_dict value has "
+                    f"{destination.device}, the state_dict value has "
                     f"{value.device}"
                 )
 
@@ -515,28 +701,35 @@ class NativeModule:
         # failure only has staged copies to release.
         staged = []
         try:
-            for name, parameter, value in matching:
+            for name, destination, value in matching:
                 staged.append(
-                    (parameter, _native_copy(value._require_open()))
+                    (destination, _native_copy(value._require_open()))
                 )
         except BaseException:
             for _, new_core in staged:
                 new_core.close()
             raise
 
-        # Commit: swap every parameter's core for its staged copy.
-        # Each swap is a pure reference assignment, but the rollback
-        # guard still restores the original cores if anything (even a
-        # KeyboardInterrupt between swaps) interrupts — atomicity never
-        # relies on "the commit probably will not fail".
+        # Commit: swap every destination's core for its staged copy.
+        # A NativeParameter swaps through its validated _adopt_value_core;
+        # a buffer (plain NativeTensor) swaps its owning _core directly.
+        # Each swap is a pure reference assignment, but the rollback guard
+        # still restores every original core if anything (even a
+        # KeyboardInterrupt between swaps) interrupts — parameters and
+        # buffers roll back together, so a failed load never leaves the
+        # model partially updated.
         adopted = []
         try:
-            for parameter, new_core in staged:
-                old_core = parameter._adopt_value_core(new_core)
-                adopted.append((parameter, old_core))
+            for destination, new_core in staged:
+                if isinstance(destination, NativeParameter):
+                    old_core = destination._adopt_value_core(new_core)
+                else:
+                    old_core = destination._require_open()
+                    destination._core = new_core
+                adopted.append((destination, old_core))
         except BaseException:
-            for parameter, old_core in adopted:
-                parameter._core = old_core
+            for destination, old_core in adopted:
+                destination._core = old_core
             for _, new_core in staged:
                 new_core.close()
             raise
@@ -544,11 +737,13 @@ class NativeModule:
         # parameter (v3.7) — pure int increments that cannot fail, done
         # before the closes so versions and released storage can never
         # disagree — then release each replaced core exactly once.
-        # Versions move only here, after every swap has succeeded, so
-        # the rollback above never has anything to decrement: a failed
-        # load leaves every version exactly as it was.
-        for parameter, _ in adopted:
-            parameter._version += 1
+        # Buffers carry no version, so they are skipped here. Versions
+        # move only at this point, after every swap has succeeded, so the
+        # rollback above never has anything to decrement: a failed load
+        # leaves every version exactly as it was.
+        for destination, _ in adopted:
+            if isinstance(destination, NativeParameter):
+                destination._version += 1
         for _, old_core in adopted:
             old_core.close()
         return LoadStateDictResult(missing, unexpected)

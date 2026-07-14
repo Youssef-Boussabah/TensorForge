@@ -84,6 +84,18 @@ registration calls needed. Modules can also declare non-trainable
 *buffers* (like BatchNorm's running statistics) that travel with
 `state_dict()` but are never optimized.
 
+The recursive walks are **identity-aware and cycle-safe**: a shared or
+tied Parameter/buffer is yielded once (first-encountered name wins), and
+a module graph with shared children or a reference cycle terminates
+instead of recursing forever. `train(mode)` requires a real `bool` (so an
+accidental `model.train("eval")` raises rather than silently staying in
+training mode), and `eval()` is `train(False)`. `load_state_dict()` is
+**atomic — validate then commit**: every key, value type, and shape is
+checked and every replacement prepared before any live Parameter or
+buffer is mutated, so a failure (e.g. a later shape mismatch) leaves the
+whole model unchanged with Parameter identities intact, and the commit is
+rollback-guarded.
+
 **Layers** (Linear, activations, Dropout, BatchNorm1d, LayerNorm,
 Conv2d, Flatten) are small Module subclasses. The two normalizations
 differ in what they average over: BatchNorm1d normalizes each feature

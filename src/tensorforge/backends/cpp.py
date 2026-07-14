@@ -1,17 +1,26 @@
 """Experimental C++ backend.
 
-A ctypes wrapper around tiny compiled kernels (see cpp/ at the repo
-root). This is a proof of concept that Python TensorForge can call
-compiled code — it is NOT wired into Tensor or autograd, and the
-normal framework never imports it.
+A ctypes wrapper around the compiled native kernels (see cpp/ at the
+repo root). It is NOT wired into the **stable** ``tensorforge.Tensor``
+or its autograd, and ``import tensorforge`` never imports it — the
+native line is a separate system. On top of these kernels the
+experimental package builds its own strided runtime
+(``NativeTensorCore``), a Python-managed native autograd
+(``NativeTensor``), and a native training stack (modules, a loss,
+optimizers, checkpoints); see ``tensorforge.experimental``.
 
-All kernels are float64-only. Binary operations require identical
-shapes; broadcasting is deliberately not supported.
+All kernels are float64/CPU only. The raw buffer kernels exposed here
+(``elementwise_add`` … ``matmul_tiled``) require identical shapes, but
+the ``NativeTensorCore`` binary ops **do** support NumPy-style
+broadcasting (see docs/native_broadcasting_design.md).
 
-Importing this module always succeeds. The compiled library is loaded
-lazily: check ``is_available()`` to see whether it can be used, and
-call ``backend_info()`` for a summary. Calling a math kernel while the
-backend is unbuilt raises ImportError with build instructions.
+The library is loaded lazily and the module always imports: check
+``is_available()`` for readiness and ``backend_info()`` for an accurate
+capability summary (raw kernels, tensor-core ops, autograd ops, native
+modules/loss/optimizers, and state/checkpoint support). Calling a math
+kernel while the backend is unbuilt raises ImportError with build
+instructions. Native failures surface as ordinary Python exceptions via
+the error contract (docs/native_abi_error_contract.md).
 """
 
 import ctypes
@@ -23,8 +32,19 @@ import numpy as np
 _SUFFIX = {"Windows": ".dll", "Darwin": ".dylib"}.get(platform.system(), ".so")
 _LIBRARY_PATH = Path(__file__).with_name("_tensorforge_cpp" + _SUFFIX)
 
-# The supported kernels, in the order they were added.
-KERNELS = (
+# ---------------------------------------------------------------------------
+# Backend capability inventory — the single source of truth backend_info()
+# reports. Grouped by layer so introspection can distinguish raw C++
+# kernels from the higher-level capabilities composed on top of them. The
+# guardrail test (tests/test_cpp_backend_info.py) cross-checks every name
+# here against the actual objects, so these tuples cannot silently drift
+# out of date.
+# ---------------------------------------------------------------------------
+
+# Raw C++ kernels callable directly over NumPy buffers — the reference /
+# benchmark set this module exposes as elementwise_add(...) etc. Require
+# identical shapes (no broadcasting at this raw level).
+RAW_KERNELS = (
     "elementwise_add",
     "elementwise_subtract",
     "elementwise_multiply",
@@ -33,6 +53,8 @@ KERNELS = (
     "matmul",
     "matmul_tiled",
 )
+# Backwards-compatible alias (list_kernels / backend_info["kernels"]).
+KERNELS = RAW_KERNELS
 
 _BINARY_KERNELS = (
     "tf_elementwise_add",
@@ -41,9 +63,53 @@ _BINARY_KERNELS = (
     "tf_elementwise_divide",
 )
 
-# Operations available as NativeTensorCore methods — distinct from
-# KERNELS, which lists the raw NumPy-buffer kernels.
+# The historical, deliberately FROZEN tensor-core registry: exactly the
+# five originally advertised compute ops. Kept frozen by contract (later
+# core ops are not appended — the sum/mean/sqrt precedent), so existing
+# consumers that pin this tuple stay stable. The complete, accurate op
+# inventory lives in TENSOR_CORE_OPS below.
 TENSOR_CORE_KERNELS = ("relu", "add", "subtract", "multiply", "matmul")
+
+# The COMPLETE set of NativeTensorCore operations (the strided native
+# runtime) — compute ops (each backed by C ABI kernels; binary ops
+# broadcast) plus the metadata-only view ops. This is the accurate,
+# non-frozen inventory backend_info() reports as "tensor_core_ops".
+TENSOR_CORE_OPS = (
+    "relu", "sqrt", "reciprocal",
+    "add", "subtract", "multiply", "matmul",
+    "sum", "mean",
+    "reshape", "transpose", "T", "narrow", "contiguous_copy",
+)
+
+# Operations the NativeTensor autograd layer (Phase B) differentiates.
+AUTOGRAD_OPS = (
+    "add", "subtract", "multiply", "relu",
+    "sum", "mean", "matmul",
+    "reshape", "transpose", "T", "narrow", "contiguous_copy",
+    "sqrt", "reciprocal",
+)
+
+# The native training stack composed on the autograd layer (Phase C),
+# reported by name only so this module stays decoupled from the
+# experimental package (the guardrail test verifies each name imports).
+NATIVE_MODULES = ("NativeModule", "NativeLinear", "NativeReLU", "NativeSequential")
+NATIVE_LOSSES = ("NativeMSELoss",)
+NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
+STATE_SUPPORT = (
+    "state_dict",
+    "load_state_dict",
+    "save_native_checkpoint",
+    "load_native_checkpoint",
+)
+
+# Explicitly NOT implemented (Phase D and beyond) — listed so
+# introspection is honest about the boundary; none of these exist yet.
+UNSUPPORTED = (
+    "conv2d", "maxpool2d", "flatten",
+    "exp", "log", "softmax", "cross_entropy",
+    "batchnorm", "layernorm", "dropout",
+    "float32", "cuda", "amp",
+)
 
 # Supported native dtype/device metadata (v1.21). The native kernels are
 # float64 CPU only, so these are the single legal values today. The tags
@@ -220,7 +286,87 @@ def _load_library():
         ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_core_narrow_backward.restype = None
+
+    _configure_error_contract(library)
     return library
+
+
+# ---------------------------------------------------------------------------
+# Native error contract (see docs/native_abi_error_contract.md)
+#
+# No C++ exception may cross the extern "C" boundary. Each fallible
+# native function clears a thread-local error slot on entry and, on any
+# exception, records a status code plus message there and returns a
+# benign value instead of unwinding. A ctypes ``errcheck`` hook on every
+# such function reads the slot after the call and raises the matching
+# Python exception, so a native failure surfaces as a normal exception at
+# the call site with useful context — never a crash or a silently wrong
+# result.
+# ---------------------------------------------------------------------------
+
+# TfStatus codes (kept in sync with cpp/include/tf_internal.h) mapped to
+# the Python exception each becomes.
+TF_OK = 0
+_STATUS_EXCEPTIONS = {
+    1: MemoryError,   # TF_ERROR_ALLOC
+    2: ValueError,    # TF_ERROR_INVALID
+    3: RuntimeError,  # TF_ERROR_RUNTIME
+}
+
+# The exported functions that participate in the error contract — every
+# function that clears-on-entry and may set the slot. The unguarded
+# storage/legacy kernels (destroy, size, fill, scale, copy, the raw
+# elementwise/matmul kernels) never allocate, so they neither clear nor
+# set the slot and must NOT carry the hook, or a stale code from an
+# earlier call could be misread as their own failure.
+_CHECKED_KERNELS = (
+    "tf_storage_create",
+    "tf_storage_materialize",
+    "tf_core_relu", "tf_core_relu_contiguous",
+    "tf_core_sqrt", "tf_core_sqrt_contiguous",
+    "tf_core_reciprocal", "tf_core_reciprocal_contiguous",
+    "tf_core_add", "tf_core_add_contiguous",
+    "tf_core_subtract", "tf_core_subtract_contiguous",
+    "tf_core_multiply", "tf_core_multiply_contiguous",
+    "tf_core_relu_backward",
+    "tf_core_matmul",
+    "tf_core_sum",
+    "tf_core_narrow_backward",
+)
+
+
+def _configure_error_contract(library):
+    """Declare the error-introspection ABI and attach the errcheck hook."""
+    library.tf_last_error_code.argtypes = []
+    library.tf_last_error_code.restype = ctypes.c_int
+    library.tf_last_error_message.argtypes = []
+    library.tf_last_error_message.restype = ctypes.c_char_p
+    library.tf_clear_error.argtypes = []
+    library.tf_clear_error.restype = None
+    library.tf_test_arm_alloc_failure.argtypes = [ctypes.c_int64]
+    library.tf_test_arm_alloc_failure.restype = None
+    library.tf_fault_injection_available.argtypes = []
+    library.tf_fault_injection_available.restype = ctypes.c_int
+
+    def _errcheck(result, func, arguments):
+        # Runs after every checked native call. The callee cleared the
+        # slot on entry, so a nonzero code here is genuinely this call's
+        # failure; translate it into the right Python exception with the
+        # native message for context, then clear the slot.
+        code = library.tf_last_error_code()
+        if code != TF_OK:
+            raw = library.tf_last_error_message()
+            message = raw.decode("utf-8", "replace") if raw else ""
+            library.tf_clear_error()
+            exception = _STATUS_EXCEPTIONS.get(code, RuntimeError)
+            raise exception(
+                f"native backend {func.__name__} failed"
+                + (f": {message}" if message else f" (status {code})")
+            )
+        return result
+
+    for name in _CHECKED_KERNELS:
+        getattr(library, name).errcheck = _errcheck
 
 
 def _require_library():
@@ -244,28 +390,75 @@ def is_available():
     return True
 
 
+def fault_injection_available():
+    """True if the compiled backend includes the test-only allocation
+    fault-injection hook (it does for any build from this repo). Never
+    raises; returns False when the backend is not built."""
+    try:
+        library = _require_library()
+    except ImportError:
+        return False
+    return bool(library.tf_fault_injection_available())
+
+
+def _arm_alloc_failure(nth=1):
+    """Test-only: arm the calling thread so the ``nth`` subsequent native
+    allocation attempt fails with a simulated ``std::bad_alloc`` (``nth=1``
+    targets the very next allocation; ``nth <= 0`` disarms). Deterministic
+    and thread-local. The native failure surfaces through the normal error
+    contract as ``MemoryError``. Used by the ABI failure tests; inert in
+    normal use (see docs/native_abi_error_contract.md)."""
+    _require_library().tf_test_arm_alloc_failure(int(nth))
+
+
 def list_kernels():
     """The experimental kernels this backend provides, in stable order."""
     return KERNELS
 
 
 def backend_info():
-    """A small metadata dictionary describing the experimental backend."""
+    """An accurate capability summary of the experimental backend.
+
+    Reports each layer separately so a caller can tell raw C++ kernels
+    from the higher-level capabilities composed on them: the raw
+    NumPy-buffer kernels, the ``NativeTensorCore`` runtime ops (which
+    broadcast), the ``NativeTensor`` autograd ops, and the Phase-C native
+    training stack (modules, loss, optimizers, and state/checkpoint
+    support). ``stable_framework_integration`` stays ``False`` — the
+    native line is deliberately separate from ``tensorforge.Tensor`` — but
+    ``native_autograd`` is ``True`` and the optimizer/state lists are
+    populated. Every list is sourced from the module-level inventory
+    tuples, so this never drifts from the code. Safe to call whether or
+    not the library is built."""
     return {
         "name": "cpp",
         "experimental": True,
         "available": is_available(),
-        "kernels": KERNELS,
-        "storage_object": "NativeStorage",
-        "tensor_view": "NativeTensorView",
-        "tensor_core": "NativeTensorCore",
-        "tensor_core_kernels": TENSOR_CORE_KERNELS,
+        # dtype / device metadata (v1.21): float64/cpu only.
         "dtype": "float64",
         "device": "cpu",
         "supported_dtypes": SUPPORTED_DTYPES,
         "supported_devices": SUPPORTED_DEVICES,
-        "tensor_integration": False,
-        "autograd_integration": False,
+        # Layered capabilities (single source of truth: the tuples above).
+        "raw_kernels": RAW_KERNELS,
+        "kernels": RAW_KERNELS,  # backwards-compatible alias
+        "storage_object": "NativeStorage",
+        "tensor_view": "NativeTensorView",
+        "tensor_core": "NativeTensorCore",
+        "tensor_core_kernels": TENSOR_CORE_KERNELS,  # frozen historical registry
+        "tensor_core_ops": TENSOR_CORE_OPS,          # complete, accurate inventory
+        "tensor_object": "NativeTensor",
+        "autograd_ops": AUTOGRAD_OPS,
+        "native_modules": NATIVE_MODULES,
+        "native_losses": NATIVE_LOSSES,
+        "native_optimizers": NATIVE_OPTIMIZERS,
+        "state_support": STATE_SUPPORT,
+        "unsupported": UNSUPPORTED,
+        # Accurate integration flags (replace the old ambiguous
+        # tensor_integration / autograd_integration pair).
+        "broadcasting": True,          # NativeTensorCore binary ops broadcast
+        "native_autograd": True,       # NativeTensor has reverse-mode autograd
+        "stable_framework_integration": False,  # never wired into tensorforge.Tensor
         "build_instructions": build_instructions(),
     }
 

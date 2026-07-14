@@ -371,7 +371,7 @@ def _metadata(cases, modes, warmup, iterations, repeats, smoke):
             "name": info["name"],
             "tensor_core": info["tensor_core"],
             "available": info["available"],
-            "autograd_integration": info["autograd_integration"],
+            "native_autograd": info["native_autograd"],
         },
         "dtype": "float64",
         "device": "cpu",

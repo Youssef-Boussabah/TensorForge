@@ -6,6 +6,8 @@ readme = "README.md"
 authors = [
     { name = "Youssef Boussabah", email = "youssefboussabah2007@gmail.com" }
 ]
+license = "MIT"
+license-files = ["LICENSE"]
 requires-python = ">=3.13"
 dependencies = [
     "numpy>=2.5.1",

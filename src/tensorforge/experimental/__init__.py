@@ -10,7 +10,12 @@ explicitly:
 (NativeTensorCore) with an opt-in, Python-managed reverse-mode autograd
 graph (Phase B, complete as of Advanced C++ v2.6). It is **not**
 tensorforge.Tensor: the two autograd engines never mix, no conversion is
-implicit, and it has no optimizer/training integration and no CUDA.
+implicit, and it shares no state with the stable framework. A full native
+training stack — parameters, modules, layers, a loss, optimizers, and
+pickle-free checkpoints — is built on it and described below; only CUDA
+and the Phase-D numerical layers (native Conv2d/MaxPool2d/Flatten, new
+activations, softmax/classification losses, BatchNorm/LayerNorm/Dropout)
+remain future work.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf

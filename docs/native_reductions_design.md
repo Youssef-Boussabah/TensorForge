@@ -79,7 +79,7 @@ smaller. There is no `sum`, no `mean`, no way to collapse an axis.
 `NativeStorage` can be `fill`ed and copied, but nothing accumulates
 across logical elements. Adding that is this design's subject.
 
-(The raw-buffer kernels in `cpp/kernels.cpp` also have no reduction; the
+(The raw-buffer kernels in `cpp/src/` also have no reduction; the
 odometer kernels only ever *materialize* or *combine* element-for-
 element. Reductions are genuinely new traversal behavior, not a re-skin
 of an existing kernel.)

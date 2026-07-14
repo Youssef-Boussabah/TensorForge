@@ -143,18 +143,18 @@ def _validated_path(path, where):
 
 
 def _validate_model(model, where):
-    """``model`` must be a NativeModule whose parameters are all open.
-    Stable framework modules are rejected by the type check — nothing
-    is converted."""
+    """``model`` must be a NativeModule whose parameters and persistent
+    buffers are all open. Stable framework modules are rejected by the
+    type check — nothing is converted."""
     if not isinstance(model, NativeModule):
         raise TypeError(
             f"{where}: model must be a NativeModule, got "
             f"{type(model).__name__}"
         )
-    for name, parameter in model.named_parameters():
-        if parameter.closed:
+    for name, tensor in model._state_named_tensors():
+        if tensor.closed:
             raise RuntimeError(
-                f"{where}: model parameter {name!r} has been closed"
+                f"{where}: model state entry {name!r} has been closed"
             )
 
 
@@ -467,7 +467,11 @@ def _validate_model_section(section, model, where):
             "manifest['model']['entries'] must map exactly the keys in "
             "manifest['model']['keys'], in the same order",
         )
-    live = dict(model.named_parameters())
+    # The live state key space is parameters *and* persistent buffers
+    # (v3.15): exactly what NativeModule.state_dict() snapshots. A
+    # bufferless model yields only its parameters, so a pre-buffer
+    # (Phase-C) checkpoint still validates unchanged.
+    live = dict(model._state_named_tensors())
     missing = sorted(set(live) - set(keys))
     unexpected = sorted(set(keys) - set(live))
     if missing or unexpected:
@@ -499,24 +503,24 @@ def _validate_model_section(section, model, where):
                 f"{entry_path}['shape'] must be a list of non-negative "
                 f"ints, got {shape!r}",
             )
-        parameter = live[key]
-        if tuple(shape) != parameter.shape:
+        destination = live[key]
+        if tuple(shape) != destination.shape:
             _checkpoint_error(
                 where,
                 f"{entry_path}['shape'] is {tuple(shape)}, the model "
-                f"parameter is {parameter.shape}",
+                f"state entry is {destination.shape}",
             )
-        if entry["dtype"] != parameter.dtype:
+        if entry["dtype"] != destination.dtype:
             _checkpoint_error(
                 where,
                 f"{entry_path}['dtype'] is {entry['dtype']!r}, the "
-                f"model parameter is {parameter.dtype!r}",
+                f"model state entry is {destination.dtype!r}",
             )
-        if entry["device"] != parameter.device:
+        if entry["device"] != destination.device:
             _checkpoint_error(
                 where,
                 f"{entry_path}['device'] is {entry['device']!r}, the "
-                f"model parameter is {parameter.device!r}",
+                f"model state entry is {destination.device!r}",
             )
     return [(key, entries[key]) for key in keys]
 
