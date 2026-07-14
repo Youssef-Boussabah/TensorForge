@@ -576,7 +576,25 @@ The Python line is done; what remains is expansion on its own terms:
     stale-graph distinction; documentation completion and support-
     matrix finalization; and build/CI/hygiene verification — no new
     numerical behavior.
-  - **Then beyond (not started):** the native CNN stack, the CUDA
+  - **Phase D — native CNN stack (design contract complete;
+    implementation not started).** The **D0 architecture contract is
+    written** —
+    [native_cnn_design.md](native_cnn_design.md) locks the layouts
+    (NCHW activations, OIHW convolution weights, cross-correlation), the
+    argument and output-shape contracts, the non-contiguous-input policy
+    (copy-then-compute at the wrapper), the fused-primitive/autograd
+    ownership split, the max-pool winner-index representation, the C ABI
+    families and C++/Python source organization, the full test and
+    benchmark strategy, and the **D0–D12 milestone sequence**
+    (`NativeFlatten`; native convolution forward and its input/weight/
+    bias gradients; the convolution module; native max-pooling forward,
+    backward, and module; and a deterministic native CNN
+    training/checkpoint-resume proof). **No numerical CNN code exists
+    yet** — the native convolution and pooling layers are still marked
+    unsupported in the [support matrix](native_support_matrix.md), and
+    the backend advertises no CNN capability. This is the design that
+    guides the remaining Phase-D milestones.
+  - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,
     distributed / DDP, and a final benchmark / profiling / docs polish

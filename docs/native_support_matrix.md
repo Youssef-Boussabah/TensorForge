@@ -21,7 +21,10 @@ Linear/ReLU/Sequential, MSE loss, `sqrt`/`reciprocal` optimizer
 primitives, SGD, Adam, optimizer state snapshots, checkpoint files,
 deterministic training and in-memory/file resume, and the failure/
 lifetime/ownership guardrails). The next major native phase is the
-**native CNN stack**, which has not started.
+**native CNN stack**, whose **architecture contract is now written**
+([native_cnn_design.md](native_cnn_design.md), Phase D / milestone D0) but
+whose **implementation has not started** — no convolution or pooling code
+exists, and the section below still lists it as unsupported.
 
 ## Runtime and metadata
 
@@ -107,6 +110,41 @@ in the stable Python framework — that does not make them native.
 - Transformers / text models
 - distributed training
 - integration or implicit dispatch into the stable `tensorforge.Tensor`
+
+## Upcoming — Phase D (native CNN stack), designed but not implemented
+
+The native CNN stack's **architecture contract is locked** in
+[native_cnn_design.md](native_cnn_design.md) (milestone **D0**), but
+**none of it is implemented** — every row below is **planned, not
+supported**, and stays in this section until its milestone lands. The
+backend registry still advertises `conv2d`, `maxpool2d`, and `flatten` as
+unsupported.
+
+| Planned capability | Milestone | Status |
+|---|---|---|
+| `NativeFlatten` (batch-preserving; existing reshape autograd) | D1 | Planned |
+| Native convolution forward kernel | D2–D3 | Planned |
+| Native convolution input/weight/bias gradients | D4–D6 | Planned |
+| `NativeConv2d` module | D7 | Planned |
+| Native max-pooling forward + winner-index buffer | D8 | Planned |
+| Native max-pooling backward (scatter) | D9 | Planned |
+| `NativeMaxPool2d` module | D10 | Planned |
+| Deterministic native CNN training + checkpoint-resume proof | D11 | Planned |
+| Phase-D cross-cutting tests, benchmarks, docs, ASan/UBSan checkpoint | D12 | Planned |
+
+Locked design decisions (see the design doc for the full contract):
+**NCHW** activations, **OIHW** convolution weights, **cross-correlation**
+(not flipped); floor output-shape formulas with symmetric per-axis
+padding; **copy-then-compute** for non-contiguous inputs (kernels consume
+contiguous storage only); convolution as a **new fused `NativeTensor`
+primitive** with a Python-managed backward (input/weight kernels + bias
+via existing `sum` reductions); max-pool winners saved in an **internal
+float64 buffer** of flat input offsets (with a `-1` padding sentinel);
+new C ABI families `tf_core_conv2d_*` / `tf_core_maxpool2d_*` under the
+existing status/guard contract; and new C++ units `cpp/src/conv2d.cpp`
+and `cpp/src/pooling.cpp`. Still float64/cpu only; no dilation, groups,
+transposed/average/adaptive/global pooling, channels-last, float32,
+CUDA, AMP, BatchNorm, Dropout, im2col, or BLAS/threaded convolution.
 
 ## How to build and verify
 

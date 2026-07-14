@@ -22,6 +22,7 @@ DOCS = (
     "native_autograd_design.md",
     "native_autograd_benchmarks.md",
     "native_support_matrix.md",
+    "native_cnn_design.md",
 )
 
 EXAMPLE_FILES = (
@@ -282,3 +283,92 @@ def test_readme_commands_reference_existing_files():
         assert (REPO_ROOT / "examples" / filename).is_file(), (
             f"README references examples/{filename}, which does not exist"
         )
+
+
+def test_native_cnn_design_locks_the_phase_d_contract():
+    """The Phase-D (native CNN) architecture contract must state its
+    load-bearing decisions, so later milestones inherit an unambiguous
+    design instead of re-deriving it."""
+    text = _normalized_doc("docs/native_cnn_design.md")
+    # Layout and math conventions.
+    for token in ("NCHW", "OIHW", "cross-correlation"):
+        assert token in text, f"native_cnn_design.md does not lock {token!r}"
+    # The three planned public surfaces are named.
+    for token in ("NativeFlatten", "NativeConv2d", "NativeMaxPool2d"):
+        assert token in text, f"native_cnn_design.md does not mention {token!r}"
+    # The non-contiguous-input policy and the max-pool winner contract.
+    assert "winner" in text.lower(), "design omits the max-pool winner contract"
+    assert "contiguous" in text.lower(), "design omits the contiguity policy"
+    # The full milestone ladder must be present (D0 through D12), and D6
+    # (autograd integration) must sit between D5 and D7.
+    for i in range(13):
+        assert f"D{i}" in text, f"native_cnn_design.md is missing milestone D{i}"
+    # Anchor on the milestone-ladder headers ("D5 —", "D6 —", "D7 —"),
+    # which use an em-dash and so do not collide with bare-"D5"/"D7"
+    # mentions in the prose.
+    d5 = text.index("D5 —")
+    d6 = text.index("D6 —")
+    d7 = text.index("D7 —")
+    assert d5 < d6 < d7, "D6 (autograd integration) is not ordered between D5 and D7"
+
+
+def test_native_cnn_design_locks_conditional_versioning_and_winner_safety():
+    """The two subtle Phase-D contracts must stay pinned: Conv2d records a
+    parameter version only for a value an *active* backward callback
+    rereads, and the max-pool winner buffer stays an exact-integer float64
+    buffer bounded by 2^53."""
+    text = _normalized_doc("docs/native_cnn_design.md")
+    # Conditional Conv2d versioning keys off which callbacks run.
+    for token in ("input._requires_grad", "weight._requires_grad"):
+        assert token in text, f"design no longer states the conditional {token!r} rule"
+    # Bias-only backward must not version-guard input/weight.
+    assert "bias-only" in text.lower(), "design omits the bias-only no-version case"
+    # Winner-index float64 safety: the exactness bound and the -1 sentinel.
+    assert "2^53" in text, "design no longer pins the float64 exactness bound"
+    assert "-1" in text, "design no longer documents the -1 winner sentinel"
+    # NaN handling is a documented, deliberate choice, not left implicit.
+    assert "NaN" in text and "divergence" in text.lower(), (
+        "design no longer documents the deliberate NaN divergence from stable"
+    )
+
+
+def test_native_cnn_design_is_honest_about_being_unimplemented():
+    """D0 is design only: the doc must not claim the CNN stack ships, and
+    the backend/support-matrix must keep presenting it as unsupported."""
+    design = _normalized_doc("docs/native_cnn_design.md")
+    # The doc states plainly that nothing is implemented yet.
+    assert "not implemented" in design.lower() or "not yet" in design.lower(), (
+        "native_cnn_design.md must state that Phase D is not implemented"
+    )
+
+    # The backend capability registry still lists the CNN ops as
+    # unsupported and does not advertise them anywhere else.
+    from tensorforge.backends import cpp
+
+    for op in ("conv2d", "maxpool2d", "flatten"):
+        assert op in cpp.UNSUPPORTED, f"cpp backend no longer lists {op!r} unsupported"
+        assert op not in cpp.AUTOGRAD_OPS, f"cpp backend advertises {op!r} as autograd op"
+        assert op not in cpp.TENSOR_CORE_OPS, f"cpp backend advertises {op!r} as core op"
+    for module in ("NativeConv2d", "NativeMaxPool2d", "NativeFlatten"):
+        assert module not in cpp.NATIVE_MODULES, (
+            f"cpp backend advertises unimplemented {module!r}"
+        )
+
+    # The native public surface must not yet export the CNN modules.
+    import tensorforge.experimental as experimental
+
+    for module in ("NativeConv2d", "NativeMaxPool2d", "NativeFlatten"):
+        assert module not in experimental.__all__, (
+            f"{module} is exported before Phase D is implemented"
+        )
+
+
+def test_native_cnn_design_is_linked_and_referenced():
+    """The design doc must be reachable from the roadmap and the support
+    matrix so the contract is discoverable, not orphaned."""
+    roadmap = (REPO_ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
+    matrix = (REPO_ROOT / "docs" / "native_support_matrix.md").read_text(
+        encoding="utf-8"
+    )
+    for doc in (roadmap, matrix):
+        assert "native_cnn_design.md" in doc
