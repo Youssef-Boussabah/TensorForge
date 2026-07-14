@@ -6,13 +6,18 @@ C++ CPU line's convolutional stack — **Phase D**. It is a milestone-zero
 ownership rules, C ABI shape, source organization, testing strategy, and
 milestone sequence **before any numerical CNN code is written**.
 
-Nothing in Phase D is implemented yet. No `NativeConv2d`,
-`NativeMaxPool2d`, or `NativeFlatten` exists; no convolution or pooling
-kernel exists; the backend capability registry still lists `conv2d`,
-`maxpool2d`, and `flatten` as **unsupported** (see
-[native_support_matrix.md](native_support_matrix.md) and
-`tensorforge.backends.cpp.UNSUPPORTED`). This document describes what
-those milestones **will** build, not what exists.
+This document defines the **complete Phase-D contract** — layouts,
+argument contracts, ownership rules, C ABI shape, source organization,
+testing strategy, and the full milestone sequence. **Implementation
+status is not restated in this introduction; it is tracked per milestone
+in the milestone map (§18) and the completion criteria (§19)**, and the
+backend capability registry (`tensorforge.backends.cpp.UNSUPPORTED`,
+mirrored in [native_support_matrix.md](native_support_matrix.md)) is the
+**single source of truth** for exactly which surfaces are live at any
+moment. Phase D began as a milestone-zero (D0) deliverable that locked
+this architecture *before any numerical CNN code was written*; individual
+milestones have since begun landing (each marked in §18), and Phase D is
+complete only when **every** D0–D12 milestone does.
 
 The stable Python framework (`tensorforge.nn.Conv2d`,
 `tensorforge.nn.MaxPool2d`, `tensorforge.nn.Flatten`) is the **numerical
@@ -1423,13 +1428,49 @@ registry advertises `conv2d` as unsupported while listing the Core-level
   stable parity and finite differences; Release **and** Debug CTests
   warning-clean. **Done.** **Dependencies:** D5.
 
-### D7 — `NativeConv2d` module
+### D7 — `NativeConv2d` module — **Implemented**
 - **Scope:** module (§9) — parameters, init, registration, state/
   checkpoint, repr, frozen support, `NativeSequential` fit.
 - **Files:** `native_conv2d.py`; `experimental/__init__.py`;
-  `NATIVE_MODULES` + support-matrix update; `tests/test_native_conv2d.py`.
+  `NATIVE_MODULES` + support-matrix update;
+  `tests/test_native_conv2d_module.py`.
 - **Tests:** registration/state/checkpoint/Sequential + forward parity.
 - **Acceptance:** trainable conv layer. **Dependencies:** D6.
+- **Status (D7 — implemented):** `NativeConv2d(in_channels, out_channels,
+  kernel_size, stride=1, padding=0, bias=True, *, seed=None,
+  requires_grad=True)` ships in
+  `src/tensorforge/experimental/native_conv2d.py`, exported from the
+  experimental package and listed in `NATIVE_MODULES` (removed from
+  `UNSUPPORTED`). Every argument is validated **before any native
+  allocation**: `in_channels`/`out_channels` are real positive ints (bools
+  rejected → `TypeError`, non-positive → `ValueError`);
+  `kernel_size`/`stride` (≥ 1) and `padding` (≥ 0) are normalized to
+  two-element `(height, width)` tuples through the native `_spatial_pair`
+  helper (int or 2-pair, bools/malformed/non-int rejected); `bias` and
+  `requires_grad` are real bools; `seed` is an int or `None`. **Normalized
+  attributes:** `in_channels`, `out_channels`, `kernel_size`, `stride`,
+  `padding` (spatial ones as 2-tuples), `weight`, `bias`. **Parameter
+  shapes:** `weight` is `(out_channels, in_channels, kh, kw)` (OIHW), `bias`
+  is `(out_channels,)` when enabled else the attribute reads `None`;
+  registration order is `weight` then `bias` (deterministic
+  `["weight", "bias"]` keys, nested as `"0.weight"`/`"0.bias"` in a
+  `NativeSequential`). No buffers. **Initialization:** deterministic uniform
+  fan-in — `fan_in = in_channels * kh * kw`, `bound = 1/sqrt(fan_in)`,
+  sampled from `[-bound, +bound]` via a **local**
+  `numpy.random.default_rng(seed)` (global RNG untouched; equal seeds →
+  identical values; no graph built; versions start at 0). **Forward**
+  validates an open 4-D NCHW input with `shape[1] == in_channels` and
+  matching float64/cpu, then delegates to `input.conv2d(self.weight,
+  self.bias, stride=self.stride, padding=self.padding)` — no numerical or
+  autograd logic is duplicated, and the module adds no graph node.
+  Non-contiguous inputs ride the existing Conv2d Policy-B path. **Autograd,
+  state, checkpoint, and optimizers** are inherited unchanged: input/weight/
+  bias gradients through the D6 backward, `requires_grad=False` freezes both
+  parameters (input still differentiates), stale-graph detection inherited,
+  `state_dict()` independent snapshots with atomic identity-preserving
+  `load_state_dict()`, the existing pickle-free checkpoint format (no schema
+  change), and both `NativeSGD`/`NativeAdam`. Verified by
+  `tests/test_native_conv2d_module.py`.
 
 ### D8 — MaxPool2d forward + winner-index contract
 - **Scope:** `tf_core_maxpool2d_forward`; winner buffer (§12);
@@ -1506,6 +1547,9 @@ Phase D is complete only when **all** hold:
 - **No** CUDA, dtype expansion, normalization, dropout, or
   classification-stack scope has leaked into Phase D.
 
-Until every milestone above lands, the backend registry, support matrix,
-and README continue to present convolution and pooling as **not
-implemented**.
+Until every milestone above lands, Phase D stays **incomplete**: the
+backend registry, support matrix, and README present each surface at its
+actual status — shipped layers (the `NativeFlatten` and Conv2d line) as
+supported, and every not-yet-shipped surface (currently the MaxPool2d
+layers and the end-to-end native CNN training + checkpoint-resume proof)
+as **not implemented**.

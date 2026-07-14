@@ -201,9 +201,11 @@ Honest expectations:
   experimental C++ **CPU** backend: float64/cpu only, no CUDA backend
   yet, no dtype promotion or casting, and no implicit dispatch into
   `tensorforge.Tensor`.
-- The native stack has no CNN layers, and native checkpoints capture
-  no scheduler or random state — see the
-  [native support matrix](docs/native_support_matrix.md).
+- The native CNN stack (Phase D) is partial: `NativeFlatten` and the
+  differentiable Conv2d layer (`NativeConv2d`) ship, but native MaxPool2d
+  and the end-to-end native CNN training + checkpoint-resume proof are
+  still upcoming. Native checkpoints also capture no scheduler or random
+  state — see the [native support matrix](docs/native_support_matrix.md).
 - `Conv2d` and `MaxPool2d` (stable line) use deliberately naive loops.
 - Benchmarks are hardware-specific characterizations with no universal
   speed claims; the naive native kernels can lose to NumPy's BLAS.
@@ -222,9 +224,12 @@ safety, `sqrt`/`reciprocal` optimizer primitives, SGD and adaptive Adam,
 in-memory optimizer state snapshots, pickle-free native checkpoint files,
 end-to-end deterministic MLP training, and deterministic in-memory and
 file resume — with cross-cutting failure, lifetime, and ownership
-guardrails. The full suite passes at 1365 tests. The next major native
-phase is the CNN stack; CUDA/GPU experiments have not started. Both
-remain future work. See [docs/roadmap.md](docs/roadmap.md) and
+guardrails. **Phase D — the native CNN stack — is now under way and
+partly shipped**: `NativeFlatten` and the differentiable Conv2d layer
+(`NativeConv2d`) are in, while native MaxPool2d and the end-to-end native
+CNN training + checkpoint-resume proof are still upcoming. CUDA/GPU
+experiments have not started and remain future work. See
+[docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 
 TensorForge is a from-scratch look at how a deep learning framework

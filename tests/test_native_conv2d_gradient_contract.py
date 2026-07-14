@@ -166,6 +166,8 @@ def test_bias_gradient_reuse_adds_no_dedicated_capability():
         assert absent not in cpp._CHECKED_KERNELS
     # No bias-gradient C ABI symbol is registered.
     assert not any("bias" in name for name in cpp._CHECKED_KERNELS)
-    # The NativeConv2d module remains unsupported (the op itself is now D6).
-    assert "NativeConv2d" in cpp.UNSUPPORTED
-    assert "NativeConv2d" not in cpp.NATIVE_MODULES
+    # The NativeConv2d module is supported (D7) and adds no dedicated
+    # bias-gradient capability — it delegates to the D6 conv2d op, whose
+    # bias path is still the existing sum reduction.
+    assert "NativeConv2d" not in cpp.UNSUPPORTED
+    assert "NativeConv2d" in cpp.NATIVE_MODULES

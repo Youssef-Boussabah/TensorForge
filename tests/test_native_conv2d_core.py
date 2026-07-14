@@ -802,22 +802,22 @@ def test_raw_symbol_registered_in_error_contract_only():
     assert callable(getattr(lib, "tf_core_conv2d_forward"))
 
 
-def test_conv2d_operation_supported_but_module_unsupported():
+def test_conv2d_operation_and_module_supported():
     # As of D6 the differentiable "conv2d" *operation* is supported (it is
     # an autograd op) and the layer-qualified Core forward/backward ops
-    # exist; the "conv2d" bare name is therefore NOT in UNSUPPORTED, but the
-    # NativeConv2d *module* (D7) still is — operation support and module
-    # support are distinct.
+    # exist; as of D7 the NativeConv2d *module* is supported too. Neither the
+    # bare "conv2d" name nor "NativeConv2d" is in UNSUPPORTED. Operation
+    # support and module support are distinct but both now present.
     assert "conv2d" in cpp.AUTOGRAD_OPS
     assert "conv2d_forward" in cpp.TENSOR_CORE_OPS
     assert "conv2d_input_backward" in cpp.TENSOR_CORE_OPS
     assert "conv2d_weight_backward" in cpp.TENSOR_CORE_OPS
     assert "conv2d" not in cpp.UNSUPPORTED
-    assert "NativeConv2d" in cpp.UNSUPPORTED
-    assert "NativeConv2d" not in cpp.NATIVE_MODULES
+    assert "NativeConv2d" not in cpp.UNSUPPORTED
+    assert "NativeConv2d" in cpp.NATIVE_MODULES
     import tensorforge.experimental as experimental
 
-    assert "NativeConv2d" not in experimental.__all__
+    assert "NativeConv2d" in experimental.__all__
 
 
 def test_maxpool2d_remains_unsupported_at_every_layer():

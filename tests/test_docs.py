@@ -191,7 +191,9 @@ def test_phase_c_marked_complete_not_in_progress():
     assert re.search(r"checkpoint", readme, re.IGNORECASE), (
         "README no longer presents native checkpointing"
     )
-    # The native CNN stack is the next phase and has not started.
+    # The native CNN stack (Phase D) is now under way — its Flatten and
+    # Conv2d milestones have shipped — while CUDA remains not started. The
+    # roadmap must keep naming the stack and keep marking CUDA future work.
     roadmap = _normalized_doc("docs/roadmap.md")
     assert "native CNN stack" in roadmap
     assert "not started" in roadmap
@@ -223,7 +225,7 @@ def test_experimental_exports_stay_intentional():
     assert set(experimental.__all__) == {
         "NativeTensor", "NativeParameter", "NativeParameterRegistry",
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
-        "NativeSequential",
+        "NativeConv2d", "NativeSequential",
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
     }
@@ -344,31 +346,34 @@ def test_native_cnn_design_is_honest_about_being_unimplemented():
 
     # The backend capability registry keeps the still-unimplemented CNN
     # surface honest. As of D6 the differentiable "conv2d" *operation* is
-    # implemented (autograd op + Core forward/backward), so it is NOT in
-    # UNSUPPORTED; but the NativeConv2d *module* (D7) and all of pooling
-    # (D8–D10) remain unsupported. Operation support and module support are
-    # distinct. NativeFlatten (D1) is checked separately, below.
+    # implemented (autograd op + Core forward/backward) and as of D7 the
+    # NativeConv2d *module* is implemented too, so neither is in UNSUPPORTED;
+    # all of pooling (D8–D10) remains unsupported. Operation support and
+    # module support are distinct. NativeFlatten (D1) is checked separately,
+    # below.
     from tensorforge.backends import cpp
 
     # maxpool2d is unimplemented at every layer.
     assert "maxpool2d" in cpp.UNSUPPORTED
     assert "maxpool2d" not in cpp.AUTOGRAD_OPS
     assert "maxpool2d" not in cpp.TENSOR_CORE_OPS
-    # The Conv2d module is unsupported even though the operation is supported.
-    assert "NativeConv2d" in cpp.UNSUPPORTED
-    for module in ("NativeConv2d", "NativeMaxPool2d"):
-        assert module not in cpp.NATIVE_MODULES, (
-            f"cpp backend advertises unimplemented {module!r}"
-        )
+    assert "NativeMaxPool2d" not in cpp.NATIVE_MODULES, (
+        "cpp backend advertises unimplemented NativeMaxPool2d"
+    )
+    # The Conv2d module (D7) is implemented: in the modern module inventory
+    # and no longer an unsupported entry (the operation was already
+    # supported at D6).
+    assert "NativeConv2d" in cpp.NATIVE_MODULES
+    assert "NativeConv2d" not in cpp.UNSUPPORTED
 
-    # The native public surface must not yet export the unimplemented CNN
-    # modules (convolution and pooling).
+    # The native public surface exports the implemented Conv2d module but
+    # not the still-unimplemented pooling module.
     import tensorforge.experimental as experimental
 
-    for module in ("NativeConv2d", "NativeMaxPool2d"):
-        assert module not in experimental.__all__, (
-            f"{module} is exported before its milestone is implemented"
-        )
+    assert "NativeConv2d" in experimental.__all__
+    assert "NativeMaxPool2d" not in experimental.__all__, (
+        "NativeMaxPool2d is exported before its milestone is implemented"
+    )
 
 
 def test_native_flatten_is_implemented_as_a_native_module():
@@ -384,9 +389,60 @@ def test_native_flatten_is_implemented_as_a_native_module():
     # Not a raw C++ kernel and not a lingering "unsupported" entry.
     assert "NativeFlatten" not in cpp.RAW_KERNELS
     assert "flatten" not in cpp.UNSUPPORTED
-    # The Conv2d module and pooling remain unimplemented (the differentiable
-    # conv2d operation itself is implemented as of D6).
-    assert "NativeConv2d" in cpp.UNSUPPORTED and "maxpool2d" in cpp.UNSUPPORTED
+    # The Conv2d module is implemented as of D7 (over the D6 operation);
+    # only pooling remains unimplemented.
+    assert "NativeConv2d" not in cpp.UNSUPPORTED
+    assert "maxpool2d" in cpp.UNSUPPORTED
+
+
+def test_docs_do_not_reassert_stale_phase_d_status():
+    """Phase D has begun and its Flatten and Conv2d milestones (D1–D7)
+    have shipped. The project-facing docs must never regress to claiming
+    the native CNN stack is unstarted, empty of layers, or that native
+    convolution is unavailable. Phrase-level (not paragraph-verbatim) so
+    accurate rewording and honest "pooling is upcoming" wording survive."""
+    docs = (
+        "README.md",
+        "docs/native_cnn_design.md",
+        "docs/native_support_matrix.md",
+        "docs/roadmap.md",
+        "docs/backend_experiments.md",
+    )
+    stale = (
+        "no CNN layers",
+        "Nothing in Phase D is implemented",
+        "native CNN stack, which has not started",
+        "native CNN phase has not started",
+        "native CNN stack has not started",
+        "Native Conv2d is unavailable",
+    )
+    for name in docs:
+        low = _normalized_doc(name).lower()
+        for phrase in stale:
+            assert phrase.lower() not in low, (
+                f"{name} reasserts the stale Phase-D claim {phrase!r}"
+            )
+
+
+def test_docs_present_shipped_native_cnn_layers():
+    """The shipped native CNN layers (D1 NativeFlatten, D7 NativeConv2d)
+    are positively presented in the README, roadmap, and support matrix,
+    while pooling and the CNN training proof stay marked upcoming."""
+    # README and support matrix name the trainable module directly.
+    for name in ("README.md", "docs/native_support_matrix.md"):
+        text = _normalized_doc(name)
+        assert "NativeConv2d" in text, f"{name} no longer presents shipped NativeConv2d"
+        assert "NativeFlatten" in text, f"{name} no longer presents shipped NativeFlatten"
+    # The roadmap presents the shipped convolution line (it deliberately
+    # says "convolution", not the banned "Conv2d" token, in its forward-
+    # looking section) plus the shipped NativeFlatten module.
+    roadmap = _normalized_doc("docs/roadmap.md")
+    assert "NativeFlatten" in roadmap
+    assert "convolution" in roadmap.lower()
+    # Pooling and the end-to-end proof remain honestly upcoming.
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    assert "NativeMaxPool2d" in matrix
+    assert "Planned" in matrix or "upcoming" in matrix.lower()
 
 
 def test_native_cnn_design_is_linked_and_referenced():

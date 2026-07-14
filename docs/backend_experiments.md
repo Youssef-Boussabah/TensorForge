@@ -510,11 +510,20 @@ non-contiguous operands, fresh owning contiguous outputs matching the
 stable Conv2d to tolerance), the bias gradient composed from the existing
 native `sum` reduction (no dedicated kernel), and the Python-managed
 **`NativeTensor.conv2d`** autograd primitive (input/weight/bias gradients,
-conditional stale-value version tracking, failure rollback). The trainable
-`NativeConv2d` **module** (D7) and pooling (`NativeMaxPool2d`) remain
-unimplemented, followed by the CUDA runtime, dtype/AMP work,
-Transformer/text experiments, distributed training, and the final
-portfolio release. Still float64/cpu only, still explicit and
+conditional stale-value version tracking, failure rollback). **D7** then
+shipped the trainable **`NativeConv2d`** module built on that operation: an
+OIHW weight / optional `(O,)` bias `NativeParameter` layer with
+deterministic uniform conv fan-in initialization (`bound =
+1/sqrt(in_channels·kh·kw)`, local-RNG, global state untouched), 4-D NCHW
+input validation, and backward supplied entirely by the D6 autograd — no
+new kernel, C ABI symbol, or custom module backward. It registers through
+the inherited `NativeModule` mechanism (deterministic `weight` then `bias`
+order), rides the existing state_dict/checkpoint/`NativeSGD`/`NativeAdam`
+paths unchanged, and drops into a `NativeSequential`. Pooling
+(`NativeMaxPool2d`, D8–D10) and the deterministic end-to-end CNN training +
+checkpoint-resume proof (D11) remain unimplemented, followed by the CUDA
+runtime, dtype/AMP work, Transformer/text experiments, distributed
+training, and the final portfolio release. Still float64/cpu only, still explicit and
 experimental, and no production performance is claimed.
 
 ### Native training stack — checkpoint files and deterministic resume (v3.14)
@@ -2861,9 +2870,12 @@ file resume, and **v3.15 — native training stack guardrails and Phase C
 completion** (the integrated completion test suite, documentation
 completion, and build/CI/hygiene verification), which **closes Phase C
 in code**. A general `divide` operation remains deliberately unshipped
-(`reciprocal` + `multiply` compose what the stack needs). The next
-major native phase is the **native CNN stack**, which has not started.
-CUDA experiments remain a separate future branch (where `device` gains a
-second value), and an AMP / Tensor Core path is where `dtype` later gains
+(`reciprocal` + `multiply` compose what the stack needs). The current
+major native phase is the **native CNN stack** (Phase D), now under way
+and partly shipped — `NativeFlatten` and the differentiable Conv2d line
+(`NativeConv2d`) are in, while native max-pooling and the end-to-end CNN
+training + checkpoint-resume proof remain upcoming. CUDA experiments
+remain a separate future branch (where `device` gains a second value),
+and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation
 throughout.

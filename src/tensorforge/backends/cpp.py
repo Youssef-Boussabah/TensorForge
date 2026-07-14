@@ -103,12 +103,16 @@ AUTOGRAD_OPS = (
     "conv2d",
 )
 
-# The native training stack composed on the autograd layer (Phase C),
-# reported by name only so this module stays decoupled from the
-# experimental package (the guardrail test verifies each name imports).
+# The native training stack composed on the autograd layer (Phase C) and
+# the Phase-D CNN modules, reported by name only so this module stays
+# decoupled from the experimental package (the guardrail test verifies
+# each name imports). "NativeConv2d" (the Conv2d *module*, D7) is the
+# trainable layer over the differentiable "conv2d" op; it is distinct from
+# that operation (in AUTOGRAD_OPS) and from the Core wrappers (in
+# TENSOR_CORE_OPS).
 NATIVE_MODULES = (
     "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
-    "NativeSequential",
+    "NativeConv2d", "NativeSequential",
 )
 NATIVE_LOSSES = ("NativeMSELoss",)
 NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
@@ -125,13 +129,15 @@ STATE_SUPPORT = (
 #   - the differentiable "conv2d" *operation* IS implemented (D3–D6:
 #     forward + input/weight/bias gradients + NativeTensor autograd), so it
 #     is NOT listed here — it lives in AUTOGRAD_OPS / TENSOR_CORE_OPS.
-#   - "NativeConv2d" (the Conv2d *module*, D7) is still unsupported.
+#   - "NativeConv2d" (the Conv2d *module*, D7) IS implemented (see
+#     NATIVE_MODULES), so it is NOT listed here either — operation support
+#     and module support are now both present for Conv2d.
 #   - "maxpool2d" (the operation and the NativeMaxPool2d module, D8–D10)
 #     is still unsupported at every layer.
 # As of Phase D milestone D1, batch-preserving flatten IS implemented as
 # the NativeFlatten module (see NATIVE_MODULES), so "flatten" is not listed.
 UNSUPPORTED = (
-    "NativeConv2d", "maxpool2d",
+    "maxpool2d", "NativeMaxPool2d",
     "exp", "log", "softmax", "cross_entropy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",

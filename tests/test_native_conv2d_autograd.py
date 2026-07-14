@@ -459,15 +459,15 @@ def test_one_shot_graph_freed_after_backward():
 # Capability separation
 # --------------------------------------------------------------------------
 
-def test_conv2d_is_an_autograd_op_but_module_is_unsupported():
+def test_conv2d_is_an_autograd_op_and_module_is_supported():
     assert "conv2d" in cpp.AUTOGRAD_OPS
     assert hasattr(NativeTensor, "conv2d")
     assert "conv2d_input_backward" in cpp.TENSOR_CORE_OPS
     assert "conv2d_weight_backward" in cpp.TENSOR_CORE_OPS
-    # The op is supported; the module and pooling are not.
+    # The op is supported (D6) and the module is supported (D7); pooling is not.
     assert "conv2d" not in cpp.UNSUPPORTED
-    assert "NativeConv2d" in cpp.UNSUPPORTED
-    assert "NativeConv2d" not in cpp.NATIVE_MODULES
+    assert "NativeConv2d" not in cpp.UNSUPPORTED
+    assert "NativeConv2d" in cpp.NATIVE_MODULES
     assert "maxpool2d" in cpp.UNSUPPORTED
     import tensorforge.experimental as experimental
-    assert "NativeConv2d" not in experimental.__all__
+    assert "NativeConv2d" in experimental.__all__

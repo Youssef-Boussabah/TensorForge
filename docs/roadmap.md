@@ -576,8 +576,9 @@ The Python line is done; what remains is expansion on its own terms:
     stale-graph distinction; documentation completion and support-
     matrix finalization; and build/CI/hygiene verification — no new
     numerical behavior.
-  - **Phase D — native CNN stack (design contract complete; first
-    milestone shipped).** The **D0 architecture contract is written** —
+  - **Phase D — native CNN stack (design contract complete; the Flatten
+    and convolution milestones have shipped, pooling and the native CNN
+    training proof upcoming).** The **D0 architecture contract is written** —
     [native_cnn_design.md](native_cnn_design.md) locks the layouts
     (NCHW activations, OIHW convolution weights, cross-correlation), the
     argument and output-shape contracts, the non-contiguous-input policy
@@ -631,12 +632,20 @@ The Python line is done; what remains is expansion on its own terms:
     gradients, deterministic `(input, weight[, bias])` parent ordering,
     conditional stale-value version tracking, and reuse of the existing
     backward snapshot/rollback engine — verified against stable parity,
-    finite differences, and all `requires_grad` combinations. The trainable
-    native convolution **module (D7)** and all of pooling (D8–D10) remain
-    **unimplemented** and marked unsupported in the
-    [support matrix](native_support_matrix.md); the backend advertises the
-    differentiable `conv2d` operation but no convolution *module* and no
-    pooling. This design guides the remaining Phase-D milestones.
+    finite differences, and all `requires_grad` combinations. **D7 completed
+    the trainable native convolution module**: an OIHW weight / optional
+    `(O,)` bias native-parameter layer with deterministic uniform conv
+    fan-in initialization (`bound = 1/sqrt(in_channels·kh·kw)`, a local
+    generator with the global state untouched), 4-D NCHW input validation,
+    and backward
+    supplied entirely by the D6 `conv2d` autograd — no new kernel, C ABI
+    symbol, or custom module backward. It registers in `NATIVE_MODULES`,
+    exports from `tensorforge.experimental`, and rides the existing
+    state_dict/checkpoint/optimizer paths unchanged. All of pooling (D8–D10)
+    and the deterministic end-to-end native-CNN training + checkpoint-resume
+    proof (D11) remain **unimplemented** and marked unsupported in the
+    [support matrix](native_support_matrix.md). This design guides the
+    remaining Phase-D milestones.
   - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

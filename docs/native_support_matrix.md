@@ -20,14 +20,14 @@ stale-graph safety). Phase C — **complete** (parameters, modules,
 Linear/ReLU/Sequential, MSE loss, `sqrt`/`reciprocal` optimizer
 primitives, SGD, Adam, optimizer state snapshots, checkpoint files,
 deterministic training and in-memory/file resume, and the failure/
-lifetime/ownership guardrails). The next major native phase is the
+lifetime/ownership guardrails). The current native phase is the
 **native CNN stack** (Phase D), whose **architecture contract is locked**
-([native_cnn_design.md](native_cnn_design.md), milestone D0) and whose
-**first implementation milestone D1 has shipped** — `NativeFlatten`, a
-batch-preserving flatten Python-composed from the existing
-`reshape`/`contiguous_copy` operations (no new kernel). Native
-**convolution and pooling remain unimplemented** and are listed as
-unsupported below.
+([native_cnn_design.md](native_cnn_design.md), milestone D0) and which is
+**partly shipped**: `NativeFlatten` (D1) and the full differentiable
+convolution line — the native `conv2d` forward/backward operation and its
+trainable module (D2–D7) — are implemented. Native **max-pooling (D8–D10)
+and the end-to-end native CNN training + checkpoint-resume proof (D11)
+remain unimplemented** and are listed as unsupported below.
 
 ## Runtime and metadata
 
@@ -109,11 +109,12 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- the `NativeConv2d` **module** (D7), `MaxPool2d`, or the rest of the CNN
-  stack (batch-preserving `NativeFlatten` **is** implemented, and the
-  differentiable **`NativeTensor.conv2d` operation** — forward, input/weight/
-  bias gradients, and autograd — **is** implemented as of D6; only the
-  trainable `NativeConv2d` module and pooling remain future work)
+- `MaxPool2d` or the rest of the CNN stack (batch-preserving
+  `NativeFlatten` **is** implemented, the differentiable
+  **`NativeTensor.conv2d` operation** — forward, input/weight/bias
+  gradients, and autograd — **is** implemented as of D6, and the trainable
+  **`NativeConv2d` module** **is** implemented as of D7; only pooling and
+  the end-to-end CNN training proof remain future work)
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP
 - Transformers / text models
@@ -138,12 +139,15 @@ guarded backward C ABI wrappers (`tf_core_conv2d_input_backward`,
 bias gradient composed from the existing native `sum` reduction (no
 dedicated kernel), and the Python-managed **`NativeTensor.conv2d`** autograd
 primitive (input/weight/bias gradients, conditional stale-value version
-tracking, failure rollback). The **`NativeConv2d` module (D7)** and all of
-pooling (D8–D10) remain **planned, not supported**, and stay in this
-section until its milestone lands. The backend registry still advertises
-the *differentiable* `conv2d` op and the `NativeConv2d` module as
-unsupported — D3 provides only the layer-qualified Core forward
-(`conv2d_forward` in `TENSOR_CORE_OPS`), not a general public Conv2d.
+tracking, failure rollback). **D7 has shipped the trainable `NativeConv2d`
+module** — an OIHW weight / optional `(O,)` bias `NativeParameter` layer
+with deterministic uniform conv fan-in initialization, 4-D NCHW input
+validation, and backward supplied entirely by the D6 `conv2d` autograd (no
+new kernel, C ABI symbol, or custom module backward); it registers in
+`NATIVE_MODULES` and exports from `tensorforge.experimental`. All of
+pooling (D8–D10) and the deterministic end-to-end CNN training +
+checkpoint-resume proof (D11) remain **planned, not supported**, and stay
+in this section until their milestones land.
 
 | Capability | Milestone | Status |
 |---|---|---|
@@ -156,8 +160,7 @@ unsupported — D3 provides only the layer-qualified Core forward
 | Convolution input/weight-gradient C ABI export (`tf_core_conv2d_input_backward`, `tf_core_conv2d_weight_backward`) + Core wrappers (`NativeTensorCore.conv2d_input_backward`/`conv2d_weight_backward`) | D6 | **Implemented (raw + Core)** |
 | Convolution bias-gradient numerical path (reuse of the existing native `sum` reduction: `g.sum(0).sum(1).sum(1) → (O,)`; no dedicated kernel, no C ABI symbol) | D5–D6 | **Implemented (existing-reduction composition, wired into the autograd node)** |
 | Convolution `NativeTensor` autograd op — differentiable `NativeTensor.conv2d(weight, bias=None, *, stride, padding)` | D6 | **Implemented** |
-| `NativeConv2d` module | D7 | Planned (unsupported) |
-| `NativeConv2d` module | D7 | Planned |
+| `NativeConv2d` module — trainable OIHW weight / optional `(O,)` bias layer over the D6 `conv2d` autograd (deterministic uniform conv fan-in init, 4-D NCHW validation; no new kernel/ABI/backward) | D7 | **Implemented** |
 | Native max-pooling forward + winner-index buffer | D8 | Planned |
 | Native max-pooling backward (scatter) | D9 | Planned |
 | `NativeMaxPool2d` module | D10 | Planned |

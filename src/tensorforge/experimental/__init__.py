@@ -17,10 +17,15 @@ CNN stack (Phase D) has begun with ``NativeFlatten`` (milestone D1) and,
 as of milestone D6, the differentiable **``NativeTensor.conv2d``** operation
 (NCHW/OIHW cross-correlation with int/tuple stride and padding and optional
 bias; input, weight, and bias gradients through native backward kernels and
-the existing ``sum`` reduction); the trainable ``NativeConv2d`` **module**
-(D7), ``MaxPool2d`` (D8–D10), CUDA, and the remaining Phase-D numerical
-layers (new activations, softmax/classification losses, BatchNorm/LayerNorm/
-Dropout) remain future work.
+the existing ``sum`` reduction), and as of milestone D7 the trainable
+**``NativeConv2d``** module built on it (OIHW weight / optional ``(O,)``
+bias ``NativeParameter``s, deterministic uniform conv fan-in initialization,
+4-D NCHW input validation, and backward supplied entirely by the D6
+autograd — no new kernel, ABI symbol, or custom module backward).
+``MaxPool2d`` (D8–D10), the deterministic end-to-end native CNN
+training/checkpoint-resume proof (D11), CUDA, and the remaining Phase-D
+numerical layers (new activations, softmax/classification losses,
+BatchNorm/LayerNorm/Dropout) remain future work.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
@@ -99,6 +104,7 @@ from .native_module import NativeModule
 from .native_linear import NativeLinear
 from .native_relu import NativeReLU
 from .native_flatten import NativeFlatten
+from .native_conv2d import NativeConv2d
 from .native_sequential import NativeSequential
 from .native_mse_loss import NativeMSELoss
 from .native_sgd import NativeSGD
@@ -113,6 +119,7 @@ __all__ = [
     "NativeLinear",
     "NativeReLU",
     "NativeFlatten",
+    "NativeConv2d",
     "NativeSequential",
     "NativeMSELoss",
     "NativeSGD",
