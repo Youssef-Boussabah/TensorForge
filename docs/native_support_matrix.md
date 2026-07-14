@@ -108,9 +108,12 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- native `Conv2d` or `MaxPool2d`, or the rest of the CNN stack
-  (batch-preserving `NativeFlatten` **is** implemented — see the training
-  stack table above and the Phase-D section below)
+- differentiable native `Conv2d` (the `NativeTensor.conv2d` autograd op),
+  `NativeConv2d`, `MaxPool2d`, or the rest of the CNN stack
+  (batch-preserving `NativeFlatten` **is** implemented, and the
+  forward-only `NativeTensorCore.conv2d_forward` Core method **is**
+  implemented as of D3 — see the Phase-D section below; convolution
+  gradients, autograd, and the module remain future work)
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP
 - Transformers / text models
@@ -121,20 +124,26 @@ in the stable Python framework — that does not make them native.
 
 The native CNN stack's **architecture contract is locked** in
 [native_cnn_design.md](native_cnn_design.md) (milestone **D0**). **D1
-(`NativeFlatten`) has shipped**, and **D2 has shipped the internal
-convolution forward compute kernel** (`tf::conv2d_forward_contiguous`, a
-hidden C++ symbol exercised only by a C++ CTest binary — **not** reachable
-from Python). Every remaining row below is **planned, not supported**, and
-stays in this section until its milestone lands. The backend registry
-still advertises `conv2d` and `maxpool2d` as unsupported: user-facing
-Conv2d does not exist until the D3 C ABI / Core wrapper lands.
+(`NativeFlatten`) has shipped**, **D2 shipped the internal convolution
+forward compute kernel** (`tf::conv2d_forward_contiguous`, a hidden C++
+symbol), and **D3 has shipped the forward-only convolution *layer***: the
+exported, exception-guarded C ABI wrapper `tf_core_conv2d_forward`, its
+ctypes/`errcheck` registration, and `NativeTensorCore.conv2d_forward` (a
+Python-reachable, forward-only, autograd-unaware Core method). Every
+remaining row below is **planned, not supported**, and stays in this
+section until its milestone lands. The backend registry still advertises
+the *differentiable* `conv2d` op and the `NativeConv2d` module as
+unsupported — D3 provides only the layer-qualified Core forward
+(`conv2d_forward` in `TENSOR_CORE_OPS`), not a general public Conv2d.
 
 | Capability | Milestone | Status |
 |---|---|---|
 | `NativeFlatten` (batch-preserving; existing reshape/copy autograd) | D1 | **Implemented** |
 | Internal convolution forward compute kernel (C++, not exposed) | D2 | **Implemented (internal)** |
-| Convolution C ABI export, Core wrapper, ctypes, Python forward access | D3 | Planned |
-| Native convolution input/weight/bias gradients | D4–D6 | Planned |
+| Convolution forward C ABI export (`tf_core_conv2d_forward`) — exception-guarded; self-validates handles/dims/offsets/output-shape/overflow/span-bounds; contiguous storage is a caller precondition (no stride metadata crosses the ABI, so it never inspects logical contiguity) | D3 | **Implemented (raw kernel)** |
+| Convolution forward Core wrapper (`NativeTensorCore.conv2d_forward`) — ctypes, Policy-B copy, output allocation, Python forward access | D3 | **Implemented (Core, forward-only)** |
+| Convolution `NativeTensor` autograd op (differentiable `conv2d`) | D6 | Planned (unsupported) |
+| Native convolution input/weight/bias gradient kernels | D4–D5 | Planned |
 | `NativeConv2d` module | D7 | Planned |
 | Native max-pooling forward + winner-index buffer | D8 | Planned |
 | Native max-pooling backward (scatter) | D9 | Planned |

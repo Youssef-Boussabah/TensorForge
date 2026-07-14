@@ -105,10 +105,15 @@ option(TF_BUILD_TESTS "Build the native C++ test executables (CTest)" OFF)
 if(TF_BUILD_TESTS)
   enable_testing()
 
-  # Conv2d forward (D2): links the internal kernel source directly.
+  # Conv2d forward (D2): links the internal kernel source directly. Since
+  # D3 added the exported tf_core_conv2d_forward wrapper into conv2d.cpp,
+  # that translation unit now references the thread-local error slot
+  # (tf::set_error / tf::clear_error via TF_GUARD), so error.cpp is compiled
+  # in too; the D2 test still exercises only the internal kernel.
   add_executable(test_conv2d_forward
     "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_conv2d_forward.cpp"
-    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp")
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
   target_include_directories(test_conv2d_forward PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
   if(NOT MSVC)

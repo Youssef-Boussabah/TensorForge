@@ -79,6 +79,11 @@ TENSOR_CORE_OPS = (
     "add", "subtract", "multiply", "matmul",
     "sum", "mean",
     "reshape", "transpose", "T", "narrow", "contiguous_copy",
+    # Phase D, D3: forward-only native Conv2d at the Core layer. This is
+    # NOT the public differentiable "conv2d" op (that autograd primitive,
+    # D6, stays in UNSUPPORTED) — it is the layer-qualified forward wrapper
+    # over the exported tf_core_conv2d_forward kernel.
+    "conv2d_forward",
 )
 
 # Operations the NativeTensor autograd layer (Phase B) differentiates.
@@ -292,6 +297,18 @@ def _load_library():
         ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_core_narrow_backward.restype = None
+    # Conv2d forward (Phase D, D3): the exported wrapper over the internal
+    # cross-correlation kernel. Contiguous storage only (Policy B copies at
+    # the Core level); a null bias handle means "no bias"; the output is
+    # caller-allocated. Handles carry per-operand offsets; the 13 trailing
+    # int64s are N, C, H, W, O, kh, kw, sh, sw, ph, pw, out_h, out_w.
+    library.tf_core_conv2d_forward.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # input handle, offset
+        ctypes.c_void_p, ctypes.c_int64,   # weight handle, offset
+        ctypes.c_void_p, ctypes.c_int64,   # bias handle (nullable), offset
+        ctypes.c_void_p,                   # output handle
+    ] + [ctypes.c_int64] * 13
+    library.tf_core_conv2d_forward.restype = None
 
     _configure_error_contract(library)
     return library
@@ -338,6 +355,7 @@ _CHECKED_KERNELS = (
     "tf_core_matmul",
     "tf_core_sum",
     "tf_core_narrow_backward",
+    "tf_core_conv2d_forward",
 )
 
 
@@ -1148,6 +1166,141 @@ class NativeTensorCore:
         )
         return result
 
+    # -- convolution (Phase D, D3: forward-only Core wrapper) ------------
+
+    def _contiguous_temp(self, temporaries):
+        """Materialize this core into a fresh **owning** row-major
+        contiguous copy (offset 0) and record it in ``temporaries`` so the
+        caller closes it deterministically after the native call — the
+        Policy-B copy-then-compute helper (docs/native_cnn_design.md §5)."""
+        temp = self.contiguous_copy()
+        temporaries.append(temp)
+        return temp
+
+    def conv2d_forward(self, weight, bias=None, *, stride=1, padding=0):
+        """2-D cross-correlation forward over this NCHW input, natively.
+
+        ``self`` is the ``(N, C, H, W)`` input; ``weight`` is an
+        ``(O, C, kh, kw)`` OIHW tensor core; ``bias`` is an optional
+        ``(O,)`` tensor core (``None`` = no bias). ``stride`` and
+        ``padding`` are each an int or a 2-element ``(height, width)`` pair
+        (bools rejected). Returns a fresh **owning** row-major contiguous
+        ``(N, O, out_h, out_w)`` NativeTensorCore.
+
+        This is the **forward-only, autograd-unaware** Core wrapper (the
+        differentiable ``NativeTensor.conv2d`` primitive is a later
+        milestone). It performs the full public validation, computes and
+        checks the output shape from the locked floor formula in Python ints
+        (so the shape math cannot overflow) *before* allocating anything,
+        and — by Policy B (docs/native_cnn_design.md §5) — feeds the raw C
+        ABI **contiguous storage only**: any non-contiguous input, weight,
+        or bias is materialized into a private contiguous copy that is
+        closed the moment the native call returns, while already-contiguous
+        operands (even with a non-zero offset) are passed through untouched.
+        The caller's tensors are never mutated. A failure at any stage
+        allocates no output and leaks no temporary copy.
+
+        No dilation, groups, channels-last, or output padding — those are
+        not part of the signature. The weight/bias/input must all be open
+        CPU float64 tensor cores."""
+        self._require_open()
+        if not isinstance(weight, NativeTensorCore):
+            raise TypeError(
+                f"conv2d_forward requires a NativeTensorCore weight, "
+                f"got {type(weight).__name__}"
+            )
+        weight._require_open()
+        self._require_matching_metadata(weight, "conv2d_forward")
+        has_bias = bias is not None
+        if has_bias:
+            if not isinstance(bias, NativeTensorCore):
+                raise TypeError(
+                    f"conv2d_forward requires a NativeTensorCore bias or None, "
+                    f"got {type(bias).__name__}"
+                )
+            bias._require_open()
+            self._require_matching_metadata(bias, "conv2d_forward")
+
+        if self.ndim != 4:
+            raise ValueError(
+                f"conv2d_forward requires a 4-D NCHW input, got shape {self.shape}"
+            )
+        if weight.ndim != 4:
+            raise ValueError(
+                f"conv2d_forward requires a 4-D OIHW weight, got shape {weight.shape}"
+            )
+        if has_bias and bias.ndim != 1:
+            raise ValueError(
+                f"conv2d_forward requires a 1-D bias, got shape {bias.shape}"
+            )
+
+        n, c, h, w = self.shape
+        o, weight_in, kh, kw = weight.shape
+        if c != weight_in:
+            raise ValueError(
+                f"conv2d_forward input channels {c} do not match the weight's "
+                f"input channels {weight_in} (input {self.shape}, weight "
+                f"{weight.shape})"
+            )
+        if has_bias and bias.shape[0] != o:
+            raise ValueError(
+                f"conv2d_forward bias length {bias.shape[0]} does not match the "
+                f"number of output channels {o}"
+            )
+
+        sh, sw = _spatial_pair(stride, "stride", minimum=1)
+        ph, pw = _spatial_pair(padding, "padding", minimum=0)
+        # Python-int floor arithmetic; raises before any allocation if the
+        # kernel does not fit the padded input.
+        out_h, out_w = conv_output_shape((h, w), (kh, kw), (sh, sw), (ph, pw))
+
+        # Policy B: hand the kernel contiguous storage only. A non-contiguous
+        # operand is copied into a private owning tensor (offset 0) closed as
+        # soon as the call returns; a contiguous operand (possibly with a
+        # non-zero offset) is passed straight through with its offset.
+        temporaries = []
+        try:
+            input_core = (
+                self if self.contiguous else self._contiguous_temp(temporaries)
+            )
+            weight_core = (
+                weight if weight.contiguous
+                else weight._contiguous_temp(temporaries)
+            )
+            bias_handle = None
+            bias_offset = 0
+            if has_bias:
+                bias_core = (
+                    bias if bias.contiguous
+                    else bias._contiguous_temp(temporaries)
+                )
+                bias_handle = bias_core._storage._require_open()
+                bias_offset = bias_core.offset
+
+            out = NativeTensorCore.zeros(
+                (n, o, out_h, out_w), dtype=self.dtype, device=self.device
+            )
+            try:
+                self._storage._lib.tf_core_conv2d_forward(
+                    input_core._storage._require_open(), input_core.offset,
+                    weight_core._storage._require_open(), weight_core.offset,
+                    bias_handle, bias_offset,
+                    out._storage._require_open(),
+                    n, c, h, w, o, kh, kw, sh, sw, ph, pw, out_h, out_w,
+                )
+            except BaseException:
+                # The native call failed (e.g. an injected allocation
+                # failure): discard the freshly allocated output so a failed
+                # forward returns no half-built tensor.
+                out.close()
+                raise
+            return out
+        finally:
+            # Close every private contiguous copy exactly once, whether the
+            # call succeeded or raised — the caller's operands are untouched.
+            for temp in temporaries:
+                temp.close()
+
     # -- view operations (metadata only: no data is copied) --------------
 
     def _view_core(self, shape, strides, offset):
@@ -1594,6 +1747,67 @@ def _reduce_out_strides(in_shape, reduced_axes, keepdims, out_shape):
             result[d] = out_full[out_index]
             out_index += 1
     return result
+
+
+def _spatial_pair(value, name, minimum):
+    """Normalize a spatial argument to a ``(height, width)`` int pair.
+
+    Mirrors the stable ``tensorforge.nn.conv._pair`` semantics in the
+    native package's strict style (the two lines never cross-import): a
+    plain int ``v`` becomes ``(v, v)``; a 2-element tuple/list of ints is
+    taken as ``(height, width)``. Booleans are rejected (``bool`` is an
+    ``int`` subclass, so ``True``/``False`` are never valid dimensions) and
+    every member must be at least ``minimum`` (``1`` for kernel/stride,
+    ``0`` for padding). Raises ``ValueError`` otherwise. Pure Python — never
+    touches the compiled library, so it is safe whether or not the backend
+    is built."""
+    if isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+        pair = (int(value), int(value))
+    elif (
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and all(
+            isinstance(v, (int, np.integer)) and not isinstance(v, bool)
+            for v in value
+        )
+    ):
+        pair = (int(value[0]), int(value[1]))
+    else:
+        raise ValueError(
+            f"{name} must be an int or a 2-element pair of ints, got {value!r}"
+        )
+    if any(v < minimum for v in pair):
+        raise ValueError(f"{name} values must be >= {minimum}, got {pair}")
+    return pair
+
+
+def conv_output_shape(input_size, kernel_size, stride, padding):
+    """The ``(out_h, out_w)`` of a 2-D convolution / pooling window.
+
+    Applies the locked floor formula per spatial axis (identical to the
+    stable Conv2d)::
+
+        out = (size + 2*pad - kernel) // stride + 1
+
+    Every argument is a validated ``(height, width)`` pair of ints. The
+    arithmetic runs in Python ints (arbitrary precision), so the
+    shape math itself can never overflow. Raises ``ValueError`` — naming
+    the kernel, stride, padding, and input — when either extent would be
+    ``< 1`` (the kernel does not fit the padded input), *before* any output
+    is allocated. Pure Python; never touches the compiled library."""
+    h, w = input_size
+    kh, kw = kernel_size
+    sh, sw = stride
+    ph, pw = padding
+    out_h = (h + 2 * ph - kh) // sh + 1
+    out_w = (w + 2 * pw - kw) // sw + 1
+    if out_h < 1 or out_w < 1:
+        raise ValueError(
+            f"kernel {(kh, kw)} with stride {(sh, sw)} and padding {(ph, pw)} "
+            f"does not fit input {(h, w)}: computed output {(out_h, out_w)} has "
+            f"a non-positive extent"
+        )
+    return out_h, out_w
 
 
 def _binary_op(kernel_name, a, b, name):

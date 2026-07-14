@@ -598,12 +598,20 @@ The Python line is done; what remains is expansion on its own terms:
     (`tf::conv2d_forward_contiguous` — direct nested-loop
     cross-correlation, symmetric zero padding, optional bias), verified
     by a dependency-free C++ CTest binary against hand-computed cases and
-    stable-framework parity. It is deliberately **not exposed to Python**
-    (no C ABI export, no ctypes, no wrapper) — that is D3. The native
-    convolution and pooling **layers** remain **unimplemented** and marked
-    unsupported in the [support matrix](native_support_matrix.md); the
-    backend advertises no convolution or pooling capability. This design
-    guides the remaining Phase-D milestones.
+    stable-framework parity. **D3 has shipped** the forward-only
+    convolution *layer*: the exported, exception-guarded C ABI wrapper
+    `tf_core_conv2d_forward` (self-validating, contiguous-only), its
+    ctypes/`errcheck` registration, and `NativeTensorCore.conv2d_forward`
+    — a Python-reachable, autograd-unaware Core method that validates
+    shapes, computes the output shape in overflow-safe Python ints,
+    copies non-contiguous operands (Policy B), and returns a fresh owning
+    contiguous NCHW output matching the stable convolution to tolerance.
+    The *differentiable* native convolution op, the convolution gradient
+    kernels, the native convolution module, and all of pooling remain
+    **unimplemented** and marked unsupported in the
+    [support matrix](native_support_matrix.md); the backend advertises no
+    differentiable convolution, no convolution module, and no pooling
+    capability. This design guides the remaining Phase-D milestones.
   - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

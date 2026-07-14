@@ -902,10 +902,11 @@ automatically):
   the exported wrappers. **D2 shipped** the internal
   `tf::conv2d_forward_contiguous` (pure arithmetic, hidden symbol),
   declared in the focused internal header
-  **`cpp/include/tf_conv2d_internal.h`** (non-ABI); the exported
-  `tf_core_conv2d_forward` and the backward kernels
-  (`tf_core_conv2d_input_backward`, `tf_core_conv2d_weight_backward`)
-  join in D3/D4/D5.
+  **`cpp/include/tf_conv2d_internal.h`** (non-ABI). **D3 added** the
+  exported, exception-guarded `tf_core_conv2d_forward` wrapper into this
+  same file (validation + Storage handles + the thread-local error
+  contract); the backward kernels (`tf_core_conv2d_input_backward`,
+  `tf_core_conv2d_weight_backward`) join in D4/D5.
 - **`cpp/src/pooling.cpp`** — `tf_core_maxpool2d_forward`,
   `tf_core_maxpool2d_backward`.
 
@@ -1101,16 +1102,89 @@ mergeable. Milestones are **not** merged to reduce the count.
 - **Status:** **done** (internal compute kernel). Conv2d is still
   **unreachable from Python**; the C ABI export is D3.
 
-### D3 — Conv2d `NativeTensorCore` wrapper + ctypes
-- **Scope:** argtypes registration; `NativeTensorCore.conv2d_forward`;
-  Policy-B contiguity; output allocation; shape validation.
-- **Excludes:** autograd graph; module.
-- **Files:** `backends/cpp.py`; `tests/test_native_tensor_core.py`
-  additions.
-- **Tests:** forward parity with stable; non-contiguous input; invalid
-  shapes; allocation failure.
+### D3 — Conv2d `NativeTensorCore` wrapper + ctypes — **implemented**
+- **Scope:** the exported C ABI wrapper `tf_core_conv2d_forward`
+  (exception-guarded, self-validating; contiguous storage is a *caller
+  precondition* — no stride metadata crosses the ABI, so it bounds-checks
+  spans but does not inspect logical contiguity); its ctypes argtypes +
+  `errcheck` registration; and `NativeTensorCore.conv2d_forward` (Policy-B
+  copy-then-compute contiguity, output allocation, full shape validation).
+- **Excludes:** autograd graph; module; any backward.
+- **Files:** `cpp/src/conv2d.cpp` (the exported wrapper joins the D2
+  internal kernel); `cpp/CMakeLists.txt` (the D2 CTest now also compiles
+  `error.cpp`, since the wrapper references the thread-local error slot);
+  `backends/cpp.py` (argtypes, `_CHECKED_KERNELS`, `_spatial_pair`,
+  `conv_output_shape`, `NativeTensorCore.conv2d_forward`, `TENSOR_CORE_OPS`
+  gains `conv2d_forward`); `tests/test_native_conv2d_core.py`.
+- **Tests:** hand-computed forward, bias/no-bias, multi-channel, batch,
+  padding, stride, rectangular, tuple stride/padding, stable parity,
+  determinism; output shape/stride/offset/ownership/metadata contract;
+  Policy-B non-contiguous input/weight/bias parity and temporary-copy
+  closure; the full validation surface; raw-ABI rejection (null handle,
+  output-dim mismatch, storage-span overflow) as `ValueError`; injected
+  allocation failure as an atomic `MemoryError`; capability separation.
 - **Acceptance:** forward-only `NativeTensorCore` conv works end to end.
+  **Done.**
 - **Dependencies:** D2.
+
+**Actual exported C ABI signature (D3).** A `void` function signalling
+success/failure only through the thread-local error slot (no C++ exception
+crosses the boundary), registered in `_CHECKED_KERNELS`:
+
+```c
+void tf_core_conv2d_forward(
+    const void* input_handle,  int64_t input_offset,
+    const void* weight_handle, int64_t weight_offset,
+    const void* bias_handle,   int64_t bias_offset,   // bias_handle == NULL => no bias
+    void*       output_handle,                         // caller-allocated, offset 0
+    int64_t batch, int64_t in_channels,
+    int64_t input_height, int64_t input_width,
+    int64_t out_channels,
+    int64_t kernel_height, int64_t kernel_width,
+    int64_t stride_height, int64_t stride_width,
+    int64_t pad_height,    int64_t pad_width,
+    int64_t output_height, int64_t output_width);
+```
+
+The wrapper validates at the boundary before running the D2 noexcept
+kernel: null required handles, non-positive extents/kernel/stride, negative
+padding/offsets, an output shape disagreeing with the floor formula, and —
+using overflow-checked int64 arithmetic — any storage span that would fall
+outside its allocation are all rejected with `TF_ERROR_INVALID`
+(`ValueError` in Python). No shape/stride arrays cross the ABI: the raw
+contract is **contiguous storage plus a per-operand offset**. Because no
+stride metadata is supplied, the ABI **cannot and does not inspect logical
+contiguity** — row-major NCHW/OIHW/1-D layout is a *caller precondition* it
+trusts, and it interprets each `(handle, offset, dims)` span as canonical
+contiguous data. What it independently guarantees is that that span lies
+inside the allocation (plus every other metadata check above); ensuring the
+data is genuinely contiguous is the Core layer's job (Policy B copies any
+non-contiguous operand before the call). The division of responsibility is
+therefore explicit: **`NativeTensorCore.conv2d_forward` accepts
+non-contiguous Core operands and makes owning contiguous copies; the raw C
+ABI only ever sees — and only ever promises to bounds-check — contiguous
+spans.**
+
+**Actual Core API (D3).**
+`NativeTensorCore.conv2d_forward(weight, bias=None, *, stride=1,
+padding=0)` — `self` is the `(N, C, H, W)` NCHW input, `weight` is
+`(O, C, kh, kw)` OIHW, `bias` is an optional `(O,)` core. `stride`/
+`padding` are an int or a 2-element `(height, width)` pair (bools
+rejected, kernel/stride ≥ 1, padding ≥ 0). It validates dtype/device,
+ranks, channel compatibility, and bias length; computes and checks
+`out_h, out_w` in **Python ints** (arbitrary precision — the shape math
+cannot overflow) before allocating anything; then, per **Policy B**,
+materializes any non-contiguous input/weight/bias into a private owning
+contiguous copy (offset 0) that is **closed as soon as the native call
+returns**, passing already-contiguous operands (offset included) straight
+through. The result is a fresh **owning** row-major contiguous
+`(N, O, out_h, out_w)` CPU float64 core, valid after every input is closed
+and independent of their storage. Failure at any stage allocates no output
+and leaks no temporary. It is **forward-only and autograd-unaware**: the
+differentiable `NativeTensor.conv2d` primitive (D6) and the `NativeConv2d`
+module (D7) are later milestones and stay unsupported, so the backend
+registry advertises `conv2d` as unsupported while listing the Core-level
+`conv2d_forward` in `TENSOR_CORE_OPS`.
 
 ### D4 — Conv2d input-gradient kernel
 - **Scope:** `tf_core_conv2d_input_backward` + its Core wrapper.

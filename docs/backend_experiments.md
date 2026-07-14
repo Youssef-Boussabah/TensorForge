@@ -497,9 +497,17 @@ first milestone **D1 has shipped**: `NativeFlatten`, a parameter-free,
 buffer-free batch-preserving flatten Python-composed from the existing
 `reshape`/`contiguous_copy` operations and their autograd (no new C++
 kernel, no custom backward), returning an independent owning result so
-it composes safely in a `NativeSequential`. The native convolution
-(`NativeConv2d`) and pooling (`NativeMaxPool2d`) layers remain
-unimplemented, followed by the CUDA runtime, dtype/AMP work,
+it composes safely in a `NativeSequential`. **D2** then added the
+internal CPU float64 convolution forward compute kernel
+(`tf::conv2d_forward_contiguous`, a hidden C++ symbol), and **D3** exposed
+it through the exception-guarded C ABI (`tf_core_conv2d_forward`) and the
+forward-only `NativeTensorCore.conv2d_forward` Core method (ctypes/
+`errcheck` registration, Policy-B copy-then-compute for non-contiguous
+operands, a fresh owning contiguous NCHW output matching the stable
+Conv2d to tolerance). The *differentiable* `NativeTensor.conv2d` op, the
+convolution gradients, the `NativeConv2d` module, and pooling
+(`NativeMaxPool2d`) remain unimplemented, followed by the CUDA runtime,
+dtype/AMP work,
 Transformer/text experiments, distributed training, and the final
 portfolio release. Still float64/cpu only, still explicit and
 experimental, and no production performance is claimed.
