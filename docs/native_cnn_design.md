@@ -448,6 +448,15 @@ out_w)`; it is made contiguous by Policy B before any kernel runs.
 - **This callback runs only when `input` requires grad**, and when it
   runs it **rereads the weight's forward value** — so a direct-parameter
   weight is version-guarded **only in that case** (§8).
+- **Status (D4 — implemented, internal):** the numerical scatter-add ships
+  as `tf::conv2d_input_backward_contiguous` in `cpp/src/conv2d.cpp`
+  (declared in `cpp/include/tf_conv2d_internal.h`) — a hidden C++ symbol
+  exercised only by the `conv2d_input_backward` CTest, **not** reachable
+  from Python. It **zero-initializes the whole grad-input span itself**
+  before the deterministic `n → o → i → j → c → p → q` `+=` accumulation,
+  reads `grad_output`/`weight` without mutation, and allocates nothing. The
+  exported `tf_core_conv2d_input_backward` wrapper, its Core method, and the
+  autograd node remain **D6**.
 
 ### 7.2 Gradient w.r.t. weight — `∂L/∂W`
 
@@ -1186,12 +1195,48 @@ module (D7) are later milestones and stay unsupported, so the backend
 registry advertises `conv2d` as unsupported while listing the Core-level
 `conv2d_forward` in `TENSOR_CORE_OPS`.
 
-### D4 — Conv2d input-gradient kernel
-- **Scope:** `tf_core_conv2d_input_backward` + its Core wrapper.
-- **Excludes:** weight/bias grad; autograd wiring.
-- **Files:** `cpp/src/conv2d.cpp`; `backends/cpp.py`; tests.
-- **Tests:** input-grad finite differences (forward-only harness).
-- **Acceptance:** `∂L/∂x` correct. **Dependencies:** D3.
+### D4 — Conv2d input-gradient kernel — **implemented (internal)**
+- **Scope:** the **internal** CPU float64 input-gradient compute kernel
+  only — `tf::conv2d_input_backward_contiguous` (direct nested-loop
+  scatter-add, the adjoint of the forward cross-correlation; symmetric
+  zero padding by skipping out-of-bounds coordinates; **zero-initializes
+  its own output span** so the caller need not pre-zero it; deterministic
+  `n → o → i → j → c → p → q` accumulation into the `(N,C,H,W)` grad-input
+  span). Bias does not affect the input gradient, so the kernel neither
+  receives nor reads a bias.
+- **Excludes — deferred:** the `extern "C" tf_core_conv2d_input_backward`
+  export, ctypes registration, the `NativeTensorCore` backward wrapper,
+  fresh-storage allocation, error mapping, and any autograd wiring are
+  **D6** (which exposes all Conv2d backward C ABI/Core surface and the
+  `NativeTensor.conv2d` graph after D5 finishes the remaining gradient
+  kernels). D4 adds **nothing reachable from Python**. Also excludes the
+  weight- and bias-gradients (D5).
+- **Files:** `cpp/src/conv2d.cpp` (definition, joining the forward kernel
+  and the D3 exported wrapper), `cpp/include/tf_conv2d_internal.h`
+  (internal, non-ABI declaration + the zero-init/accumulation/precondition
+  contract), `cpp/tests/test_conv2d_input_backward.cpp` (dependency-free
+  CTest binary compiling `conv2d.cpp` + `error.cpp` directly),
+  `cpp/CMakeLists.txt` (the new `conv2d_input_backward` CTest target).
+- **Internal signature:**
+  `void tf::conv2d_input_backward_contiguous(const double* grad_output,
+  const double* weight, double* grad_input, int64_t batch, in_channels,
+  input_height, input_width, out_channels, kernel_height, kernel_width,
+  stride_height, stride_width, pad_height, pad_width, output_height,
+  output_width) noexcept` — reads `grad_output` (NCHW) and `weight` (OIHW)
+  without mutation, writes only the `grad_input` (NCHW) span, allocates
+  nothing.
+- **Tests:** 19 dependency-free C++ cases — hand-computed 1×1/2×2 scatter,
+  overlapping-window accumulation, multi-input-channel, multi-output-
+  channel accumulation, batch, stride (untouched positions stay zero),
+  symmetric padding, rectangular input, rectangular kernel, tuple
+  asymmetric stride/padding, combined stride+padding, negative/fractional
+  values, output zero-init from garbage, input immutability, determinism,
+  stable-`tensorforge.nn.Conv2d` parity (embedded, `1e-9`), central
+  finite-difference validation against the internal forward objective
+  (`eps 1e-5`, `atol 1e-6`), and no-bias equivalence.
+- **Acceptance:** `∂L/∂x` correct against hand-computed values, stable
+  parity, and finite differences; Release **and** Debug CTests warning-
+  clean. **Done** (internal kernel). **Dependencies:** D2, D3.
 
 ### D5 — Conv2d weight- and bias-gradient
 - **Scope:** `tf_core_conv2d_weight_backward` + Core wrapper; **bias grad

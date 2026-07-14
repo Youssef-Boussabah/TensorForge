@@ -126,4 +126,27 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME conv2d_forward COMMAND test_conv2d_forward)
+
+  # Conv2d input-gradient (D4): links the same internal kernel source
+  # (conv2d.cpp) directly. It compiles error.cpp too for the identical
+  # reason as the forward target — conv2d.cpp carries the D3 guarded
+  # wrapper, which references the thread-local error slot — while the test
+  # itself exercises only the internal tf::conv2d_input_backward_contiguous
+  # kernel (and the internal forward kernel for its finite-difference
+  # objective).
+  add_executable(test_conv2d_input_backward
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_conv2d_input_backward.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_conv2d_input_backward PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_conv2d_input_backward PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_conv2d_input_backward PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_conv2d_input_backward PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME conv2d_input_backward COMMAND test_conv2d_input_backward)
 endif()

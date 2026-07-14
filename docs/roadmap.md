@@ -606,9 +606,18 @@ The Python line is done; what remains is expansion on its own terms:
     shapes, computes the output shape in overflow-safe Python ints,
     copies non-contiguous operands (Policy B), and returns a fresh owning
     contiguous NCHW output matching the stable convolution to tolerance.
-    The *differentiable* native convolution op, the convolution gradient
-    kernels, the native convolution module, and all of pooling remain
-    **unimplemented** and marked unsupported in the
+    **D4 has shipped** the **internal** CPU float64 convolution
+    input-gradient compute kernel (`tf::conv2d_input_backward_contiguous`
+    — a hidden C++ symbol: the deterministic scatter-add adjoint of the
+    forward cross-correlation, zero-initializing its own output, verified
+    by a dependency-free C++ CTest against hand-computed cases, stable
+    parity, and central finite differences). Like D2 it is deliberately
+    **not exposed to Python** — the exported backward C ABI wrapper, its
+    Core method, and the autograd node are D6, after D5 adds the
+    weight/bias gradients. The *differentiable* native convolution op, the
+    remaining convolution gradient kernels, the native convolution module,
+    and all of pooling remain **unimplemented** and marked unsupported in
+    the
     [support matrix](native_support_matrix.md); the backend advertises no
     differentiable convolution, no convolution module, and no pooling
     capability. This design guides the remaining Phase-D milestones.

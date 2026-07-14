@@ -129,8 +129,12 @@ forward compute kernel** (`tf::conv2d_forward_contiguous`, a hidden C++
 symbol), and **D3 has shipped the forward-only convolution *layer***: the
 exported, exception-guarded C ABI wrapper `tf_core_conv2d_forward`, its
 ctypes/`errcheck` registration, and `NativeTensorCore.conv2d_forward` (a
-Python-reachable, forward-only, autograd-unaware Core method). Every
-remaining row below is **planned, not supported**, and stays in this
+Python-reachable, forward-only, autograd-unaware Core method). **D4 has
+shipped the internal convolution input-gradient compute kernel**
+(`tf::conv2d_input_backward_contiguous`, a hidden C++ symbol exercised only
+by a C++ CTest — **not** reachable from Python; its exported wrapper and
+Core method are D6). Every remaining row below is **planned, not
+supported**, and stays in this
 section until its milestone lands. The backend registry still advertises
 the *differentiable* `conv2d` op and the `NativeConv2d` module as
 unsupported — D3 provides only the layer-qualified Core forward
@@ -142,8 +146,10 @@ unsupported — D3 provides only the layer-qualified Core forward
 | Internal convolution forward compute kernel (C++, not exposed) | D2 | **Implemented (internal)** |
 | Convolution forward C ABI export (`tf_core_conv2d_forward`) — exception-guarded; self-validates handles/dims/offsets/output-shape/overflow/span-bounds; contiguous storage is a caller precondition (no stride metadata crosses the ABI, so it never inspects logical contiguity) | D3 | **Implemented (raw kernel)** |
 | Convolution forward Core wrapper (`NativeTensorCore.conv2d_forward`) — ctypes, Policy-B copy, output allocation, Python forward access | D3 | **Implemented (Core, forward-only)** |
+| Internal convolution input-gradient compute kernel (`tf::conv2d_input_backward_contiguous`, C++, not exposed) | D4 | **Implemented (internal)** |
+| Convolution input-gradient C ABI export, Core wrapper, Python access | D6 | Planned |
 | Convolution `NativeTensor` autograd op (differentiable `conv2d`) | D6 | Planned (unsupported) |
-| Native convolution input/weight/bias gradient kernels | D4–D5 | Planned |
+| Native convolution weight/bias gradient kernels | D5 | Planned |
 | `NativeConv2d` module | D7 | Planned |
 | Native max-pooling forward + winner-index buffer | D8 | Planned |
 | Native max-pooling backward (scatter) | D9 | Planned |
