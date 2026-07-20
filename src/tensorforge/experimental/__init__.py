@@ -12,10 +12,36 @@ graph (Phase B, complete as of Advanced C++ v2.6). It is **not**
 tensorforge.Tensor: the two autograd engines never mix, no conversion is
 implicit, and it shares no state with the stable framework. A full native
 training stack — parameters, modules, layers, a loss, optimizers, and
-pickle-free checkpoints — is built on it and described below; only CUDA
-and the Phase-D numerical layers (native Conv2d/MaxPool2d/Flatten, new
-activations, softmax/classification losses, BatchNorm/LayerNorm/Dropout)
-remain future work.
+pickle-free checkpoints — is built on it and described below. The native
+CNN stack (Phase D) has begun with ``NativeFlatten`` (milestone D1) and,
+as of milestone D6, the differentiable **``NativeTensor.conv2d``** operation
+(NCHW/OIHW cross-correlation with int/tuple stride and padding and optional
+bias; input, weight, and bias gradients through native backward kernels and
+the existing ``sum`` reduction), and as of milestone D7 the trainable
+**``NativeConv2d``** module built on it (OIHW weight / optional ``(O,)``
+bias ``NativeParameter``s, deterministic uniform conv fan-in initialization,
+4-D NCHW input validation, and backward supplied entirely by the D6
+autograd — no new kernel, ABI symbol, or custom module backward).
+Milestones D8 and D9 added the differentiable **``NativeTensor.maxpool2d``**
+operation (NCHW window maxima with int/tuple ``kernel_size``/``stride``/
+``padding``; its backward scatters through the private winner buffer its own
+forward saved, so it never rereads the input, never recomputes a maximum,
+and records no parameter-version snapshot), and milestone D10 exposes it as
+the **``NativeMaxPool2d``** layer: a parameter-free, buffer-free module that
+normalizes ``kernel_size``/``stride``/``padding`` to two-element tuples
+(``stride=None`` ⇒ non-overlapping windows) and delegates its forward
+entirely to that operation — no new kernel, ABI symbol, custom backward, or
+state. It holds no winner storage between calls and contributes no
+state-dictionary or checkpoint keys, so it drops into a ``NativeSequential``
+beside ``NativeConv2d``/``NativeFlatten`` without touching the optimizer or
+checkpoint paths. Milestone D11 proved the whole stack trains — see
+``examples/native_cnn_training.py``, whose checkpoint-interrupted run
+reproduces the uninterrupted one exactly — and **milestone D12 closed
+Phase D** with cross-cutting integration tests, honest CNN benchmarks, and
+ASan/UBSan validation. What the native line still does **not** have: a
+classification stack (softmax/cross-entropy), further activations/math,
+normalization (BatchNorm/LayerNorm), dropout or a native RNG,
+float32/dtype expansion, CUDA, AMP, and data-pipeline abstractions.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
@@ -35,7 +61,12 @@ backward supplied entirely by the existing native autograd.
 the first composable model surface: a parameter-free activation module
 over the existing ``relu()`` autograd, and an ordered container with
 contiguous integer-string execution slots, position-based execution,
-and identity-deduplicated traversal/state. ``NativeMSELoss`` (Advanced
+and identity-deduplicated traversal/state. ``NativeFlatten`` (Phase D,
+milestone D1) is a parameter-free, buffer-free batch-preserving flatten
+Python-composed from the existing ``reshape``/``contiguous_copy``
+operations and their autograd (no new kernel, no custom backward); it
+returns an independent owning ``(N, features)`` tensor so it composes
+safely in a ``NativeSequential``. ``NativeMSELoss`` (Advanced
 C++ v3.6) is the first native loss: a parameter-free scalar
 mean/sum-reduced MSE composed from existing native operations, its
 gradients supplied entirely by the existing autograd. Parameter
@@ -88,6 +119,9 @@ from .native_parameter import NativeParameter, NativeParameterRegistry
 from .native_module import NativeModule
 from .native_linear import NativeLinear
 from .native_relu import NativeReLU
+from .native_flatten import NativeFlatten
+from .native_conv2d import NativeConv2d
+from .native_maxpool2d import NativeMaxPool2d
 from .native_sequential import NativeSequential
 from .native_mse_loss import NativeMSELoss
 from .native_sgd import NativeSGD
@@ -101,6 +135,9 @@ __all__ = [
     "NativeModule",
     "NativeLinear",
     "NativeReLU",
+    "NativeFlatten",
+    "NativeConv2d",
+    "NativeMaxPool2d",
     "NativeSequential",
     "NativeMSELoss",
     "NativeSGD",

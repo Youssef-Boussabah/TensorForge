@@ -91,3 +91,130 @@ if(TF_SANITIZE AND NOT MSVC)
 elseif(TF_SANITIZE AND MSVC)
   message(WARNING "TF_SANITIZE is not supported with MSVC; building without sanitizers")
 endif()
+
+# ---------------------------------------------------------------------------
+# Optional native C++ tests (CTest). Off by default, so the ordinary package
+# build and cpp/build.py (which never sets this option) are unaffected;
+# enable with -DTF_BUILD_TESTS=ON. Each test executable compiles the
+# internal kernel source(s) it exercises *directly* — the shared library
+# exports only the TF_EXPORT symbols, and these internal compute functions
+# are intentionally hidden, so they are not reachable through the library.
+# ---------------------------------------------------------------------------
+option(TF_BUILD_TESTS "Build the native C++ test executables (CTest)" OFF)
+
+if(TF_BUILD_TESTS)
+  enable_testing()
+
+  # Conv2d forward (D2): links the internal kernel source directly. Since
+  # D3 added the exported tf_core_conv2d_forward wrapper into conv2d.cpp,
+  # that translation unit now references the thread-local error slot
+  # (tf::set_error / tf::clear_error via TF_GUARD), so error.cpp is compiled
+  # in too; the D2 test still exercises only the internal kernel.
+  add_executable(test_conv2d_forward
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_conv2d_forward.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_conv2d_forward PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_conv2d_forward PRIVATE -Wall -Wextra)
+  endif()
+  # Honor the same optional sanitizers as the library (Clang/GCC only).
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_conv2d_forward PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_conv2d_forward PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME conv2d_forward COMMAND test_conv2d_forward)
+
+  # Conv2d input-gradient (D4): links the same internal kernel source
+  # (conv2d.cpp) directly. It compiles error.cpp too for the identical
+  # reason as the forward target — conv2d.cpp carries the D3 guarded
+  # wrapper, which references the thread-local error slot — while the test
+  # itself exercises only the internal tf::conv2d_input_backward_contiguous
+  # kernel (and the internal forward kernel for its finite-difference
+  # objective).
+  add_executable(test_conv2d_input_backward
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_conv2d_input_backward.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_conv2d_input_backward PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_conv2d_input_backward PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_conv2d_input_backward PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_conv2d_input_backward PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME conv2d_input_backward COMMAND test_conv2d_input_backward)
+
+  # Conv2d weight-gradient (D5): links the same internal kernel source
+  # (conv2d.cpp) directly, plus error.cpp for the identical reason as the
+  # other backward target (conv2d.cpp carries the D3 guarded wrapper). The
+  # test exercises only the internal tf::conv2d_weight_backward_contiguous
+  # kernel (and the internal forward kernel for its finite-difference and
+  # padded-reference oracles).
+  add_executable(test_conv2d_weight_backward
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_conv2d_weight_backward.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_conv2d_weight_backward PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_conv2d_weight_backward PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_conv2d_weight_backward PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_conv2d_weight_backward PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME conv2d_weight_backward COMMAND test_conv2d_weight_backward)
+
+  # MaxPool2d forward + winner buffer (D8): links the internal pooling
+  # kernel source (pooling.cpp) directly, plus error.cpp because that
+  # translation unit also carries the exported, guarded
+  # tf_core_maxpool2d_forward wrapper (which references the thread-local
+  # error slot). The test itself exercises only the internal
+  # tf::maxpool2d_forward_contiguous kernel — output values and saved
+  # winner indices together.
+  add_executable(test_maxpool2d_forward
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_maxpool2d_forward.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/pooling.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_maxpool2d_forward PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_maxpool2d_forward PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_maxpool2d_forward PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_maxpool2d_forward PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME maxpool2d_forward COMMAND test_maxpool2d_forward)
+
+  # MaxPool2d backward (D9): links the same internal pooling source
+  # (pooling.cpp) plus error.cpp. Unlike the forward target this test
+  # exercises *both* layers of that translation unit — the internal
+  # tf::maxpool2d_backward_contiguous scatter kernel (with valid winners
+  # only) and the exported guarded tf_core_maxpool2d_backward wrapper,
+  # whose winner-value validation it drives through plain tf::Storage
+  # handles and the thread-local error slot.
+  add_executable(test_maxpool2d_backward
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_maxpool2d_backward.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/pooling.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_maxpool2d_backward PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_maxpool2d_backward PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_maxpool2d_backward PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_maxpool2d_backward PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME maxpool2d_backward COMMAND test_maxpool2d_backward)
+endif()

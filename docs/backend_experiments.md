@@ -490,12 +490,110 @@ What it delivered:
 The verified suite stands at **1365 tests** (1353 plus the 10
 cross-cutting completion tests and 2 new documentation guardrails).
 Phase A, Phase B, and **Phase C are complete**; the
-next major native phase is the **native CNN stack** (`NativeConv2d`,
-`NativeMaxPool2d`, `NativeFlatten`), which has not started, followed by
-the CUDA runtime, dtype/AMP work, Transformer/text experiments,
-distributed training, and the final portfolio release. Still
-float64/cpu only, still explicit and experimental, and no production
-performance is claimed.
+next major native phase is the **native CNN stack** (Phase D), whose
+architecture contract is locked in
+[native_cnn_design.md](native_cnn_design.md) (milestone D0) and whose
+first milestone **D1 has shipped**: `NativeFlatten`, a parameter-free,
+buffer-free batch-preserving flatten Python-composed from the existing
+`reshape`/`contiguous_copy` operations and their autograd (no new C++
+kernel, no custom backward), returning an independent owning result so
+it composes safely in a `NativeSequential`. **D2–D6** then built the
+**differentiable native Conv2d operation**: internal CPU float64
+forward/input-gradient/weight-gradient compute kernels
+(`tf::conv2d_forward_contiguous` and the two `*_backward_contiguous`
+kernels, hidden C++ symbols), their exception-guarded C ABI wrappers
+(`tf_core_conv2d_forward`, `tf_core_conv2d_input_backward`,
+`tf_core_conv2d_weight_backward`) with ctypes/`errcheck` registration, the
+`NativeTensorCore.conv2d_forward`/`conv2d_input_backward`/
+`conv2d_weight_backward` Core methods (Policy-B copy-then-compute for
+non-contiguous operands, fresh owning contiguous outputs matching the
+stable Conv2d to tolerance), the bias gradient composed from the existing
+native `sum` reduction (no dedicated kernel), and the Python-managed
+**`NativeTensor.conv2d`** autograd primitive (input/weight/bias gradients,
+conditional stale-value version tracking, failure rollback). **D7** then
+shipped the trainable **`NativeConv2d`** module built on that operation: an
+OIHW weight / optional `(O,)` bias `NativeParameter` layer with
+deterministic uniform conv fan-in initialization (`bound =
+1/sqrt(in_channels·kh·kw)`, local-RNG, global state untouched), 4-D NCHW
+input validation, and backward supplied entirely by the D6 autograd — no
+new kernel, C ABI symbol, or custom module backward. It registers through
+the inherited `NativeModule` mechanism (deterministic `weight` then `bias`
+order), rides the existing state_dict/checkpoint/`NativeSGD`/`NativeAdam`
+paths unchanged, and drops into a `NativeSequential`. **D8** then added the
+forward-only **max-pooling** layer: the internal
+`tf::maxpool2d_forward_contiguous` kernel (a hidden C++ symbol in the new
+`cpp/src/pooling.cpp`, producing the pooled values *and* the saved winner
+indices in one deterministic row-major pass), its exception-guarded
+`tf_core_maxpool2d_forward` export with ctypes/`errcheck` registration, and
+the Core method `NativeTensorCore.maxpool2d_forward` (Policy-B
+copy-then-compute, failure-atomic output + **private** winner-buffer
+allocation, exact parity with the stable `MaxPool2d`). The winner buffer —
+an internal float64 buffer of flat plane offsets with a `-1` padding
+sentinel, proved exact against `H*W ≤ 2^53` both in Python and at the ABI —
+is deliberately invisible: no public tensor, no new dtype, no state-dict or
+checkpoint presence. **D9** then completed the differentiable pooling
+operation: the internal scatter-add `tf::maxpool2d_backward_contiguous`,
+the exported guarded `tf_core_maxpool2d_backward` wrapper (which validates
+every winner value — the `-1` sentinel or an exact in-range integer —
+before scattering, and never rounds a malformed one),
+`NativeTensorCore.maxpool2d_backward`, and the Python-managed
+**`NativeTensor.maxpool2d`** autograd node. Backward reads **only** the
+saved winners and the upstream, so it takes no kernel/stride/padding at any
+layer, records **no** parameter-version snapshot (unlike `conv2d`, whose
+gradients reread operand values), and is unaffected by input mutation after
+the forward pass; overlapping windows accumulate and padding winners drop
+their gradient. The winner buffer is owned by the graph history and
+released exactly when it is — freed by a one-shot `backward()` or
+`close()`, retained under `retain_graph=True`, and kept alive across a
+failed (retryable) backward — through the small
+`_from_op(..., graph_resources=...)` hook D9 added rather than any autograd
+redesign. **D10** completed the native CNN *layer* set with
+**`NativeMaxPool2d`**: a parameter-free, buffer-free `NativeModule` that
+normalizes `kernel_size`/`stride`/`padding` to two-element tuples
+(`stride=None` ⇒ non-overlapping windows) and delegates forward entirely to
+that operation — no new kernel, ABI symbol, ctypes declaration, custom
+backward, parameter, buffer, `return_indices`, or checkpoint schema. It
+holds no winner storage between calls (each forward's winners belong to
+that call's output graph), contributes no state-dictionary or checkpoint
+keys, and drops into a `NativeSequential` beside
+`NativeConv2d`/`NativeReLU`/`NativeFlatten`/`NativeLinear`, where
+`NativeSGD`/`NativeAdam` ignore it naturally because it owns nothing
+trainable. The native module inventory is therefore `NativeModule`,
+`NativeLinear`, `NativeReLU`, `NativeFlatten`, `NativeConv2d`,
+`NativeMaxPool2d`, and `NativeSequential`. **D11** then proved the
+complete native CNN stack **trains end to end**:
+`examples/native_cnn_training.py` composes
+Conv2d → ReLU → MaxPool2d → Flatten → Linear over eight fixed 6×6 images
+whose target is the strongest bright-to-dark vertical edge — a genuinely
+spatial, non-linear rule the convolutional path is required for — and
+trains it with `NativeMSELoss` and `NativeAdam(lr=0.05)` for 40
+deterministic steps, dropping the loss from 0.771306 to 0.011085 (98.6%)
+with finite, nonzero gradients reaching every Conv2d and Linear parameter
+on the first backward. A run interrupted at step 15, saved to one
+pickle-free checkpoint (model **and** optimizer state) and resumed into a
+completely fresh model/optimizer pair, reproduces the uninterrupted run
+**exactly** — loss history, final predictions, every parameter value, and
+every optimizer state entry — because the CPU float64 kernels are
+deterministic and nothing random happens between checkpoint and resume.
+The archive carries only persistent state (no pooling winners, no graph
+history, no gradients), the format version is unchanged, and the live
+native-storage count is exactly constant across repeated steps. D11 added
+no kernel, ABI symbol, operation, loss, optimizer, or schema. **D12 closed
+Phase D**: cross-cutting integration tests spanning several CNN components
+at once (`tests/test_native_phase_d.py`), honest CNN characterization
+benchmarks (`benchmarks/benchmark_native_cnn.py` — conv/pool forward,
+forward+backward, end-to-end training step, and a stable-framework
+reference, measurement only), **ASan/UBSan validation** of the whole
+native CNN stack under Clang 18 on Linux with no TensorForge diagnostic
+(and a LeakSanitizer pass over the instrumented native CTests),
+documentation reconciliation, and durable capability guardrails replacing
+the milestone-era wording pins. **Phase D is complete**; the native line's
+next phase — a classification stack, more activations/math, normalization,
+RNG/dropout, and a CPU optimization pass — has not started, followed by
+the CUDA
+runtime, dtype/AMP work, Transformer/text experiments, distributed
+training, and the final portfolio release. Still float64/cpu only, still explicit and
+experimental, and no production performance is claimed.
 
 ### Native training stack — checkpoint files and deterministic resume (v3.14)
 
@@ -2841,9 +2939,12 @@ file resume, and **v3.15 — native training stack guardrails and Phase C
 completion** (the integrated completion test suite, documentation
 completion, and build/CI/hygiene verification), which **closes Phase C
 in code**. A general `divide` operation remains deliberately unshipped
-(`reciprocal` + `multiply` compose what the stack needs). The next
-major native phase is the **native CNN stack**, which has not started.
-CUDA experiments remain a separate future branch (where `device` gains a
-second value), and an AMP / Tensor Core path is where `dtype` later gains
+(`reciprocal` + `multiply` compose what the stack needs). The current
+major native phase is the **native CNN stack** (Phase D), now under way
+and partly shipped — `NativeFlatten` and the differentiable Conv2d line
+(`NativeConv2d`) are in, while native max-pooling and the end-to-end CNN
+training + checkpoint-resume proof remain upcoming. CUDA experiments
+remain a separate future branch (where `device` gains a second value),
+and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation
 throughout.

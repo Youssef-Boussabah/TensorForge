@@ -108,6 +108,15 @@ class NativeTensor:
         # graph cleanup releases them with _parents/_backward. Always ()
         # on leaves and value-independent results.
         "_expected_versions",
+        # -- graph-owned native resources (Phase D, D9): a tuple of closeable
+        # native objects this node's *history* owns — saved state its
+        # backward needs that no parent keeps alive. Today the only user is
+        # maxpool2d's private winner buffer. They are closed exactly once,
+        # at the same deterministic point the graph is released (a one-shot
+        # backward's cleanup, or close()), so retain_graph keeps them alive
+        # for another pass and an abandoned graph still frees them. Always
+        # () on leaves and on ops that save no native state.
+        "_graph_resources",
     )
 
     def __init__(self, core, owns_core=True):
@@ -134,6 +143,7 @@ class NativeTensor:
         self._is_leaf = True
         self._graph_freed = False
         self._expected_versions = ()
+        self._graph_resources = ()
 
     @classmethod
     def _from_core(cls, core, owns_core=True):
@@ -145,7 +155,7 @@ class NativeTensor:
 
     @classmethod
     def _from_op(cls, core, parents, backward, op, owns_core=True,
-                 expected_versions=()):
+                 expected_versions=(), graph_resources=()):
         """Internal: build a **non-leaf** autograd graph node over
         ``core``.
 
@@ -160,6 +170,13 @@ class NativeTensor:
         ``(op_name, parameter, expected_version)`` entries for every
         direct NativeParameter parent whose forward value this op's
         backward reads — recorded only when a graph is actually built.
+        ``graph_resources`` (D9) carries closeable **native objects this
+        node's history owns** — saved forward state the backward needs that
+        no parent keeps alive (today: maxpool2d's private winner buffer).
+        They are adopted only when a graph is actually built and released
+        exactly once when it is; when no parent requires grad **they are
+        closed here immediately**, since nothing will ever consume them —
+        so a no-grad forward can never leak saved state.
 
         This is the single internal entry for graph construction: the
         differentiable ops (v2.2) and the autograd tests use it, and it
@@ -174,7 +191,27 @@ class NativeTensor:
             node._backward = backward
             node._op = op
             node._expected_versions = tuple(expected_versions)
+            node._graph_resources = tuple(graph_resources)
+        else:
+            # No graph, so no backward will ever read this saved state:
+            # release it now rather than waiting for garbage collection.
+            for resource in graph_resources:
+                resource.close()
         return node
+
+    def _release_graph_resources(self):
+        """Close the native objects this node's graph history owns, exactly
+        once (D9). Called at the deterministic graph-release points — a
+        one-shot ``backward()``'s cleanup and ``close()`` — never on a
+        retained graph, which still needs them. Clearing the tuple first
+        makes a second call a no-op, so a freed graph can never
+        double-close."""
+        resources = self._graph_resources
+        if not resources:
+            return
+        self._graph_resources = ()
+        for resource in resources:
+            resource.close()
 
     # -- constructors -----------------------------------------------------
 
@@ -733,6 +770,186 @@ class NativeTensor:
 
         return self._from_op(out_core, (self,), _backward, "contiguous_copy")
 
+    def conv2d(self, weight, bias=None, *, stride=1, padding=0):
+        """2-D cross-correlation of this NCHW input against an OIHW
+        ``weight`` (+ optional rank-1 ``bias``), natively and
+        differentiably (Phase D, D6 — a **new fused primitive**, like
+        ``matmul``, not a composition of existing ops).
+
+        ``self`` is the ``(N, C, H, W)`` input; ``weight`` is an
+        ``(O, C, kh, kw)`` NativeTensor; ``bias`` is ``None`` or a rank-1
+        ``(O,)`` NativeTensor. ``stride``/``padding`` are an int or a
+        length-2 ``(height, width)`` tuple (bools rejected). No dilation,
+        groups, or channels-last; operands must be open CPU float64
+        NativeTensors (stable ``Tensor`` and implicit conversion are
+        rejected). Returns a fresh **owning** ``(N, O, out_h, out_w)``
+        NativeTensor.
+
+        The forward reuses ``NativeTensorCore.conv2d_forward`` (no forward
+        kernel is duplicated in Python). Differentiable when any of
+        input/weight/bias requires grad — otherwise a plain forward leaf.
+        The Python-managed backward computes each gradient only for the
+        parents that require it: the input gradient (rereading the weight
+        value) and weight gradient (rereading the input value) run through
+        the native ``conv2d_input_backward``/``conv2d_weight_backward`` Core
+        ops, and the bias gradient reduces the upstream over batch and
+        spatial axes via the existing native ``sum`` (no dedicated kernel).
+        Conditional stale-value version tracking follows
+        docs/native_cnn_design.md §8: a direct-parameter operand's version
+        is recorded only when an *active* callback rereads its value."""
+        core = self._require_open()
+        if not isinstance(weight, NativeTensor):
+            raise TypeError(
+                f"conv2d requires a NativeTensor weight, got "
+                f"{type(weight).__name__}"
+            )
+        weight_core = weight._require_open()
+        has_bias = bias is not None
+        if has_bias:
+            if not isinstance(bias, NativeTensor):
+                raise TypeError(
+                    f"conv2d requires a NativeTensor bias or None, got "
+                    f"{type(bias).__name__}"
+                )
+            bias_core = bias._require_open()
+        else:
+            bias_core = None
+        # Forward via the Core wrapper — it validates ranks, channel
+        # compatibility, dtype/device, output shape, and stride/padding
+        # (bools rejected) before any allocation.
+        out_core = core.conv2d_forward(
+            weight_core, bias_core, stride=stride, padding=padding
+        )
+        parents = (self, weight) + ((bias,) if has_bias else ())
+        if not any(p._requires_grad for p in parents):
+            return self._from_core(out_core)
+
+        input_t, weight_t, bias_t = self, weight, bias
+        input_shape = core.shape
+        weight_shape = weight_core.shape
+
+        def _backward(upstream):
+            u_core = upstream._require_open()
+            # Input gradient — rereads the weight's forward value.
+            if input_t._requires_grad:
+                grad_in = u_core.conv2d_input_backward(
+                    weight_t._require_open(), input_shape=input_shape,
+                    stride=stride, padding=padding,
+                )
+                input_t._accumulate_grad(NativeTensor._from_core(grad_in))
+            # Weight gradient — rereads the input's forward value.
+            if weight_t._requires_grad:
+                grad_w = u_core.conv2d_weight_backward(
+                    input_t._require_open(), weight_shape=weight_shape,
+                    stride=stride, padding=padding,
+                )
+                weight_t._accumulate_grad(NativeTensor._from_core(grad_w))
+            # Bias gradient — reads only the upstream: sum over batch (axis
+            # 0) then the two spatial axes, via existing native reductions
+            # (no dedicated kernel). Both intermediates are closed; only the
+            # final (O,) core survives to become the gradient.
+            if has_bias and bias_t._requires_grad:
+                reduced_batch = u_core.sum(axis=0)       # (O, out_h, out_w)
+                try:
+                    reduced_h = reduced_batch.sum(axis=1)  # (O, out_w)
+                    try:
+                        grad_b = reduced_h.sum(axis=1)     # (O,)
+                    finally:
+                        reduced_h.close()
+                finally:
+                    reduced_batch.close()
+                bias_t._accumulate_grad(NativeTensor._from_core(grad_b))
+
+        # Conditional version tracking (§8): record a value's version only
+        # when an *active* callback rereads it. input-grad (runs iff input
+        # needs grad) rereads the weight; weight-grad (runs iff weight needs
+        # grad) rereads the input; bias-grad rereads neither.
+        value_read_operands = []
+        if input_t._requires_grad:
+            value_read_operands.append(weight_t)
+        if weight_t._requires_grad:
+            value_read_operands.append(input_t)
+        expected_versions = _versioned_value_reads("conv2d", value_read_operands)
+
+        return self._from_op(
+            out_core, parents, _backward, "conv2d",
+            expected_versions=expected_versions,
+        )
+
+    def maxpool2d(self, *, kernel_size, stride=None, padding=0):
+        """2-D max pooling over this NCHW input, natively and
+        differentiably (Phase D, D9 — a fused primitive whose backward is
+        driven entirely by the winners its own forward saved).
+
+        ``self`` is the ``(N, C, H, W)`` input. ``kernel_size`` and
+        ``stride`` are an int or a length-2 ``(height, width)`` tuple of
+        ints ≥ 1 (bools rejected); ``stride=None`` means
+        ``stride = kernel_size`` (non-overlapping windows, the stable
+        convention). ``padding`` is an int or pair ≥ 0, applied
+        symmetrically per axis. Returns a fresh **owning**
+        ``(N, C, out_h, out_w)`` NativeTensor. Pooling has no parameters,
+        so the only parent is the input.
+
+        The forward reuses the D8 Core path, which also records — in
+        **private** native storage the caller never sees — which input
+        element won each window (docs/native_cnn_design.md §10/§12).
+        Backward scatters the upstream gradient straight to those saved
+        winners through the native ``maxpool2d_backward`` Core op:
+        overlapping windows accumulate, a ``-1`` (padding-won) winner drops
+        its gradient, and ties give the whole window's gradient to the
+        first-occurrence winner recorded at forward time.
+
+        Because backward reads **only** the saved winners and the upstream
+        — never the input's current value, and never a recomputed maximum —
+        this operation records **no expected parameter version**: mutating
+        a directly versioned input after the forward pass cannot change the
+        gradient routing and must not raise a stale-graph error. That is a
+        deliberate contrast with ``conv2d``, whose gradients do reread
+        operand values.
+
+        The winner buffer is owned by this node's graph history and is
+        released exactly when that history is, at one of the two
+        deterministic points: a one-shot ``backward()``'s cleanup, or an
+        explicit ``close()`` (a merely dropped graph reaches ``close()``
+        through the ``__del__`` refcount/GC fallback).
+        ``retain_graph=True`` keeps it for another pass; a no-grad forward
+        (nothing requires grad) closes it immediately; and if graph
+        construction itself raises, both the buffer and the pooled output
+        are closed here before the exception propagates."""
+        core = self._require_open()
+        # Forward via the D8 Core path — it validates rank, dtype/device,
+        # the kernel/stride/padding forms (bools and malformed pairs
+        # rejected), the winner-exactness bound, and the output shape
+        # before any allocation, and returns the pooled values plus the
+        # private winner buffer.
+        out_core, winners = core._maxpool2d_forward_with_winners(
+            kernel_size=kernel_size, stride=stride, padding=padding
+        )
+        input_t = self
+        input_shape = core.shape
+
+        def _backward(upstream):
+            # Saved winners + upstream only: no input value is reread and
+            # no window maximum is recomputed.
+            grad_in = upstream._require_open().maxpool2d_backward(
+                winners, input_shape=input_shape
+            )
+            input_t._accumulate_grad(NativeTensor._from_core(grad_in))
+
+        try:
+            # _from_op adopts the winner buffer as graph-owned state when a
+            # graph is built, and closes it immediately when one is not.
+            return self._from_op(
+                out_core, (self,), _backward, "maxpool2d",
+                graph_resources=(winners,),
+            )
+        except BaseException:
+            # Graph construction failed: release the saved state and the
+            # output rather than leaking either.
+            winners.close()
+            out_core.close()
+            raise
+
     # -- autograd (opt-in; Python-managed graph over native ops) ----------
 
     def _accumulate_grad(self, grad):
@@ -959,6 +1176,12 @@ class NativeTensor:
                 node._backward = None
                 node._expected_versions = ()
                 node._graph_freed = True
+                # Release any native state this node's history owned (D9:
+                # maxpool2d's private winner buffer) at the same
+                # deterministic point the graph itself is released — not on
+                # a retained graph, which may still run backward again, and
+                # never twice.
+                node._release_graph_resources()
 
     def _seed_gradient(self, gradient):
         """Validate an explicit ``gradient`` or synthesize the default
@@ -997,9 +1220,17 @@ class NativeTensor:
     def close(self):
         """Release this tensor's hold on its core. An owning tensor frees
         the native storage; a borrowing one would detach only itself.
+        Any native state this node's graph history owns (D9: maxpool2d's
+        private winner buffer) is released here too, so an explicit
+        ``close()`` on an abandoned graph frees it deterministically. (An
+        abandoned graph object that is merely *dropped* reaches this method
+        through ``__del__``, which is the refcount/GC **fallback**, not a
+        deterministic release point — the deterministic points are a
+        one-shot ``backward()``'s history release and this method.)
         Idempotent — safe to call more than once."""
         if not self._closed:
             self._closed = True
+            self._release_graph_resources()
             if self._owns_core:
                 self._core.close()
 

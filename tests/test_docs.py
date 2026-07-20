@@ -22,6 +22,7 @@ DOCS = (
     "native_autograd_design.md",
     "native_autograd_benchmarks.md",
     "native_support_matrix.md",
+    "native_cnn_design.md",
 )
 
 EXAMPLE_FILES = (
@@ -69,15 +70,24 @@ def test_all_example_files_are_documented():
         assert path.name in text, f"examples/{path.name} is not documented"
 
 
-def test_roadmap_does_not_list_shipped_features_as_future():
+def test_roadmap_does_not_list_shipped_stable_features_as_future():
+    """A feature the **stable** framework already ships must never appear
+    in the roadmap's future-work section.
+
+    A *native* counterpart of a shipped stable feature is a different
+    thing and legitimately can be future work — the native line has its
+    own phase sequence — so explicitly native phrasings are stripped
+    before the scan. (This generalizes the long-standing "NativeAdam"
+    exemption instead of banning honest native-line statements.)"""
+    import re
+
     text = (REPO_ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
-    # Split at the future-work heading; shipped features must not appear
-    # in the future section. "NativeAdam" is exempted by name: the
-    # *native* adaptive optimizer genuinely is future work (v3.12),
-    # while the stable framework's Adam stays banned as future work.
     future = text.split("## Practical next steps", 1)[1]
     future = future.split("## What this project is not", 1)[0]
-    future = future.replace("NativeAdam", "")
+    # Strip "Native<Thing>" identifiers and "native <thing>" prose: both
+    # name the native counterpart, never the shipped stable feature.
+    future = re.sub(r"Native[A-Z]\w*", "", future)
+    future = re.sub(r"native [a-zA-Z/]+(\s+[a-z/]+){0,2}", "", future)
     shipped_features = (
         "Dropout",
         "BatchNorm",
@@ -90,7 +100,8 @@ def test_roadmap_does_not_list_shipped_features_as_future():
     )
     for shipped in shipped_features:
         assert shipped not in future, (
-            f"docs/roadmap.md lists already-shipped {shipped!r} as future work"
+            f"docs/roadmap.md lists already-shipped stable {shipped!r} as "
+            f"future work"
         )
 
 
@@ -142,13 +153,16 @@ def test_native_support_matrix_is_canonical_and_honest():
     )
     for term in shipped:
         assert term in text, f"support matrix does not cover {term!r}"
-    # Unshipped native work must appear only after the unsupported
-    # heading — never marked supported above it.
+    # Phase D shipped Conv2d/MaxPool2d, so the matrix must now *present*
+    # them (D12); what still has to stay in the unsupported section is the
+    # work that genuinely does not exist.
+    for term in ("NativeConv2d", "NativeMaxPool2d", "NativeFlatten",
+                 "native_cnn_training.py"):
+        assert term in text, f"support matrix does not cover shipped {term!r}"
     assert "## Unsupported or future" in text
     supported_part = text.split("## Unsupported or future", 1)[0]
     future_part = text.split("## Unsupported or future", 1)[1]
-    for term in ("CUDA", "float32",
-                 "Conv2d", "MaxPool2d", "AMP",
+    for term in ("CUDA", "float32", "AMP",
                  "AdamW", "AMSGrad", "weight decay", "distributed"):
         assert term in future_part, (
             f"support matrix does not list {term!r} as unsupported/future"
@@ -190,7 +204,9 @@ def test_phase_c_marked_complete_not_in_progress():
     assert re.search(r"checkpoint", readme, re.IGNORECASE), (
         "README no longer presents native checkpointing"
     )
-    # The native CNN stack is the next phase and has not started.
+    # The native CNN stack (Phase D) is now under way — its Flatten and
+    # Conv2d milestones have shipped — while CUDA remains not started. The
+    # roadmap must keep naming the stack and keep marking CUDA future work.
     roadmap = _normalized_doc("docs/roadmap.md")
     assert "native CNN stack" in roadmap
     assert "not started" in roadmap
@@ -221,7 +237,8 @@ def test_experimental_exports_stay_intentional():
 
     assert set(experimental.__all__) == {
         "NativeTensor", "NativeParameter", "NativeParameterRegistry",
-        "NativeModule", "NativeLinear", "NativeReLU", "NativeSequential",
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
     }
@@ -282,3 +299,183 @@ def test_readme_commands_reference_existing_files():
         assert (REPO_ROOT / "examples" / filename).is_file(), (
             f"README references examples/{filename}, which does not exist"
         )
+
+
+def test_native_cnn_design_locks_the_phase_d_contract():
+    """The Phase-D (native CNN) architecture contract must state its
+    load-bearing decisions, so later milestones inherit an unambiguous
+    design instead of re-deriving it."""
+    text = _normalized_doc("docs/native_cnn_design.md")
+    # Layout and math conventions.
+    for token in ("NCHW", "OIHW", "cross-correlation"):
+        assert token in text, f"native_cnn_design.md does not lock {token!r}"
+    # The three planned public surfaces are named.
+    for token in ("NativeFlatten", "NativeConv2d", "NativeMaxPool2d"):
+        assert token in text, f"native_cnn_design.md does not mention {token!r}"
+    # The non-contiguous-input policy and the max-pool winner contract.
+    assert "winner" in text.lower(), "design omits the max-pool winner contract"
+    assert "contiguous" in text.lower(), "design omits the contiguity policy"
+    # The full milestone ladder must be present (D0 through D12), and D6
+    # (autograd integration) must sit between D5 and D7.
+    for i in range(13):
+        assert f"D{i}" in text, f"native_cnn_design.md is missing milestone D{i}"
+    # Anchor on the milestone-ladder headers ("D5 —", "D6 —", "D7 —"),
+    # which use an em-dash and so do not collide with bare-"D5"/"D7"
+    # mentions in the prose.
+    d5 = text.index("D5 —")
+    d6 = text.index("D6 —")
+    d7 = text.index("D7 —")
+    assert d5 < d6 < d7, "D6 (autograd integration) is not ordered between D5 and D7"
+
+
+def test_native_cnn_design_locks_conditional_versioning_and_winner_safety():
+    """The two subtle Phase-D contracts must stay pinned: Conv2d records a
+    parameter version only for a value an *active* backward callback
+    rereads, and the max-pool winner buffer stays an exact-integer float64
+    buffer bounded by 2^53."""
+    text = _normalized_doc("docs/native_cnn_design.md")
+    # Conditional Conv2d versioning keys off which callbacks run.
+    for token in ("input._requires_grad", "weight._requires_grad"):
+        assert token in text, f"design no longer states the conditional {token!r} rule"
+    # Bias-only backward must not version-guard input/weight.
+    assert "bias-only" in text.lower(), "design omits the bias-only no-version case"
+    # Winner-index float64 safety: the exactness bound and the -1 sentinel.
+    assert "2^53" in text, "design no longer pins the float64 exactness bound"
+    assert "-1" in text, "design no longer documents the -1 winner sentinel"
+    # NaN handling is a documented, deliberate choice, not left implicit.
+    assert "NaN" in text and "divergence" in text.lower(), (
+        "design no longer documents the deliberate NaN divergence from stable"
+    )
+
+
+def test_phase_d_status_is_consistent_across_docs_and_registry():
+    """Phase D is complete (D12). The durable guarantee is *agreement*: the
+    design doc, the support matrix, the roadmap, the public exports, and the
+    backend registry must all describe the same shipped surface, and the
+    Phase-D artifacts they reference must exist. This replaces the earlier
+    milestone-era guards that pinned transient wording or asserted a
+    not-yet-written file was absent."""
+    from tensorforge.backends import cpp
+    import tensorforge.experimental as experimental
+
+    design = _normalized_doc("docs/native_cnn_design.md")
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    roadmap = _normalized_doc("docs/roadmap.md")
+
+    # Every milestone of the ladder is recorded as complete, and nothing
+    # Phase-D is still described as planned/upcoming.
+    for i in range(13):
+        assert f"D{i}" in design, f"design is missing milestone D{i}"
+    assert "Phase D" in matrix and "complete" in matrix.lower()
+
+    # The shipped CNN surface agrees everywhere.
+    for module in ("NativeFlatten", "NativeConv2d", "NativeMaxPool2d"):
+        assert module in cpp.NATIVE_MODULES, module
+        assert module in experimental.__all__, module
+        assert module not in cpp.UNSUPPORTED, module
+        assert module in design and module in matrix, module
+        # A module is a module: never advertised as an op or a raw kernel.
+        assert module not in cpp.AUTOGRAD_OPS and module not in cpp.RAW_KERNELS
+    for op in ("conv2d", "maxpool2d"):
+        assert op in cpp.AUTOGRAD_OPS, op
+        assert op not in cpp.UNSUPPORTED, op
+    for core_op in ("conv2d_forward", "conv2d_input_backward",
+                    "conv2d_weight_backward", "maxpool2d_forward",
+                    "maxpool2d_backward"):
+        assert core_op in cpp.TENSOR_CORE_OPS, core_op
+
+    # The Phase-D artifacts the docs point at are really there.
+    assert (REPO_ROOT / "examples" / "native_cnn_training.py").is_file()
+    assert (REPO_ROOT / "benchmarks" / "benchmark_native_cnn.py").is_file()
+    assert (REPO_ROOT / "tests" / "test_native_phase_d.py").is_file()
+
+    # Later phases must not be claimed. These are genuinely absent
+    # capabilities, checked against the registry rather than against prose.
+    for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
+                   "dropout", "softmax", "cross_entropy"):
+        assert absent in cpp.UNSUPPORTED, absent
+        assert absent not in cpp.AUTOGRAD_OPS and absent not in cpp.NATIVE_MODULES
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+
+
+def test_native_flatten_is_implemented_as_a_native_module():
+    """D1: NativeFlatten is a shipped native module, present in the modern
+    native-module inventory and public surface, and is NOT a raw C++
+    kernel. Convolution and pooling stay unimplemented."""
+    from tensorforge.backends import cpp
+    import tensorforge.experimental as experimental
+
+    assert "NativeFlatten" in cpp.NATIVE_MODULES
+    assert "NativeFlatten" in experimental.__all__
+    assert hasattr(experimental, "NativeFlatten")
+    # Not a raw C++ kernel and not a lingering "unsupported" entry.
+    assert "NativeFlatten" not in cpp.RAW_KERNELS
+    assert "flatten" not in cpp.UNSUPPORTED
+    # The Conv2d module is implemented as of D7 (over the D6 operation) and
+    # the pooling module as of D10 (over the D8/D9 operation); neither is a
+    # lingering unsupported entry.
+    assert "NativeConv2d" not in cpp.UNSUPPORTED
+    assert "NativeMaxPool2d" not in cpp.UNSUPPORTED
+    assert "NativeMaxPool2d" in cpp.NATIVE_MODULES
+
+
+def test_docs_do_not_reassert_a_stale_phase_d_status():
+    """The project-facing docs must never regress to claiming the native
+    CNN stack is unstarted, empty of layers, unavailable, or still awaiting
+    its training proof. Phrase-level (not paragraph-verbatim), so accurate
+    rewording survives."""
+    docs = (
+        "README.md",
+        "docs/native_cnn_design.md",
+        "docs/native_support_matrix.md",
+        "docs/roadmap.md",
+        "docs/backend_experiments.md",
+        "docs/project_summary.md",
+        "docs/architecture.md",
+    )
+    stale = (
+        "no CNN layers",
+        "Nothing in Phase D is implemented",
+        "native CNN stack, which has not started",
+        "native CNN phase has not started",
+        "native CNN stack has not started",
+        "Native Conv2d is unavailable",
+        "native MaxPool2d and the end-to-end",
+        "CNN training + checkpoint-resume proof are still upcoming",
+        "CNN training + checkpoint-resume proof is still upcoming",
+    )
+    for name in docs:
+        low = _normalized_doc(name).lower()
+        for phrase in stale:
+            assert phrase.lower() not in low, (
+                f"{name} reasserts the stale Phase-D claim {phrase!r}"
+            )
+
+
+def test_docs_present_the_shipped_native_cnn_stack():
+    """Every shipped native CNN layer and the D11 proof are positively
+    presented in the README, roadmap, and support matrix."""
+    for name in ("README.md", "docs/native_support_matrix.md"):
+        text = _normalized_doc(name)
+        for shipped in ("NativeConv2d", "NativeFlatten", "NativeMaxPool2d",
+                        "native_cnn_training.py"):
+            assert shipped in text, f"{name} no longer presents {shipped!r}"
+    roadmap = _normalized_doc("docs/roadmap.md")
+    assert "NativeFlatten" in roadmap
+    assert "convolution" in roadmap.lower() and "pooling" in roadmap.lower()
+    # The support matrix marks Phase D complete and still names what is not.
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    assert "Phase D" in matrix and "complete" in matrix.lower()
+    assert "## Unsupported or future" in matrix
+
+
+def test_native_cnn_design_is_linked_and_referenced():
+    """The design doc must be reachable from the roadmap and the support
+    matrix so the contract is discoverable, not orphaned."""
+    roadmap = (REPO_ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
+    matrix = (REPO_ROOT / "docs" / "native_support_matrix.md").read_text(
+        encoding="utf-8"
+    )
+    for doc in (roadmap, matrix):
+        assert "native_cnn_design.md" in doc

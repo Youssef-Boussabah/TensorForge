@@ -79,20 +79,55 @@ TENSOR_CORE_OPS = (
     "add", "subtract", "multiply", "matmul",
     "sum", "mean",
     "reshape", "transpose", "T", "narrow", "contiguous_copy",
+    # Phase D native Conv2d at the Core layer — layer-qualified forward and
+    # (D6) backward wrappers over the exported tf_core_conv2d_* kernels.
+    # These are Core operations, distinct from the differentiable
+    # "conv2d" NativeTensor autograd op (in AUTOGRAD_OPS) and from the
+    # NativeConv2d module (D7, still unsupported). The bias gradient has no
+    # Core op — it composes from the existing "sum" reduction.
+    "conv2d_forward",          # D3
+    "conv2d_input_backward",   # D6
+    "conv2d_weight_backward",  # D6
+    # Phase D native MaxPool2d at the Core layer — the layer-qualified
+    # forward/backward wrappers over the exported tf_core_maxpool2d_*
+    # kernels. Forward computes the pooled values and (internally) the
+    # private winner buffer; backward scatters an upstream gradient through
+    # those saved winners (no window geometry, no input reread). These are
+    # Core operations, distinct from the differentiable "maxpool2d"
+    # NativeTensor autograd op (in AUTOGRAD_OPS as of D9) and from the
+    # NativeMaxPool2d module (D10, still unsupported). The winner buffer
+    # stays internal state — never a public tensor, op, or dtype.
+    "maxpool2d_forward",       # D8
+    "maxpool2d_backward",      # D9
 )
 
 # Operations the NativeTensor autograd layer (Phase B) differentiates.
+# Phase D adds the differentiable "conv2d" fused primitive (D6): its
+# backward composes the input/weight-gradient Core ops and the existing
+# "sum" reduction (bias); and the differentiable "maxpool2d" primitive
+# (D9), whose backward scatters through the winner buffer its own forward
+# saved. These are the operations; the modules built on them (NativeConv2d,
+# D7 — implemented; NativeMaxPool2d, D10 — not yet) are separate.
 AUTOGRAD_OPS = (
     "add", "subtract", "multiply", "relu",
     "sum", "mean", "matmul",
     "reshape", "transpose", "T", "narrow", "contiguous_copy",
     "sqrt", "reciprocal",
+    "conv2d",
+    "maxpool2d",
 )
 
-# The native training stack composed on the autograd layer (Phase C),
-# reported by name only so this module stays decoupled from the
-# experimental package (the guardrail test verifies each name imports).
-NATIVE_MODULES = ("NativeModule", "NativeLinear", "NativeReLU", "NativeSequential")
+# The native training stack composed on the autograd layer (Phase C) and
+# the Phase-D CNN modules, reported by name only so this module stays
+# decoupled from the experimental package (the guardrail test verifies
+# each name imports). "NativeConv2d" (the Conv2d *module*, D7) is the
+# trainable layer over the differentiable "conv2d" op; it is distinct from
+# that operation (in AUTOGRAD_OPS) and from the Core wrappers (in
+# TENSOR_CORE_OPS).
+NATIVE_MODULES = (
+    "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+    "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+)
 NATIVE_LOSSES = ("NativeMSELoss",)
 NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
 STATE_SUPPORT = (
@@ -102,10 +137,30 @@ STATE_SUPPORT = (
     "load_native_checkpoint",
 )
 
-# Explicitly NOT implemented (Phase D and beyond) — listed so
-# introspection is honest about the boundary; none of these exist yet.
+# Explicitly NOT implemented — listed so introspection is honest about the
+# boundary. These names are layer-qualified where an operation and its
+# module diverge, so support is never over- or under-claimed:
+#   - the differentiable "conv2d" *operation* IS implemented (D3–D6:
+#     forward + input/weight/bias gradients + NativeTensor autograd), so it
+#     is NOT listed here — it lives in AUTOGRAD_OPS / TENSOR_CORE_OPS.
+#   - "NativeConv2d" (the Conv2d *module*, D7) IS implemented (see
+#     NATIVE_MODULES), so it is NOT listed here either — operation support
+#     and module support are now both present for Conv2d.
+#   - the differentiable "maxpool2d" *operation* IS implemented as of D9
+#     (the D8 forward + private winner buffer, the D9 backward scatter, and
+#     the NativeTensor autograd node), so it is NOT listed here — it lives
+#     in AUTOGRAD_OPS, with its layer-qualified Core ops
+#     "maxpool2d_forward"/"maxpool2d_backward" in TENSOR_CORE_OPS.
+#   - "NativeMaxPool2d" (the pooling *module*, D10) IS implemented (see
+#     NATIVE_MODULES), so it is NOT listed here either — operation support
+#     and module support are now both present for MaxPool2d, as they are
+#     for Conv2d.
+# As of Phase D milestone D1, batch-preserving flatten IS implemented as
+# the NativeFlatten module (see NATIVE_MODULES), so "flatten" is not listed.
+# Still absent from Phase D: the deterministic end-to-end native CNN
+# training + checkpoint-resume proof (D11) — a *proof*, not a capability
+# name, so it has no entry in any inventory.
 UNSUPPORTED = (
-    "conv2d", "maxpool2d", "flatten",
     "exp", "log", "softmax", "cross_entropy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",
@@ -119,6 +174,15 @@ UNSUPPORTED = (
 # docs/native_dtype_device_metadata_design.md).
 SUPPORTED_DTYPES = ("float64",)
 SUPPORTED_DEVICES = ("cpu",)
+
+# Largest element count the native int64 storage/ABI arithmetic addresses.
+_INT64_MAX = 2 ** 63 - 1
+# IEEE float64 represents every integer in [-(2**53), 2**53] exactly, so a
+# flat plane offset stored as a float64 (the internal MaxPool2d winner
+# buffer, docs/native_cnn_design.md §12) is exact iff the plane holds at
+# most 2**53 elements. Proved in Python arbitrary-precision arithmetic
+# before any allocation, and re-proved at the C ABI boundary.
+_MAX_EXACT_WINNER_PLANE = 2 ** 53
 
 _lib = None  # loaded lazily by _require_library()
 
@@ -286,6 +350,58 @@ def _load_library():
         ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_core_narrow_backward.restype = None
+    # Conv2d forward (Phase D, D3): the exported wrapper over the internal
+    # cross-correlation kernel. Contiguous storage only (Policy B copies at
+    # the Core level); a null bias handle means "no bias"; the output is
+    # caller-allocated. Handles carry per-operand offsets; the 13 trailing
+    # int64s are N, C, H, W, O, kh, kw, sh, sw, ph, pw, out_h, out_w.
+    library.tf_core_conv2d_forward.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # input handle, offset
+        ctypes.c_void_p, ctypes.c_int64,   # weight handle, offset
+        ctypes.c_void_p, ctypes.c_int64,   # bias handle (nullable), offset
+        ctypes.c_void_p,                   # output handle
+    ] + [ctypes.c_int64] * 13
+    library.tf_core_conv2d_forward.restype = None
+    # Conv2d backward wrappers (Phase D, D6): input- and weight-gradient
+    # exports over the D4/D5 internal kernels. Contiguous storage only
+    # (Policy B copies at the Core level); caller-allocated output; no bias
+    # gradient symbol (that composes from the existing `sum` reduction). The
+    # handle pairs differ by direction but both take the same 13 trailing
+    # int64 dims as the forward wrapper (N, C, H, W, O, kh, kw, sh, sw, ph,
+    # pw, out_h, out_w).
+    for name in ("tf_core_conv2d_input_backward",
+                 "tf_core_conv2d_weight_backward"):
+        kernel = getattr(library, name)
+        kernel.argtypes = [
+            ctypes.c_void_p, ctypes.c_int64,   # grad_output handle, offset
+            ctypes.c_void_p, ctypes.c_int64,   # weight/input handle, offset
+            ctypes.c_void_p,                   # grad_input/grad_weight handle
+        ] + [ctypes.c_int64] * 13
+        kernel.restype = None
+    # MaxPool2d forward (Phase D, D8): the exported wrapper over the
+    # internal window-maximum kernel. Contiguous storage only (Policy B
+    # copies at the Core level); the output *and* the private winner buffer
+    # are caller-allocated (offset 0). Only the input carries an offset;
+    # the 12 trailing int64s are N, C, H, W, kh, kw, sh, sw, ph, pw, out_h,
+    # out_w. There is no backward symbol yet — that is D9.
+    library.tf_core_maxpool2d_forward.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # input handle, offset
+        ctypes.c_void_p,                   # output handle
+        ctypes.c_void_p,                   # winner-buffer handle
+    ] + [ctypes.c_int64] * 12
+    library.tf_core_maxpool2d_forward.restype = None
+    # MaxPool2d backward (Phase D, D9): the exported wrapper over the
+    # internal scatter-add. It takes the upstream gradient and the private
+    # winner buffer (each with an offset) plus the caller-allocated
+    # grad_input, and **no kernel/stride/padding metadata** — the saved
+    # winners fully determine the routing, so window geometry is never
+    # recomputed. The 6 trailing int64s are N, C, H, W, out_h, out_w.
+    library.tf_core_maxpool2d_backward.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # grad_output handle, offset
+        ctypes.c_void_p, ctypes.c_int64,   # winner-buffer handle, offset
+        ctypes.c_void_p,                   # grad_input handle
+    ] + [ctypes.c_int64] * 6
+    library.tf_core_maxpool2d_backward.restype = None
 
     _configure_error_contract(library)
     return library
@@ -332,6 +448,11 @@ _CHECKED_KERNELS = (
     "tf_core_matmul",
     "tf_core_sum",
     "tf_core_narrow_backward",
+    "tf_core_conv2d_forward",
+    "tf_core_conv2d_input_backward",
+    "tf_core_conv2d_weight_backward",
+    "tf_core_maxpool2d_forward",
+    "tf_core_maxpool2d_backward",
 )
 
 
@@ -1142,6 +1263,556 @@ class NativeTensorCore:
         )
         return result
 
+    # -- convolution (Phase D, D3: forward-only Core wrapper) ------------
+
+    def _contiguous_temp(self, temporaries):
+        """Materialize this core into a fresh **owning** row-major
+        contiguous copy (offset 0) and record it in ``temporaries`` so the
+        caller closes it deterministically after the native call — the
+        Policy-B copy-then-compute helper (docs/native_cnn_design.md §5)."""
+        temp = self.contiguous_copy()
+        temporaries.append(temp)
+        return temp
+
+    def conv2d_forward(self, weight, bias=None, *, stride=1, padding=0):
+        """2-D cross-correlation forward over this NCHW input, natively.
+
+        ``self`` is the ``(N, C, H, W)`` input; ``weight`` is an
+        ``(O, C, kh, kw)`` OIHW tensor core; ``bias`` is an optional
+        ``(O,)`` tensor core (``None`` = no bias). ``stride`` and
+        ``padding`` are each an int or a 2-element ``(height, width)`` pair
+        (bools rejected). Returns a fresh **owning** row-major contiguous
+        ``(N, O, out_h, out_w)`` NativeTensorCore.
+
+        This is the **forward-only, autograd-unaware** Core wrapper (the
+        differentiable ``NativeTensor.conv2d`` primitive is a later
+        milestone). It performs the full public validation, computes and
+        checks the output shape from the locked floor formula in Python ints
+        (so the shape math cannot overflow) *before* allocating anything,
+        and — by Policy B (docs/native_cnn_design.md §5) — feeds the raw C
+        ABI **contiguous storage only**: any non-contiguous input, weight,
+        or bias is materialized into a private contiguous copy that is
+        closed the moment the native call returns, while already-contiguous
+        operands (even with a non-zero offset) are passed through untouched.
+        The caller's tensors are never mutated. A failure at any stage
+        allocates no output and leaks no temporary copy.
+
+        No dilation, groups, channels-last, or output padding — those are
+        not part of the signature. The weight/bias/input must all be open
+        CPU float64 tensor cores."""
+        self._require_open()
+        if not isinstance(weight, NativeTensorCore):
+            raise TypeError(
+                f"conv2d_forward requires a NativeTensorCore weight, "
+                f"got {type(weight).__name__}"
+            )
+        weight._require_open()
+        self._require_matching_metadata(weight, "conv2d_forward")
+        has_bias = bias is not None
+        if has_bias:
+            if not isinstance(bias, NativeTensorCore):
+                raise TypeError(
+                    f"conv2d_forward requires a NativeTensorCore bias or None, "
+                    f"got {type(bias).__name__}"
+                )
+            bias._require_open()
+            self._require_matching_metadata(bias, "conv2d_forward")
+
+        if self.ndim != 4:
+            raise ValueError(
+                f"conv2d_forward requires a 4-D NCHW input, got shape {self.shape}"
+            )
+        if weight.ndim != 4:
+            raise ValueError(
+                f"conv2d_forward requires a 4-D OIHW weight, got shape {weight.shape}"
+            )
+        if has_bias and bias.ndim != 1:
+            raise ValueError(
+                f"conv2d_forward requires a 1-D bias, got shape {bias.shape}"
+            )
+
+        n, c, h, w = self.shape
+        o, weight_in, kh, kw = weight.shape
+        if c != weight_in:
+            raise ValueError(
+                f"conv2d_forward input channels {c} do not match the weight's "
+                f"input channels {weight_in} (input {self.shape}, weight "
+                f"{weight.shape})"
+            )
+        if has_bias and bias.shape[0] != o:
+            raise ValueError(
+                f"conv2d_forward bias length {bias.shape[0]} does not match the "
+                f"number of output channels {o}"
+            )
+
+        sh, sw = _spatial_pair(stride, "stride", minimum=1)
+        ph, pw = _spatial_pair(padding, "padding", minimum=0)
+        # Python-int floor arithmetic; raises before any allocation if the
+        # kernel does not fit the padded input.
+        out_h, out_w = conv_output_shape((h, w), (kh, kw), (sh, sw), (ph, pw))
+
+        # Policy B: hand the kernel contiguous storage only. A non-contiguous
+        # operand is copied into a private owning tensor (offset 0) closed as
+        # soon as the call returns; a contiguous operand (possibly with a
+        # non-zero offset) is passed straight through with its offset.
+        temporaries = []
+        try:
+            input_core = (
+                self if self.contiguous else self._contiguous_temp(temporaries)
+            )
+            weight_core = (
+                weight if weight.contiguous
+                else weight._contiguous_temp(temporaries)
+            )
+            bias_handle = None
+            bias_offset = 0
+            if has_bias:
+                bias_core = (
+                    bias if bias.contiguous
+                    else bias._contiguous_temp(temporaries)
+                )
+                bias_handle = bias_core._storage._require_open()
+                bias_offset = bias_core.offset
+
+            out = NativeTensorCore.zeros(
+                (n, o, out_h, out_w), dtype=self.dtype, device=self.device
+            )
+            try:
+                self._storage._lib.tf_core_conv2d_forward(
+                    input_core._storage._require_open(), input_core.offset,
+                    weight_core._storage._require_open(), weight_core.offset,
+                    bias_handle, bias_offset,
+                    out._storage._require_open(),
+                    n, c, h, w, o, kh, kw, sh, sw, ph, pw, out_h, out_w,
+                )
+            except BaseException:
+                # The native call failed (e.g. an injected allocation
+                # failure): discard the freshly allocated output so a failed
+                # forward returns no half-built tensor.
+                out.close()
+                raise
+            return out
+        finally:
+            # Close every private contiguous copy exactly once, whether the
+            # call succeeded or raised — the caller's operands are untouched.
+            for temp in temporaries:
+                temp.close()
+
+    def conv2d_input_backward(self, weight, *, input_shape, stride=1, padding=0):
+        """Gradient of Conv2d w.r.t. its input, natively (Phase D, D6).
+
+        ``self`` is the upstream gradient ``grad_output`` with shape
+        ``(N, O, out_h, out_w)``; ``weight`` is the ``(O, C, kh, kw)`` OIHW
+        tensor core; ``input_shape`` is the parent input's ``(N, C, H, W)``.
+        Returns a fresh **owning** row-major contiguous ``(N, C, H, W)``
+        NativeTensorCore — the input gradient.
+
+        Forward-only and autograd-unaware (the ``NativeTensor.conv2d``
+        node calls this from its input-gradient callback). Validates ranks,
+        channel/spatial relationships, and the recomputed grad_output shape
+        before allocating; feeds the raw C ABI **contiguous storage only**
+        via Policy B (any non-contiguous grad_output/weight is copied into a
+        private core closed as soon as the call returns); the caller's
+        tensors are never mutated. A failure allocates no output and leaks no
+        temporary."""
+        self._require_open()
+        if not isinstance(weight, NativeTensorCore):
+            raise TypeError(
+                f"conv2d_input_backward requires a NativeTensorCore weight, "
+                f"got {type(weight).__name__}"
+            )
+        weight._require_open()
+        self._require_matching_metadata(weight, "conv2d_input_backward")
+        if self.ndim != 4:
+            raise ValueError(
+                f"conv2d_input_backward requires a 4-D NCHW grad_output, got "
+                f"shape {self.shape}"
+            )
+        if weight.ndim != 4:
+            raise ValueError(
+                f"conv2d_input_backward requires a 4-D OIHW weight, got shape "
+                f"{weight.shape}"
+            )
+        input_shape = _as_shape(input_shape)
+        if len(input_shape) != 4:
+            raise ValueError(
+                f"conv2d_input_backward input_shape must be 4-D NCHW, got "
+                f"{input_shape}"
+            )
+        n, c, h, w = input_shape
+        o, weight_in, kh, kw = weight.shape
+        if c != weight_in:
+            raise ValueError(
+                f"conv2d_input_backward input channels {c} do not match the "
+                f"weight's input channels {weight_in} (input_shape "
+                f"{input_shape}, weight {weight.shape})"
+            )
+        sh, sw = _spatial_pair(stride, "stride", minimum=1)
+        ph, pw = _spatial_pair(padding, "padding", minimum=0)
+        out_h, out_w = conv_output_shape((h, w), (kh, kw), (sh, sw), (ph, pw))
+        if self.shape != (n, o, out_h, out_w):
+            raise ValueError(
+                f"conv2d_input_backward grad_output shape {self.shape} does "
+                f"not match the expected {(n, o, out_h, out_w)} for input "
+                f"{input_shape}, weight {weight.shape}, stride {(sh, sw)}, "
+                f"padding {(ph, pw)}"
+            )
+        temporaries = []
+        try:
+            go = self if self.contiguous else self._contiguous_temp(temporaries)
+            wt = (
+                weight if weight.contiguous
+                else weight._contiguous_temp(temporaries)
+            )
+            out = NativeTensorCore.zeros(
+                (n, c, h, w), dtype=self.dtype, device=self.device
+            )
+            try:
+                self._storage._lib.tf_core_conv2d_input_backward(
+                    go._storage._require_open(), go.offset,
+                    wt._storage._require_open(), wt.offset,
+                    out._storage._require_open(),
+                    n, c, h, w, o, kh, kw, sh, sw, ph, pw, out_h, out_w,
+                )
+            except BaseException:
+                out.close()
+                raise
+            return out
+        finally:
+            for temp in temporaries:
+                temp.close()
+
+    def conv2d_weight_backward(self, input, *, weight_shape, stride=1, padding=0):
+        """Gradient of Conv2d w.r.t. its weight, natively (Phase D, D6).
+
+        ``self`` is the upstream gradient ``grad_output`` with shape
+        ``(N, O, out_h, out_w)``; ``input`` is the parent's ``(N, C, H, W)``
+        NCHW input; ``weight_shape`` is the weight's ``(O, C, kh, kw)`` OIHW
+        shape. Returns a fresh **owning** row-major contiguous
+        ``(O, C, kh, kw)`` NativeTensorCore — the weight gradient.
+
+        Forward-only and autograd-unaware. Same validation/Policy-B/failure
+        contract as ``conv2d_input_backward`` (any non-contiguous
+        grad_output/input is copied into a private core closed after the
+        call); the caller's tensors are never mutated."""
+        self._require_open()
+        if not isinstance(input, NativeTensorCore):
+            raise TypeError(
+                f"conv2d_weight_backward requires a NativeTensorCore input, "
+                f"got {type(input).__name__}"
+            )
+        input._require_open()
+        self._require_matching_metadata(input, "conv2d_weight_backward")
+        if self.ndim != 4:
+            raise ValueError(
+                f"conv2d_weight_backward requires a 4-D NCHW grad_output, got "
+                f"shape {self.shape}"
+            )
+        if input.ndim != 4:
+            raise ValueError(
+                f"conv2d_weight_backward requires a 4-D NCHW input, got shape "
+                f"{input.shape}"
+            )
+        weight_shape = _as_shape(weight_shape)
+        if len(weight_shape) != 4:
+            raise ValueError(
+                f"conv2d_weight_backward weight_shape must be 4-D OIHW, got "
+                f"{weight_shape}"
+            )
+        o, c, kh, kw = weight_shape
+        n, input_c, h, w = input.shape
+        if input_c != c:
+            raise ValueError(
+                f"conv2d_weight_backward input channels {input_c} do not match "
+                f"the weight's input channels {c} (input {input.shape}, "
+                f"weight_shape {weight_shape})"
+            )
+        sh, sw = _spatial_pair(stride, "stride", minimum=1)
+        ph, pw = _spatial_pair(padding, "padding", minimum=0)
+        out_h, out_w = conv_output_shape((h, w), (kh, kw), (sh, sw), (ph, pw))
+        if self.shape != (n, o, out_h, out_w):
+            raise ValueError(
+                f"conv2d_weight_backward grad_output shape {self.shape} does "
+                f"not match the expected {(n, o, out_h, out_w)} for input "
+                f"{input.shape}, weight_shape {weight_shape}, stride "
+                f"{(sh, sw)}, padding {(ph, pw)}"
+            )
+        temporaries = []
+        try:
+            go = self if self.contiguous else self._contiguous_temp(temporaries)
+            inp = (
+                input if input.contiguous
+                else input._contiguous_temp(temporaries)
+            )
+            out = NativeTensorCore.zeros(
+                (o, c, kh, kw), dtype=self.dtype, device=self.device
+            )
+            try:
+                self._storage._lib.tf_core_conv2d_weight_backward(
+                    go._storage._require_open(), go.offset,
+                    inp._storage._require_open(), inp.offset,
+                    out._storage._require_open(),
+                    n, c, h, w, o, kh, kw, sh, sw, ph, pw, out_h, out_w,
+                )
+            except BaseException:
+                out.close()
+                raise
+            return out
+        finally:
+            for temp in temporaries:
+                temp.close()
+
+    # -- pooling (Phase D, D8: forward-only Core wrapper + winners) -------
+
+    def maxpool2d_forward(self, *, kernel_size, stride=None, padding=0):
+        """2-D max pooling forward over this NCHW input, natively.
+
+        ``self`` is the ``(N, C, H, W)`` input. ``kernel_size`` and
+        ``stride`` are an int or a 2-element ``(height, width)`` pair of
+        ints ≥ 1 (bools rejected); ``stride=None`` means
+        ``stride = kernel_size`` (non-overlapping windows, the stable
+        convention). ``padding`` is an int or pair ≥ 0, applied
+        symmetrically on each spatial axis. Returns a fresh **owning**
+        row-major contiguous ``(N, C, out_h, out_w)`` NativeTensorCore.
+
+        Windows see a conceptual ``-inf`` outside the real input, so a
+        padded cell loses to any finite value but still *participates* in
+        the selection; ties keep the first occurrence in row-major window
+        order (docs/native_cnn_design.md §10). This is the **forward-only,
+        autograd-unaware** Core wrapper — the differentiable
+        ``NativeTensor.maxpool2d`` primitive and the ``NativeMaxPool2d``
+        module are later milestones (D9/D10).
+
+        The kernel also produces the private winner buffer backward will
+        need; this public method releases it, so the pooled values are all
+        that survive. The internal
+        ``_maxpool2d_forward_with_winners`` helper is what keeps it (D9).
+
+        No dilation, ceil_mode, return_indices, adaptive/average/global
+        pooling, or channels-last — none of those is in the signature."""
+        out, winners = self._maxpool2d_forward_with_winners(
+            kernel_size=kernel_size, stride=stride, padding=padding
+        )
+        # The public Core forward exposes only the pooled values; the
+        # winner buffer is internal state, released deterministically here
+        # rather than left to garbage collection.
+        winners.close()
+        return out
+
+    def _maxpool2d_forward_with_winners(
+        self, *, kernel_size, stride=None, padding=0
+    ):
+        """The pooling forward plus its private saved-winner buffer.
+
+        Returns ``(output, winners)``: two fresh **owning** row-major
+        contiguous ``(N, C, out_h, out_w)`` cores. ``winners`` holds, for
+        each output cell, the flat offset ``ih * W + iw`` of the selected
+        input element inside its ``(n, c)`` plane, or the sentinel ``-1.0``
+        when a padding cell won (docs/native_cnn_design.md §12). Every
+        stored value is an exact integral float64 — the wrapper proves
+        ``H * W <= 2**53`` in Python arbitrary-precision arithmetic
+        *before* allocating or calling anything, so no index can round.
+
+        The winner buffer is **internal**: it is never exposed as a public
+        NativeTensor, never given a dtype tag of its own, never traversed
+        as a parameter or buffer, and never serialized. It exists so the
+        D9 backward can scatter without recomputing winners; the caller of
+        this private helper owns it and must ``close()`` it.
+
+        Validation runs entirely before any allocation. Per **Policy B**
+        (docs/native_cnn_design.md §5) a non-contiguous input is
+        materialized into a private owning contiguous copy that is closed
+        as soon as the native call returns, while an already-contiguous
+        input (even at a non-zero offset) is passed straight through. On
+        any failure every object this method allocated is closed, the
+        caller's input is untouched, and no partial result is returned."""
+        self._require_open()
+        if self.ndim != 4:
+            raise ValueError(
+                f"maxpool2d_forward requires a 4-D NCHW input, got shape "
+                f"{self.shape}"
+            )
+        if self.dtype != "float64" or self.device != "cpu":
+            raise ValueError(
+                f"maxpool2d_forward requires a float64/cpu input, got "
+                f"{self.dtype}/{self.device}"
+            )
+
+        kh, kw = _spatial_pair(kernel_size, "kernel_size", minimum=1)
+        # Stable convention: no stride means non-overlapping windows.
+        if stride is None:
+            sh, sw = kh, kw
+        else:
+            sh, sw = _spatial_pair(stride, "stride", minimum=1)
+        ph, pw = _spatial_pair(padding, "padding", minimum=0)
+
+        n, c, h, w = self.shape
+        # Winner indices are float64 flat plane offsets, exact only while
+        # H*W <= 2**53 (design §12). Python ints, so the product itself
+        # cannot overflow while being checked.
+        if h * w > _MAX_EXACT_WINNER_PLANE:
+            raise ValueError(
+                f"maxpool2d_forward input plane {(h, w)} has {h * w} elements, "
+                f"more than the {_MAX_EXACT_WINNER_PLANE} float64 can index "
+                f"exactly; winner offsets would round"
+            )
+        # Python-int floor arithmetic; raises before any allocation if the
+        # window does not fit the padded input.
+        out_h, out_w = conv_output_shape((h, w), (kh, kw), (sh, sw), (ph, pw))
+        # The element counts crossing the ABI must be representable as
+        # int64 storage sizes (again in Python ints, before allocating).
+        for count, what in (
+            (n * c * h * w, "input"),
+            (n * c * out_h * out_w, "output"),
+        ):
+            if count > _INT64_MAX:
+                raise ValueError(
+                    f"maxpool2d_forward {what} element count {count} exceeds "
+                    f"the int64 range the native runtime addresses"
+                )
+
+        temporaries = []
+        out = None
+        winners = None
+        try:
+            input_core = (
+                self if self.contiguous else self._contiguous_temp(temporaries)
+            )
+            # Deterministic allocation order: output first, then winners.
+            # If the second allocation fails the first is closed below, so
+            # a failed forward leaves nothing half-built.
+            out = NativeTensorCore.zeros(
+                (n, c, out_h, out_w), dtype=self.dtype, device=self.device
+            )
+            winners = NativeTensorCore.zeros(
+                (n, c, out_h, out_w), dtype=self.dtype, device=self.device
+            )
+            self._storage._lib.tf_core_maxpool2d_forward(
+                input_core._storage._require_open(), input_core.offset,
+                out._storage._require_open(),
+                winners._storage._require_open(),
+                n, c, h, w, kh, kw, sh, sw, ph, pw, out_h, out_w,
+            )
+            return out, winners
+        except BaseException:
+            # Close whichever result objects were successfully allocated —
+            # never rely on garbage collection for native memory.
+            for allocated in (winners, out):
+                if allocated is not None:
+                    allocated.close()
+            raise
+        finally:
+            # Close the private contiguous copy (if any) exactly once,
+            # whether the call succeeded or raised.
+            for temp in temporaries:
+                temp.close()
+
+    def maxpool2d_backward(self, winners, *, input_shape):
+        """Gradient of MaxPool2d w.r.t. its input, natively (Phase D, D9).
+
+        ``self`` is the upstream gradient ``grad_output`` with shape
+        ``(N, C, out_h, out_w)``; ``winners`` is the **private saved-winner
+        core** the D8 forward produced, with exactly that shape;
+        ``input_shape`` is the parent input's ``(N, C, H, W)``. Returns a
+        fresh **owning** row-major contiguous ``(N, C, H, W)``
+        NativeTensorCore — the input gradient.
+
+        The routing comes entirely from the saved winners: each output
+        cell's gradient is added to the input element that won its window
+        (``ih = winner // W``, ``iw = winner % W``), and a ``-1`` winner
+        (padding won) drops that gradient. Overlapping windows accumulate.
+        **No input value is reread and no window maximum is recomputed**,
+        so no kernel/stride/padding argument is needed or accepted here.
+
+        Autograd-unaware (the ``NativeTensor.maxpool2d`` node calls this
+        from its single input-gradient callback). Validation runs before
+        any allocation; per Policy B a non-contiguous grad_output or winner
+        core is materialized into a private copy closed as soon as the
+        native call returns. The checked C ABI additionally validates every
+        winner value (``-1`` or an exact in-range integer) before
+        scattering, so a corrupted buffer raises instead of writing
+        anywhere. Neither operand is mutated, and a failure closes the
+        output and leaks no temporary."""
+        self._require_open()
+        if not isinstance(winners, NativeTensorCore):
+            raise TypeError(
+                f"maxpool2d_backward requires a NativeTensorCore winner "
+                f"buffer, got {type(winners).__name__}"
+            )
+        winners._require_open()
+        self._require_matching_metadata(winners, "maxpool2d_backward")
+        if self.dtype != "float64" or self.device != "cpu":
+            raise ValueError(
+                f"maxpool2d_backward requires float64/cpu operands, got "
+                f"{self.dtype}/{self.device}"
+            )
+        if self.ndim != 4:
+            raise ValueError(
+                f"maxpool2d_backward requires a 4-D NCHW grad_output, got "
+                f"shape {self.shape}"
+            )
+        if winners.shape != self.shape:
+            raise ValueError(
+                f"maxpool2d_backward winner shape {winners.shape} does not "
+                f"match the grad_output shape {self.shape}"
+            )
+        input_shape = _as_shape(input_shape)
+        if len(input_shape) != 4:
+            raise ValueError(
+                f"maxpool2d_backward input_shape must be 4-D NCHW, got "
+                f"{input_shape}"
+            )
+        n, c, h, w = input_shape
+        out_n, out_c, out_h, out_w = self.shape
+        if (n, c) != (out_n, out_c):
+            raise ValueError(
+                f"maxpool2d_backward batch/channels {(n, c)} do not match the "
+                f"grad_output's {(out_n, out_c)} (input_shape {input_shape}, "
+                f"grad_output {self.shape})"
+            )
+        # The winner domain is [0, H*W - 1] plus the -1 sentinel, so the
+        # same float64 exactness bound the forward proved must hold here.
+        if h * w > _MAX_EXACT_WINNER_PLANE:
+            raise ValueError(
+                f"maxpool2d_backward input plane {(h, w)} has {h * w} "
+                f"elements, more than the {_MAX_EXACT_WINNER_PLANE} float64 "
+                f"can index exactly"
+            )
+        if n * c * h * w > _INT64_MAX:
+            raise ValueError(
+                f"maxpool2d_backward grad_input element count {n * c * h * w} "
+                f"exceeds the int64 range the native runtime addresses"
+            )
+
+        temporaries = []
+        out = None
+        try:
+            grad_output = (
+                self if self.contiguous else self._contiguous_temp(temporaries)
+            )
+            winner_core = (
+                winners if winners.contiguous
+                else winners._contiguous_temp(temporaries)
+            )
+            out = NativeTensorCore.zeros(
+                (n, c, h, w), dtype=self.dtype, device=self.device
+            )
+            self._storage._lib.tf_core_maxpool2d_backward(
+                grad_output._storage._require_open(), grad_output.offset,
+                winner_core._storage._require_open(), winner_core.offset,
+                out._storage._require_open(),
+                n, c, h, w, out_h, out_w,
+            )
+            return out
+        except BaseException:
+            # A failed backward returns no half-built gradient.
+            if out is not None:
+                out.close()
+            raise
+        finally:
+            for temp in temporaries:
+                temp.close()
+
     # -- view operations (metadata only: no data is copied) --------------
 
     def _view_core(self, shape, strides, offset):
@@ -1588,6 +2259,67 @@ def _reduce_out_strides(in_shape, reduced_axes, keepdims, out_shape):
             result[d] = out_full[out_index]
             out_index += 1
     return result
+
+
+def _spatial_pair(value, name, minimum):
+    """Normalize a spatial argument to a ``(height, width)`` int pair.
+
+    Mirrors the stable ``tensorforge.nn.conv._pair`` semantics in the
+    native package's strict style (the two lines never cross-import): a
+    plain int ``v`` becomes ``(v, v)``; a 2-element tuple/list of ints is
+    taken as ``(height, width)``. Booleans are rejected (``bool`` is an
+    ``int`` subclass, so ``True``/``False`` are never valid dimensions) and
+    every member must be at least ``minimum`` (``1`` for kernel/stride,
+    ``0`` for padding). Raises ``ValueError`` otherwise. Pure Python — never
+    touches the compiled library, so it is safe whether or not the backend
+    is built."""
+    if isinstance(value, (int, np.integer)) and not isinstance(value, bool):
+        pair = (int(value), int(value))
+    elif (
+        isinstance(value, (tuple, list))
+        and len(value) == 2
+        and all(
+            isinstance(v, (int, np.integer)) and not isinstance(v, bool)
+            for v in value
+        )
+    ):
+        pair = (int(value[0]), int(value[1]))
+    else:
+        raise ValueError(
+            f"{name} must be an int or a 2-element pair of ints, got {value!r}"
+        )
+    if any(v < minimum for v in pair):
+        raise ValueError(f"{name} values must be >= {minimum}, got {pair}")
+    return pair
+
+
+def conv_output_shape(input_size, kernel_size, stride, padding):
+    """The ``(out_h, out_w)`` of a 2-D convolution / pooling window.
+
+    Applies the locked floor formula per spatial axis (identical to the
+    stable Conv2d)::
+
+        out = (size + 2*pad - kernel) // stride + 1
+
+    Every argument is a validated ``(height, width)`` pair of ints. The
+    arithmetic runs in Python ints (arbitrary precision), so the
+    shape math itself can never overflow. Raises ``ValueError`` — naming
+    the kernel, stride, padding, and input — when either extent would be
+    ``< 1`` (the kernel does not fit the padded input), *before* any output
+    is allocated. Pure Python; never touches the compiled library."""
+    h, w = input_size
+    kh, kw = kernel_size
+    sh, sw = stride
+    ph, pw = padding
+    out_h = (h + 2 * ph - kh) // sh + 1
+    out_w = (w + 2 * pw - kw) // sw + 1
+    if out_h < 1 or out_w < 1:
+        raise ValueError(
+            f"kernel {(kh, kw)} with stride {(sh, sw)} and padding {(ph, pw)} "
+            f"does not fit input {(h, w)}: computed output {(out_h, out_w)} has "
+            f"a non-positive extent"
+        )
+    return out_h, out_w
 
 
 def _binary_op(kernel_name, a, b, name):

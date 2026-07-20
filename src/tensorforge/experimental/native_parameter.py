@@ -302,10 +302,11 @@ class NativeParameter(NativeTensor):
 
     @classmethod
     def _from_op(cls, core, parents, backward, op, owns_core=True,
-                 expected_versions=()):
+                 expected_versions=(), graph_resources=()):
         return NativeTensor._from_op(
             core, parents, backward, op, owns_core=owns_core,
             expected_versions=expected_versions,
+            graph_resources=graph_resources,
         )
 
     def __repr__(self):
