@@ -531,10 +531,25 @@ allocation, exact parity with the stable `MaxPool2d`). The winner buffer —
 an internal float64 buffer of flat plane offsets with a `-1` padding
 sentinel, proved exact against `H*W ≤ 2^53` both in Python and at the ABI —
 is deliberately invisible: no public tensor, no new dtype, no state-dict or
-checkpoint presence. Pooling **backward and `NativeTensor.maxpool2d`
-autograd (D9)**, the **`NativeMaxPool2d` module (D10)**, and the
-deterministic end-to-end CNN training + checkpoint-resume proof (D11)
-remain unimplemented, followed by the CUDA
+checkpoint presence. **D9** then completed the differentiable pooling
+operation: the internal scatter-add `tf::maxpool2d_backward_contiguous`,
+the exported guarded `tf_core_maxpool2d_backward` wrapper (which validates
+every winner value — the `-1` sentinel or an exact in-range integer —
+before scattering, and never rounds a malformed one),
+`NativeTensorCore.maxpool2d_backward`, and the Python-managed
+**`NativeTensor.maxpool2d`** autograd node. Backward reads **only** the
+saved winners and the upstream, so it takes no kernel/stride/padding at any
+layer, records **no** parameter-version snapshot (unlike `conv2d`, whose
+gradients reread operand values), and is unaffected by input mutation after
+the forward pass; overlapping windows accumulate and padding winners drop
+their gradient. The winner buffer is owned by the graph history and
+released exactly when it is — freed by a one-shot `backward()` or
+`close()`, retained under `retain_graph=True`, and kept alive across a
+failed (retryable) backward — through the small
+`_from_op(..., graph_resources=...)` hook D9 added rather than any autograd
+redesign. The **`NativeMaxPool2d` module (D10)** and the deterministic
+end-to-end CNN training + checkpoint-resume proof (D11) remain
+unimplemented, followed by the CUDA
 runtime, dtype/AMP work, Transformer/text experiments, distributed
 training, and the final portfolio release. Still float64/cpu only, still explicit and
 experimental, and no production performance is claimed.

@@ -577,9 +577,8 @@ The Python line is done; what remains is expansion on its own terms:
     matrix finalization; and build/CI/hygiene verification — no new
     numerical behavior.
   - **Phase D — native CNN stack (design contract complete; the Flatten,
-    convolution, and max-pooling *forward* milestones have shipped, with
-    pooling backward/autograd, the pooling module, and the native CNN
-    training proof upcoming).** The **D0 architecture contract is written** —
+    convolution, and max-pooling *operation* milestones have shipped, with
+    the pooling module and the native CNN training proof upcoming).** The **D0 architecture contract is written** —
     [native_cnn_design.md](native_cnn_design.md) locks the layouts
     (NCHW activations, OIHW convolution weights, cross-correlation), the
     argument and output-shape contracts, the non-contiguous-input policy
@@ -656,8 +655,22 @@ The Python line is done; what remains is expansion on its own terms:
     before allocating anything, copies a non-contiguous input (Policy B),
     allocates the output and the **private** winner buffer in a
     failure-atomic order, and matches the stable pooling reference
-    exactly. Max-pooling **backward and `NativeTensor.maxpool2d` autograd
-    (D9)**, the **native pooling module (D10)**, and the deterministic
+    exactly. **D9 completed the differentiable native pooling
+    operation**: the internal scatter-add kernel
+    `tf::maxpool2d_backward_contiguous`, the exported guarded
+    `tf_core_maxpool2d_backward` wrapper (which validates every saved
+    winner — the sentinel or an exact in-range integer — before scattering,
+    and never rounds), `NativeTensorCore.maxpool2d_backward`, and the
+    Python-managed **`NativeTensor.maxpool2d`** autograd node. Its single
+    input-gradient callback routes the upstream through the winners the
+    forward saved — never rereading the input, never recomputing a maximum,
+    and recording **no** parameter-version snapshot (a deliberate contrast
+    with convolution) — with overlapping windows accumulating and padding
+    winners dropped. The private winner buffer became graph-owned state
+    released exactly when the graph history is (freed by a one-shot
+    backward or `close()`, retained under `retain_graph=True`, and kept
+    alive across a failed retryable backward). The **native pooling module
+    (D10)** and the deterministic
     end-to-end native-CNN training + checkpoint-resume proof (D11) remain
     **unimplemented** and marked unsupported in the
     [support matrix](native_support_matrix.md). This design guides the

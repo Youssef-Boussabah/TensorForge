@@ -408,10 +408,13 @@ def test_winner_buffer_is_not_public_surface():
     # The winner-carrying helper is deliberately private.
     assert "_maxpool2d_forward_with_winners" in dir(cpp.NativeTensorCore)
     assert "maxpool2d_forward" in dir(cpp.NativeTensorCore)
-    # The differentiable op does not exist yet, so nothing can reach a
-    # winner buffer from the public NativeTensor layer either.
-    assert not hasattr(NativeTensor, "maxpool2d")
-    assert not [name for name in dir(NativeTensor) if "winner" in name.lower()]
+    # The differentiable op exists as of D9, but it still exposes no winner
+    # surface: the buffer stays private graph state.
+    assert hasattr(NativeTensor, "maxpool2d")
+    public_tensor = [name for name in dir(NativeTensor)
+                     if not name.startswith("_")]
+    assert not [name for name in public_tensor if "winner" in name.lower()]
+    assert not [name for name in public_tensor if "indices" in name.lower()]
 
 
 def test_winner_buffer_claims_no_new_dtype_capability():
@@ -956,27 +959,30 @@ def test_raw_kernels_and_frozen_registry_unchanged():
     )
 
 
-def test_autograd_op_and_module_remain_unsupported():
+def test_autograd_op_is_supported_but_the_module_is_not():
     from tensorforge.experimental import NativeTensor
 
-    assert "maxpool2d" not in cpp.AUTOGRAD_OPS
-    assert not hasattr(NativeTensor, "maxpool2d")
+    # The differentiable operation landed in D9 (this file's forward is its
+    # first half); the NativeMaxPool2d *module* is D10 and still absent.
+    assert "maxpool2d" in cpp.AUTOGRAD_OPS
+    assert hasattr(NativeTensor, "maxpool2d")
+    assert "maxpool2d" not in cpp.UNSUPPORTED
     assert "NativeMaxPool2d" not in cpp.NATIVE_MODULES
-    assert "maxpool2d" in cpp.UNSUPPORTED
     assert "NativeMaxPool2d" in cpp.UNSUPPORTED
     import tensorforge.experimental as experimental
 
     assert "NativeMaxPool2d" not in experimental.__all__
 
 
-def test_maxpool2d_backward_remains_unimplemented():
-    # No backward Core op, no backward C ABI symbol, no ctypes registration.
-    assert not hasattr(cpp.NativeTensorCore, "maxpool2d_backward")
-    assert "maxpool2d_backward" not in cpp.TENSOR_CORE_OPS
-    assert "tf_core_maxpool2d_backward" not in cpp._CHECKED_KERNELS
+def test_forward_and_backward_are_separate_core_ops():
+    # D8 shipped the forward Core op; D9 added the backward one beside it,
+    # each backed by its own checked C ABI symbol.
+    assert "maxpool2d_forward" in cpp.TENSOR_CORE_OPS
+    assert "maxpool2d_backward" in cpp.TENSOR_CORE_OPS
+    assert hasattr(cpp.NativeTensorCore, "maxpool2d_backward")
+    assert "tf_core_maxpool2d_backward" in cpp._CHECKED_KERNELS
     lib = cpp._require_library()
-    with pytest.raises(AttributeError):
-        getattr(lib, "tf_core_maxpool2d_backward")
+    assert callable(getattr(lib, "tf_core_maxpool2d_backward"))
 
 
 def test_conv2d_support_is_unaffected():

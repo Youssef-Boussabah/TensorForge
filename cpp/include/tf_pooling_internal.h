@@ -96,4 +96,67 @@ void maxpool2d_forward_contiguous(
     int64_t output_height,
     int64_t output_width) noexcept;
 
+// Gradient of the MaxPool2d forward with respect to its input (Phase D,
+// milestone D9). The internal CPU float64 scatter-add that routes each
+// upstream value to the exact input element its window selected in the
+// forward; pure arithmetic only. Like the forward kernel this is
+// deliberately NOT part of the public C ABI: a plain C++ function in
+// ``namespace tf`` with hidden visibility. The exported, guarded
+// ``tf_core_maxpool2d_backward`` wrapper (which is where winner values are
+// validated), its ctypes registration, the NativeTensorCore backward
+// method, and the ``NativeTensor.maxpool2d`` autograd node live elsewhere.
+//
+// For every output position, using ONLY the saved winner (the input value
+// is never reread and the window maximum is never recomputed):
+//
+//   winner = winners[n, c, oh, ow]
+//   if winner == -1:  the window's maximum was padding -> drop the gradient
+//   else:             ih = winner / input_width, iw = winner % input_width
+//                     grad_input[n, c, ih, iw] += grad_output[n, c, oh, ow]
+//
+// Overlapping windows (stride < kernel) can select the same input element
+// from several output positions, so the accumulation is a genuine ``+=``.
+// Ties were already resolved at forward time: the single recorded winner
+// receives the whole window's gradient and the equal-valued cells receive
+// nothing, matching the stable framework.
+//
+// Layouts (all row-major contiguous float64):
+//   grad_output : NCHW  (batch, channels, output_height, output_width)
+//   winners     : NCHW  (batch, channels, output_height, output_width)
+//   grad_input  : NCHW  (batch, channels, input_height, input_width) — written
+//
+// Output initialization: the routine **zero-initializes the entire
+// grad_input span itself** (batch*channels*input_height*input_width
+// doubles) before accumulating, so the caller need NOT pre-zero it; any
+// prior contents are fully overwritten/defined. Input elements that won no
+// window keep their zero.
+//
+// Preconditions (guaranteed by the exported wrapper; NOT re-validated here
+// — this routine is the inner math, not a validation boundary):
+//   * grad_output / winners / grad_input are non-null and each point to
+//     contiguous storage of exactly
+//     batch*channels*output_height*output_width (the first two) and
+//     batch*channels*input_height*input_width doubles;
+//   * every dimension is positive;
+//   * every winner is either exactly -1.0 or an exact integral value in
+//     [0, input_height*input_width - 1] — the wrapper checks each one, so
+//     this routine converts without rounding and never scatters out of
+//     range;
+//   * all integer products and offsets are representable in int64.
+//
+// The routine allocates no heap memory and cannot throw (noexcept): it is
+// pure arithmetic over caller-owned buffers. It reads grad_output and
+// winners without modifying them and writes only inside the grad_input
+// span, in deterministic n -> c -> oh -> ow order.
+void maxpool2d_backward_contiguous(
+    const double* grad_output,
+    const double* winners,
+    double* grad_input,
+    int64_t batch,
+    int64_t channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t output_height,
+    int64_t output_width) noexcept;
+
 }  // namespace tf

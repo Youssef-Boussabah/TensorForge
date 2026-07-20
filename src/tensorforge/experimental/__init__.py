@@ -22,14 +22,17 @@ the existing ``sum`` reduction), and as of milestone D7 the trainable
 bias ``NativeParameter``s, deterministic uniform conv fan-in initialization,
 4-D NCHW input validation, and backward supplied entirely by the D6
 autograd — no new kernel, ABI symbol, or custom module backward).
-Milestone D8 added max-pooling only at the **runtime** layer — the
-forward-only ``NativeTensorCore.maxpool2d_forward`` and its private saved
-winner buffer — so nothing pooling-related is exported from this package
-yet. Differentiable pooling (``NativeTensor.maxpool2d`` and its backward,
-D9), the ``NativeMaxPool2d`` module (D10), the deterministic end-to-end
-native CNN training/checkpoint-resume proof (D11), CUDA, and the remaining
-Phase-D numerical layers (new activations, softmax/classification losses,
-BatchNorm/LayerNorm/Dropout) remain future work.
+Milestones D8 and D9 added the differentiable **``NativeTensor.maxpool2d``**
+operation (NCHW window maxima with int/tuple ``kernel_size``/``stride``/
+``padding``; its backward scatters through the private winner buffer its own
+forward saved, so it never rereads the input, never recomputes a maximum,
+and records no parameter-version snapshot). It is an *operation*, not a
+module: the ``NativeMaxPool2d`` layer (D10) is not implemented, so nothing
+pooling-related is exported from this package yet. That module, the
+deterministic end-to-end native CNN training/checkpoint-resume proof (D11),
+CUDA, and the remaining Phase-D numerical layers (new activations,
+softmax/classification losses, BatchNorm/LayerNorm/Dropout) remain future
+work.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf

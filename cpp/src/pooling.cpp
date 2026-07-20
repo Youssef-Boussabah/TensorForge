@@ -9,10 +9,15 @@
 // sentinel for "padding won" (§12); it never becomes a public tensor and
 // introduces no new dtype.
 //
-// The pooling *backward* scatter kernel, its C ABI symbol, and the
-// NativeTensor autograd integration are milestone D9 — none of that lives
-// here yet.
+// Milestone D9 added the pooling *backward* to this same file: the
+// internal scatter-add `tf::maxpool2d_backward_contiguous` and the checked
+// `tf_core_maxpool2d_backward` wrapper (which validates every winner value
+// before scattering). Backward consumes the saved winners only — it never
+// rereads an input value and never recomputes a window maximum. The
+// Python-managed `NativeTensor.maxpool2d` graph node lives in
+// experimental/native_tensor.py; no graph state enters C++.
 
+#include <cmath>
 #include <limits>
 
 #include "tf_internal.h"  // export macro, Storage/as_storage, TF_GUARD, set_error
@@ -116,6 +121,50 @@ void maxpool2d_forward_contiguous(
                         n, c, i, j, channels, output_height, output_width);
                     output[out_index] = best_value;
                     winners[out_index] = best_winner;
+                }
+            }
+        }
+    }
+}
+
+void maxpool2d_backward_contiguous(
+    const double* grad_output,
+    const double* winners,
+    double* grad_input,
+    int64_t batch,
+    int64_t channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t output_height,
+    int64_t output_width) noexcept {
+    // Scatter-add adjoint of the forward window maximum
+    // (docs/native_cnn_design.md §11). The output is fully defined here:
+    // zero the entire grad_input span first, so the caller need not
+    // pre-zero it and overlapping windows can accumulate with a plain +=.
+    const int64_t plane = input_height * input_width;
+    const int64_t input_count = batch * channels * plane;
+    for (int64_t idx = 0; idx < input_count; ++idx) {
+        grad_input[idx] = 0.0;
+    }
+    // Deterministic n -> c -> oh -> ow order. Backward reads ONLY the saved
+    // winners and the upstream: no input value is reread and no window
+    // maximum is recomputed, so forward and backward can never disagree.
+    for (int64_t n = 0; n < batch; ++n) {
+        for (int64_t c = 0; c < channels; ++c) {
+            // Base of this (n, c) plane in both buffers.
+            const int64_t input_base = (n * channels + c) * plane;
+            for (int64_t i = 0; i < output_height; ++i) {
+                for (int64_t j = 0; j < output_width; ++j) {
+                    const int64_t out_index = index4d(
+                        n, c, i, j, channels, output_height, output_width);
+                    const double winner = winners[out_index];
+                    if (winner < 0.0) {
+                        continue;  // -1 sentinel: padding won, drop the grad
+                    }
+                    // The wrapper proved this is an exact integer in
+                    // [0, plane - 1], so the conversion truncates nothing.
+                    const int64_t offset = static_cast<int64_t>(winner);
+                    grad_input[input_base + offset] += grad_output[out_index];
                 }
             }
         }
@@ -329,5 +378,129 @@ TF_EXPORT void tf_core_maxpool2d_forward(
         batch, channels, input_height, input_width,
         kernel_height, kernel_width, stride_height, stride_width,
         pad_height, pad_width, output_height, output_width);
+    TF_GUARD_END_VOID()
+}
+
+// ---------------------------------------------------------------------------
+// Exported C ABI backward wrapper (Phase D, milestone D9).
+//
+// ``tf_core_maxpool2d_backward`` is the exception-guarded boundary over the
+// internal noexcept scatter-add above. It shares the forward wrapper's
+// contract exactly (same file-local checked arithmetic, same validation
+// classes, same error style): storage handles + per-operand offsets +
+// integer dimensions, **never stride arrays**, so it interprets each span
+// as canonical contiguous data and bounds-checks it — logical contiguity
+// stays the caller precondition the NativeTensorCore layer guarantees by
+// Policy-B copy-then-compute. It allocates and frees nothing and mutates
+// only the caller-allocated grad_input.
+//
+// It takes **no kernel/stride/padding metadata**: the saved winners fully
+// determine the gradient routing, so backward never reconstructs window
+// geometry (docs/native_cnn_design.md §11).
+//
+// Beyond the usual metadata checks it **validates every winner value**
+// before the kernel runs. The winner buffer is private and produced by the
+// D8 forward, but this boundary is correctness-first: a value that is not
+// exactly -1.0 and not an exact, finite, in-range non-negative integer is
+// rejected with TF_ERROR_INVALID rather than rounded, truncated, or used
+// to scatter outside grad_input.
+// ---------------------------------------------------------------------------
+
+TF_EXPORT void tf_core_maxpool2d_backward(
+    const void* grad_output_handle, int64_t grad_output_offset,
+    const void* winners_handle, int64_t winners_offset,
+    void* grad_input_handle,
+    int64_t batch,
+    int64_t channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t output_height,
+    int64_t output_width) {
+    TF_GUARD_BEGIN
+    if (grad_output_handle == nullptr || winners_handle == nullptr ||
+        grad_input_handle == nullptr) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "maxpool2d_backward: null required storage handle");
+        return;
+    }
+    if (batch < 1 || channels < 1 || input_height < 1 || input_width < 1 ||
+        output_height < 1 || output_width < 1) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "maxpool2d_backward: batch, channels, and spatial "
+                      "extents must each be >= 1");
+        return;
+    }
+    if (grad_output_offset < 0 || winners_offset < 0) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "maxpool2d_backward: negative storage offset");
+        return;
+    }
+    // The winner domain is [0, H*W - 1] plus the -1 sentinel, so the same
+    // float64 exactness bound the forward proves must hold here too.
+    int64_t plane;
+    if (!checked_mul(input_height, input_width, plane) ||
+        plane > kMaxExactPlane) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "maxpool2d_backward: input plane too large for exact "
+                      "float64 winner indices");
+        return;
+    }
+    int64_t grad_output_count, grad_input_count;
+    if (!numel4(batch, channels, output_height, output_width,
+                grad_output_count) ||
+        !numel4(batch, channels, input_height, input_width,
+                grad_input_count)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "maxpool2d_backward: shape product overflows int64");
+        return;
+    }
+    if (!span_within(grad_output_offset, grad_output_count,
+                     as_storage(grad_output_handle)->size)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "maxpool2d_backward: grad_output span exceeds storage");
+        return;
+    }
+    if (!span_within(winners_offset, grad_output_count,
+                     as_storage(winners_handle)->size)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "maxpool2d_backward: winner span exceeds storage");
+        return;
+    }
+    if (!span_within(0, grad_input_count,
+                     as_storage(grad_input_handle)->size)) {
+        tf::set_error(TF_ERROR_INVALID,
+                      "maxpool2d_backward: grad_input span exceeds storage");
+        return;
+    }
+    const double* grad_output =
+        as_storage(grad_output_handle)->data + grad_output_offset;
+    const double* winners = as_storage(winners_handle)->data + winners_offset;
+    // Winner validation: exactly -1.0, or a finite, non-negative, exactly
+    // integral offset no larger than plane - 1. Nothing else is accepted,
+    // and nothing is silently rounded. Checked for the whole buffer before
+    // the kernel writes anything, so a malformed winner leaves grad_input
+    // untouched.
+    for (int64_t idx = 0; idx < grad_output_count; ++idx) {
+        const double winner = winners[idx];
+        if (winner == -1.0) {
+            continue;  // padding won: backward drops this gradient
+        }
+        const bool valid = std::isfinite(winner) && winner >= 0.0 &&
+                           std::floor(winner) == winner &&
+                           winner <= static_cast<double>(plane - 1);
+        if (!valid) {
+            tf::set_error(
+                TF_ERROR_INVALID,
+                "maxpool2d_backward: winner buffer holds an invalid index "
+                "(each entry must be -1 or an exact integer in "
+                "[0, input_height*input_width - 1])");
+            return;
+        }
+    }
+    double* grad_input = as_storage(grad_input_handle)->data;
+    tf::maxpool2d_backward_contiguous(
+        grad_output, winners, grad_input,
+        batch, channels, input_height, input_width,
+        output_height, output_width);
     TF_GUARD_END_VOID()
 }

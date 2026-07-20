@@ -926,8 +926,10 @@ def test_conv2d_operation_still_advertised():
     assert "NativeConv2d" not in cpp.TENSOR_CORE_OPS
 
 
-def test_maxpool2d_remains_unsupported():
-    assert "maxpool2d" in cpp.UNSUPPORTED
+def test_maxpool2d_module_remains_unsupported():
+    # The pooling *operation* shipped in D9; the pooling *module* (D10) has
+    # not, so it is the only pooling name left in UNSUPPORTED.
+    assert "NativeMaxPool2d" in cpp.UNSUPPORTED
     assert "NativeMaxPool2d" not in cpp.NATIVE_MODULES
     import tensorforge.experimental as experimental
 

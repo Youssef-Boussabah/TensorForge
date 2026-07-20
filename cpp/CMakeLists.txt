@@ -194,4 +194,27 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME maxpool2d_forward COMMAND test_maxpool2d_forward)
+
+  # MaxPool2d backward (D9): links the same internal pooling source
+  # (pooling.cpp) plus error.cpp. Unlike the forward target this test
+  # exercises *both* layers of that translation unit — the internal
+  # tf::maxpool2d_backward_contiguous scatter kernel (with valid winners
+  # only) and the exported guarded tf_core_maxpool2d_backward wrapper,
+  # whose winner-value validation it drives through plain tf::Storage
+  # handles and the thread-local error slot.
+  add_executable(test_maxpool2d_backward
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_maxpool2d_backward.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/pooling.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_maxpool2d_backward PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_maxpool2d_backward PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_maxpool2d_backward PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_maxpool2d_backward PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME maxpool2d_backward COMMAND test_maxpool2d_backward)
 endif()

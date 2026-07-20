@@ -347,16 +347,19 @@ def test_native_cnn_design_is_honest_about_being_unimplemented():
     # The backend capability registry keeps the still-unimplemented CNN
     # surface honest. As of D6 the differentiable "conv2d" *operation* is
     # implemented (autograd op + Core forward/backward) and as of D7 the
-    # NativeConv2d *module* is implemented too, so neither is in UNSUPPORTED;
-    # all of pooling (D8–D10) remains unsupported. Operation support and
+    # NativeConv2d *module* is too; as of D8/D9 the "maxpool2d" *operation*
+    # is implemented (Core forward + backward + NativeTensor autograd) while
+    # the NativeMaxPool2d *module* (D10) is not. Operation support and
     # module support are distinct. NativeFlatten (D1) is checked separately,
     # below.
     from tensorforge.backends import cpp
 
-    # maxpool2d is unimplemented at every layer.
-    assert "maxpool2d" in cpp.UNSUPPORTED
-    assert "maxpool2d" not in cpp.AUTOGRAD_OPS
-    assert "maxpool2d" not in cpp.TENSOR_CORE_OPS
+    # The pooling operation is implemented; only its module is missing.
+    assert "maxpool2d" not in cpp.UNSUPPORTED
+    assert "maxpool2d" in cpp.AUTOGRAD_OPS
+    assert "maxpool2d_forward" in cpp.TENSOR_CORE_OPS
+    assert "maxpool2d_backward" in cpp.TENSOR_CORE_OPS
+    assert "NativeMaxPool2d" in cpp.UNSUPPORTED
     assert "NativeMaxPool2d" not in cpp.NATIVE_MODULES, (
         "cpp backend advertises unimplemented NativeMaxPool2d"
     )
@@ -389,10 +392,11 @@ def test_native_flatten_is_implemented_as_a_native_module():
     # Not a raw C++ kernel and not a lingering "unsupported" entry.
     assert "NativeFlatten" not in cpp.RAW_KERNELS
     assert "flatten" not in cpp.UNSUPPORTED
-    # The Conv2d module is implemented as of D7 (over the D6 operation);
-    # only pooling remains unimplemented.
+    # The Conv2d module is implemented as of D7 (over the D6 operation) and
+    # the pooling operation as of D9; only the pooling module (D10) remains
+    # unimplemented.
     assert "NativeConv2d" not in cpp.UNSUPPORTED
-    assert "maxpool2d" in cpp.UNSUPPORTED
+    assert "NativeMaxPool2d" in cpp.UNSUPPORTED
 
 
 def test_docs_do_not_reassert_stale_phase_d_status():

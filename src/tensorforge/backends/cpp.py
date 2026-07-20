@@ -89,27 +89,32 @@ TENSOR_CORE_OPS = (
     "conv2d_input_backward",   # D6
     "conv2d_weight_backward",  # D6
     # Phase D native MaxPool2d at the Core layer — the layer-qualified
-    # forward wrapper over the exported tf_core_maxpool2d_forward kernel.
-    # It computes the pooled values and (internally) the private winner
-    # buffer the D9 backward will consume. It is a Core operation only:
-    # there is deliberately no differentiable "maxpool2d" NativeTensor op
-    # (D9) and no NativeMaxPool2d module (D10) yet, so both stay in
-    # UNSUPPORTED. The winner buffer is internal state, never a public
-    # tensor, op, or dtype.
+    # forward/backward wrappers over the exported tf_core_maxpool2d_*
+    # kernels. Forward computes the pooled values and (internally) the
+    # private winner buffer; backward scatters an upstream gradient through
+    # those saved winners (no window geometry, no input reread). These are
+    # Core operations, distinct from the differentiable "maxpool2d"
+    # NativeTensor autograd op (in AUTOGRAD_OPS as of D9) and from the
+    # NativeMaxPool2d module (D10, still unsupported). The winner buffer
+    # stays internal state — never a public tensor, op, or dtype.
     "maxpool2d_forward",       # D8
+    "maxpool2d_backward",      # D9
 )
 
 # Operations the NativeTensor autograd layer (Phase B) differentiates.
 # Phase D adds the differentiable "conv2d" fused primitive (D6): its
 # backward composes the input/weight-gradient Core ops and the existing
-# "sum" reduction (bias). This is the operation; the NativeConv2d module
-# (D7) is separate and still unsupported.
+# "sum" reduction (bias); and the differentiable "maxpool2d" primitive
+# (D9), whose backward scatters through the winner buffer its own forward
+# saved. These are the operations; the modules built on them (NativeConv2d,
+# D7 — implemented; NativeMaxPool2d, D10 — not yet) are separate.
 AUTOGRAD_OPS = (
     "add", "subtract", "multiply", "relu",
     "sum", "mean", "matmul",
     "reshape", "transpose", "T", "narrow", "contiguous_copy",
     "sqrt", "reciprocal",
     "conv2d",
+    "maxpool2d",
 )
 
 # The native training stack composed on the autograd layer (Phase C) and
@@ -141,19 +146,18 @@ STATE_SUPPORT = (
 #   - "NativeConv2d" (the Conv2d *module*, D7) IS implemented (see
 #     NATIVE_MODULES), so it is NOT listed here either — operation support
 #     and module support are now both present for Conv2d.
-#   - "maxpool2d" here names the differentiable *operation* — the
-#     NativeTensor autograd primitive (D9) — and "NativeMaxPool2d" the
-#     *module* (D10); neither exists yet, so both stay listed. As of D8 the
-#     layer-qualified Core forward "maxpool2d_forward" IS implemented (see
-#     TENSOR_CORE_OPS) together with its private saved-winner buffer, so
-#     that name is deliberately absent here: forward Core execution and
-#     autograd/module support are distinct layers, exactly as they were for
-#     "conv2d" between D3 and D6. MaxPool2d *backward* has no name in any
-#     inventory — it ships in D9 as part of the "maxpool2d" operation.
+#   - the differentiable "maxpool2d" *operation* IS implemented as of D9
+#     (the D8 forward + private winner buffer, the D9 backward scatter, and
+#     the NativeTensor autograd node), so it is NOT listed here — it lives
+#     in AUTOGRAD_OPS, with its layer-qualified Core ops
+#     "maxpool2d_forward"/"maxpool2d_backward" in TENSOR_CORE_OPS.
+#   - "NativeMaxPool2d" (the pooling *module*, D10) does not exist yet, so
+#     it stays listed: operation support and module support are distinct
+#     layers, exactly as they were for Conv2d between D6 and D7.
 # As of Phase D milestone D1, batch-preserving flatten IS implemented as
 # the NativeFlatten module (see NATIVE_MODULES), so "flatten" is not listed.
 UNSUPPORTED = (
-    "maxpool2d", "NativeMaxPool2d",
+    "NativeMaxPool2d",
     "exp", "log", "softmax", "cross_entropy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",
@@ -383,6 +387,18 @@ def _load_library():
         ctypes.c_void_p,                   # winner-buffer handle
     ] + [ctypes.c_int64] * 12
     library.tf_core_maxpool2d_forward.restype = None
+    # MaxPool2d backward (Phase D, D9): the exported wrapper over the
+    # internal scatter-add. It takes the upstream gradient and the private
+    # winner buffer (each with an offset) plus the caller-allocated
+    # grad_input, and **no kernel/stride/padding metadata** — the saved
+    # winners fully determine the routing, so window geometry is never
+    # recomputed. The 6 trailing int64s are N, C, H, W, out_h, out_w.
+    library.tf_core_maxpool2d_backward.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # grad_output handle, offset
+        ctypes.c_void_p, ctypes.c_int64,   # winner-buffer handle, offset
+        ctypes.c_void_p,                   # grad_input handle
+    ] + [ctypes.c_int64] * 6
+    library.tf_core_maxpool2d_backward.restype = None
 
     _configure_error_contract(library)
     return library
@@ -433,6 +449,7 @@ _CHECKED_KERNELS = (
     "tf_core_conv2d_input_backward",
     "tf_core_conv2d_weight_backward",
     "tf_core_maxpool2d_forward",
+    "tf_core_maxpool2d_backward",
 )
 
 
@@ -1684,6 +1701,112 @@ class NativeTensorCore:
         finally:
             # Close the private contiguous copy (if any) exactly once,
             # whether the call succeeded or raised.
+            for temp in temporaries:
+                temp.close()
+
+    def maxpool2d_backward(self, winners, *, input_shape):
+        """Gradient of MaxPool2d w.r.t. its input, natively (Phase D, D9).
+
+        ``self`` is the upstream gradient ``grad_output`` with shape
+        ``(N, C, out_h, out_w)``; ``winners`` is the **private saved-winner
+        core** the D8 forward produced, with exactly that shape;
+        ``input_shape`` is the parent input's ``(N, C, H, W)``. Returns a
+        fresh **owning** row-major contiguous ``(N, C, H, W)``
+        NativeTensorCore — the input gradient.
+
+        The routing comes entirely from the saved winners: each output
+        cell's gradient is added to the input element that won its window
+        (``ih = winner // W``, ``iw = winner % W``), and a ``-1`` winner
+        (padding won) drops that gradient. Overlapping windows accumulate.
+        **No input value is reread and no window maximum is recomputed**,
+        so no kernel/stride/padding argument is needed or accepted here.
+
+        Autograd-unaware (the ``NativeTensor.maxpool2d`` node calls this
+        from its single input-gradient callback). Validation runs before
+        any allocation; per Policy B a non-contiguous grad_output or winner
+        core is materialized into a private copy closed as soon as the
+        native call returns. The checked C ABI additionally validates every
+        winner value (``-1`` or an exact in-range integer) before
+        scattering, so a corrupted buffer raises instead of writing
+        anywhere. Neither operand is mutated, and a failure closes the
+        output and leaks no temporary."""
+        self._require_open()
+        if not isinstance(winners, NativeTensorCore):
+            raise TypeError(
+                f"maxpool2d_backward requires a NativeTensorCore winner "
+                f"buffer, got {type(winners).__name__}"
+            )
+        winners._require_open()
+        self._require_matching_metadata(winners, "maxpool2d_backward")
+        if self.dtype != "float64" or self.device != "cpu":
+            raise ValueError(
+                f"maxpool2d_backward requires float64/cpu operands, got "
+                f"{self.dtype}/{self.device}"
+            )
+        if self.ndim != 4:
+            raise ValueError(
+                f"maxpool2d_backward requires a 4-D NCHW grad_output, got "
+                f"shape {self.shape}"
+            )
+        if winners.shape != self.shape:
+            raise ValueError(
+                f"maxpool2d_backward winner shape {winners.shape} does not "
+                f"match the grad_output shape {self.shape}"
+            )
+        input_shape = _as_shape(input_shape)
+        if len(input_shape) != 4:
+            raise ValueError(
+                f"maxpool2d_backward input_shape must be 4-D NCHW, got "
+                f"{input_shape}"
+            )
+        n, c, h, w = input_shape
+        out_n, out_c, out_h, out_w = self.shape
+        if (n, c) != (out_n, out_c):
+            raise ValueError(
+                f"maxpool2d_backward batch/channels {(n, c)} do not match the "
+                f"grad_output's {(out_n, out_c)} (input_shape {input_shape}, "
+                f"grad_output {self.shape})"
+            )
+        # The winner domain is [0, H*W - 1] plus the -1 sentinel, so the
+        # same float64 exactness bound the forward proved must hold here.
+        if h * w > _MAX_EXACT_WINNER_PLANE:
+            raise ValueError(
+                f"maxpool2d_backward input plane {(h, w)} has {h * w} "
+                f"elements, more than the {_MAX_EXACT_WINNER_PLANE} float64 "
+                f"can index exactly"
+            )
+        if n * c * h * w > _INT64_MAX:
+            raise ValueError(
+                f"maxpool2d_backward grad_input element count {n * c * h * w} "
+                f"exceeds the int64 range the native runtime addresses"
+            )
+
+        temporaries = []
+        out = None
+        try:
+            grad_output = (
+                self if self.contiguous else self._contiguous_temp(temporaries)
+            )
+            winner_core = (
+                winners if winners.contiguous
+                else winners._contiguous_temp(temporaries)
+            )
+            out = NativeTensorCore.zeros(
+                (n, c, h, w), dtype=self.dtype, device=self.device
+            )
+            self._storage._lib.tf_core_maxpool2d_backward(
+                grad_output._storage._require_open(), grad_output.offset,
+                winner_core._storage._require_open(), winner_core.offset,
+                out._storage._require_open(),
+                n, c, h, w, out_h, out_w,
+            )
+            return out
+        except BaseException:
+            # A failed backward returns no half-built gradient.
+            if out is not None:
+                out.close()
+            raise
+        finally:
             for temp in temporaries:
                 temp.close()
 

@@ -25,11 +25,12 @@ lifetime/ownership guardrails). The current native phase is the
 ([native_cnn_design.md](native_cnn_design.md), milestone D0) and which is
 **partly shipped**: `NativeFlatten` (D1), the full differentiable
 convolution line — the native `conv2d` forward/backward operation and its
-trainable module (D2–D7) — and the raw/Core native max-pooling **forward**
-with its private saved-winner buffer (D8) are implemented. Native
-max-pooling **backward and autograd (D9)**, the pooling **module (D10)**,
-and the end-to-end native CNN training + checkpoint-resume proof (D11)
-**remain unimplemented** and are listed as unsupported below.
+trainable module (D2–D7) — and the full differentiable native
+**max-pooling operation** (D8's forward plus private saved-winner buffer,
+D9's backward scatter and `NativeTensor` autograd) are implemented. The
+pooling **module (D10)** and the end-to-end native CNN training +
+checkpoint-resume proof (D11) **remain unimplemented** and are listed as
+unsupported below.
 
 ## Runtime and metadata
 
@@ -60,6 +61,7 @@ and the end-to-end native CNN training + checkpoint-resume proof (D11)
 | `transpose` / `T` | Yes | Yes | Borrowing view; inverse-permutation backward |
 | `narrow` | Yes | Yes | Borrowing view; native scatter backward |
 | `contiguous_copy` | Yes | Yes | Owning materialization; pass-through backward |
+| `maxpool2d` | Yes | Yes | D8–D9: fused NCHW window-maximum primitive (int/tuple `kernel_size`/`stride`/`padding`, `stride=None` ⇒ non-overlapping); backward scatters through the **private winner buffer the forward saved** — never rereading the input or recomputing a maximum — so it records **no** version snapshot and survives input mutation; the winner buffer is graph-owned state released with the graph history. **The pooling *module* (D10) is separate and not yet implemented.** |
 | `conv2d` | Yes | Yes | D6: fused NCHW/OIHW cross-correlation primitive (int/tuple stride & padding, optional bias); input/weight gradients via native backward kernels, bias gradient via existing `sum`; conditional stale-value versioning. **The trainable convolution *module* (D7) is separate and not yet implemented.** |
 
 ## Autograd engine
@@ -111,16 +113,14 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- the differentiable `MaxPool2d` **operation** (`NativeTensor.maxpool2d`,
-  D9), its **backward** scatter kernel, and the `NativeMaxPool2d`
-  **module** (D10) — the rest of the CNN stack *is* implemented:
+- the `NativeMaxPool2d` **module** (D10) — the differentiable pooling
+  *operation* it will wrap **is** implemented (`NativeTensor.maxpool2d`,
+  forward + backward + autograd, D8–D9), as is the rest of the CNN stack:
   batch-preserving `NativeFlatten`, the differentiable
   **`NativeTensor.conv2d` operation** (forward, input/weight/bias
-  gradients, and autograd, D6), the trainable **`NativeConv2d` module**
-  (D7), and the forward-only **Core** pooling op
-  `NativeTensorCore.maxpool2d_forward` with its private winner buffer
-  (D8); only pooling backward/autograd/module and the end-to-end CNN
-  training proof remain future work
+  gradients, and autograd, D6), and the trainable **`NativeConv2d`
+  module** (D7); only the pooling module and the end-to-end CNN training
+  proof remain future work
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP
 - Transformers / text models
@@ -158,11 +158,19 @@ shipped the forward-only pooling *layer*:** the internal compute kernel
 `NativeTensorCore.maxpool2d_forward` — a Python-reachable, autograd-unaware
 Core method that also produces the **private saved-winner buffer** (an
 internal float64 buffer of flat plane offsets with a `-1` padding sentinel,
-validated exact against `H*W ≤ 2^53`) the D9 backward will consume. Pooling
-**backward and `NativeTensor.maxpool2d` autograd (D9)**, the
-**`NativeMaxPool2d` module (D10)**, and the deterministic end-to-end CNN
-training + checkpoint-resume proof (D11) remain **planned, not supported**,
-and stay in this section until their milestones land.
+validated exact against `H*W ≤ 2^53`) the D9 backward consumes. **D9 has
+completed the differentiable pooling operation**: the internal scatter-add
+`tf::maxpool2d_backward_contiguous`, the exported guarded
+`tf_core_maxpool2d_backward` wrapper (which **validates every winner value**
+— `-1` or an exact in-range integer — before scattering, never rounding),
+`NativeTensorCore.maxpool2d_backward`, and the Python-managed
+**`NativeTensor.maxpool2d`** autograd node whose single input-gradient
+callback uses only the saved winners (no input reread, no recomputed
+maximum, **no version snapshot**), with the winner buffer owned by the
+graph history and released exactly when it is. The **`NativeMaxPool2d`
+module (D10)** and the deterministic end-to-end CNN training +
+checkpoint-resume proof (D11) remain **planned, not supported**, and stay
+in this section until their milestones land.
 
 | Capability | Milestone | Status |
 |---|---|---|
@@ -179,7 +187,10 @@ and stay in this section until their milestones land.
 | Internal max-pooling forward compute kernel (`tf::maxpool2d_forward_contiguous`, C++, not exposed) — pooled values and winners in one pass | D8 | **Implemented (internal)** |
 | Max-pooling forward C ABI export (`tf_core_maxpool2d_forward`) — exception-guarded; self-validates handles/dims/offset/output-shape/winner-exactness/overflow/span-bounds; contiguous storage is a caller precondition (no stride metadata crosses the ABI) | D8 | **Implemented (raw kernel)** |
 | Max-pooling forward Core wrapper (`NativeTensorCore.maxpool2d_forward`, plus the private with-winners helper) — ctypes, Policy-B copy, output + private winner-buffer allocation, failure-atomic cleanup | D8 | **Implemented (Core, forward-only)** |
-| Native max-pooling backward (scatter) + `NativeTensor.maxpool2d` autograd | D9 | Planned |
+| Internal max-pooling backward compute kernel (`tf::maxpool2d_backward_contiguous`, C++, not exposed) — zero-initializing scatter-add driven only by the saved winners | D9 | **Implemented (internal)** |
+| Max-pooling backward C ABI export (`tf_core_maxpool2d_backward`) — exception-guarded; validates handles/dims/offsets/spans **and every winner value** (`-1` or an exact in-range integer, never rounded); takes no kernel/stride/padding | D9 | **Implemented (raw kernel)** |
+| Max-pooling backward Core wrapper (`NativeTensorCore.maxpool2d_backward`) — ctypes, Policy-B copies, fresh owning grad_input, failure-atomic cleanup | D9 | **Implemented (Core)** |
+| Pooling `NativeTensor` autograd op — differentiable `NativeTensor.maxpool2d(*, kernel_size, stride, padding)`; single `(input,)` parent, graph-owned saved winners, no version snapshot | D9 | **Implemented** |
 | `NativeMaxPool2d` module | D10 | Planned |
 | Deterministic native CNN training + checkpoint-resume proof | D11 | Planned |
 | Phase-D cross-cutting tests, benchmarks, docs, ASan/UBSan checkpoint | D12 | Planned |

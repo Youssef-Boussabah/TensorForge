@@ -807,6 +807,21 @@ Graph ownership stays **in Python** — no graph state moves into C++.
 - **Rereads input values?** No — relies **entirely** on saved winners.
 - **Input not requiring grad:** if `input` does not require grad, no node
   is built and no winner buffer is retained (plain forward tensor).
+- **Status (D9 — implemented as specified).** The scatter ships as the
+  internal `tf::maxpool2d_backward_contiguous` plus the checked
+  `tf_core_maxpool2d_backward` wrapper, reached from Python through
+  `NativeTensorCore.maxpool2d_backward` and the single input-gradient
+  callback of the `NativeTensor.maxpool2d` node (§18, D9). It takes **no
+  kernel/stride/padding argument at any layer** — the saved winners are the
+  whole routing story, so no window geometry is reconstructed and no input
+  value is reread. The saved-index validation §12 demands is enforced at
+  the checked boundary rather than assumed: every entry must be `-1.0` or
+  an exact integral offset in `[0, H*W - 1]`, and a violation raises
+  `ValueError` before grad_input is touched — never a silent rounding.
+  Because backward is value-independent, the node records **no** expected
+  parameter version, and the winner buffer's lifetime is bound to the graph
+  history (released by a one-shot `backward()` or `close()`, retained under
+  `retain_graph=True`, kept alive across a failed retryable backward).
 
 ---
 
@@ -919,6 +934,20 @@ is absent from `state_dict`, checkpoints, parameter/buffer traversal,
 `backend_info`, `__all__`, and every public method name (guarded by
 `tests/test_native_maxpool2d_core.py`), and `SUPPORTED_DTYPES` still reads
 `("float64",)` — no index dtype was introduced.
+
+**Status (D9 — the lifetime half).** D9 made the buffer graph-owned
+without exposing it: `NativeTensor.maxpool2d` passes it to `_from_op` as a
+**graph resource**, so the node closes it exactly once when its history is
+released at either deterministic point (a one-shot `backward()`'s cleanup,
+or an explicit `close()`; a merely dropped graph reaches `close()` via the
+`__del__` refcount/GC fallback), keeps it under `retain_graph=True`, keeps
+it across a failed retryable backward, closes it immediately when no parent
+requires grad, and — if graph construction raises — closes both it and the
+pooled output before re-raising. It is still never a public `NativeTensor`, never
+returned from a public method, and never traversed as a parameter or
+buffer; the *only* consumer is the backward callback, through the private
+Core method. Its integrity is no longer merely assumed either — the D9 C
+ABI validates every entry before scattering (§11 status).
 
 ---
 
@@ -1622,14 +1651,124 @@ registry advertises `conv2d` as unsupported while listing the Core-level
   Debug CTests warning-clean. **Done** (raw + Core, forward-only).
   **Dependencies:** D3 (shares the Core patterns).
 
-### D9 — MaxPool2d backward + autograd integration
-- **Scope:** `tf_core_maxpool2d_backward` (scatter); `NativeTensor.
-  maxpool2d(...)` node holding the winner buffer.
-- **Files:** `cpp/src/pooling.cpp`; `native_tensor.py`; `AUTOGRAD_OPS`
-  update; `tests/test_native_maxpool2d.py`.
-- **Tests:** §16 MaxPool2d group (scatter, overlap, ties, lifetime,
-  atomicity).
-- **Acceptance:** differentiable native pooling. **Dependencies:** D8.
+### D9 — MaxPool2d backward + autograd integration — **implemented**
+- **Scope:** the internal CPU float64 scatter-add kernel
+  `tf::maxpool2d_backward_contiguous`; the exported, exception-guarded
+  `tf_core_maxpool2d_backward` wrapper (which **validates every winner
+  value**); its ctypes/`errcheck` registration; the Core backward
+  `NativeTensorCore.maxpool2d_backward`; the differentiable
+  **`NativeTensor.maxpool2d`** graph node; and the smallest general
+  mechanism the winner buffer needed to live exactly as long as the graph
+  does (`_from_op(..., graph_resources=...)` +
+  `NativeTensor._release_graph_resources`).
+- **Excludes — deferred:** `NativeMaxPool2d` (**D10**), the CNN training
+  proof (**D11**). No module, parameters, buffers, public
+  `return_indices`, public winner tensor, integer dtype, or
+  checkpoint-schema change.
+- **Files:** `cpp/src/pooling.cpp`, `cpp/include/tf_pooling_internal.h`,
+  `cpp/tests/test_maxpool2d_backward.cpp`, `cpp/CMakeLists.txt` (the new
+  `maxpool2d_backward` CTest target), `backends/cpp.py` (argtypes,
+  `_CHECKED_KERNELS`, the Core backward method, `TENSOR_CORE_OPS` gains
+  `maxpool2d_backward`, `AUTOGRAD_OPS` gains `maxpool2d`, `UNSUPPORTED`
+  swaps the bare `maxpool2d` op for the still-absent `NativeMaxPool2d`
+  module), `experimental/native_tensor.py`,
+  `experimental/native_parameter.py` (the `_from_op` override forwards the
+  new keyword), `tests/test_native_maxpool2d_backward_core.py`,
+  `tests/test_native_maxpool2d_autograd.py`.
+- **Internal kernel signature:**
+  `void tf::maxpool2d_backward_contiguous(const double* grad_output, const
+  double* winners, double* grad_input, int64_t batch, channels,
+  input_height, input_width, output_height, output_width) noexcept` — it
+  **zero-initializes the whole grad_input span itself**, then scatters in
+  deterministic `n → c → oh → ow` order: a `-1` winner drops its gradient,
+  any other winner is converted (`ih = winner / W`, `iw = winner % W`) and
+  accumulated with `+=` so overlapping windows sum. It reads no input
+  value, recomputes no maximum, takes no kernel/stride/padding argument,
+  allocates nothing, and mutates neither grad_output nor winners.
+- **Exported ABI signature (D9).** `void`, guarded, in `_CHECKED_KERNELS`,
+  with **no stride arrays and no window geometry**:
+  ```c
+  void tf_core_maxpool2d_backward(
+      const void* grad_output_handle, int64_t grad_output_offset,
+      const void* winners_handle,     int64_t winners_offset,
+      void*       grad_input_handle,   // caller-allocated (N,C,H,W), offset 0
+      int64_t batch, int64_t channels,
+      int64_t input_height, int64_t input_width,
+      int64_t output_height, int64_t output_width);
+  ```
+  Beyond the shared metadata checks (null handles, negative offsets,
+  non-positive extents, `H*W ≤ 2^53`, overflow-checked shape products, and
+  every span inside its allocation) it **validates each winner value**
+  before the kernel runs: an entry must be exactly `-1.0`, or finite,
+  non-negative, exactly integral (`floor(v) == v`), and `≤ H*W - 1`.
+  Anything else — fractional, NaN, ±inf, below `-1`, or out of range — is
+  rejected with `TF_ERROR_INVALID` (`ValueError`) and **nothing is rounded,
+  truncated, or written**; grad_input is left untouched. It allocates and
+  frees nothing.
+- **Core API (D9).** `NativeTensorCore.maxpool2d_backward(winners, *,
+  input_shape)` — the receiver is `grad_output` `(N, C, out_h, out_w)`,
+  `winners` is the private saved-winner core of the same shape, and
+  `input_shape` normalizes to a 4-tuple of positive ints whose `(N, C)`
+  must match. It validates rank, float64/cpu metadata, shape agreement,
+  and the `H*W ≤ 2^53` bound before allocating; copies a non-contiguous
+  grad_output *or* winner core under Policy B (each temporary closed as
+  soon as the call returns); returns a fresh **owning** row-major
+  contiguous `(N, C, H, W)` core; and closes that output if the native
+  call fails.
+- **`NativeTensor.maxpool2d` API (D9).** `maxpool2d(*, kernel_size,
+  stride=None, padding=0)` — keyword-only, over an open 4-D NCHW CPU
+  float64 receiver, with the D8 argument contract unchanged
+  (`stride=None` ⇒ `stride = kernel_size`; bools and malformed pairs
+  rejected). Forward calls the private
+  `_maxpool2d_forward_with_winners` Core path; the result is a fresh
+  owning `(N, C, out_h, out_w)` NativeTensor. Exactly **one parent —
+  `(input,)`** — and the closure captures only the private winner core and
+  the input shape: no input values, no forward output, no graph state in
+  C++.
+- **Saved-winner graph ownership (the load-bearing D9 contract).** The
+  winner core is handed to `_from_op` as a **graph resource**. When a graph
+  is built the node owns it and releases it *exactly once*, at the same
+  deterministic point the history is released. There are exactly **two
+  deterministic release points**: the cleanup step of a successful default
+  `backward()`, and an explicit `close()`. A graph object that is merely
+  dropped reaches `close()` through `__del__`, which is the refcount/GC
+  **fallback** — a safety net, not a guarantee this design leans on.
+  When **no** parent requires grad, `_from_op` closes the buffer
+  immediately — a no-grad forward leaves nothing behind — and if graph
+  construction itself raises, `maxpool2d` closes both the winner buffer and
+  the pooled output core before re-raising, so a failed `_from_op` leaks
+  neither (ownership never transferred, and every close is idempotent, so
+  nothing is closed twice). `retain_graph=True` skips the release, so the
+  buffer stays valid for another pass; a **failed** backward never reaches
+  the cleanup step, so the buffer survives and the graph stays retryable;
+  and a repeated backward after a one-shot free raises the existing
+  freed-graph `RuntimeError` without double-closing (the resource tuple is
+  cleared before closing). This is the smallest reusable mechanism that
+  fits the existing lifecycle — no autograd redesign, and no other
+  operation is affected.
+- **No version read (deliberate contrast with Conv2d).** Backward reads
+  only the saved winners and the upstream, so `maxpool2d` records **no**
+  expected version and is absent from `_versioned_value_reads`. Mutating a
+  directly versioned input after the forward pass neither raises
+  stale-graph nor changes gradient routing — the winners recorded at
+  forward time still decide.
+- **Failure rollback and retry.** The existing snapshot/rollback engine is
+  reused unchanged: a mid-pass failure (an injected allocation failure, or
+  a corrupted winner rejected at the ABI) restores every node's gradient
+  reference, commits nothing partially, frees no graph, keeps the winner
+  buffer alive, leaves the native error slot clear, and a subsequent
+  backward through the same graph succeeds and accumulates normally.
+- **Tests:** 21 dependency-free C++ cases (simple/multi-window scatter,
+  overlapping accumulation, channels, batch, rectangular, stride through
+  saved winners, padding sentinel, all-padding, repeated offsets, negative
+  and fractional upstreams, zero-init from garbage, grad_output and winner
+  immutability, determinism, forward→backward integration, exact
+  stable-framework gradient parity, checked-wrapper rejection of seven
+  malformed winner classes, and both offset boundaries) plus 52 Core
+  backward and 55 autograd Python cases.
+- **Acceptance:** differentiable native pooling correct against the stable
+  reference; Release **and** Debug CTests warning-clean. **Done.**
+  **Dependencies:** D8.
 
 ### D10 — `NativeMaxPool2d` module
 - **Scope:** parameter-free module (like `NativeReLU`) wrapping
@@ -1689,8 +1828,8 @@ Phase D is complete only when **all** hold:
 Until every milestone above lands, Phase D stays **incomplete**: the
 backend registry, support matrix, and README present each surface at its
 actual status — shipped layers (the `NativeFlatten` and Conv2d line, plus
-the D8 raw/Core MaxPool2d **forward** and its private winner buffer) as
-supported, and every not-yet-shipped surface (currently MaxPool2d
-**backward** and its `NativeTensor` autograd integration, the
-`NativeMaxPool2d` module, and the end-to-end native CNN training +
+the complete differentiable MaxPool2d **operation**: D8's forward and
+private winner buffer and D9's backward scatter and `NativeTensor`
+autograd) as supported, and every not-yet-shipped surface (currently the
+`NativeMaxPool2d` module and the end-to-end native CNN training +
 checkpoint-resume proof) as **not implemented**.
