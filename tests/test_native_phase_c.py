@@ -692,14 +692,16 @@ def test_native_phase_c_lifetime_and_close_discipline(tmp_path):
 @needs_native
 def test_native_phase_c_public_surface_guardrails():
     # The complete Phase C surface, exported from experimental only, plus
-    # the Phase-D additions (NativeFlatten D1, NativeConv2d D7).
+    # the Phase-D additions (NativeFlatten D1, NativeConv2d D7,
+    # NativeMaxPool2d D10).
     assert set(experimental.__all__) == {
         "NativeTensor", "NativeParameter", "NativeParameterRegistry",
         "NativeModule", "NativeLinear", "NativeReLU", "NativeSequential",
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
-        "NativeFlatten",  # Phase D, milestone D1
-        "NativeConv2d",   # Phase D, milestone D7
+        "NativeFlatten",     # Phase D, milestone D1
+        "NativeConv2d",      # Phase D, milestone D7
+        "NativeMaxPool2d",   # Phase D, milestone D10
     }
     for name in experimental.__all__:
         assert not hasattr(tensorforge, name)
@@ -725,11 +727,11 @@ def test_native_phase_c_public_surface_guardrails():
                        "scheduler", "map_location"):
             assert not hasattr(optimizer, absent)
     assert "momentum" not in inspect.signature(NativeSGD.__init__).parameters
-    # No pooling CNN API and no CUDA/dtype expansion appeared.
-    # (NativeFlatten shipped in Phase D milestone D1 and NativeConv2d in
-    # milestone D7; both are asserted present in the surface set above.)
-    for absent in ("NativeMaxPool2d",
-                   "NativeDropout", "NativeBatchNorm1d"):
+    # No normalization/regularization CNN API and no CUDA/dtype expansion
+    # appeared. (NativeFlatten shipped in Phase D milestone D1,
+    # NativeConv2d in D7, and NativeMaxPool2d in D10; all three are
+    # asserted present in the surface set above.)
+    for absent in ("NativeDropout", "NativeBatchNorm1d", "NativeAvgPool2d"):
         assert not hasattr(experimental, absent)
     info = cpp.backend_info()
     assert info["device"] == "cpu" and info["dtype"] == "float64"

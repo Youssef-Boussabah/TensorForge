@@ -26,13 +26,18 @@ Milestones D8 and D9 added the differentiable **``NativeTensor.maxpool2d``**
 operation (NCHW window maxima with int/tuple ``kernel_size``/``stride``/
 ``padding``; its backward scatters through the private winner buffer its own
 forward saved, so it never rereads the input, never recomputes a maximum,
-and records no parameter-version snapshot). It is an *operation*, not a
-module: the ``NativeMaxPool2d`` layer (D10) is not implemented, so nothing
-pooling-related is exported from this package yet. That module, the
-deterministic end-to-end native CNN training/checkpoint-resume proof (D11),
-CUDA, and the remaining Phase-D numerical layers (new activations,
-softmax/classification losses, BatchNorm/LayerNorm/Dropout) remain future
-work.
+and records no parameter-version snapshot), and milestone D10 exposes it as
+the **``NativeMaxPool2d``** layer: a parameter-free, buffer-free module that
+normalizes ``kernel_size``/``stride``/``padding`` to two-element tuples
+(``stride=None`` ⇒ non-overlapping windows) and delegates its forward
+entirely to that operation — no new kernel, ABI symbol, custom backward, or
+state. It holds no winner storage between calls and contributes no
+state-dictionary or checkpoint keys, so it drops into a ``NativeSequential``
+beside ``NativeConv2d``/``NativeFlatten`` without touching the optimizer or
+checkpoint paths. The deterministic end-to-end native CNN
+training/checkpoint-resume proof (D11), CUDA, and the remaining Phase-D
+numerical layers (new activations, softmax/classification losses,
+BatchNorm/LayerNorm/Dropout) remain future work.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
@@ -112,6 +117,7 @@ from .native_linear import NativeLinear
 from .native_relu import NativeReLU
 from .native_flatten import NativeFlatten
 from .native_conv2d import NativeConv2d
+from .native_maxpool2d import NativeMaxPool2d
 from .native_sequential import NativeSequential
 from .native_mse_loss import NativeMSELoss
 from .native_sgd import NativeSGD
@@ -127,6 +133,7 @@ __all__ = [
     "NativeReLU",
     "NativeFlatten",
     "NativeConv2d",
+    "NativeMaxPool2d",
     "NativeSequential",
     "NativeMSELoss",
     "NativeSGD",

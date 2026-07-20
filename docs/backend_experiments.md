@@ -547,9 +547,22 @@ released exactly when it is — freed by a one-shot `backward()` or
 `close()`, retained under `retain_graph=True`, and kept alive across a
 failed (retryable) backward — through the small
 `_from_op(..., graph_resources=...)` hook D9 added rather than any autograd
-redesign. The **`NativeMaxPool2d` module (D10)** and the deterministic
-end-to-end CNN training + checkpoint-resume proof (D11) remain
-unimplemented, followed by the CUDA
+redesign. **D10** completed the native CNN *layer* set with
+**`NativeMaxPool2d`**: a parameter-free, buffer-free `NativeModule` that
+normalizes `kernel_size`/`stride`/`padding` to two-element tuples
+(`stride=None` ⇒ non-overlapping windows) and delegates forward entirely to
+that operation — no new kernel, ABI symbol, ctypes declaration, custom
+backward, parameter, buffer, `return_indices`, or checkpoint schema. It
+holds no winner storage between calls (each forward's winners belong to
+that call's output graph), contributes no state-dictionary or checkpoint
+keys, and drops into a `NativeSequential` beside
+`NativeConv2d`/`NativeReLU`/`NativeFlatten`/`NativeLinear`, where
+`NativeSGD`/`NativeAdam` ignore it naturally because it owns nothing
+trainable. The native module inventory is therefore `NativeModule`,
+`NativeLinear`, `NativeReLU`, `NativeFlatten`, `NativeConv2d`,
+`NativeMaxPool2d`, and `NativeSequential`. The deterministic end-to-end
+CNN training + checkpoint-resume proof (D11) and the Phase-D completion
+pass (D12) remain unimplemented, followed by the CUDA
 runtime, dtype/AMP work, Transformer/text experiments, distributed
 training, and the final portfolio release. Still float64/cpu only, still explicit and
 experimental, and no production performance is claimed.

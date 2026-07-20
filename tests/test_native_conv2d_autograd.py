@@ -464,12 +464,12 @@ def test_conv2d_is_an_autograd_op_and_module_is_supported():
     assert hasattr(NativeTensor, "conv2d")
     assert "conv2d_input_backward" in cpp.TENSOR_CORE_OPS
     assert "conv2d_weight_backward" in cpp.TENSOR_CORE_OPS
-    # The op is supported (D6) and the module is supported (D7). Pooling has
-    # reached the same operation stage (D9) but not the module stage (D10),
-    # so only NativeMaxPool2d is still unsupported.
+    # The op is supported (D6) and the module is supported (D7); pooling has
+    # since reached both stages too (D8/D9 operation, D10 module), so both
+    # CNN layers are in the module inventory and neither is unsupported.
     assert "conv2d" not in cpp.UNSUPPORTED
     assert "NativeConv2d" not in cpp.UNSUPPORTED
     assert "NativeConv2d" in cpp.NATIVE_MODULES
-    assert "NativeMaxPool2d" in cpp.UNSUPPORTED
+    assert "NativeMaxPool2d" in cpp.NATIVE_MODULES
     import tensorforge.experimental as experimental
     assert "NativeConv2d" in experimental.__all__

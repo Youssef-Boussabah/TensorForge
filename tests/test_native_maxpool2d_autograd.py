@@ -10,8 +10,8 @@ forward/gradient parity with the stable framework, the routing rules
 (ties, padding sentinels, -inf, overlapping windows), argument handling,
 explicit-gradient validation, graph lifetime and the saved-winner
 ownership contract (retain/free/failure/abandon), the deliberate absence
-of version tracking, failure rollback, and the capability split that keeps
-``NativeMaxPool2d`` (D10) unsupported.
+of version tracking, failure rollback, and the capability split between
+this operation and the ``NativeMaxPool2d`` module built on it (D10).
 
 Backend-dependent, so the module skips cleanly when the compiled backend
 is not built. Cleanup is explicit via close().
@@ -719,13 +719,19 @@ def test_operation_is_advertised_as_an_autograd_op():
     assert "maxpool2d_backward" in cpp.TENSOR_CORE_OPS
 
 
-def test_module_remains_unsupported():
+def test_module_wraps_this_operation_without_extending_it():
+    # D10 added the NativeMaxPool2d module on top of this operation. The
+    # module is a module only: it is never advertised as an autograd op or
+    # a Core/raw kernel, and it adds no capability this file does not
+    # already cover.
     import tensorforge.experimental as experimental
 
-    assert "NativeMaxPool2d" in cpp.UNSUPPORTED
-    assert "NativeMaxPool2d" not in cpp.NATIVE_MODULES
-    assert "NativeMaxPool2d" not in experimental.__all__
-    assert not hasattr(experimental, "NativeMaxPool2d")
+    assert "NativeMaxPool2d" in cpp.NATIVE_MODULES
+    assert "NativeMaxPool2d" in experimental.__all__
+    assert "NativeMaxPool2d" not in cpp.UNSUPPORTED
+    assert "NativeMaxPool2d" not in cpp.AUTOGRAD_OPS
+    assert "NativeMaxPool2d" not in cpp.TENSOR_CORE_OPS
+    assert "NativeMaxPool2d" not in cpp.RAW_KERNELS
 
 
 def test_winner_buffer_never_appears_publicly():

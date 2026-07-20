@@ -126,7 +126,7 @@ AUTOGRAD_OPS = (
 # TENSOR_CORE_OPS).
 NATIVE_MODULES = (
     "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
-    "NativeConv2d", "NativeSequential",
+    "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
 )
 NATIVE_LOSSES = ("NativeMSELoss",)
 NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
@@ -151,13 +151,16 @@ STATE_SUPPORT = (
 #     the NativeTensor autograd node), so it is NOT listed here — it lives
 #     in AUTOGRAD_OPS, with its layer-qualified Core ops
 #     "maxpool2d_forward"/"maxpool2d_backward" in TENSOR_CORE_OPS.
-#   - "NativeMaxPool2d" (the pooling *module*, D10) does not exist yet, so
-#     it stays listed: operation support and module support are distinct
-#     layers, exactly as they were for Conv2d between D6 and D7.
+#   - "NativeMaxPool2d" (the pooling *module*, D10) IS implemented (see
+#     NATIVE_MODULES), so it is NOT listed here either — operation support
+#     and module support are now both present for MaxPool2d, as they are
+#     for Conv2d.
 # As of Phase D milestone D1, batch-preserving flatten IS implemented as
 # the NativeFlatten module (see NATIVE_MODULES), so "flatten" is not listed.
+# Still absent from Phase D: the deterministic end-to-end native CNN
+# training + checkpoint-resume proof (D11) — a *proof*, not a capability
+# name, so it has no entry in any inventory.
 UNSUPPORTED = (
-    "NativeMaxPool2d",
     "exp", "log", "softmax", "cross_entropy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",

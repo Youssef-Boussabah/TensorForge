@@ -23,14 +23,16 @@ deterministic training and in-memory/file resume, and the failure/
 lifetime/ownership guardrails). The current native phase is the
 **native CNN stack** (Phase D), whose **architecture contract is locked**
 ([native_cnn_design.md](native_cnn_design.md), milestone D0) and which is
-**partly shipped**: `NativeFlatten` (D1), the full differentiable
-convolution line — the native `conv2d` forward/backward operation and its
-trainable module (D2–D7) — and the full differentiable native
-**max-pooling operation** (D8's forward plus private saved-winner buffer,
-D9's backward scatter and `NativeTensor` autograd) are implemented. The
-pooling **module (D10)** and the end-to-end native CNN training +
-checkpoint-resume proof (D11) **remain unimplemented** and are listed as
-unsupported below.
+**partly shipped**: every native CNN **layer** now exists —
+`NativeFlatten` (D1), the full differentiable convolution line (the native
+`conv2d` forward/backward operation and its trainable module, D2–D7), and
+the full native **max-pooling** line (D8's forward plus private
+saved-winner buffer, D9's backward scatter and `NativeTensor` autograd,
+and D10's parameter-free pooling module). The deterministic end-to-end
+native CNN training + checkpoint-resume proof (D11) and the Phase-D
+cross-cutting/benchmark/sanitizer completion pass (D12) **remain
+unimplemented**, so Phase D is **not** complete; see the Phase-D section
+below for per-milestone status.
 
 ## Runtime and metadata
 
@@ -113,14 +115,16 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- the `NativeMaxPool2d` **module** (D10) — the differentiable pooling
-  *operation* it will wrap **is** implemented (`NativeTensor.maxpool2d`,
-  forward + backward + autograd, D8–D9), as is the rest of the CNN stack:
-  batch-preserving `NativeFlatten`, the differentiable
-  **`NativeTensor.conv2d` operation** (forward, input/weight/bias
-  gradients, and autograd, D6), and the trainable **`NativeConv2d`
-  module** (D7); only the pooling module and the end-to-end CNN training
-  proof remain future work
+- the deterministic end-to-end native **CNN training + checkpoint-resume
+  proof** (D11) and the Phase-D completion pass (D12) — every CNN *layer*
+  it will compose **is** implemented: batch-preserving `NativeFlatten`
+  (D1), the differentiable **`NativeTensor.conv2d` operation** (forward,
+  input/weight/bias gradients, and autograd, D6) with its trainable
+  **`NativeConv2d` module** (D7), and the differentiable
+  **`NativeTensor.maxpool2d` operation** (forward + private winners +
+  backward scatter, D8–D9) with its parameter-free
+  **`NativeMaxPool2d` module** (D10); only the proof and the completion
+  pass remain future work
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP
 - Transformers / text models
@@ -167,10 +171,19 @@ completed the differentiable pooling operation**: the internal scatter-add
 **`NativeTensor.maxpool2d`** autograd node whose single input-gradient
 callback uses only the saved winners (no input reread, no recomputed
 maximum, **no version snapshot**), with the winner buffer owned by the
-graph history and released exactly when it is. The **`NativeMaxPool2d`
-module (D10)** and the deterministic end-to-end CNN training +
-checkpoint-resume proof (D11) remain **planned, not supported**, and stay
-in this section until their milestones land.
+graph history and released exactly when it is. **D10 has shipped the
+`NativeMaxPool2d` module** — a parameter-free, buffer-free layer that
+normalizes `kernel_size`/`stride`/`padding` to two-element tuples
+(`stride=None` ⇒ non-overlapping windows) and delegates its forward
+entirely to that operation: no new kernel, C ABI symbol, ctypes
+declaration, custom backward, parameter, buffer, or checkpoint schema, no
+`return_indices`, and no winner state held between calls. It registers in
+`NATIVE_MODULES`, exports from `tensorforge.experimental`, contributes no
+state-dictionary or checkpoint keys, and composes in a `NativeSequential`
+beside `NativeConv2d`/`NativeReLU`/`NativeFlatten`/`NativeLinear`. The
+deterministic end-to-end CNN training + checkpoint-resume proof (D11) and
+the Phase-D completion pass (D12) remain **planned, not supported**, and
+stay in this section until their milestones land.
 
 | Capability | Milestone | Status |
 |---|---|---|
@@ -191,7 +204,7 @@ in this section until their milestones land.
 | Max-pooling backward C ABI export (`tf_core_maxpool2d_backward`) — exception-guarded; validates handles/dims/offsets/spans **and every winner value** (`-1` or an exact in-range integer, never rounded); takes no kernel/stride/padding | D9 | **Implemented (raw kernel)** |
 | Max-pooling backward Core wrapper (`NativeTensorCore.maxpool2d_backward`) — ctypes, Policy-B copies, fresh owning grad_input, failure-atomic cleanup | D9 | **Implemented (Core)** |
 | Pooling `NativeTensor` autograd op — differentiable `NativeTensor.maxpool2d(*, kernel_size, stride, padding)`; single `(input,)` parent, graph-owned saved winners, no version snapshot | D9 | **Implemented** |
-| `NativeMaxPool2d` module | D10 | Planned |
+| `NativeMaxPool2d` module — parameter-free, buffer-free layer over the D8/D9 pooling operation (normalized `(h, w)` `kernel_size`/`stride`/`padding`, `stride=None` ⇒ non-overlapping); no new kernel/ABI/backward, no parameters, buffers, winner state, or state-dict keys | D10 | **Implemented** |
 | Deterministic native CNN training + checkpoint-resume proof | D11 | Planned |
 | Phase-D cross-cutting tests, benchmarks, docs, ASan/UBSan checkpoint | D12 | Planned |
 

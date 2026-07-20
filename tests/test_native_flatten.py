@@ -375,11 +375,11 @@ def test_native_flatten_in_native_module_inventory_not_raw_kernel():
     assert "NativeFlatten" in cpp.NATIVE_MODULES
     assert "NativeFlatten" not in cpp.RAW_KERNELS
     assert "NativeFlatten" not in cpp.list_kernels()
-    # The Conv2d module is implemented (D7, over the D6 operation), and the
-    # pooling *operation* is implemented (D9); only the pooling *module*
-    # (D10) remains unimplemented and unsupported.
+    # The Conv2d module is implemented (D7, over the D6 operation) and the
+    # pooling module too (D10, over the D8/D9 operation); neither remains an
+    # unsupported entry.
     assert "NativeConv2d" not in cpp.UNSUPPORTED
-    assert "NativeMaxPool2d" in cpp.UNSUPPORTED
+    assert "NativeMaxPool2d" not in cpp.UNSUPPORTED
     assert "flatten" not in cpp.UNSUPPORTED  # now implemented as the module
     info = cpp.backend_info()
     assert "NativeFlatten" in info["native_modules"]

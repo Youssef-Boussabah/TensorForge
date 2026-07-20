@@ -926,14 +926,16 @@ def test_conv2d_operation_still_advertised():
     assert "NativeConv2d" not in cpp.TENSOR_CORE_OPS
 
 
-def test_maxpool2d_module_remains_unsupported():
-    # The pooling *operation* shipped in D9; the pooling *module* (D10) has
-    # not, so it is the only pooling name left in UNSUPPORTED.
-    assert "NativeMaxPool2d" in cpp.UNSUPPORTED
-    assert "NativeMaxPool2d" not in cpp.NATIVE_MODULES
+def test_maxpool2d_module_is_supported_alongside_conv2d():
+    # The pooling operation shipped in D8/D9 and its module in D10, so both
+    # CNN layers are now advertised the same way — NativeConv2d is not a
+    # special case in the inventory.
+    assert "NativeMaxPool2d" not in cpp.UNSUPPORTED
+    assert "NativeMaxPool2d" in cpp.NATIVE_MODULES
     import tensorforge.experimental as experimental
 
-    assert not hasattr(experimental, "NativeMaxPool2d")
+    assert hasattr(experimental, "NativeMaxPool2d")
+    assert "NativeMaxPool2d" in experimental.__all__
 
 
 def test_phase_d_not_marked_complete():

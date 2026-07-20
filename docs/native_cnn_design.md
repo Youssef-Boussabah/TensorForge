@@ -255,6 +255,17 @@ Runtime validation mirrors Conv2d: open 4-D NCHW `NativeTensor`,
 float64/cpu, the window must fit the padded input, output extents ≥ 1
 before allocation. MaxPool2d has **no parameters**.
 
+**Status (D10 — implemented as specified).** `NativeMaxPool2d(kernel_size,
+stride=None, padding=0)` ships in
+`src/tensorforge/experimental/native_maxpool2d.py`, exported from the
+experimental package and listed in `NATIVE_MODULES` (removed from
+`UNSUPPORTED`). It normalizes all three arguments through `_spatial_pair`
+(`stride=None` ⇒ the normalized `kernel_size`) into two-element tuples and
+delegates its forward entirely to `NativeTensor.maxpool2d`; it is
+parameter-free, buffer-free, holds no winner state between calls, and
+contributes no state-dictionary or checkpoint keys. See §18 (D10) for the
+full contract.
+
 This is the **smallest coherent contract** that supports a real native
 CNN training proof (Conv → ReLU → MaxPool → Flatten → Linear → MSE).
 
@@ -1770,13 +1781,70 @@ registry advertises `conv2d` as unsupported while listing the Core-level
   reference; Release **and** Debug CTests warning-clean. **Done.**
   **Dependencies:** D8.
 
-### D10 — `NativeMaxPool2d` module
-- **Scope:** parameter-free module (like `NativeReLU`) wrapping
-  `maxpool2d`.
-- **Files:** `native_maxpool2d.py`; `experimental/__init__.py`;
-  `NATIVE_MODULES` + support-matrix update; tests.
-- **Acceptance:** pooling module in a `NativeSequential`.
-- **Dependencies:** D9.
+### D10 — `NativeMaxPool2d` module — **implemented**
+- **Scope:** the parameter-free module (like `NativeReLU`) wrapping the
+  D8/D9 `maxpool2d` operation, its public experimental export, and the
+  capability-inventory update. **No** new kernel, C ABI symbol, ctypes
+  declaration, pooling numerics, autograd callback, public winner access,
+  parameter/buffer, `return_indices`, or checkpoint-schema change.
+- **Excludes — deferred:** the deterministic end-to-end native CNN
+  training + checkpoint-resume proof (**D11**) and the Phase-D
+  cross-cutting/completion work (**D12**).
+- **Files:** `experimental/native_maxpool2d.py` (new),
+  `experimental/__init__.py` (import, `__all__`, docstring),
+  `backends/cpp.py` (`NATIVE_MODULES` gains `NativeMaxPool2d`,
+  `UNSUPPORTED` drops it), `tests/test_native_maxpool2d_module.py`.
+- **Final constructor:** `NativeMaxPool2d(kernel_size, stride=None,
+  padding=0)` — no other arguments in Phase D (no `dilation`,
+  `ceil_mode`, `return_indices`, adaptive/average pooling, `device`,
+  `dtype`, `requires_grad`, or `seed`).
+- **Validation and normalized attributes:** `kernel_size`/`stride`
+  (each ≥ 1) and `padding` (≥ 0) go through the native `_spatial_pair`
+  helper (int or 2-element pair; bools, malformed lengths, and
+  non-integer members rejected with `ValueError`); `stride=None` resolves
+  to the normalized `kernel_size` (non-overlapping windows). The stored
+  `kernel_size` / `stride` / `padding` attributes are always two-element
+  `(height, width)` int tuples. Validation runs before any module state
+  exists, and the module allocates **no native storage at all**, so a
+  rejected argument cannot leak any.
+- **Forward delegation:** `forward(input)` validates an open 4-D NCHW
+  `NativeTensor` (rank error named by the module; the stable `Tensor`,
+  NumPy arrays, lists, scalars, and closed tensors rejected) and returns
+  `input.maxpool2d(kernel_size=…, stride=…, padding=…)` — the fresh owning
+  tensor the operation produced. `NativeTensorCore` is never called
+  directly, and **no** output-shape math, winner generation, tie/padding/
+  `-inf`/NaN behavior, backward scatter, winner lifetime, or versioning
+  logic is duplicated: all of it stays in D8/D9.
+- **Parameterless and stateless:** no parameters, no buffers, no custom
+  backward, no persistent forward state, and **no winner storage held by
+  the module** — each forward's winners belong to that call's output
+  graph, so repeated forwards produce independent graphs and independent
+  winner resources. `parameters()`, `named_parameters()`, `buffers()`,
+  `named_buffers()`, and `state_dict()` are empty; the layer contributes
+  **no keys** to a parent module's state dictionary or to a checkpoint,
+  and `train()`/`eval()` never change pooling numerics.
+- **State and checkpoints:** `load_state_dict({})` succeeds; unexpected
+  keys follow the existing strict/non-strict rules. Architecture lives in
+  the constructor, never in tensor state. The existing v3.14 checkpoint
+  path handles models containing the module unchanged (`format_version`
+  1, pickle-free, no MaxPool-specific serializer, parameter identities
+  preserved on load).
+- **Sequential/optimizer integration:** drops into a `NativeSequential`
+  beside `NativeConv2d`/`NativeReLU`/`NativeFlatten`/`NativeLinear`;
+  parameter order and hierarchical names skip the pooling slot entirely
+  (`"0.weight"`, `"0.bias"`, `"4.weight"`, `"4.bias"` in the Conv→ReLU→
+  Pool→Flatten→Linear stack), and `NativeSGD`/`NativeAdam` ignore it
+  naturally because it owns nothing trainable. Reusing one pooling
+  instance in several slots is safe (identity-deduplicated traversal).
+- **Tests:** 93 focused cases — constructor/attribute normalization and
+  rejection, repr, empty parameter/buffer/state surface, forward
+  correctness and stable parity, inherited autograd (ties, padding
+  sentinel, overlapping accumulation, no version snapshot, retain/freed
+  history, no-grad avoidance), Sequential composition, checkpoint and
+  optimizer round trips, ownership/failure paths, and the capability
+  split.
+- **Acceptance:** pooling module in a `NativeSequential`. **Done.**
+  **Dependencies:** D9.
 
 ### D11 — Deterministic native CNN training + checkpoint-resume proof
 - **Scope:** `examples/native_cnn_training.py` — a small deterministic
@@ -1827,9 +1895,10 @@ Phase D is complete only when **all** hold:
 
 Until every milestone above lands, Phase D stays **incomplete**: the
 backend registry, support matrix, and README present each surface at its
-actual status — shipped layers (the `NativeFlatten` and Conv2d line, plus
-the complete differentiable MaxPool2d **operation**: D8's forward and
-private winner buffer and D9's backward scatter and `NativeTensor`
-autograd) as supported, and every not-yet-shipped surface (currently the
-`NativeMaxPool2d` module and the end-to-end native CNN training +
-checkpoint-resume proof) as **not implemented**.
+actual status — shipped layers (`NativeFlatten`, the Conv2d line, and the
+complete MaxPool2d line: D8's forward and private winner buffer, D9's
+backward scatter and `NativeTensor` autograd, and D10's `NativeMaxPool2d`
+module) as supported, while the remaining work — the **deterministic
+end-to-end native CNN training + checkpoint-resume proof (D11)** and the
+Phase-D cross-cutting/benchmark/sanitizer completion pass (**D12**) — is
+**not implemented** and is presented as such.

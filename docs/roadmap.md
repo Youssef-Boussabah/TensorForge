@@ -576,9 +576,10 @@ The Python line is done; what remains is expansion on its own terms:
     stale-graph distinction; documentation completion and support-
     matrix finalization; and build/CI/hygiene verification — no new
     numerical behavior.
-  - **Phase D — native CNN stack (design contract complete; the Flatten,
-    convolution, and max-pooling *operation* milestones have shipped, with
-    the pooling module and the native CNN training proof upcoming).** The **D0 architecture contract is written** —
+  - **Phase D — native CNN stack (design contract complete; every CNN
+    layer — flatten, convolution, and max-pooling, operations and modules
+    alike — has shipped, with the deterministic native CNN training +
+    checkpoint-resume proof and the phase completion pass upcoming).** The **D0 architecture contract is written** —
     [native_cnn_design.md](native_cnn_design.md) locks the layouts
     (NCHW activations, OIHW convolution weights, cross-correlation), the
     argument and output-shape contracts, the non-contiguous-input policy
@@ -669,8 +670,16 @@ The Python line is done; what remains is expansion on its own terms:
     winners dropped. The private winner buffer became graph-owned state
     released exactly when the graph history is (freed by a one-shot
     backward or `close()`, retained under `retain_graph=True`, and kept
-    alive across a failed retryable backward). The **native pooling module
-    (D10)** and the deterministic
+    alive across a failed retryable backward). **D10 completed the native
+    pooling layer**: a parameter-free, buffer-free module that normalizes
+    its window arguments to `(height, width)` tuples (no stride means
+    non-overlapping windows) and delegates its forward entirely to that
+    operation — no new kernel, C ABI symbol, custom backward, parameters,
+    buffers, or checkpoint schema, and no winner state held between calls.
+    It exports from `tensorforge.experimental`, contributes no
+    state-dictionary keys, and composes in a `NativeSequential` beside the
+    convolution, activation, flatten, and linear layers, so the native
+    optimizers ignore it naturally. The deterministic
     end-to-end native-CNN training + checkpoint-resume proof (D11) remain
     **unimplemented** and marked unsupported in the
     [support matrix](native_support_matrix.md). This design guides the

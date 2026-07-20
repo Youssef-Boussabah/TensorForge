@@ -201,11 +201,12 @@ Honest expectations:
   experimental C++ **CPU** backend: float64/cpu only, no CUDA backend
   yet, no dtype promotion or casting, and no implicit dispatch into
   `tensorforge.Tensor`.
-- The native CNN stack (Phase D) is partial: `NativeFlatten` and the
-  differentiable Conv2d layer (`NativeConv2d`) ship, but native MaxPool2d
-  and the end-to-end native CNN training + checkpoint-resume proof are
-  still upcoming. Native checkpoints also capture no scheduler or random
-  state — see the [native support matrix](docs/native_support_matrix.md).
+- The native CNN stack (Phase D) is partial: the layers ship
+  (`NativeFlatten`, the differentiable convolution layer `NativeConv2d`,
+  and the pooling layer `NativeMaxPool2d`), but the end-to-end native CNN
+  training + checkpoint-resume proof is still upcoming. Native
+  checkpoints also capture no scheduler or random state — see the
+  [native support matrix](docs/native_support_matrix.md).
 - `Conv2d` and `MaxPool2d` (stable line) use deliberately naive loops.
 - Benchmarks are hardware-specific characterizations with no universal
   speed claims; the naive native kernels can lose to NumPy's BLAS.
@@ -225,9 +226,11 @@ in-memory optimizer state snapshots, pickle-free native checkpoint files,
 end-to-end deterministic MLP training, and deterministic in-memory and
 file resume — with cross-cutting failure, lifetime, and ownership
 guardrails. **Phase D — the native CNN stack — is now under way and
-partly shipped**: `NativeFlatten` and the differentiable Conv2d layer
-(`NativeConv2d`) are in, while native MaxPool2d and the end-to-end native
-CNN training + checkpoint-resume proof are still upcoming. CUDA/GPU
+partly shipped**: every native CNN layer is in — `NativeFlatten`, the
+differentiable convolution layer (`NativeConv2d`), and the pooling layer
+(`NativeMaxPool2d`) over the native `maxpool2d` operation — while the
+end-to-end native CNN training + checkpoint-resume proof is still
+upcoming. CUDA/GPU
 experiments have not started and remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).

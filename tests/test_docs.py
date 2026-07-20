@@ -225,7 +225,7 @@ def test_experimental_exports_stay_intentional():
     assert set(experimental.__all__) == {
         "NativeTensor", "NativeParameter", "NativeParameterRegistry",
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
-        "NativeConv2d", "NativeSequential",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
     }
@@ -335,48 +335,44 @@ def test_native_cnn_design_locks_conditional_versioning_and_winner_safety():
     )
 
 
-def test_native_cnn_design_is_honest_about_being_unimplemented():
-    """D0 is design only: the doc must not claim the CNN stack ships, and
-    the backend/support-matrix must keep presenting it as unsupported."""
+def test_native_cnn_design_is_honest_about_its_remaining_work():
+    """Phase D is not finished: the design doc must keep saying so, and the
+    backend registry must keep the shipped/unshipped boundary accurate."""
     design = _normalized_doc("docs/native_cnn_design.md")
-    # The doc states plainly that nothing is implemented yet.
+    # The doc states plainly that Phase D still has unimplemented work.
     assert "not implemented" in design.lower() or "not yet" in design.lower(), (
-        "native_cnn_design.md must state that Phase D is not implemented"
+        "native_cnn_design.md must state that Phase D is incomplete"
     )
+    # D11 (the deterministic CNN training + checkpoint-resume proof) and D12
+    # are still planned, and Phase D is not marked complete.
+    assert "D11" in design and "D12" in design
 
-    # The backend capability registry keeps the still-unimplemented CNN
-    # surface honest. As of D6 the differentiable "conv2d" *operation* is
-    # implemented (autograd op + Core forward/backward) and as of D7 the
-    # NativeConv2d *module* is too; as of D8/D9 the "maxpool2d" *operation*
-    # is implemented (Core forward + backward + NativeTensor autograd) while
-    # the NativeMaxPool2d *module* (D10) is not. Operation support and
-    # module support are distinct. NativeFlatten (D1) is checked separately,
-    # below.
+    # The backend capability registry keeps the boundary honest. As of D6/D7
+    # the "conv2d" operation and the NativeConv2d module are implemented; as
+    # of D8/D9/D10 the "maxpool2d" operation and the NativeMaxPool2d module
+    # are too. Operation support and module support stay distinguishable.
     from tensorforge.backends import cpp
 
-    # The pooling operation is implemented; only its module is missing.
     assert "maxpool2d" not in cpp.UNSUPPORTED
     assert "maxpool2d" in cpp.AUTOGRAD_OPS
     assert "maxpool2d_forward" in cpp.TENSOR_CORE_OPS
     assert "maxpool2d_backward" in cpp.TENSOR_CORE_OPS
-    assert "NativeMaxPool2d" in cpp.UNSUPPORTED
-    assert "NativeMaxPool2d" not in cpp.NATIVE_MODULES, (
-        "cpp backend advertises unimplemented NativeMaxPool2d"
-    )
-    # The Conv2d module (D7) is implemented: in the modern module inventory
-    # and no longer an unsupported entry (the operation was already
-    # supported at D6).
+    assert "NativeMaxPool2d" not in cpp.UNSUPPORTED
+    assert "NativeMaxPool2d" in cpp.NATIVE_MODULES
+    # The module is a module only — never advertised as an op or kernel.
+    assert "NativeMaxPool2d" not in cpp.AUTOGRAD_OPS
+    assert "NativeMaxPool2d" not in cpp.TENSOR_CORE_OPS
+    assert "NativeMaxPool2d" not in cpp.RAW_KERNELS
     assert "NativeConv2d" in cpp.NATIVE_MODULES
     assert "NativeConv2d" not in cpp.UNSUPPORTED
 
-    # The native public surface exports the implemented Conv2d module but
-    # not the still-unimplemented pooling module.
+    # Both shipped CNN modules are exported from the experimental surface.
     import tensorforge.experimental as experimental
 
     assert "NativeConv2d" in experimental.__all__
-    assert "NativeMaxPool2d" not in experimental.__all__, (
-        "NativeMaxPool2d is exported before its milestone is implemented"
-    )
+    assert "NativeMaxPool2d" in experimental.__all__
+    # The D11 training/checkpoint-resume proof has not shipped.
+    assert not (REPO_ROOT / "examples" / "native_cnn_training.py").exists()
 
 
 def test_native_flatten_is_implemented_as_a_native_module():
@@ -393,10 +389,11 @@ def test_native_flatten_is_implemented_as_a_native_module():
     assert "NativeFlatten" not in cpp.RAW_KERNELS
     assert "flatten" not in cpp.UNSUPPORTED
     # The Conv2d module is implemented as of D7 (over the D6 operation) and
-    # the pooling operation as of D9; only the pooling module (D10) remains
-    # unimplemented.
+    # the pooling module as of D10 (over the D8/D9 operation); neither is a
+    # lingering unsupported entry.
     assert "NativeConv2d" not in cpp.UNSUPPORTED
-    assert "NativeMaxPool2d" in cpp.UNSUPPORTED
+    assert "NativeMaxPool2d" not in cpp.UNSUPPORTED
+    assert "NativeMaxPool2d" in cpp.NATIVE_MODULES
 
 
 def test_docs_do_not_reassert_stale_phase_d_status():

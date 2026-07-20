@@ -820,11 +820,12 @@ def test_conv2d_operation_and_module_supported():
     assert "NativeConv2d" in experimental.__all__
 
 
-def test_maxpool2d_module_remains_unsupported():
+def test_maxpool2d_is_supported_as_an_operation_and_a_module():
     # Pooling is exposed as an operation (D8 forward + D9 backward/autograd)
-    # but not as a module: NativeMaxPool2d is D10.
-    assert "NativeMaxPool2d" in cpp.UNSUPPORTED
-    assert "NativeMaxPool2d" not in cpp.NATIVE_MODULES
+    # and, as of D10, as the NativeMaxPool2d module built on it.
+    assert "maxpool2d" in cpp.AUTOGRAD_OPS
+    assert "NativeMaxPool2d" in cpp.NATIVE_MODULES
+    assert "NativeMaxPool2d" not in cpp.UNSUPPORTED
     # Backward kernels stay layer-qualified Core ops — never an autograd op
     # name and never a NumPy-buffer raw kernel, for Conv2d or pooling.
     for name in cpp.AUTOGRAD_OPS + cpp.RAW_KERNELS:

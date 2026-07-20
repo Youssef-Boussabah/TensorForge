@@ -959,19 +959,20 @@ def test_raw_kernels_and_frozen_registry_unchanged():
     )
 
 
-def test_autograd_op_is_supported_but_the_module_is_not():
+def test_autograd_op_and_module_are_both_supported():
     from tensorforge.experimental import NativeTensor
 
     # The differentiable operation landed in D9 (this file's forward is its
-    # first half); the NativeMaxPool2d *module* is D10 and still absent.
+    # first half) and the NativeMaxPool2d module in D10 — distinct layers,
+    # both now present.
     assert "maxpool2d" in cpp.AUTOGRAD_OPS
     assert hasattr(NativeTensor, "maxpool2d")
     assert "maxpool2d" not in cpp.UNSUPPORTED
-    assert "NativeMaxPool2d" not in cpp.NATIVE_MODULES
-    assert "NativeMaxPool2d" in cpp.UNSUPPORTED
+    assert "NativeMaxPool2d" in cpp.NATIVE_MODULES
+    assert "NativeMaxPool2d" not in cpp.UNSUPPORTED
     import tensorforge.experimental as experimental
 
-    assert "NativeMaxPool2d" not in experimental.__all__
+    assert "NativeMaxPool2d" in experimental.__all__
 
 
 def test_forward_and_backward_are_separate_core_ops():
