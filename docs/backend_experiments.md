@@ -519,9 +519,22 @@ input validation, and backward supplied entirely by the D6 autograd — no
 new kernel, C ABI symbol, or custom module backward. It registers through
 the inherited `NativeModule` mechanism (deterministic `weight` then `bias`
 order), rides the existing state_dict/checkpoint/`NativeSGD`/`NativeAdam`
-paths unchanged, and drops into a `NativeSequential`. Pooling
-(`NativeMaxPool2d`, D8–D10) and the deterministic end-to-end CNN training +
-checkpoint-resume proof (D11) remain unimplemented, followed by the CUDA
+paths unchanged, and drops into a `NativeSequential`. **D8** then added the
+forward-only **max-pooling** layer: the internal
+`tf::maxpool2d_forward_contiguous` kernel (a hidden C++ symbol in the new
+`cpp/src/pooling.cpp`, producing the pooled values *and* the saved winner
+indices in one deterministic row-major pass), its exception-guarded
+`tf_core_maxpool2d_forward` export with ctypes/`errcheck` registration, and
+the Core method `NativeTensorCore.maxpool2d_forward` (Policy-B
+copy-then-compute, failure-atomic output + **private** winner-buffer
+allocation, exact parity with the stable `MaxPool2d`). The winner buffer —
+an internal float64 buffer of flat plane offsets with a `-1` padding
+sentinel, proved exact against `H*W ≤ 2^53` both in Python and at the ABI —
+is deliberately invisible: no public tensor, no new dtype, no state-dict or
+checkpoint presence. Pooling **backward and `NativeTensor.maxpool2d`
+autograd (D9)**, the **`NativeMaxPool2d` module (D10)**, and the
+deterministic end-to-end CNN training + checkpoint-resume proof (D11)
+remain unimplemented, followed by the CUDA
 runtime, dtype/AMP work, Transformer/text experiments, distributed
 training, and the final portfolio release. Still float64/cpu only, still explicit and
 experimental, and no production performance is claimed.

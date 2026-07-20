@@ -576,8 +576,9 @@ The Python line is done; what remains is expansion on its own terms:
     stale-graph distinction; documentation completion and support-
     matrix finalization; and build/CI/hygiene verification — no new
     numerical behavior.
-  - **Phase D — native CNN stack (design contract complete; the Flatten
-    and convolution milestones have shipped, pooling and the native CNN
+  - **Phase D — native CNN stack (design contract complete; the Flatten,
+    convolution, and max-pooling *forward* milestones have shipped, with
+    pooling backward/autograd, the pooling module, and the native CNN
     training proof upcoming).** The **D0 architecture contract is written** —
     [native_cnn_design.md](native_cnn_design.md) locks the layouts
     (NCHW activations, OIHW convolution weights, cross-correlation), the
@@ -641,9 +642,24 @@ The Python line is done; what remains is expansion on its own terms:
     supplied entirely by the D6 `conv2d` autograd — no new kernel, C ABI
     symbol, or custom module backward. It registers in `NATIVE_MODULES`,
     exports from `tensorforge.experimental`, and rides the existing
-    state_dict/checkpoint/optimizer paths unchanged. All of pooling (D8–D10)
-    and the deterministic end-to-end native-CNN training + checkpoint-resume
-    proof (D11) remain **unimplemented** and marked unsupported in the
+    state_dict/checkpoint/optimizer paths unchanged. **D8 has shipped the
+    forward-only native max-pooling layer**: the internal CPU float64
+    compute kernel `tf::maxpool2d_forward_contiguous` (a hidden C++ symbol
+    that produces the pooled values and the saved winner indices in one
+    deterministic row-major pass — padding participates as a conceptual
+    `-inf`, ties keep the first occurrence, and a completely padded window
+    yields `-inf` with the `-1` sentinel), the exported guarded C ABI
+    wrapper `tf_core_maxpool2d_forward` with its ctypes/`errcheck`
+    registration, and `NativeTensorCore.maxpool2d_forward` — a
+    Python-reachable, autograd-unaware Core method that validates the
+    arguments and the `H*W ≤ 2^53` winner-exactness bound in Python ints
+    before allocating anything, copies a non-contiguous input (Policy B),
+    allocates the output and the **private** winner buffer in a
+    failure-atomic order, and matches the stable pooling reference
+    exactly. Max-pooling **backward and `NativeTensor.maxpool2d` autograd
+    (D9)**, the **native pooling module (D10)**, and the deterministic
+    end-to-end native-CNN training + checkpoint-resume proof (D11) remain
+    **unimplemented** and marked unsupported in the
     [support matrix](native_support_matrix.md). This design guides the
     remaining Phase-D milestones.
   - **Then beyond (not started):** the CUDA

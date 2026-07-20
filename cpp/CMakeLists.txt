@@ -171,4 +171,27 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME conv2d_weight_backward COMMAND test_conv2d_weight_backward)
+
+  # MaxPool2d forward + winner buffer (D8): links the internal pooling
+  # kernel source (pooling.cpp) directly, plus error.cpp because that
+  # translation unit also carries the exported, guarded
+  # tf_core_maxpool2d_forward wrapper (which references the thread-local
+  # error slot). The test itself exercises only the internal
+  # tf::maxpool2d_forward_contiguous kernel — output values and saved
+  # winner indices together.
+  add_executable(test_maxpool2d_forward
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_maxpool2d_forward.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/pooling.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_maxpool2d_forward PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_maxpool2d_forward PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_maxpool2d_forward PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_maxpool2d_forward PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME maxpool2d_forward COMMAND test_maxpool2d_forward)
 endif()

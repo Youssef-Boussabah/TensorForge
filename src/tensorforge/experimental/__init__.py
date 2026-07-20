@@ -22,9 +22,13 @@ the existing ``sum`` reduction), and as of milestone D7 the trainable
 bias ``NativeParameter``s, deterministic uniform conv fan-in initialization,
 4-D NCHW input validation, and backward supplied entirely by the D6
 autograd — no new kernel, ABI symbol, or custom module backward).
-``MaxPool2d`` (D8–D10), the deterministic end-to-end native CNN
-training/checkpoint-resume proof (D11), CUDA, and the remaining Phase-D
-numerical layers (new activations, softmax/classification losses,
+Milestone D8 added max-pooling only at the **runtime** layer — the
+forward-only ``NativeTensorCore.maxpool2d_forward`` and its private saved
+winner buffer — so nothing pooling-related is exported from this package
+yet. Differentiable pooling (``NativeTensor.maxpool2d`` and its backward,
+D9), the ``NativeMaxPool2d`` module (D10), the deterministic end-to-end
+native CNN training/checkpoint-resume proof (D11), CUDA, and the remaining
+Phase-D numerical layers (new activations, softmax/classification losses,
 BatchNorm/LayerNorm/Dropout) remain future work.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,

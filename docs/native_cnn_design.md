@@ -748,6 +748,29 @@ Graph ownership stays **in Python** — no graph state moves into C++.
 - **Layer responsibilities:** kernel = max + winner recording; Core
   wrapper = contiguity/allocation/marshalling; `NativeTensor.maxpool2d` =
   graph node holding the winner buffer; `NativeMaxPool2d` = the module.
+- **Status (D8 — implemented, raw + Core forward).** The first two layers
+  ship: `tf::maxpool2d_forward_contiguous` (internal, `cpp/src/pooling.cpp`,
+  declared in `cpp/include/tf_pooling_internal.h`) and the exported guarded
+  `tf_core_maxpool2d_forward` wrapper, reached from Python through
+  `NativeTensorCore.maxpool2d_forward` / the private
+  `_maxpool2d_forward_with_winners`. The third and fourth layers
+  (`NativeTensor.maxpool2d` in D9, `NativeMaxPool2d` in D10) do not exist
+  yet, so the registry still lists `maxpool2d` and `NativeMaxPool2d` as
+  unsupported while `TENSOR_CORE_OPS` carries the layer-qualified
+  `maxpool2d_forward`. **The implemented selection rule, exactly as
+  specified above:** one row-major (`p` outer, `q` inner) scan per window;
+  a padded position is a real candidate holding the conceptual `-inf` with
+  winner `-1`; the first non-NaN candidate seeds the scan and only a
+  **strictly greater** later candidate replaces it, so ties keep the first
+  occurrence; an in-bounds first maximum saves `ih * W + iw`, a padded
+  first maximum saves `-1`; a completely padded window yields `-inf` and
+  `-1`. **NaN fallback (D8 refinement of the unsupported-NaN policy):** a
+  NaN never wins, and a window whose candidates are *all* NaN (only
+  reachable with no padded position, since padding is `-inf`) falls back
+  deterministically to its **first candidate** — that candidate's value and
+  its winner — so the output value and the saved winner always come from the
+  same selected candidate even there. No NumPy/PyTorch NaN parity is
+  claimed or tested.
 
 ---
 
@@ -878,6 +901,25 @@ for no correctness gain — the float64 buffer is exact and reuses
 everything. If a future milestone introduces a real integer native dtype,
 the winner buffer is the natural first internal adopter.
 
+**Status (D8 — implemented as specified).** The winner buffer is allocated
+by the Core wrapper as a second `NativeTensorCore.zeros((N, C, out_h,
+out_w))` (owning, contiguous, offset 0) *after* the output and overwritten
+entirely by the forward kernel. The exactness bound is proved **twice**:
+`NativeTensorCore._maxpool2d_forward_with_winners` checks `H * W <= 2**53`
+in Python arbitrary-precision arithmetic before allocating anything or
+copying a non-contiguous input, and `tf_core_maxpool2d_forward` re-proves it
+in overflow-checked int64 so a direct ABI caller cannot bypass the Python
+check; either violation raises `ValueError`. The kernel writes only `-1.0`
+or an exact non-negative integral offset. The public
+`NativeTensorCore.maxpool2d_forward` **closes** the winner buffer before
+returning the pooled values, so D8 exposes no winner object at all; the
+private `_maxpool2d_forward_with_winners` returns the `(output, winners)`
+pair that D9's backward closure will own and close exactly once. The buffer
+is absent from `state_dict`, checkpoints, parameter/buffer traversal,
+`backend_info`, `__all__`, and every public method name (guarded by
+`tests/test_native_maxpool2d_core.py`), and `SUPPORTED_DTYPES` still reads
+`("float64",)` — no index dtype was introduced.
+
 ---
 
 ## 13. C ABI design
@@ -954,7 +996,15 @@ automatically):
   contract); the backward kernels (`tf_core_conv2d_input_backward`,
   `tf_core_conv2d_weight_backward`) join in D4/D5.
 - **`cpp/src/pooling.cpp`** — `tf_core_maxpool2d_forward`,
-  `tf_core_maxpool2d_backward`.
+  `tf_core_maxpool2d_backward`. **D8 shipped** the internal
+  `tf::maxpool2d_forward_contiguous` (pure arithmetic, hidden symbol,
+  declared in the focused internal header
+  **`cpp/include/tf_pooling_internal.h`**) *and*, in the same file, the
+  exported guarded `tf_core_maxpool2d_forward` wrapper; the backward
+  scatter kernel and `tf_core_maxpool2d_backward` join in D9. Its
+  file-local checked-arithmetic/offset helpers are deliberately kept
+  separate from conv2d.cpp's rather than promoted to a shared header, so
+  each compute unit stays self-contained (below).
 
 The internal compute kernels are exercised by dependency-free CTest
 binaries under **`cpp/tests/`** (e.g. `test_conv2d_forward.cpp`), built
@@ -1472,16 +1522,105 @@ registry advertises `conv2d` as unsupported while listing the Core-level
   change), and both `NativeSGD`/`NativeAdam`. Verified by
   `tests/test_native_conv2d_module.py`.
 
-### D8 — MaxPool2d forward + winner-index contract
-- **Scope:** `tf_core_maxpool2d_forward`; winner buffer (§12);
-  `NativeTensorCore.maxpool2d_forward`.
-- **Excludes:** backward; autograd; module.
-- **Files:** `cpp/src/pooling.cpp`; `backends/cpp.py`; tests.
-- **Tests:** forward hand-computed, ties, padding, stride, winner buffer
-  contents.
-- **Acceptance:** correct pooled values + winners. **Dependencies:** D3
-  (shares Core patterns). **Risks:** tie/padding winner encoding
-  (mitigated by the sentinel design).
+### D8 — MaxPool2d forward + winner-index contract — **implemented**
+- **Scope:** the internal CPU float64 forward compute kernel
+  `tf::maxpool2d_forward_contiguous` (hidden symbol, declared in the new
+  focused internal header `cpp/include/tf_pooling_internal.h`); the
+  exported, exception-guarded `tf_core_maxpool2d_forward` wrapper; its
+  ctypes/`errcheck` registration; and the Core forward
+  `NativeTensorCore.maxpool2d_forward` plus the private
+  `_maxpool2d_forward_with_winners` helper that keeps the **saved winner
+  buffer** (§12).
+- **Excludes — deferred:** the pooling **backward** scatter kernel, a
+  backward C ABI symbol, `NativeTensor.maxpool2d`, MaxPool2d autograd
+  (all **D9**), and `NativeMaxPool2d` (**D10**). D8 adds no public winner
+  API, no integer dtype, and no CNN training work.
+- **Files:** `cpp/src/pooling.cpp`, `cpp/include/tf_pooling_internal.h`,
+  `cpp/tests/test_maxpool2d_forward.cpp`, `cpp/CMakeLists.txt` (the new
+  `maxpool2d_forward` CTest target), `backends/cpp.py` (argtypes,
+  `_CHECKED_KERNELS`, the Core methods, `TENSOR_CORE_OPS` gains
+  `maxpool2d_forward`), `tests/test_native_maxpool2d_core.py`.
+- **Internal kernel signature:**
+  `void tf::maxpool2d_forward_contiguous(const double* input, double*
+  output, double* winners, int64_t batch, channels, input_height,
+  input_width, kernel_height, kernel_width, stride_height, stride_width,
+  pad_height, pad_width, output_height, output_width) noexcept` — direct
+  nested loops in `n → c → i → j → p → q` order, reads the input without
+  mutation, writes only the caller-owned output and winner spans (both
+  fully defined, no pre-initialization needed), allocates nothing, and
+  materializes no padded input (out-of-bounds coordinates are computed in
+  signed `int64_t`).
+- **Exported ABI signature (D8).** A `void` function signalling
+  success/failure only through the thread-local error slot, registered in
+  `_CHECKED_KERNELS`:
+  ```c
+  void tf_core_maxpool2d_forward(
+      const void* input_handle, int64_t input_offset,
+      void*       output_handle,    // caller-allocated (N,C,oh,ow), offset 0
+      void*       winners_handle,   // caller-allocated (N,C,oh,ow), offset 0
+      int64_t batch, int64_t channels,
+      int64_t input_height,  int64_t input_width,
+      int64_t kernel_height, int64_t kernel_width,
+      int64_t stride_height, int64_t stride_width,
+      int64_t pad_height,    int64_t pad_width,
+      int64_t output_height, int64_t output_width);
+  ```
+  No handle is nullable and **no stride arrays cross the ABI** — the raw
+  contract is canonical contiguous storage plus the input offset, exactly
+  like the Conv2d wrappers, so it bounds-checks each span but cannot and
+  does not inspect *logical* contiguity (that stays the Core layer's
+  Policy-B responsibility). It rejects with `TF_ERROR_INVALID`
+  (`ValueError` in Python): null handles, non-positive extents/kernel/
+  stride, negative padding or offset, an output shape disagreeing with the
+  floor formula, a plane with `H*W > 2^53` (re-proving the winner-exactness
+  bound in its own overflow-checked fixed-width arithmetic), shape products
+  that overflow int64, and any input/output/winner span falling outside its
+  allocation. It allocates and frees nothing and mutates only the
+  caller-provided output/winner storage.
+- **Core API and result representation (D8).**
+  `NativeTensorCore.maxpool2d_forward(*, kernel_size, stride=None,
+  padding=0)` returns the pooled **owning** contiguous
+  `(N, C, out_h, out_w)` core alone (it closes the winner buffer
+  deterministically); the private
+  `NativeTensorCore._maxpool2d_forward_with_winners(...)` returns the
+  `(output, winners)` pair — the representation D9's backward closure will
+  hold. `stride=None` means `stride = kernel_size`; `kernel_size`/`stride`
+  are int or 2-pairs ≥ 1 and `padding` int or 2-pair ≥ 0 (bools and
+  malformed pairs rejected). Validation — open receiver, rank exactly 4,
+  float64/cpu metadata, argument forms, `H*W ≤ 2^53`, the floor output
+  shape with both extents ≥ 1, and int64-representable element counts —
+  runs entirely in Python ints **before any allocation**. Non-contiguous
+  input takes one explicit owning contiguous copy (Policy B) closed as soon
+  as the native call returns; an already-contiguous input (even at a
+  non-zero offset) is passed straight through.
+- **Allocation order and cleanup.** Output first, winner buffer second,
+  then the native call. A failure at any point closes every object already
+  allocated (winner then output) and the temporary contiguous copy, returns
+  no partial result, leaves the input open and unchanged, restores the
+  native error slot for the next call, and returns live native storage to
+  its baseline — never relying on garbage collection.
+- **Winner ownership/lifetime.** Fresh owning row-major contiguous
+  `(N, C, out_h, out_w)` float64 storage at offset 0, valid independently
+  of the input's lifetime, closed exactly once by whoever holds it (the
+  public Core method, or D9's backward closure). It never appears in
+  `state_dict`, checkpoints, parameter/buffer traversal, `backend_info`, or
+  any public NativeTensor API, and advertises no new dtype.
+- **Tests:** 25 dependency-free C++ cases (simple/multi-window/multi-
+  channel/batch, rectangular input and kernel, stride > 1, separate h/w
+  stride, symmetric and separate h/w padding, combined stride+padding,
+  negative and fractional values, unique maximum, equal-value tie,
+  padding-vs-real-`-inf` tie, all-`-inf` valid values, completely padded
+  windows, repeated winner offsets across overlapping windows, input
+  immutability, full output/winner initialization from garbage,
+  determinism, exact stable-`tensorforge.nn.MaxPool2d` parity for output
+  *and* converted winners, winner exactness at a 200×200 plane's offset
+  39999, and a focused NaN case) plus 83 Python Core cases (forward
+  correctness and stable parity, output/winner contracts, Policy B,
+  the validation surface, raw-ABI rejection, allocation/native-call failure
+  atomicity with a live-storage baseline, and capability separation).
+- **Acceptance:** correct pooled values **and** winners; Release **and**
+  Debug CTests warning-clean. **Done** (raw + Core, forward-only).
+  **Dependencies:** D3 (shares the Core patterns).
 
 ### D9 — MaxPool2d backward + autograd integration
 - **Scope:** `tf_core_maxpool2d_backward` (scatter); `NativeTensor.
@@ -1549,7 +1688,9 @@ Phase D is complete only when **all** hold:
 
 Until every milestone above lands, Phase D stays **incomplete**: the
 backend registry, support matrix, and README present each surface at its
-actual status — shipped layers (the `NativeFlatten` and Conv2d line) as
-supported, and every not-yet-shipped surface (currently the MaxPool2d
-layers and the end-to-end native CNN training + checkpoint-resume proof)
-as **not implemented**.
+actual status — shipped layers (the `NativeFlatten` and Conv2d line, plus
+the D8 raw/Core MaxPool2d **forward** and its private winner buffer) as
+supported, and every not-yet-shipped surface (currently MaxPool2d
+**backward** and its `NativeTensor` autograd integration, the
+`NativeMaxPool2d` module, and the end-to-end native CNN training +
+checkpoint-resume proof) as **not implemented**.

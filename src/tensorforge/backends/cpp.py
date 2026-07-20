@@ -88,6 +88,15 @@ TENSOR_CORE_OPS = (
     "conv2d_forward",          # D3
     "conv2d_input_backward",   # D6
     "conv2d_weight_backward",  # D6
+    # Phase D native MaxPool2d at the Core layer — the layer-qualified
+    # forward wrapper over the exported tf_core_maxpool2d_forward kernel.
+    # It computes the pooled values and (internally) the private winner
+    # buffer the D9 backward will consume. It is a Core operation only:
+    # there is deliberately no differentiable "maxpool2d" NativeTensor op
+    # (D9) and no NativeMaxPool2d module (D10) yet, so both stay in
+    # UNSUPPORTED. The winner buffer is internal state, never a public
+    # tensor, op, or dtype.
+    "maxpool2d_forward",       # D8
 )
 
 # Operations the NativeTensor autograd layer (Phase B) differentiates.
@@ -132,8 +141,15 @@ STATE_SUPPORT = (
 #   - "NativeConv2d" (the Conv2d *module*, D7) IS implemented (see
 #     NATIVE_MODULES), so it is NOT listed here either — operation support
 #     and module support are now both present for Conv2d.
-#   - "maxpool2d" (the operation and the NativeMaxPool2d module, D8–D10)
-#     is still unsupported at every layer.
+#   - "maxpool2d" here names the differentiable *operation* — the
+#     NativeTensor autograd primitive (D9) — and "NativeMaxPool2d" the
+#     *module* (D10); neither exists yet, so both stay listed. As of D8 the
+#     layer-qualified Core forward "maxpool2d_forward" IS implemented (see
+#     TENSOR_CORE_OPS) together with its private saved-winner buffer, so
+#     that name is deliberately absent here: forward Core execution and
+#     autograd/module support are distinct layers, exactly as they were for
+#     "conv2d" between D3 and D6. MaxPool2d *backward* has no name in any
+#     inventory — it ships in D9 as part of the "maxpool2d" operation.
 # As of Phase D milestone D1, batch-preserving flatten IS implemented as
 # the NativeFlatten module (see NATIVE_MODULES), so "flatten" is not listed.
 UNSUPPORTED = (
@@ -151,6 +167,15 @@ UNSUPPORTED = (
 # docs/native_dtype_device_metadata_design.md).
 SUPPORTED_DTYPES = ("float64",)
 SUPPORTED_DEVICES = ("cpu",)
+
+# Largest element count the native int64 storage/ABI arithmetic addresses.
+_INT64_MAX = 2 ** 63 - 1
+# IEEE float64 represents every integer in [-(2**53), 2**53] exactly, so a
+# flat plane offset stored as a float64 (the internal MaxPool2d winner
+# buffer, docs/native_cnn_design.md §12) is exact iff the plane holds at
+# most 2**53 elements. Proved in Python arbitrary-precision arithmetic
+# before any allocation, and re-proved at the C ABI boundary.
+_MAX_EXACT_WINNER_PLANE = 2 ** 53
 
 _lib = None  # loaded lazily by _require_library()
 
@@ -346,6 +371,18 @@ def _load_library():
             ctypes.c_void_p,                   # grad_input/grad_weight handle
         ] + [ctypes.c_int64] * 13
         kernel.restype = None
+    # MaxPool2d forward (Phase D, D8): the exported wrapper over the
+    # internal window-maximum kernel. Contiguous storage only (Policy B
+    # copies at the Core level); the output *and* the private winner buffer
+    # are caller-allocated (offset 0). Only the input carries an offset;
+    # the 12 trailing int64s are N, C, H, W, kh, kw, sh, sw, ph, pw, out_h,
+    # out_w. There is no backward symbol yet — that is D9.
+    library.tf_core_maxpool2d_forward.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # input handle, offset
+        ctypes.c_void_p,                   # output handle
+        ctypes.c_void_p,                   # winner-buffer handle
+    ] + [ctypes.c_int64] * 12
+    library.tf_core_maxpool2d_forward.restype = None
 
     _configure_error_contract(library)
     return library
@@ -395,6 +432,7 @@ _CHECKED_KERNELS = (
     "tf_core_conv2d_forward",
     "tf_core_conv2d_input_backward",
     "tf_core_conv2d_weight_backward",
+    "tf_core_maxpool2d_forward",
 )
 
 
@@ -1501,6 +1539,151 @@ class NativeTensorCore:
                 raise
             return out
         finally:
+            for temp in temporaries:
+                temp.close()
+
+    # -- pooling (Phase D, D8: forward-only Core wrapper + winners) -------
+
+    def maxpool2d_forward(self, *, kernel_size, stride=None, padding=0):
+        """2-D max pooling forward over this NCHW input, natively.
+
+        ``self`` is the ``(N, C, H, W)`` input. ``kernel_size`` and
+        ``stride`` are an int or a 2-element ``(height, width)`` pair of
+        ints ≥ 1 (bools rejected); ``stride=None`` means
+        ``stride = kernel_size`` (non-overlapping windows, the stable
+        convention). ``padding`` is an int or pair ≥ 0, applied
+        symmetrically on each spatial axis. Returns a fresh **owning**
+        row-major contiguous ``(N, C, out_h, out_w)`` NativeTensorCore.
+
+        Windows see a conceptual ``-inf`` outside the real input, so a
+        padded cell loses to any finite value but still *participates* in
+        the selection; ties keep the first occurrence in row-major window
+        order (docs/native_cnn_design.md §10). This is the **forward-only,
+        autograd-unaware** Core wrapper — the differentiable
+        ``NativeTensor.maxpool2d`` primitive and the ``NativeMaxPool2d``
+        module are later milestones (D9/D10).
+
+        The kernel also produces the private winner buffer backward will
+        need; this public method releases it, so the pooled values are all
+        that survive. The internal
+        ``_maxpool2d_forward_with_winners`` helper is what keeps it (D9).
+
+        No dilation, ceil_mode, return_indices, adaptive/average/global
+        pooling, or channels-last — none of those is in the signature."""
+        out, winners = self._maxpool2d_forward_with_winners(
+            kernel_size=kernel_size, stride=stride, padding=padding
+        )
+        # The public Core forward exposes only the pooled values; the
+        # winner buffer is internal state, released deterministically here
+        # rather than left to garbage collection.
+        winners.close()
+        return out
+
+    def _maxpool2d_forward_with_winners(
+        self, *, kernel_size, stride=None, padding=0
+    ):
+        """The pooling forward plus its private saved-winner buffer.
+
+        Returns ``(output, winners)``: two fresh **owning** row-major
+        contiguous ``(N, C, out_h, out_w)`` cores. ``winners`` holds, for
+        each output cell, the flat offset ``ih * W + iw`` of the selected
+        input element inside its ``(n, c)`` plane, or the sentinel ``-1.0``
+        when a padding cell won (docs/native_cnn_design.md §12). Every
+        stored value is an exact integral float64 — the wrapper proves
+        ``H * W <= 2**53`` in Python arbitrary-precision arithmetic
+        *before* allocating or calling anything, so no index can round.
+
+        The winner buffer is **internal**: it is never exposed as a public
+        NativeTensor, never given a dtype tag of its own, never traversed
+        as a parameter or buffer, and never serialized. It exists so the
+        D9 backward can scatter without recomputing winners; the caller of
+        this private helper owns it and must ``close()`` it.
+
+        Validation runs entirely before any allocation. Per **Policy B**
+        (docs/native_cnn_design.md §5) a non-contiguous input is
+        materialized into a private owning contiguous copy that is closed
+        as soon as the native call returns, while an already-contiguous
+        input (even at a non-zero offset) is passed straight through. On
+        any failure every object this method allocated is closed, the
+        caller's input is untouched, and no partial result is returned."""
+        self._require_open()
+        if self.ndim != 4:
+            raise ValueError(
+                f"maxpool2d_forward requires a 4-D NCHW input, got shape "
+                f"{self.shape}"
+            )
+        if self.dtype != "float64" or self.device != "cpu":
+            raise ValueError(
+                f"maxpool2d_forward requires a float64/cpu input, got "
+                f"{self.dtype}/{self.device}"
+            )
+
+        kh, kw = _spatial_pair(kernel_size, "kernel_size", minimum=1)
+        # Stable convention: no stride means non-overlapping windows.
+        if stride is None:
+            sh, sw = kh, kw
+        else:
+            sh, sw = _spatial_pair(stride, "stride", minimum=1)
+        ph, pw = _spatial_pair(padding, "padding", minimum=0)
+
+        n, c, h, w = self.shape
+        # Winner indices are float64 flat plane offsets, exact only while
+        # H*W <= 2**53 (design §12). Python ints, so the product itself
+        # cannot overflow while being checked.
+        if h * w > _MAX_EXACT_WINNER_PLANE:
+            raise ValueError(
+                f"maxpool2d_forward input plane {(h, w)} has {h * w} elements, "
+                f"more than the {_MAX_EXACT_WINNER_PLANE} float64 can index "
+                f"exactly; winner offsets would round"
+            )
+        # Python-int floor arithmetic; raises before any allocation if the
+        # window does not fit the padded input.
+        out_h, out_w = conv_output_shape((h, w), (kh, kw), (sh, sw), (ph, pw))
+        # The element counts crossing the ABI must be representable as
+        # int64 storage sizes (again in Python ints, before allocating).
+        for count, what in (
+            (n * c * h * w, "input"),
+            (n * c * out_h * out_w, "output"),
+        ):
+            if count > _INT64_MAX:
+                raise ValueError(
+                    f"maxpool2d_forward {what} element count {count} exceeds "
+                    f"the int64 range the native runtime addresses"
+                )
+
+        temporaries = []
+        out = None
+        winners = None
+        try:
+            input_core = (
+                self if self.contiguous else self._contiguous_temp(temporaries)
+            )
+            # Deterministic allocation order: output first, then winners.
+            # If the second allocation fails the first is closed below, so
+            # a failed forward leaves nothing half-built.
+            out = NativeTensorCore.zeros(
+                (n, c, out_h, out_w), dtype=self.dtype, device=self.device
+            )
+            winners = NativeTensorCore.zeros(
+                (n, c, out_h, out_w), dtype=self.dtype, device=self.device
+            )
+            self._storage._lib.tf_core_maxpool2d_forward(
+                input_core._storage._require_open(), input_core.offset,
+                out._storage._require_open(),
+                winners._storage._require_open(),
+                n, c, h, w, kh, kw, sh, sw, ph, pw, out_h, out_w,
+            )
+            return out, winners
+        except BaseException:
+            # Close whichever result objects were successfully allocated —
+            # never rely on garbage collection for native memory.
+            for allocated in (winners, out):
+                if allocated is not None:
+                    allocated.close()
+            raise
+        finally:
+            # Close the private contiguous copy (if any) exactly once,
+            # whether the call succeeded or raised.
             for temp in temporaries:
                 temp.close()
 
