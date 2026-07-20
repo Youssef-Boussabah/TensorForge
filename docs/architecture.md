@@ -157,7 +157,13 @@ explicit layer at a time:
   correction, explicit `close()` lifetime), in-memory optimizer
   `state_dict`/`load_state_dict`, and pickle-free native checkpoint
   files (`save_native_checkpoint`/`load_native_checkpoint`) with
-  deterministic in-memory and file resume — proven end to end by
+  deterministic in-memory and file resume — and, with **Phase D (the
+  native CNN stack) complete**, `NativeFlatten`, the differentiable
+  `conv2d` operation with its trainable `NativeConv2d` module, and the
+  `maxpool2d` operation (private saved winners, scatter backward) with its
+  parameter-free `NativeMaxPool2d` module, proven together by a
+  deterministic CNN training + exact checkpoint-resume run
+  (`examples/native_cnn_training.py`) — proven end to end by
   `examples/native_mlp_training.py` and
   `examples/native_checkpoint_resume.py`.
 

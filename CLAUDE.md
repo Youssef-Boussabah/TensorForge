@@ -9,8 +9,10 @@ developed milestone by milestone (v0.1 … v3.0), each one small,
 tested, and readable. The Python framework line is complete as of
 v3.0; work continues on advanced branches (the experimental C++
 native line has completed Phase A — CPU runtime, Phase B — native
-autograd, and Phase C — the native training stack, through Advanced
-C++ v3.15; the native CNN stack and CUDA experiments are future work).
+autograd, Phase C — the native training stack, and Phase D — the
+native CNN stack, through Advanced C++ v3.16; a native classification
+stack, normalization/dropout/RNG, CPU optimization, and CUDA
+experiments are future work).
 Position the project as serious and systems-focused — never
 "educational", "toy", or "mini" — while staying honest: not
 production-ready, not a PyTorch replacement.
@@ -64,8 +66,12 @@ production-ready, not a PyTorch replacement.
   `cpp.backend_info()`; kernels raise ImportError at call time when
   unbuilt, and the backend tests skip. `benchmarks/cpp_backend.py`
   compares kernels against NumPy honestly (no performance assertions
-  anywhere). `scripts/smoke_cpp_backend.py` is the hard-failing smoke
-  check CI runs after building.
+  anywhere), and `benchmarks/benchmark_native_cnn.py` characterizes the
+  Phase-D CNN stack the same way. `scripts/smoke_cpp_backend.py` is the
+  hard-failing smoke check CI runs after building. Dependency-free C++
+  CTests live in `cpp/tests/` and build only with `-DTF_BUILD_TESTS=ON`;
+  sanitizer validation uses Clang on Linux
+  (`-DTF_SANITIZE=address,undefined`), which MSVC does not support.
 
 ## Commands
 

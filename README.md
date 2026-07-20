@@ -138,6 +138,7 @@ uv run python examples/native_mlp_training.py     # end-to-end native training
 uv run python examples/native_checkpoint_resume.py # save, restore, resume bit-for-bit
 uv run python examples/native_cnn_training.py     # end-to-end native CNN training + resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
+uv run python benchmarks/benchmark_native_cnn.py --smoke  # CNN characterization
 ```
 
 The native API mirrors the stable one, explicitly:
@@ -207,15 +208,15 @@ Honest expectations:
   experimental C++ **CPU** backend: float64/cpu only, no CUDA backend
   yet, no dtype promotion or casting, and no implicit dispatch into
   `tensorforge.Tensor`.
-- The native CNN stack (Phase D) is not finished: the layers ship
-  (`NativeFlatten`, the differentiable convolution layer `NativeConv2d`,
-  and the pooling layer `NativeMaxPool2d`) and the end-to-end native CNN
-  training + checkpoint-resume proof now runs
-  (`examples/native_cnn_training.py`), but the phase's final hardening
-  checkpoint — cross-cutting guardrails, benchmarks, and sanitizer
-  validation — is still outstanding. Native checkpoints also capture no
-  scheduler or random state — see the
+- The native CNN stack (Phase D) is complete — `NativeFlatten`,
+  `NativeConv2d`, `NativeMaxPool2d`, and a deterministic training +
+  exact checkpoint-resume proof — but the native line stops there: no
+  native classification stack (softmax/cross-entropy), no normalization,
+  no dropout or native RNG, and native checkpoints capture no scheduler
+  or random state — see the
   [native support matrix](docs/native_support_matrix.md).
+- Both lines' convolution and pooling use deliberately naive loops (the
+  native kernels too: no im2col, BLAS, threading, or SIMD).
 - `Conv2d` and `MaxPool2d` (stable line) use deliberately naive loops.
 - Benchmarks are hardware-specific characterizations with no universal
   speed claims; the naive native kernels can lose to NumPy's BLAS.
@@ -225,26 +226,28 @@ Honest expectations:
 ## Status
 
 **v3.0 — the stable Python framework line is complete**, covered by the
-test suite and documented. **The advanced branch has completed Phase C
-of its native line (Advanced C++ v3.15)**: Phase A (native CPU runtime),
-Phase B (native autograd), and Phase C (the native training stack) are
-all complete. Phase C shipped parameters, modules, state dictionaries,
+test suite and documented. **The advanced branch has completed Phase D
+of its native line (Advanced C++ v3.16)**: Phase A (native CPU runtime),
+Phase B (native autograd), Phase C (the native training stack), and
+Phase D (the native CNN stack) are all complete. Phase C shipped
+parameters, modules, state dictionaries,
 Linear/ReLU/Sequential, MSE loss, parameter versioning with stale-graph
 safety, `sqrt`/`reciprocal` optimizer primitives, SGD and adaptive Adam,
 in-memory optimizer state snapshots, pickle-free native checkpoint files,
 end-to-end deterministic MLP training, and deterministic in-memory and
 file resume — with cross-cutting failure, lifetime, and ownership
-guardrails. **Phase D — the native CNN stack — is now under way and
-partly shipped**: every native CNN layer is in — `NativeFlatten`, the
-differentiable convolution layer (`NativeConv2d`), and the pooling layer
-(`NativeMaxPool2d`) over the native `maxpool2d` operation — and the
-end-to-end native CNN training + checkpoint-resume proof now runs
+guardrails. **Phase D** added every native CNN layer — `NativeFlatten`,
+the differentiable convolution layer (`NativeConv2d`) over the native
+`conv2d` operation, and the pooling layer (`NativeMaxPool2d`) over the
+native `maxpool2d` operation with its private saved winners — plus the
+end-to-end training + checkpoint-resume proof
 (`examples/native_cnn_training.py`: 40 deterministic steps, 98.6% loss
 reduction, and a checkpoint-interrupted run that reproduces the
-uninterrupted one exactly), while the phase's final hardening checkpoint
-— cross-cutting guardrails, benchmarks, and sanitizer validation — is
-still outstanding. CUDA/GPU
-experiments have not started and remain future work. See
+uninterrupted one exactly), cross-cutting integration tests, honest CNN
+benchmarks, and ASan/UBSan validation of the whole native stack. The next
+native phase — a classification stack, more activations/math,
+normalization, RNG/dropout, and CPU optimization — has not started, and
+CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 

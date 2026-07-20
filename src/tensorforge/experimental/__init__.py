@@ -34,10 +34,14 @@ entirely to that operation — no new kernel, ABI symbol, custom backward, or
 state. It holds no winner storage between calls and contributes no
 state-dictionary or checkpoint keys, so it drops into a ``NativeSequential``
 beside ``NativeConv2d``/``NativeFlatten`` without touching the optimizer or
-checkpoint paths. The deterministic end-to-end native CNN
-training/checkpoint-resume proof (D11), CUDA, and the remaining Phase-D
-numerical layers (new activations, softmax/classification losses,
-BatchNorm/LayerNorm/Dropout) remain future work.
+checkpoint paths. Milestone D11 proved the whole stack trains — see
+``examples/native_cnn_training.py``, whose checkpoint-interrupted run
+reproduces the uninterrupted one exactly — and **milestone D12 closed
+Phase D** with cross-cutting integration tests, honest CNN benchmarks, and
+ASan/UBSan validation. What the native line still does **not** have: a
+classification stack (softmax/cross-entropy), further activations/math,
+normalization (BatchNorm/LayerNorm), dropout or a native RNG,
+float32/dtype expansion, CUDA, AMP, and data-pipeline abstractions.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf

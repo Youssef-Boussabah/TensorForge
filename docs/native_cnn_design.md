@@ -15,9 +15,12 @@ backend capability registry (`tensorforge.backends.cpp.UNSUPPORTED`,
 mirrored in [native_support_matrix.md](native_support_matrix.md)) is the
 **single source of truth** for exactly which surfaces are live at any
 moment. Phase D began as a milestone-zero (D0) deliverable that locked
-this architecture *before any numerical CNN code was written*; individual
-milestones have since begun landing (each marked in §18), and Phase D is
-complete only when **every** D0–D12 milestone does.
+this architecture *before any numerical CNN code was written*; **every
+D0–D12 milestone has since landed** (each marked in §18) and the
+completion criteria in §19 are all met, so **Phase D is complete**. This
+document therefore reads as the phase's contract *and* its record: where
+implementation refined a D0 decision, the refinement is stated at the
+milestone that made it.
 
 The stable Python framework (`tensorforge.nn.Conv2d`,
 `tensorforge.nn.MaxPool2d`, `tensorforge.nn.Flatten`) is the **numerical
@@ -1144,14 +1147,37 @@ failure; stale-graph behavior where applicable.
 
 ### `tests/test_native_cnn_training.py` (module + integration)
 
-Parameter registration (`["weight", "bias"]`); state dicts; checkpoint
-round trips (save→load→resume); `NativeSequential` traversal with
-Conv/Pool/Flatten slots; deterministic CNN training (fixed seed,
-monotonic loss); resume equivalence (bit-identical continuation);
-existing Phase A–C regression coverage stays green.
+Parameter registration; state dicts; checkpoint round trips
+(save→load→resume); `NativeSequential` traversal with Conv/Pool/Flatten
+slots; deterministic CNN training (fixed seeds); resume equivalence
+(exact continuation); existing Phase A–C regression coverage stays green.
+**As implemented (D11):** the loss curve is deliberately *not* asserted
+monotonic — Adam overshoots early on this task — so the guardrails are a
+final loss and a final/initial ratio each far below the observed values,
+plus "predictions moved closer" and "both trainable layers changed".
+
+### `tests/test_native_phase_d.py` (cross-cutting, D12)
+
+The completion file, complementing the per-component suites with the
+invariants that span several Phase-D components at once: the full module
+stack (shapes, order, state keys, dtype/device, non-contiguous input);
+one graph producing every gradient; graph-resource release and
+`retain_graph` across the mixed graph; shared modules/inputs accumulating
+with identity-deduplicated traversal; the Conv2d and MaxPool2d versioning
+contracts meeting in one backward; state/checkpoint integration for a
+model containing both operations (including exact `NativeAdam`/`NativeSGD`
+resume and Phase-C compatibility); cross-layer failure atomicity under
+injected allocation failure; resource lifetime across the whole stack;
+and the final capability boundary, including that the support matrix and
+the backend inventories agree.
 
 Every new test protects a real behavioral guarantee, not an arbitrary
-string.
+string. **D12 also replaced the milestone-era documentation guardrails**
+— which pinned transient wording, banned legitimate feature tokens from
+whole sections, or asserted that a not-yet-written file was absent — with
+durable semantic checks: the docs, the public exports, and the backend
+registry must *agree*, the artifacts they reference must exist, and
+genuinely absent capabilities must stay in `UNSUPPORTED`.
 
 ---
 
@@ -1173,6 +1199,23 @@ autograd benchmark) will separately time and label:
 Reported modes distinguish **reference/correctness**, **native call
 overhead**, **kernel execution**, and **end-to-end training** — the same
 four-way honesty as the Phase-B autograd benchmark.
+
+**Status (D12 — delivered as `benchmarks/benchmark_native_cnn.py`).**
+Three cases (`conv2d`, `maxpool2d`, `cnn`) × five modes:
+`forward_native` (no graph — native execution plus wrapper/ctypes
+overhead), `forward_graph` (the same forward with grad-tracking operands,
+isolating graph-construction cost), `forward_backward_fresh` (fresh graph
+plus one default `backward()`, including the winner-buffer release),
+`training_step` (the full D11 iteration: forward, loss, backward,
+`step()`, `zero_grad()`, cleanup — `cnn` only), and `stable_forward` (the
+stable `tensorforge.nn` equivalent on the same shapes). Warm-up plus
+repeated timed batches, median/min/max per iteration, a correctness gate
+before any timing, `--smoke`/`--json`/`--case`/`--mode` CLI, and no
+timing assertion anywhere — the report states explicitly that both lines
+are naive implementations and that the comparison is neither a speed
+claim nor a cross-framework, GPU, or scalability result.
+`tests/test_native_cnn_benchmark.py` proves it runs and reports the
+expected fields without pinning a single duration.
 
 ---
 
@@ -1936,49 +1979,126 @@ registry advertises `conv2d` as unsupported while listing the Core-level
   **Dependencies:** D1, D7, D10. The proof stays on **MSE** — no
   classification scope leaked in.
 
-### D12 — Phase-D cross-cutting tests, benchmarks, docs, completion
+### D12 — Phase-D cross-cutting tests, benchmarks, docs, completion — **implemented (phase closed)**
 - **Scope:** cross-cutting guardrails (`tests/test_native_phase_d.py`),
-  benchmarks (§17), final support-matrix/roadmap/README updates, and the
-  **ASan/UBSan validation checkpoint**.
-- **Files:** `tests/test_native_phase_d.py`; `benchmarks/…`; doc updates.
-- **Tests:** phase-completion invariants; benchmark correctness gate.
+  benchmarks (§17), the **ASan/UBSan validation checkpoint**, the
+  documentation/status reconciliation, and the Phase-D completion
+  declaration. **No** new kernel, C ABI symbol, ctypes declaration,
+  operation, module, loss, optimizer feature, dtype, or checkpoint schema:
+  D12 is hardening and certification only.
+- **Files:** `tests/test_native_phase_d.py`,
+  `benchmarks/benchmark_native_cnn.py`,
+  `tests/test_native_cnn_benchmark.py` (new); documentation updates across
+  `native_cnn_design.md`, `native_support_matrix.md`, `roadmap.md`,
+  `backend_experiments.md`, `architecture.md`, `project_summary.md`,
+  `release_history.md`, `README.md`, `CLAUDE.md`, and the experimental
+  package docstring; and the replacement of the milestone-era
+  documentation guardrails in `tests/test_docs.py` (plus the three
+  per-component files that asserted a not-yet-written artifact's absence)
+  with durable semantic checks.
+- **Cross-cutting tests (`tests/test_native_phase_d.py`).** 40 cases
+  covering only what the per-component suites cannot: the complete
+  Conv→ReLU→Pool→Flatten→Linear stack (shapes, deterministic parameter
+  order, state keys, float64/cpu, contiguous *and* non-contiguous input);
+  one graph producing every expected gradient plus the input gradient;
+  graph-resource release and `retain_graph` behavior across the mixed
+  graph; shared modules and shared inputs accumulating across branches
+  with identity-deduplicated traversal; the two versioning contracts
+  meeting in one place (Conv2d input-grad detects a stale weight,
+  weight-grad detects a stale versioned input, bias-only backward ignores
+  both, MaxPool2d records nothing and still routes by saved winners);
+  state/checkpoint integration for a model containing both operations
+  (independent snapshots, atomic invalid load, exact `NativeAdam` **and**
+  `NativeSGD` resume, no transient state serialized, Phase-C
+  compatibility); cross-layer failure atomicity under injected allocation
+  failure at four successive points; resource lifetime (no accumulation
+  across steps, winner lifetime, graph-construction failure, explicit
+  close); and the final capability boundary.
+- **Benchmarks (§17).** `benchmarks/benchmark_native_cnn.py` with five
+  modes — `forward_native`, `forward_graph`, `forward_backward_fresh`,
+  `training_step`, and a `stable_forward` reference — over `conv2d`,
+  `maxpool2d`, and the end-to-end `cnn` case, with warm-up, repeated timed
+  batches, median/min/max reporting, a correctness gate before timing, and
+  `--smoke`/`--json` modes. It asserts no speed and claims no
+  cross-framework, GPU, production, or scalability result;
+  `tests/test_native_cnn_benchmark.py` proves it runs and reports the
+  expected fields without pinning any timing.
+- **Sanitizer validation.** Clang 18.1.3 on Linux (WSL2 Ubuntu), CMake
+  3.28.3, `-DCMAKE_BUILD_TYPE=Debug -DTF_SANITIZE=address,undefined
+  -DTF_BUILD_TESTS=ON` into a build directory outside the tree.
+  Instrumentation was confirmed in the built library (`nm -D` shows 19
+  `__asan*` and 12 `__ubsan*` symbols). With
+  `ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1`
+  and `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`: all 5 native
+  CTests pass (with `detect_leaks=1`, i.e. LeakSanitizer active), the 634
+  Phase-D Python tests pass, the 1602-test native-focused selection
+  passes, the full Python suite passes, and the CNN/checkpoint-resume/MLP
+  examples and the CNN benchmark smoke all run clean — **zero ASan and
+  zero UBSan diagnostics attributable to TensorForge**. Python-level runs
+  preload the ASan runtime (`LD_PRELOAD`) because the interpreter itself
+  is not instrumented.
+  **LeakSanitizer scope, stated honestly.** The fully instrumented native
+  CTest binaries report **no leaks at all**. Running LSan over the Python
+  process *with* the instrumented library does report ~1.36 MB in ~1315
+  allocations, but **not one leak stack touches `_tensorforge_cpp.so` or
+  any `tf::`/`tf_core_`/`tf_storage_` symbol**: every allocation site is
+  CPython/NumPy module-and-type initialization
+  (`_PyObject_Malloc`, `PyType_GenericAlloc`, `_PyType_FromMetaclass_impl`,
+  `initumath`, `PyUFunc_FromFuncAndDataAndSignatureAndIdentity`, …) that a
+  non-instrumented interpreter never frees at shutdown. That output is
+  therefore unusable as a project-level leak gate, and the project's leak
+  contract remains what it has always been: the deterministic live-storage
+  counters and explicit-cleanup tests, which assert an exact return to
+  baseline. **No suppression file was added** — nothing was hidden.
 - **Acceptance:** all §19 criteria met; Phase D marked complete.
-- **Dependencies:** D1–D11.
+  **Done.** **Dependencies:** D1–D11.
 
 ---
 
-## 19. Phase-D completion criteria
+## 19. Phase-D completion criteria — all met
 
-Phase D is complete only when **all** hold:
+Phase D was to be complete only when **all** of the following held. Each
+is checked against reality at the D12 completion checkpoint:
 
-- `NativeFlatten` works through existing reshape/autograd behavior.
-- Conv2d forward and all required gradients (input, weight, bias) work.
-- `NativeConv2d` registers and restores parameters correctly.
-- MaxPool2d forward and backward are deterministic.
-- `NativeMaxPool2d` integrates with `NativeSequential`.
-- Stable/native numerical **parity** tests pass (to tolerance).
-- Finite-difference **gradient checks** pass.
-- Stale-graph / versioning behavior remains correct.
-- Allocation failures produce Python **exceptions** (`MemoryError` via the
-  status contract).
-- Failure paths **leak nothing** and **partially mutate nothing**.
-- Native CNN training is **deterministic**.
-- Checkpoint **resume reproduces** uninterrupted training.
-- Existing **Phase A–C tests keep passing**.
-- Support documentation marks **only completed** features as supported.
-- **ASan/UBSan** validation is run at the Phase-D completion checkpoint.
-- **No** CUDA, dtype expansion, normalization, dropout, or
-  classification-stack scope has leaked into Phase D.
+- ✅ `NativeFlatten` works through existing reshape/autograd behavior
+  (D1; refined to an **owning** output — §3.1).
+- ✅ Conv2d forward and all required gradients (input, weight, bias) work
+  (D2–D6; bias gradient composed from existing `sum` reductions).
+- ✅ `NativeConv2d` registers and restores parameters correctly (D7).
+- ✅ MaxPool2d forward and backward are deterministic (D8–D9), driven by
+  the private saved winners with the locked tie/padding/`-inf` rules.
+- ✅ `NativeMaxPool2d` integrates with `NativeSequential` (D10).
+- ✅ Stable/native numerical **parity** tests pass — exactly for pooling
+  (selection copies values) and to tolerance for convolution.
+- ✅ Finite-difference **gradient checks** pass (D4/D5 C++ CTests, D6
+  autograd tests).
+- ✅ Stale-graph / versioning behavior remains correct, including the
+  deliberate asymmetry between Conv2d (conditional version reads) and
+  MaxPool2d (none) — cross-checked together in
+  `tests/test_native_phase_d.py`.
+- ✅ Allocation failures produce Python **exceptions** (`MemoryError` via
+  the status contract) at every Phase-D layer.
+- ✅ Failure paths **leak nothing** and **partially mutate nothing** —
+  verified with the deterministic live-storage counters.
+- ✅ Native CNN training is **deterministic** (D11).
+- ✅ Checkpoint **resume reproduces** uninterrupted training *exactly*
+  (D11: losses, predictions, parameters, and optimizer state).
+- ✅ Existing **Phase A–C tests keep passing** (full suite green).
+- ✅ Support documentation marks **only completed** features as supported,
+  and the doc guardrails are now semantic agreement checks between the
+  docs and the backend inventories rather than wording pins.
+- ✅ **ASan/UBSan** validation run at the Phase-D completion checkpoint
+  (D12, Clang 18 on Linux): no diagnostic attributable to TensorForge;
+  LeakSanitizer clean over the instrumented native CTests.
+- ✅ **No** CUDA, dtype expansion, normalization, dropout, or
+  classification-stack scope leaked into Phase D — `SUPPORTED_DTYPES` is
+  still `("float64",)`, `SUPPORTED_DEVICES` still `("cpu",)`, and every
+  excluded name is still in `UNSUPPORTED`.
 
-Until every milestone above lands, Phase D stays **incomplete**: the
-backend registry, support matrix, and README present each surface at its
-actual status — shipped layers (`NativeFlatten`, the Conv2d line, and the
-complete MaxPool2d line: D8's forward and private winner buffer, D9's
-backward scatter and `NativeTensor` autograd, and D10's `NativeMaxPool2d`
-module) as supported, and the D11 **deterministic end-to-end native CNN
-training + checkpoint-resume proof** as demonstrated
-(`examples/native_cnn_training.py`), while the remaining work — the
-Phase-D cross-cutting guardrails, benchmarks, ASan/UBSan validation, and
-the completion declaration (**D12**) — is **not implemented** and is
-presented as such. **Phase D is not complete until D12 lands**, and no
-document may say otherwise before then.
+**Phase D is therefore complete.** The backend registry, support matrix,
+roadmap, and README all present the same shipped surface: `NativeFlatten`,
+the full Conv2d line, the full MaxPool2d line, and the deterministic
+training + exact checkpoint-resume proof, with the phase's deliberate
+exclusions still marked unsupported. The next native phase (**Phase E**)
+has not started; nothing in this document should be read as a claim about
+it.

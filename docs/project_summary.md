@@ -63,8 +63,10 @@ ctypes-loaded C++ kernels. **Phase B (native autograd) is complete** —
 a Python-managed reverse-mode graph over autograd-unaware kernels,
 with fourteen differentiable operations (the v3.11 optimizer math
 primitives sqrt and reciprocal included), view/broadcast gradients, and a
-defined graph lifetime. **Phase C (the native training stack) is
-complete** and trains end to end: `NativeParameter` (value
+defined graph lifetime. **Phase C (the native training stack) and
+Phase D (the native CNN stack) are both complete** — the native line
+trains a convolutional model end to end and resumes it exactly from a
+checkpoint. Phase C provides: `NativeParameter` (value
 versioning, stale-graph safety), `NativeModule` with atomic state
 dictionaries, `NativeLinear`/`NativeReLU`/`NativeSequential`,
 `NativeMSELoss`, `NativeSGD`, `NativeAdam` (persistent native moment
@@ -74,21 +76,31 @@ checkpoint files with deterministic bit-identical file resume
 (`save_native_checkpoint`/`load_native_checkpoint`), and a
 deterministic MLP training proof
 (`examples/native_mlp_training.py` — 25 native SGD steps, monotonic
-99.5% loss reduction). The two engines never mix: explicit entry via
+99.5% loss reduction). Phase D adds the CNN layers on top:
+`NativeFlatten`, the differentiable `conv2d` operation with its
+trainable `NativeConv2d` module, and the `maxpool2d` operation (private
+saved winners, scatter backward, no version snapshot) with its
+parameter-free `NativeMaxPool2d` module — proven by
+`examples/native_cnn_training.py` (40 deterministic NativeAdam steps,
+98.6% loss reduction, and a checkpoint-interrupted run that reproduces
+the uninterrupted one exactly) and validated under ASan/UBSan. The two
+engines never mix: explicit entry via
 `NativeTensor.from_array`, explicit exit via `to_numpy()`, no implicit
 dispatch. The exact per-operation status lives in the
 [native support matrix](native_support_matrix.md).
 
 ## Testing and reliability (both lines)
 
-1365 pytest tests cover every feature of both lines: known-value
+Over 2000 pytest tests cover every feature of both lines: known-value
 checks against hand-computed math, finite-difference gradient
 verification (stable and native), exact resume-equivalence tests for
 checkpointing, NumPy-tripwire tests proving the native paths never
-fall back, cross-cutting Phase C integration guardrails (shared/frozen/
-late-active parameters, failure recovery at every boundary, graph-
-version interactions, and lifetime discipline), and guardrail tests
-keeping docs, examples, and the public API from drifting. Native tests
+fall back, cross-cutting Phase C **and Phase D** integration guardrails
+(shared/frozen/late-active parameters, failure recovery at every
+boundary, graph-version interactions, saved-winner lifetime, and
+lifetime discipline), and guardrail tests keeping docs, examples, and
+the public API from drifting. The native C++ kernels additionally have
+dependency-free CTest binaries, validated under ASan/UBSan. Native tests
 skip cleanly when the backend is not built; CI builds it from source
 and runs everything.
 
@@ -96,8 +108,10 @@ and runs everything.
 
 Not production-ready and not a PyTorch replacement. The stable
 framework is NumPy on CPU; `Conv2d` and `MaxPool2d` use deliberately
-naive loops. The native line is float64/cpu only — no CUDA backend,
-no dtype promotion or casting, no native CNN stack, no scheduler or
+naive loops, and so do their native counterparts (direct nested loops —
+no im2col, BLAS, threading, or SIMD). The native line is float64/cpu
+only — no CUDA backend, no dtype promotion or casting, no native
+classification stack, normalization, dropout, or RNG, no scheduler or
 random-state capture in native checkpoints, and
 no dispatch into `tensorforge.Tensor`. Benchmarks are hardware-specific
 characterizations, never universal speed claims. No real datasets, no
@@ -112,7 +126,15 @@ the optimizer math primitives (v3.11), the adaptive NativeAdam
 optimizer (v3.12), the in-memory optimizer state contract (v3.13),
 native checkpoint files with deterministic file resume (v3.14), and
 the Phase C guardrails-and-completion milestone (v3.15) — which
-**closes Phase C**. Next on the native line: the native CNN stack,
-then the CUDA runtime, dtype/AMP work, and Transformer/text and
-distributed experiments. See [roadmap.md](roadmap.md) and
+**closes Phase C** — and then **Phase D, the native CNN stack
+(v3.16), which is complete**: `NativeFlatten`, the differentiable
+`conv2d` operation and `NativeConv2d`, the `maxpool2d` operation
+(private saved winners, scatter backward) and `NativeMaxPool2d`, a
+deterministic end-to-end CNN training run whose checkpoint-interrupted
+resume matches it exactly, cross-cutting integration tests, honest CNN
+benchmarks, and ASan/UBSan validation. Next on the native line
+(**not started**): a native classification stack, more activations/math,
+normalization, RNG/dropout, a CPU optimization phase, then the CUDA
+runtime, dtype/AMP work, and Transformer/text and distributed
+experiments. See [roadmap.md](roadmap.md) and
 [release_history.md](release_history.md) for the full arc.

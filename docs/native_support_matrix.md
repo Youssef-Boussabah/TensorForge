@@ -1,10 +1,11 @@
 # Native support matrix
 
 The canonical, authoritative statement of what the **experimental
-native C++ CPU line** supports today, as of Advanced C++ v3.15 —
-**Phase C (the native training stack) is complete**, closing the
+native C++ CPU line** supports today, as of Advanced C++ v3.16 —
+**Phase D (the native CNN stack) is complete**, closing the
 Phase A (native CPU runtime) → Phase B (native autograd) → Phase C
-arc in code. The stable Python framework's features (see
+(native training stack) → Phase D arc in code. The stable Python
+framework's features (see
 [architecture.md](architecture.md)) are **not** listed here — a feature
 appears as supported only if the native stack itself provides it.
 Everything below is float64/cpu only, explicit, and experimental; see
@@ -20,21 +21,21 @@ stale-graph safety). Phase C — **complete** (parameters, modules,
 Linear/ReLU/Sequential, MSE loss, `sqrt`/`reciprocal` optimizer
 primitives, SGD, Adam, optimizer state snapshots, checkpoint files,
 deterministic training and in-memory/file resume, and the failure/
-lifetime/ownership guardrails). The current native phase is the
-**native CNN stack** (Phase D), whose **architecture contract is locked**
-([native_cnn_design.md](native_cnn_design.md), milestone D0) and which is
-**partly shipped**: every native CNN **layer** now exists —
-`NativeFlatten` (D1), the full differentiable convolution line (the native
-`conv2d` forward/backward operation and its trainable module, D2–D7), and
-the full native **max-pooling** line (D8's forward plus private
-saved-winner buffer, D9's backward scatter and `NativeTensor` autograd,
-and D10's parameter-free pooling module), and **D11 has proven the whole
-stack trains end to end**: `examples/native_cnn_training.py` learns a
-spatial regression target with `NativeAdam`, and a checkpoint-interrupted
-run reproduces the uninterrupted one exactly. The Phase-D cross-cutting
-guardrails, benchmarks, and ASan/UBSan validation (D12) **remain
-unimplemented**, so Phase D is **not** complete; see the Phase-D section
-below for per-milestone status.
+lifetime/ownership guardrails). Phase D — **complete** (the native CNN
+stack, milestones D0–D12: the locked architecture contract
+([native_cnn_design.md](native_cnn_design.md)); `NativeFlatten`; the
+differentiable `conv2d` operation with input/weight/bias gradients and the
+trainable `NativeConv2d` module; the `maxpool2d` operation with its private
+saved winners, backward scatter, and the `NativeMaxPool2d` module; the
+deterministic end-to-end CNN training + exact checkpoint-resume proof
+(`examples/native_cnn_training.py`); cross-cutting Phase-D integration
+tests; honest CNN benchmarks (`benchmarks/benchmark_native_cnn.py`); and
+ASan/UBSan validation of the whole stack). The next native phase is
+**Phase E**, which has **not started** — see
+[roadmap.md](roadmap.md). Everything Phase D deliberately excluded
+remains unsupported and is named in the "Unsupported or future" section
+below, which stays the single place this document lists capabilities the
+native line does not have.
 
 ## Runtime and metadata
 
@@ -118,24 +119,21 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- the Phase-D completion pass (D12): cross-cutting guardrails, CNN
-  benchmarks, and the ASan/UBSan validation checkpoint — everything it
-  will certify **is** implemented and proven: batch-preserving
-  `NativeFlatten` (D1), the differentiable **`NativeTensor.conv2d`
-  operation** (D6) with its trainable **`NativeConv2d` module** (D7), the
-  differentiable **`NativeTensor.maxpool2d` operation** (D8–D9) with its
-  **`NativeMaxPool2d` module** (D10), and the deterministic end-to-end
-  **native CNN training + checkpoint-resume proof** (D11); only that
-  completion pass remains future work
+- native classification: `softmax`, cross-entropy, or any classification
+  loss/metric (the native line trains regression through `NativeMSELoss`)
+- native normalization (BatchNorm/LayerNorm), dropout, or a native RNG
+- additional native activations/math beyond `relu`/`sqrt`/`reciprocal`
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP
 - Transformers / text models
 - distributed training
 - integration or implicit dispatch into the stable `tensorforge.Tensor`
 
-## Upcoming — Phase D (native CNN stack), in progress
+## Phase D — the native CNN stack, **complete**
 
-The native CNN stack's **architecture contract is locked** in
+Every milestone below has shipped and is validated; this section is the
+per-milestone record, not a plan. The native CNN stack's **architecture
+contract is locked** in
 [native_cnn_design.md](native_cnn_design.md) (milestone **D0**). **D1
 (`NativeFlatten`) has shipped**, **D2 shipped the internal convolution
 forward compute kernel** (`tf::conv2d_forward_contiguous`, a hidden C++
@@ -193,9 +191,18 @@ bright-to-dark vertical edge of eight fixed 6×6 images) with
 model/optimizer pair reproduces the uninterrupted run **exactly**: loss
 history, final predictions, every parameter value, and every optimizer
 state entry. It adds no kernel, ABI symbol, operation, loss, optimizer, or
-checkpoint schema. The Phase-D completion pass (D12 — cross-cutting
-guardrails, benchmarks, ASan/UBSan validation) remains **planned, not
-supported**, and stays in this section until it lands.
+checkpoint schema. **D12 closed the phase**: cross-cutting Phase-D
+integration tests (`tests/test_native_phase_d.py` — the full module stack,
+end-to-end autograd, shared graphs, the two versioning contracts meeting in
+one backward, state/checkpoint integration, cross-layer failure atomicity,
+resource lifetime, and the capability boundary), honest CNN benchmarks
+(`benchmarks/benchmark_native_cnn.py` — conv/pool forward, forward+backward,
+end-to-end training step, and a stable-framework reference, with no speed
+claims), **ASan/UBSan validation** of the whole native CNN stack under
+Clang on Linux, a LeakSanitizer pass over the native CTests, documentation
+reconciliation, and the replacement of the milestone-era documentation
+guardrails with durable semantic ones. D12 added no kernel, C ABI symbol,
+ctypes declaration, operation, module, or schema.
 
 | Capability | Milestone | Status |
 |---|---|---|
@@ -218,7 +225,7 @@ supported**, and stays in this section until it lands.
 | Pooling `NativeTensor` autograd op — differentiable `NativeTensor.maxpool2d(*, kernel_size, stride, padding)`; single `(input,)` parent, graph-owned saved winners, no version snapshot | D9 | **Implemented** |
 | `NativeMaxPool2d` module — parameter-free, buffer-free layer over the D8/D9 pooling operation (normalized `(h, w)` `kernel_size`/`stride`/`padding`, `stride=None` ⇒ non-overlapping); no new kernel/ABI/backward, no parameters, buffers, winner state, or state-dict keys | D10 | **Implemented** |
 | Deterministic native CNN training + checkpoint-resume proof (`examples/native_cnn_training.py`: Conv→ReLU→Pool→Flatten→Linear + `NativeMSELoss` + `NativeAdam`, 40 steps, loss 0.771306 → 0.011085; interrupted-and-resumed training matches the uninterrupted run exactly — losses, predictions, parameters, and optimizer state) | D11 | **Implemented (proven)** |
-| Phase-D cross-cutting tests, benchmarks, docs, ASan/UBSan checkpoint | D12 | Planned |
+| Phase-D cross-cutting integration tests (`tests/test_native_phase_d.py`), CNN benchmarks (`benchmarks/benchmark_native_cnn.py`), ASan/UBSan validation, LeakSanitizer pass over the native CTests, documentation reconciliation, and durable capability guardrails | D12 | **Implemented (phase closed)** |
 
 Locked design decisions (see the design doc for the full contract):
 **NCHW** activations, **OIHW** convolution weights, **cross-correlation**
@@ -256,5 +263,17 @@ uv run python examples/native_mlp_training.py          # end-to-end training pro
 uv run python examples/native_checkpoint_resume.py     # save, restore, resume bit-for-bit
 uv run python examples/native_cnn_training.py          # end-to-end CNN training + resume proof
 uv run python benchmarks/benchmark_native_autograd.py --smoke
+uv run python benchmarks/benchmark_native_cnn.py --smoke   # CNN characterization
 uv run pytest                                          # full suite (native tests skip if unbuilt)
+```
+
+Sanitizer validation (Linux/WSL with Clang; MSVC supports neither
+`-fsanitize=undefined` nor this option form):
+
+```
+cmake -S cpp -B build/phase-d-sanitizers -DCMAKE_BUILD_TYPE=Debug \
+      -DCMAKE_CXX_COMPILER=clang++ -DTF_SANITIZE=address,undefined \
+      -DTF_BUILD_TESTS=ON
+cmake --build build/phase-d-sanitizers
+ctest --test-dir build/phase-d-sanitizers --output-on-failure
 ```

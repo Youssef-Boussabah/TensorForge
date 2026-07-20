@@ -576,11 +576,12 @@ The Python line is done; what remains is expansion on its own terms:
     stale-graph distinction; documentation completion and support-
     matrix finalization; and build/CI/hygiene verification — no new
     numerical behavior.
-  - **Phase D — native CNN stack (design contract complete; every CNN
-    layer — flatten, convolution, and max-pooling, operations and modules
-    alike — has shipped, and the deterministic native CNN training +
-    checkpoint-resume proof now runs end to end, with only the phase
-    completion pass upcoming).** The **D0 architecture contract is written** —
+  - **Phase D — native CNN stack — COMPLETE (milestones D0–D12).** Every
+    CNN layer — flatten, convolution, and max-pooling, operations and
+    modules alike — has shipped; the deterministic native CNN training +
+    checkpoint-resume proof runs end to end; and the phase closed with
+    cross-cutting integration tests, honest CNN benchmarks, and ASan/UBSan
+    validation. The **D0 architecture contract is written** —
     [native_cnn_design.md](native_cnn_design.md) locks the layouts
     (NCHW activations, OIHW convolution weights, cross-correlation), the
     argument and output-shape contracts, the non-contiguous-input policy
@@ -691,11 +692,22 @@ The Python line is done; what remains is expansion on its own terms:
     model/optimizer pair, reproduces the uninterrupted run **exactly**
     (loss history, final predictions, every parameter value, and every
     optimizer state entry), adding no kernel, operation, loss, optimizer,
-    or checkpoint schema. The Phase-D completion pass (D12 — cross-cutting
-    guardrails, benchmarks, and the ASan/UBSan validation checkpoint)
-    remains **unimplemented**, so Phase D is not yet complete; see the
-    [support matrix](native_support_matrix.md). This design guides the
-    remaining Phase-D milestone.
+    or checkpoint schema. **D12 closed the phase**: cross-cutting
+    integration tests spanning several CNN components at once
+    (`tests/test_native_phase_d.py`), honest CNN characterization
+    benchmarks (`benchmarks/benchmark_native_cnn.py` — measurement only,
+    no speed claims), **ASan/UBSan validation** of the whole native CNN
+    stack under Clang on Linux with no TensorForge diagnostic, a
+    LeakSanitizer pass over the instrumented native CTests, documentation
+    reconciliation across every status surface, and the replacement of the
+    milestone-era doc guardrails with durable semantic checks. See the
+    [support matrix](native_support_matrix.md) for the finalized status.
+  - **Phase E — the next native phase (not started).** The natural
+    continuations, in no committed order: a native classification stack
+    (softmax/cross-entropy and its metrics), more native activations and
+    math, native normalization, a native RNG and dropout, a CPU
+    optimization phase for the deliberately naive kernels, and
+    build/packaging evolution. None of it exists today.
   - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

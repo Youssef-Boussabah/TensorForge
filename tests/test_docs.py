@@ -70,15 +70,24 @@ def test_all_example_files_are_documented():
         assert path.name in text, f"examples/{path.name} is not documented"
 
 
-def test_roadmap_does_not_list_shipped_features_as_future():
+def test_roadmap_does_not_list_shipped_stable_features_as_future():
+    """A feature the **stable** framework already ships must never appear
+    in the roadmap's future-work section.
+
+    A *native* counterpart of a shipped stable feature is a different
+    thing and legitimately can be future work — the native line has its
+    own phase sequence — so explicitly native phrasings are stripped
+    before the scan. (This generalizes the long-standing "NativeAdam"
+    exemption instead of banning honest native-line statements.)"""
+    import re
+
     text = (REPO_ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
-    # Split at the future-work heading; shipped features must not appear
-    # in the future section. "NativeAdam" is exempted by name: the
-    # *native* adaptive optimizer genuinely is future work (v3.12),
-    # while the stable framework's Adam stays banned as future work.
     future = text.split("## Practical next steps", 1)[1]
     future = future.split("## What this project is not", 1)[0]
-    future = future.replace("NativeAdam", "")
+    # Strip "Native<Thing>" identifiers and "native <thing>" prose: both
+    # name the native counterpart, never the shipped stable feature.
+    future = re.sub(r"Native[A-Z]\w*", "", future)
+    future = re.sub(r"native [a-zA-Z/]+(\s+[a-z/]+){0,2}", "", future)
     shipped_features = (
         "Dropout",
         "BatchNorm",
@@ -91,7 +100,8 @@ def test_roadmap_does_not_list_shipped_features_as_future():
     )
     for shipped in shipped_features:
         assert shipped not in future, (
-            f"docs/roadmap.md lists already-shipped {shipped!r} as future work"
+            f"docs/roadmap.md lists already-shipped stable {shipped!r} as "
+            f"future work"
         )
 
 
@@ -143,13 +153,16 @@ def test_native_support_matrix_is_canonical_and_honest():
     )
     for term in shipped:
         assert term in text, f"support matrix does not cover {term!r}"
-    # Unshipped native work must appear only after the unsupported
-    # heading — never marked supported above it.
+    # Phase D shipped Conv2d/MaxPool2d, so the matrix must now *present*
+    # them (D12); what still has to stay in the unsupported section is the
+    # work that genuinely does not exist.
+    for term in ("NativeConv2d", "NativeMaxPool2d", "NativeFlatten",
+                 "native_cnn_training.py"):
+        assert term in text, f"support matrix does not cover shipped {term!r}"
     assert "## Unsupported or future" in text
     supported_part = text.split("## Unsupported or future", 1)[0]
     future_part = text.split("## Unsupported or future", 1)[1]
-    for term in ("CUDA", "float32",
-                 "Conv2d", "MaxPool2d", "AMP",
+    for term in ("CUDA", "float32", "AMP",
                  "AdamW", "AMSGrad", "weight decay", "distributed"):
         assert term in future_part, (
             f"support matrix does not list {term!r} as unsupported/future"
@@ -335,48 +348,55 @@ def test_native_cnn_design_locks_conditional_versioning_and_winner_safety():
     )
 
 
-def test_native_cnn_design_is_honest_about_its_remaining_work():
-    """Phase D is not finished: the design doc must keep saying so, and the
-    backend registry must keep the shipped/unshipped boundary accurate."""
-    design = _normalized_doc("docs/native_cnn_design.md")
-    # The doc states plainly that Phase D still has unimplemented work.
-    assert "not implemented" in design.lower() or "not yet" in design.lower(), (
-        "native_cnn_design.md must state that Phase D is incomplete"
-    )
-    # D11 (the deterministic CNN training + checkpoint-resume proof) and D12
-    # are still planned, and Phase D is not marked complete.
-    assert "D11" in design and "D12" in design
-
-    # The backend capability registry keeps the boundary honest. As of D6/D7
-    # the "conv2d" operation and the NativeConv2d module are implemented; as
-    # of D8/D9/D10 the "maxpool2d" operation and the NativeMaxPool2d module
-    # are too. Operation support and module support stay distinguishable.
+def test_phase_d_status_is_consistent_across_docs_and_registry():
+    """Phase D is complete (D12). The durable guarantee is *agreement*: the
+    design doc, the support matrix, the roadmap, the public exports, and the
+    backend registry must all describe the same shipped surface, and the
+    Phase-D artifacts they reference must exist. This replaces the earlier
+    milestone-era guards that pinned transient wording or asserted a
+    not-yet-written file was absent."""
     from tensorforge.backends import cpp
-
-    assert "maxpool2d" not in cpp.UNSUPPORTED
-    assert "maxpool2d" in cpp.AUTOGRAD_OPS
-    assert "maxpool2d_forward" in cpp.TENSOR_CORE_OPS
-    assert "maxpool2d_backward" in cpp.TENSOR_CORE_OPS
-    assert "NativeMaxPool2d" not in cpp.UNSUPPORTED
-    assert "NativeMaxPool2d" in cpp.NATIVE_MODULES
-    # The module is a module only — never advertised as an op or kernel.
-    assert "NativeMaxPool2d" not in cpp.AUTOGRAD_OPS
-    assert "NativeMaxPool2d" not in cpp.TENSOR_CORE_OPS
-    assert "NativeMaxPool2d" not in cpp.RAW_KERNELS
-    assert "NativeConv2d" in cpp.NATIVE_MODULES
-    assert "NativeConv2d" not in cpp.UNSUPPORTED
-
-    # Both shipped CNN modules are exported from the experimental surface.
     import tensorforge.experimental as experimental
 
-    assert "NativeConv2d" in experimental.__all__
-    assert "NativeMaxPool2d" in experimental.__all__
-    # The D11 training/checkpoint-resume proof has shipped as a runnable
-    # example; the D12 completion pass (cross-cutting guardrails,
-    # benchmarks, sanitizer validation) has not.
+    design = _normalized_doc("docs/native_cnn_design.md")
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    roadmap = _normalized_doc("docs/roadmap.md")
+
+    # Every milestone of the ladder is recorded as complete, and nothing
+    # Phase-D is still described as planned/upcoming.
+    for i in range(13):
+        assert f"D{i}" in design, f"design is missing milestone D{i}"
+    assert "Phase D" in matrix and "complete" in matrix.lower()
+
+    # The shipped CNN surface agrees everywhere.
+    for module in ("NativeFlatten", "NativeConv2d", "NativeMaxPool2d"):
+        assert module in cpp.NATIVE_MODULES, module
+        assert module in experimental.__all__, module
+        assert module not in cpp.UNSUPPORTED, module
+        assert module in design and module in matrix, module
+        # A module is a module: never advertised as an op or a raw kernel.
+        assert module not in cpp.AUTOGRAD_OPS and module not in cpp.RAW_KERNELS
+    for op in ("conv2d", "maxpool2d"):
+        assert op in cpp.AUTOGRAD_OPS, op
+        assert op not in cpp.UNSUPPORTED, op
+    for core_op in ("conv2d_forward", "conv2d_input_backward",
+                    "conv2d_weight_backward", "maxpool2d_forward",
+                    "maxpool2d_backward"):
+        assert core_op in cpp.TENSOR_CORE_OPS, core_op
+
+    # The Phase-D artifacts the docs point at are really there.
     assert (REPO_ROOT / "examples" / "native_cnn_training.py").is_file()
-    assert not (REPO_ROOT / "tests" / "test_native_phase_d.py").exists()
-    assert not (REPO_ROOT / "benchmarks" / "benchmark_native_cnn.py").exists()
+    assert (REPO_ROOT / "benchmarks" / "benchmark_native_cnn.py").is_file()
+    assert (REPO_ROOT / "tests" / "test_native_phase_d.py").is_file()
+
+    # Later phases must not be claimed. These are genuinely absent
+    # capabilities, checked against the registry rather than against prose.
+    for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
+                   "dropout", "softmax", "cross_entropy"):
+        assert absent in cpp.UNSUPPORTED, absent
+        assert absent not in cpp.AUTOGRAD_OPS and absent not in cpp.NATIVE_MODULES
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
 
 def test_native_flatten_is_implemented_as_a_native_module():
@@ -400,18 +420,19 @@ def test_native_flatten_is_implemented_as_a_native_module():
     assert "NativeMaxPool2d" in cpp.NATIVE_MODULES
 
 
-def test_docs_do_not_reassert_stale_phase_d_status():
-    """Phase D has begun and its Flatten and Conv2d milestones (D1–D7)
-    have shipped. The project-facing docs must never regress to claiming
-    the native CNN stack is unstarted, empty of layers, or that native
-    convolution is unavailable. Phrase-level (not paragraph-verbatim) so
-    accurate rewording and honest "pooling is upcoming" wording survive."""
+def test_docs_do_not_reassert_a_stale_phase_d_status():
+    """The project-facing docs must never regress to claiming the native
+    CNN stack is unstarted, empty of layers, unavailable, or still awaiting
+    its training proof. Phrase-level (not paragraph-verbatim), so accurate
+    rewording survives."""
     docs = (
         "README.md",
         "docs/native_cnn_design.md",
         "docs/native_support_matrix.md",
         "docs/roadmap.md",
         "docs/backend_experiments.md",
+        "docs/project_summary.md",
+        "docs/architecture.md",
     )
     stale = (
         "no CNN layers",
@@ -420,6 +441,9 @@ def test_docs_do_not_reassert_stale_phase_d_status():
         "native CNN phase has not started",
         "native CNN stack has not started",
         "Native Conv2d is unavailable",
+        "native MaxPool2d and the end-to-end",
+        "CNN training + checkpoint-resume proof are still upcoming",
+        "CNN training + checkpoint-resume proof is still upcoming",
     )
     for name in docs:
         low = _normalized_doc(name).lower()
@@ -429,25 +453,21 @@ def test_docs_do_not_reassert_stale_phase_d_status():
             )
 
 
-def test_docs_present_shipped_native_cnn_layers():
-    """The shipped native CNN layers (D1 NativeFlatten, D7 NativeConv2d)
-    are positively presented in the README, roadmap, and support matrix,
-    while pooling and the CNN training proof stay marked upcoming."""
-    # README and support matrix name the trainable module directly.
+def test_docs_present_the_shipped_native_cnn_stack():
+    """Every shipped native CNN layer and the D11 proof are positively
+    presented in the README, roadmap, and support matrix."""
     for name in ("README.md", "docs/native_support_matrix.md"):
         text = _normalized_doc(name)
-        assert "NativeConv2d" in text, f"{name} no longer presents shipped NativeConv2d"
-        assert "NativeFlatten" in text, f"{name} no longer presents shipped NativeFlatten"
-    # The roadmap presents the shipped convolution line (it deliberately
-    # says "convolution", not the banned "Conv2d" token, in its forward-
-    # looking section) plus the shipped NativeFlatten module.
+        for shipped in ("NativeConv2d", "NativeFlatten", "NativeMaxPool2d",
+                        "native_cnn_training.py"):
+            assert shipped in text, f"{name} no longer presents {shipped!r}"
     roadmap = _normalized_doc("docs/roadmap.md")
     assert "NativeFlatten" in roadmap
-    assert "convolution" in roadmap.lower()
-    # Pooling and the end-to-end proof remain honestly upcoming.
+    assert "convolution" in roadmap.lower() and "pooling" in roadmap.lower()
+    # The support matrix marks Phase D complete and still names what is not.
     matrix = _normalized_doc("docs/native_support_matrix.md")
-    assert "NativeMaxPool2d" in matrix
-    assert "Planned" in matrix or "upcoming" in matrix.lower()
+    assert "Phase D" in matrix and "complete" in matrix.lower()
+    assert "## Unsupported or future" in matrix
 
 
 def test_native_cnn_design_is_linked_and_referenced():

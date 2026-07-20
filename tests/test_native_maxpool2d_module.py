@@ -886,17 +886,16 @@ def test_no_return_indices_or_public_winner_capability():
     assert "winner" not in advertised.lower()
 
 
-def test_phase_d_completion_remains_outstanding():
-    # D11 (the deterministic CNN training + checkpoint-resume proof) has
-    # since shipped as a runnable example; the D12 completion pass
-    # (cross-cutting guardrails, benchmarks, sanitizer validation) has not,
-    # so Phase D is still incomplete.
+def test_this_module_is_part_of_the_completed_phase_d_stack():
+    # D11 proved the stack trains and D12 closed the phase; this module is
+    # part of both, and the artifacts that certify it exist.
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parent.parent
     assert (repo_root / "examples" / "native_cnn_training.py").is_file()
-    assert not (repo_root / "tests" / "test_native_phase_d.py").exists()
+    assert (repo_root / "tests" / "test_native_phase_d.py").is_file()
     matrix = (repo_root / "docs" / "native_support_matrix.md").read_text(
         encoding="utf-8"
     )
+    assert "NativeMaxPool2d" in matrix
     assert "D11" in matrix and "D12" in matrix

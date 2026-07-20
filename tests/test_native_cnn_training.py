@@ -780,14 +780,14 @@ def test_d11_adds_no_capability_entries():
         assert not [n for n in inventory if "train" in n.lower()]
 
 
-def test_phase_d_completion_work_remains_outstanding():
-    # D12 (cross-cutting guardrails, benchmarks, sanitizer validation) has
-    # not shipped: no phase-completion test file or CNN benchmark exists.
+def test_phase_d_completion_artifacts_exist():
+    # D12 closed Phase D: the cross-cutting completion tests and the CNN
+    # benchmark ship alongside this proof.
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parent.parent
-    assert not (repo_root / "tests" / "test_native_phase_d.py").exists()
-    assert not (repo_root / "benchmarks" / "benchmark_native_cnn.py").exists()
+    assert (repo_root / "tests" / "test_native_phase_d.py").is_file()
+    assert (repo_root / "benchmarks" / "benchmark_native_cnn.py").is_file()
 
 
 def test_the_model_is_a_native_module_stack():

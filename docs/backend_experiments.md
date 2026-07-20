@@ -578,9 +578,19 @@ deterministic and nothing random happens between checkpoint and resume.
 The archive carries only persistent state (no pooling winners, no graph
 history, no gradients), the format version is unchanged, and the live
 native-storage count is exactly constant across repeated steps. D11 added
-no kernel, ABI symbol, operation, loss, optimizer, or schema. The Phase-D
-completion pass (D12 — cross-cutting guardrails, benchmarks, ASan/UBSan
-validation) remains unimplemented, followed by the CUDA
+no kernel, ABI symbol, operation, loss, optimizer, or schema. **D12 closed
+Phase D**: cross-cutting integration tests spanning several CNN components
+at once (`tests/test_native_phase_d.py`), honest CNN characterization
+benchmarks (`benchmarks/benchmark_native_cnn.py` — conv/pool forward,
+forward+backward, end-to-end training step, and a stable-framework
+reference, measurement only), **ASan/UBSan validation** of the whole
+native CNN stack under Clang 18 on Linux with no TensorForge diagnostic
+(and a LeakSanitizer pass over the instrumented native CTests),
+documentation reconciliation, and durable capability guardrails replacing
+the milestone-era wording pins. **Phase D is complete**; the native line's
+next phase — a classification stack, more activations/math, normalization,
+RNG/dropout, and a CPU optimization pass — has not started, followed by
+the CUDA
 runtime, dtype/AMP work, Transformer/text experiments, distributed
 training, and the final portfolio release. Still float64/cpu only, still explicit and
 experimental, and no production performance is claimed.
