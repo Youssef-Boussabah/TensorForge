@@ -87,6 +87,11 @@ reached explicitly through `tensorforge.experimental` and
   trains a 2→8→ReLU→1 MLP for 25 deterministic native SGD steps with a
   monotonic 99.5% loss reduction — model, loss, gradients, and updates
   all native.
+- **A native CNN training proof**: `examples/native_cnn_training.py`
+  trains Conv2d→ReLU→MaxPool2d→Flatten→Linear on eight fixed 6×6 images
+  for 40 deterministic native Adam steps (98.6% loss reduction), then
+  checkpoints mid-run and resumes into a fresh model/optimizer pair that
+  reproduces the uninterrupted run exactly.
 
 The exact operation-by-operation status lives in the
 [native support matrix](docs/native_support_matrix.md).
@@ -131,6 +136,7 @@ uv run python examples/native_tensor_demo.py      # the native runtime and views
 uv run python examples/native_autograd_demo.py    # native backward
 uv run python examples/native_mlp_training.py     # end-to-end native training
 uv run python examples/native_checkpoint_resume.py # save, restore, resume bit-for-bit
+uv run python examples/native_cnn_training.py     # end-to-end native CNN training + resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 ```
 
@@ -201,11 +207,14 @@ Honest expectations:
   experimental C++ **CPU** backend: float64/cpu only, no CUDA backend
   yet, no dtype promotion or casting, and no implicit dispatch into
   `tensorforge.Tensor`.
-- The native CNN stack (Phase D) is partial: the layers ship
+- The native CNN stack (Phase D) is not finished: the layers ship
   (`NativeFlatten`, the differentiable convolution layer `NativeConv2d`,
-  and the pooling layer `NativeMaxPool2d`), but the end-to-end native CNN
-  training + checkpoint-resume proof is still upcoming. Native
-  checkpoints also capture no scheduler or random state — see the
+  and the pooling layer `NativeMaxPool2d`) and the end-to-end native CNN
+  training + checkpoint-resume proof now runs
+  (`examples/native_cnn_training.py`), but the phase's final hardening
+  checkpoint — cross-cutting guardrails, benchmarks, and sanitizer
+  validation — is still outstanding. Native checkpoints also capture no
+  scheduler or random state — see the
   [native support matrix](docs/native_support_matrix.md).
 - `Conv2d` and `MaxPool2d` (stable line) use deliberately naive loops.
 - Benchmarks are hardware-specific characterizations with no universal
@@ -228,9 +237,13 @@ file resume — with cross-cutting failure, lifetime, and ownership
 guardrails. **Phase D — the native CNN stack — is now under way and
 partly shipped**: every native CNN layer is in — `NativeFlatten`, the
 differentiable convolution layer (`NativeConv2d`), and the pooling layer
-(`NativeMaxPool2d`) over the native `maxpool2d` operation — while the
-end-to-end native CNN training + checkpoint-resume proof is still
-upcoming. CUDA/GPU
+(`NativeMaxPool2d`) over the native `maxpool2d` operation — and the
+end-to-end native CNN training + checkpoint-resume proof now runs
+(`examples/native_cnn_training.py`: 40 deterministic steps, 98.6% loss
+reduction, and a checkpoint-interrupted run that reproduces the
+uninterrupted one exactly), while the phase's final hardening checkpoint
+— cross-cutting guardrails, benchmarks, and sanitizer validation — is
+still outstanding. CUDA/GPU
 experiments have not started and remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).

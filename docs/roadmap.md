@@ -578,8 +578,9 @@ The Python line is done; what remains is expansion on its own terms:
     numerical behavior.
   - **Phase D — native CNN stack (design contract complete; every CNN
     layer — flatten, convolution, and max-pooling, operations and modules
-    alike — has shipped, with the deterministic native CNN training +
-    checkpoint-resume proof and the phase completion pass upcoming).** The **D0 architecture contract is written** —
+    alike — has shipped, and the deterministic native CNN training +
+    checkpoint-resume proof now runs end to end, with only the phase
+    completion pass upcoming).** The **D0 architecture contract is written** —
     [native_cnn_design.md](native_cnn_design.md) locks the layouts
     (NCHW activations, OIHW convolution weights, cross-correlation), the
     argument and output-shape contracts, the non-contiguous-input policy
@@ -679,11 +680,22 @@ The Python line is done; what remains is expansion on its own terms:
     It exports from `tensorforge.experimental`, contributes no
     state-dictionary keys, and composes in a `NativeSequential` beside the
     convolution, activation, flatten, and linear layers, so the native
-    optimizers ignore it naturally. The deterministic
-    end-to-end native-CNN training + checkpoint-resume proof (D11) remain
-    **unimplemented** and marked unsupported in the
+    optimizers ignore it naturally. **D11 proved the whole stack trains
+    end to end**: `examples/native_cnn_training.py` learns a genuinely
+    spatial target — the strongest bright-to-dark vertical edge of eight
+    fixed 6×6 images — through convolution, activation, pooling, flatten,
+    and a linear head with the native MSE loss and the native adaptive
+    optimizer, dropping the loss from about 0.7713 to about 0.0111 in 40
+    deterministic steps; and a run interrupted at step 15, checkpointed
+    with its optimizer state and resumed into a completely fresh
+    model/optimizer pair, reproduces the uninterrupted run **exactly**
+    (loss history, final predictions, every parameter value, and every
+    optimizer state entry), adding no kernel, operation, loss, optimizer,
+    or checkpoint schema. The Phase-D completion pass (D12 — cross-cutting
+    guardrails, benchmarks, and the ASan/UBSan validation checkpoint)
+    remains **unimplemented**, so Phase D is not yet complete; see the
     [support matrix](native_support_matrix.md). This design guides the
-    remaining Phase-D milestones.
+    remaining Phase-D milestone.
   - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

@@ -28,9 +28,11 @@ lifetime/ownership guardrails). The current native phase is the
 `conv2d` forward/backward operation and its trainable module, D2–D7), and
 the full native **max-pooling** line (D8's forward plus private
 saved-winner buffer, D9's backward scatter and `NativeTensor` autograd,
-and D10's parameter-free pooling module). The deterministic end-to-end
-native CNN training + checkpoint-resume proof (D11) and the Phase-D
-cross-cutting/benchmark/sanitizer completion pass (D12) **remain
+and D10's parameter-free pooling module), and **D11 has proven the whole
+stack trains end to end**: `examples/native_cnn_training.py` learns a
+spatial regression target with `NativeAdam`, and a checkpoint-interrupted
+run reproduces the uninterrupted one exactly. The Phase-D cross-cutting
+guardrails, benchmarks, and ASan/UBSan validation (D12) **remain
 unimplemented**, so Phase D is **not** complete; see the Phase-D section
 below for per-milestone status.
 
@@ -100,6 +102,7 @@ below for per-milestone status.
 | Optimizer state (in-memory) | Supported | v3.13: one versioned schema (format 1, exact optimizer type tag), ordered positional shape/dtype/device parameter metadata — no object ids, names, values, or gradients — caller-owned independent NativeTensor m/v snapshots and per-parameter step counts (NativeAdam), exact validation with no casting or device movement, staged atomic loading that never touches parameter values, versions, gradients, or retained graphs; deterministic in-memory training continuation with the module state contract |
 | Checkpoint files / resume | Supported | v3.14: `save_native_checkpoint` / `load_native_checkpoint` — one pickle-free NPZ archive (format `"tensorforge.native_checkpoint"`, version 1) holding the model state, optionally one native optimizer's v3.13 state, and JSON-compatible metadata; UTF-8/JSON uint8 manifest, indexed float64 array entries, strict full-archive validation before any live mutation, strict optimizer presence/type matching, atomic temporary-file replacement, `allow_pickle=False` loading, deterministic bit-identical file resume (`examples/native_checkpoint_resume.py`); no scheduler or random-state capture, no `map_location` |
 | End-to-end MLP training | Proven | `examples/native_mlp_training.py`: 25 deterministic steps, monotonic 99.5% loss reduction |
+| End-to-end CNN training + checkpoint resume | Proven | D11: `examples/native_cnn_training.py` — convolution → activation → pooling → flatten → linear over eight fixed 6×6 images, learning a spatial edge-strength target with `NativeMSELoss` and `NativeAdam(lr=0.05)`; 40 deterministic steps, loss 0.771306 → 0.011085 (98.6% reduction); a run interrupted at step 15, checkpointed (model **and** optimizer state) and resumed into a fresh model/optimizer pair reproduces the uninterrupted run **exactly** — losses, predictions, parameter values, and optimizer state. Adds no kernel, operation, loss, optimizer, or checkpoint schema |
 
 ## Unsupported or future (native line)
 
@@ -115,16 +118,15 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- the deterministic end-to-end native **CNN training + checkpoint-resume
-  proof** (D11) and the Phase-D completion pass (D12) — every CNN *layer*
-  it will compose **is** implemented: batch-preserving `NativeFlatten`
-  (D1), the differentiable **`NativeTensor.conv2d` operation** (forward,
-  input/weight/bias gradients, and autograd, D6) with its trainable
-  **`NativeConv2d` module** (D7), and the differentiable
-  **`NativeTensor.maxpool2d` operation** (forward + private winners +
-  backward scatter, D8–D9) with its parameter-free
-  **`NativeMaxPool2d` module** (D10); only the proof and the completion
-  pass remain future work
+- the Phase-D completion pass (D12): cross-cutting guardrails, CNN
+  benchmarks, and the ASan/UBSan validation checkpoint — everything it
+  will certify **is** implemented and proven: batch-preserving
+  `NativeFlatten` (D1), the differentiable **`NativeTensor.conv2d`
+  operation** (D6) with its trainable **`NativeConv2d` module** (D7), the
+  differentiable **`NativeTensor.maxpool2d` operation** (D8–D9) with its
+  **`NativeMaxPool2d` module** (D10), and the deterministic end-to-end
+  **native CNN training + checkpoint-resume proof** (D11); only that
+  completion pass remains future work
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP
 - Transformers / text models
@@ -180,10 +182,20 @@ declaration, custom backward, parameter, buffer, or checkpoint schema, no
 `return_indices`, and no winner state held between calls. It registers in
 `NATIVE_MODULES`, exports from `tensorforge.experimental`, contributes no
 state-dictionary or checkpoint keys, and composes in a `NativeSequential`
-beside `NativeConv2d`/`NativeReLU`/`NativeFlatten`/`NativeLinear`. The
-deterministic end-to-end CNN training + checkpoint-resume proof (D11) and
-the Phase-D completion pass (D12) remain **planned, not supported**, and
-stay in this section until their milestones land.
+beside `NativeConv2d`/`NativeReLU`/`NativeFlatten`/`NativeLinear`. **D11
+has shipped the deterministic end-to-end proof**
+(`examples/native_cnn_training.py`): the full Conv→ReLU→Pool→Flatten→
+Linear stack learns a genuinely spatial regression target (the strongest
+bright-to-dark vertical edge of eight fixed 6×6 images) with
+`NativeMSELoss` and `NativeAdam(lr=0.05)` over 40 steps — loss
+0.771306 → 0.011085 — and a run interrupted at step 15, checkpointed
+(model **and** optimizer state) and resumed into a completely fresh
+model/optimizer pair reproduces the uninterrupted run **exactly**: loss
+history, final predictions, every parameter value, and every optimizer
+state entry. It adds no kernel, ABI symbol, operation, loss, optimizer, or
+checkpoint schema. The Phase-D completion pass (D12 — cross-cutting
+guardrails, benchmarks, ASan/UBSan validation) remains **planned, not
+supported**, and stays in this section until it lands.
 
 | Capability | Milestone | Status |
 |---|---|---|
@@ -205,7 +217,7 @@ stay in this section until their milestones land.
 | Max-pooling backward Core wrapper (`NativeTensorCore.maxpool2d_backward`) — ctypes, Policy-B copies, fresh owning grad_input, failure-atomic cleanup | D9 | **Implemented (Core)** |
 | Pooling `NativeTensor` autograd op — differentiable `NativeTensor.maxpool2d(*, kernel_size, stride, padding)`; single `(input,)` parent, graph-owned saved winners, no version snapshot | D9 | **Implemented** |
 | `NativeMaxPool2d` module — parameter-free, buffer-free layer over the D8/D9 pooling operation (normalized `(h, w)` `kernel_size`/`stride`/`padding`, `stride=None` ⇒ non-overlapping); no new kernel/ABI/backward, no parameters, buffers, winner state, or state-dict keys | D10 | **Implemented** |
-| Deterministic native CNN training + checkpoint-resume proof | D11 | Planned |
+| Deterministic native CNN training + checkpoint-resume proof (`examples/native_cnn_training.py`: Conv→ReLU→Pool→Flatten→Linear + `NativeMSELoss` + `NativeAdam`, 40 steps, loss 0.771306 → 0.011085; interrupted-and-resumed training matches the uninterrupted run exactly — losses, predictions, parameters, and optimizer state) | D11 | **Implemented (proven)** |
 | Phase-D cross-cutting tests, benchmarks, docs, ASan/UBSan checkpoint | D12 | Planned |
 
 Locked design decisions (see the design doc for the full contract):
@@ -242,6 +254,7 @@ uv run python examples/native_tensor_demo.py           # runtime and views
 uv run python examples/native_autograd_demo.py         # native backward
 uv run python examples/native_mlp_training.py          # end-to-end training proof
 uv run python examples/native_checkpoint_resume.py     # save, restore, resume bit-for-bit
+uv run python examples/native_cnn_training.py          # end-to-end CNN training + resume proof
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run pytest                                          # full suite (native tests skip if unbuilt)
 ```

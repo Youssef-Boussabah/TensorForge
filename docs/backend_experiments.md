@@ -560,9 +560,27 @@ keys, and drops into a `NativeSequential` beside
 `NativeSGD`/`NativeAdam` ignore it naturally because it owns nothing
 trainable. The native module inventory is therefore `NativeModule`,
 `NativeLinear`, `NativeReLU`, `NativeFlatten`, `NativeConv2d`,
-`NativeMaxPool2d`, and `NativeSequential`. The deterministic end-to-end
-CNN training + checkpoint-resume proof (D11) and the Phase-D completion
-pass (D12) remain unimplemented, followed by the CUDA
+`NativeMaxPool2d`, and `NativeSequential`. **D11** then proved the
+complete native CNN stack **trains end to end**:
+`examples/native_cnn_training.py` composes
+Conv2d → ReLU → MaxPool2d → Flatten → Linear over eight fixed 6×6 images
+whose target is the strongest bright-to-dark vertical edge — a genuinely
+spatial, non-linear rule the convolutional path is required for — and
+trains it with `NativeMSELoss` and `NativeAdam(lr=0.05)` for 40
+deterministic steps, dropping the loss from 0.771306 to 0.011085 (98.6%)
+with finite, nonzero gradients reaching every Conv2d and Linear parameter
+on the first backward. A run interrupted at step 15, saved to one
+pickle-free checkpoint (model **and** optimizer state) and resumed into a
+completely fresh model/optimizer pair, reproduces the uninterrupted run
+**exactly** — loss history, final predictions, every parameter value, and
+every optimizer state entry — because the CPU float64 kernels are
+deterministic and nothing random happens between checkpoint and resume.
+The archive carries only persistent state (no pooling winners, no graph
+history, no gradients), the format version is unchanged, and the live
+native-storage count is exactly constant across repeated steps. D11 added
+no kernel, ABI symbol, operation, loss, optimizer, or schema. The Phase-D
+completion pass (D12 — cross-cutting guardrails, benchmarks, ASan/UBSan
+validation) remains unimplemented, followed by the CUDA
 runtime, dtype/AMP work, Transformer/text experiments, distributed
 training, and the final portfolio release. Still float64/cpu only, still explicit and
 experimental, and no production performance is claimed.

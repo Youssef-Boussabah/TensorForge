@@ -1846,18 +1846,95 @@ registry advertises `conv2d` as unsupported while listing the Core-level
 - **Acceptance:** pooling module in a `NativeSequential`. **Done.**
   **Dependencies:** D9.
 
-### D11 — Deterministic native CNN training + checkpoint-resume proof
+### D11 — Deterministic native CNN training + checkpoint-resume proof — **implemented**
 - **Scope:** `examples/native_cnn_training.py` — a small deterministic
-  Conv→ReLU→Pool→Flatten→Linear→MSE CNN trained through the native stack;
-  checkpoint save + resume equivalence; integration tests.
-- **Files:** `examples/native_cnn_training.py`;
-  `tests/test_native_cnn_training.py`; support-matrix "proven" row.
-- **Tests:** deterministic loss trajectory; bit-identical resume; NumPy
-  tripwire over the run.
-- **Acceptance:** end-to-end native CNN training proof.
-- **Dependencies:** D1, D7, D10. **Risks:** any loss beyond MSE would
-  pull in classification scope — kept to MSE unless the approved proof
-  explicitly needs otherwise.
+  Conv→ReLU→Pool→Flatten→Linear→MSE CNN trained end to end through the
+  native stack, plus an exact uninterrupted-versus-resumed equivalence
+  proof over one existing pickle-free checkpoint, and the integration
+  tests. **No** new kernel, C ABI symbol, ctypes declaration, tensor
+  operation, loss, optimizer, dataset/dataloader abstraction, checkpoint
+  schema, or capability-inventory entry: D11 is an *integration proof*,
+  not new API surface.
+- **Excludes — deferred:** the Phase-D cross-cutting guardrails,
+  benchmarks, ASan/UBSan validation, documentation reconciliation, and the
+  Phase-D completion declaration are all **D12**.
+- **Files:** `examples/native_cnn_training.py` (new),
+  `tests/test_native_cnn_training.py` (new), plus documentation updates.
+  **No source module changed.**
+- **Canonical model.** `NativeSequential(NativeConv2d(1, 2, 2, seed=0),
+  NativeReLU(), NativeMaxPool2d(2), NativeFlatten(), NativeLinear(8, 1,
+  seed=1))` — NCHW float64/cpu throughout: `(8, 1, 6, 6)` → conv
+  `(8, 2, 5, 5)` → pool `(8, 2, 2, 2)` (the floor formula drops the odd
+  row/column) → flatten `(8, 8)` → `(8, 1)`. Trainable parameters are
+  exactly `["0.weight", "0.bias", "4.weight", "4.bias"]`; pooling, ReLU,
+  and flatten contribute none.
+- **Deterministic task.** Eight fixed 6×6 single-channel images (frozen
+  Python literals, every value a half or a quarter so they are exactly
+  representable) whose target is the strength of the strongest
+  *bright-to-dark vertical edge*: `0.25 × max over every 2×2 window of
+  (top-left + bottom-left − top-right − bottom-right)`, floored at 0. That
+  rule is precisely a 2×2 convolution, a ReLU, and a maximum over
+  positions, so it **requires the convolutional path** — the maximum is not
+  a linear function of the pixels, and the flat image (target exactly 0)
+  plus the dark-to-bright image keep it from degenerating into a pixel sum.
+  Targets are frozen literals too, re-derived in the tests from the
+  documented rule. Nothing is generated, shuffled, augmented, or loaded,
+  and no random number is drawn during training.
+- **Configuration.** `NativeAdam(lr=0.05)` — the canonical optimizer,
+  because its persistent moments and per-parameter step counts make the
+  resume proof meaningful — for `TOTAL_STEPS = 40`, split at
+  `SPLIT_STEP = 15`. `NativeSGD` gets a smaller smoke case (two valid CNN
+  steps with a decreasing loss), not a second convergence suite.
+- **Training loop.** A fresh graph per step: forward → `NativeMSELoss` →
+  record the scalar → `backward()` → `optimizer.step()` → close that
+  step's prediction/loss tensors → `optimizer.zero_grad()`. The one-shot
+  backward releases each step's graph *and* max-pooling's private winner
+  buffer, so no graph is retained, no stale graph is reused after a step,
+  parameter identities stay stable, and versions advance exactly once per
+  step.
+- **Loss-reduction proof.** Deterministic curve `0.771306 → 0.011085`
+  (98.6% reduction; non-monotonic early, as Adam overshoots). The
+  guardrails allow a final loss up to `0.10` and a final/initial ratio up
+  to `0.10` — a ~7–9× margin over the observed values — plus "predictions
+  moved at least 3× closer to the targets" and "both Conv2d and Linear
+  parameters changed". Every trainable parameter receives a finite,
+  meaningfully nonzero gradient on the **first** backward (shapes checked
+  against the parameters), and input gradients work when the input
+  requires grad.
+- **Uninterrupted vs. resumed equivalence.** Path A trains 40 steps.
+  Path B trains 15, saves model **and** optimizer state through
+  `save_native_checkpoint` (with metadata) into a temporary directory,
+  loads it into a **completely fresh** model/optimizer pair, and continues
+  to 40. The two agree **exactly** (`==`, not a tolerance — the CPU
+  float64 kernels are deterministic: fixed loop orders, no parallel
+  reduction, no fast-math, and nothing random happens between checkpoint
+  and resume): prefix losses, resumed suffix losses step-for-step, final
+  loss, final predictions, every parameter value, every optimizer state
+  entry, and the parameter ordering. The fresh model's parameter
+  identities survive the load, and the loaded optimizer references those
+  fresh parameters — it retains no object from the saved run.
+- **Checkpoint boundaries.** The archive holds **only** persistent state:
+  the four trainable parameters and the optimizer's own state. Its file
+  list and manifest contain no pooling winners, no graph history, no
+  gradients, and no transient outputs (asserted by substring scan);
+  `format` and `format_version` (1) are unchanged, loading stays
+  `allow_pickle=False` and atomic, and no CNN-specific serializer exists.
+  Loading restores graph-free leaves, so training resumes by building
+  fresh graphs.
+- **Lifetime and failure paths.** With a warm-up and `gc.collect()`, the
+  live native-storage count is **exactly constant** across repeated steps
+  (no winner-buffer or graph accumulation); a checkpoint round trip leaks
+  nothing; an injected allocation failure mid-step leaves every parameter
+  value and version untouched, leaks no winner buffer, clears the native
+  error slot, and a later step succeeds; loading into an incompatible
+  architecture is rejected without mutating it, and the original
+  checkpoint still loads afterwards.
+- **Tests:** 36 focused integration cases, including the example smoke
+  test (runs `main()`, checks it reports learning and resume equivalence,
+  writes nothing into the repository, and needs no network).
+- **Acceptance:** end-to-end native CNN training proof. **Done.**
+  **Dependencies:** D1, D7, D10. The proof stays on **MSE** — no
+  classification scope leaked in.
 
 ### D12 — Phase-D cross-cutting tests, benchmarks, docs, completion
 - **Scope:** cross-cutting guardrails (`tests/test_native_phase_d.py`),
@@ -1898,7 +1975,10 @@ backend registry, support matrix, and README present each surface at its
 actual status — shipped layers (`NativeFlatten`, the Conv2d line, and the
 complete MaxPool2d line: D8's forward and private winner buffer, D9's
 backward scatter and `NativeTensor` autograd, and D10's `NativeMaxPool2d`
-module) as supported, while the remaining work — the **deterministic
-end-to-end native CNN training + checkpoint-resume proof (D11)** and the
-Phase-D cross-cutting/benchmark/sanitizer completion pass (**D12**) — is
-**not implemented** and is presented as such.
+module) as supported, and the D11 **deterministic end-to-end native CNN
+training + checkpoint-resume proof** as demonstrated
+(`examples/native_cnn_training.py`), while the remaining work — the
+Phase-D cross-cutting guardrails, benchmarks, ASan/UBSan validation, and
+the completion declaration (**D12**) — is **not implemented** and is
+presented as such. **Phase D is not complete until D12 lands**, and no
+document may say otherwise before then.

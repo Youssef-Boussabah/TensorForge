@@ -371,8 +371,12 @@ def test_native_cnn_design_is_honest_about_its_remaining_work():
 
     assert "NativeConv2d" in experimental.__all__
     assert "NativeMaxPool2d" in experimental.__all__
-    # The D11 training/checkpoint-resume proof has not shipped.
-    assert not (REPO_ROOT / "examples" / "native_cnn_training.py").exists()
+    # The D11 training/checkpoint-resume proof has shipped as a runnable
+    # example; the D12 completion pass (cross-cutting guardrails,
+    # benchmarks, sanitizer validation) has not.
+    assert (REPO_ROOT / "examples" / "native_cnn_training.py").is_file()
+    assert not (REPO_ROOT / "tests" / "test_native_phase_d.py").exists()
+    assert not (REPO_ROOT / "benchmarks" / "benchmark_native_cnn.py").exists()
 
 
 def test_native_flatten_is_implemented_as_a_native_module():
