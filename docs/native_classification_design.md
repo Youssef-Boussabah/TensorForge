@@ -7,15 +7,24 @@ architecture, public API surface, numerical-stability strategy, ownership
 rules, C ABI shape, source organization, testing strategy, and milestone
 sequence **before any numerical classification code is written**.
 
-**E0 adds no numerical behavior.** No kernel, C ABI symbol, ctypes
+**E0 added no numerical behavior.** No kernel, C ABI symbol, ctypes
 declaration, `NativeTensorCore` method, `NativeTensor` operation, loss
-module, metric, benchmark, or example ships with this document. Every
-capability described below is *designed*, not present. The backend
-capability registry (`tensorforge.backends.cpp` — `TENSOR_CORE_OPS`,
-`AUTOGRAD_OPS`, `NATIVE_MODULES`, `NATIVE_LOSSES`, and `UNSUPPORTED`),
-mirrored in [native_support_matrix.md](native_support_matrix.md), stays
-the **single source of truth** for what is actually live at any moment.
-At E0 every Phase-E name is in `UNSUPPORTED`.
+module, metric, benchmark, or example shipped with the first version of
+this document. The backend capability registry
+(`tensorforge.backends.cpp` — `TENSOR_CORE_OPS`, `AUTOGRAD_OPS`,
+`NATIVE_MODULES`, `NATIVE_LOSSES`, and `UNSUPPORTED`), mirrored in
+[native_support_matrix.md](native_support_matrix.md), stays the
+**single source of truth** for what is actually live at any moment.
+
+**Phase-E status: in progress.** **E0 is complete** (this contract) and
+**E1 is complete** — the differentiable `NativeTensor.exp()` ships
+through the whole stack, so `"exp"` now lives in `TENSOR_CORE_OPS` and
+`AUTOGRAD_OPS` and has left `UNSUPPORTED`. **Everything else in Phase E
+(E2–E10) is still designed-only**: `log`, `softmax`, `log_softmax`,
+`cross_entropy`, `NativeCrossEntropyLoss`, and `native_accuracy` do not
+exist in code and remain in `UNSUPPORTED`. Per-milestone status is
+recorded in the ladder (§15); the completion criteria (§17) are **not**
+met, so Phase E is **not** complete.
 
 The stable Python framework (`tensorforge.Tensor.exp/log/softmax`,
 `tensorforge.nn.cross_entropy`, `tensorforge.nn.accuracy`) is the
@@ -197,6 +206,39 @@ them), so "nonempty" is inherited, not re-checked.
   backward runs, backward must fail **clearly and atomically** — the
   existing closed-tensor `RuntimeError`, raised before any gradient is
   accumulated, never a silent wrong answer.
+
+**Status (E1 — implemented as specified).** The op ships end to end:
+`op_exp` in `cpp/src/elementwise.cpp` (plain `std::exp`, reusing the
+existing `core_unary` odometer and `core_unary_contiguous` fast-path
+walkers), the guarded exports `tf_core_exp` / `tf_core_exp_contiguous`,
+their ctypes declarations and `_CHECKED_KERNELS` registration,
+`NativeTensorCore.exp()` (dispatching on contiguity through the shared
+`_unary_compute` helper), and the differentiable `NativeTensor.exp()`
+whose backward is one native multiply — `upstream * saved output` —
+recording **no** expected version. Two E1 refinements of the D0-era
+sketch, both tightening rather than changing the contract:
+
+- **The exports validate their own arguments.** `tf_core_exp` and
+  `tf_core_exp_contiguous` check handles, layout metadata, spans, and
+  overflow themselves (file-local `checked_mul`/`checked_add` helpers
+  and a min/max reachable-index bound that also covers negative strides)
+  before touching memory, rejecting a bad call with `TF_ERROR_INVALID`
+  → `ValueError` and writing nothing. The older unary exports
+  (`relu`/`sqrt`/`reciprocal`) predate this convention and were left
+  exactly as they are — E1 tightened only what it added.
+- **The saved output is the node's own core, not a separate graph
+  resource.** `exp`'s derivative *is* its forward result, which the
+  autograd node already owns, so no `graph_resources` entry is needed
+  (contrast MaxPool2d's private winner buffer, and the saved
+  probabilities cross-entropy will need in E6). Lifetime therefore
+  follows the ordinary node rules: retained under `retain_graph=True`,
+  released with the graph, and a `close()`d intermediate makes backward
+  raise before any gradient is committed.
+
+**Not covered by E1:** a closed *parent* still fails backward, because
+the parent is where the gradient is accumulated — that is the existing
+ownership contract, not a value read. The distinction is proved in
+`tests/test_native_exp.py`.
 
 ### 4.2 `NativeTensor.log()`
 
@@ -620,21 +662,24 @@ training step — against a stable-framework reference row.
 
 ## 15. Milestone ladder (E0–E10)
 
-| Milestone | Deliverable |
-|---|---|
-| E0 | Classification architecture contract and Phase-D baseline reconciliation |
-| E1 | Native exponential |
-| E2 | Native logarithm |
-| E3 | Stable differentiable softmax |
-| E4 | Stable differentiable log-softmax |
-| E5 | Fused cross-entropy forward and backward Core contract |
-| E6 | Differentiable `NativeTensor` cross-entropy |
-| E7 | `NativeCrossEntropyLoss` and reporting-only `native_accuracy` |
-| E8 | Deterministic native classification training and exact checkpoint resume |
-| E9 | Native classification benchmark characterization |
-| E10 | Phase-E integration, sanitizer validation, documentation reconciliation, and closure |
+| Milestone | Deliverable | Status |
+|---|---|---|
+| E0 | Classification architecture contract and Phase-D baseline reconciliation | **complete** |
+| E1 | Native exponential | **complete** |
+| E2 | Native logarithm | not started |
+| E3 | Stable differentiable softmax | not started |
+| E4 | Stable differentiable log-softmax | not started |
+| E5 | Fused cross-entropy forward and backward Core contract | not started |
+| E6 | Differentiable `NativeTensor` cross-entropy | not started |
+| E7 | `NativeCrossEntropyLoss` and reporting-only `native_accuracy` | not started |
+| E8 | Deterministic native classification training and exact checkpoint resume | not started |
+| E9 | Native classification benchmark characterization | not started |
+| E10 | Phase-E integration, sanitizer validation, documentation reconciliation, and closure | not started |
 
-### E0 — Classification architecture contract and Phase-D baseline reconciliation *(this document)*
+Each milestone's full contract follows; the table above is the status
+summary, and the registry remains the authority on what is live.
+
+### E0 — Classification architecture contract and Phase-D baseline reconciliation *(this document)* — **complete**
 
 - **Objective:** lock the complete Phase-E contract above, and reconcile
   the documentation and comment drift left after Phase D so the phase
@@ -660,7 +705,7 @@ training step — against a stable-framework reference row.
   ctypes declaration, Core method, tensor operation, module, metric,
   benchmark, or example.
 
-### E1 — Native exponential
+### E1 — Native exponential — **complete**
 
 - **Objective:** a differentiable `NativeTensor.exp()` through the whole
   stack.
@@ -682,6 +727,21 @@ training step — against a stable-framework reference row.
   which would wrongly demand versioning.
 - **Dependencies:** E0.
 - **Non-goals:** `log`, any probability transform, any module.
+- **Shipped (E1).** Exactly the above, plus the two refinements recorded
+  in §4.1: the exports self-validate at the trust boundary (handles,
+  layout metadata, spans, overflow, negative strides), and the saved
+  output is the autograd node's own core rather than a separate
+  `graph_resources` entry. Files touched: `cpp/src/elementwise.cpp`
+  (`op_exp`, the file-local validators, and the two guarded exports),
+  `cpp/tests/test_exp.cpp` + `cpp/CMakeLists.txt` (a new dependency-free
+  CTest driving the exported pair, including its rejection cases),
+  `src/tensorforge/backends/cpp.py` (ctypes declarations,
+  `_CHECKED_KERNELS`, `NativeTensorCore.exp`, `TENSOR_CORE_OPS`,
+  `AUTOGRAD_OPS`, `UNSUPPORTED`),
+  `src/tensorforge/experimental/native_tensor.py` (`NativeTensor.exp`),
+  and `tests/test_native_exp.py`. No new source file, no module, no
+  benchmark, no example, no schema change, and no change to any existing
+  kernel or operation.
 
 ### E2 — Native logarithm
 

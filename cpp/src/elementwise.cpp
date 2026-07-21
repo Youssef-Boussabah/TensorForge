@@ -1,7 +1,8 @@
 // Elementwise kernels: the unary and binary walkers over native tensor
 // cores (odometer + contiguous fast paths), ReLU and its backward, the
-// v3.11 optimizer-math primitives (sqrt / reciprocal), and the legacy
-// raw-buffer elementwise kernels the v0.x benchmarks still call.
+// v3.11 optimizer-math primitives (sqrt / reciprocal), the Phase-E
+// exponential (milestone E1), and the legacy raw-buffer elementwise
+// kernels the v0.x benchmarks still call.
 //
 // The walkers read strided views directly from Storage and write into
 // fresh contiguous output, so contiguous and non-contiguous inputs
@@ -37,6 +38,13 @@ double op_relu_backward(double x, double u) { return x > 0.0 ? u : 0.0; }
 typedef double (*UnaryOp)(double);
 double op_sqrt(double x) { return std::sqrt(x); }
 double op_reciprocal(double x) { return 1.0 / x; }
+// Phase E, milestone E1. Plain std::exp: no clamping, no inserted bound,
+// no fast approximation. IEEE float64 semantics: exp(0) == 1, a large
+// positive argument overflows to +inf, a large negative one underflows
+// toward +0, +inf maps to +inf, -inf maps to +0, and NaN propagates —
+// the same values NumPy's float64 exp produces (NumPy additionally warns
+// on overflow; this kernel does not).
+double op_exp(double x) { return std::exp(x); }
 
 // Walk one strided source with the standard odometer and write row-major
 // contiguous output.
@@ -137,6 +145,144 @@ void core_binary_contiguous(
     }
 }
 
+// -- trust-boundary validation for the guarded unary exports ----------------
+//
+// Added with the Phase-E exponential (E1) and used by its two exports. The
+// older unary exports (relu/sqrt/reciprocal) predate the self-validating
+// convention the Phase-C/D exports established and are deliberately left
+// exactly as they are — E1 tightens only what it adds
+// (docs/native_classification_design.md §9.3: "raw ABI validation is
+// self-contained", because these symbols are reachable by any ctypes
+// caller, not only by the Python wrapper that already validates).
+//
+// Each helper returns nullptr when the call is safe, otherwise a static
+// message (no allocation, so validation itself can never fail). Every
+// product and sum is overflow-checked, so a bogus dimension cannot wrap
+// int64 into a small span that would pass a naive bounds test.
+
+// Checked int64 multiply/add for non-negative operands. File-local, like
+// the equivalents in conv2d.cpp and pooling.cpp (each compute unit keeps
+// its own rather than growing a premature shared surface).
+bool checked_mul(int64_t a, int64_t b, int64_t& out) {
+    if (a == 0 || b == 0) {
+        out = 0;
+        return true;
+    }
+    if (a > INT64_MAX / b) {
+        return false;
+    }
+    out = a * b;
+    return true;
+}
+
+bool checked_add(int64_t a, int64_t b, int64_t& out) {
+    if (a > INT64_MAX - b) {
+        return false;
+    }
+    out = a + b;
+    return true;
+}
+
+// The destination is always freshly allocated row-major contiguous
+// storage of exactly ``numel`` elements starting at index 0.
+const char* check_destination(void* dst_handle, int64_t numel) {
+    if (as_storage(dst_handle)->size < numel) {
+        return "unary kernel: output storage smaller than the element count";
+    }
+    return nullptr;
+}
+
+// A strided source view: validate the layout metadata, then prove that
+// every element the odometer will touch lies inside the source storage.
+// Strides may in principle be negative, so both the lowest and the
+// highest reachable index are bounded (rather than assuming the walk only
+// moves forward from ``offset``).
+const char* unary_strided_error(
+    const void* src_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim
+) {
+    if (src_handle == nullptr || dst_handle == nullptr) {
+        return "unary kernel: null storage handle";
+    }
+    if (ndim < 0) {
+        return "unary kernel: negative ndim";
+    }
+    if (ndim > 0 && (shape == nullptr || strides == nullptr)) {
+        return "unary kernel: null shape or stride array";
+    }
+    if (offset < 0) {
+        return "unary kernel: negative offset";
+    }
+    const int64_t src_size = as_storage(src_handle)->size;
+    // Scalars (ndim == 0) read exactly one element, at ``offset``.
+    if (ndim == 0) {
+        if (offset >= src_size) {
+            return "unary kernel: offset outside the input storage";
+        }
+        return check_destination(dst_handle, 1);
+    }
+    int64_t numel = 1;
+    // Total travel away from ``offset``, split by direction: axis d moves
+    // the read position by strides[d] * k for k in [0, shape[d] - 1].
+    int64_t forward_travel = 0;
+    int64_t backward_travel = 0;
+    for (int64_t d = 0; d < ndim; ++d) {
+        if (shape[d] < 1) {
+            return "unary kernel: non-positive dimension";
+        }
+        if (!checked_mul(numel, shape[d], numel)) {
+            return "unary kernel: element count overflows int64";
+        }
+        const int64_t stride = strides[d];
+        if (stride == INT64_MIN) {
+            // Negating INT64_MIN is undefined behavior, so reject it
+            // before taking the magnitude below.
+            return "unary kernel: stride arithmetic overflows int64";
+        }
+        int64_t magnitude;
+        if (!checked_mul(stride < 0 ? -stride : stride, shape[d] - 1,
+                         magnitude)) {
+            return "unary kernel: stride arithmetic overflows int64";
+        }
+        const bool ok = stride < 0
+            ? checked_add(backward_travel, magnitude, backward_travel)
+            : checked_add(forward_travel, magnitude, forward_travel);
+        if (!ok) {
+            return "unary kernel: stride arithmetic overflows int64";
+        }
+    }
+    int64_t highest;  // offset + forward_travel, the last index touched
+    if (!checked_add(offset, forward_travel, highest)) {
+        return "unary kernel: stride arithmetic overflows int64";
+    }
+    // lowest = offset - backward_travel; both are non-negative, so the
+    // subtraction cannot overflow.
+    if (backward_travel > offset || highest >= src_size) {
+        return "unary kernel: input span exceeds its storage";
+    }
+    return check_destination(dst_handle, numel);
+}
+
+// The contiguous fast path takes ``numel`` and an ``offset`` instead of
+// layout arrays: the source run is [offset, offset + numel).
+const char* unary_contiguous_error(
+    const void* src_handle, void* dst_handle, int64_t numel, int64_t offset
+) {
+    if (src_handle == nullptr || dst_handle == nullptr) {
+        return "unary kernel: null storage handle";
+    }
+    if (numel < 0 || offset < 0) {
+        return "unary kernel: negative element count or offset";
+    }
+    int64_t end;
+    if (!checked_add(offset, numel, end) ||
+        end > as_storage(src_handle)->size) {
+        return "unary kernel: input span exceeds its storage";
+    }
+    return check_destination(dst_handle, numel);
+}
+
 }  // namespace
 
 // -- ReLU over tensor cores --------------------------------------------------
@@ -194,6 +340,45 @@ TF_EXPORT void tf_core_reciprocal_contiguous(
 ) {
     TF_GUARD_BEGIN
     core_unary_contiguous(src, dst, numel, offset, op_reciprocal);
+    TF_GUARD_END_VOID()
+}
+
+// -- Phase E: the exponential (milestone E1) --------------------------------
+//
+// Same two-path shape as every other unary core op — a generic odometer
+// export for strided views and a flat contiguous export — so
+// NativeTensorCore.exp() dispatches exactly like relu/sqrt/reciprocal and
+// both paths produce bit-for-bit identical values.
+//
+// Unlike those older exports these two **validate their own arguments**
+// before touching memory (see the helpers above). Validation runs inside
+// the guard, so a rejected call records TF_ERROR_INVALID in the
+// thread-local slot, writes nothing, allocates nothing, leaves every
+// caller-owned object untouched, and surfaces in Python as ValueError.
+
+TF_EXPORT void tf_core_exp(
+    const void* src, void* dst,
+    const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    if (const char* err =
+            unary_strided_error(src, dst, shape, strides, offset, ndim)) {
+        tf::set_error(TF_ERROR_INVALID, err);
+        return;
+    }
+    core_unary(src, dst, shape, strides, offset, ndim, op_exp);
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_exp_contiguous(
+    const void* src, void* dst, int64_t numel, int64_t offset
+) {
+    TF_GUARD_BEGIN
+    if (const char* err = unary_contiguous_error(src, dst, numel, offset)) {
+        tf::set_error(TF_ERROR_INVALID, err);
+        return;
+    }
+    core_unary_contiguous(src, dst, numel, offset, op_exp);
     TF_GUARD_END_VOID()
 }
 

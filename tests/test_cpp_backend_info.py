@@ -142,6 +142,35 @@ def test_advertised_autograd_ops_exist():
         assert hasattr(NativeTensor, op), op
 
 
+def test_phase_e_boundary_is_reported_honestly():
+    """Milestone E1 shipped the exponential and nothing else of Phase E.
+    The registries must show exactly that: exp implemented at the Core
+    and autograd layers, every later Phase-E capability still
+    unsupported, and no capability advertised in the wrong inventory."""
+    info = cpp.backend_info()
+    assert "exp" in info["tensor_core_ops"]
+    assert "exp" in info["autograd_ops"]
+    assert "exp" not in info["unsupported"]
+    # exp is an operation, not a module, a loss, or a raw-buffer kernel.
+    assert "exp" not in info["native_modules"]
+    assert "exp" not in info["native_losses"]
+    assert "exp" not in info["raw_kernels"]
+    # E2-E7 are still genuinely absent from every implemented inventory.
+    for absent in ("log", "softmax", "log_softmax", "cross_entropy",
+                   "NativeCrossEntropyLoss", "native_accuracy"):
+        assert absent in info["unsupported"], absent
+        assert absent not in info["tensor_core_ops"], absent
+        assert absent not in info["autograd_ops"], absent
+        assert absent not in info["native_modules"], absent
+        assert absent not in info["native_losses"], absent
+    # No metrics inventory exists yet — E7 introduces it.
+    assert "native_metrics" not in info and not hasattr(cpp, "NATIVE_METRICS")
+    # The line is still float64/cpu only and still separate from stable.
+    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_devices"] == ("cpu",)
+    assert info["stable_framework_integration"] is False
+
+
 @needs_native
 def test_advertised_raw_kernels_are_callable_functions():
     for name in cpp.RAW_KERNELS:

@@ -475,6 +475,40 @@ class NativeTensor:
         result = self._from_op(out_core, (self,), _backward, "reciprocal")
         return result
 
+    def exp(self):
+        """Elementwise e**x, computed natively over this tensor's layout
+        (Phase E, milestone E1 — the first stable-math primitive of the
+        classification stack). Returns a new owning NativeTensor; the
+        original stays open. IEEE float64 semantics: ``exp(0) == 1``,
+        large positive arguments overflow to ``+inf``, large negative
+        ones underflow toward ``+0``, ``-inf`` gives ``+0``, and NaN
+        propagates — no clamping, no inserted bound.
+
+        Differentiable: d(exp(x))/dx = exp(x), so the backward is simply
+        ``upstream * saved forward output``. It reads the **saved
+        output**, never the parent's current value, so the graph records
+        no expected parameter version (v3.7): mutating a direct parameter
+        input after forward leaves this edge valid, and the gradient
+        stays correct for the forward that was recorded. A closed saved
+        output makes backward raise deterministically, before any
+        gradient is committed."""
+        core = self._require_open()
+        out_core = core.exp()
+        if not self._requires_grad:
+            return self._from_core(out_core)
+
+        def _backward(upstream):
+            # The derivative *is* the forward result, so no local
+            # derivative has to be rebuilt: one native multiply of the
+            # upstream by the saved output produces fresh owning storage.
+            contribution = upstream._require_open().multiply(
+                result._require_open()
+            )
+            self._accumulate_grad(NativeTensor._from_core(contribution))
+
+        result = self._from_op(out_core, (self,), _backward, "exp")
+        return result
+
     def add(self, other):
         """self + other elementwise, natively. Identical shapes or
         NumPy-style broadcasting. Returns a new owning NativeTensor.

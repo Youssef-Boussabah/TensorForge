@@ -76,6 +76,10 @@ TENSOR_CORE_KERNELS = ("relu", "add", "subtract", "multiply", "matmul")
 # non-frozen inventory backend_info() reports as "tensor_core_ops".
 TENSOR_CORE_OPS = (
     "relu", "sqrt", "reciprocal",
+    # Phase E stable math (E1): the exponential, a unary Core op with the
+    # same odometer/contiguous pair as relu/sqrt/reciprocal. Its guarded
+    # exports additionally self-validate at the ABI boundary.
+    "exp",
     "add", "subtract", "multiply", "matmul",
     "sum", "mean",
     "reshape", "transpose", "T", "narrow", "contiguous_copy",
@@ -108,7 +112,9 @@ TENSOR_CORE_OPS = (
 # (D9), whose backward scatters through the winner buffer its own forward
 # saved. These are the operations; the modules built on them (NativeConv2d,
 # D7; NativeMaxPool2d, D10 — both implemented) are separate entries in
-# NATIVE_MODULES.
+# NATIVE_MODULES. Phase E adds "exp" (E1), whose backward multiplies the
+# upstream by the **saved forward output** — so, like sqrt/reciprocal, it
+# records no expected parameter version.
 AUTOGRAD_OPS = (
     "add", "subtract", "multiply", "relu",
     "sum", "mean", "matmul",
@@ -116,6 +122,7 @@ AUTOGRAD_OPS = (
     "sqrt", "reciprocal",
     "conv2d",
     "maxpool2d",
+    "exp",
 )
 
 # The native training stack composed on the autograd layer (Phase C) and
@@ -164,10 +171,12 @@ STATE_SUPPORT = (
 # has no entry in any inventory.
 # The classification names below are the Phase-E surface contracted in
 # docs/native_classification_design.md (milestone E0). A locked contract is
-# not an implementation: none of them exists in code, so all of them stay
-# here until the milestone that implements each one removes it.
+# not an implementation: each stays here until the milestone that
+# implements it removes it. Milestone E1 implemented the exponential, so
+# "exp" left this tuple for TENSOR_CORE_OPS and AUTOGRAD_OPS; the rest of
+# Phase E (E2-E7) is still genuinely absent.
 UNSUPPORTED = (
-    "exp", "log", "softmax", "log_softmax", "cross_entropy",
+    "log", "softmax", "log_softmax", "cross_entropy",
     "NativeCrossEntropyLoss", "native_accuracy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",
@@ -292,8 +301,10 @@ def _load_library():
     library.tf_storage_materialize.restype = None
     # Unary core kernels share tf_core_relu's signature (one strided
     # source, one contiguous destination); sqrt/reciprocal are the
-    # v3.11 optimizer math primitives.
-    for name in ("tf_core_relu", "tf_core_sqrt", "tf_core_reciprocal"):
+    # v3.11 optimizer math primitives and exp is the Phase-E stable-math
+    # primitive (milestone E1).
+    for name in ("tf_core_relu", "tf_core_sqrt", "tf_core_reciprocal",
+                 "tf_core_exp"):
         kernel = getattr(library, name)
         kernel.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array,
@@ -317,7 +328,7 @@ def _load_library():
     # take numel + offsets instead of shape/strides. Selected by
     # NativeTensorCore when the operands are row-major contiguous.
     for name in ("tf_core_relu_contiguous", "tf_core_sqrt_contiguous",
-                 "tf_core_reciprocal_contiguous"):
+                 "tf_core_reciprocal_contiguous", "tf_core_exp_contiguous"):
         kernel = getattr(library, name)
         kernel.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64,
@@ -448,6 +459,10 @@ _CHECKED_KERNELS = (
     "tf_core_relu", "tf_core_relu_contiguous",
     "tf_core_sqrt", "tf_core_sqrt_contiguous",
     "tf_core_reciprocal", "tf_core_reciprocal_contiguous",
+    # Phase E, E1: the two exponential exports. Unlike the older unary
+    # exports these validate their own handles/layout/spans before
+    # computing, so an invalid call raises ValueError through this hook.
+    "tf_core_exp", "tf_core_exp_contiguous",
     "tf_core_add", "tf_core_add_contiguous",
     "tf_core_subtract", "tf_core_subtract_contiguous",
     "tf_core_multiply", "tf_core_multiply_contiguous",
@@ -1031,6 +1046,23 @@ class NativeTensorCore:
         NaN propagates — the same values NumPy produces."""
         return self._unary_compute("tf_core_reciprocal",
                                    "tf_core_reciprocal_contiguous")
+
+    def exp(self):
+        """Elementwise e**x, computed by the native kernel reading this
+        tensor's (possibly strided) view directly (Phase E, milestone
+        E1). Returns a new **owning** row-major contiguous
+        NativeTensorCore of the same shape; the input is not mutated and
+        shares no storage with the result.
+
+        Plain IEEE float64 ``std::exp`` — no clamping and no inserted
+        bound: ``exp(0) == 1``, a large positive argument overflows to
+        ``+inf``, a large negative one underflows toward ``+0``, ``+inf``
+        gives ``+inf``, ``-inf`` gives ``+0``, and NaN propagates (the
+        values NumPy produces, without its overflow warning).
+
+        Graph-unaware, like every Core op: the differentiable surface is
+        ``NativeTensor.exp()``."""
+        return self._unary_compute("tf_core_exp", "tf_core_exp_contiguous")
 
     def relu_backward(self, upstream):
         """The gradient of ``relu`` at this tensor's forward value:

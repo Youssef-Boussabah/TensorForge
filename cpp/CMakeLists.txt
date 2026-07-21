@@ -217,4 +217,27 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME maxpool2d_backward COMMAND test_maxpool2d_backward)
+
+  # Native exponential (Phase E, E1): links the elementwise source
+  # (elementwise.cpp) plus error.cpp, since the exports under test are
+  # guarded and reference the thread-local error slot. Unlike the conv2d
+  # and pooling targets this test drives the *exported* C ABI pair
+  # (tf_core_exp / tf_core_exp_contiguous) rather than a hidden tf::
+  # kernel — the exponential's compute is file-local to that translation
+  # unit, and the exports are where E1's own argument validation lives.
+  add_executable(test_exp
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_exp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_exp PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_exp PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_exp PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_exp PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME exp COMMAND test_exp)
 endif()

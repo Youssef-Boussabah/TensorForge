@@ -30,13 +30,16 @@ saved winners, backward scatter, and the `NativeMaxPool2d` module; the
 deterministic end-to-end CNN training + exact checkpoint-resume proof
 (`examples/native_cnn_training.py`); cross-cutting Phase-D integration
 tests; honest CNN benchmarks (`benchmarks/benchmark_native_cnn.py`); and
-ASan/UBSan validation of the whole stack). The next native phase is
-**Phase E — Native Classification and Stable Math**, whose architecture
-contract is **locked** in
+ASan/UBSan validation of the whole stack). **Phase E — Native
+Classification and Stable Math — is in progress**: its architecture
+contract is locked in
 [native_classification_design.md](native_classification_design.md)
-(milestone E0) but whose implementation has **not started**: no Phase-E
-capability exists in code, and every Phase-E name is still listed as
-unsupported below — see also [roadmap.md](roadmap.md). Everything Phase D
+(milestone **E0**, complete) and milestone **E1** has shipped the
+differentiable native `exp`. **Everything else in Phase E (E2–E10) is
+still designed-only** — `log`, `softmax`, `log_softmax`,
+`cross_entropy`, `NativeCrossEntropyLoss`, and `native_accuracy` do not
+exist in code and stay listed as unsupported below. See also
+[roadmap.md](roadmap.md). Everything Phase D
 deliberately excluded
 remains unsupported and is named in the "Unsupported or future" section
 below, which stays the single place this document lists capabilities the
@@ -64,6 +67,7 @@ native line does not have.
 | `relu` | Yes | Yes | Fused native `relu_backward` mask kernel |
 | `sqrt` | Yes | Yes | v3.11 optimizer math primitive; backward `1/(2·sqrt(x))` from the **saved forward output** — IEEE: negatives → NaN, signed zeros preserved |
 | `reciprocal` | Yes | Yes | v3.11 optimizer math primitive; backward `−1/x²` from the **saved forward output** — IEEE: ±0 → ±inf, ±inf → ±0, NaN propagates |
+| `exp` | Yes | Yes | Phase E, **E1**: elementwise `e**x` over any legal shape, both the strided-odometer and contiguous execution paths; backward is `upstream × ` the **saved forward output**, so it never rereads the input and records **no** parameter-version snapshot (mutating a direct parameter after forward leaves the edge valid). Plain IEEE `std::exp` — no clamping, no inserted bound: `exp(0)=1`, overflow → `+inf`, underflow → `+0`, `-inf` → `+0`, NaN propagates. Its two guarded exports (`tf_core_exp`, `tf_core_exp_contiguous`) validate handles, layout, spans, and overflow at the ABI itself |
 | `matmul` | Yes | Yes | 2-D only, no batching/broadcasting |
 | `sum` | Yes | Yes | All elements or one axis; `keepdims` |
 | `mean` | Yes | Yes | All elements or one axis; `keepdims` |
@@ -126,11 +130,12 @@ in the stable Python framework — that does not make them native.
 - `divide` as a NativeTensor operation (a raw ctypes `elementwise_divide`
   kernel exists at the kernel layer, but no tensor op and no backward;
   `reciprocal` + `multiply` compose what the training stack needs)
-- `exp`, `log`, `tanh`, `sigmoid`, `softmax`, `log_softmax` (`exp`,
-  `log`, `softmax`, and `log_softmax` are **designed** for Phase E — see
+- `log`, `tanh`, `sigmoid`, `softmax`, `log_softmax` (`log`, `softmax`,
+  and `log_softmax` are **designed** for Phase E — see
   [native_classification_design.md](native_classification_design.md) —
   but none of them exists in code today; `tanh` and `sigmoid` are outside
-  Phase E entirely)
+  Phase E entirely. `exp` **is** implemented as of E1 and is listed in
+  the forward-operation table above)
 - scheduler state, random-state capture/restoration, or dataloader
   state in native checkpoints; `map_location`, partial or name-remapped
   loading, checkpoint merging, sharding, compression, or encryption
@@ -141,9 +146,11 @@ in the stable Python framework — that does not make them native.
   operation, loss, or metric exists (the native line trains regression
   through `NativeMSELoss`). The whole surface is contracted for Phase E
   in [native_classification_design.md](native_classification_design.md);
-  a locked contract is not an implementation
+  a locked contract is not an implementation. Phase E has begun — E1
+  shipped `exp` — but the classification surface itself is still absent
 - native normalization (BatchNorm/LayerNorm), dropout, or a native RNG
-- additional native activations/math beyond `relu`/`sqrt`/`reciprocal`
+- additional native activations/math beyond
+  `relu`/`sqrt`/`reciprocal`/`exp`
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP
 - Transformers / text models
@@ -261,6 +268,28 @@ existing status/guard contract; and new C++ units `cpp/src/conv2d.cpp`
 and `cpp/src/pooling.cpp`. Still float64/cpu only; no dilation, groups,
 transposed/average/adaptive/global pooling, channels-last, float32,
 CUDA, AMP, BatchNorm, Dropout, im2col, or BLAS/threaded convolution.
+
+## Phase E — native classification and stable math, **in progress**
+
+The architecture contract is locked in
+[native_classification_design.md](native_classification_design.md); the
+registry above (and `tensorforge.backends.cpp`) stays the authority on
+what is live. Two of eleven milestones have landed.
+
+| Capability | Milestone | Status |
+|---|---|---|
+| Phase-E architecture contract (scope, public API, stability strategy, backward/versioning matrix, `int64` target contract, saved-probability lifetime, C ABI families, inventory placements, E0–E10 ladder) | E0 | **Complete** (documentation only — no numerical behavior) |
+| Native `exp`: the C++ kernel (odometer + contiguous), the self-validating guarded exports `tf_core_exp` / `tf_core_exp_contiguous`, their ctypes registration, `NativeTensorCore.exp()`, and the differentiable `NativeTensor.exp()` with its **saved-output** backward and **no** version snapshot | E1 | **Implemented** |
+| Native `log` (live-input backward, version-checked — the deliberate contrast with `exp`) | E2 | Not started |
+| Stable `softmax` / `log_softmax` (fused max-shift and log-sum-exp) | E3–E4 | Not started |
+| Fused `cross_entropy` Core contract, then its differentiable operation | E5–E6 | Not started |
+| `NativeCrossEntropyLoss` and reporting-only `native_accuracy` | E7 | Not started |
+| Deterministic classification training + exact checkpoint resume | E8 | Not started |
+| Classification benchmarks; phase integration, sanitizer, and closure | E9–E10 | Not started |
+
+Phase E adds **no** persistent state: the native checkpoint format stays
+**version 1**, and E1 added no parameter, buffer, module, loss, metric,
+optimizer, schema, benchmark, or example.
 
 ## How to build and verify
 

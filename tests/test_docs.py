@@ -525,11 +525,14 @@ def test_phase_e_design_locks_the_contract():
 
 
 def test_phase_e_milestone_ladder_is_ordered():
-    """E0 through E10 all exist and appear in increasing order."""
+    """E0 through E10 each have their own contract section, and those
+    sections appear in increasing order. Anchored on the milestone
+    headings, so status notes elsewhere in the document (which may name a
+    milestone) cannot perturb the check."""
     text = _normalized_doc(PHASE_E_DESIGN)
     positions = []
     for i in range(11):
-        marker = f"E{i} —"
+        marker = f"### E{i} —"
         assert marker in text, f"{PHASE_E_DESIGN} is missing milestone E{i}"
         positions.append(text.index(marker))
     assert positions == sorted(positions), (
@@ -563,12 +566,22 @@ def test_phase_e_design_distinguishes_the_backward_read_contracts():
     assert "no logits version snapshot" in cross_entropy
 
 
-def test_phase_e_capabilities_are_not_advertised_as_implemented():
-    """E0 designs Phase E; it implements none of it. Every Phase-E name
-    must still be absent from the live capability registries."""
+def test_phase_e_implemented_surface_matches_the_milestones_reached():
+    """Phase E ships one milestone at a time, and the registries are the
+    honest record. E1 implemented `exp`; E2-E7 have not landed, so every
+    later capability must still be absent from every implemented
+    inventory."""
     from tensorforge.backends import cpp
 
-    for name in ("exp", "log", "softmax", "log_softmax", "cross_entropy",
+    # E1 — implemented, in the two inventories it belongs to and no others.
+    assert "exp" in cpp.TENSOR_CORE_OPS
+    assert "exp" in cpp.AUTOGRAD_OPS
+    assert "exp" not in cpp.UNSUPPORTED
+    assert "exp" not in cpp.NATIVE_MODULES and "exp" not in cpp.NATIVE_LOSSES
+    assert "exp" not in cpp.RAW_KERNELS  # no raw NumPy-buffer exp exists
+
+    # E2-E7 — still designed only.
+    for name in ("log", "softmax", "log_softmax", "cross_entropy",
                  "NativeCrossEntropyLoss", "native_accuracy"):
         assert name in cpp.UNSUPPORTED, f"{name} left the unsupported boundary"
         assert name not in cpp.TENSOR_CORE_OPS, name
@@ -578,8 +591,64 @@ def test_phase_e_capabilities_are_not_advertised_as_implemented():
         assert name not in cpp.NATIVE_LOSSES, name
     # No metrics inventory exists yet either — E7 introduces it.
     assert not hasattr(cpp, "NATIVE_METRICS")
-    # And no classification source unit / module has appeared.
+    # And no classification source unit has appeared (E3 adds it).
     assert not (REPO_ROOT / "cpp" / "src" / "classification.cpp").exists()
+
+
+def test_phase_e_milestone_status_is_reported_honestly():
+    """E0 and E1 are marked complete, E2-E10 are not, and Phase E itself
+    is never declared complete. Checked semantically against the design
+    document's status table and the live registry."""
+    from tensorforge.backends import cpp
+
+    # The ladder's status table is the one place per-milestone status is
+    # declared, so the row checks run inside that section only.
+    ladder = _design_section("Milestone ladder")
+    for done in ("E0", "E1"):
+        row = re.search(rf"\|\s*{done}\s*\|[^|]*\|([^|]*)\|", ladder)
+        assert row is not None, f"the ladder has no status row for {done}"
+        assert "complete" in row.group(1).lower(), (
+            f"the design does not mark {done} complete"
+        )
+    for pending in ("E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10"):
+        row = re.search(rf"\|\s*{pending}\s*\|[^|]*\|([^|]*)\|", ladder)
+        assert row is not None, f"the ladder has no status row for {pending}"
+        assert "complete" not in row.group(1).lower(), (
+            f"{pending} is marked complete but has not shipped"
+        )
+    # Phase E as a whole is in progress, and says so positively. (§17's
+    # "Phase E is complete when ..." criteria list is a condition, not a
+    # claim, so the check is on the status statement, not a banned word.)
+    design = _status_text(PHASE_E_DESIGN)
+    assert "Phase-E status: in progress" in design
+    assert re.search(r"Phase E is [^.]{0,30}not[^.]{0,30}complete", design), (
+        "the design no longer states that Phase E is not complete"
+    )
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    assert re.search(r"Phase E[^.]{0,120}in progress", matrix, re.I), (
+        "the support matrix no longer marks Phase E in progress"
+    )
+    # The registry agrees: exactly the E1 capability is live.
+    assert "exp" in cpp.AUTOGRAD_OPS and "log" in cpp.UNSUPPORTED
+
+
+def test_docs_present_the_shipped_exponential():
+    """The status surfaces must present `exp` as implemented and must
+    keep documenting its load-bearing invariant."""
+    for name in ("docs/native_support_matrix.md", PHASE_E_DESIGN):
+        text = _normalized_doc(name)
+        assert "`exp`" in text or "exp" in text, name
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    # exp is presented as a differentiable forward operation, and the
+    # saved-output/no-version contract is stated where users will read it.
+    assert re.search(r"`exp`\s*\|\s*Yes\s*\|\s*Yes", matrix), (
+        "the support matrix does not list exp as a differentiable operation"
+    )
+    assert re.search(r"saved forward output", matrix)
+    exp_section = _design_section("NativeTensor.exp()")
+    assert "E1" in exp_section and "implemented" in exp_section.lower(), (
+        "the design does not record exp as implemented"
+    )
 
 
 def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():

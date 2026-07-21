@@ -69,7 +69,8 @@ reached explicitly through `tensorforge.experimental` and
   operations Phase B shipped (`add`, `subtract`, `multiply`, `relu`,
   `sqrt`, `reciprocal`, `matmul`, `sum`, `mean`, `reshape`,
   `transpose`/`T`, `narrow`, `contiguous_copy`), joined by the Phase-D
-  `conv2d` and `maxpool2d` primitives below, plus broadcasting and view
+  `conv2d` and `maxpool2d` primitives below and the Phase-E `exp`, plus
+  broadcasting and view
   gradients, a native scatter backward for `narrow`, one-shot graph
   release with `retain_graph` opt-in, and failure rollback. The backend's
   `AUTOGRAD_OPS` registry is the exact, current list.
@@ -213,12 +214,14 @@ Honest expectations:
   `tensorforge.Tensor`.
 - The native CNN stack (Phase D) is complete — `NativeFlatten`,
   `NativeConv2d`, `NativeMaxPool2d`, and a deterministic training +
-  exact checkpoint-resume proof — but the native line stops there: no
-  native classification stack (softmax/cross-entropy — Phase E is
-  *designed* in
+  exact checkpoint-resume proof. Phase E (native classification and
+  stable math) is *in progress*: its contract is locked in
   [docs/native_classification_design.md](docs/native_classification_design.md)
-  and *not implemented*), no normalization, no dropout or native RNG, and
-  native checkpoints capture no scheduler or random state — see the
+  and milestone E1 shipped the differentiable native `exp`, but
+  `log`, `softmax`, `log_softmax`, `cross_entropy`,
+  `NativeCrossEntropyLoss`, and `native_accuracy` **do not exist yet**.
+  Beyond that: no normalization, no dropout or native RNG, and native
+  checkpoints capture no scheduler or random state — see the
   [native support matrix](docs/native_support_matrix.md).
 - Both lines' convolution and pooling use deliberately naive loops (the
   stable `Conv2d`/`MaxPool2d` and the native kernels alike: no im2col,
@@ -249,15 +252,18 @@ end-to-end training + checkpoint-resume proof
 (`examples/native_cnn_training.py`: 40 deterministic steps, 98.6% loss
 reduction, and a checkpoint-interrupted run that reproduces the
 uninterrupted one exactly), cross-cutting integration tests, honest CNN
-benchmarks, and ASan/UBSan validation of the whole native stack. The next
-native phase — **Phase E, Native Classification and Stable Math** — has
-its architecture contract locked
+benchmarks, and ASan/UBSan validation of the whole native stack.
+**Phase E — Native Classification and Stable Math — is now in
+progress**: its architecture contract is locked
 ([docs/native_classification_design.md](docs/native_classification_design.md),
-milestone E0) but **no implementation**: native `exp`/`log`/`softmax`/
+milestone E0) and milestone **E1 shipped the differentiable native
+`exp`** — C++ kernel, self-validating guarded C ABI, `NativeTensorCore`
+and `NativeTensor` layers, with a saved-output backward that records no
+parameter version. The rest of the phase (`log`, `softmax`,
 `log_softmax`, the fused `cross_entropy`, `NativeCrossEntropyLoss`, and
-`native_accuracy` do not exist yet. More activations/math, normalization,
-RNG/dropout, and CPU optimization sit beyond it, and CUDA/GPU experiments
-remain future work. See
+`native_accuracy`) is designed but **not implemented**. More
+activations/math, normalization, RNG/dropout, and CPU optimization sit
+beyond it, and CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 

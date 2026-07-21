@@ -702,8 +702,8 @@ The Python line is done; what remains is expansion on its own terms:
     reconciliation across every status surface, and the replacement of the
     milestone-era doc guardrails with durable semantic checks. See the
     [support matrix](native_support_matrix.md) for the finalized status.
-  - **Phase E — Native Classification and Stable Math — designed, not
-    implemented.** The **E0 architecture contract is written** —
+  - **Phase E — Native Classification and Stable Math — in progress
+    (E0 and E1 complete).** The **E0 architecture contract is written** —
     [native_classification_design.md](native_classification_design.md)
     locks the scope, the public API surface (`exp`, `log`, `softmax`,
     `log_softmax`, a fused `cross_entropy` from raw logits,
@@ -715,10 +715,22 @@ The Python line is done; what remains is expansion on its own terms:
     the graph-owned saved-probability lifetime, the contiguous-only C ABI
     families and the new `cpp/src/classification.cpp` unit, the capability
     inventory placements, the unchanged checkpoint format version 1, and
-    the **E0–E10 milestone sequence**. **E0 added no numerical behavior:
-    no kernel, ABI symbol, operation, loss, metric, benchmark, or example
-    exists yet, and every Phase-E name is still listed as unsupported in
-    the [support matrix](native_support_matrix.md).** Deliberately outside
+    the **E0–E10 milestone sequence**. **E0 added no numerical behavior**
+    — it was a design-and-reconciliation milestone. **E1 has shipped the
+    native exponential**: the C++ kernel on both the strided-odometer and
+    contiguous execution paths, the two guarded C ABI exports
+    (`tf_core_exp`/`tf_core_exp_contiguous`, which validate their own
+    handles, layout metadata, spans, and overflow), their ctypes
+    registration, `NativeTensorCore.exp()`, and the differentiable
+    `NativeTensor.exp()` whose backward is `upstream ×` the **saved
+    forward output** — never rereading the input, so it records **no**
+    parameter-version snapshot and survives post-forward mutation, with
+    plain IEEE semantics (no clamping, no inserted bound). **Everything
+    else in Phase E is still designed-only**: `log`, `softmax`,
+    `log_softmax`, `cross_entropy`, `NativeCrossEntropyLoss`, and
+    `native_accuracy` remain listed as unsupported in the
+    [support matrix](native_support_matrix.md), and Phase E is **not**
+    complete. Deliberately outside
     Phase E and still unplanned: more native activations beyond it, native
     normalization, a native RNG and dropout, a CPU optimization phase for
     the deliberately naive kernels, and build/packaging evolution.
