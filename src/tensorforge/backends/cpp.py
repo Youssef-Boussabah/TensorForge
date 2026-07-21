@@ -80,12 +80,15 @@ TENSOR_CORE_OPS = (
     # same odometer/contiguous pair as relu/sqrt/reciprocal. Their guarded
     # exports additionally self-validate at the ABI boundary.
     "exp", "log",
-    # Phase E probability transform (E3): an axis-wise *fused* Core op
-    # over the contiguous-only tf_core_softmax_forward export, with
-    # Policy-B copy-then-compute for non-contiguous inputs. Not composed
-    # from public max/subtract/exp/sum/divide — the stability transform
-    # lives inside the kernel where it cannot be bypassed.
-    "softmax",
+    # Phase E probability transforms (E3: softmax, E4: log_softmax) —
+    # axis-wise *fused* Core ops over the contiguous-only
+    # tf_core_softmax_forward / tf_core_log_softmax_forward exports, with
+    # Policy-B copy-then-compute for non-contiguous inputs. Neither is
+    # composed from public max/subtract/exp/sum/divide — the stability
+    # transform lives inside each kernel where it cannot be bypassed — and
+    # log_softmax is emphatically NOT softmax followed by log: it is its
+    # own fused log-sum-exp kernel (design §4.4).
+    "softmax", "log_softmax",
     "add", "subtract", "multiply", "matmul",
     "sum", "mean",
     "reshape", "transpose", "T", "narrow", "contiguous_copy",
@@ -128,7 +131,12 @@ TENSOR_CORE_OPS = (
 # probabilities `y` and is *composed* from existing Core ops at the
 # graph-unaware level — `y * (upstream - sum(upstream * y, axis,
 # keepdims=True))` — so no dedicated backward kernel exists and no
-# parameter version is recorded.
+# parameter version is recorded. "log_softmax" (E4) is the same archetype
+# again: its own fused log-sum-exp forward (never softmax().log()), and a
+# backward composed from existing Core ops out of the saved log
+# probabilities alone — `upstream - exp(y) * sum(upstream, axis,
+# keepdims=True)` — so it too records no parameter version and needs no
+# backward kernel.
 AUTOGRAD_OPS = (
     "add", "subtract", "multiply", "relu",
     "sum", "mean", "matmul",
@@ -136,7 +144,7 @@ AUTOGRAD_OPS = (
     "sqrt", "reciprocal",
     "conv2d",
     "maxpool2d",
-    "exp", "log", "softmax",
+    "exp", "log", "softmax", "log_softmax",
 )
 
 # The native training stack composed on the autograd layer (Phase C) and
@@ -186,14 +194,14 @@ STATE_SUPPORT = (
 # The classification names below are the Phase-E surface contracted in
 # docs/native_classification_design.md (milestone E0). A locked contract is
 # not an implementation: each stays here until the milestone that
-# implements it removes it. Milestones E1, E2, and E3 implemented the
-# exponential, the logarithm, and the softmax, so "exp", "log", and
-# "softmax" left this tuple for TENSOR_CORE_OPS and AUTOGRAD_OPS; the
-# rest of Phase E (E4-E7) is still genuinely absent. "log_softmax" is a
-# distinct fused capability from the shipped "log" and "softmax" — it is
-# deliberately NOT composed from them (design §4.4).
+# implements it removes it. Milestones E1-E4 implemented the exponential,
+# the logarithm, the softmax, and the log-softmax, so "exp", "log",
+# "softmax", and "log_softmax" left this tuple for TENSOR_CORE_OPS and
+# AUTOGRAD_OPS; the rest of Phase E (E5-E7) is still genuinely absent.
+# "log_softmax" shipped as its own fused log-sum-exp kernel, deliberately
+# NOT composed from the shipped "log" and "softmax" (design §4.4).
 UNSUPPORTED = (
-    "log_softmax", "cross_entropy",
+    "cross_entropy",
     "NativeCrossEntropyLoss", "native_accuracy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",
@@ -453,6 +461,18 @@ def _load_library():
         ctypes.c_void_p,                   # destination handle
     ] + [ctypes.c_int64] * 3
     library.tf_core_softmax_forward.restype = None
+    # Log-softmax forward (Phase E, E4): the exported wrapper over the
+    # fused maximum-shift / log-sum-exp kernel in the same translation
+    # unit. Identical call shape to the softmax export — contiguous
+    # storage only, one source offset, a caller-allocated destination at
+    # offset 0, and the (outer, axis_length, inner) decomposition of the
+    # reduction axis. It is a *separate* kernel, not softmax composed with
+    # log; there is deliberately no log-softmax backward export.
+    library.tf_core_log_softmax_forward.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # source handle, offset
+        ctypes.c_void_p,                   # destination handle
+    ] + [ctypes.c_int64] * 3
+    library.tf_core_log_softmax_forward.restype = None
 
     _configure_error_contract(library)
     return library
@@ -513,9 +533,13 @@ _CHECKED_KERNELS = (
     "tf_core_conv2d_weight_backward",
     "tf_core_maxpool2d_forward",
     "tf_core_maxpool2d_backward",
-    # Phase E, E3: the fused softmax forward. Self-validating like the
-    # other Phase-E exports; IEEE NaN/inf results stay values, not errors.
+    # Phase E, E3/E4: the fused softmax and log-softmax forwards. Both
+    # self-validate like the other Phase-E exports (through one shared
+    # file-local validator); IEEE NaN/inf results stay values, not errors.
+    # Neither has a backward export — those gradients are composed from
+    # existing Core ops.
     "tf_core_softmax_forward",
+    "tf_core_log_softmax_forward",
 )
 
 
@@ -1202,6 +1226,52 @@ class NativeTensorCore:
 
         Graph-unaware, like every Core op: the differentiable surface is
         ``NativeTensor.softmax()``."""
+        return self._axis_fused_forward(axis, "tf_core_softmax_forward")
+
+    def log_softmax(self, axis=-1):
+        """Numerically stable log-softmax over one ``axis`` (Phase E,
+        milestone E4), computed by the fused native kernel.
+
+        Axis rules, validation order, and the output contract are exactly
+        ``softmax``'s: a plain int (negative allowed), rejected before any
+        allocation if it is a bool, a float, a string, ``None``, or out of
+        range (so a rank-0 input is rejected too); the result is a fresh
+        **owning** row-major contiguous NativeTensorCore (offset 0) of the
+        input's shape, sharing no storage with the input and leaving it
+        unmutated.
+
+        Per slice the kernel computes ``(x - max(x)) - log(sum(exp(x -
+        max(x))))`` in one fused pass, all in float64. It is **never**
+        ``softmax(x).log()`` — no probability buffer is formed and no
+        division happens, so a probability too small to represent (which
+        would round to 0 and give ``log(0) == -inf``) still gets an
+        accurate finite log-probability. Exceptional values follow plain
+        IEEE arithmetic with no special-casing: a NaN or ``+inf`` in a
+        slice makes that whole slice NaN, while a ``-inf`` gets ``-inf``
+        and leaves its finite neighbours governed by the stable
+        computation. Those are values, not errors.
+
+        The C ABI is **contiguous-only**, so a non-contiguous input is
+        materialized into a private contiguous copy (Policy B) that is
+        closed the moment the native call returns; an already-contiguous
+        input is passed through with its offset.
+
+        Graph-unaware, like every Core op: the differentiable surface is
+        ``NativeTensor.log_softmax()``."""
+        return self._axis_fused_forward(axis, "tf_core_log_softmax_forward")
+
+    def _axis_fused_forward(self, axis, kernel_name):
+        """Shared plumbing for the fused axis-wise classification
+        forwards (E3 ``softmax``, E4 ``log_softmax``).
+
+        The two operations have the identical shape contract and the
+        identical **contiguous-only** C ABI — source handle + offset,
+        destination handle, and the ``(outer, axis_length, inner)``
+        factorization of the reduction axis — so only the exported kernel
+        symbol differs, and each caller names its own. Sharing keeps their
+        axis normalization, their validate-before-allocate ordering, and
+        their Policy-B ownership and failure cleanup provably in step
+        rather than as two copies that could drift."""
         self._require_open()
         # Validate/normalize the axis first — nothing is allocated if this
         # raises. _normalize_axis rejects bool/non-int/out-of-range and
@@ -1227,7 +1297,7 @@ class NativeTensorCore:
                 shape, dtype=self.dtype, device=self.device
             )
             try:
-                self._storage._lib.tf_core_softmax_forward(
+                getattr(self._storage._lib, kernel_name)(
                     source._storage._require_open(), source.offset,
                     out._storage._require_open(),
                     outer, axis_length, inner,

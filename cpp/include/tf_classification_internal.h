@@ -30,4 +30,25 @@ void softmax_forward_contiguous(
     const double* src, double* dst,
     int64_t outer, int64_t axis_length, int64_t inner) noexcept;
 
+// Numerically stable log-softmax over one axis of a row-major CONTIGUOUS
+// float64 tensor, using the identical (outer, axis_length, inner)
+// decomposition as ``softmax_forward_contiguous`` above.
+//
+// Per slice: m = max_k x, then out = (x - m), accumulating
+// sum_exp = Σ_k exp(x_k - m) as it goes, then out -= log(sum_exp) — the
+// fused maximum-shift / log-sum-exp form. It is emphatically NOT
+// log(softmax(x)): no probability buffer is formed and no division
+// happens, which is exactly the precision loss the operation exists to
+// avoid in the small-probability regime. ``src`` already points at the
+// first element (the caller adds any storage offset); ``dst`` is
+// caller-allocated with at least outer*axis_length*inner elements and is
+// written in full.
+//
+// noexcept and allocation-free: the guarded exported wrapper does all
+// validation, and this reads ``src`` without mutating it. Deterministic
+// traversal; no NaN/inf special-casing beyond plain IEEE arithmetic.
+void log_softmax_forward_contiguous(
+    const double* src, double* dst,
+    int64_t outer, int64_t axis_length, int64_t inner) noexcept;
+
 }  // namespace tf

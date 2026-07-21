@@ -624,6 +624,77 @@ class NativeTensor:
         result = self._from_op(out_core, (self,), _backward, "softmax")
         return result
 
+    def log_softmax(self, axis=-1):
+        """Numerically stable log-softmax over one ``axis``, computed by
+        its own fused native kernel (Phase E, milestone E4).
+
+        ``axis`` follows exactly ``softmax``'s rules: a plain int,
+        negative allowed (NumPy-style); a bool, a float, a string,
+        ``None``, or an out-of-range value raises, and rank 0 is rejected.
+        Validation happens before any allocation. Returns a new owning
+        row-major contiguous NativeTensor of the input's shape; the
+        original stays open and unmutated. A non-contiguous input is
+        handled by the Core layer's Policy-B copy-then-compute.
+
+        Per slice the kernel fuses ``(x - max(x)) - log(sum(exp(x -
+        max(x))))`` in float64. It is **never** ``softmax(x).log()``:
+        that composition is exactly the precision loss this operation
+        exists to avoid, since a probability below the float64 minimum
+        rounds to 0 and its logarithm to ``-inf``, while the fused
+        log-sum-exp form stays finite and accurate. Exceptional values
+        follow plain IEEE arithmetic: a NaN or ``+inf`` in a slice makes
+        that slice NaN; a ``-inf`` gets ``-inf`` and leaves its finite
+        neighbours alone.
+
+        Differentiable, with the Jacobian-vector product in closed form::
+
+            dx = upstream - exp(y) * sum(upstream, axis, keepdims=True)
+
+        where ``y`` is the **saved forward output** — ``exp(y)`` recovers
+        the probabilities without ever rereading the input. Like ``exp``
+        and ``softmax`` (and unlike ``log``), the graph therefore records
+        **no** expected parameter version: mutating a direct parameter
+        input after forward leaves this edge valid and the gradient
+        correct for the forward that ran. The whole backward is composed
+        from existing graph-unaware Core operations — there is no
+        dedicated log-softmax backward kernel."""
+        core = self._require_open()
+        # Normalize once, before anything is allocated, and hold the
+        # normalized value in the closure so backward is independent of
+        # the caller's variable and of any later rebinding. The Core
+        # method validates identically (and again before *its* allocation).
+        normalized_axis = cpp._normalize_axis(axis, core.shape)
+        out_core = core.log_softmax(normalized_axis)
+        if not self._requires_grad:
+            return self._from_core(out_core)
+
+        def _backward(upstream):
+            # dx = g - exp(y) * sum(g, axis, keepdims=True), entirely at
+            # the Core level. Each intermediate is fresh owning storage
+            # closed in a finally as soon as its consumer has run, so a
+            # failure at any stage leaks nothing and commits nothing.
+            y_core = result._require_open()
+            g_core = upstream._require_open()
+            probabilities = y_core.exp()
+            try:
+                slice_sum = g_core.sum(axis=normalized_axis, keepdims=True)
+                try:
+                    # Broadcasting multiply: slice_sum keeps the reduced
+                    # axis at size 1, so it stretches back over the slice.
+                    scaled = probabilities.multiply(slice_sum)
+                finally:
+                    slice_sum.close()
+                try:
+                    contribution = g_core.subtract(scaled)
+                finally:
+                    scaled.close()
+            finally:
+                probabilities.close()
+            self._accumulate_grad(NativeTensor._from_core(contribution))
+
+        result = self._from_op(out_core, (self,), _backward, "log_softmax")
+        return result
+
     def add(self, other):
         """self + other elementwise, natively. Identical shapes or
         NumPy-style broadcasting. Returns a new owning NativeTensor.

@@ -282,4 +282,27 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME softmax COMMAND test_softmax)
+
+  # Fused log-softmax (Phase E, E4): links the same classification source
+  # unit plus error.cpp. Like the softmax target it drives *both* layers —
+  # the internal tf::log_softmax_forward_contiguous kernel for the fused
+  # maximum-shift / log-sum-exp numerics and the exported
+  # tf_core_log_softmax_forward wrapper for the validation matrix. It also
+  # re-drives softmax's rejection matrix as regression coverage for the
+  # file-local validator E4 factored out of the two exports.
+  add_executable(test_log_softmax
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_log_softmax.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_log_softmax PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_log_softmax PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_log_softmax PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_log_softmax PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME log_softmax COMMAND test_log_softmax)
 endif()

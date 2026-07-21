@@ -12,9 +12,9 @@ native line has completed Phase A — CPU runtime, Phase B — native
 autograd, Phase C — the native training stack, and Phase D — the
 native CNN stack, through Advanced C++ v3.16; Phase E — native
 classification and stable math — is *in progress*, its contract locked
-in `docs/native_classification_design.md` with milestones E1–E3 (the
-differentiable native `exp`, `log`, and the fused stable `softmax`)
-shipped and `log_softmax`/`cross_entropy`/`NativeCrossEntropyLoss`/
+in `docs/native_classification_design.md` with milestones E1–E4 (the
+differentiable native `exp`, `log`, and the fused stable `softmax` and
+`log_softmax`) shipped and `cross_entropy`/`NativeCrossEntropyLoss`/
 `native_accuracy` still unimplemented; normalization/dropout/RNG, CPU
 optimization, and CUDA experiments are future work beyond it).
 Position the project as serious and systems-focused — never

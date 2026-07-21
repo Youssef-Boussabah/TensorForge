@@ -18,21 +18,23 @@ this document. The backend capability registry
 
 **Phase-E status: in progress.** **E0 is complete** (this contract),
 **E1 is complete** (the differentiable `NativeTensor.exp()`), **E2 is
-complete** (the differentiable `NativeTensor.log()`), and **E3 is
-complete** (the fused, stable `NativeTensor.softmax()`) — so `"exp"`,
-`"log"`, and `"softmax"` now live in `TENSOR_CORE_OPS` and
-`AUTOGRAD_OPS` and have left `UNSUPPORTED`. Shipping exp and log as a
-pair was deliberate: they are the phase's two backward archetypes, and
-§5's matrix is now **proved by tests**, not merely asserted — `exp`
-reads its saved output and records no version, `log` rereads the live
-input and version-guards a direct parameter, and `softmax` joins `exp`
-on the saved-output side. E3 also created the phase's C++ source unit,
-`cpp/src/classification.cpp`. **Everything else in Phase E (E4–E10) is
-still designed-only**: `log_softmax`, `cross_entropy`,
-`NativeCrossEntropyLoss`, and `native_accuracy` do not exist in code and
-remain in `UNSUPPORTED`. Per-milestone status is recorded in the ladder
-(§15); the completion criteria (§17) are **not** met, so Phase E is
-**not** complete.
+complete** (the differentiable `NativeTensor.log()`), **E3 is
+complete** (the fused, stable `NativeTensor.softmax()`), and **E4 is
+complete** (the fused, stable `NativeTensor.log_softmax()`) — so
+`"exp"`, `"log"`, `"softmax"`, and `"log_softmax"` now live in
+`TENSOR_CORE_OPS` and `AUTOGRAD_OPS` and have left `UNSUPPORTED`.
+Shipping exp and log as a pair was deliberate: they are the phase's two
+backward archetypes, and §5's matrix is now **proved by tests**, not
+merely asserted — `exp` reads its saved output and records no version,
+`log` rereads the live input and version-guards a direct parameter, and
+`softmax` and `log_softmax` join `exp` on the saved-output side. E3 also
+created the phase's C++ source unit, `cpp/src/classification.cpp`, which
+E4 extended with its own fused log-sum-exp kernel — **never**
+`softmax().log()`. **Everything else in Phase E (E5–E10) is still
+designed-only**: `cross_entropy`, `NativeCrossEntropyLoss`, and
+`native_accuracy` do not exist in code and remain in `UNSUPPORTED`.
+Per-milestone status is recorded in the ladder (§15); the completion
+criteria (§17) are **not** met, so Phase E is **not** complete.
 
 The stable Python framework (`tensorforge.Tensor.exp/log/softmax`,
 `tensorforge.nn.cross_entropy`, `tensorforge.nn.accuracy`) is the
@@ -413,6 +415,79 @@ with Policy-B copy-then-compute, and the differentiable
   output**, recovering the probabilities without rereading the input.
 - **Backward reads the saved output, never the input.**
 - **Versioning: no version snapshot.**
+
+**Status (E4 — implemented as specified).** The op ships end to end:
+the internal `tf::log_softmax_forward_contiguous` kernel and the guarded
+export `tf_core_log_softmax_forward` in `cpp/src/classification.cpp`
+(declared in `cpp/include/tf_classification_internal.h`), the ctypes
+declaration and `_CHECKED_KERNELS` registration,
+`NativeTensorCore.log_softmax(axis=-1)` with Policy-B copy-then-compute,
+and the differentiable `NativeTensor.log_softmax(axis=-1)`.
+Implementation notes:
+
+- **The forward is one fused log-sum-exp kernel, never
+  `softmax().log()`.** Per slice it computes the maximum, writes the
+  shifted logits straight into the destination while accumulating
+  `Σ exp(x − m)`, then subtracts `log` of that sum in place — three
+  passes, **no probability buffer and no division anywhere**. It is not
+  composed from public max/subtract/exp/sum/divide operations, and it
+  does not call the softmax kernel. The distinction is pinned both
+  structurally (the Core forward calls exactly one classification export,
+  and the kernel body contains no division) and numerically: for logits
+  `[0, −800]` the composed form gives `−inf` (the probability underflows
+  to 0 before its logarithm is taken) while the fused form returns an
+  accurate finite `−800`.
+- **The ABI is contiguous-only, and reuses E3's call shape exactly.**
+  `tf_core_log_softmax_forward(src_handle, src_offset, dst_handle, outer,
+  axis_length, inner)` — strides never cross the boundary; the Core layer
+  applies the existing native Policy-B copy-then-compute (§9.4) for a
+  strided or offset view, closing the private copy in a `finally` whether
+  the call succeeds or raises, and closing the output if the kernel fails
+  after allocation. No log-softmax **backward** export exists.
+- **The two exports now share one file-local validator.** Softmax and
+  log-softmax re-prove the identical preconditions (handles, positive
+  dimensional factors, non-negative offset, overflow-safe products,
+  source span, destination capacity) in the identical order, so E4
+  factored those checks into `forward_argument_error` and each export
+  supplies its own operation name for the message. Softmax's behavior and
+  messages are unchanged, and `cpp/tests/test_log_softmax.cpp` re-drives
+  softmax's whole rejection matrix (plus a numeric call) as regression
+  coverage for the sharing — the same discipline E2 applied to E1's unary
+  validators.
+- **The Core wrappers share their Policy-B plumbing too.** Both delegate
+  to a private `NativeTensorCore._axis_fused_forward(axis, kernel_name)`,
+  so axis normalization, the validate-before-allocate ordering, the
+  Policy-B ownership, and the failure cleanup cannot drift apart; each
+  public method still names its own exported symbol.
+- **The backward is composed at the Core layer, with no new kernel.**
+  `probabilities = y.exp()` → `slice_sum = g.sum(axis, keepdims=True)` →
+  `scaled = probabilities * slice_sum` (broadcasting over the kept axis)
+  → `contribution = g − scaled`, with every temporary closed in a
+  `finally` as soon as its consumer has run. `exp(y)` recovers the
+  probabilities from the **saved log probabilities** without rereading
+  the input. **No dedicated log-softmax backward kernel exists**, as E0
+  requires.
+- **Saved-output semantics confirmed.** The node records no expected
+  version and owns no private graph resource (`y` is the node's own
+  core), so mutating a direct parameter after forward leaves the edge
+  valid — proved with a non-uniform upstream, which is what makes the
+  saved-output distinction observable. `log`'s live-input/version-checked
+  contrast is re-proved unchanged in the same module, as are `exp`'s and
+  `softmax`'s saved-output behavior and `multiply`'s guard; a mixed graph
+  with a stale branch commits nothing on either branch and fails
+  identically on retry.
+- **Exceptional values are plain IEEE.** A NaN or `+inf` in a slice makes
+  that whole slice NaN (`inf − inf`); an all-`-inf` slice is NaN; a
+  `-inf` alongside finite values keeps `-inf` at its own position while
+  the finite positions stay governed by the stable computation
+  (`exp(-inf) == 0` contributes nothing to the sum). A structurally valid
+  call that produces NaN or infinity is **not** an ABI failure — the
+  error slot stays `TF_OK`. Tests compare against a NumPy reference
+  running the *same* maximum-shift order rather than another framework's
+  special-casing.
+- **No `NativeLogSoftmax` module, no `NLLLoss`, no public `max`/`argmax`,
+  and no division** were added, and the native checkpoint format stays
+  **version 1**.
 
 ### 4.5 `NativeTensor.cross_entropy(targets, reduction="mean")`
 
@@ -806,7 +881,7 @@ training step — against a stable-framework reference row.
 | E1 | Native exponential | **complete** |
 | E2 | Native logarithm | **complete** |
 | E3 | Stable differentiable softmax | **complete** |
-| E4 | Stable differentiable log-softmax | not started |
+| E4 | Stable differentiable log-softmax | **complete** |
 | E5 | Fused cross-entropy forward and backward Core contract | not started |
 | E6 | Differentiable `NativeTensor` cross-entropy | not started |
 | E7 | `NativeCrossEntropyLoss` and reporting-only `native_accuracy` | not started |
@@ -952,7 +1027,7 @@ summary, and the registry remains the authority on what is live.
   graph node of its own. No module, no public `max`/`argmax`/division, no
   benchmark, no example, no schema change.
 
-### E4 — Stable differentiable log-softmax
+### E4 — Stable differentiable log-softmax — **complete**
 
 - **Objective:** `NativeTensor.log_softmax(axis=-1)` as a **fused**
   log-sum-exp, never `softmax().log()`.
@@ -971,6 +1046,27 @@ summary, and the registry remains the authority on what is live.
   softmax and log-softmax axis handling.
 - **Dependencies:** E2 (log semantics), E3 (axis machinery).
 - **Non-goals:** a `NativeLogSoftmax` module; `NLLLoss`.
+- **Shipped (E4).** Exactly the above; see §4.4's status block for the
+  implementation notes. Files created: `cpp/tests/test_log_softmax.cpp`,
+  `tests/test_native_log_softmax.py`. Files touched:
+  `cpp/src/classification.cpp` (the internal
+  `tf::log_softmax_forward_contiguous` kernel, the guarded
+  `tf_core_log_softmax_forward` export, and the shared
+  `forward_argument_error` validator the two exports now use),
+  `cpp/include/tf_classification_internal.h` (the new internal
+  declaration), `cpp/CMakeLists.txt` (a ninth CTest target),
+  `src/tensorforge/backends/cpp.py` (the ctypes declaration,
+  `_CHECKED_KERNELS`, `NativeTensorCore.log_softmax` over the shared
+  private `_axis_fused_forward` helper, `TENSOR_CORE_OPS`,
+  `AUTOGRAD_OPS`, `UNSUPPORTED`), and
+  `src/tensorforge/experimental/native_tensor.py`
+  (`NativeTensor.log_softmax`). Neither named risk materialized: the
+  forward is a single fused kernel that neither divides nor calls the
+  softmax kernel (pinned structurally *and* numerically in the
+  small-probability regime), and the axis handling cannot drift because
+  both Core wrappers now go through one shared helper. No module, no
+  `NLLLoss`, no public `max`/`argmax`/division, no backward kernel, no
+  benchmark, no example, no schema change.
 
 ### E5 — Fused cross-entropy forward and backward Core contract
 

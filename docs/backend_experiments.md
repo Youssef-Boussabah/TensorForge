@@ -26,11 +26,13 @@ reverse-mode autograd over autograd-unaware kernels, parameters, modules
 `NativeMaxPool2d`, `NativeSequential`), `NativeMSELoss`, `NativeSGD` and
 `NativeAdam` with in-memory optimizer state, pickle-free native
 checkpoints with exact resume, and deterministic end-to-end MLP **and**
-CNN training proofs. The next phase — **Phase E, Native Classification
-and Stable Math** — has its architecture contract locked in
-[native_classification_design.md](native_classification_design.md) (E0)
-but **no implementation**: no native `exp`, `log`, `softmax`,
-`log_softmax`, `cross_entropy`, classification loss, or metric exists.
+CNN training proofs. The current phase — **Phase E, Native
+Classification and Stable Math** — has its architecture contract locked
+in [native_classification_design.md](native_classification_design.md)
+(E0) and is **in progress**: milestones E1–E4 shipped the differentiable
+native `exp`, `log`, `softmax`, and `log_softmax`, while
+`cross_entropy`, `NativeCrossEntropyLoss`, and `native_accuracy` do not
+exist yet.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 

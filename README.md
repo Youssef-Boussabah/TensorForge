@@ -217,8 +217,8 @@ Honest expectations:
   exact checkpoint-resume proof. Phase E (native classification and
   stable math) is *in progress*: its contract is locked in
   [docs/native_classification_design.md](docs/native_classification_design.md)
-  and milestones E1–E3 shipped the differentiable native `exp`, `log`,
-  and the fused stable `softmax`, but `log_softmax`, `cross_entropy`,
+  and milestones E1–E4 shipped the differentiable native `exp`, `log`,
+  and the fused stable `softmax` and `log_softmax`, but `cross_entropy`,
   `NativeCrossEntropyLoss`, and `native_accuracy` **do not exist yet**.
   Beyond that: no normalization, no dropout or native RNG, and native
   checkpoints capture no scheduler or random state — see the
@@ -256,19 +256,23 @@ benchmarks, and ASan/UBSan validation of the whole native stack.
 **Phase E — Native Classification and Stable Math — is now in
 progress**: its architecture contract is locked
 ([docs/native_classification_design.md](docs/native_classification_design.md),
-milestone E0) and milestones **E1–E3 shipped the differentiable native
-`exp`, `log`, and the fused stable `softmax`** — C++ kernels,
-self-validating guarded C ABI, `NativeTensorCore` and `NativeTensor`
-layers. `exp` and `log` are the phase's two backward archetypes: `exp`
-reads its saved output and records no parameter version, while `log`
-rereads the live input (`upstream × reciprocal(x)`, no division operation
-added) and version-guards a direct parameter so a post-forward mutation
-fails before any gradient moves. `softmax` adds the first fused
-probability transform — a maximum-shift kernel over any axis behind a
-contiguous-only ABI, with a saved-output backward composed from existing
-Core operations rather than a dedicated kernel. The rest of the phase
-(`log_softmax`, the fused `cross_entropy`, `NativeCrossEntropyLoss`, and
-`native_accuracy`) is designed but **not implemented**. More
+milestone E0) and milestones **E1–E4 shipped the differentiable native
+`exp`, `log`, and the fused stable `softmax` and `log_softmax`** — C++
+kernels, self-validating guarded C ABI, `NativeTensorCore` and
+`NativeTensor` layers. `exp` and `log` are the phase's two backward
+archetypes: `exp` reads its saved output and records no parameter
+version, while `log` rereads the live input (`upstream × reciprocal(x)`,
+no division operation added) and version-guards a direct parameter so a
+post-forward mutation fails before any gradient moves. `softmax` and
+`log_softmax` are the phase's two fused probability transforms — a
+maximum-shift kernel and a log-sum-exp kernel over any axis behind a
+contiguous-only ABI, each with a saved-output backward composed from
+existing Core operations rather than a dedicated kernel. `log_softmax`
+is deliberately **never** `softmax().log()`: it forms no probability and
+performs no division, so it stays accurate where the composed form
+collapses to `-inf`. The rest of the phase (the fused `cross_entropy`,
+`NativeCrossEntropyLoss`, and `native_accuracy`) is designed but **not
+implemented**. More
 activations/math, normalization, RNG/dropout, and CPU optimization sit
 beyond it, and CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and

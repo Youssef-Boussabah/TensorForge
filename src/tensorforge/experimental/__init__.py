@@ -40,10 +40,11 @@ checkpoint paths. Milestone D11 proved the whole stack trains — see
 reproduces the uninterrupted one exactly — and **milestone D12 closed
 Phase D** with cross-cutting integration tests, honest CNN benchmarks, and
 ASan/UBSan validation. What the native line still does **not** have: a
-classification stack (softmax/cross-entropy — contracted for Phase E in
-docs/native_classification_design.md, but not implemented: no ``exp``,
-``log``, ``softmax``, ``log_softmax``, ``cross_entropy``,
-``NativeCrossEntropyLoss``, or ``native_accuracy`` exists), further
+classification **loss and metric** stack (contracted for Phase E in
+docs/native_classification_design.md; milestones E1-E4 shipped the
+differentiable ``exp``, ``log``, ``softmax``, and ``log_softmax``, but no
+``cross_entropy``, ``NativeCrossEntropyLoss``, or ``native_accuracy``
+exists), further
 activations/math, normalization (BatchNorm/LayerNorm), dropout or a
 native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline
 abstractions.

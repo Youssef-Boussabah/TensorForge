@@ -392,10 +392,11 @@ def test_phase_d_status_is_consistent_across_docs_and_registry():
 
     # Later phases must not be claimed. These are genuinely absent
     # capabilities, checked against the registry rather than against
-    # prose. ("softmax" left this list when Phase E milestone E3
-    # implemented it; the Phase-E boundary is tracked separately below.)
+    # prose. ("softmax" and "log_softmax" left this list when Phase E
+    # milestones E3 and E4 implemented them; the Phase-E boundary is
+    # tracked separately below.)
     for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout", "log_softmax", "cross_entropy"):
+                   "dropout", "cross_entropy"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS and absent not in cpp.NATIVE_MODULES
     assert cpp.SUPPORTED_DTYPES == ("float64",)
@@ -570,14 +571,14 @@ def test_phase_e_design_distinguishes_the_backward_read_contracts():
 
 def test_phase_e_implemented_surface_matches_the_milestones_reached():
     """Phase E ships one milestone at a time, and the registries are the
-    honest record. E1 implemented `exp` and E2 `log`; E3-E7 have not
-    landed, so every later capability must still be absent from every
-    implemented inventory."""
+    honest record. E1-E4 implemented `exp`, `log`, `softmax`, and
+    `log_softmax`; E5-E7 have not landed, so every later capability must
+    still be absent from every implemented inventory."""
     from tensorforge.backends import cpp
 
-    # E1/E2/E3 — implemented, in the two inventories they belong to, no
-    # others.
-    for shipped in ("exp", "log", "softmax"):
+    # E1/E2/E3/E4 — implemented, in the two inventories they belong to,
+    # no others.
+    for shipped in ("exp", "log", "softmax", "log_softmax"):
         assert shipped in cpp.TENSOR_CORE_OPS, shipped
         assert shipped in cpp.AUTOGRAD_OPS, shipped
         assert shipped not in cpp.UNSUPPORTED, shipped
@@ -586,8 +587,8 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
         # No raw NumPy-buffer stable-math kernel exists.
         assert shipped not in cpp.RAW_KERNELS, shipped
 
-    # E4-E7 — still designed only.
-    for name in ("log_softmax", "cross_entropy",
+    # E5-E7 — still designed only.
+    for name in ("cross_entropy",
                  "NativeCrossEntropyLoss", "native_accuracy"):
         assert name in cpp.UNSUPPORTED, f"{name} left the unsupported boundary"
         assert name not in cpp.TENSOR_CORE_OPS, name
@@ -597,37 +598,50 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
         assert name not in cpp.NATIVE_LOSSES, name
     # No metrics inventory exists yet either — E7 introduces it.
     assert not hasattr(cpp, "NATIVE_METRICS")
-    # E3 created the classification source unit locked by E0 §9.1, and
-    # the softmax kernel/export are defined there rather than in the
-    # elementwise unit. Checked by symbol definition, not by banning the
-    # word, so cross-referencing comments remain possible.
+    # Neither probability transform became a module (E0 §1 excludes both).
+    import tensorforge.experimental as experimental
+    for module in ("NativeSoftmax", "NativeLogSoftmax"):
+        assert module not in cpp.NATIVE_MODULES, module
+        assert not hasattr(experimental, module), module
+    # E3 created the classification source unit locked by E0 §9.1, and E4
+    # extended it; both forwards' kernels/exports are defined there rather
+    # than in the elementwise unit. Checked by symbol definition, not by
+    # banning the word, so cross-referencing comments remain possible.
     classification = (REPO_ROOT / "cpp" / "src" / "classification.cpp")
     assert classification.is_file()
-    assert "tf_core_softmax_forward" in classification.read_text(
-        encoding="utf-8"
-    )
+    classification_text = classification.read_text(encoding="utf-8")
+    for export in ("tf_core_softmax_forward", "tf_core_log_softmax_forward"):
+        assert export in classification_text, export
+        assert export in cpp._CHECKED_KERNELS, export
+    # Neither fused transform has a backward ABI symbol: those gradients
+    # are composed from existing Core operations.
+    for absent in ("tf_core_softmax_backward",
+                   "tf_core_log_softmax_backward"):
+        assert absent not in classification_text, absent
+        assert absent not in cpp._CHECKED_KERNELS, absent
     elementwise = (REPO_ROOT / "cpp" / "src" / "elementwise.cpp").read_text(
         encoding="utf-8"
     )
     assert "tf_core_softmax_forward(" not in elementwise
+    assert "tf_core_log_softmax_forward(" not in elementwise
 
 
 def test_phase_e_milestone_status_is_reported_honestly():
-    """E0 and E1 are marked complete, E2-E10 are not, and Phase E itself
-    is never declared complete. Checked semantically against the design
+    """E0-E4 are marked complete, E5-E10 are not, and Phase E itself is
+    never declared complete. Checked semantically against the design
     document's status table and the live registry."""
     from tensorforge.backends import cpp
 
     # The ladder's status table is the one place per-milestone status is
     # declared, so the row checks run inside that section only.
     ladder = _design_section("Milestone ladder")
-    for done in ("E0", "E1", "E2", "E3"):
+    for done in ("E0", "E1", "E2", "E3", "E4"):
         row = re.search(rf"\|\s*{done}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {done}"
         assert "complete" in row.group(1).lower(), (
             f"the design does not mark {done} complete"
         )
-    for pending in ("E4", "E5", "E6", "E7", "E8", "E9", "E10"):
+    for pending in ("E5", "E6", "E7", "E8", "E9", "E10"):
         row = re.search(rf"\|\s*{pending}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {pending}"
         assert "complete" not in row.group(1).lower(), (
@@ -645,11 +659,12 @@ def test_phase_e_milestone_status_is_reported_honestly():
     assert re.search(r"Phase E[^.]{0,120}in progress", matrix, re.I), (
         "the support matrix no longer marks Phase E in progress"
     )
-    # The registry agrees: exactly the E1/E2/E3 capabilities are live and
+    # The registry agrees: exactly the E1-E4 capabilities are live and
     # the next milestone's capability is not.
-    for shipped in ("exp", "log", "softmax"):
+    for shipped in ("exp", "log", "softmax", "log_softmax"):
         assert shipped in cpp.AUTOGRAD_OPS, shipped
-    assert "log_softmax" in cpp.UNSUPPORTED
+        assert shipped not in cpp.UNSUPPORTED, shipped
+    assert "cross_entropy" in cpp.UNSUPPORTED
 
 
 def test_docs_present_the_shipped_stable_math():
@@ -727,6 +742,57 @@ def test_docs_present_the_shipped_softmax():
     # Softmax stays contiguous-only at the ABI while the Core handles
     # strided inputs — both halves must remain stated.
     assert "contiguous-only" in design.lower()
+
+
+def test_docs_present_the_shipped_log_softmax():
+    """E4's load-bearing decisions must stay documented: the fused
+    log-sum-exp forward that is explicitly never `softmax().log()`, the
+    contiguous-only ABI with Core-level Policy B, the saved-output
+    backward composed from Core ops with no backward kernel, and the
+    absence of a module."""
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    assert re.search(r"`log_softmax`\s*\|\s*Yes\s*\|\s*Yes", matrix), (
+        "the support matrix does not list log_softmax as a differentiable "
+        "operation"
+    )
+    section = _design_section("NativeTensor.log_softmax(")
+    assert "E4" in section and "implemented" in section.lower(), (
+        "the design does not record log_softmax as implemented"
+    )
+    lowered = section.lower()
+    # Fused stable forward — and explicitly not the composed form.
+    assert "fused" in lowered
+    assert "log-sum-exp" in lowered
+    assert re.search(r"never[^.]{0,40}softmax\(\)\.log\(\)", lowered), (
+        "the design no longer rejects softmax().log() as the implementation"
+    )
+    # Contiguous-only ABI + Policy-B copy at the Core layer.
+    assert "contiguous-only" in lowered
+    assert "policy-b" in lowered or "policy b" in lowered
+    # Saved-output backward, no version snapshot, no backward kernel.
+    assert "saved output" in lowered or "saved log probabilities" in lowered
+    assert "no version snapshot" in lowered
+    assert re.search(r"no dedicated log-softmax backward kernel", section,
+                     re.I), (
+        "the design no longer records that log_softmax has no backward kernel"
+    )
+    # The exact backward formula stays written down somewhere in the doc.
+    design = _normalized_doc(PHASE_E_DESIGN)
+    assert re.search(
+        r"upstream\s*[−-]\s*exp\(y\)\s*\*\s*"
+        r"sum\(upstream,\s*axis,\s*keepdims=True\)",
+        design,
+    ), "the design no longer states the log_softmax backward formula"
+    # log's live-input/version-checked contrast is preserved alongside it.
+    log_section = _design_section("NativeTensor.log()")
+    assert "rereads the live input" in log_section
+    assert "version-checked" in log_section
+    # No module was added at any layer.
+    from tensorforge.backends import cpp
+    import tensorforge.experimental as experimental
+
+    assert not hasattr(experimental, "NativeLogSoftmax")
+    assert "NativeLogSoftmax" not in cpp.NATIVE_MODULES
 
 
 def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():

@@ -158,9 +158,13 @@ def test_native_softmax_registry_placement():
     assert "softmax" in info["tensor_core_ops"]
     assert "softmax" in info["autograd_ops"]
     assert "softmax" not in info["unsupported"]
-    # E4-E7 are still genuinely absent. "log_softmax" is a distinct fused
-    # capability, deliberately not composed from log and softmax.
-    for absent in ("log_softmax", "cross_entropy",
+    # E4 landed "log_softmax" as a distinct fused capability, deliberately
+    # not composed from log and softmax (its contract lives in
+    # tests/test_native_log_softmax.py). E5-E7 are still genuinely absent.
+    assert "log_softmax" in cpp.TENSOR_CORE_OPS
+    assert "log_softmax" in cpp.AUTOGRAD_OPS
+    assert "log_softmax" not in cpp.UNSUPPORTED
+    for absent in ("cross_entropy",
                    "NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.TENSOR_CORE_OPS
@@ -1087,10 +1091,12 @@ def test_native_softmax_metadata_marshalling_is_not_data(monkeypatch):
 @needs_native
 def test_native_softmax_scope_boundaries_hold():
     """E3 is softmax only: no later Phase-E surface, no public max/argmax
-    or division, no module, and the stable framework is untouched."""
+    or division, no module, and the stable framework is untouched.
+    (`log_softmax` arrived separately in E4 as its own fused kernel, so
+    it is no longer listed as absent here.)"""
     x = NativeTensor.from_array(VALUES)
     core = cpp.NativeTensorCore.from_array(VALUES)
-    for absent in ("log_softmax", "cross_entropy", "max", "argmax", "amax",
+    for absent in ("cross_entropy", "max", "argmax", "amax",
                    "divide", "sigmoid", "tanh"):
         assert not hasattr(x, absent), absent
         assert not hasattr(core, absent), absent

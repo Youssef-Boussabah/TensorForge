@@ -703,8 +703,8 @@ The Python line is done; what remains is expansion on its own terms:
     milestone-era doc guardrails with durable semantic checks. See the
     [support matrix](native_support_matrix.md) for the finalized status.
   - **Phase E — Native Classification and Stable Math — in progress
-    (E0, E1, E2, and E3 complete).** The **E0 architecture contract is
-    written** —
+    (E0, E1, E2, E3, and E4 complete).** The **E0 architecture contract
+    is written** —
     [native_classification_design.md](native_classification_design.md)
     locks the scope, the public API surface (`exp`, `log`, `softmax`,
     `log_softmax`, a fused `cross_entropy` from raw logits,
@@ -748,8 +748,23 @@ The Python line is done; what remains is expansion on its own terms:
     **composed from existing Core operations** — no dedicated backward
     kernel — reading only the saved probabilities, so it records no
     parameter version. E3 added no `NativeSoftmax` module and no public
-    `max`, `argmax`, or division. **Everything else in Phase E is still
-    designed-only**: `log_softmax`, `cross_entropy`,
+    `max`, `argmax`, or division. **E4 has shipped the stable native
+    log-softmax**, the phase's second fused probability transform: its
+    **own** log-sum-exp kernel computing
+    `(x - max(x)) - log(sum(exp(x - max(x))))` in one pass over any
+    single axis, **never** `softmax().log()` — no probability buffer is
+    formed and no division happens, so a probability too small to
+    represent (which the composed form would round to 0 and report as
+    `-inf`) still gets an accurate finite log-probability. It reuses E3's
+    contiguous-only C ABI shape, its trust-boundary validator (now shared
+    by both exports), and the same Core-level Policy-B copy-then-compute.
+    Its backward is the closed-form
+    `upstream - exp(y) * sum(upstream, axis, keepdims)` **composed from
+    existing Core operations** — no backward kernel; `exp(y)` recovers
+    the probabilities from the saved log probabilities — so it too reads
+    only the saved output and records no parameter version. E4 added no
+    `NativeLogSoftmax` module and no `NLLLoss`. **Everything else in
+    Phase E is still designed-only**: `cross_entropy`,
     `NativeCrossEntropyLoss`, and `native_accuracy` remain listed as
     unsupported in the [support matrix](native_support_matrix.md), and
     Phase E is **not** complete. Deliberately outside
