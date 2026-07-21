@@ -10,9 +10,11 @@ tested, and readable. The Python framework line is complete as of
 v3.0; work continues on advanced branches (the experimental C++
 native line has completed Phase A — CPU runtime, Phase B — native
 autograd, Phase C — the native training stack, and Phase D — the
-native CNN stack, through Advanced C++ v3.16; a native classification
-stack, normalization/dropout/RNG, CPU optimization, and CUDA
-experiments are future work).
+native CNN stack, through Advanced C++ v3.16; Phase E — native
+classification and stable math — is *designed only*, its contract locked
+in `docs/native_classification_design.md` with nothing implemented, and
+normalization/dropout/RNG, CPU optimization, and CUDA experiments are
+future work beyond it).
 Position the project as serious and systems-focused — never
 "educational", "toy", or "mini" — while staying honest: not
 production-ready, not a PyTorch replacement.
@@ -52,7 +54,9 @@ production-ready, not a PyTorch replacement.
   stats and a `main()` that prints, guarded by `__main__`.
 - `tests/` — pytest suite; every feature has tests.
 - `docs/` — project summary, architecture, autograd, training,
-  examples, roadmap, release history. When a milestone changes the
+  examples, roadmap, release history, and the native-line design
+  contracts (`native_cnn_design.md` for Phase D,
+  `native_classification_design.md` for Phase E). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the

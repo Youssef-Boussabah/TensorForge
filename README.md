@@ -65,12 +65,14 @@ reached explicitly through `tensorforge.experimental` and
   tracking, NumPy-style broadcasting, sum/mean reductions, and
   float64/cpu dtype/device metadata over ctypes-loaded C++ kernels.
 - **Native autograd (Phase B, complete)**: a Python-managed
-  reverse-mode graph over autograd-unaware kernels — fourteen
-  differentiable operations (`add`, `subtract`, `multiply`, `relu`,
+  reverse-mode graph over autograd-unaware kernels — the differentiable
+  operations Phase B shipped (`add`, `subtract`, `multiply`, `relu`,
   `sqrt`, `reciprocal`, `matmul`, `sum`, `mean`, `reshape`,
-  `transpose`/`T`, `narrow`, `contiguous_copy`), broadcasting and view
+  `transpose`/`T`, `narrow`, `contiguous_copy`), joined by the Phase-D
+  `conv2d` and `maxpool2d` primitives below, plus broadcasting and view
   gradients, a native scatter backward for `narrow`, one-shot graph
-  release with `retain_graph` opt-in, and failure rollback.
+  release with `retain_graph` opt-in, and failure rollback. The backend's
+  `AUTOGRAD_OPS` registry is the exact, current list.
 - **Native training stack (Phase C, complete)**: `NativeParameter`
   (value versioning and a controlled mutation path with stale-graph
   detection), `NativeModule` with atomic `state_dict`/
@@ -197,6 +199,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_design.md](docs/native_autograd_design.md) — design for native reverse-mode autograd over NativeTensor (Phase B)
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
+- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — designed, not implemented)
 
 ## Limitations
 
@@ -211,13 +214,15 @@ Honest expectations:
 - The native CNN stack (Phase D) is complete — `NativeFlatten`,
   `NativeConv2d`, `NativeMaxPool2d`, and a deterministic training +
   exact checkpoint-resume proof — but the native line stops there: no
-  native classification stack (softmax/cross-entropy), no normalization,
-  no dropout or native RNG, and native checkpoints capture no scheduler
-  or random state — see the
+  native classification stack (softmax/cross-entropy — Phase E is
+  *designed* in
+  [docs/native_classification_design.md](docs/native_classification_design.md)
+  and *not implemented*), no normalization, no dropout or native RNG, and
+  native checkpoints capture no scheduler or random state — see the
   [native support matrix](docs/native_support_matrix.md).
 - Both lines' convolution and pooling use deliberately naive loops (the
-  native kernels too: no im2col, BLAS, threading, or SIMD).
-- `Conv2d` and `MaxPool2d` (stable line) use deliberately naive loops.
+  stable `Conv2d`/`MaxPool2d` and the native kernels alike: no im2col,
+  BLAS, threading, or SIMD).
 - Benchmarks are hardware-specific characterizations with no universal
   speed claims; the naive native kernels can lose to NumPy's BLAS.
 - No real datasets and no external ML libraries; every example runs on
@@ -245,9 +250,14 @@ end-to-end training + checkpoint-resume proof
 reduction, and a checkpoint-interrupted run that reproduces the
 uninterrupted one exactly), cross-cutting integration tests, honest CNN
 benchmarks, and ASan/UBSan validation of the whole native stack. The next
-native phase — a classification stack, more activations/math,
-normalization, RNG/dropout, and CPU optimization — has not started, and
-CUDA/GPU experiments remain future work. See
+native phase — **Phase E, Native Classification and Stable Math** — has
+its architecture contract locked
+([docs/native_classification_design.md](docs/native_classification_design.md),
+milestone E0) but **no implementation**: native `exp`/`log`/`softmax`/
+`log_softmax`, the fused `cross_entropy`, `NativeCrossEntropyLoss`, and
+`native_accuracy` do not exist yet. More activations/math, normalization,
+RNG/dropout, and CPU optimization sit beyond it, and CUDA/GPU experiments
+remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 

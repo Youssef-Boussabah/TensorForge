@@ -13,7 +13,8 @@ tensorforge.Tensor: the two autograd engines never mix, no conversion is
 implicit, and it shares no state with the stable framework. A full native
 training stack — parameters, modules, layers, a loss, optimizers, and
 pickle-free checkpoints — is built on it and described below. The native
-CNN stack (Phase D) has begun with ``NativeFlatten`` (milestone D1) and,
+CNN stack (Phase D) is **complete** (milestones D0–D12): it began with
+``NativeFlatten`` (milestone D1) and,
 as of milestone D6, the differentiable **``NativeTensor.conv2d``** operation
 (NCHW/OIHW cross-correlation with int/tuple stride and padding and optional
 bias; input, weight, and bias gradients through native backward kernels and
@@ -39,9 +40,13 @@ checkpoint paths. Milestone D11 proved the whole stack trains — see
 reproduces the uninterrupted one exactly — and **milestone D12 closed
 Phase D** with cross-cutting integration tests, honest CNN benchmarks, and
 ASan/UBSan validation. What the native line still does **not** have: a
-classification stack (softmax/cross-entropy), further activations/math,
-normalization (BatchNorm/LayerNorm), dropout or a native RNG,
-float32/dtype expansion, CUDA, AMP, and data-pipeline abstractions.
+classification stack (softmax/cross-entropy — contracted for Phase E in
+docs/native_classification_design.md, but not implemented: no ``exp``,
+``log``, ``softmax``, ``log_softmax``, ``cross_entropy``,
+``NativeCrossEntropyLoss``, or ``native_accuracy`` exists), further
+activations/math, normalization (BatchNorm/LayerNorm), dropout or a
+native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline
+abstractions.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
@@ -52,7 +57,10 @@ assignment, deterministic identity-deduplicated recursive traversal,
 recursive ``zero_grad()``, and ``train()``/``eval()`` state propagation
 — plus the in-memory state dictionary contract (Advanced C++ v3.3):
 ``state_dict()`` snapshots and atomic identity-preserving
-``load_state_dict()``, parameters only. ``NativeLinear`` (Advanced C++
+``load_state_dict()``. That contract began as parameters-only and, since
+the v3.15 buffer support (``register_buffer``/``buffers()``), covers
+**parameters and persistent buffers** — non-persistent buffers are never
+serialized. ``NativeLinear`` (Advanced C++
 v3.4) is the first concrete native layer: a fully connected
 ``y = x @ weight (+ bias)`` on NativeModule/NativeParameter with
 deterministic seeded initialization, strictly 2-D input semantics, and

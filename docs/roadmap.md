@@ -702,12 +702,26 @@ The Python line is done; what remains is expansion on its own terms:
     reconciliation across every status surface, and the replacement of the
     milestone-era doc guardrails with durable semantic checks. See the
     [support matrix](native_support_matrix.md) for the finalized status.
-  - **Phase E — the next native phase (not started).** The natural
-    continuations, in no committed order: a native classification stack
-    (softmax/cross-entropy and its metrics), more native activations and
-    math, native normalization, a native RNG and dropout, a CPU
-    optimization phase for the deliberately naive kernels, and
-    build/packaging evolution. None of it exists today.
+  - **Phase E — Native Classification and Stable Math — designed, not
+    implemented.** The **E0 architecture contract is written** —
+    [native_classification_design.md](native_classification_design.md)
+    locks the scope, the public API surface (`exp`, `log`, `softmax`,
+    `log_softmax`, a fused `cross_entropy` from raw logits,
+    `NativeCrossEntropyLoss`, and a reporting-only `native_accuracy`), the
+    numerical-stability strategy (maximum shift and log-sum-exp, never
+    `softmax().log()`), the backward-read and versioning matrix (`log` is
+    the one version-checked operation; everything else reads saved state),
+    the `int64` target contract (the native runtime has no integer dtype),
+    the graph-owned saved-probability lifetime, the contiguous-only C ABI
+    families and the new `cpp/src/classification.cpp` unit, the capability
+    inventory placements, the unchanged checkpoint format version 1, and
+    the **E0–E10 milestone sequence**. **E0 added no numerical behavior:
+    no kernel, ABI symbol, operation, loss, metric, benchmark, or example
+    exists yet, and every Phase-E name is still listed as unsupported in
+    the [support matrix](native_support_matrix.md).** Deliberately outside
+    Phase E and still unplanned: more native activations beyond it, native
+    normalization, a native RNG and dropout, a CPU optimization phase for
+    the deliberately naive kernels, and build/packaging evolution.
   - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

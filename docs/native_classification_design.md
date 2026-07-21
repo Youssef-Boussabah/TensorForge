@@ -1,0 +1,931 @@
+# Native classification architecture design (Phase E contract)
+
+This is the **design-and-contract** document for the experimental native
+C++ CPU line's classification stack — **Phase E — Native Classification
+and Stable Math**. It is a milestone-zero (E0) deliverable: it locks the
+architecture, public API surface, numerical-stability strategy, ownership
+rules, C ABI shape, source organization, testing strategy, and milestone
+sequence **before any numerical classification code is written**.
+
+**E0 adds no numerical behavior.** No kernel, C ABI symbol, ctypes
+declaration, `NativeTensorCore` method, `NativeTensor` operation, loss
+module, metric, benchmark, or example ships with this document. Every
+capability described below is *designed*, not present. The backend
+capability registry (`tensorforge.backends.cpp` — `TENSOR_CORE_OPS`,
+`AUTOGRAD_OPS`, `NATIVE_MODULES`, `NATIVE_LOSSES`, and `UNSUPPORTED`),
+mirrored in [native_support_matrix.md](native_support_matrix.md), stays
+the **single source of truth** for what is actually live at any moment.
+At E0 every Phase-E name is in `UNSUPPORTED`.
+
+The stable Python framework (`tensorforge.Tensor.exp/log/softmax`,
+`tensorforge.nn.cross_entropy`, `tensorforge.nn.accuracy`) is the
+**numerical and public-behavior reference**. Where the native
+architecture must differ (ownership, lifetime, the fused-primitive /
+autograd split, the absence of an integer dtype), the difference is
+stated and justified. No implementation code is copied from any other
+framework.
+
+Read alongside:
+[native_tensor_wrapper_design.md](native_tensor_wrapper_design.md) (the
+`NativeTensor` wrapper and ownership model),
+[native_autograd_design.md](native_autograd_design.md) (the
+Python-managed reverse-mode graph),
+[native_cnn_design.md](native_cnn_design.md) (Phase D — the source of
+the graph-owned saved-resource model this phase reuses),
+[native_abi_error_contract.md](native_abi_error_contract.md) (the
+exception-safe C ABI status contract), and
+[backend_experiments.md](backend_experiments.md) (the whole native line).
+
+---
+
+## 0. Invariants Phase E must preserve
+
+Phase E changes nothing about these existing guarantees:
+
+- Stable `Tensor` and `NativeTensor` remain **separate systems**; there is
+  no implicit conversion, no dispatch, and no fallback between them.
+- Native autograd stays **Python-managed** at the `NativeTensor` layer;
+  the `NativeTensorCore` runtime and the C++ kernels stay
+  **autograd-unaware**.
+- The native runtime targets **CPU float64** only.
+- Native storage **ownership and lifetime are explicit** (`owns_core`,
+  `close()`); owning cores free storage, borrowing views do not.
+- `NativeParameter` preserves **object identity**; value replacement
+  increments its monotonic **value version**; graphs record expected
+  versions and detect **stale graphs** through version checks.
+- `state_dict()` returns **independent snapshots**; state and checkpoint
+  loading are **atomic** (validate → stage → commit → rollback on
+  failure); native checkpoints stay **pickle-free** and load with
+  `allow_pickle=False`; buffers stay separate from parameters.
+- Native checkpoints keep **format version 1**.
+- Failed operations must **not partially mutate** caller-visible state.
+- Every fallible native export uses the existing **thread-local status /
+  `errcheck` contract**; **no C++ exception crosses the C ABI**.
+- Numerical operations stay free of NumPy compute — the NumPy tripwire
+  tests keep holding. The one deliberate exception is the reporting-only
+  metric of §8, which is outside training and autograd.
+- Existing Phase A–D numerical behavior is **unchanged**.
+
+---
+
+## 1. Phase-E scope
+
+### In scope
+
+| # | Deliverable |
+|---|---|
+| 1 | Differentiable `NativeTensor.exp()` |
+| 2 | Differentiable `NativeTensor.log()` |
+| 3 | Numerically stable `NativeTensor.softmax(axis=-1)` |
+| 4 | Numerically stable `NativeTensor.log_softmax(axis=-1)` |
+| 5 | Fused `NativeTensor.cross_entropy(targets, reduction="mean")` from raw logits |
+| 6 | `NativeCrossEntropyLoss` module |
+| 7 | Reporting-only `native_accuracy(logits, targets)` |
+| 8 | Deterministic end-to-end native classification training |
+| 9 | Exact model and optimizer checkpoint resume for that run |
+| 10 | Honest classification benchmarks (characterization only) |
+| 11 | Cross-cutting integration, ownership, sanitizer, and documentation closure |
+
+### Explicitly excluded from Phase E
+
+`tanh`; `sigmoid`; binary cross-entropy; `NLLLoss`; class weighting;
+`ignore_index`; label smoothing; probability targets; soft-label targets;
+`NativeSoftmax` or `NativeLogSoftmax` **modules**; `max`, `min`, `argmax`,
+or product reductions; native integer tensors; normalization; BatchNorm;
+LayerNorm; a native RNG; dropout; optimizer changes; scheduler changes;
+checkpoint schema changes; CPU optimization; build or packaging redesign;
+float32; CUDA; AMP; any stable-framework change; implicit dispatch;
+implicit conversion; real datasets; and data loaders.
+
+These stay in the support matrix's unsupported/future section. As in
+Phase D, the first implementation of every kernel favors **correctness,
+readability, sanitizer safety, and explicit indexing** over speed.
+
+---
+
+## 2. Locked public API surface
+
+```
+NativeTensor.exp()
+NativeTensor.log()
+NativeTensor.softmax(axis=-1)
+NativeTensor.log_softmax(axis=-1)
+NativeTensor.cross_entropy(targets, reduction="mean")
+
+NativeCrossEntropyLoss(reduction="mean")          # a NativeModule
+native_accuracy(logits, targets) -> float          # reporting only
+```
+
+Nothing else becomes public. In particular the fused cross-entropy's
+**saved probabilities are private** (§7) and never reachable from any
+public attribute, method, state dictionary, or checkpoint.
+
+**Reductions.** `cross_entropy` and `NativeCrossEntropyLoss` support
+exactly `"mean"` and `"sum"`, validated by exact string match (no case or
+whitespace normalization, no coercion) — the `NativeMSELoss` precedent.
+**`reduction="none"` is not supported in Phase E**: both supported
+reductions produce a scalar, which is what `backward()`'s default seed and
+the training loop need; an unreduced loss is a broader API question
+deferred past this phase.
+
+**Axis argument.** `softmax` and `log_softmax` take `axis=-1` by default,
+accept any valid positive or negative axis, reject `bool` (the existing
+`_normalize_axis` rule — a `bool` is never a legal axis even though it is
+an `int` in Python), and normalize negatives against `ndim`. Rank ≥ 1 is
+required; rank 0 (a scalar) has no axis to normalize and is rejected.
+
+---
+
+## 3. Numerical stability strategy
+
+The whole phase exists because a naive `exp(x) / sum(exp(x))` overflows
+for large logits and a naive `log(softmax(x))` loses precision for small
+probabilities. Two standard transforms carry the phase, and both are
+**mandatory, not optional optimizations**:
+
+- **Maximum shift.** With `m = max_j x_j` along the axis,
+  `softmax(x)_i = exp(x_i − m) / Σ_j exp(x_j − m)`. Every exponent is
+  ≤ 0, so no term overflows, and at least one term equals 1, so the
+  denominator is ≥ 1 and never underflows to zero.
+- **Log-sum-exp.** `log_softmax(x)_i = (x_i − m) − log(Σ_j exp(x_j − m))`,
+  computed in that order and **never** as `log(softmax(x))`.
+
+`cross_entropy` uses the same log-sum-exp directly on raw logits:
+`loss_n = −(x[n, t_n] − m_n) + log(Σ_j exp(x[n, j] − m_n))`.
+
+The max shift is an internal computation, **not** a new public `max`
+reduction: Phase E adds no `max`/`min`/`argmax` operation to any
+inventory. The maximum is computed inside the fused kernels over the
+axis being normalized.
+
+Determinism: fixed row-major traversal order, no parallel reduction, no
+SIMD/FMA/Kahan tricks. Floating-point parity with the stable framework is
+therefore **to a tolerance** (`atol ≈ 1e-12` for test-sized tensors), not
+bit-for-bit — the same honesty the reductions and CNN docs already state.
+
+---
+
+## 4. Operation contracts
+
+Common to all five operations: **float64/CPU only**; inputs must be open
+`NativeTensor`s (stable `Tensor`s, NumPy arrays, lists, scalars, and
+closed tensors are rejected by type/state before anything is allocated);
+every output is a **fresh owning row-major contiguous** tensor that
+aliases no input; zero-size dimensions cannot exist (the runtime forbids
+them), so "nonempty" is inherited, not re-checked.
+
+### 4.1 `NativeTensor.exp()`
+
+- **Shape support:** any shape already legal in the native runtime,
+  including rank-0 scalars and arbitrary strided/offset views.
+- **Execution paths:** both the **generic strided odometer** path and the
+  **contiguous fast path**, exactly like `sqrt`/`reciprocal` — two guarded
+  exports, selected by the Core wrapper on the operand's contiguity.
+- **IEEE behavior:** unmodified `std::exp`. Overflow to `+inf`, underflow
+  to `0`, `NaN` propagation, and `exp(-inf) == 0` are all inherited, not
+  clamped.
+- **Backward — reads the saved forward output.** `d/dx exp(x) = exp(x)`,
+  so the node keeps its own forward result `y` and computes
+  `dx = upstream * y`. **The input is never reread during backward.**
+- **Versioning: no version snapshot.** Because backward reads the
+  **saved output** and not a parent's current value, `exp` records
+  **no parameter version**, exactly like `sqrt`/`reciprocal`. Mutating a
+  direct `NativeParameter` after the forward pass therefore leaves this
+  edge valid, and backward still produces the mathematically correct
+  gradient for the forward that actually ran.
+- **Closed saved output:** if the saved output tensor is closed before
+  backward runs, backward must fail **clearly and atomically** — the
+  existing closed-tensor `RuntimeError`, raised before any gradient is
+  accumulated, never a silent wrong answer.
+
+### 4.2 `NativeTensor.log()`
+
+- **Shape support and execution paths:** identical to `exp` (generic
+  strided + contiguous, both guarded exports).
+- **IEEE behavior:** unmodified `std::log`, with **no clamping and no
+  inserted epsilon**. `log(0) == -inf`, `log(negative) == NaN`,
+  `log(+inf) == +inf`, `NaN` propagates. Silently clamping would hide
+  real modelling bugs; the stable framework's stability lives in the fused
+  losses, not in `log` itself, and native follows that.
+- **Backward — rereads the live input.** `d/dx log(x) = 1/x`, and the
+  saved output `y = log(x)` cannot recover `x` cheaply or exactly, so the
+  backward **rereads the input's current value** and computes
+  `dx = upstream * reciprocal(input)` through the existing native
+  `reciprocal` (no new division operation; the `reciprocal` + `multiply`
+  composition rule is unchanged).
+- **Versioning: version-checked.** Because backward reads a parent's
+  **live input** value, a direct `NativeParameter` parent **is
+  version-guarded** through `_versioned_value_reads("log", (self,))`.
+  Mutating that parameter after the forward pass must raise the
+  deterministic **stale-graph** `RuntimeError` **before any gradient is
+  computed or committed** — the existing pre-callback validation point.
+  A non-parameter parent records nothing, as always.
+
+This exp/log asymmetry is deliberate and is the phase's first teaching
+point: *what a backward reads decides what it must version-guard.*
+
+### 4.3 `NativeTensor.softmax(axis=-1)`
+
+- **Forward:** the §3 maximum-shift form, as one **fused C++ kernel** —
+  not a composition of `exp` and `sum` at the Python layer. Fusing keeps
+  one pass over the axis, avoids three intermediate allocations, and
+  keeps the stability transform inside the kernel where it cannot be
+  bypassed.
+- **Rank/axis:** any rank ≥ 1; any valid positive or negative axis; a
+  `bool` axis is rejected. Output shape equals input shape exactly.
+- **Layout:** **contiguous-only C ABI.** The kernel receives contiguous
+  storage plus an offset and a three-way factorization of the shape
+  around the axis — `(outer, axis_length, inner)` — which is all the
+  index arithmetic a general-rank axis-wise pass needs. The Core wrapper
+  applies the existing **Policy-B copy-then-compute** rule from Phase D:
+  a non-contiguous operand is materialized with `contiguous_copy()` into
+  private owning storage that the wrapper closes as soon as the kernel
+  returns. The caller's view is never touched.
+- **Backward — composed at the graph-unaware Core layer from the saved
+  output.** With `y = softmax(x)`:
+  `dx = y * (upstream − sum(upstream * y, axis, keepdims=True))`.
+  This is expressed with existing Core ops (`multiply`, `sum` with
+  `keepdims`, `subtract`) rather than a new backward kernel — the
+  identity is exact, the pieces are already tested, and no new C ABI
+  symbol is needed. The composition happens **below** the autograd layer
+  (in the backward closure, over cores), so the graph never leaks into
+  C++ and no intermediate node is created.
+- **Backward reads the saved output `y`, never the input.**
+- **Versioning: no version snapshot.** Same reasoning as `exp`.
+
+### 4.4 `NativeTensor.log_softmax(axis=-1)`
+
+- **Forward:** a **fused stable log-sum-exp** kernel. **Never implemented
+  as `softmax().log()`** — that composition is exactly the precision loss
+  this operation exists to avoid, and the design forbids it at every
+  layer.
+- **Rank/axis, shape, layout:** identical to `softmax`, including the
+  contiguous-only C ABI with `(outer, axis_length, inner)` factorization
+  and Core-level Policy-B handling.
+- **Backward — from the saved output.** With `y = log_softmax(x)`:
+  `dx = upstream − exp(y) * sum(upstream, axis, keepdims=True)`.
+  The `exp(y)` here is the Phase-E `exp` Core op applied to the **saved
+  output**, recovering the probabilities without rereading the input.
+- **Backward reads the saved output, never the input.**
+- **Versioning: no version snapshot.**
+
+### 4.5 `NativeTensor.cross_entropy(targets, reduction="mean")`
+
+- **Fused directly from raw logits.** Never
+  `softmax().log()`-then-index, and never `log_softmax()`-then-gather:
+  one kernel computes the row maximum, the log-sum-exp, the per-row loss,
+  **and** the softmax probabilities the backward needs, in a single
+  deterministic pass.
+- **Logits contract:** shape exactly `(batch_size, num_classes)`, rank
+  **2** (rank 1, rank 3, and higher are rejected with an error naming the
+  actual shape). `batch_size` and `num_classes` are both positive by the
+  existing nonempty-tensor rule. No broadcasting, no implicit reshape, no
+  channel-dimension convention.
+- **Targets:** not `NativeTensor`s — see §6.
+- **Reduction:** exactly `"mean"` or `"sum"`.
+- **Result:** a **scalar** `NativeTensor` (shape `()`), so
+  `loss.backward()` works with the existing default seed and an explicit
+  scalar upstream scales the gradient exactly as the engine defines.
+- **Saved state:** the forward produces **private saved probabilities**
+  (the full `(batch_size, num_classes)` softmax) as internal owning
+  native storage. It is never a public `NativeTensor`, never has a public
+  dtype, and never appears in any inventory (§7).
+- **Backward** uses **only**: the saved probabilities, the independently
+  copied target metadata, the reduction, and the scalar upstream
+  gradient. The rule is
+  `grad_logits[n, j] = upstream * (p[n, j] − [j == t_n]) / N` for
+  `"mean"` (drop the `/N` for `"sum"`), computed by a dedicated backward
+  kernel into fresh owning contiguous `(batch_size, num_classes)`
+  storage.
+- **Backward never rereads the logits**, so there is **no logits version
+  snapshot**: a direct `NativeParameter` logits parent mutated after
+  forward leaves this edge valid. (In practice logits are an
+  intermediate, not a parameter; the rule is stated because it must be
+  provable, not because it is common.)
+
+---
+
+## 5. Backward-read and versioning matrix
+
+The one table to consult when implementing any Phase-E backward. "Saved"
+means state the forward recorded; "live" means the parent's current value
+read at backward time.
+
+| Operation | Backward reads | Rereads the input? | Parameter version snapshot |
+|---|---|---|---|
+| `exp` | the **saved output** `y` | no | **none** |
+| `log` | the **live input** `x` | **yes** | **version-checked** (stale-graph error on a mutated direct parameter) |
+| `softmax` | the **saved output** `y` | no | **none** |
+| `log_softmax` | the **saved output** `y` | no | **none** |
+| `cross_entropy` | the **saved probabilities** + copied targets | no | **none** (no logits version snapshot) |
+
+Only `log` joins the version-checked set (`multiply`, `matmul`, `relu`,
+and conditionally `conv2d`). Everything else in Phase E is a
+saved-state backward and therefore survives post-forward mutation, the
+same property `sqrt`/`reciprocal`/`maxpool2d` already have.
+
+---
+
+## 6. Target contract
+
+The native runtime has **no integer dtype**, and Phase E deliberately
+does not add one (a public integer `NativeTensor` is a much larger
+change: storage, ABI, dtype normalization, promotion rules). So
+classification targets are **not** `NativeTensor`s.
+
+**Targets are accepted as Python or NumPy integer data and immediately
+converted to an independently owned contiguous `int64` copy.** That copy
+— never the caller's object — is what the forward validates, what the
+kernel reads, and what the backward closure keeps.
+
+Validation, all performed **before any allocation or kernel call**:
+
+- must be **one-dimensional** (a nested sequence or a 2-D array is
+  rejected; a scalar is rejected);
+- length must equal `batch_size` exactly;
+- every element must be an **actual integer scalar value**;
+- **`bool` is rejected** (a `bool` is an `int` in Python, but a boolean
+  target is a modelling error, and the native line rejects `bool`
+  wherever an integer is meant);
+- **floating-point values are rejected, including integral ones such as
+  `1.0`** — no silent truncation, no "it happened to be whole" coercion;
+- **nested arrays are rejected**;
+- **negative values are rejected**;
+- values **≥ `num_classes` are rejected**;
+- errors name the offending index and value.
+
+**Caller mutation after forward can never affect backward.** Because the
+forward took an independent `int64` copy, mutating the caller's list or
+NumPy array afterwards changes nothing — targets carry no version
+counter and need none. This must be proved by a dedicated test, not
+assumed.
+
+**Crossing the ABI.** Targets travel as a raw `const int64_t*` span plus
+its length — the honest representation, since they are not native
+tensors. The owning buffer stays alive for the whole call (and, for the
+backward, for the life of the graph node). C++ **revalidates the range**
+of every target it reads (`0 ≤ t < num_classes`) rather than trusting the
+Python layer, per §10.
+
+---
+
+## 7. Saved-probability lifetime contract
+
+Phase E reuses, unchanged, the **graph-owned resource model** Phase D
+established for MaxPool2d's private winner buffer
+(`NativeTensor._from_op(..., graph_resources=(...))`).
+
+When `cross_entropy` **builds an autograd graph**:
+
+- the output node **owns** the private probability storage;
+- it is **retained under `retain_graph=True`**, so a second backward pass
+  still has it;
+- it is **released after a successful one-shot backward**, at the same
+  deterministic point the graph history is released;
+- it is **released by `output.close()`** if the graph is abandoned;
+- it **stays alive after a failed retryable backward**, so a caller who
+  fixes the error and retries is not left with a half-freed graph;
+- it is **released exactly once** (idempotent, never double-freed);
+- it **never appears in `state_dict()`**;
+- it **never appears in a checkpoint**.
+
+When **no graph is built** (no operand requires grad), the private
+probabilities are **closed immediately inside the forward** — the
+existing `_from_op` behavior — so a no-grad forward can never leak saved
+state.
+
+The copied `int64` targets are ordinary Python-side data held by the same
+backward closure and released with it. They are graph data: never
+serialized, never public.
+
+---
+
+## 8. Metric contract
+
+`native_accuracy(logits, targets) -> float` is a **reporting helper**,
+not a native kernel and not an autograd operation.
+
+It must:
+
+- accept an **open `NativeTensor` of rank 2** (`(batch_size,
+  num_classes)`), rejecting everything else by type/state/shape;
+- validate `targets` with **the same contract as §6**;
+- **explicitly materialize** through `logits.to_numpy()` — the documented
+  native→host copy, the one sanctioned exit from the native world;
+- compute `argmax` with **NumPy**;
+- return a **Python `float`** (the fraction correct), matching the stable
+  `accuracy` metric's return type;
+- **build no graph**, modify no gradients, modify no parameters, and
+  leave the input tensor open and unchanged.
+
+**Why NumPy is allowed here, and only here.** This is a metric computed
+outside training and outside autograd, exactly as the stable framework's
+metrics are "plain NumPy returning Python floats, outside autograd". It
+is not a native operation and must never be described as one. Every
+**numerical** native operation keeps its NumPy-tripwire protection: the
+Phase-E training proof asserts no NumPy compute inside the training step,
+and the metric is called outside that guarded region (or the guard
+explicitly permits the reporting call, and says so).
+
+`native_accuracy` therefore belongs in a **new `NATIVE_METRICS`
+inventory** (§11) — not in `TENSOR_CORE_OPS`, not in `AUTOGRAD_OPS`, not
+in `NATIVE_MODULES`.
+
+---
+
+## 9. C++ source organization and the C ABI
+
+### 9.1 Source units
+
+| Unit | Contents |
+|---|---|
+| `cpp/src/elementwise.cpp` (existing) | `exp` and `log` — they are unary elementwise ops and belong with `relu`/`sqrt`/`reciprocal`, reusing the existing `core_unary` odometer and `core_unary_contiguous` fast-path helpers |
+| `cpp/src/classification.cpp` (**new**) | `softmax` forward, `log_softmax` forward, cross-entropy forward, cross-entropy backward |
+| `cpp/include/tf_classification_internal.h` (**new**) | declarations of the internal `tf::…_contiguous` compute functions, so the dependency-free CTests can link them without going through the C ABI |
+
+`cpp/CMakeLists.txt` globs `cpp/src/*.cpp`, so a new translation unit
+needs **no build-system change**; `cpp/build.py`'s direct-compiler
+fallback enumerates sources the same way. Verify, do not assume, at the
+milestone that adds the file.
+
+### 9.2 Guarded C ABI families
+
+| Symbol | Milestone | Shape of the call |
+|---|---|---|
+| `tf_core_exp` | E1 | generic strided: source handle, destination handle, `shape`, `strides`, `offset`, `ndim` |
+| `tf_core_exp_contiguous` | E1 | contiguous: source handle, destination handle, `numel`, `offset` |
+| `tf_core_log` | E2 | as `tf_core_exp` |
+| `tf_core_log_contiguous` | E2 | as `tf_core_exp_contiguous` |
+| `tf_core_softmax_forward` | E3 | contiguous-only: source handle + offset, destination handle, `outer`, `axis_length`, `inner` |
+| `tf_core_log_softmax_forward` | E4 | as `tf_core_softmax_forward` |
+| `tf_core_cross_entropy_forward` | E5 | logits handle + offset, `const int64_t* targets`, loss handle, probabilities handle, `batch_size`, `num_classes`, reduction code |
+| `tf_core_cross_entropy_backward` | E5 | probabilities handle, `const int64_t* targets`, upstream handle + offset, grad-logits handle, `batch_size`, `num_classes`, reduction code |
+
+The **final exact argument lists** follow the repository's existing
+handle / shape / stride / offset / dimension / status / overflow /
+span-validation conventions (compare `tf_core_relu`, `tf_core_sum`,
+`tf_core_conv2d_forward`, `tf_core_maxpool2d_forward`); the table fixes
+the *shape* of each call, not its literal signature.
+
+The reduction crosses as a small integer **code** (`0` = mean, `1` =
+sum), validated on both sides — never a string, which would put
+allocation and encoding concerns on the ABI.
+
+### 9.3 ABI rules (unchanged, restated because they bind Phase E)
+
+- **No C++ exception crosses the ABI.** Every export is wrapped in
+  `TF_GUARD_BEGIN` / `TF_GUARD_END_VOID`; failures become the
+  thread-local status the ctypes `errcheck` hook turns into
+  `MemoryError` / `ValueError` / `RuntimeError`.
+- **Raw ABI validation is self-contained.** Each export re-proves its own
+  preconditions — non-null handles, positive dimensions, non-negative
+  offsets, overflow-safe products, and every span it touches inside its
+  storage — because the exports are reachable by any ctypes caller, not
+  only by the Python wrapper.
+- **Python validates before allocation** wherever it can (dtype/device,
+  rank, shape, axis, reduction, targets, output-shape arithmetic in
+  arbitrary-precision Python ints), so a rejected call allocates nothing.
+- **C++ revalidates trust-boundary data** — most importantly every target
+  index it dereferences, the same way the pooling backward revalidates
+  every saved winner instead of trusting it.
+- **Ordinary failures mutate nothing.** A rejected call leaves inputs,
+  gradients, parameters, versions, and graphs untouched.
+- **Partial allocations are cleaned up.** Where a forward allocates both
+  an output and a private buffer, the wrapper closes what it already owns
+  before propagating a failure (the `_maxpool2d_forward_with_winners`
+  pattern).
+- **No implicit fallback exists.** An unavailable native operation raises
+  with build instructions; it never quietly computes in NumPy.
+
+---
+
+## 10. Failure atomicity across the layers
+
+Every Phase-E milestone must preserve the four-layer failure story:
+
+1. **Kernel:** validates, then computes; on failure records a status and
+   writes nothing meaningful (allocation failures inside a kernel surface
+   as `MemoryError`).
+2. **Core wrapper:** validates → allocates → calls → cleans up on any
+   raise, so no partially built output or orphaned private buffer
+   escapes.
+3. **`NativeTensor` op:** builds a graph node only after a successful
+   forward; a failed forward creates no node and adopts no resource.
+4. **`backward()`:** the existing snapshot/rollback engine restores every
+   node's gradient on failure, so a failed pass commits no partial
+   gradients — and, per §7, keeps the saved probabilities alive for a
+   retry.
+
+---
+
+## 11. Capability inventory contract
+
+Later milestones must update the **correct layer-specific inventory** —
+never a convenient one:
+
+| Name | Inventory | Milestone |
+|---|---|---|
+| `exp`, `log` | `TENSOR_CORE_OPS` **and** `AUTOGRAD_OPS` | E1, E2 |
+| `softmax`, `log_softmax` | `TENSOR_CORE_OPS` **and** `AUTOGRAD_OPS` | E3, E4 |
+| `cross_entropy_forward`, `cross_entropy_backward` | `TENSOR_CORE_OPS` (layer-qualified Core wrappers) | E5 |
+| `cross_entropy` | `AUTOGRAD_OPS` (the differentiable operation) | E6 |
+| `NativeCrossEntropyLoss` | `NATIVE_LOSSES` | E7 |
+| `native_accuracy` | a **new `NATIVE_METRICS`** inventory, surfaced by `backend_info()` | E7 |
+
+Each name leaves `UNSUPPORTED` in the same milestone that implements it,
+and not before.
+
+Explicitly forbidden placements:
+
+- `NativeCrossEntropyLoss` in `AUTOGRAD_OPS` — it is a module, not an
+  operation (the `NativeMSELoss` precedent).
+- `native_accuracy` in `TENSOR_CORE_OPS`, `AUTOGRAD_OPS`, or
+  `NATIVE_MODULES` — it is a reporting function, not a runtime op, not
+  differentiable, and not a module.
+- `softmax` or `cross_entropy` in `RAW_KERNELS` — that tuple is the
+  frozen set of raw NumPy-buffer benchmark kernels. Phase E designs **no**
+  separate raw NumPy-buffer classification kernels, so nothing is added
+  there unless a later milestone explicitly designs them.
+
+`TENSOR_CORE_KERNELS` stays frozen at its historical five, as always.
+
+---
+
+## 12. Checkpoint contract
+
+Phase E **retains native checkpoint format version 1**. Classification
+adds **no persistent model or optimizer state**:
+
+- `NativeCrossEntropyLoss` is parameter-free and buffer-free; its
+  `state_dict()` is empty and it contributes no checkpoint keys (the
+  `NativeMSELoss` precedent).
+- Saved probabilities and copied targets are **graph data** and must
+  never be serialized.
+- `native_accuracy` holds no state at all.
+- No manifest field, section, key ordering, array-naming rule, or
+  validation step changes. A Phase-E model checkpoints and resumes
+  through exactly the existing `save_native_checkpoint` /
+  `load_native_checkpoint` paths, and a checkpoint written before Phase E
+  remains loadable.
+
+---
+
+## 13. Testing contract
+
+Each milestone lands with focused tests; the phase closes with
+cross-cutting ones. Recurring obligations:
+
+- **Exact hand-computed cases** for every forward (small tensors whose
+  values can be written down).
+- **Stable-framework parity** to a stated tolerance — native `softmax` /
+  `log_softmax` / `cross_entropy` against `tensorforge.Tensor.softmax`
+  and `tensorforge.nn.cross_entropy`, comparing *values only* (no shared
+  objects, no shared graph).
+- **Central finite differences** for every gradient, over every
+  `requires_grad` combination.
+- **Stability tests with extreme logits** (e.g. `±1000`) proving no
+  overflow, no `NaN`, and probabilities summing to 1 — the tests that
+  would fail against a naive implementation.
+- **Versioning tests** proving the §5 matrix: mutate a direct parameter
+  after forward and assert `log` raises stale-graph while `exp`,
+  `softmax`, `log_softmax`, and `cross_entropy` still differentiate
+  correctly.
+- **Ownership/lifetime tests**: outputs own their storage; strided and
+  offset inputs work through Policy B without mutating the caller's view;
+  saved probabilities follow §7 across one-shot backward, `retain_graph`,
+  `close()`, abandonment, and a failed retryable backward.
+- **Target-contract tests**: every rejection in §6, plus post-forward
+  caller mutation having no effect.
+- **Failure-atomicity tests** at every boundary, including the existing
+  deterministic allocation-failure injection.
+- **NumPy-tripwire tests** proving no NumPy compute in the native
+  training path (with the §8 metric exception stated explicitly).
+- **Dependency-free C++ CTests** for each new internal compute function,
+  and **ASan/UBSan** validation of the whole classification stack.
+
+---
+
+## 14. Benchmark contract
+
+E9 adds a characterization harness in the established style
+(`benchmarks/benchmark_native_cnn.py` is the model): correctness gate
+first, medians over repeated runs after warmup, a `--smoke` mode, a JSON
+mode, honest hardware-specific reporting, and **no performance
+assertions anywhere**. It measures what the phase actually built —
+`exp`/`log` elementwise, `softmax`/`log_softmax` along an axis, fused
+cross-entropy forward and forward+backward, and a full classification
+training step — against a stable-framework reference row.
+
+---
+
+## 15. Milestone ladder (E0–E10)
+
+| Milestone | Deliverable |
+|---|---|
+| E0 | Classification architecture contract and Phase-D baseline reconciliation |
+| E1 | Native exponential |
+| E2 | Native logarithm |
+| E3 | Stable differentiable softmax |
+| E4 | Stable differentiable log-softmax |
+| E5 | Fused cross-entropy forward and backward Core contract |
+| E6 | Differentiable `NativeTensor` cross-entropy |
+| E7 | `NativeCrossEntropyLoss` and reporting-only `native_accuracy` |
+| E8 | Deterministic native classification training and exact checkpoint resume |
+| E9 | Native classification benchmark characterization |
+| E10 | Phase-E integration, sanitizer validation, documentation reconciliation, and closure |
+
+### E0 — Classification architecture contract and Phase-D baseline reconciliation *(this document)*
+
+- **Objective:** lock the complete Phase-E contract above, and reconcile
+  the documentation and comment drift left after Phase D so the phase
+  starts from an accurate baseline.
+- **Layer:** documentation and guardrail tests only.
+- **Expected files:** this document; `docs/native_support_matrix.md`,
+  `docs/roadmap.md`, `docs/backend_experiments.md`,
+  `docs/architecture.md`, `docs/project_summary.md`, `README.md`,
+  `CLAUDE.md`, `src/tensorforge/backends/cpp.py` (comments and the
+  `UNSUPPORTED` boundary only), `src/tensorforge/experimental/__init__.py`
+  (docstring only), `tests/test_docs.py`.
+- **Required tests:** durable semantic guardrails — the design document
+  exists, is linked, and states its load-bearing decisions; the ladder is
+  in order; the four backward/versioning distinctions are pinned; every
+  Phase-E capability is still `UNSUPPORTED` in the live registries; the
+  Phase-D shipped surface is unchanged; no authoritative status surface
+  claims a shipped Phase-D module is unimplemented.
+- **Risks:** accidentally advertising an unimplemented capability;
+  writing brittle prose-locking tests; deleting useful history instead of
+  labelling it.
+- **Dependencies:** completed Phase D.
+- **Non-goals:** **any** numerical behavior — no kernel, ABI symbol,
+  ctypes declaration, Core method, tensor operation, module, metric,
+  benchmark, or example.
+
+### E1 — Native exponential
+
+- **Objective:** a differentiable `NativeTensor.exp()` through the whole
+  stack.
+- **Layer:** C++ kernels → C ABI → ctypes → `NativeTensorCore` →
+  `NativeTensor` autograd.
+- **Expected files:** `cpp/src/elementwise.cpp`;
+  `src/tensorforge/backends/cpp.py` (two guarded exports, their ctypes
+  declarations, `NativeTensorCore.exp`, inventories);
+  `src/tensorforge/experimental/native_tensor.py`;
+  `tests/test_native_exp.py`.
+- **Required tests:** exact values; IEEE edge cases (`0`, `-inf`,
+  overflow to `+inf`, `NaN`); strided/offset views through both execution
+  paths, bit-identical to each other; fresh owning contiguous output;
+  finite-difference gradients; saved-output backward valid after a
+  post-forward parameter mutation (**no** version snapshot); closed
+  saved-output failure is clear and atomic.
+- **Risks:** forgetting the contiguous fast path and silently regressing
+  performance characteristics; letting the backward reread the input,
+  which would wrongly demand versioning.
+- **Dependencies:** E0.
+- **Non-goals:** `log`, any probability transform, any module.
+
+### E2 — Native logarithm
+
+- **Objective:** a differentiable `NativeTensor.log()`.
+- **Layer:** same four layers as E1.
+- **Expected files:** as E1, plus `tests/test_native_log.py`.
+- **Required tests:** exact values; `log(0) == -inf`,
+  `log(negative) == NaN`, `NaN` propagation — proving **no clamping and
+  no epsilon**; both execution paths; finite differences;
+  `dx = upstream * reciprocal(x)` verified against an analytic reference;
+  **stale-graph raised** when a direct parameter parent is mutated after
+  forward, raised **before** any gradient changes; a non-parameter parent
+  records no version.
+- **Risks:** copying E1's no-version backward by habit; introducing a
+  division operation instead of reusing `reciprocal`.
+- **Dependencies:** E1 (shares the unary kernel scaffolding).
+- **Non-goals:** stability clamping, `log1p`, `log2`, `log10`.
+
+### E3 — Stable differentiable softmax
+
+- **Objective:** `NativeTensor.softmax(axis=-1)` with the fused
+  maximum-shift forward and the saved-output backward.
+- **Layer:** new `cpp/src/classification.cpp` + internal header → C ABI →
+  Core → autograd.
+- **Expected files:** `cpp/src/classification.cpp`;
+  `cpp/include/tf_classification_internal.h`; `cpp/tests/test_softmax.cpp`;
+  `src/tensorforge/backends/cpp.py`;
+  `src/tensorforge/experimental/native_tensor.py`;
+  `tests/test_native_softmax.py`.
+- **Required tests:** rows sum to 1; exact small cases; extreme logits
+  (`±1000`) with no overflow/`NaN`; every rank ≥ 1 and every valid
+  positive/negative axis; `bool` axis rejected; non-contiguous input via
+  Policy B leaves the caller's view untouched; output owns fresh
+  contiguous storage; stable parity; finite differences; saved-output
+  backward with **no** version snapshot; the C++ CTest for the internal
+  compute function.
+- **Risks:** the `(outer, axis_length, inner)` factorization getting
+  negative-axis normalization wrong; a non-contiguous copy leaking on a
+  failure path; composing the backward with an extra graph node instead
+  of at the Core layer.
+- **Dependencies:** E1 (the `exp` math and the unary precedent).
+- **Non-goals:** a `NativeSoftmax` module; a public `max` reduction;
+  `log_softmax`.
+
+### E4 — Stable differentiable log-softmax
+
+- **Objective:** `NativeTensor.log_softmax(axis=-1)` as a **fused**
+  log-sum-exp, never `softmax().log()`.
+- **Layer:** as E3.
+- **Expected files:** `cpp/src/classification.cpp`;
+  `cpp/tests/test_log_softmax.cpp`; `src/tensorforge/backends/cpp.py`;
+  `src/tensorforge/experimental/native_tensor.py`;
+  `tests/test_native_log_softmax.py`.
+- **Required tests:** `exp(log_softmax(x))` matches `softmax(x)` to
+  tolerance; precision in the small-probability regime where
+  `log(softmax(x))` degrades; extreme logits; rank/axis coverage as E3;
+  finite differences; saved-output backward with **no** version snapshot;
+  a test asserting the implementation does not route through `softmax`
+  followed by `log`; the C++ CTest.
+- **Risks:** silently reintroducing the composed form; drift between the
+  softmax and log-softmax axis handling.
+- **Dependencies:** E2 (log semantics), E3 (axis machinery).
+- **Non-goals:** a `NativeLogSoftmax` module; `NLLLoss`.
+
+### E5 — Fused cross-entropy forward and backward Core contract
+
+- **Objective:** the autograd-unaware Core layer of cross-entropy: the
+  fused forward (loss **and** private probabilities) and the backward
+  kernel, reachable from Python as forward-only Core methods.
+- **Layer:** C++ kernels → C ABI → ctypes → `NativeTensorCore`.
+- **Expected files:** `cpp/src/classification.cpp`;
+  `cpp/include/tf_classification_internal.h`;
+  `cpp/tests/test_cross_entropy.cpp`;
+  `src/tensorforge/backends/cpp.py` (both guarded exports, ctypes
+  declarations, `NativeTensorCore.cross_entropy_forward` — including the
+  private with-probabilities helper — and
+  `NativeTensorCore.cross_entropy_backward`);
+  `tests/test_native_cross_entropy_core.py`.
+- **Required tests:** exact loss for hand-computed cases under both
+  reductions; extreme-logit stability; the full §6 target-rejection
+  matrix at the Core boundary; C++-side target-range revalidation;
+  probabilities equal to `softmax(logits)` to tolerance; backward values
+  equal to `(p − onehot)/N` scaled by upstream; failure atomicity
+  including injected allocation failure with no orphaned private buffer;
+  the C++ CTest.
+- **Risks:** ordering the forward's two allocations so a failure orphans
+  one; trusting Python-validated targets at the ABI; computing
+  probabilities in a second pass that could disagree with the loss.
+- **Dependencies:** E3, E4 (the shared stable-math machinery).
+- **Non-goals:** any graph construction; any public tensor operation;
+  the loss module.
+
+### E6 — Differentiable `NativeTensor` cross-entropy
+
+- **Objective:** `NativeTensor.cross_entropy(targets, reduction="mean")`
+  — the graph node over the E5 Core contract.
+- **Layer:** `NativeTensor` autograd.
+- **Expected files:**
+  `src/tensorforge/experimental/native_tensor.py`;
+  `src/tensorforge/backends/cpp.py` (inventories);
+  `tests/test_native_cross_entropy_autograd.py`.
+- **Required tests:** scalar output; single `(logits,)` parent;
+  finite-difference gradients under both reductions; explicit scalar
+  upstream scaling; **no** logits version snapshot (post-forward mutation
+  of a direct parameter still differentiates); saved-probability lifetime
+  across one-shot backward, `retain_graph=True`, `close()`, abandonment,
+  and a failed retryable backward; targets mutated after forward change
+  nothing; no-grad forward releases the probabilities immediately;
+  stable-framework parity.
+- **Risks:** the private buffer outliving or predeceasing the graph;
+  double release; retaining the logits unnecessarily and implying a
+  version guard that does not exist.
+- **Dependencies:** E5.
+- **Non-goals:** the loss module; the metric; training.
+
+### E7 — `NativeCrossEntropyLoss` and reporting-only `native_accuracy`
+
+- **Objective:** the public classification surface.
+- **Layer:** native modules + a reporting helper.
+- **Expected files:**
+  `src/tensorforge/experimental/native_cross_entropy_loss.py`;
+  `src/tensorforge/experimental/native_metrics.py`;
+  `src/tensorforge/experimental/__init__.py` (exports);
+  `src/tensorforge/backends/cpp.py` (`NATIVE_LOSSES`, the new
+  `NATIVE_METRICS`, `backend_info()`);
+  `tests/test_native_cross_entropy_loss.py`;
+  `tests/test_native_metrics.py`.
+- **Required tests:** exact reduction validation; parameter-free,
+  buffer-free, empty `state_dict()`; train/eval independence; input
+  rejection matrix; composition in a `NativeSequential` model; the metric
+  returning a Python `float`, building no graph, touching no gradient,
+  leaving its input open; the metric's target validation; the inventory
+  placements of §11 asserted directly.
+- **Risks:** registering the metric in the wrong inventory; the metric
+  quietly acquiring gradient side effects; describing the metric as a
+  native kernel.
+- **Dependencies:** E6.
+- **Non-goals:** BCE, `NLLLoss`, class weights, `ignore_index`, label
+  smoothing, soft labels.
+
+### E8 — Deterministic native classification training and exact checkpoint resume
+
+- **Objective:** prove the stack trains and resumes, end to end, with no
+  new capability.
+- **Layer:** example + integration tests.
+- **Expected files:** `examples/native_classification_training.py`;
+  `tests/test_native_classification_training.py`;
+  `docs/examples.md` / `README.md` / matrix references.
+- **Required tests:** deterministic seeded loss trajectory reproduced
+  bit-identically across runs; accuracy improving; a run interrupted
+  mid-training, checkpointed (model **and** optimizer state) and resumed
+  into a fresh model/optimizer pair reproducing the uninterrupted run
+  **exactly**; checkpoint **format version 1** unchanged and no new keys;
+  NumPy tripwire over the training step.
+- **Risks:** hiding a real defect behind a too-easy synthetic task;
+  letting the reporting metric run inside the tripwire region without
+  saying so.
+- **Dependencies:** E7.
+- **Non-goals:** real datasets; data loaders; schedulers; any schema
+  change.
+
+### E9 — Native classification benchmark characterization
+
+- **Objective:** honest measurement of what Phase E built.
+- **Layer:** benchmarks only (measurement-only, no behavior).
+- **Expected files:** `benchmarks/benchmark_native_classification.py`;
+  a benchmark section in the docs.
+- **Required tests:** the harness's correctness gate; `--smoke` and JSON
+  modes; **no test asserts a speed**.
+- **Risks:** drifting into optimization work; publishing numbers as
+  claims rather than characterizations.
+- **Dependencies:** E8.
+- **Non-goals:** CPU optimization; kernel tuning; threading; SIMD.
+
+### E10 — Phase-E integration, sanitizer validation, documentation reconciliation, and closure
+
+- **Objective:** close the phase with **no new numerical behavior**.
+- **Layer:** cross-cutting tests and documentation.
+- **Expected files:** `tests/test_native_phase_e.py`; the support matrix,
+  roadmap, this document's status sections, `README.md`,
+  `backend_experiments.md`, and the durable doc guardrails.
+- **Required tests:** cross-cutting integration (the full classification
+  model stack, shared graphs, the versioning contracts meeting in one
+  backward, saved-resource lifetime under stress, state/checkpoint
+  integration, cross-layer failure atomicity, the capability boundary);
+  ASan/UBSan validation of the classification kernels under Clang on
+  Linux; a practical LeakSanitizer pass over the native CTests.
+- **Risks:** slipping a behavior change into a closure milestone;
+  leaving a status surface claiming Phase E is unimplemented.
+- **Dependencies:** E9.
+- **Non-goals:** anything in §1's exclusion list; Phase F planning.
+
+---
+
+## 16. Why this order
+
+The ladder is **architectural, not chronological convenience**:
+
+- **Stable scalar math first** (E1, E2). `exp` and `log` are the smallest
+  operations that introduce the phase's two backward archetypes —
+  saved-output and live-input — and every later operation depends on one
+  of them.
+- **Probability transforms next** (E3, E4). They need `exp`'s math and
+  `log`'s semantics, and they establish the axis factorization and the
+  contiguous-only classification ABI that cross-entropy reuses.
+- **Fused loss Core contract next** (E5). The numerically hardest piece
+  lands where it can be tested in isolation — autograd-unaware,
+  forward-only, with no graph to confuse a failure.
+- **Graph integration after the Core contract** (E6). The saved-resource
+  lifetime is subtle enough to deserve a milestone where the numerics are
+  already known correct.
+- **Public loss and metric surface after operation correctness** (E7).
+  A module is a thin layer; it should never be where a numerical bug is
+  found.
+- **End-to-end proof after the public stack** (E8). A training proof is
+  only meaningful once the surface it exercises is final.
+- **Benchmark after behavior is complete** (E9). Measuring a moving
+  target teaches nothing.
+- **Behavior-free closure last** (E10). The phase ends with hardening,
+  validation, and documentation — never with new capability.
+
+---
+
+## 17. Phase-E completion criteria
+
+Phase E is complete when **all** of the following hold:
+
+1. `exp`, `log`, `softmax`, `log_softmax` are differentiable
+   `NativeTensor` operations, and `cross_entropy` is a fused
+   differentiable operation from raw logits.
+2. `NativeCrossEntropyLoss` and `native_accuracy` are exported, tested,
+   and registered in the correct inventories; no Phase-E name remains in
+   `UNSUPPORTED`.
+3. The §5 backward/versioning matrix is proved by tests, not asserted by
+   prose.
+4. The §6 target contract and the §7 saved-probability lifetime contract
+   are proved, including the failed-retryable-backward and abandoned-graph
+   paths.
+5. A deterministic native classification training run learns and resumes
+   **exactly** from a checkpoint, with **format version 1** unchanged.
+6. Benchmarks characterize the stack with no performance assertion.
+7. ASan/UBSan (and a practical LeakSanitizer pass) find nothing in the
+   classification stack.
+8. Every status surface — support matrix, roadmap, README, summary,
+   architecture, and the backend registry — agrees on what shipped.
+9. Phase A–D behavior, the stable framework, the checkpoint schema, and
+   the strict stable/native separation are all unchanged.

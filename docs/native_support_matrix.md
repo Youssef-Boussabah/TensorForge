@@ -31,8 +31,13 @@ deterministic end-to-end CNN training + exact checkpoint-resume proof
 (`examples/native_cnn_training.py`); cross-cutting Phase-D integration
 tests; honest CNN benchmarks (`benchmarks/benchmark_native_cnn.py`); and
 ASan/UBSan validation of the whole stack). The next native phase is
-**Phase E**, which has **not started** — see
-[roadmap.md](roadmap.md). Everything Phase D deliberately excluded
+**Phase E — Native Classification and Stable Math**, whose architecture
+contract is **locked** in
+[native_classification_design.md](native_classification_design.md)
+(milestone E0) but whose implementation has **not started**: no Phase-E
+capability exists in code, and every Phase-E name is still listed as
+unsupported below — see also [roadmap.md](roadmap.md). Everything Phase D
+deliberately excluded
 remains unsupported and is named in the "Unsupported or future" section
 below, which stays the single place this document lists capabilities the
 native line does not have.
@@ -66,8 +71,14 @@ native line does not have.
 | `transpose` / `T` | Yes | Yes | Borrowing view; inverse-permutation backward |
 | `narrow` | Yes | Yes | Borrowing view; native scatter backward |
 | `contiguous_copy` | Yes | Yes | Owning materialization; pass-through backward |
-| `maxpool2d` | Yes | Yes | D8–D9: fused NCHW window-maximum primitive (int/tuple `kernel_size`/`stride`/`padding`, `stride=None` ⇒ non-overlapping); backward scatters through the **private winner buffer the forward saved** — never rereading the input or recomputing a maximum — so it records **no** version snapshot and survives input mutation; the winner buffer is graph-owned state released with the graph history. **The pooling *module* (D10) is separate and not yet implemented.** |
-| `conv2d` | Yes | Yes | D6: fused NCHW/OIHW cross-correlation primitive (int/tuple stride & padding, optional bias); input/weight gradients via native backward kernels, bias gradient via existing `sum`; conditional stale-value versioning. **The trainable convolution *module* (D7) is separate and not yet implemented.** |
+| `maxpool2d` | Yes | Yes | D8–D9: fused NCHW window-maximum primitive (int/tuple `kernel_size`/`stride`/`padding`, `stride=None` ⇒ non-overlapping); backward scatters through the **private winner buffer the forward saved** — never rereading the input or recomputing a maximum — so it records **no** version snapshot and survives input mutation; the winner buffer is graph-owned state released with the graph history. The pooling ***module*** built on it, `NativeMaxPool2d`, is a separate layer and **is implemented** (D10 — see the training stack below) |
+| `conv2d` | Yes | Yes | D6: fused NCHW/OIHW cross-correlation primitive (int/tuple stride & padding, optional bias); input/weight gradients via native backward kernels, bias gradient via existing `sum`; conditional stale-value versioning. The trainable convolution ***module*** built on it, `NativeConv2d`, is a separate layer and **is implemented** (D7 — see the training stack below) |
+
+This table lists **operations** on `NativeTensor`. An implemented
+differentiable *operation* and an implemented *module* are different
+things and are tracked separately: operations here, the modules that
+compose them in the training-stack table below. For Conv2d and MaxPool2d
+both halves shipped in Phase D.
 
 ## Autograd engine
 
@@ -96,6 +107,8 @@ native line does not have.
 | `NativeLinear` | Supported | Seeded deterministic init; strictly 2-D input |
 | `NativeReLU` | Supported | Parameter-free activation module |
 | `NativeFlatten` | Supported | D1 (Phase D): parameter-free, buffer-free batch-preserving flatten `(N, …) → (N, features)`, Python-composed from the existing `reshape`/`contiguous_copy` ops and their autograd — no new kernel, no custom backward; returns an independent owning result so it composes safely in `NativeSequential` |
+| `NativeConv2d` | Supported | D7 (Phase D): the trainable convolution **module** over the differentiable `conv2d` operation — OIHW weight / optional `(O,)` bias `NativeParameter`s, deterministic uniform conv fan-in initialization, 4-D NCHW input validation; backward supplied entirely by the operation's autograd (no new kernel, ABI symbol, or custom module backward) |
+| `NativeMaxPool2d` | Supported | D10 (Phase D): the pooling **module** over the differentiable `maxpool2d` operation — parameter-free, buffer-free, normalized `(h, w)` `kernel_size`/`stride`/`padding` (`stride=None` ⇒ non-overlapping); no winner state between calls and no state-dictionary or checkpoint keys |
 | `NativeSequential` | Supported | Ordered container with contiguous integer-string slots |
 | `NativeMSELoss` | Supported | `"mean"` / `"sum"` reductions; exact shapes, no broadcasting |
 | `NativeSGD` | Supported | Minimal `value ← value − lr·grad`; identity-deduplicated; two-phase mutation-atomic `step()`; `zero_grad()`; in-memory `state_dict`/`load_state_dict` (v3.13: lr + positional parameter metadata) |
@@ -113,14 +126,22 @@ in the stable Python framework — that does not make them native.
 - `divide` as a NativeTensor operation (a raw ctypes `elementwise_divide`
   kernel exists at the kernel layer, but no tensor op and no backward;
   `reciprocal` + `multiply` compose what the training stack needs)
-- `exp`, `log`, `tanh`, `sigmoid`, `softmax`
+- `exp`, `log`, `tanh`, `sigmoid`, `softmax`, `log_softmax` (`exp`,
+  `log`, `softmax`, and `log_softmax` are **designed** for Phase E — see
+  [native_classification_design.md](native_classification_design.md) —
+  but none of them exists in code today; `tanh` and `sigmoid` are outside
+  Phase E entirely)
 - scheduler state, random-state capture/restoration, or dataloader
   state in native checkpoints; `map_location`, partial or name-remapped
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- native classification: `softmax`, cross-entropy, or any classification
-  loss/metric (the native line trains regression through `NativeMSELoss`)
+- native classification: `softmax`, `log_softmax`, `cross_entropy`,
+  `NativeCrossEntropyLoss`, or `native_accuracy` — no classification
+  operation, loss, or metric exists (the native line trains regression
+  through `NativeMSELoss`). The whole surface is contracted for Phase E
+  in [native_classification_design.md](native_classification_design.md);
+  a locked contract is not an implementation
 - native normalization (BatchNorm/LayerNorm), dropout, or a native RNG
 - additional native activations/math beyond `relu`/`sqrt`/`reciprocal`
 - CUDA / GPU execution

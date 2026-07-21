@@ -23,6 +23,7 @@ DOCS = (
     "native_autograd_benchmarks.md",
     "native_support_matrix.md",
     "native_cnn_design.md",
+    "native_classification_design.md",
 )
 
 EXAMPLE_FILES = (
@@ -468,6 +469,196 @@ def test_docs_present_the_shipped_native_cnn_stack():
     matrix = _normalized_doc("docs/native_support_matrix.md")
     assert "Phase D" in matrix and "complete" in matrix.lower()
     assert "## Unsupported or future" in matrix
+
+
+# --- Phase E (native classification) — E0 contract guardrails -------------
+#
+# E0 is a design-and-reconciliation milestone: it adds no numerical
+# behavior. These guards therefore check two things — that the contract is
+# written and internally coherent, and that nothing it describes has been
+# accidentally advertised as implemented.
+
+PHASE_E_DESIGN = "docs/native_classification_design.md"
+
+
+def _design_section(token, relative_path=PHASE_E_DESIGN):
+    """The whitespace-normalized body of the first ``##``-level section
+    whose heading contains ``token``.
+
+    Anchoring on headings (not paragraphs) keeps these checks semantic:
+    the surrounding prose can be rewritten or rewrapped freely, but the
+    load-bearing statement has to stay inside its own section."""
+    text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    for chunk in re.split(r"\n#{2,4} ", text):
+        heading = chunk.split("\n", 1)[0]
+        if token in heading:
+            return re.sub(r"\s+", " ", chunk)
+    raise AssertionError(f"{relative_path} has no section naming {token!r}")
+
+
+def test_phase_e_design_exists_and_is_linked():
+    path = REPO_ROOT / PHASE_E_DESIGN
+    assert path.is_file(), f"missing {PHASE_E_DESIGN}"
+    assert path.read_text(encoding="utf-8").strip(), f"{PHASE_E_DESIGN} is empty"
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert PHASE_E_DESIGN in readme, f"README does not link to {PHASE_E_DESIGN}"
+
+
+def test_phase_e_design_locks_the_contract():
+    """The classification contract must name its phase, its whole public
+    surface, and the decisions later milestones inherit."""
+    text = _normalized_doc(PHASE_E_DESIGN)
+    assert "Phase E" in text
+    assert "Native Classification and Stable Math" in text
+    for token in ("exp", "log", "softmax", "log_softmax", "cross_entropy",
+                  "NativeCrossEntropyLoss", "native_accuracy"):
+        assert token in text, f"{PHASE_E_DESIGN} does not lock {token!r}"
+    # Targets are int64 host data (the native runtime has no integer dtype).
+    assert "int64" in text, "the design does not state the int64 target contract"
+    # The fused loss's private saved state and its graph lifetime.
+    assert "saved probabilities" in text
+    assert "retain_graph" in text
+    # The checkpoint schema is explicitly preserved.
+    assert re.search(r"checkpoint[^.]{0,80}format version 1", text), (
+        "the design does not preserve native checkpoint format version 1"
+    )
+
+
+def test_phase_e_milestone_ladder_is_ordered():
+    """E0 through E10 all exist and appear in increasing order."""
+    text = _normalized_doc(PHASE_E_DESIGN)
+    positions = []
+    for i in range(11):
+        marker = f"E{i} —"
+        assert marker in text, f"{PHASE_E_DESIGN} is missing milestone E{i}"
+        positions.append(text.index(marker))
+    assert positions == sorted(positions), (
+        "the E0-E10 milestone ladder is out of order"
+    )
+
+
+def test_phase_e_design_distinguishes_the_backward_read_contracts():
+    """The four distinct backward/versioning archetypes must each be
+    pinned in their own operation section — this is the subtlety the
+    whole phase turns on."""
+    exp = _design_section("NativeTensor.exp()")
+    assert "saved forward output" in exp
+    assert re.search(r"no (parameter )?version snapshot", exp), (
+        "exp must record no version snapshot (saved-output backward)"
+    )
+
+    log = _design_section("NativeTensor.log()")
+    assert "rereads the live input" in log
+    assert "version-checked" in log and "stale-graph" in log, (
+        "log must be version-checked (live-input backward)"
+    )
+
+    for token in ("NativeTensor.softmax(", "NativeTensor.log_softmax("):
+        section = _design_section(token)
+        assert "saved output" in section, f"{token} backward must read the saved output"
+        assert "no version snapshot" in section, f"{token} must record no version"
+
+    cross_entropy = _design_section("NativeTensor.cross_entropy(")
+    assert "saved probabilities" in cross_entropy
+    assert "no logits version snapshot" in cross_entropy
+
+
+def test_phase_e_capabilities_are_not_advertised_as_implemented():
+    """E0 designs Phase E; it implements none of it. Every Phase-E name
+    must still be absent from the live capability registries."""
+    from tensorforge.backends import cpp
+
+    for name in ("exp", "log", "softmax", "log_softmax", "cross_entropy",
+                 "NativeCrossEntropyLoss", "native_accuracy"):
+        assert name in cpp.UNSUPPORTED, f"{name} left the unsupported boundary"
+        assert name not in cpp.TENSOR_CORE_OPS, name
+        assert name not in cpp.AUTOGRAD_OPS, name
+        assert name not in cpp.RAW_KERNELS, name
+        assert name not in cpp.NATIVE_MODULES, name
+        assert name not in cpp.NATIVE_LOSSES, name
+    # No metrics inventory exists yet either — E7 introduces it.
+    assert not hasattr(cpp, "NATIVE_METRICS")
+    # And no classification source unit / module has appeared.
+    assert not (REPO_ROOT / "cpp" / "src" / "classification.cpp").exists()
+
+
+def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():
+    """Phase E adds no persistent state: the native checkpoint format
+    version stays 1, and the Phase-D surface is untouched."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+    import tensorforge.experimental as experimental
+
+    assert native_checkpoint._FORMAT_VERSION == 1
+    for module in ("NativeFlatten", "NativeConv2d", "NativeMaxPool2d"):
+        assert module in cpp.NATIVE_MODULES and module in experimental.__all__
+    for op in ("conv2d", "maxpool2d"):
+        assert op in cpp.AUTOGRAD_OPS
+    # Stable/native separation and the remaining future work stay explicit.
+    assert cpp.backend_info()["stable_framework_integration"] is False
+    for future in ("cuda", "float32", "amp", "batchnorm", "layernorm",
+                   "dropout"):
+        assert future in cpp.UNSUPPORTED, future
+
+
+# Where the *current* capability status is stated. Per-milestone historical
+# records (docs/native_cnn_design.md, the milestone log in
+# docs/backend_experiments.md) deliberately preserve superseded wording and
+# are not scanned.
+AUTHORITATIVE_STATUS_SURFACES = (
+    "README.md",
+    "docs/native_support_matrix.md",
+    "docs/architecture.md",
+    "docs/project_summary.md",
+    "docs/roadmap.md",
+    "src/tensorforge/backends/cpp.py",
+    "src/tensorforge/experimental/__init__.py",
+)
+
+
+# How a shipped Phase-D layer gets named in prose: by class name, or as
+# "the convolution/pooling module". Emphasis markers are stripped before
+# matching, so "the pooling *module*" and "`NativeMaxPool2d`" both count.
+_MODULE_SUBJECTS = {
+    "NativeConv2d": r"(NativeConv2d|convolution module|Conv2d module)",
+    "NativeMaxPool2d": (
+        r"(NativeMaxPool2d|pooling module|MaxPool2d module|max-pooling module)"
+    ),
+}
+_ABSENT_CLAIM = (
+    r"(not yet implemented|not implemented|still unsupported|is unsupported"
+    r"|does not exist|has not shipped)"
+)
+
+
+def _status_text(relative_path):
+    """Whitespace-normalized text with markdown emphasis stripped, so a
+    status claim is matched by meaning rather than by formatting."""
+    text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    return re.sub(r"\s+", " ", re.sub(r"[*`]", "", text))
+
+
+def test_authoritative_surfaces_do_not_call_shipped_modules_unimplemented():
+    """Semantic, not token-level: if a module is in the live registry and
+    the public exports, no authoritative current-status text may claim it
+    is missing. Both word orders are checked within a narrow same-sentence
+    window, so unrelated prose cannot trip the guard."""
+    from tensorforge.backends import cpp
+    import tensorforge.experimental as experimental
+
+    for module, subject in _MODULE_SUBJECTS.items():
+        # The premise: these really are implemented.
+        assert module in cpp.NATIVE_MODULES and module in experimental.__all__
+        forward = re.compile(subject + r"[^.]{0,120}?" + _ABSENT_CLAIM, re.I)
+        backward = re.compile(_ABSENT_CLAIM + r"[^.]{0,120}?" + subject, re.I)
+        for name in AUTHORITATIVE_STATUS_SURFACES:
+            text = _status_text(name)
+            for pattern in (forward, backward):
+                match = pattern.search(text)
+                assert match is None, (
+                    f"{name} claims {module} is unimplemented "
+                    f"({match.group(0)!r}), but it is in NATIVE_MODULES"
+                )
 
 
 def test_native_cnn_design_is_linked_and_referenced():

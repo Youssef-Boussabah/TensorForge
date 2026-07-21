@@ -83,7 +83,7 @@ TENSOR_CORE_OPS = (
     # (D6) backward wrappers over the exported tf_core_conv2d_* kernels.
     # These are Core operations, distinct from the differentiable
     # "conv2d" NativeTensor autograd op (in AUTOGRAD_OPS) and from the
-    # NativeConv2d module (D7, still unsupported). The bias gradient has no
+    # NativeConv2d module (D7, in NATIVE_MODULES). The bias gradient has no
     # Core op — it composes from the existing "sum" reduction.
     "conv2d_forward",          # D3
     "conv2d_input_backward",   # D6
@@ -95,7 +95,7 @@ TENSOR_CORE_OPS = (
     # those saved winners (no window geometry, no input reread). These are
     # Core operations, distinct from the differentiable "maxpool2d"
     # NativeTensor autograd op (in AUTOGRAD_OPS as of D9) and from the
-    # NativeMaxPool2d module (D10, still unsupported). The winner buffer
+    # NativeMaxPool2d module (D10, in NATIVE_MODULES). The winner buffer
     # stays internal state — never a public tensor, op, or dtype.
     "maxpool2d_forward",       # D8
     "maxpool2d_backward",      # D9
@@ -107,7 +107,8 @@ TENSOR_CORE_OPS = (
 # "sum" reduction (bias); and the differentiable "maxpool2d" primitive
 # (D9), whose backward scatters through the winner buffer its own forward
 # saved. These are the operations; the modules built on them (NativeConv2d,
-# D7 — implemented; NativeMaxPool2d, D10 — not yet) are separate.
+# D7; NativeMaxPool2d, D10 — both implemented) are separate entries in
+# NATIVE_MODULES.
 AUTOGRAD_OPS = (
     "add", "subtract", "multiply", "relu",
     "sum", "mean", "matmul",
@@ -157,11 +158,17 @@ STATE_SUPPORT = (
 #     for Conv2d.
 # As of Phase D milestone D1, batch-preserving flatten IS implemented as
 # the NativeFlatten module (see NATIVE_MODULES), so "flatten" is not listed.
-# Still absent from Phase D: the deterministic end-to-end native CNN
-# training + checkpoint-resume proof (D11) — a *proof*, not a capability
-# name, so it has no entry in any inventory.
+# Phase D is complete (D0-D12): every CNN operation and module shipped,
+# along with the deterministic end-to-end native CNN training +
+# checkpoint-resume proof (D11) — a *proof*, not a capability name, so it
+# has no entry in any inventory.
+# The classification names below are the Phase-E surface contracted in
+# docs/native_classification_design.md (milestone E0). A locked contract is
+# not an implementation: none of them exists in code, so all of them stay
+# here until the milestone that implements each one removes it.
 UNSUPPORTED = (
-    "exp", "log", "softmax", "cross_entropy",
+    "exp", "log", "softmax", "log_softmax", "cross_entropy",
+    "NativeCrossEntropyLoss", "native_accuracy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",
 )
@@ -543,9 +550,9 @@ def backend_info():
     Reports each layer separately so a caller can tell raw C++ kernels
     from the higher-level capabilities composed on them: the raw
     NumPy-buffer kernels, the ``NativeTensorCore`` runtime ops (which
-    broadcast), the ``NativeTensor`` autograd ops, and the Phase-C native
-    training stack (modules, loss, optimizers, and state/checkpoint
-    support). ``stable_framework_integration`` stays ``False`` — the
+    broadcast), the ``NativeTensor`` autograd ops, and the native
+    training stack (modules — including the Phase-D CNN layers — the loss,
+    the optimizers, and state/checkpoint support). ``stable_framework_integration`` stays ``False`` — the
     native line is deliberately separate from ``tensorforge.Tensor`` — but
     ``native_autograd`` is ``True`` and the optimizer/state lists are
     populated. Every list is sourced from the module-level inventory
@@ -1580,8 +1587,9 @@ class NativeTensorCore:
         the selection; ties keep the first occurrence in row-major window
         order (docs/native_cnn_design.md §10). This is the **forward-only,
         autograd-unaware** Core wrapper — the differentiable
-        ``NativeTensor.maxpool2d`` primitive and the ``NativeMaxPool2d``
-        module are later milestones (D9/D10).
+        ``NativeTensor.maxpool2d`` primitive (D9) and the
+        ``NativeMaxPool2d`` module (D10) are separate layers built on it,
+        and both are implemented.
 
         The kernel also produces the private winner buffer backward will
         need; this public method releases it, so the pooled values are all
