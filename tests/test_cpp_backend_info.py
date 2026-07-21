@@ -143,20 +143,22 @@ def test_advertised_autograd_ops_exist():
 
 
 def test_phase_e_boundary_is_reported_honestly():
-    """Milestone E1 shipped the exponential and nothing else of Phase E.
-    The registries must show exactly that: exp implemented at the Core
-    and autograd layers, every later Phase-E capability still
-    unsupported, and no capability advertised in the wrong inventory."""
+    """Phase E ships one milestone at a time. E1 shipped the exponential
+    and E2 the logarithm; the registries must show exactly that — both
+    implemented at the Core and autograd layers, every later Phase-E
+    capability still unsupported, and nothing in the wrong inventory."""
     info = cpp.backend_info()
-    assert "exp" in info["tensor_core_ops"]
-    assert "exp" in info["autograd_ops"]
-    assert "exp" not in info["unsupported"]
-    # exp is an operation, not a module, a loss, or a raw-buffer kernel.
-    assert "exp" not in info["native_modules"]
-    assert "exp" not in info["native_losses"]
-    assert "exp" not in info["raw_kernels"]
-    # E2-E7 are still genuinely absent from every implemented inventory.
-    for absent in ("log", "softmax", "log_softmax", "cross_entropy",
+    for shipped in ("exp", "log"):
+        assert shipped in info["tensor_core_ops"], shipped
+        assert shipped in info["autograd_ops"], shipped
+        assert shipped not in info["unsupported"], shipped
+        # An operation, not a module, a loss, or a raw-buffer kernel.
+        assert shipped not in info["native_modules"], shipped
+        assert shipped not in info["native_losses"], shipped
+        assert shipped not in info["raw_kernels"], shipped
+    # E3-E7 are still genuinely absent from every implemented inventory.
+    # ("log_softmax" is a distinct capability from the shipped "log".)
+    for absent in ("softmax", "log_softmax", "cross_entropy",
                    "NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in info["unsupported"], absent
         assert absent not in info["tensor_core_ops"], absent

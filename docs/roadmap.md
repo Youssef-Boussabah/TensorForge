@@ -703,7 +703,8 @@ The Python line is done; what remains is expansion on its own terms:
     milestone-era doc guardrails with durable semantic checks. See the
     [support matrix](native_support_matrix.md) for the finalized status.
   - **Phase E — Native Classification and Stable Math — in progress
-    (E0 and E1 complete).** The **E0 architecture contract is written** —
+    (E0, E1, and E2 complete).** The **E0 architecture contract is
+    written** —
     [native_classification_design.md](native_classification_design.md)
     locks the scope, the public API surface (`exp`, `log`, `softmax`,
     `log_softmax`, a fused `cross_entropy` from raw logits,
@@ -725,12 +726,22 @@ The Python line is done; what remains is expansion on its own terms:
     `NativeTensor.exp()` whose backward is `upstream ×` the **saved
     forward output** — never rereading the input, so it records **no**
     parameter-version snapshot and survives post-forward mutation, with
-    plain IEEE semantics (no clamping, no inserted bound). **Everything
-    else in Phase E is still designed-only**: `log`, `softmax`,
-    `log_softmax`, `cross_entropy`, `NativeCrossEntropyLoss`, and
-    `native_accuracy` remain listed as unsupported in the
-    [support matrix](native_support_matrix.md), and Phase E is **not**
-    complete. Deliberately outside
+    plain IEEE semantics (no clamping, no inserted bound). **E2 has
+    shipped the native logarithm** through the same four layers, reusing
+    E1's self-validating export contract unchanged: plain IEEE
+    `std::log` (`log(±0)` is `-inf`, `log(negative)` is NaN — values, not
+    errors), with a backward that **rereads the live input** as
+    `upstream × reciprocal(x)` (composed from the existing `reciprocal`;
+    no division operation was added). That makes a direct
+    `NativeParameter` parent **version-checked**: mutating it after
+    forward raises the deterministic stale-graph error before any
+    gradient is committed anywhere in the graph — the deliberate
+    counterpart to `exp`'s saved-output edge, which stays valid across
+    the same mutation. **Everything else in Phase E is still
+    designed-only**: `softmax`, `log_softmax`, `cross_entropy`,
+    `NativeCrossEntropyLoss`, and `native_accuracy` remain listed as
+    unsupported in the [support matrix](native_support_matrix.md), and
+    Phase E is **not** complete. Deliberately outside
     Phase E and still unplanned: more native activations beyond it, native
     normalization, a native RNG and dropout, a CPU optimization phase for
     the deliberately naive kernels, and build/packaging evolution.

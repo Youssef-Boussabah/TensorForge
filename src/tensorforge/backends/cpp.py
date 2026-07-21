@@ -76,10 +76,10 @@ TENSOR_CORE_KERNELS = ("relu", "add", "subtract", "multiply", "matmul")
 # non-frozen inventory backend_info() reports as "tensor_core_ops".
 TENSOR_CORE_OPS = (
     "relu", "sqrt", "reciprocal",
-    # Phase E stable math (E1): the exponential, a unary Core op with the
-    # same odometer/contiguous pair as relu/sqrt/reciprocal. Its guarded
+    # Phase E stable math (E1: exp, E2: log) — unary Core ops with the
+    # same odometer/contiguous pair as relu/sqrt/reciprocal. Their guarded
     # exports additionally self-validate at the ABI boundary.
-    "exp",
+    "exp", "log",
     "add", "subtract", "multiply", "matmul",
     "sum", "mean",
     "reshape", "transpose", "T", "narrow", "contiguous_copy",
@@ -114,7 +114,10 @@ TENSOR_CORE_OPS = (
 # D7; NativeMaxPool2d, D10 — both implemented) are separate entries in
 # NATIVE_MODULES. Phase E adds "exp" (E1), whose backward multiplies the
 # upstream by the **saved forward output** — so, like sqrt/reciprocal, it
-# records no expected parameter version.
+# records no expected parameter version — and "log" (E2), whose backward
+# rereads the **live input** (`upstream * reciprocal(x)`) and therefore
+# DOES record one for a direct NativeParameter. The pair is the phase's
+# deliberate contrast between the two backward archetypes.
 AUTOGRAD_OPS = (
     "add", "subtract", "multiply", "relu",
     "sum", "mean", "matmul",
@@ -122,7 +125,7 @@ AUTOGRAD_OPS = (
     "sqrt", "reciprocal",
     "conv2d",
     "maxpool2d",
-    "exp",
+    "exp", "log",
 )
 
 # The native training stack composed on the autograd layer (Phase C) and
@@ -172,11 +175,12 @@ STATE_SUPPORT = (
 # The classification names below are the Phase-E surface contracted in
 # docs/native_classification_design.md (milestone E0). A locked contract is
 # not an implementation: each stays here until the milestone that
-# implements it removes it. Milestone E1 implemented the exponential, so
-# "exp" left this tuple for TENSOR_CORE_OPS and AUTOGRAD_OPS; the rest of
-# Phase E (E2-E7) is still genuinely absent.
+# implements it removes it. Milestones E1 and E2 implemented the
+# exponential and the logarithm, so "exp" and "log" left this tuple for
+# TENSOR_CORE_OPS and AUTOGRAD_OPS; the rest of Phase E (E3-E7) is still
+# genuinely absent.
 UNSUPPORTED = (
-    "log", "softmax", "log_softmax", "cross_entropy",
+    "softmax", "log_softmax", "cross_entropy",
     "NativeCrossEntropyLoss", "native_accuracy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",
@@ -301,10 +305,10 @@ def _load_library():
     library.tf_storage_materialize.restype = None
     # Unary core kernels share tf_core_relu's signature (one strided
     # source, one contiguous destination); sqrt/reciprocal are the
-    # v3.11 optimizer math primitives and exp is the Phase-E stable-math
-    # primitive (milestone E1).
+    # v3.11 optimizer math primitives while exp and log are the Phase-E
+    # stable-math primitives (milestones E1 and E2).
     for name in ("tf_core_relu", "tf_core_sqrt", "tf_core_reciprocal",
-                 "tf_core_exp"):
+                 "tf_core_exp", "tf_core_log"):
         kernel = getattr(library, name)
         kernel.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array,
@@ -328,7 +332,8 @@ def _load_library():
     # take numel + offsets instead of shape/strides. Selected by
     # NativeTensorCore when the operands are row-major contiguous.
     for name in ("tf_core_relu_contiguous", "tf_core_sqrt_contiguous",
-                 "tf_core_reciprocal_contiguous", "tf_core_exp_contiguous"):
+                 "tf_core_reciprocal_contiguous", "tf_core_exp_contiguous",
+                 "tf_core_log_contiguous"):
         kernel = getattr(library, name)
         kernel.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int64, ctypes.c_int64,
@@ -459,10 +464,12 @@ _CHECKED_KERNELS = (
     "tf_core_relu", "tf_core_relu_contiguous",
     "tf_core_sqrt", "tf_core_sqrt_contiguous",
     "tf_core_reciprocal", "tf_core_reciprocal_contiguous",
-    # Phase E, E1: the two exponential exports. Unlike the older unary
+    # Phase E stable math (E1: exp, E2: log). Unlike the older unary
     # exports these validate their own handles/layout/spans before
     # computing, so an invalid call raises ValueError through this hook.
+    # IEEE domain results (log of 0/negative) stay values, not errors.
     "tf_core_exp", "tf_core_exp_contiguous",
+    "tf_core_log", "tf_core_log_contiguous",
     "tf_core_add", "tf_core_add_contiguous",
     "tf_core_subtract", "tf_core_subtract_contiguous",
     "tf_core_multiply", "tf_core_multiply_contiguous",
@@ -1063,6 +1070,25 @@ class NativeTensorCore:
         Graph-unaware, like every Core op: the differentiable surface is
         ``NativeTensor.exp()``."""
         return self._unary_compute("tf_core_exp", "tf_core_exp_contiguous")
+
+    def log(self):
+        """Elementwise natural logarithm, computed by the native kernel
+        reading this tensor's (possibly strided) view directly (Phase E,
+        milestone E2). Returns a new **owning** row-major contiguous
+        NativeTensorCore of the same shape; the input is not mutated and
+        shares no storage with the result.
+
+        Plain IEEE float64 ``std::log`` — **no clamping, no inserted
+        epsilon, no absolute value, and no domain rejection**:
+        ``log(1) == 0``, values in ``(0, 1)`` give negative finite
+        results, ``log(±0) == -inf``, ``log(negative)`` is NaN,
+        ``log(+inf) == +inf``, and NaN propagates. Those are *values*, not
+        errors — the same ones NumPy produces, without its warnings. A
+        caller that needs a guarded logarithm must clamp its own input.
+
+        Graph-unaware, like every Core op: the differentiable surface is
+        ``NativeTensor.log()``."""
+        return self._unary_compute("tf_core_log", "tf_core_log_contiguous")
 
     def relu_backward(self, upstream):
         """The gradient of ``relu`` at this tensor's forward value:

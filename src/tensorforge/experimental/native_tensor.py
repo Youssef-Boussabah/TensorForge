@@ -509,6 +509,51 @@ class NativeTensor:
         result = self._from_op(out_core, (self,), _backward, "exp")
         return result
 
+    def log(self):
+        """Elementwise natural logarithm, computed natively over this
+        tensor's layout (Phase E, milestone E2 — the second stable-math
+        primitive of the classification stack). Returns a new owning
+        NativeTensor; the original stays open. IEEE float64 semantics with
+        **no clamping and no inserted epsilon**: ``log(1) == 0``,
+        ``log(±0) == -inf``, ``log(negative)`` is NaN, ``log(+inf) ==
+        +inf``, and NaN propagates. Stability belongs in the fused losses
+        (E4/E5), never in ``log`` itself.
+
+        Differentiable: d(log(x))/dx = 1/x, computed as ``upstream *
+        reciprocal(input)`` through the existing native ``reciprocal``
+        primitive (no division operation exists or is added). Unlike
+        ``exp``/``sqrt``/``reciprocal``, this backward **rereads the
+        parent's live value** — the saved output ``log(x)`` cannot recover
+        ``x`` cheaply or exactly — so a direct NativeParameter parent
+        **is** version-guarded (v3.7): mutating it after forward makes
+        ``backward()`` raise the deterministic stale-graph error before any
+        gradient is committed anywhere in the graph, and the fix is a fresh
+        forward pass."""
+        core = self._require_open()
+        out_core = core.log()
+        if not self._requires_grad:
+            return self._from_core(out_core)
+
+        def _backward(upstream):
+            # 1/x from the parent's *current* value (never from the saved
+            # log output). The reciprocal is a transient owning core: it is
+            # closed in a finally so a failing multiply cannot leak it, and
+            # an exception from the cleanup never masks the original error.
+            inverse = self._require_open().reciprocal()
+            try:
+                contribution = upstream._require_open().multiply(inverse)
+            finally:
+                inverse.close()
+            self._accumulate_grad(NativeTensor._from_core(contribution))
+
+        # The backward reads this parent's forward value, so a direct
+        # parameter operand is stale-guarded — the same rule relu/multiply/
+        # matmul already follow, through the same helper.
+        return self._from_op(
+            out_core, (self,), _backward, "log",
+            expected_versions=_versioned_value_reads("log", (self,)),
+        )
+
     def add(self, other):
         """self + other elementwise, natively. Identical shapes or
         NumPy-style broadcasting. Returns a new owning NativeTensor.

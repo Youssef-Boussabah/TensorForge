@@ -99,8 +99,9 @@ def test_native_exp_registry_placement():
     info = cpp.backend_info()
     assert "exp" in info["tensor_core_ops"] and "exp" in info["autograd_ops"]
     assert "exp" not in info["unsupported"]
-    # The rest of Phase E is still genuinely absent.
-    for absent in ("log", "softmax", "log_softmax", "cross_entropy",
+    # E2 landed `log` beside it (its own contract lives in
+    # tests/test_native_log.py); everything after E2 is still absent.
+    for absent in ("softmax", "log_softmax", "cross_entropy",
                    "NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.TENSOR_CORE_OPS
@@ -588,11 +589,13 @@ def test_native_exp_uses_no_numpy_compute(monkeypatch):
 
 @needs_native
 def test_native_exp_scope_boundaries_hold():
-    """E1 is exponential only: no other Phase-E surface appeared, and the
-    stable framework is untouched."""
+    """E1 added the exponential and nothing else. (`log` arrived
+    separately in E2, so it is no longer listed as absent here — the
+    still-unshipped Phase-E surface is.) The stable framework is
+    untouched."""
     x = NativeTensor.from_array(VALUES)
     core = cpp.NativeTensorCore.from_array(VALUES)
-    for absent in ("log", "softmax", "log_softmax", "cross_entropy"):
+    for absent in ("softmax", "log_softmax", "cross_entropy"):
         assert not hasattr(x, absent), absent
         assert not hasattr(core, absent), absent
     assert not hasattr(x, "divide") and not hasattr(x, "__truediv__")

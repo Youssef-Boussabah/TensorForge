@@ -568,20 +568,23 @@ def test_phase_e_design_distinguishes_the_backward_read_contracts():
 
 def test_phase_e_implemented_surface_matches_the_milestones_reached():
     """Phase E ships one milestone at a time, and the registries are the
-    honest record. E1 implemented `exp`; E2-E7 have not landed, so every
-    later capability must still be absent from every implemented
-    inventory."""
+    honest record. E1 implemented `exp` and E2 `log`; E3-E7 have not
+    landed, so every later capability must still be absent from every
+    implemented inventory."""
     from tensorforge.backends import cpp
 
-    # E1 — implemented, in the two inventories it belongs to and no others.
-    assert "exp" in cpp.TENSOR_CORE_OPS
-    assert "exp" in cpp.AUTOGRAD_OPS
-    assert "exp" not in cpp.UNSUPPORTED
-    assert "exp" not in cpp.NATIVE_MODULES and "exp" not in cpp.NATIVE_LOSSES
-    assert "exp" not in cpp.RAW_KERNELS  # no raw NumPy-buffer exp exists
+    # E1/E2 — implemented, in the two inventories they belong to, no others.
+    for shipped in ("exp", "log"):
+        assert shipped in cpp.TENSOR_CORE_OPS, shipped
+        assert shipped in cpp.AUTOGRAD_OPS, shipped
+        assert shipped not in cpp.UNSUPPORTED, shipped
+        assert shipped not in cpp.NATIVE_MODULES, shipped
+        assert shipped not in cpp.NATIVE_LOSSES, shipped
+        # No raw NumPy-buffer stable-math kernel exists.
+        assert shipped not in cpp.RAW_KERNELS, shipped
 
-    # E2-E7 — still designed only.
-    for name in ("log", "softmax", "log_softmax", "cross_entropy",
+    # E3-E7 — still designed only.
+    for name in ("softmax", "log_softmax", "cross_entropy",
                  "NativeCrossEntropyLoss", "native_accuracy"):
         assert name in cpp.UNSUPPORTED, f"{name} left the unsupported boundary"
         assert name not in cpp.TENSOR_CORE_OPS, name
@@ -604,13 +607,13 @@ def test_phase_e_milestone_status_is_reported_honestly():
     # The ladder's status table is the one place per-milestone status is
     # declared, so the row checks run inside that section only.
     ladder = _design_section("Milestone ladder")
-    for done in ("E0", "E1"):
+    for done in ("E0", "E1", "E2"):
         row = re.search(rf"\|\s*{done}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {done}"
         assert "complete" in row.group(1).lower(), (
             f"the design does not mark {done} complete"
         )
-    for pending in ("E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10"):
+    for pending in ("E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10"):
         row = re.search(rf"\|\s*{pending}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {pending}"
         assert "complete" not in row.group(1).lower(), (
@@ -628,27 +631,39 @@ def test_phase_e_milestone_status_is_reported_honestly():
     assert re.search(r"Phase E[^.]{0,120}in progress", matrix, re.I), (
         "the support matrix no longer marks Phase E in progress"
     )
-    # The registry agrees: exactly the E1 capability is live.
-    assert "exp" in cpp.AUTOGRAD_OPS and "log" in cpp.UNSUPPORTED
+    # The registry agrees: exactly the E1/E2 capabilities are live and
+    # the next milestone's capability is not.
+    assert "exp" in cpp.AUTOGRAD_OPS and "log" in cpp.AUTOGRAD_OPS
+    assert "softmax" in cpp.UNSUPPORTED
 
 
-def test_docs_present_the_shipped_exponential():
-    """The status surfaces must present `exp` as implemented and must
-    keep documenting its load-bearing invariant."""
-    for name in ("docs/native_support_matrix.md", PHASE_E_DESIGN):
-        text = _normalized_doc(name)
-        assert "`exp`" in text or "exp" in text, name
+def test_docs_present_the_shipped_stable_math():
+    """The status surfaces must present `exp` and `log` as implemented
+    and keep documenting each one's load-bearing backward invariant —
+    the contrast is the whole point of shipping them as a pair."""
     matrix = _normalized_doc("docs/native_support_matrix.md")
-    # exp is presented as a differentiable forward operation, and the
-    # saved-output/no-version contract is stated where users will read it.
-    assert re.search(r"`exp`\s*\|\s*Yes\s*\|\s*Yes", matrix), (
-        "the support matrix does not list exp as a differentiable operation"
-    )
+    # Both are presented as differentiable forward operations.
+    for shipped in ("exp", "log"):
+        assert re.search(rf"`{shipped}`\s*\|\s*Yes\s*\|\s*Yes", matrix), (
+            f"the support matrix does not list {shipped} as a "
+            f"differentiable operation"
+        )
+    # exp: saved output, no version. log: live input, version-checked.
     assert re.search(r"saved forward output", matrix)
-    exp_section = _design_section("NativeTensor.exp()")
-    assert "E1" in exp_section and "implemented" in exp_section.lower(), (
-        "the design does not record exp as implemented"
+    assert re.search(r"live input", matrix), (
+        "the support matrix no longer documents log's live-input backward"
     )
+    exp_section = _design_section("NativeTensor.exp()")
+    assert "E1" in exp_section and "implemented" in exp_section.lower()
+    assert "no version snapshot" in exp_section
+    log_section = _design_section("NativeTensor.log()")
+    assert "E2" in log_section and "implemented" in log_section.lower(), (
+        "the design does not record log as implemented"
+    )
+    assert "rereads the live input" in log_section
+    assert "version-checked" in log_section and "stale-graph" in log_section
+    # And the reciprocal-based derivative, which is why no division exists.
+    assert "reciprocal" in log_section
 
 
 def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():

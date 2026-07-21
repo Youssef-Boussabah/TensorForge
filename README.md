@@ -69,8 +69,8 @@ reached explicitly through `tensorforge.experimental` and
   operations Phase B shipped (`add`, `subtract`, `multiply`, `relu`,
   `sqrt`, `reciprocal`, `matmul`, `sum`, `mean`, `reshape`,
   `transpose`/`T`, `narrow`, `contiguous_copy`), joined by the Phase-D
-  `conv2d` and `maxpool2d` primitives below and the Phase-E `exp`, plus
-  broadcasting and view
+  `conv2d` and `maxpool2d` primitives below and the Phase-E `exp`/`log`,
+  plus broadcasting and view
   gradients, a native scatter backward for `narrow`, one-shot graph
   release with `retain_graph` opt-in, and failure rollback. The backend's
   `AUTOGRAD_OPS` registry is the exact, current list.
@@ -217,8 +217,8 @@ Honest expectations:
   exact checkpoint-resume proof. Phase E (native classification and
   stable math) is *in progress*: its contract is locked in
   [docs/native_classification_design.md](docs/native_classification_design.md)
-  and milestone E1 shipped the differentiable native `exp`, but
-  `log`, `softmax`, `log_softmax`, `cross_entropy`,
+  and milestones E1/E2 shipped the differentiable native `exp` and `log`,
+  but `softmax`, `log_softmax`, `cross_entropy`,
   `NativeCrossEntropyLoss`, and `native_accuracy` **do not exist yet**.
   Beyond that: no normalization, no dropout or native RNG, and native
   checkpoints capture no scheduler or random state — see the
@@ -256,12 +256,16 @@ benchmarks, and ASan/UBSan validation of the whole native stack.
 **Phase E — Native Classification and Stable Math — is now in
 progress**: its architecture contract is locked
 ([docs/native_classification_design.md](docs/native_classification_design.md),
-milestone E0) and milestone **E1 shipped the differentiable native
-`exp`** — C++ kernel, self-validating guarded C ABI, `NativeTensorCore`
-and `NativeTensor` layers, with a saved-output backward that records no
-parameter version. The rest of the phase (`log`, `softmax`,
-`log_softmax`, the fused `cross_entropy`, `NativeCrossEntropyLoss`, and
-`native_accuracy`) is designed but **not implemented**. More
+milestone E0) and milestones **E1/E2 shipped the differentiable native
+`exp` and `log`** — C++ kernels, self-validating guarded C ABI,
+`NativeTensorCore` and `NativeTensor` layers — as the phase's two
+backward archetypes: `exp` reads its saved output and records no
+parameter version, while `log` rereads the live input (`upstream ×
+reciprocal(x)`, no division operation added) and version-guards a direct
+parameter so a post-forward mutation fails before any gradient moves. The
+rest of the phase (`softmax`, `log_softmax`, the fused `cross_entropy`,
+`NativeCrossEntropyLoss`, and `native_accuracy`) is designed but **not
+implemented**. More
 activations/math, normalization, RNG/dropout, and CPU optimization sit
 beyond it, and CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and

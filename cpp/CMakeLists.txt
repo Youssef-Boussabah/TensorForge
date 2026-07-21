@@ -240,4 +240,25 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME exp COMMAND test_exp)
+
+  # Native logarithm (Phase E, E2): same target shape as the E1 exp test —
+  # it links elementwise.cpp plus error.cpp and drives the *exported*
+  # guarded pair (tf_core_log / tf_core_log_contiguous), since the
+  # logarithm's compute is file-local to that translation unit. It also
+  # regression-covers the validators E2 shares with exp.
+  add_executable(test_log
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_log.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_log PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_log PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_log PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_log PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME log COMMAND test_log)
 endif()

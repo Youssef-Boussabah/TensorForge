@@ -34,9 +34,10 @@ ASan/UBSan validation of the whole stack). **Phase E — Native
 Classification and Stable Math — is in progress**: its architecture
 contract is locked in
 [native_classification_design.md](native_classification_design.md)
-(milestone **E0**, complete) and milestone **E1** has shipped the
-differentiable native `exp`. **Everything else in Phase E (E2–E10) is
-still designed-only** — `log`, `softmax`, `log_softmax`,
+(milestone **E0**, complete) and milestones **E1** and **E2** have
+shipped the differentiable native `exp` and `log` — the phase's two
+backward archetypes (saved-output vs live-input). **Everything else in
+Phase E (E3–E10) is still designed-only** — `softmax`, `log_softmax`,
 `cross_entropy`, `NativeCrossEntropyLoss`, and `native_accuracy` do not
 exist in code and stay listed as unsupported below. See also
 [roadmap.md](roadmap.md). Everything Phase D
@@ -67,6 +68,7 @@ native line does not have.
 | `relu` | Yes | Yes | Fused native `relu_backward` mask kernel |
 | `sqrt` | Yes | Yes | v3.11 optimizer math primitive; backward `1/(2·sqrt(x))` from the **saved forward output** — IEEE: negatives → NaN, signed zeros preserved |
 | `reciprocal` | Yes | Yes | v3.11 optimizer math primitive; backward `−1/x²` from the **saved forward output** — IEEE: ±0 → ±inf, ±inf → ±0, NaN propagates |
+| `log` | Yes | Yes | Phase E, **E2**: elementwise natural logarithm over any legal shape, both execution paths; backward rereads the **live input** — `upstream × reciprocal(x)` through the existing `reciprocal` primitive (no division operation exists) — so a direct `NativeParameter` parent **is** version-guarded: mutating it after forward raises the stale-graph error before any gradient is committed anywhere in the graph. Plain IEEE `std::log` — no clamping, no epsilon, no domain rejection: `log(1)=0`, `log(±0)=-inf`, `log(negative)=NaN`, `log(+inf)=+inf`, NaN propagates, and those are **values**, not ABI errors. Reuses E1's self-validating export contract unchanged |
 | `exp` | Yes | Yes | Phase E, **E1**: elementwise `e**x` over any legal shape, both the strided-odometer and contiguous execution paths; backward is `upstream × ` the **saved forward output**, so it never rereads the input and records **no** parameter-version snapshot (mutating a direct parameter after forward leaves the edge valid). Plain IEEE `std::exp` — no clamping, no inserted bound: `exp(0)=1`, overflow → `+inf`, underflow → `+0`, `-inf` → `+0`, NaN propagates. Its two guarded exports (`tf_core_exp`, `tf_core_exp_contiguous`) validate handles, layout, spans, and overflow at the ABI itself |
 | `matmul` | Yes | Yes | 2-D only, no batching/broadcasting |
 | `sum` | Yes | Yes | All elements or one axis; `keepdims` |
@@ -130,12 +132,12 @@ in the stable Python framework — that does not make them native.
 - `divide` as a NativeTensor operation (a raw ctypes `elementwise_divide`
   kernel exists at the kernel layer, but no tensor op and no backward;
   `reciprocal` + `multiply` compose what the training stack needs)
-- `log`, `tanh`, `sigmoid`, `softmax`, `log_softmax` (`log`, `softmax`,
-  and `log_softmax` are **designed** for Phase E — see
+- `tanh`, `sigmoid`, `softmax`, `log_softmax` (`softmax` and
+  `log_softmax` are **designed** for Phase E — see
   [native_classification_design.md](native_classification_design.md) —
-  but none of them exists in code today; `tanh` and `sigmoid` are outside
-  Phase E entirely. `exp` **is** implemented as of E1 and is listed in
-  the forward-operation table above)
+  but neither exists in code today; `tanh` and `sigmoid` are outside
+  Phase E entirely. `exp` and `log` **are** implemented as of E1 and E2
+  and are listed in the forward-operation table above)
 - scheduler state, random-state capture/restoration, or dataloader
   state in native checkpoints; `map_location`, partial or name-remapped
   loading, checkpoint merging, sharding, compression, or encryption
@@ -146,11 +148,12 @@ in the stable Python framework — that does not make them native.
   operation, loss, or metric exists (the native line trains regression
   through `NativeMSELoss`). The whole surface is contracted for Phase E
   in [native_classification_design.md](native_classification_design.md);
-  a locked contract is not an implementation. Phase E has begun — E1
-  shipped `exp` — but the classification surface itself is still absent
+  a locked contract is not an implementation. Phase E has begun — E1 and
+  E2 shipped `exp` and `log` — but the classification surface itself is
+  still absent
 - native normalization (BatchNorm/LayerNorm), dropout, or a native RNG
 - additional native activations/math beyond
-  `relu`/`sqrt`/`reciprocal`/`exp`
+  `relu`/`sqrt`/`reciprocal`/`exp`/`log`
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP
 - Transformers / text models
@@ -274,13 +277,13 @@ CUDA, AMP, BatchNorm, Dropout, im2col, or BLAS/threaded convolution.
 The architecture contract is locked in
 [native_classification_design.md](native_classification_design.md); the
 registry above (and `tensorforge.backends.cpp`) stays the authority on
-what is live. Two of eleven milestones have landed.
+what is live. Three of eleven milestones have landed.
 
 | Capability | Milestone | Status |
 |---|---|---|
 | Phase-E architecture contract (scope, public API, stability strategy, backward/versioning matrix, `int64` target contract, saved-probability lifetime, C ABI families, inventory placements, E0–E10 ladder) | E0 | **Complete** (documentation only — no numerical behavior) |
 | Native `exp`: the C++ kernel (odometer + contiguous), the self-validating guarded exports `tf_core_exp` / `tf_core_exp_contiguous`, their ctypes registration, `NativeTensorCore.exp()`, and the differentiable `NativeTensor.exp()` with its **saved-output** backward and **no** version snapshot | E1 | **Implemented** |
-| Native `log` (live-input backward, version-checked — the deliberate contrast with `exp`) | E2 | Not started |
+| Native `log`: the same four layers, reusing E1's self-validating export contract unchanged; backward is `upstream × reciprocal(live input)`, so a direct `NativeParameter` parent **is** version-checked and a stale graph fails before any gradient moves — the deliberate contrast with `exp` | E2 | **Implemented** |
 | Stable `softmax` / `log_softmax` (fused max-shift and log-sum-exp) | E3–E4 | Not started |
 | Fused `cross_entropy` Core contract, then its differentiable operation | E5–E6 | Not started |
 | `NativeCrossEntropyLoss` and reporting-only `native_accuracy` | E7 | Not started |
@@ -288,8 +291,9 @@ what is live. Two of eleven milestones have landed.
 | Classification benchmarks; phase integration, sanitizer, and closure | E9–E10 | Not started |
 
 Phase E adds **no** persistent state: the native checkpoint format stays
-**version 1**, and E1 added no parameter, buffer, module, loss, metric,
-optimizer, schema, benchmark, or example.
+**version 1**, and E1/E2 added no parameter, buffer, module, loss,
+metric, optimizer, schema, benchmark, or example — and no division
+operation (`log`'s derivative composes from the existing `reciprocal`).
 
 ## How to build and verify
 

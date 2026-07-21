@@ -16,15 +16,20 @@ this document. The backend capability registry
 [native_support_matrix.md](native_support_matrix.md), stays the
 **single source of truth** for what is actually live at any moment.
 
-**Phase-E status: in progress.** **E0 is complete** (this contract) and
-**E1 is complete** — the differentiable `NativeTensor.exp()` ships
-through the whole stack, so `"exp"` now lives in `TENSOR_CORE_OPS` and
-`AUTOGRAD_OPS` and has left `UNSUPPORTED`. **Everything else in Phase E
-(E2–E10) is still designed-only**: `log`, `softmax`, `log_softmax`,
-`cross_entropy`, `NativeCrossEntropyLoss`, and `native_accuracy` do not
-exist in code and remain in `UNSUPPORTED`. Per-milestone status is
-recorded in the ladder (§15); the completion criteria (§17) are **not**
-met, so Phase E is **not** complete.
+**Phase-E status: in progress.** **E0 is complete** (this contract),
+**E1 is complete** (the differentiable `NativeTensor.exp()`), and **E2 is
+complete** (the differentiable `NativeTensor.log()`) — so `"exp"` and
+`"log"` now live in `TENSOR_CORE_OPS` and `AUTOGRAD_OPS` and have left
+`UNSUPPORTED`. Shipping them as a pair was deliberate: they are the
+phase's two backward archetypes, and §5's matrix is now **proved by
+tests**, not merely asserted — `exp` reads its saved output and records
+no version, `log` rereads the live input and version-guards a direct
+parameter. **Everything else in Phase E (E3–E10) is still
+designed-only**: `softmax`, `log_softmax`, `cross_entropy`,
+`NativeCrossEntropyLoss`, and `native_accuracy` do not exist in code and
+remain in `UNSUPPORTED`. Per-milestone status is recorded in the ladder
+(§15); the completion criteria (§17) are **not** met, so Phase E is
+**not** complete.
 
 The stable Python framework (`tensorforge.Tensor.exp/log/softmax`,
 `tensorforge.nn.cross_entropy`, `tensorforge.nn.accuracy`) is the
@@ -265,6 +270,45 @@ ownership contract, not a value read. The distinction is proved in
 
 This exp/log asymmetry is deliberate and is the phase's first teaching
 point: *what a backward reads decides what it must version-guard.*
+
+**Status (E2 — implemented as specified).** The op ships end to end:
+`op_log` in `cpp/src/elementwise.cpp` (plain `std::log`, over the same
+`core_unary` / `core_unary_contiguous` walkers), the guarded exports
+`tf_core_log` / `tf_core_log_contiguous`, their ctypes declarations and
+`_CHECKED_KERNELS` registration, `NativeTensorCore.log()`, and the
+differentiable `NativeTensor.log()`. Implementation notes:
+
+- **E1's validators were reused unchanged.** `unary_strided_error` and
+  `unary_contiguous_error` were written op-agnostic in E1, so E2 needed
+  **no generalization at all** — the log exports call them directly.
+  `cpp/tests/test_log.cpp` re-drives the whole rejection matrix as
+  regression coverage that sharing them weakened neither operation.
+- **IEEE domain results are values, not ABI errors.** `log(0) == -inf`
+  and `log(negative) == NaN` set IEEE flags, not C++ exceptions, so they
+  flow to the destination and leave the thread-local error slot clear.
+  This is asserted at both the C++ and Python layers.
+- **The backward's temporary is `finally`-closed.** The closure computes
+  `reciprocal(input)` into a transient owning core and closes it in a
+  `finally`, so a failing `multiply` cannot leak it and a cleanup problem
+  cannot mask the original exception — the pattern conv2d's bias
+  reduction established (§D6).
+- **Version guarding uses the existing mechanism only.** No new
+  stale-check path exists inside the closure: `_versioned_value_reads`
+  records the entry and `backward()`'s existing preflight validates it
+  before the gradient snapshot, the seed, and every callback. A stale
+  graph therefore commits nothing **anywhere** — proved with a mixed
+  graph whose healthy branch also stays untouched — is not marked freed,
+  and fails identically on retry.
+- **The direct-parent rule was not broadened.** `p.exp().log()` after
+  mutating `p` stays valid: `log` rereads its direct parent (exp's
+  output, a plain tensor with no version slot), and `exp` reads its saved
+  output, so no edge reads the mutated value. Version provenance does
+  **not** propagate through intermediates in the current architecture,
+  and E2 deliberately did not redesign that — the boundary is stated here
+  and locked by a test.
+- **No saved-output state and no graph resource.** `log`'s node owns
+  nothing private (`_graph_resources == ()`); its local derivative is
+  rebuilt from the live input each pass.
 
 ### 4.3 `NativeTensor.softmax(axis=-1)`
 
@@ -666,7 +710,7 @@ training step — against a stable-framework reference row.
 |---|---|---|
 | E0 | Classification architecture contract and Phase-D baseline reconciliation | **complete** |
 | E1 | Native exponential | **complete** |
-| E2 | Native logarithm | not started |
+| E2 | Native logarithm | **complete** |
 | E3 | Stable differentiable softmax | not started |
 | E4 | Stable differentiable log-softmax | not started |
 | E5 | Fused cross-entropy forward and backward Core contract | not started |
@@ -743,7 +787,7 @@ summary, and the registry remains the authority on what is live.
   benchmark, no example, no schema change, and no change to any existing
   kernel or operation.
 
-### E2 — Native logarithm
+### E2 — Native logarithm — **complete**
 
 - **Objective:** a differentiable `NativeTensor.log()`.
 - **Layer:** same four layers as E1.
@@ -759,6 +803,19 @@ summary, and the registry remains the authority on what is live.
   division operation instead of reusing `reciprocal`.
 - **Dependencies:** E1 (shares the unary kernel scaffolding).
 - **Non-goals:** stability clamping, `log1p`, `log2`, `log10`.
+- **Shipped (E2).** Exactly the above; see §4.2's status block for the
+  implementation notes. Files touched: `cpp/src/elementwise.cpp`
+  (`op_log` and the two guarded exports — E1's validators reused
+  verbatim), `cpp/tests/test_log.cpp` + `cpp/CMakeLists.txt` (a seventh
+  CTest target), `src/tensorforge/backends/cpp.py` (ctypes declarations,
+  `_CHECKED_KERNELS`, `NativeTensorCore.log`, `TENSOR_CORE_OPS`,
+  `AUTOGRAD_OPS`, `UNSUPPORTED`),
+  `src/tensorforge/experimental/native_tensor.py` (`NativeTensor.log`),
+  and `tests/test_native_log.py`. Neither risk materialized: the backward
+  records a version through the existing helper, and the derivative goes
+  through the existing native `reciprocal` — **no division operation was
+  added at any layer**. No new source file, module, benchmark, example,
+  schema change, or change to any existing kernel or operation.
 
 ### E3 — Stable differentiable softmax
 

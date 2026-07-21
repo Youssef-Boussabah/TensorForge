@@ -1,8 +1,9 @@
 // Elementwise kernels: the unary and binary walkers over native tensor
 // cores (odometer + contiguous fast paths), ReLU and its backward, the
 // v3.11 optimizer-math primitives (sqrt / reciprocal), the Phase-E
-// exponential (milestone E1), and the legacy raw-buffer elementwise
-// kernels the v0.x benchmarks still call.
+// stable math (exponential — milestone E1; logarithm — milestone E2),
+// and the legacy raw-buffer elementwise kernels the v0.x benchmarks
+// still call.
 //
 // The walkers read strided views directly from Storage and write into
 // fresh contiguous output, so contiguous and non-contiguous inputs
@@ -45,6 +46,15 @@ double op_reciprocal(double x) { return 1.0 / x; }
 // the same values NumPy's float64 exp produces (NumPy additionally warns
 // on overflow; this kernel does not).
 double op_exp(double x) { return std::exp(x); }
+// Phase E, milestone E2. Plain std::log: the natural logarithm, with no
+// clamping, no inserted epsilon, no absolute value, and no domain
+// rejection. IEEE float64 semantics: log(1) == 0, log(±0) == -inf,
+// log(negative) == NaN, log(+inf) == +inf, and NaN propagates. The
+// zero and negative cases raise IEEE divide-by-zero / invalid *flags*,
+// not C++ exceptions, so they stay numerical results and never become
+// ABI errors — the same values NumPy produces (NumPy also warns; this
+// kernel does not).
+double op_log(double x) { return std::log(x); }
 
 // Walk one strided source with the standard odometer and write row-major
 // contiguous output.
@@ -343,18 +353,24 @@ TF_EXPORT void tf_core_reciprocal_contiguous(
     TF_GUARD_END_VOID()
 }
 
-// -- Phase E: the exponential (milestone E1) --------------------------------
+// -- Phase E stable math: exponential (E1) and logarithm (E2) ---------------
 //
 // Same two-path shape as every other unary core op — a generic odometer
 // export for strided views and a flat contiguous export — so
-// NativeTensorCore.exp() dispatches exactly like relu/sqrt/reciprocal and
-// both paths produce bit-for-bit identical values.
+// NativeTensorCore.exp()/log() dispatch exactly like relu/sqrt/reciprocal
+// and both paths produce bit-for-bit identical values.
 //
-// Unlike those older exports these two **validate their own arguments**
-// before touching memory (see the helpers above). Validation runs inside
-// the guard, so a rejected call records TF_ERROR_INVALID in the
-// thread-local slot, writes nothing, allocates nothing, leaves every
-// caller-owned object untouched, and surfaces in Python as ValueError.
+// Unlike the older unary exports these four **validate their own
+// arguments** before touching memory, through the shared helpers above
+// (E2 reuses E1's validators unchanged — the messages were written
+// op-agnostic for exactly this reason). Validation runs inside the guard,
+// so a rejected call records TF_ERROR_INVALID in the thread-local slot,
+// writes nothing, allocates nothing, leaves every caller-owned object
+// untouched, and surfaces in Python as ValueError.
+//
+// IEEE domain results (NaN from log of a negative, ±inf, ±0) are
+// **values**, not failures: they flow to the destination and leave the
+// error slot clear.
 
 TF_EXPORT void tf_core_exp(
     const void* src, void* dst,
@@ -379,6 +395,32 @@ TF_EXPORT void tf_core_exp_contiguous(
         return;
     }
     core_unary_contiguous(src, dst, numel, offset, op_exp);
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_log(
+    const void* src, void* dst,
+    const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    if (const char* err =
+            unary_strided_error(src, dst, shape, strides, offset, ndim)) {
+        tf::set_error(TF_ERROR_INVALID, err);
+        return;
+    }
+    core_unary(src, dst, shape, strides, offset, ndim, op_log);
+    TF_GUARD_END_VOID()
+}
+
+TF_EXPORT void tf_core_log_contiguous(
+    const void* src, void* dst, int64_t numel, int64_t offset
+) {
+    TF_GUARD_BEGIN
+    if (const char* err = unary_contiguous_error(src, dst, numel, offset)) {
+        tf::set_error(TF_ERROR_INVALID, err);
+        return;
+    }
+    core_unary_contiguous(src, dst, numel, offset, op_log);
     TF_GUARD_END_VOID()
 }
 
