@@ -80,6 +80,12 @@ TENSOR_CORE_OPS = (
     # same odometer/contiguous pair as relu/sqrt/reciprocal. Their guarded
     # exports additionally self-validate at the ABI boundary.
     "exp", "log",
+    # Phase E probability transform (E3): an axis-wise *fused* Core op
+    # over the contiguous-only tf_core_softmax_forward export, with
+    # Policy-B copy-then-compute for non-contiguous inputs. Not composed
+    # from public max/subtract/exp/sum/divide — the stability transform
+    # lives inside the kernel where it cannot be bypassed.
+    "softmax",
     "add", "subtract", "multiply", "matmul",
     "sum", "mean",
     "reshape", "transpose", "T", "narrow", "contiguous_copy",
@@ -117,7 +123,12 @@ TENSOR_CORE_OPS = (
 # records no expected parameter version — and "log" (E2), whose backward
 # rereads the **live input** (`upstream * reciprocal(x)`) and therefore
 # DOES record one for a direct NativeParameter. The pair is the phase's
-# deliberate contrast between the two backward archetypes.
+# deliberate contrast between the two backward archetypes. "softmax" (E3)
+# joins exp on the saved-output side: its backward reads only the saved
+# probabilities `y` and is *composed* from existing Core ops at the
+# graph-unaware level — `y * (upstream - sum(upstream * y, axis,
+# keepdims=True))` — so no dedicated backward kernel exists and no
+# parameter version is recorded.
 AUTOGRAD_OPS = (
     "add", "subtract", "multiply", "relu",
     "sum", "mean", "matmul",
@@ -125,7 +136,7 @@ AUTOGRAD_OPS = (
     "sqrt", "reciprocal",
     "conv2d",
     "maxpool2d",
-    "exp", "log",
+    "exp", "log", "softmax",
 )
 
 # The native training stack composed on the autograd layer (Phase C) and
@@ -175,12 +186,14 @@ STATE_SUPPORT = (
 # The classification names below are the Phase-E surface contracted in
 # docs/native_classification_design.md (milestone E0). A locked contract is
 # not an implementation: each stays here until the milestone that
-# implements it removes it. Milestones E1 and E2 implemented the
-# exponential and the logarithm, so "exp" and "log" left this tuple for
-# TENSOR_CORE_OPS and AUTOGRAD_OPS; the rest of Phase E (E3-E7) is still
-# genuinely absent.
+# implements it removes it. Milestones E1, E2, and E3 implemented the
+# exponential, the logarithm, and the softmax, so "exp", "log", and
+# "softmax" left this tuple for TENSOR_CORE_OPS and AUTOGRAD_OPS; the
+# rest of Phase E (E4-E7) is still genuinely absent. "log_softmax" is a
+# distinct fused capability from the shipped "log" and "softmax" — it is
+# deliberately NOT composed from them (design §4.4).
 UNSUPPORTED = (
-    "softmax", "log_softmax", "cross_entropy",
+    "log_softmax", "cross_entropy",
     "NativeCrossEntropyLoss", "native_accuracy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",
@@ -307,8 +320,11 @@ def _load_library():
     # source, one contiguous destination); sqrt/reciprocal are the
     # v3.11 optimizer math primitives while exp and log are the Phase-E
     # stable-math primitives (milestones E1 and E2).
+    # tf_core_contiguous_copy shares the same signature: it is the
+    # identity map over the odometer, gathering a strided view of one
+    # storage into a second storage (the native Policy-B copy, E3.1).
     for name in ("tf_core_relu", "tf_core_sqrt", "tf_core_reciprocal",
-                 "tf_core_exp", "tf_core_log"):
+                 "tf_core_exp", "tf_core_log", "tf_core_contiguous_copy"):
         kernel = getattr(library, name)
         kernel.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array,
@@ -425,6 +441,18 @@ def _load_library():
         ctypes.c_void_p,                   # grad_input handle
     ] + [ctypes.c_int64] * 6
     library.tf_core_maxpool2d_backward.restype = None
+    # Softmax forward (Phase E, E3): the exported wrapper over the fused
+    # maximum-shift kernel in classification.cpp. **Contiguous storage
+    # only** — the Core layer applies Policy-B copy-then-compute, so no
+    # stride metadata crosses the boundary. Only the source carries an
+    # offset (the destination is caller-allocated at offset 0); the three
+    # trailing int64s are the (outer, axis_length, inner) decomposition of
+    # the reduction axis.
+    library.tf_core_softmax_forward.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # source handle, offset
+        ctypes.c_void_p,                   # destination handle
+    ] + [ctypes.c_int64] * 3
+    library.tf_core_softmax_forward.restype = None
 
     _configure_error_contract(library)
     return library
@@ -470,6 +498,9 @@ _CHECKED_KERNELS = (
     # IEEE domain results (log of 0/negative) stay values, not errors.
     "tf_core_exp", "tf_core_exp_contiguous",
     "tf_core_log", "tf_core_log_contiguous",
+    # The native strided-to-contiguous storage gather behind every
+    # contiguous_copy / Policy-B path (E3.1). Self-validating.
+    "tf_core_contiguous_copy",
     "tf_core_add", "tf_core_add_contiguous",
     "tf_core_subtract", "tf_core_subtract_contiguous",
     "tf_core_multiply", "tf_core_multiply_contiguous",
@@ -482,6 +513,9 @@ _CHECKED_KERNELS = (
     "tf_core_conv2d_weight_backward",
     "tf_core_maxpool2d_forward",
     "tf_core_maxpool2d_backward",
+    # Phase E, E3: the fused softmax forward. Self-validating like the
+    # other Phase-E exports; IEEE NaN/inf results stay values, not errors.
+    "tf_core_softmax_forward",
 )
 
 
@@ -832,8 +866,30 @@ class NativeTensorView:
         Always copies, even if the view is already contiguous — the
         result is an independent storage the caller owns (and must
         close).
+
+        **Native storage-to-storage** (E3.1): the elements are gathered
+        by ``tf_core_contiguous_copy`` straight from this view's storage
+        into the fresh allocation, so tensor data never leaves native
+        memory. Only the shape/stride arrays cross as ctypes metadata. A
+        failed gather closes the new storage before propagating, so no
+        half-filled allocation escapes.
         """
-        return NativeStorage.from_array(self.to_numpy().ravel())
+        storage = NativeStorage(
+            self._numel, dtype=self._storage.dtype, device=self._storage.device
+        )
+        try:
+            storage._lib.tf_core_contiguous_copy(
+                self._storage._require_open(),
+                storage._require_open(),
+                np.asarray(self._shape, dtype=np.int64),
+                np.asarray(self._strides, dtype=np.int64),
+                self._offset,
+                len(self._shape),
+            )
+        except BaseException:
+            storage.close()
+            raise
+        return storage
 
     def __repr__(self):
         return (
@@ -976,9 +1032,37 @@ class NativeTensorCore:
     def contiguous_copy(self):
         """A new, independent NativeTensorCore with the same values in
         row-major contiguous storage. Always copies, even when this
-        tensor is already contiguous."""
+        tensor is already contiguous.
+
+        **Native storage-to-storage** (E3.1): the fresh output is
+        allocated first and ``tf_core_contiguous_copy`` gathers this
+        (possibly strided, possibly offset) view straight into it, so
+        **tensor data never round-trips through a NumPy host buffer**.
+        Only the shape/stride arrays cross the boundary, as ctypes
+        metadata. This is the shared helper behind every Policy-B
+        copy-then-compute path (softmax, conv2d, maxpool2d), the
+        differentiable ``contiguous_copy`` operation, ``NativeFlatten``,
+        and ``NativeParameter`` construction.
+
+        The result owns its storage, is contiguous at offset 0, aliases
+        nothing, and leaves this tensor unchanged. A failed gather closes
+        the freshly allocated output before propagating, so no partially
+        initialized core escapes."""
         self._require_open()
-        return NativeTensorCore.from_array(self.to_numpy())
+        out = NativeTensorCore.zeros(
+            self.shape, dtype=self.dtype, device=self.device
+        )
+        try:
+            shape_arr, strides_arr = self._layout_arrays()
+            self._storage._lib.tf_core_contiguous_copy(
+                self._storage._require_open(),
+                out._storage._require_open(),
+                shape_arr, strides_arr, self.offset, self.ndim,
+            )
+        except BaseException:
+            out.close()
+            raise
+        return out
 
     # -- native compute (arithmetic happens in C++ over storage) ---------
 
@@ -1089,6 +1173,77 @@ class NativeTensorCore:
         Graph-unaware, like every Core op: the differentiable surface is
         ``NativeTensor.log()``."""
         return self._unary_compute("tf_core_log", "tf_core_log_contiguous")
+
+    def softmax(self, axis=-1):
+        """Numerically stable softmax over one ``axis`` (Phase E,
+        milestone E3), computed by the fused native kernel.
+
+        ``axis`` is a plain int (negative allowed, NumPy-style), validated
+        by the existing ``_normalize_axis`` rules: a bool, a float, a
+        string, ``None``, or an out-of-range value raises, and any axis on
+        a rank-0 tensor raises — softmax requires rank >= 1. Validation
+        runs **before any allocation**, so a rejected call allocates
+        nothing. Returns a fresh **owning** row-major contiguous
+        NativeTensorCore (offset 0) of the input's shape; the input is not
+        mutated and shares no storage with the result.
+
+        Per slice the kernel computes ``exp(x - max(x)) / sum(exp(x -
+        max(x)))`` in one fused pass, all in float64 — the maximum shift
+        keeps every exponent <= 0, so a large common offset cannot
+        overflow. Exceptional values follow plain IEEE arithmetic with no
+        special-casing: a NaN or ``+inf`` anywhere in a slice propagates
+        through that slice's shift and sum, so the whole slice becomes
+        NaN. Those are values, not errors.
+
+        The C ABI is **contiguous-only**, so a non-contiguous input is
+        materialized into a private contiguous copy (Policy B) that is
+        closed the moment the native call returns; an already-contiguous
+        input is passed through with its offset.
+
+        Graph-unaware, like every Core op: the differentiable surface is
+        ``NativeTensor.softmax()``."""
+        self._require_open()
+        # Validate/normalize the axis first — nothing is allocated if this
+        # raises. _normalize_axis rejects bool/non-int/out-of-range and
+        # every axis on a rank-0 shape.
+        normalized = _normalize_axis(axis, self.shape)
+        shape = self.shape
+        # Python ints are arbitrary precision, so these products cannot
+        # overflow here; the C ABI re-proves them in int64 anyway.
+        outer = 1
+        for extent in shape[:normalized]:
+            outer *= extent
+        axis_length = shape[normalized]
+        inner = 1
+        for extent in shape[normalized + 1:]:
+            inner *= extent
+
+        temporaries = []
+        try:
+            source = (
+                self if self.contiguous else self._contiguous_temp(temporaries)
+            )
+            out = NativeTensorCore.zeros(
+                shape, dtype=self.dtype, device=self.device
+            )
+            try:
+                self._storage._lib.tf_core_softmax_forward(
+                    source._storage._require_open(), source.offset,
+                    out._storage._require_open(),
+                    outer, axis_length, inner,
+                )
+            except BaseException:
+                # The native call failed (e.g. an injected allocation
+                # failure): discard the freshly allocated output so a
+                # failed forward returns no half-built tensor.
+                out.close()
+                raise
+            return out
+        finally:
+            # Close the private contiguous copy exactly once, whether the
+            # call succeeded or raised — the caller's input is untouched.
+            for temp in temporaries:
+                temp.close()
 
     def relu_backward(self, upstream):
         """The gradient of ``relu`` at this tensor's forward value:

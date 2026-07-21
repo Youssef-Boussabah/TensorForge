@@ -391,9 +391,11 @@ def test_phase_d_status_is_consistent_across_docs_and_registry():
     assert (REPO_ROOT / "tests" / "test_native_phase_d.py").is_file()
 
     # Later phases must not be claimed. These are genuinely absent
-    # capabilities, checked against the registry rather than against prose.
+    # capabilities, checked against the registry rather than against
+    # prose. ("softmax" left this list when Phase E milestone E3
+    # implemented it; the Phase-E boundary is tracked separately below.)
     for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout", "softmax", "cross_entropy"):
+                   "dropout", "log_softmax", "cross_entropy"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS and absent not in cpp.NATIVE_MODULES
     assert cpp.SUPPORTED_DTYPES == ("float64",)
@@ -573,8 +575,9 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
     implemented inventory."""
     from tensorforge.backends import cpp
 
-    # E1/E2 — implemented, in the two inventories they belong to, no others.
-    for shipped in ("exp", "log"):
+    # E1/E2/E3 — implemented, in the two inventories they belong to, no
+    # others.
+    for shipped in ("exp", "log", "softmax"):
         assert shipped in cpp.TENSOR_CORE_OPS, shipped
         assert shipped in cpp.AUTOGRAD_OPS, shipped
         assert shipped not in cpp.UNSUPPORTED, shipped
@@ -583,8 +586,8 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
         # No raw NumPy-buffer stable-math kernel exists.
         assert shipped not in cpp.RAW_KERNELS, shipped
 
-    # E3-E7 — still designed only.
-    for name in ("softmax", "log_softmax", "cross_entropy",
+    # E4-E7 — still designed only.
+    for name in ("log_softmax", "cross_entropy",
                  "NativeCrossEntropyLoss", "native_accuracy"):
         assert name in cpp.UNSUPPORTED, f"{name} left the unsupported boundary"
         assert name not in cpp.TENSOR_CORE_OPS, name
@@ -594,8 +597,19 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
         assert name not in cpp.NATIVE_LOSSES, name
     # No metrics inventory exists yet either — E7 introduces it.
     assert not hasattr(cpp, "NATIVE_METRICS")
-    # And no classification source unit has appeared (E3 adds it).
-    assert not (REPO_ROOT / "cpp" / "src" / "classification.cpp").exists()
+    # E3 created the classification source unit locked by E0 §9.1, and
+    # the softmax kernel/export are defined there rather than in the
+    # elementwise unit. Checked by symbol definition, not by banning the
+    # word, so cross-referencing comments remain possible.
+    classification = (REPO_ROOT / "cpp" / "src" / "classification.cpp")
+    assert classification.is_file()
+    assert "tf_core_softmax_forward" in classification.read_text(
+        encoding="utf-8"
+    )
+    elementwise = (REPO_ROOT / "cpp" / "src" / "elementwise.cpp").read_text(
+        encoding="utf-8"
+    )
+    assert "tf_core_softmax_forward(" not in elementwise
 
 
 def test_phase_e_milestone_status_is_reported_honestly():
@@ -607,13 +621,13 @@ def test_phase_e_milestone_status_is_reported_honestly():
     # The ladder's status table is the one place per-milestone status is
     # declared, so the row checks run inside that section only.
     ladder = _design_section("Milestone ladder")
-    for done in ("E0", "E1", "E2"):
+    for done in ("E0", "E1", "E2", "E3"):
         row = re.search(rf"\|\s*{done}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {done}"
         assert "complete" in row.group(1).lower(), (
             f"the design does not mark {done} complete"
         )
-    for pending in ("E3", "E4", "E5", "E6", "E7", "E8", "E9", "E10"):
+    for pending in ("E4", "E5", "E6", "E7", "E8", "E9", "E10"):
         row = re.search(rf"\|\s*{pending}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {pending}"
         assert "complete" not in row.group(1).lower(), (
@@ -631,10 +645,11 @@ def test_phase_e_milestone_status_is_reported_honestly():
     assert re.search(r"Phase E[^.]{0,120}in progress", matrix, re.I), (
         "the support matrix no longer marks Phase E in progress"
     )
-    # The registry agrees: exactly the E1/E2 capabilities are live and
+    # The registry agrees: exactly the E1/E2/E3 capabilities are live and
     # the next milestone's capability is not.
-    assert "exp" in cpp.AUTOGRAD_OPS and "log" in cpp.AUTOGRAD_OPS
-    assert "softmax" in cpp.UNSUPPORTED
+    for shipped in ("exp", "log", "softmax"):
+        assert shipped in cpp.AUTOGRAD_OPS, shipped
+    assert "log_softmax" in cpp.UNSUPPORTED
 
 
 def test_docs_present_the_shipped_stable_math():
@@ -664,6 +679,54 @@ def test_docs_present_the_shipped_stable_math():
     assert "version-checked" in log_section and "stale-graph" in log_section
     # And the reciprocal-based derivative, which is why no division exists.
     assert "reciprocal" in log_section
+
+
+def test_docs_present_the_shipped_softmax():
+    """E3's load-bearing decisions must stay documented: the fused
+    maximum shift, the contiguous-only ABI with Core-level Policy B, and
+    the saved-output backward composed at the Core layer."""
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    assert re.search(r"`softmax`\s*\|\s*Yes\s*\|\s*Yes", matrix), (
+        "the support matrix does not list softmax as a differentiable "
+        "operation"
+    )
+    section = _design_section("NativeTensor.softmax(")
+    assert "E3" in section and "implemented" in section.lower(), (
+        "the design does not record softmax as implemented"
+    )
+    lowered = section.lower()
+    # Fused stable forward — not a composition of public ops.
+    assert "maximum" in lowered and "shift" in lowered
+    assert "fused" in lowered
+    # Contiguous-only ABI + Policy-B copy at the Core layer.
+    assert "contiguous-only" in lowered
+    assert "policy-b" in lowered or "policy b" in lowered
+    # Saved-output backward, composed at the Core layer, no version.
+    assert "saved output" in lowered
+    assert "no parameter version snapshot" in lowered or (
+        "no version snapshot" in lowered
+    )
+    # And the two things E3 deliberately did NOT add.
+    design = _status_text(PHASE_E_DESIGN)
+    assert re.search(r"no dedicated .{0,30}backward kernel", design, re.I), (
+        "the design no longer records that softmax has no backward kernel"
+    )
+    # E3.1: the Policy-B copy is native storage-to-storage, and the docs
+    # must not describe a host NumPy round-trip as an accepted state.
+    assert re.search(r"storage.to.storage", design, re.I), (
+        "the design no longer records the native Policy-B copy"
+    )
+    assert re.search(r"no tensor.data NumPy round.trip", design, re.I), (
+        "the design no longer states that no tensor-data round-trip remains"
+    )
+    matrix_normalized = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"tensor data never round.trips", matrix_normalized,
+                     re.I), (
+        "the support matrix no longer documents the native contiguous copy"
+    )
+    # Softmax stays contiguous-only at the ABI while the Core handles
+    # strided inputs — both halves must remain stated.
+    assert "contiguous-only" in design.lower()
 
 
 def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():

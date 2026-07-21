@@ -12,11 +12,11 @@ native line has completed Phase A — CPU runtime, Phase B — native
 autograd, Phase C — the native training stack, and Phase D — the
 native CNN stack, through Advanced C++ v3.16; Phase E — native
 classification and stable math — is *in progress*, its contract locked
-in `docs/native_classification_design.md` with milestones E1 and E2 (the
-differentiable native `exp` and `log`) shipped and `softmax`/
-`log_softmax`/`cross_entropy`/`NativeCrossEntropyLoss`/`native_accuracy`
-still unimplemented; normalization/dropout/RNG, CPU optimization, and
-CUDA experiments are future work beyond it).
+in `docs/native_classification_design.md` with milestones E1–E3 (the
+differentiable native `exp`, `log`, and the fused stable `softmax`)
+shipped and `log_softmax`/`cross_entropy`/`NativeCrossEntropyLoss`/
+`native_accuracy` still unimplemented; normalization/dropout/RNG, CPU
+optimization, and CUDA experiments are future work beyond it).
 Position the project as serious and systems-focused — never
 "educational", "toy", or "mini" — while staying honest: not
 production-ready, not a PyTorch replacement.
@@ -65,7 +65,8 @@ production-ready, not a PyTorch replacement.
   experimental C++ backend, hard-failing kernel smoke check, then
   pytest.
 - `cpp/` + `src/tensorforge/backends/` — the experimental C++ backend
-  (post-v3.0 line). Plain C-ABI kernels loaded via ctypes; built with
+  (post-v3.0 line; `cpp/src/classification.cpp` holds the Phase-E
+  classification kernels). Plain C-ABI kernels loaded via ctypes; built with
   `uv run python cpp/build.py` (`uv sync --group cpp` first if no
   compiler). Never imported by the main framework; importing the
   wrapper is always safe (lazy load) — check `cpp.is_available()` /

@@ -143,12 +143,13 @@ def test_advertised_autograd_ops_exist():
 
 
 def test_phase_e_boundary_is_reported_honestly():
-    """Phase E ships one milestone at a time. E1 shipped the exponential
-    and E2 the logarithm; the registries must show exactly that — both
-    implemented at the Core and autograd layers, every later Phase-E
-    capability still unsupported, and nothing in the wrong inventory."""
+    """Phase E ships one milestone at a time. E1 shipped the exponential,
+    E2 the logarithm, and E3 the softmax; the registries must show
+    exactly that — each implemented at the Core and autograd layers,
+    every later Phase-E capability still unsupported, and nothing in the
+    wrong inventory."""
     info = cpp.backend_info()
-    for shipped in ("exp", "log"):
+    for shipped in ("exp", "log", "softmax"):
         assert shipped in info["tensor_core_ops"], shipped
         assert shipped in info["autograd_ops"], shipped
         assert shipped not in info["unsupported"], shipped
@@ -156,9 +157,10 @@ def test_phase_e_boundary_is_reported_honestly():
         assert shipped not in info["native_modules"], shipped
         assert shipped not in info["native_losses"], shipped
         assert shipped not in info["raw_kernels"], shipped
-    # E3-E7 are still genuinely absent from every implemented inventory.
-    # ("log_softmax" is a distinct capability from the shipped "log".)
-    for absent in ("softmax", "log_softmax", "cross_entropy",
+    # E4-E7 are still genuinely absent from every implemented inventory.
+    # ("log_softmax" is a distinct fused capability from the shipped
+    # "log" and "softmax" — design §4.4 forbids composing it from them.)
+    for absent in ("log_softmax", "cross_entropy",
                    "NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in info["unsupported"], absent
         assert absent not in info["tensor_core_ops"], absent

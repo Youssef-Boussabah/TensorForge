@@ -766,8 +766,13 @@ def test_no_out_of_scope_capability_is_advertised():
     assert info["supported_devices"] == ("cpu",)
     assert info["dtype"] == "float64" and info["device"] == "cpu"
     assert info["stable_framework_integration"] is False
+    # Capabilities Phase D deliberately excluded and that no later
+    # milestone has shipped either. ("softmax" was in this list until
+    # Phase E milestone E3 implemented it — its own contract now lives in
+    # tests/test_native_softmax.py; "log_softmax" and "cross_entropy"
+    # remain genuinely absent.)
     for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout", "softmax", "cross_entropy"):
+                   "dropout", "log_softmax", "cross_entropy"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS

@@ -733,14 +733,26 @@ def test_temporary_copies_closed_when_output_alloc_fails(monkeypatch):
     # If output allocation fails after Policy-B copies were made, every
     # temporary must still be closed (failure atomicity, no leak).
     created = []
+    inside_copy = []
     original_copy = cpp.NativeTensorCore.contiguous_copy
+    original_zeros = cpp.NativeTensorCore.zeros
 
     def tracking_copy(self):
-        result = original_copy(self)
+        # As of E3.1 the Policy-B copy is a native storage-to-storage
+        # gather that allocates its destination through zeros() too, so
+        # the flag below distinguishes the copy's own allocation from the
+        # operation's output allocation (which is what must fail here).
+        inside_copy.append(True)
+        try:
+            result = original_copy(self)
+        finally:
+            inside_copy.pop()
         created.append(result)
         return result
 
     def boom(*args, **kwargs):
+        if inside_copy:
+            return original_zeros(*args, **kwargs)
         raise MemoryError("simulated output allocation failure")
 
     monkeypatch.setattr(cpp.NativeTensorCore, "contiguous_copy", tracking_copy)

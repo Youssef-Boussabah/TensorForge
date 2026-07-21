@@ -17,15 +17,18 @@ this document. The backend capability registry
 **single source of truth** for what is actually live at any moment.
 
 **Phase-E status: in progress.** **E0 is complete** (this contract),
-**E1 is complete** (the differentiable `NativeTensor.exp()`), and **E2 is
-complete** (the differentiable `NativeTensor.log()`) — so `"exp"` and
-`"log"` now live in `TENSOR_CORE_OPS` and `AUTOGRAD_OPS` and have left
-`UNSUPPORTED`. Shipping them as a pair was deliberate: they are the
-phase's two backward archetypes, and §5's matrix is now **proved by
-tests**, not merely asserted — `exp` reads its saved output and records
-no version, `log` rereads the live input and version-guards a direct
-parameter. **Everything else in Phase E (E3–E10) is still
-designed-only**: `softmax`, `log_softmax`, `cross_entropy`,
+**E1 is complete** (the differentiable `NativeTensor.exp()`), **E2 is
+complete** (the differentiable `NativeTensor.log()`), and **E3 is
+complete** (the fused, stable `NativeTensor.softmax()`) — so `"exp"`,
+`"log"`, and `"softmax"` now live in `TENSOR_CORE_OPS` and
+`AUTOGRAD_OPS` and have left `UNSUPPORTED`. Shipping exp and log as a
+pair was deliberate: they are the phase's two backward archetypes, and
+§5's matrix is now **proved by tests**, not merely asserted — `exp`
+reads its saved output and records no version, `log` rereads the live
+input and version-guards a direct parameter, and `softmax` joins `exp`
+on the saved-output side. E3 also created the phase's C++ source unit,
+`cpp/src/classification.cpp`. **Everything else in Phase E (E4–E10) is
+still designed-only**: `log_softmax`, `cross_entropy`,
 `NativeCrossEntropyLoss`, and `native_accuracy` do not exist in code and
 remain in `UNSUPPORTED`. Per-milestone status is recorded in the ladder
 (§15); the completion criteria (§17) are **not** met, so Phase E is
@@ -339,6 +342,62 @@ differentiable `NativeTensor.log()`. Implementation notes:
 - **Backward reads the saved output `y`, never the input.**
 - **Versioning: no version snapshot.** Same reasoning as `exp`.
 
+**Status (E3 — implemented as specified).** The op ships end to end:
+the internal `tf::softmax_forward_contiguous` kernel and the guarded
+export `tf_core_softmax_forward` in the **new**
+`cpp/src/classification.cpp` (declared in the new
+`cpp/include/tf_classification_internal.h`), the ctypes declaration and
+`_CHECKED_KERNELS` registration, `NativeTensorCore.softmax(axis=-1)`
+with Policy-B copy-then-compute, and the differentiable
+`NativeTensor.softmax(axis=-1)`. Implementation notes:
+
+- **The forward is genuinely fused, and the ABI is contiguous-only.**
+  One kernel does max → shifted exponentials → sum → normalize in three
+  passes over each slice, writing the exponentials straight into the
+  destination so **no second probability buffer is allocated in C++**.
+  It is not composed from public max/subtract/exp/sum/divide operations —
+  E3 adds no public `max`, `argmax`, or division. The export takes
+  `(source handle, source offset, destination handle, outer,
+  axis_length, inner)` and self-validates all of it; strides never cross
+  the boundary.
+- **The axis is validated by the existing `_normalize_axis`.** Bools,
+  floats, strings, `None`, tuples, and out-of-range values are rejected;
+  negatives normalize; every axis on a rank-0 tensor is out of bounds, so
+  rank ≥ 1 falls out of the existing rule rather than a new check.
+  Validation runs **before any allocation** (proved by a test that makes
+  allocation itself fail).
+- **Policy B follows the Phase-D helper exactly.** A non-contiguous input
+  is materialized through `_contiguous_temp`, closed in a `finally`
+  whether the call succeeds or raises; the output is closed if the kernel
+  fails after allocation; the caller's input is never closed. Both the
+  success and post-copy failure paths are asserted by instrumenting the
+  copy helper.
+- **The Policy-B copy is fully native (E3.1).**
+  `NativeTensorCore.contiguous_copy` allocates its destination and then
+  gathers the strided source **storage to storage** through the
+  `tf_core_contiguous_copy` export, so **no tensor data round-trips
+  through a NumPy host buffer** at any point of a non-contiguous
+  softmax. Only the shape/stride arrays cross the boundary, as ctypes
+  metadata. The strict NumPy tripwire therefore applies equally to the
+  contiguous and non-contiguous paths, and to the backward. See §9.4.
+- **The backward is composed at the Core layer, with no new kernel.**
+  `weighted = g * y` → `slice_dot = weighted.sum(axis, keepdims=True)` →
+  `centered = g - slice_dot` (broadcasting over the kept axis) →
+  `contribution = y * centered`, each temporary closed in a `finally` as
+  soon as its consumer has run. **No dedicated softmax backward kernel
+  exists**, as E0 requires.
+- **Saved-output semantics confirmed.** The node records no expected
+  version and owns no private graph resource (`y` is the node's own
+  core), so mutating a direct parameter after forward leaves the edge
+  valid — proved with a *weighted* loss, since a plain
+  `softmax(x).sum()` has a zero gradient and would hide an error.
+- **Exceptional values are plain IEEE.** A NaN or `+inf` in a slice makes
+  that whole slice NaN (`inf - inf`); `-inf` simply takes zero mass; an
+  all-`-inf` slice is NaN. These are values, not ABI errors — the error
+  slot stays `TF_OK`. Tests compare against a NumPy reference running the
+  *same* maximum-shift order rather than another framework's
+  special-casing.
+
 ### 4.4 `NativeTensor.log_softmax(axis=-1)`
 
 - **Forward:** a **fused stable log-sum-exp** kernel. **Never implemented
@@ -583,6 +642,41 @@ allocation and encoding concerns on the ABI.
 - **No implicit fallback exists.** An unavailable native operation raises
   with build instructions; it never quietly computes in NumPy.
 
+### 9.4 The native Policy-B copy (E3.1 — shared runtime hardening)
+
+Phase E's contiguous-only ABIs depend on Policy-B copy-then-compute, so
+that copy must itself stay inside native memory. It now does.
+
+`NativeTensorCore.contiguous_copy` (and its `NativeTensorView`
+counterpart) previously materialized through
+`from_array(self.to_numpy())` — a host round-trip that exported tensor
+values into a NumPy buffer and imported them back. E3.1 replaced it with
+a **native storage-to-storage gather**:
+
+| Export | Shape of the call |
+|---|---|
+| `tf_core_contiguous_copy` | source handle, destination handle, `shape`, `strides`, `offset`, `ndim` — the same generic-strided signature the unary exports use |
+
+The wrapper allocates the destination first, calls the export, and closes
+the destination if the call raises, so no partially initialized core
+escapes. The kernel reuses `elementwise.cpp`'s existing odometer walker
+(the operation is the identity map; only the traversal matters) and its
+existing `unary_strided_error` trust-boundary validation — handles,
+layout metadata, spans in both stride directions, overflow, and
+destination capacity — so the copy inherits validation already exercised
+by the E1/E2 CTests rather than re-deriving it.
+
+**No tensor-data NumPy round-trip remains** in any copy path; only
+shape/stride arrays cross as ctypes metadata. Softmax stays
+**contiguous-only at the C ABI boundary**, and the Core continues to
+handle non-contiguous inputs through this native Policy-B copy.
+
+This is **shared native runtime hardening, not new Conv2d or MaxPool2d
+behavior**: those Phase-D operations, `NativeFlatten`, `NativeParameter`
+construction, and the differentiable `contiguous_copy` operation all use
+the same helper and gained the same property with no change to their own
+contracts, numerics, or public surface.
+
 ---
 
 ## 10. Failure atomicity across the layers
@@ -711,7 +805,7 @@ training step — against a stable-framework reference row.
 | E0 | Classification architecture contract and Phase-D baseline reconciliation | **complete** |
 | E1 | Native exponential | **complete** |
 | E2 | Native logarithm | **complete** |
-| E3 | Stable differentiable softmax | not started |
+| E3 | Stable differentiable softmax | **complete** |
 | E4 | Stable differentiable log-softmax | not started |
 | E5 | Fused cross-entropy forward and backward Core contract | not started |
 | E6 | Differentiable `NativeTensor` cross-entropy | not started |
@@ -817,7 +911,7 @@ summary, and the registry remains the authority on what is live.
   added at any layer**. No new source file, module, benchmark, example,
   schema change, or change to any existing kernel or operation.
 
-### E3 — Stable differentiable softmax
+### E3 — Stable differentiable softmax — **complete**
 
 - **Objective:** `NativeTensor.softmax(axis=-1)` with the fused
   maximum-shift forward and the saved-output backward.
@@ -842,6 +936,21 @@ summary, and the registry remains the authority on what is live.
 - **Dependencies:** E1 (the `exp` math and the unary precedent).
 - **Non-goals:** a `NativeSoftmax` module; a public `max` reduction;
   `log_softmax`.
+- **Shipped (E3).** Exactly the above; see §4.3's status block for the
+  implementation notes. Files created: `cpp/src/classification.cpp`,
+  `cpp/include/tf_classification_internal.h`, `cpp/tests/test_softmax.cpp`,
+  `tests/test_native_softmax.py`. Files touched: `cpp/CMakeLists.txt` (an
+  eighth CTest target only — the `src/*.cpp` glob discovers the new source
+  unit automatically, so no source-list entry was added),
+  `src/tensorforge/backends/cpp.py` (the ctypes declaration,
+  `_CHECKED_KERNELS`, `NativeTensorCore.softmax`, `TENSOR_CORE_OPS`,
+  `AUTOGRAD_OPS`, `UNSUPPORTED`), and
+  `src/tensorforge/experimental/native_tensor.py`
+  (`NativeTensor.softmax`). None of the named risks materialized: the
+  axis factorization handles negative axes through the shared validator,
+  the Policy-B copy is closed on both paths, and the backward adds no
+  graph node of its own. No module, no public `max`/`argmax`/division, no
+  benchmark, no example, no schema change.
 
 ### E4 — Stable differentiable log-softmax
 

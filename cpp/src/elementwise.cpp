@@ -353,6 +353,47 @@ TF_EXPORT void tf_core_reciprocal_contiguous(
     TF_GUARD_END_VOID()
 }
 
+// -- strided-to-contiguous storage gather (E3.1) ----------------------------
+//
+// The shared native materialization path: read any strided/offset view of
+// one storage and write its logical elements, in row-major order, into a
+// second storage. This is the storage-to-storage twin of
+// ``tf_storage_materialize`` (storage.cpp), which gathers into a raw
+// caller-supplied double* — i.e. a NumPy buffer — and therefore cannot
+// serve a Core-to-Core copy without exporting tensor data to the host.
+//
+// ``NativeTensorCore.contiguous_copy`` is built on this, so every
+// Policy-B copy-then-compute path (softmax, conv2d, maxpool2d), the
+// differentiable ``contiguous_copy`` operation, ``NativeFlatten``, and
+// ``NativeParameter`` construction now keep tensor values in native
+// memory for the whole copy.
+//
+// It reuses this file's existing pieces rather than re-deriving them: the
+// same ``core_unary`` odometer that every strided unary op walks with,
+// and the same ``unary_strided_error`` trust-boundary validation the E1/E2
+// exports use (handles, layout metadata, spans in both stride directions,
+// overflow, destination capacity) — so the copy inherits validation that
+// is already exercised by the exp and log CTests. The operation is the
+// identity map; only the traversal matters.
+
+namespace {
+double op_identity(double x) { return x; }
+}  // namespace
+
+TF_EXPORT void tf_core_contiguous_copy(
+    const void* src, void* dst,
+    const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    if (const char* err =
+            unary_strided_error(src, dst, shape, strides, offset, ndim)) {
+        tf::set_error(TF_ERROR_INVALID, err);
+        return;
+    }
+    core_unary(src, dst, shape, strides, offset, ndim, op_identity);
+    TF_GUARD_END_VOID()
+}
+
 // -- Phase E stable math: exponential (E1) and logarithm (E2) ---------------
 //
 // Same two-path shape as every other unary core op — a generic odometer

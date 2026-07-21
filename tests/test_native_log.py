@@ -119,9 +119,11 @@ def test_native_log_registry_placement():
     info = cpp.backend_info()
     assert "log" in info["tensor_core_ops"] and "log" in info["autograd_ops"]
     assert "log" not in info["unsupported"]
-    # E3-E7 are still genuinely absent — "log_softmax" is a different
-    # capability from "log" and must not be dragged in by name overlap.
-    for absent in ("softmax", "log_softmax", "cross_entropy",
+    # E3 landed `softmax` (its contract lives in
+    # tests/test_native_softmax.py); E4-E7 are still genuinely absent —
+    # "log_softmax" is a different capability from "log" and from
+    # "softmax", and must not be dragged in by name overlap.
+    for absent in ("log_softmax", "cross_entropy",
                    "NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.TENSOR_CORE_OPS
@@ -779,8 +781,7 @@ def test_native_log_scope_boundaries_hold():
     division, and the stable framework is untouched."""
     x = NativeTensor.from_array(VALUES)
     core = cpp.NativeTensorCore.from_array(VALUES)
-    for absent in ("softmax", "log_softmax", "cross_entropy", "tanh",
-                   "sigmoid"):
+    for absent in ("log_softmax", "cross_entropy", "tanh", "sigmoid"):
         assert not hasattr(x, absent), absent
         assert not hasattr(core, absent), absent
     assert not hasattr(x, "divide") and not hasattr(x, "__truediv__")

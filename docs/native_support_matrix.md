@@ -34,12 +34,13 @@ ASan/UBSan validation of the whole stack). **Phase E — Native
 Classification and Stable Math — is in progress**: its architecture
 contract is locked in
 [native_classification_design.md](native_classification_design.md)
-(milestone **E0**, complete) and milestones **E1** and **E2** have
-shipped the differentiable native `exp` and `log` — the phase's two
-backward archetypes (saved-output vs live-input). **Everything else in
-Phase E (E3–E10) is still designed-only** — `softmax`, `log_softmax`,
-`cross_entropy`, `NativeCrossEntropyLoss`, and `native_accuracy` do not
-exist in code and stay listed as unsupported below. See also
+(milestone **E0**, complete) and milestones **E1**, **E2**, and **E3**
+have shipped the differentiable native `exp`, `log`, and `softmax` —
+the phase's two backward archetypes (saved-output vs live-input) plus
+its first fused probability transform. **Everything else in Phase E
+(E4–E10) is still designed-only** — `log_softmax`, `cross_entropy`,
+`NativeCrossEntropyLoss`, and `native_accuracy` do not exist in code and
+stay listed as unsupported below. See also
 [roadmap.md](roadmap.md). Everything Phase D
 deliberately excluded
 remains unsupported and is named in the "Unsupported or future" section
@@ -54,6 +55,7 @@ native line does not have.
 | `NativeStorage` ownership | Supported | Explicit allocate/free of native memory; positive sizes only |
 | Shape / strides / offsets | Supported | Full strided layouts, including non-contiguous and offset views |
 | Contiguity tracking | Supported | `contiguous` reported on every tensor |
+| Native contiguous copy | Supported | `contiguous_copy()` gathers any strided/offset view **storage to storage** through the native `tf_core_contiguous_copy` kernel — tensor data never round-trips through a NumPy host buffer (only shape/stride arrays cross as ctypes metadata). Shared infrastructure: it is what every Policy-B copy-then-compute path (Conv2d, MaxPool2d, softmax), `NativeFlatten`, `NativeParameter` construction, and the differentiable `contiguous_copy` operation use |
 | dtype metadata | Supported | `"float64"` only — validated, never promoted or cast |
 | device metadata | Supported | `"cpu"` only — validated, never transferred |
 | Lifetime rules | Supported | Explicit `close()` / `with` blocks; closed tensors reject reads clearly; `owns_core` distinguishes owning from borrowing views |
@@ -68,6 +70,7 @@ native line does not have.
 | `relu` | Yes | Yes | Fused native `relu_backward` mask kernel |
 | `sqrt` | Yes | Yes | v3.11 optimizer math primitive; backward `1/(2·sqrt(x))` from the **saved forward output** — IEEE: negatives → NaN, signed zeros preserved |
 | `reciprocal` | Yes | Yes | v3.11 optimizer math primitive; backward `−1/x²` from the **saved forward output** — IEEE: ±0 → ±inf, ±inf → ±0, NaN propagates |
+| `softmax` | Yes | Yes | Phase E, **E3**: numerically stable probability transform over any single axis (positive or negative, rank >= 1; bool/float/`None`/out-of-range axes and rank 0 rejected before any allocation). The forward is a **fused maximum-shift kernel** — `exp(x - max(x)) / sum(exp(x - max(x)))` in one pass, entirely in float64 — not a composition of public ops (E3 adds no `max`, `argmax`, or division). Its C ABI is **contiguous-only**, so the Core layer applies the existing Policy-B copy-then-compute for strided views — a fully native storage-to-storage copy, with no tensor-data NumPy round-trip; the result is always fresh owning contiguous storage. Backward is the closed-form `y * (upstream − sum(upstream · y, axis, keepdims))`, **composed from existing Core ops** (no dedicated backward kernel) and reading only the **saved output**, so it records **no** version snapshot. Exceptional values are plain IEEE: a NaN or `+inf` makes its slice NaN, `-inf` takes zero mass — values, not ABI errors |
 | `log` | Yes | Yes | Phase E, **E2**: elementwise natural logarithm over any legal shape, both execution paths; backward rereads the **live input** — `upstream × reciprocal(x)` through the existing `reciprocal` primitive (no division operation exists) — so a direct `NativeParameter` parent **is** version-guarded: mutating it after forward raises the stale-graph error before any gradient is committed anywhere in the graph. Plain IEEE `std::log` — no clamping, no epsilon, no domain rejection: `log(1)=0`, `log(±0)=-inf`, `log(negative)=NaN`, `log(+inf)=+inf`, NaN propagates, and those are **values**, not ABI errors. Reuses E1's self-validating export contract unchanged |
 | `exp` | Yes | Yes | Phase E, **E1**: elementwise `e**x` over any legal shape, both the strided-odometer and contiguous execution paths; backward is `upstream × ` the **saved forward output**, so it never rereads the input and records **no** parameter-version snapshot (mutating a direct parameter after forward leaves the edge valid). Plain IEEE `std::exp` — no clamping, no inserted bound: `exp(0)=1`, overflow → `+inf`, underflow → `+0`, `-inf` → `+0`, NaN propagates. Its two guarded exports (`tf_core_exp`, `tf_core_exp_contiguous`) validate handles, layout, spans, and overflow at the ABI itself |
 | `matmul` | Yes | Yes | 2-D only, no batching/broadcasting |
@@ -132,28 +135,32 @@ in the stable Python framework — that does not make them native.
 - `divide` as a NativeTensor operation (a raw ctypes `elementwise_divide`
   kernel exists at the kernel layer, but no tensor op and no backward;
   `reciprocal` + `multiply` compose what the training stack needs)
-- `tanh`, `sigmoid`, `softmax`, `log_softmax` (`softmax` and
-  `log_softmax` are **designed** for Phase E — see
+- `tanh`, `sigmoid`, `log_softmax` (`log_softmax` is **designed** for
+  Phase E — see
   [native_classification_design.md](native_classification_design.md) —
-  but neither exists in code today; `tanh` and `sigmoid` are outside
-  Phase E entirely. `exp` and `log` **are** implemented as of E1 and E2
-  and are listed in the forward-operation table above)
+  but does not exist in code today, and is deliberately **not** composed
+  from the shipped `log` and `softmax`; `tanh` and `sigmoid` are outside
+  Phase E entirely. `exp`, `log`, and `softmax` **are** implemented as of
+  E1–E3 and are listed in the forward-operation table above)
+- a public `max`/`min`/`argmax` reduction or a public `divide` operation
+  (softmax's maximum shift and normalization live inside its fused
+  kernel; they are not exposed as operations)
 - scheduler state, random-state capture/restoration, or dataloader
   state in native checkpoints; `map_location`, partial or name-remapped
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- native classification: `softmax`, `log_softmax`, `cross_entropy`,
-  `NativeCrossEntropyLoss`, or `native_accuracy` — no classification
-  operation, loss, or metric exists (the native line trains regression
-  through `NativeMSELoss`). The whole surface is contracted for Phase E
-  in [native_classification_design.md](native_classification_design.md);
-  a locked contract is not an implementation. Phase E has begun — E1 and
-  E2 shipped `exp` and `log` — but the classification surface itself is
-  still absent
+- native classification **losses and metrics**: `cross_entropy`,
+  `NativeCrossEntropyLoss`, or `native_accuracy` — none exists, so the
+  native line still trains regression through `NativeMSELoss`. The whole
+  surface is contracted for Phase E in
+  [native_classification_design.md](native_classification_design.md);
+  a locked contract is not an implementation. Phase E has begun — E1–E3
+  shipped `exp`, `log`, and `softmax` — but no classification loss,
+  metric, or `NativeSoftmax` module exists
 - native normalization (BatchNorm/LayerNorm), dropout, or a native RNG
 - additional native activations/math beyond
-  `relu`/`sqrt`/`reciprocal`/`exp`/`log`
+  `relu`/`sqrt`/`reciprocal`/`exp`/`log`/`softmax`
 - CUDA / GPU execution
 - float32 / float16 / bfloat16, dtype promotion or casting, AMP
 - Transformers / text models
@@ -277,23 +284,25 @@ CUDA, AMP, BatchNorm, Dropout, im2col, or BLAS/threaded convolution.
 The architecture contract is locked in
 [native_classification_design.md](native_classification_design.md); the
 registry above (and `tensorforge.backends.cpp`) stays the authority on
-what is live. Three of eleven milestones have landed.
+what is live. Four of eleven milestones have landed.
 
 | Capability | Milestone | Status |
 |---|---|---|
 | Phase-E architecture contract (scope, public API, stability strategy, backward/versioning matrix, `int64` target contract, saved-probability lifetime, C ABI families, inventory placements, E0–E10 ladder) | E0 | **Complete** (documentation only — no numerical behavior) |
 | Native `exp`: the C++ kernel (odometer + contiguous), the self-validating guarded exports `tf_core_exp` / `tf_core_exp_contiguous`, their ctypes registration, `NativeTensorCore.exp()`, and the differentiable `NativeTensor.exp()` with its **saved-output** backward and **no** version snapshot | E1 | **Implemented** |
 | Native `log`: the same four layers, reusing E1's self-validating export contract unchanged; backward is `upstream × reciprocal(live input)`, so a direct `NativeParameter` parent **is** version-checked and a stale graph fails before any gradient moves — the deliberate contrast with `exp` | E2 | **Implemented** |
-| Stable `softmax` / `log_softmax` (fused max-shift and log-sum-exp) | E3–E4 | Not started |
+| Stable `softmax`: the fused maximum-shift kernel in the new `cpp/src/classification.cpp`, the contiguous-only `tf_core_softmax_forward` export, `NativeTensorCore.softmax(axis=-1)` with Policy-B copy-then-compute, and the differentiable `NativeTensor.softmax(axis=-1)` whose saved-output backward is composed from existing Core ops | E3 | **Implemented** |
+| Stable `log_softmax` (fused log-sum-exp; never `softmax().log()`) | E4 | Not started |
 | Fused `cross_entropy` Core contract, then its differentiable operation | E5–E6 | Not started |
 | `NativeCrossEntropyLoss` and reporting-only `native_accuracy` | E7 | Not started |
 | Deterministic classification training + exact checkpoint resume | E8 | Not started |
 | Classification benchmarks; phase integration, sanitizer, and closure | E9–E10 | Not started |
 
 Phase E adds **no** persistent state: the native checkpoint format stays
-**version 1**, and E1/E2 added no parameter, buffer, module, loss,
-metric, optimizer, schema, benchmark, or example — and no division
-operation (`log`'s derivative composes from the existing `reciprocal`).
+**version 1**, and E1–E3 added no parameter, buffer, module, loss,
+metric, optimizer, schema, benchmark, or example — no division operation
+(`log`'s derivative composes from the existing `reciprocal`), and no
+public `max`/`argmax` (softmax's shift is internal to its kernel).
 
 ## How to build and verify
 

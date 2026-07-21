@@ -261,4 +261,25 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME log COMMAND test_log)
+
+  # Fused softmax (Phase E, E3): links the new classification source unit
+  # plus error.cpp (the guarded export references the thread-local error
+  # slot). Like the pooling tests it drives *both* layers — the internal
+  # tf::softmax_forward_contiguous kernel for the numerics and the
+  # exported tf_core_softmax_forward wrapper for the validation matrix.
+  add_executable(test_softmax
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_softmax.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_softmax PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_softmax PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_softmax PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_softmax PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME softmax COMMAND test_softmax)
 endif()

@@ -554,6 +554,76 @@ class NativeTensor:
             expected_versions=_versioned_value_reads("log", (self,)),
         )
 
+    def softmax(self, axis=-1):
+        """Numerically stable softmax over one ``axis``, computed by the
+        fused native kernel (Phase E, milestone E3 — the classification
+        stack's first probability transform).
+
+        ``axis`` is a plain int, negative allowed (NumPy-style); a bool,
+        a float, a string, ``None``, or an out-of-range value raises, and
+        rank 0 is rejected — softmax needs an axis to normalize over.
+        Validation happens before any allocation. Returns a new owning
+        row-major contiguous NativeTensor of the input's shape; the
+        original stays open and unmutated. A non-contiguous input is
+        handled by the Core layer's Policy-B copy-then-compute, so the
+        result is contiguous whatever the input layout.
+
+        Per slice the kernel fuses ``exp(x - max(x)) / sum(exp(x -
+        max(x)))`` in float64 — the maximum shift means a large common
+        offset cannot overflow. Exceptional values follow plain IEEE
+        arithmetic: a NaN or ``+inf`` in a slice propagates, making that
+        slice NaN.
+
+        Differentiable, with the Jacobian-vector product written in
+        closed form::
+
+            dx = y * (upstream - sum(upstream * y, axis, keepdims=True))
+
+        where ``y`` is the **saved forward output**. Like ``exp`` (and
+        unlike ``log``), the backward never rereads the parent's value and
+        never recomputes the softmax, so the graph records **no** expected
+        parameter version: mutating a direct parameter input after forward
+        leaves this edge valid and the gradient correct for the forward
+        that ran. The whole backward is composed from existing
+        graph-unaware Core operations — there is no dedicated softmax
+        backward kernel."""
+        core = self._require_open()
+        # Normalize once, before anything is allocated, and hold the
+        # normalized value in the closure so backward is independent of
+        # the caller's variable and of any later rebinding. The Core
+        # method validates identically (and again before *its* allocation).
+        normalized_axis = cpp._normalize_axis(axis, core.shape)
+        out_core = core.softmax(normalized_axis)
+        if not self._requires_grad:
+            return self._from_core(out_core)
+
+        def _backward(upstream):
+            # dx = y * (g - sum(g * y, axis, keepdims=True)), entirely at
+            # the Core level. Each intermediate is fresh owning storage
+            # closed in a finally as soon as its consumer has run, so a
+            # failure at any stage leaks nothing and commits nothing.
+            y_core = result._require_open()
+            g_core = upstream._require_open()
+            weighted = g_core.multiply(y_core)
+            try:
+                slice_dot = weighted.sum(axis=normalized_axis, keepdims=True)
+            finally:
+                weighted.close()
+            try:
+                # Broadcasting subtract: slice_dot keeps the reduced axis
+                # at size 1, so it stretches back over the slice.
+                centered = g_core.subtract(slice_dot)
+            finally:
+                slice_dot.close()
+            try:
+                contribution = y_core.multiply(centered)
+            finally:
+                centered.close()
+            self._accumulate_grad(NativeTensor._from_core(contribution))
+
+        result = self._from_op(out_core, (self,), _backward, "softmax")
+        return result
+
     def add(self, other):
         """self + other elementwise, natively. Identical shapes or
         NumPy-style broadcasting. Returns a new owning NativeTensor.
