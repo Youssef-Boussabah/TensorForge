@@ -14,10 +14,12 @@ native CNN stack, through Advanced C++ v3.16; Phase E — native
 classification and stable math — is *in progress*, its contract locked
 in `docs/native_classification_design.md` with milestones E1–E4 (the
 differentiable native `exp`, `log`, and the fused stable `softmax` and
-`log_softmax`) and E5 (the fused `cross_entropy` **Core** contract —
-`NativeTensorCore.cross_entropy_forward`/`cross_entropy_backward` only)
-shipped, and the differentiable `NativeTensor.cross_entropy`,
-`NativeCrossEntropyLoss`, and `native_accuracy` still unimplemented;
+`log_softmax`), E5 (the fused `cross_entropy` **Core** contract —
+`NativeTensorCore.cross_entropy_forward`/`cross_entropy_backward`), and
+E6 (the differentiable `NativeTensor.cross_entropy(targets,
+reduction="mean")`, one autograd node with graph-owned saved
+probabilities and no logits reread) shipped, and
+`NativeCrossEntropyLoss` and `native_accuracy` still unimplemented;
 normalization/dropout/RNG, CPU optimization, and CUDA experiments are
 future work beyond it).
 Position the project as serious and systems-focused — never

@@ -120,9 +120,11 @@ TENSOR_CORE_OPS = (
     # the independently copied int64 targets, and the normalized reduction;
     # the backward turns those saved probabilities (never the logits) plus
     # a native one-element upstream into a fresh gradient. There is
-    # deliberately **no** "cross_entropy" entry here and none in
-    # AUTOGRAD_OPS: the differentiable NativeTensor.cross_entropy operation
-    # is E6 and does not exist yet.
+    # deliberately **no** bare "cross_entropy" entry here: that name
+    # belongs to the differentiable NativeTensor operation, which E6
+    # shipped into AUTOGRAD_OPS. Core wrapper and autograd operation are
+    # different capabilities with different names (design §11), exactly as
+    # for conv2d and maxpool2d.
     "cross_entropy_forward",   # E5
     "cross_entropy_backward",  # E5
 )
@@ -149,7 +151,15 @@ TENSOR_CORE_OPS = (
 # backward composed from existing Core ops out of the saved log
 # probabilities alone — `upstream - exp(y) * sum(upstream, axis,
 # keepdims=True)` — so it too records no parameter version and needs no
-# backward kernel.
+# backward kernel. "cross_entropy" (E6) is the phase's fused loss: one
+# graph node over the E5 Core contract, whose backward reads only the
+# **saved probabilities** its own forward produced, the independently
+# copied int64 targets, the normalized reduction, and the native scalar
+# upstream — so it records no expected parameter version either, and the
+# probabilities are graph-owned private state released with the graph
+# history (the maxpool2d winner-buffer contract, reused unchanged). Its
+# layer-qualified Core wrappers stay in TENSOR_CORE_OPS; this entry is the
+# differentiable operation.
 AUTOGRAD_OPS = (
     "add", "subtract", "multiply", "relu",
     "sum", "mean", "matmul",
@@ -158,6 +168,7 @@ AUTOGRAD_OPS = (
     "conv2d",
     "maxpool2d",
     "exp", "log", "softmax", "log_softmax",
+    "cross_entropy",
 )
 
 # The native training stack composed on the autograd layer (Phase C) and
@@ -220,11 +231,12 @@ STATE_SUPPORT = (
 # That is the layer-specific inventory contract (design §11) the Conv2d
 # and MaxPool2d milestones already followed — a Core wrapper and a
 # differentiable operation are different capabilities with different
-# names. **E5 is Core-only**: there is no NativeTensor.cross_entropy, no
-# autograd node, and no graph-owned saved state yet, and that absence is
-# reported the way this registry always reports it — by "cross_entropy"
-# being absent from AUTOGRAD_OPS (E6 adds it). The loss module and the
-# metric (E7) have not started and stay listed below.
+# names. **E6** then shipped the differentiable operation itself:
+# NativeTensor.cross_entropy builds one graph node over that Core
+# contract, so the bare name "cross_entropy" now lives in AUTOGRAD_OPS
+# and appears nowhere here. The loss module and the metric (E7) have not
+# started and stay listed below — E6 added no module, no metric, and no
+# NATIVE_METRICS inventory.
 UNSUPPORTED = (
     "NativeCrossEntropyLoss", "native_accuracy",
     "batchnorm", "layernorm", "dropout",

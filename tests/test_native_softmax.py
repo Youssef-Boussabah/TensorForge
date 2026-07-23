@@ -165,12 +165,14 @@ def test_native_softmax_registry_placement():
     assert "log_softmax" in cpp.TENSOR_CORE_OPS
     assert "log_softmax" in cpp.AUTOGRAD_OPS
     assert "log_softmax" not in cpp.UNSUPPORTED
-    # E5 is Core-only: no differentiable operation (E6), no module or
-    # metric (E7).
+    # E5 shipped the Core layer, E6 the differentiable operation; the
+    # module and the metric (E7) are still absent.
     for core_op in ("cross_entropy_forward", "cross_entropy_backward"):
         assert core_op in cpp.TENSOR_CORE_OPS, core_op
         assert core_op not in cpp.AUTOGRAD_OPS, core_op
-    assert "cross_entropy" not in cpp.AUTOGRAD_OPS
+    # ...and E6 added the differentiable operation itself under the bare
+    # name, exactly where an autograd operation belongs.
+    assert "cross_entropy" in cpp.AUTOGRAD_OPS
     assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
     for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in cpp.UNSUPPORTED, absent
@@ -1103,7 +1105,7 @@ def test_native_softmax_scope_boundaries_hold():
     it is no longer listed as absent here.)"""
     x = NativeTensor.from_array(VALUES)
     core = cpp.NativeTensorCore.from_array(VALUES)
-    for absent in ("cross_entropy", "max", "argmax", "amax",
+    for absent in ("max", "argmax", "amax",
                    "divide", "sigmoid", "tanh"):
         assert not hasattr(x, absent), absent
         assert not hasattr(core, absent), absent

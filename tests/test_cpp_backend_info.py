@@ -163,10 +163,10 @@ def test_phase_e_boundary_is_reported_honestly():
     # log-sum-exp kernel — design §4.4 forbids composing it from the
     # shipped "log" and "softmax", and it did not become a module.)
     assert "log_softmax" not in info["native_modules"]
-    # E5 shipped the layer-qualified cross-entropy Core wrappers — and
-    # only those. The differentiable operation is E6 and its absence is
-    # reported the way this registry always reports an unimplemented
-    # operation: by being absent from autograd_ops.
+    # E5 shipped the layer-qualified cross-entropy Core wrappers and E6
+    # the differentiable operation over them. The two stay separate
+    # entries at separate layers: Core wrappers in tensor_core_ops, the
+    # bare operation name in autograd_ops.
     for core_op in ("cross_entropy_forward", "cross_entropy_backward"):
         assert core_op in info["tensor_core_ops"], core_op
         assert core_op not in info["autograd_ops"], core_op
@@ -174,9 +174,10 @@ def test_phase_e_boundary_is_reported_honestly():
         assert core_op not in info["native_modules"], core_op
         assert core_op not in info["native_losses"], core_op
         assert core_op not in info["raw_kernels"], core_op
-    assert "cross_entropy" not in info["autograd_ops"]
+    assert "cross_entropy" in info["autograd_ops"]
     assert "cross_entropy" not in info["tensor_core_ops"]
-    # E6-E7 are still genuinely absent from every implemented inventory.
+    assert "cross_entropy" not in info["unsupported"]
+    # E7 is still genuinely absent from every implemented inventory.
     for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in info["unsupported"], absent
         assert absent not in info["tensor_core_ops"], absent

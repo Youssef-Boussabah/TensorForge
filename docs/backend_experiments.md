@@ -34,9 +34,12 @@ native `exp`, `log`, `softmax`, and `log_softmax`, and E5 shipped the
 fused `cross_entropy` **Core** contract
 (`NativeTensorCore.cross_entropy_forward` / `cross_entropy_backward`
 over two guarded, contiguous-only exports, with strict copied `int64`
-targets and private saved probabilities). E5 is **Core-only**: the
-differentiable `NativeTensor.cross_entropy` (E6),
-`NativeCrossEntropyLoss`, and `native_accuracy` (E7) do not exist yet.
+targets and private saved probabilities). E6 then shipped the
+differentiable `NativeTensor.cross_entropy(targets, reduction="mean")`
+over it — one autograd node with graph-owned saved probabilities, no
+logits reread, and no expected parameter version, adding no kernel and
+no ABI export. `NativeCrossEntropyLoss` and `native_accuracy` (E7) do
+not exist yet.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 

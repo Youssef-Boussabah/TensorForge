@@ -695,6 +695,112 @@ class NativeTensor:
         result = self._from_op(out_core, (self,), _backward, "log_softmax")
         return result
 
+    def cross_entropy(self, targets, reduction="mean"):
+        """Fused multi-class cross-entropy over rank-2 logits, natively and
+        differentiably (Phase E, milestone E6 — the autograd node over the
+        E5 Core contract).
+
+        ``self`` is the ``(batch_size, num_classes)`` logits block; the
+        class axis is fixed at axis 1, so there is deliberately no ``axis``
+        argument. ``targets`` is a one-dimensional sequence of integer
+        class labels — a list/tuple of Python ints or a 1-D NumPy integer
+        array, **never** a NativeTensor (the runtime has no integer dtype).
+        ``reduction`` is exactly ``"mean"`` or ``"sum"``. Returns a
+        **scalar** NativeTensor (shape ``()``), so ``loss.backward()``
+        works with the engine's existing default seed.
+
+        Everything numerical is the E5 Core contract, called once and
+        unchanged: ``NativeTensorCore.cross_entropy_forward`` validates the
+        rank, the dtype/device, the strict target rules (bools and
+        floating-point labels rejected outright, nothing truncated), and
+        the reduction *before any allocation*, copies the labels into an
+        independently owned read-only ``int64`` array, applies Policy-B
+        copy-then-compute to a strided view, and runs the single fused
+        kernel that produces the scalar loss **and** the saved
+        probabilities together. This method adds no second cross-entropy
+        path and no arithmetic of its own.
+
+        Backward consumes **only** the saved probabilities, that copied
+        target array, the normalized reduction, and the native scalar
+        upstream::
+
+            grad[n, j] = upstream * (p[n, j] - [j == t_n]) / N
+
+        (the ``/ N`` for ``"mean"`` only), through the E5 Core backward —
+        whose signature does not even accept logits. So **backward never
+        rereads the logits**, and the graph records **no expected
+        parameter version**: mutating a direct NativeParameter logits
+        parent after the forward pass leaves this edge valid and its
+        gradient correct for the forward that ran (the ``maxpool2d``
+        archetype, the deliberate contrast with ``log``).
+
+        The saved probabilities are **private graph-owned state** (D9's
+        ``graph_resources`` contract, reused unchanged): never a public
+        tensor, never a parameter or buffer, never in a ``state_dict()``
+        or a checkpoint. They are released exactly once, at the same
+        deterministic points the graph history is — a one-shot
+        ``backward()``'s cleanup or ``close()`` — so ``retain_graph=True``
+        keeps them for another pass, a failed retryable backward leaves
+        them alive, an abandoned graph still frees them, and a no-grad
+        forward closes them immediately. The copied targets are ordinary
+        immutable host metadata held by the backward closure and collected
+        with it; mutating the caller's list or array after the forward
+        cannot reach them.
+
+        If graph construction itself raises, both the scalar loss and the
+        saved probabilities are closed here before the exception
+        propagates."""
+        core = self._require_open()
+        # One call into the E5 Core contract does all the validation and
+        # all the math. Nothing is rechecked or recomputed at this layer.
+        result = core.cross_entropy_forward(targets, reduction)
+        # Unpack the record immediately. It is a plain __slots__ carrier
+        # with no __del__, so once this frame holds the four fields the
+        # record owns nothing that could later be double-closed — exactly
+        # the position maxpool2d is in when its Core hands back
+        # (out_core, winners).
+        loss_core = result.loss
+        probabilities = result.probabilities
+        saved_targets = result.targets
+        saved_reduction = result.reduction
+        logits_t = self
+
+        def _backward(upstream):
+            # Saved probabilities + copied targets + reduction + the native
+            # one-element upstream, whose storage handle and offset go
+            # straight to the kernel (no NumPy extraction). The logits are
+            # not an argument of the Core backward at all.
+            grad_core = probabilities.cross_entropy_backward(
+                saved_targets, upstream._require_open(), saved_reduction
+            )
+            contribution = NativeTensor._from_core(grad_core)
+            try:
+                logits_t._accumulate_grad(contribution)
+            except BaseException:
+                # _accumulate_grad adopts a contribution only on the
+                # assignment that ends it — a closed parent, or a failing
+                # native add for a second contribution, raises before that
+                # — so an unadopted gradient is released here rather than
+                # left to the __del__ safety net.
+                contribution.close()
+                raise
+
+        try:
+            # _from_op adopts the probabilities as this node's graph-owned
+            # resource when a graph is built, and closes them immediately
+            # when no parent requires grad. Same contract as maxpool2d's
+            # winner buffer; no second lifetime system.
+            return self._from_op(
+                loss_core, (self,), _backward, "cross_entropy",
+                graph_resources=(probabilities,),
+            )
+        except BaseException:
+            # Nothing adopted either output: release both, in the same
+            # saved-state-then-output order maxpool2d uses.
+            probabilities.close()
+            loss_core.close()
+            raise
+
     def add(self, other):
         """self + other elementwise, natively. Identical shapes or
         NumPy-style broadcasting. Returns a new owning NativeTensor.

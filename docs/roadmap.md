@@ -703,7 +703,7 @@ The Python line is done; what remains is expansion on its own terms:
     milestone-era doc guardrails with durable semantic checks. See the
     [support matrix](native_support_matrix.md) for the finalized status.
   - **Phase E — Native Classification and Stable Math — in progress
-    (E0, E1, E2, E3, E4, and E5 complete).** The **E0 architecture contract
+    (E0, E1, E2, E3, E4, E5, and E6 complete).** The **E0 architecture contract
     is written** —
     [native_classification_design.md](native_classification_design.md)
     locks the scope, the public API surface (`exp`, `log`, `softmax`,
@@ -787,12 +787,34 @@ The Python line is done; what remains is expansion on its own terms:
     outputs fail atomically: any failure closes everything it allocated
     and returns no partial result. **E5 added no
     `NativeTensor.cross_entropy`, no autograd node, and no graph-owned
-    saved state** — the private probabilities are Core-level state the
-    caller owns. **Everything else in Phase E is still designed-only**:
-    the differentiable `cross_entropy` operation (E6),
-    `NativeCrossEntropyLoss`, and `native_accuracy` (E7) do not exist —
-    the latter two remain listed as unsupported in the
-    [support matrix](native_support_matrix.md), and
+    saved state** — the private probabilities were Core-level state the
+    caller owned. **E6 has shipped that differentiable operation**:
+    `NativeTensor.cross_entropy(targets, reduction="mean")`, a single
+    autograd node over the E5 contract that adds **no kernel, no C ABI
+    export, and no numerical change**. It calls the E5 forward once,
+    returns a **scalar** `NativeTensor`, and adopts the private saved
+    probabilities as **graph-owned state** through the same
+    `_from_op(..., graph_resources=...)` contract the Phase-D pooling
+    winner buffer established: retained under `retain_graph=True` and across a
+    failed retryable backward, released exactly once when the graph
+    history is (a one-shot `backward()` or `close()`), and closed
+    immediately when nothing requires gradients. The copied `int64`
+    targets ride in the backward closure as immutable metadata — no
+    native integer tensor — so caller mutation after the forward cannot
+    reach the gradient. Because backward consumes only that saved state
+    and a native scalar upstream, **it never rereads the logits** and the
+    node records **no expected parameter version**: mutating a direct
+    `NativeParameter` logits parent with `copy_value_` afterwards neither
+    raises a stale-graph error nor changes the gradient, even across a
+    retained graph — the `maxpool2d` archetype, and the deliberate
+    contrast with `log`. Failures are atomic throughout: an E5 forward
+    failure returns no tensor and builds no node, a graph-construction
+    failure closes both E5 outputs, and a backward failure commits no
+    gradient, leaks no gradient core, keeps the probabilities for a
+    retry, and leaves the graph honestly un-freed. **Everything else in
+    Phase E is still designed-only**: `NativeCrossEntropyLoss` and
+    `native_accuracy` (E7) do not exist — both remain listed as
+    unsupported in the [support matrix](native_support_matrix.md) — and
     Phase E is **not** complete. Deliberately outside
     Phase E and still unplanned: more native activations beyond it, native
     normalization, a native RNG and dropout, a CPU optimization phase for

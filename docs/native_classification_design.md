@@ -20,12 +20,14 @@ this document. The backend capability registry
 **E1 is complete** (the differentiable `NativeTensor.exp()`), **E2 is
 complete** (the differentiable `NativeTensor.log()`), **E3 is
 complete** (the fused, stable `NativeTensor.softmax()`), **E4 is
-complete** (the fused, stable `NativeTensor.log_softmax()`), and **E5 is
+complete** (the fused, stable `NativeTensor.log_softmax()`), **E5 is
 complete** (the fused cross-entropy **Core contract** — forward and
-backward) — so `"exp"`, `"log"`, `"softmax"`, and `"log_softmax"` now
-live in `TENSOR_CORE_OPS` and `AUTOGRAD_OPS`, and
+backward), and **E6 is complete** (the differentiable
+`NativeTensor.cross_entropy()`) — so `"exp"`, `"log"`, `"softmax"`, and
+`"log_softmax"` now live in `TENSOR_CORE_OPS` and `AUTOGRAD_OPS`,
 `"cross_entropy_forward"`/`"cross_entropy_backward"` live in
-`TENSOR_CORE_OPS`; all of them have left `UNSUPPORTED`.
+`TENSOR_CORE_OPS`, and `"cross_entropy"` lives in `AUTOGRAD_OPS`; all of
+them have left `UNSUPPORTED`.
 Shipping exp and log as a pair was deliberate: they are the phase's two
 backward archetypes, and §5's matrix is now **proved by tests**, not
 merely asserted — `exp` reads its saved output and records no version,
@@ -36,19 +38,26 @@ E4 extended with its own fused log-sum-exp kernel — **never**
 `softmax().log()` — and which E5 extended again with the fused
 cross-entropy forward/backward pair.
 
-**E5 is Core-only, and that boundary is load-bearing.** It shipped the
-graph-unaware runtime layer: the fused forward (scalar loss **and**
-private saved probabilities in one pass), the saved-probability
-backward, both guarded C ABI exports, and the strict copied-`int64`
-target contract of §6. It shipped **no** `NativeTensor.cross_entropy`,
-**no** autograd registration, and **no** graph-owned resource — those
-are E6. **Everything else in Phase E (E6–E10) is still designed-only**:
+**E5 shipped the Core layer; E6 shipped the graph node over it, and that
+split is load-bearing.** E5 delivered the graph-unaware runtime layer:
+the fused forward (scalar loss **and** private saved probabilities in one
+pass), the saved-probability backward, both guarded C ABI exports, and
+the strict copied-`int64` target contract of §6. **E6 added no numerical
+capability at all** — no kernel, no ABI export, no change to any formula.
+It added exactly one thing: `NativeTensor.cross_entropy(targets,
+reduction="mean")`, a single autograd node that calls the E5 forward
+once, adopts the private probabilities as a **graph-owned resource**
+(§7), captures the copied targets and the normalized reduction in its
+backward closure, and drives the E5 backward — never rereading the
+logits, and therefore recording **no expected parameter version**.
+
+**Everything else in Phase E (E7–E10) is still designed-only**:
 `NativeCrossEntropyLoss` and `native_accuracy` do not exist in code and
-remain in `UNSUPPORTED`, and `"cross_entropy"` is deliberately absent
-from `AUTOGRAD_OPS`, which is how this registry has always reported an
-unimplemented operation. Per-milestone status is recorded in the ladder
-(§15); the completion criteria (§17) are **not** met, so Phase E is
-**not** complete.
+remain in `UNSUPPORTED`, there is no `NATIVE_METRICS` inventory, and no
+native classification training, benchmark, or sanitizer work has
+started. Per-milestone status is recorded in the ladder (§15); the
+completion criteria (§17) are **not** met, so Phase E is **not**
+complete.
 
 The stable Python framework (`tensorforge.Tensor.exp/log/softmax`,
 `tensorforge.nn.cross_entropy`, `tensorforge.nn.accuracy`) is the
@@ -254,7 +263,8 @@ sketch, both tightening rather than changing the contract:
   resource.** `exp`'s derivative *is* its forward result, which the
   autograd node already owns, so no `graph_resources` entry is needed
   (contrast MaxPool2d's private winner buffer, and the saved
-  probabilities cross-entropy will need in E6). Lifetime therefore
+  probabilities cross-entropy adopts as a graph resource at E6). Lifetime
+  therefore
   follows the ordinary node rules: retained under `retain_graph=True`,
   released with the graph, and a `close()`d intermediate makes backward
   raise before any gradient is committed.
@@ -537,11 +547,9 @@ Implementation notes:
   intermediate, not a parameter; the rule is stated because it must be
   provable, not because it is common.)
 
-**Status (E5 — the Core contract is implemented as specified; the
-autograd operation is not).** E5 is deliberately **Core-only**: it
-shipped the **graph-unaware** half of
-this section, end to end — the internal
-`tf::cross_entropy_forward_contiguous` and
+**Status (E5 + E6 — this section is implemented as specified, at both
+layers).** E5 shipped the **graph-unaware** half, end to end — the
+internal `tf::cross_entropy_forward_contiguous` and
 `tf::cross_entropy_backward_contiguous` kernels and the guarded exports
 `tf_core_cross_entropy_forward` / `tf_core_cross_entropy_backward` in
 `cpp/src/classification.cpp` (declared in
@@ -549,9 +557,11 @@ this section, end to end — the internal
 and `_CHECKED_KERNELS` registration, and the Core methods
 `NativeTensorCore.cross_entropy_forward(targets, reduction="mean")` and
 `NativeTensorCore.cross_entropy_backward(targets, upstream,
-reduction="mean")`. **`NativeTensor.cross_entropy` does not exist yet**
-— no autograd node, no `graph_resources` entry, no expected version.
-That is E6. Implementation notes:
+reduction="mean")`. **E6 then shipped the public differentiable
+operation** `NativeTensor.cross_entropy(targets, reduction="mean")` over
+it, adding **no new kernel, no new ABI export, and no change to any
+formula** — see the E6 status block after these notes. Implementation
+notes:
 
 - **The forward is genuinely fused, in C++.** One kernel walks each row
   once for its maximum, once to write `exp(x − m)` straight into the
@@ -625,12 +635,11 @@ That is E6. Implementation notes:
   buffer.
 - **The saved probabilities are private Core state.** They are returned
   through the internal `_CrossEntropyForwardResult` record (loss,
-  probabilities, copied targets, normalized reduction) so E6 and the
-  tests can use them; they are not a public `NativeTensor`, not a
-  module parameter or buffer, not in any `state_dict()` or checkpoint,
-  and not in any capability inventory. At E5 the caller owns them and
-  releases them with `result.close()`; §7's graph-owned lifetime begins
-  at E6.
+  probabilities, copied targets, normalized reduction); they are not a
+  public `NativeTensor`, not a module parameter or buffer, not in any
+  `state_dict()` or checkpoint, and not in any capability inventory. The
+  **Core** caller owns them and releases them with `result.close()`;
+  §7's graph-owned lifetime is what E6's autograd node applies on top.
 - **Exceptional values are plain IEEE.** A NaN or `+inf` in a row makes
   that row NaN (`inf − inf`); an all-`-inf` row is NaN; a `-inf`
   alongside finite values simply takes zero probability, and a `-inf`
@@ -645,6 +654,72 @@ That is E6. Implementation notes:
   NumPy constructor is a small tuple or list of Python ints, and a
   stricter second tripwire blocks *every* NumPy constructor across a
   backward whose target copy is already prepared.
+
+**Status (E6 — the differentiable operation, implemented as specified).**
+`NativeTensor.cross_entropy(targets, reduction="mean")` lives in
+`src/tensorforge/experimental/native_tensor.py` and is registered as
+`"cross_entropy"` in `AUTOGRAD_OPS`. It is **autograd integration only**:
+E6 changed no C++ file, added no C ABI export, altered no ctypes
+signature, and touched no numerical formula. Implementation notes:
+
+- **One Core call, one graph node.** The method calls
+  `NativeTensorCore.cross_entropy_forward` exactly once — which is where
+  every validation, the target copy, Policy B, and the fused kernel
+  already live — unpacks the E5 result record immediately, and hands the
+  scalar loss core to `_from_op(..., graph_resources=(probabilities,))`
+  with the logits as its single parent. There is no second cross-entropy
+  path and no revalidation at this layer.
+- **Ownership transfer is explicit, and needs no new machinery.** The E5
+  result record is a plain `__slots__` carrier with **no** `__del__`, so
+  once the four fields are unpacked into the calling frame the record
+  owns nothing that could be double-closed. That places this operation in
+  exactly MaxPool2d's position when its Core returns
+  `(out_core, winners)`, and the same cleanup applies: if graph
+  construction raises, the probabilities and then the loss are closed
+  before the exception propagates. No release/take helper and no resource
+  manager was added.
+- **Saved probabilities are graph-owned.** Exactly one resource belongs
+  to the node. It survives forward, survives `retain_graph=True`, survives
+  a failed retryable backward, and is released exactly once at the
+  deterministic points §7 names — a one-shot `backward()`'s history
+  release, or `close()`. A **no-grad forward closes it immediately**
+  inside `_from_op`, proved by instrumenting the core's own lifetime
+  rather than by observing an empty `graph_resources` tuple.
+- **Targets are closure metadata, not a graph resource.** The owned,
+  read-only `int64` copy is captured by the backward closure and released
+  with it when the history is. `graph_resources` is only for closeable
+  *native* objects, so nothing was added there; no native integer tensor
+  exists.
+- **Backward never rereads the logits, and records no version.**
+  `_expected_versions == ()`. The Core backward's signature does not
+  accept logits at all, so this is structural rather than a promise:
+  mutating a direct `NativeParameter` logits parent with `copy_value_`
+  after the forward neither raises a stale-graph error nor changes the
+  gradient, including across a retained graph, and a fresh forward
+  afterwards uses the new values. This is the `maxpool2d` archetype and
+  the deliberate contrast with `log`.
+- **A closed parent is a lifetime failure, not a value reread.** The
+  gradient still computes correctly from saved state; it is
+  `_accumulate_grad` that requires the parent tensor open, because that
+  is where the gradient is *stored*. The failure commits nothing, keeps
+  the saved probabilities, and leaves the graph retryable. No version
+  snapshot would help and none is recorded.
+- **Nothing partial survives a failure.** An E5 validation, allocation,
+  or kernel failure returns no tensor and builds no node; a graph
+  construction failure closes both E5 outputs; a backward failure
+  (allocation, native, or accumulation) commits no gradient, leaks no
+  gradient core — proved while holding a strong reference that disables
+  the `__del__` fallback — keeps the probabilities for a retry, and does
+  not mark the graph freed. In a mixed graph whose other branch is stale,
+  the engine's preflight raises before any callback runs, so
+  cross-entropy commits nothing and pre-existing gradients are restored
+  by reference.
+- **Still no tensor-data NumPy round-trip.** The public forward and
+  backward run under the same strict tripwire as the Core layer, on the
+  contiguous and the Policy-B paths; a stricter variant blocks *every*
+  NumPy constructor across a backward, and an instrumented probe proves
+  the only values a NumPy constructor ever receives are small integer
+  target labels and shape/stride metadata.
 
 ---
 
@@ -741,14 +816,19 @@ The copied `int64` targets are ordinary Python-side data held by the same
 backward closure and released with it. They are graph data: never
 serialized, never public.
 
-**Status at E5: no graph exists yet, so none of this is live.** The
-shipped Core forward hands the private probabilities back through its
-internal result record and the **caller** owns them, releasing both
-outputs with `result.close()` (idempotent) or individually. Nothing
-adopts them, nothing retains them, and no `graph_resources` entry, no
-expected version, and no retry semantics exist for cross-entropy yet.
-E6 is where the output node adopts the probabilities and every rule
-above starts to bind.
+**Status: live as of E6.** Every rule above now binds and is directly
+tested. The Core forward still hands the private probabilities back
+through its internal result record — at that layer the **caller** owns
+them and releases them with `result.close()` — and
+`NativeTensor.cross_entropy` is the caller that adopts them into
+`_from_op(..., graph_resources=(probabilities,))`. The E5 result record
+has no finalizer, so unpacking it is a complete ownership transfer; if
+graph construction raises, the probabilities and the loss are both closed
+explicitly before the exception propagates. Exactly one probability
+resource belongs to the node; a no-grad forward closes it inside
+`_from_op` before returning; the copied targets ride in the backward
+closure rather than in `graph_resources`, which is reserved for closeable
+native objects.
 
 ---
 
@@ -931,11 +1011,15 @@ name, and a separate module name. E5 followed exactly that rule:
 `"cross_entropy_forward"` and `"cross_entropy_backward"` entered
 `TENSOR_CORE_OPS`, and the bare `"cross_entropy"` token left
 `UNSUPPORTED` because it no longer describes anything absent as a whole.
-The differentiable operation's absence is reported the way this registry
+The differentiable operation's absence was reported the way this registry
 reports every unimplemented operation — **by `"cross_entropy"` not being
-in `AUTOGRAD_OPS`** — and E6 adds it there. `NativeCrossEntropyLoss` and
-`native_accuracy` stay in `UNSUPPORTED` until E7. Guardrail tests assert
-each half of this directly, so the boundary cannot blur.
+in `AUTOGRAD_OPS`** — and **E6 added it there**, leaving the two Core
+wrappers exactly where E5 put them. The bare name is therefore in
+`AUTOGRAD_OPS` only; it is deliberately *not* an alias in
+`TENSOR_CORE_OPS`, and there is no `NativeTensorCore.cross_entropy`.
+`NativeCrossEntropyLoss` and `native_accuracy` stay in `UNSUPPORTED`
+until E7. Guardrail tests assert each half of this directly, so the
+boundary cannot blur.
 
 Explicitly forbidden placements:
 
@@ -1030,7 +1114,7 @@ training step — against a stable-framework reference row.
 | E3 | Stable differentiable softmax | **complete** |
 | E4 | Stable differentiable log-softmax | **complete** |
 | E5 | Fused cross-entropy forward and backward Core contract | **complete** |
-| E6 | Differentiable `NativeTensor` cross-entropy | not started |
+| E6 | Differentiable `NativeTensor` cross-entropy | **complete** |
 | E7 | `NativeCrossEntropyLoss` and reporting-only `native_accuracy` | not started |
 | E8 | Deterministic native classification training and exact checkpoint resume | not started |
 | E9 | Native classification benchmark characterization | not started |
@@ -1267,7 +1351,7 @@ summary, and the registry remains the authority on what is live.
   division, no integer tensor, no benchmark, no example, no schema
   change.
 
-### E6 — Differentiable `NativeTensor` cross-entropy
+### E6 — Differentiable `NativeTensor` cross-entropy — **complete**
 
 - **Objective:** `NativeTensor.cross_entropy(targets, reduction="mean")`
   — the graph node over the E5 Core contract.
@@ -1275,7 +1359,7 @@ summary, and the registry remains the authority on what is live.
 - **Expected files:**
   `src/tensorforge/experimental/native_tensor.py`;
   `src/tensorforge/backends/cpp.py` (inventories);
-  `tests/test_native_cross_entropy_autograd.py`.
+  `tests/test_native_cross_entropy.py`.
 - **Required tests:** scalar output; single `(logits,)` parent;
   finite-difference gradients under both reductions; explicit scalar
   upstream scaling; **no** logits version snapshot (post-forward mutation
@@ -1289,6 +1373,18 @@ summary, and the registry remains the authority on what is live.
   version guard that does not exist.
 - **Dependencies:** E5.
 - **Non-goals:** the loss module; the metric; training.
+- **Shipped (E6).** Exactly the above; see §4.5's E6 status block for the
+  implementation notes and §7 for the now-live lifetime contract. Files
+  touched: `src/tensorforge/experimental/native_tensor.py` (the one new
+  method), `src/tensorforge/backends/cpp.py` (`"cross_entropy"` into
+  `AUTOGRAD_OPS`, plus the inventory comments), the new
+  `tests/test_native_cross_entropy.py`, the Phase-D/E milestone-boundary
+  tests, and the status documents. **No C++ source, header, C ABI export,
+  ctypes signature, CMake target, or C++ test changed** — E6 adds no
+  numerical capability. No module, no metric, no `NATIVE_METRICS`, no
+  `reduction="none"`, no public saved probabilities or target objects, no
+  integer tensor, no benchmark, no example, no schema change (the native
+  checkpoint format stays version 1).
 
 ### E7 — `NativeCrossEntropyLoss` and reporting-only `native_accuracy`
 

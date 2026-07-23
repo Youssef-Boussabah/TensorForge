@@ -10,10 +10,13 @@ C ABI (`tf_core_cross_entropy_forward` / `tf_core_cross_entropy_backward`)
 → ctypes → `NativeTensorCore.cross_entropy_forward` with Policy-B
 copy-then-compute and `NativeTensorCore.cross_entropy_backward`.
 
-**E5 is Core-only.** There is no `NativeTensor.cross_entropy`, no
-autograd node, no graph-owned saved state, no loss module, and no
-metric — E6 and E7 add those, and several tests below pin their absence
-so the milestone boundary cannot be crossed by accident.
+**This file stays Core-only.** The `NativeTensor.cross_entropy`
+autograd node E6 built on top of these helpers — its graph-owned saved
+probabilities, its closure-captured targets, and its lifetime and
+rollback rules — is pinned separately in
+tests/test_native_cross_entropy.py; nothing here builds a graph. The loss
+module and the metric are E7, and tests below still pin their absence so
+that milestone boundary cannot be crossed by accident.
 
 Forward is a **fused maximum shift + log-sum-exp** over rank-2
 `(batch_size, num_classes)` logits with the class axis fixed at axis 1:
@@ -245,8 +248,9 @@ def test_native_cross_entropy_registry_placement():
         assert core_op not in cpp.NATIVE_LOSSES, core_op
         assert core_op not in cpp.RAW_KERNELS, core_op
         assert core_op not in cpp.TENSOR_CORE_KERNELS, core_op
-    # The differentiable operation is E6 and is genuinely absent.
-    assert "cross_entropy" not in cpp.AUTOGRAD_OPS
+    # The differentiable operation shipped separately at E6 and lives
+    # under the bare name in AUTOGRAD_OPS — never in this Core inventory.
+    assert "cross_entropy" in cpp.AUTOGRAD_OPS
     assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
     # E7's module and metric are still unsupported, and no metrics
     # inventory exists yet.
@@ -263,7 +267,8 @@ def test_native_cross_entropy_registry_placement():
     info = cpp.backend_info()
     assert "cross_entropy_forward" in info["tensor_core_ops"]
     assert "cross_entropy_backward" in info["tensor_core_ops"]
-    assert "cross_entropy" not in info["autograd_ops"]
+    assert "cross_entropy" in info["autograd_ops"]
+    assert "cross_entropy" not in info["tensor_core_ops"]
     assert "native_metrics" not in info
     # backend_info stays internally consistent: nothing advertised as
     # unsupported may appear in an implemented inventory.
@@ -274,15 +279,20 @@ def test_native_cross_entropy_registry_placement():
 
 
 @needs_native
-def test_native_cross_entropy_autograd_layer_is_absent():
-    """E5's hard boundary: nothing above the Core layer exists yet."""
+def test_native_cross_entropy_core_layer_stays_graph_unaware():
+    """E5's hard boundary, still binding after E6 built on it: the Core
+    layer itself knows nothing about graphs. The differentiable operation
+    that E6 added lives one layer up, on NativeTensor, and its contract is
+    tests/test_native_cross_entropy.py."""
     import tensorforge.experimental as experimental
 
     x = NativeTensor.from_array(LOGITS)
     core = cpp.NativeTensorCore.from_array(LOGITS)
-    # No differentiable operation, in any spelling.
-    for absent in ("cross_entropy", "cross_entropy_forward",
-                   "cross_entropy_backward", "nll_loss"):
+    # The E6 operation is a NativeTensor method under the bare name only —
+    # the Core wrappers never leaked upward, and no NLL variant appeared.
+    assert hasattr(x, "cross_entropy")
+    for absent in ("cross_entropy_forward", "cross_entropy_backward",
+                   "nll_loss"):
         assert not hasattr(x, absent), absent
     # ...and no bare Core "cross_entropy" either: the Core surface is
     # layer-qualified on purpose.
@@ -1727,11 +1737,14 @@ def test_native_cross_entropy_scope_boundaries_hold():
 
     x = NativeTensor.from_array(LOGITS)
     core = cpp.NativeTensorCore.from_array(LOGITS)
-    for absent in ("cross_entropy", "max", "argmax", "amax", "divide", "gather",
+    for absent in ("max", "argmax", "amax", "divide", "gather",
                    "scatter", "sigmoid", "tanh", "nll_loss", "one_hot",
                    "binary_cross_entropy"):
         assert not hasattr(x, absent), absent
         assert not hasattr(core, absent), absent
+    # The bare name never joined the Core surface: E6 added it on
+    # NativeTensor, over these layer-qualified wrappers.
+    assert not hasattr(core, "cross_entropy")
     assert not hasattr(x, "__truediv__")
     for absent in ("NativeCrossEntropyLoss", "native_accuracy", "NativeNLLLoss",
                    "NativeSoftmax", "NativeLogSoftmax"):
