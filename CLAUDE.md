@@ -11,7 +11,8 @@ v3.0; work continues on advanced branches (the experimental C++
 native line has completed Phase A — CPU runtime, Phase B — native
 autograd, Phase C — the native training stack, and Phase D — the
 native CNN stack, through Advanced C++ v3.16; Phase E — native
-classification and stable math — is *in progress*, its contract locked
+classification and stable math — is *complete* (E0–E10), its contract
+locked
 in `docs/native_classification_design.md` with milestones E1–E4 (the
 differentiable native `exp`, `log`, and the fused stable `softmax` and
 `log_softmax`), E5 (the fused `cross_entropy` **Core** contract —
@@ -32,10 +33,13 @@ characterization benchmark
 `benchmarks/benchmark_native_classification.py`: seven cases, each
 correctness-gated before timing, each labelled with the reference it
 used, medians with spread after warm-up, `--smoke`/`--json` modes, and
-**no speed assertion or timing threshold anywhere**) shipped, with
-phase closure and sanitizer validation (E10) still
-unimplemented;
-normalization/dropout/RNG, CPU optimization, and CUDA experiments are
+**no speed assertion or timing threshold anywhere**), and E10 (phase
+closure: `tests/test_native_phase_e.py` cross-cutting integration,
+Release and Debug builds with 10/10 CTests each, Clang ASan/UBSan and
+LeakSanitizer validation, and documentation reconciliation — no new
+numerical capability) all shipped;
+normalization/dropout/RNG, data loaders, native integer tensors, further
+dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond it).
 Position the project as serious and systems-focused — never
 "educational", "toy", or "mini" — while staying honest: not

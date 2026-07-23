@@ -212,7 +212,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_design.md](docs/native_autograd_design.md) — design for native reverse-mode autograd over NativeTensor (Phase B)
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
-- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — in progress: E1–E9 shipped, E10 designed only)
+- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 
 ## Limitations
 
@@ -224,24 +224,16 @@ Honest expectations:
   experimental C++ **CPU** backend: float64/cpu only, no CUDA backend
   yet, no dtype promotion or casting, and no implicit dispatch into
   `tensorforge.Tensor`.
-- The native CNN stack (Phase D) is complete — `NativeFlatten`,
-  `NativeConv2d`, `NativeMaxPool2d`, and a deterministic training +
-  exact checkpoint-resume proof. Phase E (native classification and
-  stable math) is *in progress*: its contract is locked in
-  [docs/native_classification_design.md](docs/native_classification_design.md)
-  and milestones E1–E4 shipped the differentiable native `exp`, `log`,
-  and the fused stable `softmax` and `log_softmax`, E5 shipped the
-  fused `cross_entropy` **Core** forward/backward, E6 shipped the
-  differentiable `NativeTensor.cross_entropy` over it, E7 shipped the
-  public `NativeCrossEntropyLoss` module and the reporting-only
-  `native_accuracy`, E8 shipped the deterministic classification
-  training and exact checkpoint-resume proof (a fixed-task integration
-  result, not a benchmark), and E9 shipped the characterization
-  benchmark — which measures, and promises nothing: no timing number is
-  committed, no test asserts a speed, and no CI performance gate exists.
-  Phase closure and sanitizer validation (E10) are not done yet.
-  Beyond that: no normalization, no dropout or native RNG, and native
-  checkpoints capture no scheduler or random state — see the
+- The native CNN stack (Phase D) and the native classification stack
+  (Phase E) are both complete — but "complete" means *these* capabilities
+  work and are validated, not that the native line is finished. What the
+  native line still does **not** have: normalization (BatchNorm /
+  LayerNorm), dropout or a native RNG, data loaders, native integer
+  tensors, further dtypes or devices, CUDA, AMP, and any implicit
+  dispatch into `tensorforge.Tensor`. Native checkpoints capture no
+  scheduler or random state, and the classification loss supports
+  `"mean"`/`"sum"` only — no `reduction="none"`, class weights,
+  `ignore_index`, label smoothing, or soft targets. See the
   [native support matrix](docs/native_support_matrix.md).
 - Both lines' convolution and pooling use deliberately naive loops (the
   stable `Conv2d`/`MaxPool2d` and the native kernels alike: no im2col,
@@ -254,10 +246,11 @@ Honest expectations:
 ## Status
 
 **v3.0 — the stable Python framework line is complete**, covered by the
-test suite and documented. **The advanced branch has completed Phase D
-of its native line (Advanced C++ v3.16)**: Phase A (native CPU runtime),
-Phase B (native autograd), Phase C (the native training stack), and
-Phase D (the native CNN stack) are all complete. Phase C shipped
+test suite and documented. **The advanced branch has completed Phase E
+of its native line**: Phase A (native CPU runtime),
+Phase B (native autograd), Phase C (the native training stack),
+Phase D (the native CNN stack), and Phase E (native classification and
+stable math) are all complete. Phase C shipped
 parameters, modules, state dictionaries,
 Linear/ReLU/Sequential, MSE loss, parameter versioning with stale-graph
 safety, `sqrt`/`reciprocal` optimizer primitives, SGD and adaptive Adam,
@@ -273,8 +266,8 @@ end-to-end training + checkpoint-resume proof
 reduction, and a checkpoint-interrupted run that reproduces the
 uninterrupted one exactly), cross-cutting integration tests, honest CNN
 benchmarks, and ASan/UBSan validation of the whole native stack.
-**Phase E — Native Classification and Stable Math — is now in
-progress**: its architecture contract is locked
+**Phase E — Native Classification and Stable Math — is complete**
+(milestones E0–E10): its architecture contract is locked
 ([docs/native_classification_design.md](docs/native_classification_design.md),
 milestone E0) and milestones **E1–E4 shipped the differentiable native
 `exp`, `log`, and the fused stable `softmax` and `log_softmax`** — C++
@@ -337,8 +330,16 @@ measurements taken after warm-up with setup and cleanup outside the
 timer. It has `--smoke` and `--json` modes and writes no result file.
 Observed ratios are **local characterizations, not guarantees**: no test
 asserts a speed, no timing number is committed as a promise, and there is
-no CI performance gate. Phase closure with sanitizer validation (E10) is
-designed but **not implemented**. More
+no CI performance gate. **E10 closed the phase with no new numerical
+capability**: cross-cutting integration tests
+(`tests/test_native_phase_e.py`), Release **and** Debug native builds
+(10/10 CTests each, zero warnings), Clang AddressSanitizer and
+UndefinedBehaviorSanitizer validation of the whole classification stack
+with zero diagnostics attributable to TensorForge, a practical
+LeakSanitizer pass finding no native leak, the full Python regression
+suite, and documentation reconciliation across every status surface.
+Phase E expanded nothing beyond float64/CPU and added no implicit
+stable/native dispatch. More
 activations/math, normalization, RNG/dropout, and CPU optimization sit
 beyond it, and CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and

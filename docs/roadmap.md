@@ -702,8 +702,8 @@ The Python line is done; what remains is expansion on its own terms:
     reconciliation across every status surface, and the replacement of the
     milestone-era doc guardrails with durable semantic checks. See the
     [support matrix](native_support_matrix.md) for the finalized status.
-  - **Phase E — Native Classification and Stable Math — in progress
-    (E0-E9 complete).** The **E0 architecture contract
+  - **Phase E — Native Classification and Stable Math — complete
+    (E0-E10).** The **E0 architecture contract
     is written** —
     [native_classification_design.md](native_classification_design.md)
     locks the scope, the public API surface (`exp`, `log`, `softmax`,
@@ -899,9 +899,19 @@ The Python line is done; what remains is expansion on its own terms:
     observed ratio is a **local characterization**, never a speedup
     claim: no test asserts a speed, no timing number is committed as a
     promise, and there is no CI performance gate anywhere.
-    **Everything else in Phase E is still designed-only**: phase closure
-    with sanitizer validation (E10) has not started, and Phase E is
-    **not** complete. Deliberately outside
+    **E10 closed the phase**, adding no numerical capability of any kind:
+    cross-cutting integration tests (``tests/test_native_phase_e.py``)
+    covering the classification stack as one system, **Release and Debug**
+    native builds (10/10 CTests each, zero compiler warnings), Clang
+    AddressSanitizer and UndefinedBehaviorSanitizer validation of the
+    whole classification stack (zero diagnostics attributable to
+    TensorForge), a practical LeakSanitizer pass finding **no** native
+    leak with the live-storage counters returning to baseline, the
+    complete Python regression suite, the conversion of milestone-era
+    "not yet shipped" documentation guardrails into durable semantic
+    ones, and reconciliation of every authoritative status surface.
+    **Phase E is complete**, and it expanded nothing beyond float64/CPU
+    and added no implicit stable/native dispatch. Deliberately outside
     Phase E and still unplanned: more native activations beyond it, native
     normalization, a native RNG and dropout, a CPU optimization phase for
     the deliberately naive kernels, and build/packaging evolution.

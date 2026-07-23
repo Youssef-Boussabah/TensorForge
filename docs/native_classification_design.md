@@ -16,7 +16,7 @@ this document. The backend capability registry
 [native_support_matrix.md](native_support_matrix.md), stays the
 **single source of truth** for what is actually live at any moment.
 
-**Phase-E status: in progress.** **E0 is complete** (this contract),
+**Phase-E status: complete.** **E0 is complete** (this contract),
 **E1 is complete** (the differentiable `NativeTensor.exp()`), **E2 is
 complete** (the differentiable `NativeTensor.log()`), **E3 is
 complete** (the fused, stable `NativeTensor.softmax()`), **E4 is
@@ -108,10 +108,16 @@ machine, build, and workload, no test compares a duration to a constant,
 and no CI timing threshold exists. E9 changed no numerical runtime file
 and tuned nothing (§14).
 
-**Everything else in Phase E (E10) is still designed-only**: there is no
-phase closure or sanitizer validation. Per-milestone status is recorded
-in the ladder (§15); the completion criteria (§17) are **not** met, so
-Phase E is **not** complete.
+**E10 closed the phase, adding no numerical capability at all.** It
+delivered the cross-cutting integration test
+(`tests/test_native_phase_e.py`), Release **and** Debug native build
+validation with the full CTest suite, Clang AddressSanitizer and
+UndefinedBehaviorSanitizer validation of the whole classification stack
+on Linux, a practical LeakSanitizer pass, the conversion of the
+milestone-era "not yet shipped" documentation guardrails into durable
+semantic ones, and reconciliation of every authoritative status surface.
+Per-milestone status is recorded in the ladder (§15), and the completion
+criteria (§17) are **all met** — see §18 for the closure statement.
 
 The stable Python framework (`tensorforge.Tensor.exp/log/softmax`,
 `tensorforge.nn.cross_entropy`, `tensorforge.nn.accuracy`) is the
@@ -1289,7 +1295,7 @@ never committed as project promises.
 | E7 | `NativeCrossEntropyLoss` and reporting-only `native_accuracy` | **complete** |
 | E8 | Deterministic native classification training and exact checkpoint resume | **complete** |
 | E9 | Native classification benchmark characterization | **complete** |
-| E10 | Phase-E integration, sanitizer validation, documentation reconciliation, and closure | not started |
+| E10 | Phase-E integration, sanitizer validation, documentation reconciliation, and closure | **complete** |
 
 Each milestone's full contract follows; the table above is the status
 summary, and the registry remains the authority on what is live.
@@ -1732,7 +1738,7 @@ summary, and the registry remains the authority on what is live.
     no persistent artifact — the benchmark writes no result file, and the
     native checkpoint format stays version 1.
 
-### E10 — Phase-E integration, sanitizer validation, documentation reconciliation, and closure
+### E10 — Phase-E integration, sanitizer validation, documentation reconciliation, and closure — **complete**
 
 - **Objective:** close the phase with **no new numerical behavior**.
 - **Layer:** cross-cutting tests and documentation.
@@ -1749,6 +1755,81 @@ summary, and the registry remains the authority on what is live.
   leaving a status surface claiming Phase E is unimplemented.
 - **Dependencies:** E9.
 - **Non-goals:** anything in §1's exclusion list; Phase F planning.
+- **Shipped (E10).** Exactly the above, as **tests and documentation
+  only** — no C++ source, header, C ABI export, ctypes symbol, CMake
+  target, numerical runtime file, module, loss, metric, optimizer, or
+  checkpoint behavior changed, and **no new numerical capability** was
+  added.
+  - **Cross-cutting integration test.** `tests/test_native_phase_e.py`
+    (32 tests) validates Phase E as one stack rather than repeating the
+    milestone matrices: the public surface and honest float64/CPU scope;
+    inventory self-consistency with implemented and unsupported names
+    disjoint; stable/native separation with no implicit dispatch or
+    conversion in either direction and unchanged stable behavior; the
+    whole path (conv → ReLU → pool → flatten → linear → fused loss →
+    backward → `NativeAdam.step()`) in one graph; `exp`/`log`/`softmax`/
+    `log_softmax` composing around a classification workload; raw logits
+    with strict host integer targets; saved probabilities **and**
+    max-pooling winners released by one backward and retained under
+    `retain_graph`; the phase's versioning asymmetry meeting in one
+    mixed graph (`log` version-checked, cross-entropy recording none and
+    still correct after post-forward mutation); Policy-B strided inputs
+    reaching every fused kernel with gradients landing in the base
+    layout; the stateless loss module and the reporting-only metric
+    leaving a live graph intact; the E8 proof still learning and
+    resuming exactly; exact checkpoint round trips for **both** native
+    optimizers with format version 1 and no classification state
+    serialized; storage returning to baseline across repeated steps
+    including reporting passes; idempotent cleanup; failure atomicity
+    with a clean native error state after recovery; a NumPy tripwire
+    over a complete step plus every Phase-E forward; the E9 benchmark's
+    smoke/JSON paths and its absence of any performance threshold; and
+    the artifacts of the closed phase.
+  - **Release and Debug validation** (Windows, MSVC 19.44, Visual Studio
+    17 2022 generator, CMake 4.1.2): both configured with
+    `-DTF_BUILD_TESTS=ON` into fresh out-of-source build directories and
+    built clean — **zero compiler and linker warnings in both**, and
+    **10/10 CTests pass in each**. The Debug library was written outside
+    the source tree so the active runtime stays Release.
+  - **Sanitizer validation** (WSL2 Ubuntu 24.04, Clang 18.1.3, CMake
+    3.28.3): `-DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++
+    -DTF_SANITIZE=address,undefined -DTF_BUILD_TESTS=ON`, built with zero
+    warnings; instrumentation confirmed in the library (`nm -D` shows 22
+    `__asan*` and 13 `__ubsan*` symbols). With
+    `ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1`
+    and `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`: **10/10
+    native CTests pass** (with `detect_leaks=1`), and every sanitized
+    Python workload passes — the native smoke check, the `exp`/`log`/
+    `softmax`/`log_softmax` suites, both cross-entropy suites, the loss
+    and metric suites, this phase's integration test, the classification
+    training suite, the training example, and the benchmark smoke run:
+    **720 tests, zero ASan and zero UBSan diagnostics attributable to
+    TensorForge**. Python-level runs preload the ASan runtime
+    (`LD_PRELOAD`) because the interpreter itself is not instrumented.
+  - **LeakSanitizer, scope stated honestly.** The fully instrumented
+    native CTest binaries report **no leaks at all**. A dedicated
+    workload — three complete lifecycles of dataset, model, `NativeAdam`,
+    four training steps, reporting accuracy, checkpoint save, load into a
+    **fresh** model/optimizer pair, a resumed step, and explicit closure,
+    plus standalone `exp`/`log`/`softmax`/`log_softmax` and a Policy-B
+    pass — ends with the live-native-storage counter back at its
+    baseline (0 → 0) before exit. Running LSan over that *Python* process
+    does report 926,246 bytes in 831 allocations, but **not one leak
+    frame names `_tensorforge_cpp`, `tf_core_`, `tf_storage_`, or
+    `tf::`**: every site is CPython/NumPy interpreter and module
+    initialization that a non-instrumented interpreter never frees at
+    shutdown. **No suppression file was added** — nothing was hidden —
+    and the project's leak contract remains the deterministic
+    live-storage counters and explicit-cleanup tests, which assert an
+    exact return to baseline.
+  - **Documentation reconciliation.** Every authoritative surface now
+    agrees that Phase E is complete, and the milestone-era guardrails
+    that asserted *absence* (no training example, no benchmark file, no
+    integration test, "Phase E is in progress") were **converted into
+    durable semantic checks** rather than deleted: the closure artifacts
+    must exist and be documented, the ladder must mark E0–E10 complete,
+    no surface may regress to "in progress", and no surface may claim a
+    future-phase capability.
 
 ---
 
@@ -1783,25 +1864,84 @@ The ladder is **architectural, not chronological convenience**:
 
 ## 17. Phase-E completion criteria
 
-Phase E is complete when **all** of the following hold:
+Phase E was to be complete only when **all** of the following held. Each
+is checked against reality at the E10 closure checkpoint:
 
-1. `exp`, `log`, `softmax`, `log_softmax` are differentiable
+1. ✅ `exp`, `log`, `softmax`, `log_softmax` are differentiable
    `NativeTensor` operations, and `cross_entropy` is a fused
-   differentiable operation from raw logits.
-2. `NativeCrossEntropyLoss` and `native_accuracy` are exported, tested,
-   and registered in the correct inventories; no Phase-E name remains in
-   `UNSUPPORTED`.
-3. The §5 backward/versioning matrix is proved by tests, not asserted by
-   prose.
-4. The §6 target contract and the §7 saved-probability lifetime contract
-   are proved, including the failed-retryable-backward and abandoned-graph
-   paths.
-5. A deterministic native classification training run learns and resumes
-   **exactly** from a checkpoint, with **format version 1** unchanged.
-6. Benchmarks characterize the stack with no performance assertion.
-7. ASan/UBSan (and a practical LeakSanitizer pass) find nothing in the
-   classification stack.
-8. Every status surface — support matrix, roadmap, README, summary,
-   architecture, and the backend registry — agrees on what shipped.
-9. Phase A–D behavior, the stable framework, the checkpoint schema, and
+   differentiable operation from raw logits (E1–E6).
+2. ✅ `NativeCrossEntropyLoss` and `native_accuracy` are exported, tested,
+   and registered in the correct inventories (`NATIVE_LOSSES` and the new
+   `NATIVE_METRICS`); no Phase-E name remains in `UNSUPPORTED` (E7).
+3. ✅ The §5 backward/versioning matrix is proved by tests, not asserted
+   by prose — including the two archetypes meeting in one mixed graph in
+   `tests/test_native_phase_e.py`.
+4. ✅ The §6 target contract and the §7 saved-probability lifetime
+   contract are proved, including the failed-retryable-backward and
+   abandoned-graph paths.
+5. ✅ A deterministic native classification training run learns
+   (1.159638 → 0.000101, accuracy 0.3333 → 1.0000) and resumes
+   **exactly** from a checkpoint, with **format version 1** unchanged
+   (E8).
+6. ✅ Benchmarks characterize the stack with no performance assertion and
+   no CI timing threshold (E9).
+7. ✅ ASan/UBSan find nothing attributable to TensorForge, and the
+   practical LeakSanitizer pass reports no native leak — the instrumented
+   CTests are leak-free and no leak frame in the Python process touches
+   the native library (E10).
+8. ✅ Every status surface — support matrix, roadmap, README, summary,
+   architecture, the design documents, and the backend registry — agrees
+   on what shipped.
+9. ✅ Phase A–D behavior, the stable framework, the checkpoint schema, and
    the strict stable/native separation are all unchanged.
+
+---
+
+## 18. Phase-E completion statement
+
+**Phase E is complete.** The experimental native line now has stable
+native classification mathematics, end to end and validated:
+
+- **Stable scalar math** — differentiable `exp` (saved-output backward,
+  no version snapshot) and `log` (live-input backward, version-checked),
+  the phase's two backward archetypes.
+- **Probability transforms** — fused, numerically stable `softmax`
+  (maximum shift) and `log_softmax` (log-sum-exp, never
+  `softmax().log()`), each with a saved-output backward composed from
+  existing Core operations and no dedicated backward kernel.
+- **The fused cross-entropy Core contract** —
+  `NativeTensorCore.cross_entropy_forward` / `cross_entropy_backward`
+  over two guarded, contiguous-only C ABI exports, producing the stable
+  scalar loss and private saved probabilities in one pass, with strict
+  copied host `int64` targets.
+- **The differentiable operation** — `NativeTensor.cross_entropy(targets,
+  reduction="mean")`, one scalar-output autograd node with graph-owned
+  saved probabilities that never rereads the logits and records no
+  expected parameter version.
+- **The public surface** — the stateless `NativeCrossEntropyLoss` module
+  and the deliberately **reporting-only** `native_accuracy`, which
+  converts through the explicit public `to_numpy()` boundary and builds
+  no graph.
+- **A deterministic native CNN classification proof** — a
+  Conv2d→ReLU→MaxPool2d→Flatten→Linear classifier over raw logits,
+  trained on a fixed twelve-image three-class dataset, with **exact**
+  `NativeAdam` checkpoint resume into a fresh model/optimizer pair
+  (native checkpoint format **version 1**, unchanged).
+- **Honest benchmark characterization** — seven correctness-gated cases
+  with labelled references, median-and-spread reporting, and **no speed
+  guarantee** of any kind.
+- **Validation** — Release **and** Debug native builds (10/10 CTests
+  each, zero warnings), Clang ASan and UBSan validation of the whole
+  classification stack with zero diagnostics attributable to TensorForge,
+  a practical LeakSanitizer pass with no native leak, and the complete
+  Python regression suite green.
+
+Phase E expanded nothing beyond **float64 on CPU**, added no implicit
+stable/native dispatch or conversion, and left the stable Python
+framework untouched. The capabilities it deliberately excluded —
+`reduction="none"`, class weights, `ignore_index`, label smoothing, soft
+targets, `NLLLoss`, binary cross-entropy, a native `argmax` kernel, top-k
+or stateful metrics, native integer tensors, normalization, dropout, a
+native RNG, data loaders, further dtypes or devices, CUDA, and AMP —
+remain unimplemented and are still listed as such. Nothing in this
+document should be read as a claim about any later phase.

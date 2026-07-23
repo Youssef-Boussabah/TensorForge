@@ -666,43 +666,47 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
 
 
 def test_phase_e_milestone_status_is_reported_honestly():
-    """E0-E9 are marked complete, E10 is not, and Phase E itself is
-    never declared complete. Checked semantically against the design
-    document's status table and the live registry."""
+    """Every Phase-E milestone E0-E10 is marked complete, and the phase
+    itself is marked complete on every authoritative surface. Checked
+    semantically against the design document's status table and the live
+    registry — the milestone-era 'not yet shipped' rows are gone because
+    the phase closed, not because the check was relaxed."""
     from tensorforge.backends import cpp
 
     # The ladder's status table is the one place per-milestone status is
     # declared, so the row checks run inside that section only.
     ladder = _design_section("Milestone ladder")
-    for done in ("E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"):
+    for done in ("E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9",
+                 "E10"):
         row = re.search(rf"\|\s*{done}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {done}"
         assert "complete" in row.group(1).lower(), (
             f"the design does not mark {done} complete"
         )
-    row = re.search(r"\|\s*E10\s*\|[^|]*\|([^|]*)\|", ladder)
-    assert row is not None, "the ladder has no status row for E10"
-    assert "complete" not in row.group(1).lower(), (
-        "E10 is marked complete but has not shipped"
-    )
-    # Phase E as a whole is in progress, and says so positively. (§17's
-    # "Phase E is complete when ..." criteria list is a condition, not a
-    # claim, so the check is on the status statement, not a banned word.)
+    # Phase E as a whole is complete, stated positively, and no surface
+    # may regress to the milestone-era "in progress" wording.
     design = _status_text(PHASE_E_DESIGN)
-    assert "Phase-E status: in progress" in design
-    assert re.search(r"Phase E is [^.]{0,30}not[^.]{0,30}complete", design), (
-        "the design no longer states that Phase E is not complete"
-    )
-    matrix = _normalized_doc("docs/native_support_matrix.md")
-    assert re.search(r"Phase E[^.]{0,120}in progress", matrix, re.I), (
-        "the support matrix no longer marks Phase E in progress"
+    assert "Phase-E status: complete" in design
+    assert not re.search(r"Phase-E status: in progress", design)
+    assert not re.search(r"Phase E is [^.]{0,30}not[^.]{0,30}complete", design)
+    for surface in ("README.md", "docs/native_support_matrix.md",
+                    "docs/roadmap.md", "docs/backend_experiments.md",
+                    "docs/project_summary.md",
+                    "src/tensorforge/experimental/__init__.py"):
+        text = _status_text(surface)
+        assert not re.search(r"Phase E[^.]{0,40}in progress", text, re.I), (
+            f"{surface} still calls Phase E in progress"
+        )
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"Phase E[^.]{0,160}complete", matrix, re.I), (
+        "the support matrix no longer marks Phase E complete"
     )
     # The registry agrees: E1-E4's capabilities and E6's cross-entropy are
     # live as differentiable operations, E5's Core wrappers at the Core
     # layer, and E7's module and metric in their own layer inventories —
-    # while nothing E8-E10 owns (a training proof, a benchmark, phase
-    # closure) is a capability name at all. E8's proof is an example plus
-    # integration tests, so it added no inventory entry either.
+    # while nothing E8-E10 delivered (a training proof, a benchmark, phase
+    # closure) is a capability name at all: those milestones shipped
+    # examples, benchmarks, and tests, never inventory entries.
     for shipped in ("exp", "log", "softmax", "log_softmax"):
         assert shipped in cpp.AUTOGRAD_OPS, shipped
         assert shipped not in cpp.UNSUPPORTED, shipped
@@ -1191,30 +1195,58 @@ def test_docs_present_the_shipped_classification_benchmark():
     )
 
 
-def test_phase_e_remaining_milestones_are_not_claimed():
-    """E10 owns phase closure and sanitizer validation. It may not be
-    implied as done: no phase-closure test file exists, and Phase E is
-    still open."""
-    assert not (REPO_ROOT / "tests" / "test_native_phase_e.py").exists(), (
-        "tests/test_native_phase_e.py exists, but E10 has not shipped"
+def test_phase_e_closure_artifacts_exist_and_are_documented():
+    """E10 closed the phase. This replaces the milestone-era absence
+    checks (which asserted that the integration test and the benchmark
+    did *not* exist yet) with the durable positive form: the closure
+    artifacts are present, referenced, and described honestly."""
+    assert (REPO_ROOT / "tests" / "test_native_phase_e.py").is_file(), (
+        "the Phase-E cross-cutting integration test is missing"
     )
-    design = _status_text(PHASE_E_DESIGN)
-    assert re.search(r"Phase E is [^.]{0,30}not[^.]{0,30}complete", design)
-    ladder = _design_section("Milestone ladder")
-    row = re.search(r"\|\s*E10\s*\|[^|]*\|([^|]*)\|", ladder)
-    assert row is not None, "the ladder has no status row for E10"
-    assert "complete" not in row.group(1).lower()
-    # No status surface may claim the sanitizer closure, and the
-    # phase-level claim stays "in progress" everywhere it is stated.
-    for name in ("README.md", "docs/native_support_matrix.md",
-                 "docs/roadmap.md"):
-        text = _status_text(name)
-        assert not re.search(r"Phase E[^.]{0,60}is complete", text), name
-        assert not re.search(r"(ASan|UBSan|sanitizer)[^.]{0,80}"
-                             r"(classification|Phase E)[^.]{0,40}"
-                             r"(passed|clean|validated)", text, re.I), name
-    matrix = _status_text("docs/native_support_matrix.md")
-    assert re.search(r"Phase E[^.]{0,120}in progress", matrix, re.I)
+    section = _design_section("E10 —")
+    lowered = section.lower()
+    assert "complete" in lowered, "the design does not record E10 as shipped"
+    assert "tests/test_native_phase_e.py" in section
+    # The closure milestone's own deliverables, stated in its section.
+    for token in ("asan", "ubsan", "leaksanitizer", "release", "debug"):
+        assert token in lowered, token
+    assert re.search(r"no (new )?numerical (capability|behavior)", lowered), (
+        "the design no longer states that E10 added no numerical capability"
+    )
+    # The phase-completion statement exists and names what shipped.
+    completion = _status_text(PHASE_E_DESIGN)
+    assert "Phase-E status: complete" in completion
+    for token in ("exp", "log", "softmax", "log-softmax",
+                  "NativeCrossEntropyLoss", "native_accuracy",
+                  "checkpoint", "float64"):
+        assert token in completion, token
+
+
+def test_no_future_phase_is_claimed_by_phase_e_closure():
+    """Closing Phase E must not imply anything about what comes next: no
+    surface may present CUDA, AMP, other dtypes or devices, native
+    integer targets, normalization, RNG/dropout, or data loaders as
+    shipped, and the registry stays the authority."""
+    from tensorforge.backends import cpp
+
+    for future in ("cuda", "amp", "float32", "batchnorm", "layernorm",
+                   "dropout"):
+        assert future in cpp.UNSUPPORTED, future
+        assert future not in cpp.AUTOGRAD_OPS and future not in cpp.TENSOR_CORE_OPS
+        assert future not in cpp.NATIVE_MODULES
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert cpp.backend_info()["stable_framework_integration"] is False
+    claim = re.compile(
+        r"(CUDA|AMP|float32|float16|bfloat16|GPU|BatchNorm|LayerNorm|"
+        r"dropout|data loader|dataloader|native RNG|integer tensor)"
+        r"[^.]{0,60}(is|are|now)\s+(supported|implemented|shipped|available)",
+        re.I,
+    )
+    for surface in AUTHORITATIVE_STATUS_SURFACES + (PHASE_E_DESIGN,):
+        text = _status_text(surface)
+        match = claim.search(text)
+        assert match is None, (surface, match.group(0) if match else "")
 
 
 def test_no_committed_benchmark_timing_promise():

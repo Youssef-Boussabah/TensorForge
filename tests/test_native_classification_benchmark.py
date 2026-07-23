@@ -574,5 +574,14 @@ def test_e9_adds_no_kernel_abi_operation_or_schema():
     assert cpp.backend_info()["stable_framework_integration"] is False
 
 
-def test_e10_artifacts_are_still_absent():
-    assert not (REPO_ROOT / "tests" / "test_native_phase_e.py").exists()
+def test_the_benchmark_stays_separate_from_the_phase_e_closure_tests():
+    """E10 closed the phase with a cross-cutting integration test. That
+    file owns stack-level guarantees; this benchmark stays measurement
+    only, and neither absorbs the other."""
+    integration = REPO_ROOT / "tests" / "test_native_phase_e.py"
+    assert integration.is_file()
+    source = integration.read_text(encoding="utf-8")
+    # The closure test may exercise the benchmark's correctness path, but
+    # it must not time anything or assert a duration.
+    assert "perf_counter" not in source
+    assert "median_s\"] <" not in source and "median_s'] <" not in source

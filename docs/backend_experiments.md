@@ -26,10 +26,10 @@ reverse-mode autograd over autograd-unaware kernels, parameters, modules
 `NativeMaxPool2d`, `NativeSequential`), `NativeMSELoss`, `NativeSGD` and
 `NativeAdam` with in-memory optimizer state, pickle-free native
 checkpoints with exact resume, and deterministic end-to-end MLP **and**
-CNN training proofs. The current phase — **Phase E, Native
+CNN training proofs. The most recent phase — **Phase E, Native
 Classification and Stable Math** — has its architecture contract locked
 in [native_classification_design.md](native_classification_design.md)
-(E0) and is **in progress**: milestones E1–E4 shipped the differentiable
+(E0) and is **complete** (E0–E10): milestones E1–E4 shipped the differentiable
 native `exp`, `log`, `softmax`, and `log_softmax`, and E5 shipped the
 fused `cross_entropy` **Core** contract
 (`NativeTensorCore.cross_entropy_forward` / `cross_entropy_backward`
@@ -60,8 +60,17 @@ alone, and one complete classification training step — every case gated
 for correctness *before* timing, every case labelled with the reference
 it used (`stable_tensorforge`, `numpy`, or `native_only`), medians
 reported with min/max/spread after warm-up, `--smoke` and `--json` modes,
-and **no speed assertion or timing threshold anywhere**. Phase closure
-with sanitizer validation (E10) does not exist yet.
+and **no speed assertion or timing threshold anywhere**. **E10** closed
+the phase without adding any numerical capability: cross-cutting
+integration tests (`tests/test_native_phase_e.py`), Release **and** Debug
+native builds (10/10 CTests each, zero warnings), Clang ASan/UBSan
+validation of the whole classification stack with zero diagnostics
+attributable to TensorForge, a practical LeakSanitizer pass with no
+native leak, the full Python regression, and documentation
+reconciliation. Phase E therefore delivered stable native classification
+mathematics end to end — float64/CPU only, with no implicit
+stable/native dispatch and no change to the stable framework or the
+version-1 checkpoint format.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 

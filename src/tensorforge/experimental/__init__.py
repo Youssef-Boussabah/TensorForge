@@ -40,8 +40,8 @@ checkpoint paths. Milestone D11 proved the whole stack trains — see
 reproduces the uninterrupted one exactly — and **milestone D12 closed
 Phase D** with cross-cutting integration tests, honest CNN benchmarks, and
 ASan/UBSan validation. The native **classification** stack
-(contracted for Phase E in docs/native_classification_design.md) is now
-largely in place: milestones E1-E4 shipped the differentiable ``exp``,
+(contracted for Phase E in docs/native_classification_design.md) is
+**complete**: milestones E1-E4 shipped the differentiable ``exp``,
 ``log``, ``softmax``, and ``log_softmax``; E5 and E6 shipped the fused
 stable ``cross_entropy`` — its graph-unaware Core contract and then the
 differentiable ``NativeTensor.cross_entropy`` with graph-owned saved
@@ -61,9 +61,12 @@ characterizes that stack in
 ``benchmarks/benchmark_native_classification.py`` — seven
 correctness-gated cases with honest reference labels, medians and spread
 after warm-up, ``--smoke``/``--json`` modes, and no speed assertion or
-timing threshold anywhere. What the native line
-still does **not** have: phase closure
-and sanitizer validation (E10), further
+timing threshold anywhere. **Milestone E10 closed Phase E** with
+cross-cutting integration tests (``tests/test_native_phase_e.py``),
+Release and Debug native builds, Clang ASan/UBSan and LeakSanitizer
+validation, and documentation reconciliation — adding no numerical
+capability. **Phase E is complete.** What the native line
+still does **not** have: further
 activations/math, normalization (BatchNorm/LayerNorm), dropout or a
 native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline
 abstractions.

@@ -1130,14 +1130,13 @@ def test_e8_changes_no_checkpoint_schema_and_no_stable_framework():
 
 
 def test_the_e8_proof_stays_separate_from_the_e9_benchmark():
-    """E9 shipped the characterization benchmark, and the split is
-    deliberate: this example owns deterministic correctness and exact
-    resume, the benchmark owns measurement. Neither may absorb the
-    other — the example times nothing, and E10's closure is still
-    absent."""
+    """The split is deliberate and survives phase closure: this example
+    owns deterministic correctness and exact resume, the E9 benchmark
+    owns measurement, and the E10 integration test owns stack-level
+    guarantees. The example itself times nothing."""
     assert (REPO_ROOT / "benchmarks"
             / "benchmark_native_classification.py").is_file()
-    assert not (REPO_ROOT / "tests" / "test_native_phase_e.py").exists()
+    assert (REPO_ROOT / "tests" / "test_native_phase_e.py").is_file()
     # Structural, not word-level: the example's prose may (and does)
     # explain that measurement is E9's job, but it must measure nothing —
     # it imports no timer and calls none.

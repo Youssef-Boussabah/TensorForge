@@ -31,8 +31,8 @@ deterministic end-to-end CNN training + exact checkpoint-resume proof
 (`examples/native_cnn_training.py`); cross-cutting Phase-D integration
 tests; honest CNN benchmarks (`benchmarks/benchmark_native_cnn.py`); and
 ASan/UBSan validation of the whole stack). **Phase E — Native
-Classification and Stable Math — is in progress**: its architecture
-contract is locked in
+Classification and Stable Math — is complete** (milestones E0–E10):
+its architecture contract is locked in
 [native_classification_design.md](native_classification_design.md)
 (milestone **E0**, complete) and milestones **E1**, **E2**, **E3**, and
 **E4** have shipped the differentiable native `exp`, `log`, `softmax`,
@@ -67,8 +67,13 @@ correctness **before** timing, each labelled with the reference it used
 (`stable_tensorforge`, `numpy`, or `native_only`), and each reported as a
 median with min/max/spread after warm-up, with `--smoke` and `--json`
 modes. **No speed is asserted and no timing threshold exists anywhere.**
-**Everything else in Phase E (E10) is still designed-only** — there is
-no phase closure or sanitizer validation. See also
+Milestone **E10** then closed the phase, adding no numerical capability:
+cross-cutting integration tests (`tests/test_native_phase_e.py`), Release
+**and** Debug native builds (10/10 CTests each, zero warnings), Clang
+ASan/UBSan validation of the whole classification stack with **zero
+diagnostics attributable to TensorForge**, a practical LeakSanitizer pass
+with **no native leak**, the full Python regression suite, and
+documentation reconciliation across every status surface. See also
 [roadmap.md](roadmap.md). Everything Phase D
 deliberately excluded
 remains unsupported and is named in the "Unsupported or future" section
@@ -256,14 +261,16 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- Phase-E **closure and sanitizer validation** (E10). Everything below
-  it in the phase is present — E1–E4 shipped `exp`, `log`, `softmax`, and
+- *(Phase E itself is complete — E0–E10 — so nothing from it is listed
+  here any more.* E1–E4 shipped `exp`, `log`, `softmax`, and
   `log_softmax`, E5 and E6 shipped the fused `cross_entropy` Core
   contract and the differentiable operation over it, E7 shipped
   `NativeCrossEntropyLoss` and `native_accuracy`, E8 proved deterministic
   classification training and exact checkpoint resume
-  (`examples/native_classification_training.py`), and E9 characterized
-  the stack (`benchmarks/benchmark_native_classification.py`). Note what
+  (`examples/native_classification_training.py`), E9 characterized
+  the stack (`benchmarks/benchmark_native_classification.py`), and E10
+  closed it with integration, Release/Debug, sanitizer, and leak
+  validation. Note what
   E9 is **not**: no performance contract, no committed timing numbers, no
   CI speed gate, and no optimization work — the native kernels remain
   deliberately naive. See
@@ -394,12 +401,12 @@ and `cpp/src/pooling.cpp`. Still float64/cpu only; no dilation, groups,
 transposed/average/adaptive/global pooling, channels-last, float32,
 CUDA, AMP, BatchNorm, Dropout, im2col, or BLAS/threaded convolution.
 
-## Phase E — native classification and stable math, **in progress**
+## Phase E — native classification and stable math, **complete**
 
 The architecture contract is locked in
 [native_classification_design.md](native_classification_design.md); the
 registry above (and `tensorforge.backends.cpp`) stays the authority on
-what is live. Nine of eleven milestones have landed.
+what is live. All eleven milestones (E0–E10) have landed.
 
 | Capability | Milestone | Status |
 |---|---|---|
@@ -413,7 +420,7 @@ what is live. Nine of eleven milestones have landed.
 | The public classification surface: the stateless **`NativeCrossEntropyLoss`** module, whose entire forward delegates to the E6 operation (no kernel, ABI symbol, arithmetic, target validation, or state of its own), and the reporting-only **`native_accuracy`** helper (strict targets, one explicit `to_numpy()`, NumPy `argmax`, Python `float`, no graph/gradient/version/storage side effects) — plus the new `NATIVE_METRICS` inventory and its `backend_info()` key. Adds no training mathematics | E7 | **Implemented** |
 | Deterministic classification training + exact checkpoint resume: `examples/native_classification_training.py` — a `NativeConv2d(1, 4, 3, seed=0)` → `NativeReLU` → `NativeMaxPool2d(2)` → `NativeFlatten` → `NativeLinear(16, 3, seed=1)` classifier over **raw logits** into `NativeCrossEntropyLoss`, on twelve fixed 6×6 single-channel images in three classes (four per class, positions varying, committed as source literals, labels host integers), trained full-batch for **40** deterministic `NativeAdam(lr=0.05)` steps: loss **1.159638 → 0.000101** (99.99% reduction), reporting accuracy **0.3333 → 1.0000**, both the convolution and the linear head moving. Interrupted at step **15**, checkpointed (model **and** optimizer state, format **version 1**, no new keys) and resumed into a **fresh** model/optimizer pair, it reproduces the uninterrupted run **exactly** — remaining loss suffix, parameters, both Adam moment buffers, step counters, logits, predictions, and accuracy. `native_accuracy` is used for reporting only, never inside the training mathematics, and a tripwire proves one complete step reaches no NumPy compute or tensor-data conversion. Adds **no** operation, module, loss, metric, optimizer, kernel, ABI symbol, or schema change, and no inventory entry | E8 | **Implemented** (an integration proof on one fixed task — not a benchmark, not a generalization or speed claim) |
 | Classification benchmark characterization: `benchmarks/benchmark_native_classification.py` — seven cases (`exp_forward`, `log_forward`, `softmax_forward`, `log_softmax_forward`, `cross_entropy_forward`, `cross_entropy_backward`, `classification_training_step`), each with a **correctness gate that runs before any timing** (shape, finiteness, reference parity, no input mutation; gradients for the backward case; finite loss, parameter update, optimizer-state advance, graph release, and stable parity for the training step), an honest per-case reference label (`stable_tensorforge`, `numpy` where the stable line has no direct operation — `log_softmax` — or `native_only`), warm-up plus repeated `time.perf_counter_ns` measurements with setup and cleanup outside the timer, and **median** reporting with min/max/spread and every raw sample. `--smoke` (1 warm-up / 3 repetitions) and `--json` modes; writes no result file. **No speed assertion, no committed timing number, and no CI timing threshold** — observed ratios are local characterizations only. Adds no capability of any kind | E9 | **Implemented** (measurement only) |
-| Phase integration, sanitizer validation, and closure | E10 | Not started |
+| Phase-E cross-cutting integration tests (`tests/test_native_phase_e.py`: the whole classification path in one graph, inventory self-consistency, stable/native separation with no implicit dispatch, saved-probability and winner lifetime, the versioning archetypes meeting in one mixed graph, Policy-B strided inputs through every fused kernel, the stateless loss module and reporting-only metric, exact resume for both native optimizers, storage baselines, failure atomicity and error-state recovery, a NumPy tripwire, and the capability boundary); **Release and Debug** native builds (10/10 CTests each, zero compiler/linker warnings); Clang **ASan/UBSan** validation of the classification stack with zero diagnostics attributable to TensorForge; a practical **LeakSanitizer** pass with no native leak; documentation reconciliation; and the conversion of milestone-era absence guardrails into durable semantic checks. Adds no numerical capability | E10 | **Implemented (phase closed)** |
 
 Phase E adds **no** persistent state: the native checkpoint format stays
 **version 1**, E1–E6 added no parameter, buffer, module, loss,
