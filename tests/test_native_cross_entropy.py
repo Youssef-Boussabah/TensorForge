@@ -1660,19 +1660,19 @@ def test_native_cross_entropy_registry_placement():
         assert core_op in cpp.TENSOR_CORE_OPS, core_op
         assert core_op not in cpp.AUTOGRAD_OPS, core_op
         assert hasattr(cpp.NativeTensorCore, core_op), core_op
-    # E7's module and metric are untouched, and no metrics inventory exists.
-    for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
-        assert absent in cpp.UNSUPPORTED, absent
-        assert absent not in cpp.AUTOGRAD_OPS, absent
-        assert absent not in cpp.TENSOR_CORE_OPS, absent
-        assert absent not in cpp.NATIVE_MODULES, absent
-        assert absent not in cpp.NATIVE_LOSSES, absent
-    assert not hasattr(cpp, "NATIVE_METRICS")
+    # E7 shipped the module and the metric into their own inventories.
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+    for shipped in ("NativeCrossEntropyLoss", "native_accuracy"):
+        assert shipped not in cpp.UNSUPPORTED, shipped
+        assert shipped not in cpp.AUTOGRAD_OPS, shipped
+        assert shipped not in cpp.TENSOR_CORE_OPS, shipped
+        assert shipped not in cpp.NATIVE_MODULES, shipped
     # backend_info stays internally consistent.
     info = cpp.backend_info()
     assert "cross_entropy" in info["autograd_ops"]
     assert "cross_entropy" not in info["tensor_core_ops"]
-    assert "native_metrics" not in info
+    assert info["native_metrics"] == ("native_accuracy",)
     implemented = (set(info["tensor_core_ops"]) | set(info["autograd_ops"])
                    | set(info["raw_kernels"]))
     for name in info["unsupported"]:
@@ -1688,9 +1688,14 @@ def test_native_cross_entropy_is_a_native_tensor_operation_only():
     assert callable(NativeTensor.cross_entropy)
     assert not hasattr(cpp.NativeTensorCore, "cross_entropy")
     assert not hasattr(NativeTensor, "nll_loss")
-    for absent in ("NativeCrossEntropyLoss", "native_accuracy", "NativeNLLLoss",
-                   "NATIVE_METRICS"):
-        assert not hasattr(experimental, absent), absent
+    # E7's public surface is built *on* this operation and lives beside
+    # it, never on NativeTensor or NativeTensorCore.
+    assert hasattr(experimental, "NativeCrossEntropyLoss")
+    assert hasattr(experimental, "native_accuracy")
+    for absent in ("cross_entropy_loss", "accuracy", "native_accuracy"):
+        assert not hasattr(NativeTensor, absent), absent
+        assert not hasattr(cpp.NativeTensorCore, absent), absent
+    assert not hasattr(experimental, "NativeNLLLoss")
 
 
 @needs_native

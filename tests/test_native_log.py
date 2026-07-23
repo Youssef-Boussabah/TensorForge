@@ -112,7 +112,7 @@ def test_native_log_registry_placement():
     assert "log" not in cpp.UNSUPPORTED
     assert "log" not in cpp.NATIVE_MODULES
     assert "log" not in cpp.NATIVE_LOSSES
-    assert not hasattr(cpp, "NATIVE_METRICS")
+    assert "log" not in cpp.NATIVE_METRICS
     # E1 stays implemented alongside it.
     assert "exp" in cpp.TENSOR_CORE_OPS and "exp" in cpp.AUTOGRAD_OPS
     assert "exp" not in cpp.UNSUPPORTED
@@ -136,10 +136,15 @@ def test_native_log_registry_placement():
     # name, exactly where an autograd operation belongs.
     assert "cross_entropy" in cpp.AUTOGRAD_OPS
     assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
-    for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
-        assert absent in cpp.UNSUPPORTED, absent
-        assert absent not in cpp.TENSOR_CORE_OPS
-        assert absent not in cpp.AUTOGRAD_OPS
+    # E7 shipped the public classification surface, each name into the
+    # one inventory that describes its layer — never into an operation
+    # inventory.
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+    for shipped in ("NativeCrossEntropyLoss", "native_accuracy"):
+        assert shipped not in cpp.UNSUPPORTED, shipped
+        assert shipped not in cpp.TENSOR_CORE_OPS
+        assert shipped not in cpp.AUTOGRAD_OPS
 
 
 # ======================================================================
@@ -801,9 +806,11 @@ def test_native_log_scope_boundaries_hold():
     assert not hasattr(core, "cross_entropy")
     assert not hasattr(x, "divide") and not hasattr(x, "__truediv__")
     assert not hasattr(core, "divide")
+    # (`NativeCrossEntropyLoss` and `native_accuracy` are no longer
+    # listed as absent: E7 shipped both. Neither is a log capability.)
     import tensorforge.experimental as experimental
-    assert not hasattr(experimental, "NativeCrossEntropyLoss")
-    assert not hasattr(experimental, "native_accuracy")
+    for absent in ("NativeLog", "NativeNLLLoss"):
+        assert not hasattr(experimental, absent), absent
     # The stable Tensor keeps its own log, entirely separately.
     stable = tensorforge.Tensor(2.0, requires_grad=True)
     stable.log().backward()

@@ -66,6 +66,7 @@ def test_backend_info_shape():
         "autograd_ops",
         "native_modules",
         "native_losses",
+        "native_metrics",
         "native_optimizers",
         "state_support",
         "unsupported",
@@ -103,7 +104,10 @@ def test_backend_info_reports_accurate_integration_flags():
     # Native autograd and native optimizers DO exist (were stale-False).
     assert info["native_autograd"] is True
     assert info["native_optimizers"] == ("NativeSGD", "NativeAdam")
-    assert info["native_losses"] == ("NativeMSELoss",)
+    assert info["native_losses"] == ("NativeMSELoss",
+                                     "NativeCrossEntropyLoss")
+    # E7's reporting metric inventory — neither a runtime op nor a module.
+    assert info["native_metrics"] == ("native_accuracy",)
     # But the native line is still not wired into the stable framework.
     assert info["stable_framework_integration"] is False
 
@@ -177,15 +181,20 @@ def test_phase_e_boundary_is_reported_honestly():
     assert "cross_entropy" in info["autograd_ops"]
     assert "cross_entropy" not in info["tensor_core_ops"]
     assert "cross_entropy" not in info["unsupported"]
-    # E7 is still genuinely absent from every implemented inventory.
-    for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
-        assert absent in info["unsupported"], absent
-        assert absent not in info["tensor_core_ops"], absent
-        assert absent not in info["autograd_ops"], absent
-        assert absent not in info["native_modules"], absent
-        assert absent not in info["native_losses"], absent
-    # No metrics inventory exists yet — E7 introduces it.
-    assert "native_metrics" not in info and not hasattr(cpp, "NATIVE_METRICS")
+    # E7 shipped the public surface, each name into exactly one
+    # layer-appropriate inventory: the loss module into native_losses,
+    # the reporting helper into the new native_metrics.
+    assert "NativeCrossEntropyLoss" in info["native_losses"]
+    assert "native_accuracy" in info["native_metrics"]
+    for shipped in ("NativeCrossEntropyLoss", "native_accuracy"):
+        assert shipped not in info["unsupported"], shipped
+        assert shipped not in info["tensor_core_ops"], shipped
+        assert shipped not in info["autograd_ops"], shipped
+        assert shipped not in info["raw_kernels"], shipped
+        assert shipped not in info["native_modules"], shipped
+    assert "NativeCrossEntropyLoss" not in info["native_metrics"]
+    assert "native_accuracy" not in info["native_losses"]
+    assert info["native_metrics"] == cpp.NATIVE_METRICS == ("native_accuracy",)
     # The line is still float64/cpu only and still separate from stable.
     assert info["supported_dtypes"] == ("float64",)
     assert info["supported_devices"] == ("cpu",)

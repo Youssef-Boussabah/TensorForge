@@ -703,7 +703,7 @@ The Python line is done; what remains is expansion on its own terms:
     milestone-era doc guardrails with durable semantic checks. See the
     [support matrix](native_support_matrix.md) for the finalized status.
   - **Phase E — Native Classification and Stable Math — in progress
-    (E0, E1, E2, E3, E4, E5, and E6 complete).** The **E0 architecture contract
+    (E0-E7 complete).** The **E0 architecture contract
     is written** —
     [native_classification_design.md](native_classification_design.md)
     locks the scope, the public API surface (`exp`, `log`, `softmax`,
@@ -811,11 +811,39 @@ The Python line is done; what remains is expansion on its own terms:
     failure returns no tensor and builds no node, a graph-construction
     failure closes both E5 outputs, and a backward failure commits no
     gradient, leaks no gradient core, keeps the probabilities for a
-    retry, and leaves the graph honestly un-freed. **Everything else in
-    Phase E is still designed-only**: `NativeCrossEntropyLoss` and
-    `native_accuracy` (E7) do not exist — both remain listed as
-    unsupported in the [support matrix](native_support_matrix.md) — and
-    Phase E is **not** complete. Deliberately outside
+    retry, and leaves the graph honestly un-freed. **E7 has shipped the
+    public classification surface** and, like E6, added no training
+    mathematics. ``NativeCrossEntropyLoss(reduction="mean")`` is a
+    parameter-free, buffer-free ``NativeModule`` whose entire forward is
+    ``logits.cross_entropy(targets, reduction=self.reduction)`` — no Core
+    call, no ABI call, no NumPy, no ``softmax``/``log_softmax``
+    composition, and no second formula — so it inherits every E5/E6
+    guarantee rather than restating any of them, validates its
+    ``"mean"``/``"sum"`` reduction in the constructor with the
+    operation's own validator, and contributes no ``state_dict()`` or
+    checkpoint keys (the reduction is constructor configuration, not
+    model state). ``native_accuracy(logits, targets) -> float`` is a
+    deliberately **reporting-only** helper, and the honesty of that label
+    is the point: there is no accuracy kernel, no C ABI export, no Core
+    method, no autograd node, and no native ``argmax`` (the runtime has
+    no integer dtype for one to return). It validates rank-2 logits and
+    targets through the *same* private preparer the cross-entropy forward
+    uses — so the strict accepted/rejected matrix is identical at both
+    call sites by construction — then materializes the logits **once**
+    through the explicit public ``to_numpy()`` boundary, takes
+    ``numpy.argmax(axis=1)`` (ties to the first maximal index), and
+    returns a plain ``float`` in ``[0.0, 1.0]``. It builds no graph,
+    touches no gradient, parameter, or version, allocates no native
+    storage at all, and retains nothing, so a graph built before the call
+    is still usable after it. The two capabilities land in the two
+    inventories that describe their layers — ``NATIVE_LOSSES`` and the
+    new ``NATIVE_METRICS``, reported by ``backend_info()`` — and with
+    that, no classification name remains listed as unsupported.
+    **Everything else in Phase E is still designed-only**: the
+    deterministic native classification training and exact-resume proof
+    (E8), the classification benchmarks (E9), and phase closure with
+    sanitizer validation (E10) have not started, and Phase E is **not**
+    complete. Deliberately outside
     Phase E and still unplanned: more native activations beyond it, native
     normalization, a native RNG and dropout, a CPU optimization phase for
     the deliberately naive kernels, and build/packaging evolution.

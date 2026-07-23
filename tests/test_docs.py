@@ -242,6 +242,7 @@ def test_experimental_exports_stay_intentional():
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
+        "NativeCrossEntropyLoss", "native_accuracy",   # Phase E, E7
     }
     for name in experimental.__all__:
         assert hasattr(experimental, name)
@@ -393,11 +394,12 @@ def test_phase_d_status_is_consistent_across_docs_and_registry():
     # Later phases must not be claimed. These are genuinely absent
     # capabilities, checked against the registry rather than against
     # prose. ("softmax" and "log_softmax" left this list when Phase E
-    # milestones E3 and E4 implemented them, and "cross_entropy" when E5
-    # implemented its Core layer; the Phase-E boundary is tracked
-    # separately below.)
+    # milestones E3 and E4 implemented them, "cross_entropy" when E5 and
+    # E6 implemented its Core and autograd layers, and
+    # "NativeCrossEntropyLoss"/"native_accuracy" when E7 shipped the
+    # public surface; the Phase-E boundary is tracked separately below.)
     for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout", "NativeCrossEntropyLoss", "native_accuracy"):
+                   "dropout"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS and absent not in cpp.NATIVE_MODULES
     assert cpp.SUPPORTED_DTYPES == ("float64",)
@@ -617,18 +619,23 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
                    "tf_core_accuracy"):
         assert absent not in cpp._CHECKED_KERNELS, absent
 
-    # E7 — still designed only.
+    # E7 — the public surface, each name in exactly one layer-appropriate
+    # inventory and none in an operation inventory.
+    import tensorforge.experimental as experimental
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
     for name in ("NativeCrossEntropyLoss", "native_accuracy"):
-        assert name in cpp.UNSUPPORTED, f"{name} left the unsupported boundary"
+        assert name not in cpp.UNSUPPORTED, f"{name} is still unsupported"
         assert name not in cpp.TENSOR_CORE_OPS, name
         assert name not in cpp.AUTOGRAD_OPS, name
         assert name not in cpp.RAW_KERNELS, name
-        assert name not in cpp.NATIVE_MODULES, name
-        assert name not in cpp.NATIVE_LOSSES, name
-    # No metrics inventory exists yet either — E7 introduces it.
-    assert not hasattr(cpp, "NATIVE_METRICS")
+        assert hasattr(experimental, name), name
+        assert name in experimental.__all__, name
+    assert "NativeCrossEntropyLoss" not in cpp.NATIVE_METRICS
+    assert "native_accuracy" not in cpp.NATIVE_LOSSES
+    assert "native_accuracy" not in cpp.NATIVE_MODULES
     # Neither probability transform became a module (E0 §1 excludes both).
-    import tensorforge.experimental as experimental
     for module in ("NativeSoftmax", "NativeLogSoftmax"):
         assert module not in cpp.NATIVE_MODULES, module
         assert not hasattr(experimental, module), module
@@ -666,13 +673,13 @@ def test_phase_e_milestone_status_is_reported_honestly():
     # The ladder's status table is the one place per-milestone status is
     # declared, so the row checks run inside that section only.
     ladder = _design_section("Milestone ladder")
-    for done in ("E0", "E1", "E2", "E3", "E4", "E5", "E6"):
+    for done in ("E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7"):
         row = re.search(rf"\|\s*{done}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {done}"
         assert "complete" in row.group(1).lower(), (
             f"the design does not mark {done} complete"
         )
-    for pending in ("E7", "E8", "E9", "E10"):
+    for pending in ("E8", "E9", "E10"):
         row = re.search(rf"\|\s*{pending}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {pending}"
         assert "complete" not in row.group(1).lower(), (
@@ -691,16 +698,20 @@ def test_phase_e_milestone_status_is_reported_honestly():
         "the support matrix no longer marks Phase E in progress"
     )
     # The registry agrees: E1-E4's capabilities and E6's cross-entropy are
-    # live as differentiable operations, E5's Core wrappers are live at
-    # the Core layer, and E7's module and metric are not live at all.
+    # live as differentiable operations, E5's Core wrappers at the Core
+    # layer, and E7's module and metric in their own layer inventories —
+    # while nothing E8-E10 owns (a training proof, a benchmark, phase
+    # closure) is a capability name at all.
     for shipped in ("exp", "log", "softmax", "log_softmax"):
         assert shipped in cpp.AUTOGRAD_OPS, shipped
         assert shipped not in cpp.UNSUPPORTED, shipped
     assert "cross_entropy_forward" in cpp.TENSOR_CORE_OPS
     assert "cross_entropy_backward" in cpp.TENSOR_CORE_OPS
     assert "cross_entropy" in cpp.AUTOGRAD_OPS
-    assert "NativeCrossEntropyLoss" in cpp.UNSUPPORTED
-    assert "native_accuracy" in cpp.UNSUPPORTED
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+    for shipped in ("NativeCrossEntropyLoss", "native_accuracy"):
+        assert shipped not in cpp.UNSUPPORTED, shipped
 
 
 def test_docs_present_the_shipped_stable_math():
@@ -957,9 +968,129 @@ def test_docs_present_the_shipped_cross_entropy_autograd():
     )
     assert re.search(r"E6[^.]{0,200}differentiable", matrix, re.I)
     assert "cross_entropy" in cpp.AUTOGRAD_OPS
-    assert "NativeCrossEntropyLoss" in cpp.UNSUPPORTED
-    assert "native_accuracy" in cpp.UNSUPPORTED
-    assert not hasattr(cpp, "NATIVE_METRICS")
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+
+
+def test_docs_present_the_shipped_classification_loss_module():
+    """E7's loss module must stay documented as what it is: a stateless
+    NativeModule that *delegates* to the E6 operation, supports mean and
+    sum only, and adds no kernel, ABI, or persistent state."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeCrossEntropyLoss
+
+    section = _design_section("NativeTensor.cross_entropy(")
+    lowered = section.lower()
+    assert "E7" in section and "NativeCrossEntropyLoss" in section, (
+        "the design does not record the loss module as shipped"
+    )
+    assert 'NativeCrossEntropyLoss(reduction="mean")' in section
+    # Delegation, not reimplementation.
+    assert re.search(r"delegat", lowered), (
+        "the design no longer states that the loss module delegates"
+    )
+    assert "logits.cross_entropy(targets" in section
+    # Stateless, and the reduction is configuration rather than state.
+    assert re.search(r"stateless|parameter-free|no parameters", lowered), (
+        "the design no longer states that the loss module is stateless"
+    )
+    assert re.search(r"buffer-free|no buffers", lowered)
+    assert re.search(r"state_dict\(\)`? is empty|no state-dictionary",
+                     lowered), (
+        "the design no longer states that state_dict() is empty"
+    )
+    assert re.search(r"constructor configuration", lowered), (
+        "the design no longer states that the reduction is not model state"
+    )
+    assert re.search(r"checkpoint format stays version 1|version 1", lowered)
+    assert '"mean"' in section and '"sum"' in section
+    # The registry and the export agree.
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "NativeCrossEntropyLoss" not in cpp.AUTOGRAD_OPS
+    assert NativeCrossEntropyLoss("sum").state_dict() == {}
+    # The support matrix presents it too.
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"NativeCrossEntropyLoss[^|]{0,400}Supported", matrix) or (
+        re.search(r"NativeCrossEntropyLoss", matrix)), (
+        "the support matrix does not present the loss module"
+    )
+
+
+def test_docs_present_the_reporting_only_accuracy_metric():
+    """E7's metric must stay documented **honestly**: reporting-only, a
+    Python float, an explicit `to_numpy()` conversion and a NumPy argmax,
+    no graph, and emphatically not native C++ compute."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeTensor, native_accuracy
+
+    section = _design_section("Metric contract")
+    lowered = section.lower()
+    assert "E7" in section and "implemented" in lowered, (
+        "the design does not record the metric as shipped"
+    )
+    assert "native_accuracy(logits, targets) -> float" in section
+    # Reporting-only, and not a kernel or an operation.
+    assert re.search(r"reporting", lowered)
+    assert re.search(r"not a native kernel|not native compute|no accuracy "
+                     r"kernel", lowered), (
+        "the design no longer denies that the metric is a native kernel"
+    )
+    assert re.search(r"not an autograd operation|no autograd node", lowered)
+    # The two mechanics that must never be hidden.
+    assert "to_numpy()" in section, (
+        "the design no longer documents the explicit to_numpy() conversion"
+    )
+    assert re.search(r"argmax", lowered), (
+        "the design no longer documents the NumPy argmax"
+    )
+    assert re.search(r"numpy", lowered)
+    # No graph, no gradients, and a Python float out.
+    assert re.search(r"build no graph|builds no graph", lowered)
+    assert re.search(r"python `?float", lowered)
+    # The shared strict target contract.
+    assert re.search(r"same contract as §6|same private|same strict",
+                     lowered), (
+        "the design no longer ties the metric to the §6 target contract"
+    )
+    # The inventory placement is stated, and the registry agrees.
+    assert "NATIVE_METRICS" in section
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    assert "native_accuracy" not in cpp.TENSOR_CORE_OPS
+    assert "native_accuracy" not in cpp.AUTOGRAD_OPS
+    assert "native_accuracy" not in cpp.NATIVE_MODULES
+    assert "native_accuracy" not in cpp.NATIVE_LOSSES
+    assert cpp.backend_info()["native_metrics"] == cpp.NATIVE_METRICS
+    # No native surface was invented for it.
+    assert not hasattr(NativeTensor, "native_accuracy")
+    assert not hasattr(NativeTensor, "argmax")
+    assert not hasattr(cpp.NativeTensorCore, "argmax")
+    for absent in ("tf_core_accuracy", "tf_core_argmax"):
+        assert absent not in cpp._CHECKED_KERNELS, absent
+    assert callable(native_accuracy)
+    # The support matrix says the same thing.
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"native_accuracy[^|]{0,600}(reporting|to_numpy)",
+                     matrix), (
+        "the support matrix does not present the metric as reporting-only"
+    )
+
+
+def test_phase_e_remaining_milestones_are_not_claimed():
+    """E8-E10 own the training proof, the benchmarks, and phase closure.
+    None of them may be implied as done: no classification training
+    example or benchmark exists, and Phase E is still open."""
+    for missing in ("examples/native_classification_training.py",
+                    "benchmarks/benchmark_native_classification.py"):
+        assert not (REPO_ROOT / missing).exists(), (
+            f"{missing} exists, but E8/E9 have not shipped"
+        )
+    design = _status_text(PHASE_E_DESIGN)
+    assert re.search(r"Phase E is [^.]{0,30}not[^.]{0,30}complete", design)
+    ladder = _design_section("Milestone ladder")
+    for pending in ("E8", "E9", "E10"):
+        row = re.search(rf"\|\s*{pending}\s*\|[^|]*\|([^|]*)\|", ladder)
+        assert row is not None, f"the ladder has no status row for {pending}"
+        assert "complete" not in row.group(1).lower(), pending
 
 
 def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():

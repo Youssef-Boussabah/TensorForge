@@ -149,7 +149,7 @@ def test_native_softmax_registry_placement():
     assert "softmax" not in cpp.UNSUPPORTED
     assert "softmax" not in cpp.NATIVE_MODULES
     assert "softmax" not in cpp.NATIVE_LOSSES
-    assert not hasattr(cpp, "NATIVE_METRICS")
+    assert "softmax" not in cpp.NATIVE_METRICS
     # E1/E2 stay implemented alongside it.
     for shipped in ("exp", "log"):
         assert shipped in cpp.TENSOR_CORE_OPS and shipped in cpp.AUTOGRAD_OPS
@@ -174,10 +174,15 @@ def test_native_softmax_registry_placement():
     # name, exactly where an autograd operation belongs.
     assert "cross_entropy" in cpp.AUTOGRAD_OPS
     assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
-    for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
-        assert absent in cpp.UNSUPPORTED, absent
-        assert absent not in cpp.TENSOR_CORE_OPS
-        assert absent not in cpp.AUTOGRAD_OPS
+    # E7 shipped the public classification surface, each name into the
+    # one inventory that describes its layer — never into an operation
+    # inventory.
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+    for shipped in ("NativeCrossEntropyLoss", "native_accuracy"):
+        assert shipped not in cpp.UNSUPPORTED, shipped
+        assert shipped not in cpp.TENSOR_CORE_OPS
+        assert shipped not in cpp.AUTOGRAD_OPS
 
 
 # ======================================================================
@@ -1111,8 +1116,9 @@ def test_native_softmax_scope_boundaries_hold():
         assert not hasattr(core, absent), absent
     assert not hasattr(x, "__truediv__")
     import tensorforge.experimental as experimental
-    for absent in ("NativeSoftmax", "NativeCrossEntropyLoss",
-                   "native_accuracy"):
+    # (`NativeCrossEntropyLoss` and `native_accuracy` left this list at
+    # E7, which shipped both; neither is a softmax capability.)
+    for absent in ("NativeSoftmax", "NativeNLLLoss"):
         assert not hasattr(experimental, absent), absent
     assert "NativeSoftmax" not in cpp.NATIVE_MODULES
     # The stable Tensor keeps its own softmax, entirely separately.

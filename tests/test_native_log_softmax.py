@@ -226,7 +226,7 @@ def test_native_log_softmax_registry_placement():
     assert "log_softmax" not in cpp.NATIVE_MODULES
     assert "log_softmax" not in cpp.NATIVE_LOSSES
     assert "log_softmax" not in cpp.TENSOR_CORE_KERNELS
-    assert not hasattr(cpp, "NATIVE_METRICS")
+    assert "log_softmax" not in cpp.NATIVE_METRICS
     # E1/E2/E3 stay implemented alongside it.
     for shipped in ("exp", "log", "softmax"):
         assert shipped in cpp.TENSOR_CORE_OPS and shipped in cpp.AUTOGRAD_OPS
@@ -246,10 +246,15 @@ def test_native_log_softmax_registry_placement():
     # name, exactly where an autograd operation belongs.
     assert "cross_entropy" in cpp.AUTOGRAD_OPS
     assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
-    for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
-        assert absent in cpp.UNSUPPORTED, absent
-        assert absent not in cpp.TENSOR_CORE_OPS
-        assert absent not in cpp.AUTOGRAD_OPS
+    # E7 shipped the public classification surface, each name into the
+    # one inventory that describes its layer — never into an operation
+    # inventory.
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+    for shipped in ("NativeCrossEntropyLoss", "native_accuracy"):
+        assert shipped not in cpp.UNSUPPORTED, shipped
+        assert shipped not in cpp.TENSOR_CORE_OPS
+        assert shipped not in cpp.AUTOGRAD_OPS
 
 
 # ======================================================================
@@ -1412,8 +1417,9 @@ def test_native_log_softmax_scope_boundaries_hold():
         assert not hasattr(core, absent), absent
     assert not hasattr(x, "__truediv__")
     import tensorforge.experimental as experimental
-    for absent in ("NativeLogSoftmax", "NativeSoftmax",
-                   "NativeCrossEntropyLoss", "native_accuracy", "NativeNLLLoss"):
+    # (`NativeCrossEntropyLoss` and `native_accuracy` left this list at
+    # E7, which shipped both; neither is a log-softmax capability.)
+    for absent in ("NativeLogSoftmax", "NativeSoftmax", "NativeNLLLoss"):
         assert not hasattr(experimental, absent), absent
     assert "NativeLogSoftmax" not in cpp.NATIVE_MODULES
     assert "NativeSoftmax" not in cpp.NATIVE_MODULES

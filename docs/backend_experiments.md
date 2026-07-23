@@ -38,8 +38,14 @@ targets and private saved probabilities). E6 then shipped the
 differentiable `NativeTensor.cross_entropy(targets, reduction="mean")`
 over it — one autograd node with graph-owned saved probabilities, no
 logits reread, and no expected parameter version, adding no kernel and
-no ABI export. `NativeCrossEntropyLoss` and `native_accuracy` (E7) do
-not exist yet.
+no ABI export. E7 then completed the public surface:
+`NativeCrossEntropyLoss`, a stateless `NativeModule` delegating entirely
+to that operation, and the reporting-only `native_accuracy` — explicit
+`to_numpy()` plus a NumPy argmax, returning a Python `float`, building
+no graph and touching no gradient, listed in the new `NATIVE_METRICS`
+inventory. Deterministic native classification training and exact resume
+(E8), classification benchmarks (E9), and phase closure (E10) do not
+exist yet.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 

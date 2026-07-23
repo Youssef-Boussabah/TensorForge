@@ -182,7 +182,26 @@ NATIVE_MODULES = (
     "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
     "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
 )
-NATIVE_LOSSES = ("NativeMSELoss",)
+# Native loss *modules*. Losses are tracked here and deliberately not in
+# NATIVE_MODULES, which lists the model-building layers — the split that
+# has held since NativeMSELoss. "NativeCrossEntropyLoss" (E7) is a
+# parameter-free wrapper whose forward is exactly
+# NativeTensor.cross_entropy: the module is a separate capability from
+# the differentiable operation (in AUTOGRAD_OPS) and from the Core
+# wrappers (in TENSOR_CORE_OPS), the same three-way split conv2d and
+# maxpool2d follow.
+NATIVE_LOSSES = ("NativeMSELoss", "NativeCrossEntropyLoss")
+
+# Native **reporting** metrics (E7). A separate inventory on purpose:
+# these are neither runtime ops, nor differentiable operations, nor
+# modules. `native_accuracy` is a plain Python helper that materializes
+# its logits through the explicit public `to_numpy()` boundary and takes
+# a NumPy argmax — there is no accuracy kernel, no C ABI export, no Core
+# method, and no autograd node, and the native runtime has no integer
+# dtype for an index-producing reduction to return. Listing it anywhere
+# else would over-claim.
+NATIVE_METRICS = ("native_accuracy",)
+
 NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
 STATE_SUPPORT = (
     "state_dict",
@@ -233,12 +252,14 @@ STATE_SUPPORT = (
 # differentiable operation are different capabilities with different
 # names. **E6** then shipped the differentiable operation itself:
 # NativeTensor.cross_entropy builds one graph node over that Core
-# contract, so the bare name "cross_entropy" now lives in AUTOGRAD_OPS
-# and appears nowhere here. The loss module and the metric (E7) have not
-# started and stay listed below — E6 added no module, no metric, and no
-# NATIVE_METRICS inventory.
+# contract, so the bare name "cross_entropy" now lives in AUTOGRAD_OPS.
+# **E7** completed the public surface: "NativeCrossEntropyLoss" moved to
+# NATIVE_LOSSES and "native_accuracy" to the new NATIVE_METRICS, so
+# neither is listed here any more. Every classification name has now
+# left this tuple, each into the one inventory that describes its actual
+# layer — nothing about cross-entropy or accuracy is unsupported.
+# What remains below is genuinely absent from the native line.
 UNSUPPORTED = (
-    "NativeCrossEntropyLoss", "native_accuracy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",
 )
@@ -736,6 +757,7 @@ def backend_info():
         "autograd_ops": AUTOGRAD_OPS,
         "native_modules": NATIVE_MODULES,
         "native_losses": NATIVE_LOSSES,
+        "native_metrics": NATIVE_METRICS,   # reporting helpers, not ops (E7)
         "native_optimizers": NATIVE_OPTIMIZERS,
         "state_support": STATE_SUPPORT,
         "unsupported": UNSUPPORTED,

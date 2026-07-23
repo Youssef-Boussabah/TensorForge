@@ -47,9 +47,12 @@ exports) and milestone **E6** shipped the differentiable
 one autograd node whose **graph-owned private saved probabilities** drive
 its backward, so the logits are never reread and no parameter version is
 recorded. E6 added **no** kernel, ABI export, or numerical change.
-**Everything else in Phase E (E7–E10) is still designed-only** —
-`NativeCrossEntropyLoss` and `native_accuracy` do not
-exist in code and stay listed as unsupported below. See also
+Milestone **E7** completed the public surface: the stateless
+**`NativeCrossEntropyLoss`** module (whose entire forward delegates to
+that operation) and the reporting-only **`native_accuracy`** helper.
+**Everything else in Phase E (E8–E10) is still designed-only** — there
+is no deterministic native classification training or exact-resume proof,
+no classification benchmark, and no phase closure. See also
 [roadmap.md](roadmap.md). Everything Phase D
 deliberately excluded
 remains unsupported and is named in the "Unsupported or future" section
@@ -151,8 +154,25 @@ single autograd node:
   correct for the forward that ran;
 - E6 added no C++ kernel, no C ABI export, and no change to any formula.
 
-The `NativeCrossEntropyLoss` module and `native_accuracy` remain **E7 —
-not implemented**.
+Milestone **E7** then added the public surface over that operation:
+
+- **`NativeCrossEntropyLoss(reduction="mean")`** — a parameter-free,
+  buffer-free `NativeModule` whose whole forward is
+  `logits.cross_entropy(targets, reduction=self.reduction)`. It adds no
+  kernel, ABI symbol, arithmetic, or target validation of its own, so it
+  inherits every guarantee above unchanged. Its reduction is validated in
+  the constructor by the operation's own validator, and is constructor
+  configuration rather than model state: `state_dict()` is empty and it
+  contributes no checkpoint keys.
+- **`native_accuracy(logits, targets) -> float`** — a **reporting**
+  helper, listed under metrics rather than operations because it is not
+  native compute: it validates rank-2 logits and targets under the same
+  strict contract, materializes the logits **once** through the explicit
+  public `to_numpy()` boundary, takes `numpy.argmax(axis=1)` (ties go to
+  the first maximal index), and returns a Python `float` in
+  `[0.0, 1.0]`. It builds no graph, touches no gradient, parameter, or
+  version, allocates no native storage, and retains nothing. There is no
+  accuracy kernel, no Core method, and no native `argmax`.
 
 ## Autograd engine
 
@@ -185,6 +205,8 @@ not implemented**.
 | `NativeMaxPool2d` | Supported | D10 (Phase D): the pooling **module** over the differentiable `maxpool2d` operation — parameter-free, buffer-free, normalized `(h, w)` `kernel_size`/`stride`/`padding` (`stride=None` ⇒ non-overlapping); no winner state between calls and no state-dictionary or checkpoint keys |
 | `NativeSequential` | Supported | Ordered container with contiguous integer-string slots |
 | `NativeMSELoss` | Supported | `"mean"` / `"sum"` reductions; exact shapes, no broadcasting |
+| `NativeCrossEntropyLoss` | Supported | E7 (Phase E): the classification **loss module** over the differentiable `cross_entropy` operation — parameter-free, buffer-free, `"mean"`/`"sum"` only (validated in the constructor by the operation's own validator, so an invalid reduction can never reach it), targets validated and copied by the operation itself. Its forward is exactly `logits.cross_entropy(targets, reduction=self.reduction)`: no new kernel, ABI symbol, arithmetic, or custom backward, and no state-dictionary or checkpoint keys |
+| `native_accuracy` | Supported (reporting only) | E7 (Phase E): **not** a native operation — a Python helper that validates rank-2 logits and strict `int64` targets, materializes once through the explicit public `to_numpy()` boundary, takes `numpy.argmax(axis=1)` (first-maximal index on ties), and returns a Python `float` in `[0.0, 1.0]`. Builds no graph, touches no gradient/parameter/version, allocates no native storage, retains nothing. Reported in the new `NATIVE_METRICS` inventory, never in the operation inventories |
 | `NativeSGD` | Supported | Minimal `value ← value − lr·grad`; identity-deduplicated; two-phase mutation-atomic `step()`; `zero_grad()`; in-memory `state_dict`/`load_state_dict` (v3.13: lr + positional parameter metadata) |
 | `NativeAdam` | Supported | Adaptive optimizer (v3.12): validated `lr`/`betas`/`eps`; persistent optimizer-owned native m/v moments and per-parameter step counts; bias correction via `sqrt`/`reciprocal` (no division); graph-free staged updates committed through `copy_value_`; skipped frozen/`grad=None` parameters never age state; explicit state lifetime — `close()` releases the moments; in-memory `state_dict`/`load_state_dict` (v3.13) |
 | Optimizer state (in-memory) | Supported | v3.13: one versioned schema (format 1, exact optimizer type tag), ordered positional shape/dtype/device parameter metadata — no object ids, names, values, or gradients — caller-owned independent NativeTensor m/v snapshots and per-parameter step counts (NativeAdam), exact validation with no casting or device movement, staged atomic loading that never touches parameter values, versions, gradients, or retained graphs; deterministic in-memory training continuation with the module state contract |
@@ -217,17 +239,22 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- native classification **losses and metrics**: `NativeCrossEntropyLoss`
-  and `native_accuracy` — neither exists, so the native line still trains
-  regression through `NativeMSELoss`. The whole surface is contracted
-  for Phase E in
-  [native_classification_design.md](native_classification_design.md);
-  a locked contract is not an implementation. Phase E has begun — E1–E4
-  shipped `exp`, `log`, `softmax`, and `log_softmax`, E5 shipped the
-  cross-entropy **Core** forward/backward described above, and E6 shipped
-  the differentiable `NativeTensor.cross_entropy` operation over it — but
-  no classification loss module, metric, `NATIVE_METRICS` inventory, or
-  probability-transform module exists
+- a **deterministic native classification training example and exact
+  checkpoint-resume proof** (E8), classification **benchmarks** (E9), and
+  Phase-E **closure and sanitizer validation** (E10). The classification
+  *capabilities* themselves are now present — E1–E4 shipped `exp`,
+  `log`, `softmax`, and `log_softmax`, E5 and E6 shipped the fused
+  `cross_entropy` Core contract and the differentiable operation over it,
+  and E7 shipped `NativeCrossEntropyLoss` and `native_accuracy` — but
+  nothing has yet trained a classifier end to end on the native line, so
+  the only proven end-to-end training runs remain the regression ones
+  through `NativeMSELoss`. See
+  [native_classification_design.md](native_classification_design.md)
+- `NLLLoss`, binary cross-entropy, class weights, `ignore_index`, label
+  smoothing, soft/one-hot targets, and `reduction="none"` on the native
+  line; top-k, per-class, confusion-matrix, streaming, or stateful
+  metrics; a `NativeSoftmax`/`NativeLogSoftmax` module; and a native
+  `argmax` (the runtime has no integer dtype for one to return)
 - native normalization (BatchNorm/LayerNorm), dropout, or a native RNG
 - additional native activations/math beyond
   `relu`/`sqrt`/`reciprocal`/`exp`/`log`/`softmax`/`log_softmax`
@@ -354,7 +381,7 @@ CUDA, AMP, BatchNorm, Dropout, im2col, or BLAS/threaded convolution.
 The architecture contract is locked in
 [native_classification_design.md](native_classification_design.md); the
 registry above (and `tensorforge.backends.cpp`) stays the authority on
-what is live. Six of eleven milestones have landed.
+what is live. Seven of eleven milestones have landed.
 
 | Capability | Milestone | Status |
 |---|---|---|
@@ -365,7 +392,7 @@ what is live. Six of eleven milestones have landed.
 | Stable `log_softmax`: its own fused log-sum-exp kernel in `cpp/src/classification.cpp` (**never** `softmax().log()` — no probability buffer, no division), the contiguous-only `tf_core_log_softmax_forward` export sharing E3's call shape and trust-boundary validator, `NativeTensorCore.log_softmax(axis=-1)` with the same Policy-B copy-then-compute, and the differentiable `NativeTensor.log_softmax(axis=-1)` whose saved-output backward — `upstream − exp(y) · sum(upstream, axis, keepdims)` — is composed from existing Core ops with no backward kernel and no version snapshot | E4 | **Implemented** |
 | Fused `cross_entropy` **Core contract**: the internal fused forward (scalar loss **and** private saved probabilities in one pass) and saved-probability backward kernels, the guarded contiguous-only `tf_core_cross_entropy_forward` / `tf_core_cross_entropy_backward` exports (which revalidate every target index themselves), their ctypes registration, and the graph-unaware `NativeTensorCore.cross_entropy_forward` / `cross_entropy_backward` wrappers with strict copied-`int64` targets, `"mean"`/`"sum"` reductions, Policy-B copy-then-compute, and deterministic multiple-output failure cleanup | E5 | **Implemented** (the Core layer; the autograd node over it is the E6 row below) |
 | The differentiable `NativeTensor.cross_entropy(targets, reduction="mean")` operation over that Core contract: one scalar-output autograd node with **graph-owned** private saved probabilities (retained under `retain_graph=True` and a failed retryable backward, released exactly once with the graph history, closed immediately on a no-grad forward), closure-owned immutable `int64` target metadata, **no logits reread** and therefore **no expected parameter version**, and complete failure atomicity across E5 forward, graph construction, and backward. Adds no kernel, no ABI export, and no numerical change | E6 | **Implemented** |
-| `NativeCrossEntropyLoss` and reporting-only `native_accuracy` | E7 | Not started |
+| The public classification surface: the stateless **`NativeCrossEntropyLoss`** module, whose entire forward delegates to the E6 operation (no kernel, ABI symbol, arithmetic, target validation, or state of its own), and the reporting-only **`native_accuracy`** helper (strict targets, one explicit `to_numpy()`, NumPy `argmax`, Python `float`, no graph/gradient/version/storage side effects) — plus the new `NATIVE_METRICS` inventory and its `backend_info()` key. Adds no training mathematics | E7 | **Implemented** |
 | Deterministic classification training + exact checkpoint resume | E8 | Not started |
 | Classification benchmarks; phase integration, sanitizer, and closure | E9–E10 | Not started |
 

@@ -200,7 +200,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_design.md](docs/native_autograd_design.md) — design for native reverse-mode autograd over NativeTensor (Phase B)
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
-- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — in progress: E1–E6 shipped, E7–E10 designed only)
+- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — in progress: E1–E7 shipped, E8–E10 designed only)
 
 ## Limitations
 
@@ -219,9 +219,11 @@ Honest expectations:
   [docs/native_classification_design.md](docs/native_classification_design.md)
   and milestones E1–E4 shipped the differentiable native `exp`, `log`,
   and the fused stable `softmax` and `log_softmax`, E5 shipped the
-  fused `cross_entropy` **Core** forward/backward, and E6 shipped the
-  differentiable `NativeTensor.cross_entropy` over it — but
-  `NativeCrossEntropyLoss` and `native_accuracy` **do not exist yet**.
+  fused `cross_entropy` **Core** forward/backward, E6 shipped the
+  differentiable `NativeTensor.cross_entropy` over it, and E7 shipped the
+  public `NativeCrossEntropyLoss` module and the reporting-only
+  `native_accuracy` — but nothing has yet trained a native classifier
+  end to end (E8), and there are no classification benchmarks (E9).
   Beyond that: no normalization, no dropout or native RNG, and native
   checkpoints capture no scheduler or random state — see the
   [native support matrix](docs/native_support_matrix.md).
@@ -287,8 +289,14 @@ released exactly once with the graph history, closed immediately when no
 gradient is required — and whose backward never rereads the logits, so
 no parameter version is recorded and mutating the logits after the
 forward leaves the gradient correct for the forward that ran.
-`NativeCrossEntropyLoss` and `native_accuracy` (E7) are designed but
-**not implemented**. More
+**E7 completed the public surface**: `NativeCrossEntropyLoss`, a
+stateless module whose whole forward delegates to that operation, and
+`native_accuracy`, a deliberately **reporting-only** helper — no kernel,
+no Core method, no autograd node — that materializes once through the
+explicit public `to_numpy()` boundary, takes a NumPy argmax, and returns
+a plain `float` without building a graph or touching any gradient. A
+deterministic native classification training and resume proof (E8) and
+classification benchmarks (E9) are designed but **not implemented**. More
 activations/math, normalization, RNG/dropout, and CPU optimization sit
 beyond it, and CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and

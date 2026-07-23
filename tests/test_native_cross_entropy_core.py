@@ -252,15 +252,15 @@ def test_native_cross_entropy_registry_placement():
     # under the bare name in AUTOGRAD_OPS — never in this Core inventory.
     assert "cross_entropy" in cpp.AUTOGRAD_OPS
     assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
-    # E7's module and metric are still unsupported, and no metrics
-    # inventory exists yet.
-    for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
-        assert absent in cpp.UNSUPPORTED, absent
-        assert absent not in cpp.TENSOR_CORE_OPS, absent
-        assert absent not in cpp.AUTOGRAD_OPS, absent
-        assert absent not in cpp.NATIVE_MODULES, absent
-        assert absent not in cpp.NATIVE_LOSSES, absent
-    assert not hasattr(cpp, "NATIVE_METRICS")
+    # E7's module and metric shipped into their own layer inventories,
+    # and neither is a Core capability.
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+    for shipped in ("NativeCrossEntropyLoss", "native_accuracy"):
+        assert shipped not in cpp.UNSUPPORTED, shipped
+        assert shipped not in cpp.TENSOR_CORE_OPS, shipped
+        assert shipped not in cpp.AUTOGRAD_OPS, shipped
+        assert shipped not in cpp.NATIVE_MODULES, shipped
     # E1-E4 stay implemented alongside it.
     for shipped in ("exp", "log", "softmax", "log_softmax"):
         assert shipped in cpp.TENSOR_CORE_OPS and shipped in cpp.AUTOGRAD_OPS
@@ -269,7 +269,7 @@ def test_native_cross_entropy_registry_placement():
     assert "cross_entropy_backward" in info["tensor_core_ops"]
     assert "cross_entropy" in info["autograd_ops"]
     assert "cross_entropy" not in info["tensor_core_ops"]
-    assert "native_metrics" not in info
+    assert info["native_metrics"] == ("native_accuracy",)
     # backend_info stays internally consistent: nothing advertised as
     # unsupported may appear in an implemented inventory.
     implemented = (set(info["tensor_core_ops"]) | set(info["autograd_ops"])
@@ -299,10 +299,13 @@ def test_native_cross_entropy_core_layer_stays_graph_unaware():
     assert not hasattr(core, "cross_entropy")
     assert hasattr(core, "cross_entropy_forward")
     assert hasattr(core, "cross_entropy_backward")
-    # No module, no metric, no metrics inventory.
-    for absent in ("NativeCrossEntropyLoss", "native_accuracy",
-                   "NativeNLLLoss", "NATIVE_METRICS"):
-        assert not hasattr(experimental, absent), absent
+    # E7's module and metric exist, but neither is a Core capability:
+    # they are Python surfaces built on this layer, not methods of it.
+    assert hasattr(experimental, "NativeCrossEntropyLoss")
+    assert hasattr(experimental, "native_accuracy")
+    assert not hasattr(experimental, "NativeNLLLoss")
+    for absent in ("native_accuracy", "accuracy", "argmax"):
+        assert not hasattr(core, absent), absent
     # No graph-resource or expected-version machinery was wired up for
     # cross-entropy: the Core forward builds no node at all.
     result = core.cross_entropy_forward(TARGETS, "mean")
@@ -1746,8 +1749,9 @@ def test_native_cross_entropy_scope_boundaries_hold():
     # NativeTensor, over these layer-qualified wrappers.
     assert not hasattr(core, "cross_entropy")
     assert not hasattr(x, "__truediv__")
-    for absent in ("NativeCrossEntropyLoss", "native_accuracy", "NativeNLLLoss",
-                   "NativeSoftmax", "NativeLogSoftmax"):
+    # (`NativeCrossEntropyLoss` and `native_accuracy` left this list at
+    # E7, which shipped both as Python surfaces over this Core contract.)
+    for absent in ("NativeNLLLoss", "NativeSoftmax", "NativeLogSoftmax"):
         assert not hasattr(experimental, absent), absent
     # No integer tensors, no new dtype/device.
     assert cpp.SUPPORTED_DTYPES == ("float64",)

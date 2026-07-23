@@ -39,12 +39,18 @@ checkpoint paths. Milestone D11 proved the whole stack trains — see
 ``examples/native_cnn_training.py``, whose checkpoint-interrupted run
 reproduces the uninterrupted one exactly — and **milestone D12 closed
 Phase D** with cross-cutting integration tests, honest CNN benchmarks, and
-ASan/UBSan validation. What the native line still does **not** have: a
-classification **loss and metric** stack (contracted for Phase E in
-docs/native_classification_design.md; milestones E1-E4 shipped the
-differentiable ``exp``, ``log``, ``softmax``, and ``log_softmax``, but no
-``cross_entropy``, ``NativeCrossEntropyLoss``, or ``native_accuracy``
-exists), further
+ASan/UBSan validation. The native **classification** stack
+(contracted for Phase E in docs/native_classification_design.md) is now
+largely in place: milestones E1-E4 shipped the differentiable ``exp``,
+``log``, ``softmax``, and ``log_softmax``; E5 and E6 shipped the fused
+stable ``cross_entropy`` — its graph-unaware Core contract and then the
+differentiable ``NativeTensor.cross_entropy`` with graph-owned saved
+probabilities, no logits reread, and no expected version snapshot; and
+**milestone E7** adds the public surface described below,
+``NativeCrossEntropyLoss`` and ``native_accuracy``. What the native line
+still does **not** have: a deterministic classification training and
+exact-resume proof (E8), classification benchmarks (E9), phase closure
+and sanitizer validation (E10), further
 activations/math, normalization (BatchNorm/LayerNorm), dropout or a
 native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline
 abstractions.
@@ -119,6 +125,27 @@ separate from the stable ``tensorforge.serialization`` (no scheduler
 or random-state capture, no ``map_location``). Still fully separate
 from ``tensorforge.nn`` and ``tensorforge.optim``.
 
+``NativeCrossEntropyLoss`` (Phase E, milestone E7) is the native
+classification loss: a parameter-free, buffer-free ``NativeModule``
+whose forward is exactly
+``logits.cross_entropy(targets, reduction=self.reduction)``. It adds no
+kernel, ABI symbol, arithmetic, or target validation of its own, so it
+inherits every E5/E6 guarantee unchanged — strict copied ``int64``
+targets, the fused stable forward, a scalar output, graph-owned saved
+probabilities, no logits reread, no expected version snapshot, and full
+failure atomicity. Its ``"mean"``/``"sum"`` reduction is validated in the
+constructor by the operation's own validator and is **constructor
+configuration, not model state**: it contributes no ``state_dict()``
+entries and no checkpoint keys (format version 1 is unchanged).
+``native_accuracy(logits, targets) -> float`` (also E7) is a
+**reporting-only** helper, not native C++ compute and not an autograd
+operation: it validates rank-2 logits and targets under the same strict
+contract, materializes the logits **once** through the explicit public
+``to_numpy()`` boundary, takes ``numpy.argmax(axis=1)`` (first-maximal
+index on ties), and returns a plain ``float`` in ``[0.0, 1.0]`` — while
+building no graph, touching no gradient, parameter, or version, and
+retaining nothing.
+
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).
 """
@@ -133,6 +160,8 @@ from .native_conv2d import NativeConv2d
 from .native_maxpool2d import NativeMaxPool2d
 from .native_sequential import NativeSequential
 from .native_mse_loss import NativeMSELoss
+from .native_cross_entropy_loss import NativeCrossEntropyLoss
+from .native_metrics import native_accuracy
 from .native_sgd import NativeSGD
 from .native_adam import NativeAdam
 from .native_checkpoint import load_native_checkpoint, save_native_checkpoint
@@ -149,6 +178,8 @@ __all__ = [
     "NativeMaxPool2d",
     "NativeSequential",
     "NativeMSELoss",
+    "NativeCrossEntropyLoss",
+    "native_accuracy",
     "NativeSGD",
     "NativeAdam",
     "save_native_checkpoint",
