@@ -475,6 +475,332 @@ class NativeTensor:
         result = self._from_op(out_core, (self,), _backward, "reciprocal")
         return result
 
+    def exp(self):
+        """Elementwise e**x, computed natively over this tensor's layout
+        (Phase E, milestone E1 — the first stable-math primitive of the
+        classification stack). Returns a new owning NativeTensor; the
+        original stays open. IEEE float64 semantics: ``exp(0) == 1``,
+        large positive arguments overflow to ``+inf``, large negative
+        ones underflow toward ``+0``, ``-inf`` gives ``+0``, and NaN
+        propagates — no clamping, no inserted bound.
+
+        Differentiable: d(exp(x))/dx = exp(x), so the backward is simply
+        ``upstream * saved forward output``. It reads the **saved
+        output**, never the parent's current value, so the graph records
+        no expected parameter version (v3.7): mutating a direct parameter
+        input after forward leaves this edge valid, and the gradient
+        stays correct for the forward that was recorded. A closed saved
+        output makes backward raise deterministically, before any
+        gradient is committed."""
+        core = self._require_open()
+        out_core = core.exp()
+        if not self._requires_grad:
+            return self._from_core(out_core)
+
+        def _backward(upstream):
+            # The derivative *is* the forward result, so no local
+            # derivative has to be rebuilt: one native multiply of the
+            # upstream by the saved output produces fresh owning storage.
+            contribution = upstream._require_open().multiply(
+                result._require_open()
+            )
+            self._accumulate_grad(NativeTensor._from_core(contribution))
+
+        result = self._from_op(out_core, (self,), _backward, "exp")
+        return result
+
+    def log(self):
+        """Elementwise natural logarithm, computed natively over this
+        tensor's layout (Phase E, milestone E2 — the second stable-math
+        primitive of the classification stack). Returns a new owning
+        NativeTensor; the original stays open. IEEE float64 semantics with
+        **no clamping and no inserted epsilon**: ``log(1) == 0``,
+        ``log(±0) == -inf``, ``log(negative)`` is NaN, ``log(+inf) ==
+        +inf``, and NaN propagates. Stability belongs in the fused losses
+        (E4/E5), never in ``log`` itself.
+
+        Differentiable: d(log(x))/dx = 1/x, computed as ``upstream *
+        reciprocal(input)`` through the existing native ``reciprocal``
+        primitive (no division operation exists or is added). Unlike
+        ``exp``/``sqrt``/``reciprocal``, this backward **rereads the
+        parent's live value** — the saved output ``log(x)`` cannot recover
+        ``x`` cheaply or exactly — so a direct NativeParameter parent
+        **is** version-guarded (v3.7): mutating it after forward makes
+        ``backward()`` raise the deterministic stale-graph error before any
+        gradient is committed anywhere in the graph, and the fix is a fresh
+        forward pass."""
+        core = self._require_open()
+        out_core = core.log()
+        if not self._requires_grad:
+            return self._from_core(out_core)
+
+        def _backward(upstream):
+            # 1/x from the parent's *current* value (never from the saved
+            # log output). The reciprocal is a transient owning core: it is
+            # closed in a finally so a failing multiply cannot leak it, and
+            # an exception from the cleanup never masks the original error.
+            inverse = self._require_open().reciprocal()
+            try:
+                contribution = upstream._require_open().multiply(inverse)
+            finally:
+                inverse.close()
+            self._accumulate_grad(NativeTensor._from_core(contribution))
+
+        # The backward reads this parent's forward value, so a direct
+        # parameter operand is stale-guarded — the same rule relu/multiply/
+        # matmul already follow, through the same helper.
+        return self._from_op(
+            out_core, (self,), _backward, "log",
+            expected_versions=_versioned_value_reads("log", (self,)),
+        )
+
+    def softmax(self, axis=-1):
+        """Numerically stable softmax over one ``axis``, computed by the
+        fused native kernel (Phase E, milestone E3 — the classification
+        stack's first probability transform).
+
+        ``axis`` is a plain int, negative allowed (NumPy-style); a bool,
+        a float, a string, ``None``, or an out-of-range value raises, and
+        rank 0 is rejected — softmax needs an axis to normalize over.
+        Validation happens before any allocation. Returns a new owning
+        row-major contiguous NativeTensor of the input's shape; the
+        original stays open and unmutated. A non-contiguous input is
+        handled by the Core layer's Policy-B copy-then-compute, so the
+        result is contiguous whatever the input layout.
+
+        Per slice the kernel fuses ``exp(x - max(x)) / sum(exp(x -
+        max(x)))`` in float64 — the maximum shift means a large common
+        offset cannot overflow. Exceptional values follow plain IEEE
+        arithmetic: a NaN or ``+inf`` in a slice propagates, making that
+        slice NaN.
+
+        Differentiable, with the Jacobian-vector product written in
+        closed form::
+
+            dx = y * (upstream - sum(upstream * y, axis, keepdims=True))
+
+        where ``y`` is the **saved forward output**. Like ``exp`` (and
+        unlike ``log``), the backward never rereads the parent's value and
+        never recomputes the softmax, so the graph records **no** expected
+        parameter version: mutating a direct parameter input after forward
+        leaves this edge valid and the gradient correct for the forward
+        that ran. The whole backward is composed from existing
+        graph-unaware Core operations — there is no dedicated softmax
+        backward kernel."""
+        core = self._require_open()
+        # Normalize once, before anything is allocated, and hold the
+        # normalized value in the closure so backward is independent of
+        # the caller's variable and of any later rebinding. The Core
+        # method validates identically (and again before *its* allocation).
+        normalized_axis = cpp._normalize_axis(axis, core.shape)
+        out_core = core.softmax(normalized_axis)
+        if not self._requires_grad:
+            return self._from_core(out_core)
+
+        def _backward(upstream):
+            # dx = y * (g - sum(g * y, axis, keepdims=True)), entirely at
+            # the Core level. Each intermediate is fresh owning storage
+            # closed in a finally as soon as its consumer has run, so a
+            # failure at any stage leaks nothing and commits nothing.
+            y_core = result._require_open()
+            g_core = upstream._require_open()
+            weighted = g_core.multiply(y_core)
+            try:
+                slice_dot = weighted.sum(axis=normalized_axis, keepdims=True)
+            finally:
+                weighted.close()
+            try:
+                # Broadcasting subtract: slice_dot keeps the reduced axis
+                # at size 1, so it stretches back over the slice.
+                centered = g_core.subtract(slice_dot)
+            finally:
+                slice_dot.close()
+            try:
+                contribution = y_core.multiply(centered)
+            finally:
+                centered.close()
+            self._accumulate_grad(NativeTensor._from_core(contribution))
+
+        result = self._from_op(out_core, (self,), _backward, "softmax")
+        return result
+
+    def log_softmax(self, axis=-1):
+        """Numerically stable log-softmax over one ``axis``, computed by
+        its own fused native kernel (Phase E, milestone E4).
+
+        ``axis`` follows exactly ``softmax``'s rules: a plain int,
+        negative allowed (NumPy-style); a bool, a float, a string,
+        ``None``, or an out-of-range value raises, and rank 0 is rejected.
+        Validation happens before any allocation. Returns a new owning
+        row-major contiguous NativeTensor of the input's shape; the
+        original stays open and unmutated. A non-contiguous input is
+        handled by the Core layer's Policy-B copy-then-compute.
+
+        Per slice the kernel fuses ``(x - max(x)) - log(sum(exp(x -
+        max(x))))`` in float64. It is **never** ``softmax(x).log()``:
+        that composition is exactly the precision loss this operation
+        exists to avoid, since a probability below the float64 minimum
+        rounds to 0 and its logarithm to ``-inf``, while the fused
+        log-sum-exp form stays finite and accurate. Exceptional values
+        follow plain IEEE arithmetic: a NaN or ``+inf`` in a slice makes
+        that slice NaN; a ``-inf`` gets ``-inf`` and leaves its finite
+        neighbours alone.
+
+        Differentiable, with the Jacobian-vector product in closed form::
+
+            dx = upstream - exp(y) * sum(upstream, axis, keepdims=True)
+
+        where ``y`` is the **saved forward output** — ``exp(y)`` recovers
+        the probabilities without ever rereading the input. Like ``exp``
+        and ``softmax`` (and unlike ``log``), the graph therefore records
+        **no** expected parameter version: mutating a direct parameter
+        input after forward leaves this edge valid and the gradient
+        correct for the forward that ran. The whole backward is composed
+        from existing graph-unaware Core operations — there is no
+        dedicated log-softmax backward kernel."""
+        core = self._require_open()
+        # Normalize once, before anything is allocated, and hold the
+        # normalized value in the closure so backward is independent of
+        # the caller's variable and of any later rebinding. The Core
+        # method validates identically (and again before *its* allocation).
+        normalized_axis = cpp._normalize_axis(axis, core.shape)
+        out_core = core.log_softmax(normalized_axis)
+        if not self._requires_grad:
+            return self._from_core(out_core)
+
+        def _backward(upstream):
+            # dx = g - exp(y) * sum(g, axis, keepdims=True), entirely at
+            # the Core level. Each intermediate is fresh owning storage
+            # closed in a finally as soon as its consumer has run, so a
+            # failure at any stage leaks nothing and commits nothing.
+            y_core = result._require_open()
+            g_core = upstream._require_open()
+            probabilities = y_core.exp()
+            try:
+                slice_sum = g_core.sum(axis=normalized_axis, keepdims=True)
+                try:
+                    # Broadcasting multiply: slice_sum keeps the reduced
+                    # axis at size 1, so it stretches back over the slice.
+                    scaled = probabilities.multiply(slice_sum)
+                finally:
+                    slice_sum.close()
+                try:
+                    contribution = g_core.subtract(scaled)
+                finally:
+                    scaled.close()
+            finally:
+                probabilities.close()
+            self._accumulate_grad(NativeTensor._from_core(contribution))
+
+        result = self._from_op(out_core, (self,), _backward, "log_softmax")
+        return result
+
+    def cross_entropy(self, targets, reduction="mean"):
+        """Fused multi-class cross-entropy over rank-2 logits, natively and
+        differentiably (Phase E, milestone E6 — the autograd node over the
+        E5 Core contract).
+
+        ``self`` is the ``(batch_size, num_classes)`` logits block; the
+        class axis is fixed at axis 1, so there is deliberately no ``axis``
+        argument. ``targets`` is a one-dimensional sequence of integer
+        class labels — a list/tuple of Python ints or a 1-D NumPy integer
+        array, **never** a NativeTensor (the runtime has no integer dtype).
+        ``reduction`` is exactly ``"mean"`` or ``"sum"``. Returns a
+        **scalar** NativeTensor (shape ``()``), so ``loss.backward()``
+        works with the engine's existing default seed.
+
+        Everything numerical is the E5 Core contract, called once and
+        unchanged: ``NativeTensorCore.cross_entropy_forward`` validates the
+        rank, the dtype/device, the strict target rules (bools and
+        floating-point labels rejected outright, nothing truncated), and
+        the reduction *before any allocation*, copies the labels into an
+        independently owned read-only ``int64`` array, applies Policy-B
+        copy-then-compute to a strided view, and runs the single fused
+        kernel that produces the scalar loss **and** the saved
+        probabilities together. This method adds no second cross-entropy
+        path and no arithmetic of its own.
+
+        Backward consumes **only** the saved probabilities, that copied
+        target array, the normalized reduction, and the native scalar
+        upstream::
+
+            grad[n, j] = upstream * (p[n, j] - [j == t_n]) / N
+
+        (the ``/ N`` for ``"mean"`` only), through the E5 Core backward —
+        whose signature does not even accept logits. So **backward never
+        rereads the logits**, and the graph records **no expected
+        parameter version**: mutating a direct NativeParameter logits
+        parent after the forward pass leaves this edge valid and its
+        gradient correct for the forward that ran (the ``maxpool2d``
+        archetype, the deliberate contrast with ``log``).
+
+        The saved probabilities are **private graph-owned state** (D9's
+        ``graph_resources`` contract, reused unchanged): never a public
+        tensor, never a parameter or buffer, never in a ``state_dict()``
+        or a checkpoint. They are released exactly once, at the same
+        deterministic points the graph history is — a one-shot
+        ``backward()``'s cleanup or ``close()`` — so ``retain_graph=True``
+        keeps them for another pass, a failed retryable backward leaves
+        them alive, an abandoned graph still frees them, and a no-grad
+        forward closes them immediately. The copied targets are ordinary
+        immutable host metadata held by the backward closure and collected
+        with it; mutating the caller's list or array after the forward
+        cannot reach them.
+
+        If graph construction itself raises, both the scalar loss and the
+        saved probabilities are closed here before the exception
+        propagates."""
+        core = self._require_open()
+        # One call into the E5 Core contract does all the validation and
+        # all the math. Nothing is rechecked or recomputed at this layer.
+        result = core.cross_entropy_forward(targets, reduction)
+        # Unpack the record immediately. It is a plain __slots__ carrier
+        # with no __del__, so once this frame holds the four fields the
+        # record owns nothing that could later be double-closed — exactly
+        # the position maxpool2d is in when its Core hands back
+        # (out_core, winners).
+        loss_core = result.loss
+        probabilities = result.probabilities
+        saved_targets = result.targets
+        saved_reduction = result.reduction
+        logits_t = self
+
+        def _backward(upstream):
+            # Saved probabilities + copied targets + reduction + the native
+            # one-element upstream, whose storage handle and offset go
+            # straight to the kernel (no NumPy extraction). The logits are
+            # not an argument of the Core backward at all.
+            grad_core = probabilities.cross_entropy_backward(
+                saved_targets, upstream._require_open(), saved_reduction
+            )
+            contribution = NativeTensor._from_core(grad_core)
+            try:
+                logits_t._accumulate_grad(contribution)
+            except BaseException:
+                # _accumulate_grad adopts a contribution only on the
+                # assignment that ends it — a closed parent, or a failing
+                # native add for a second contribution, raises before that
+                # — so an unadopted gradient is released here rather than
+                # left to the __del__ safety net.
+                contribution.close()
+                raise
+
+        try:
+            # _from_op adopts the probabilities as this node's graph-owned
+            # resource when a graph is built, and closes them immediately
+            # when no parent requires grad. Same contract as maxpool2d's
+            # winner buffer; no second lifetime system.
+            return self._from_op(
+                loss_core, (self,), _backward, "cross_entropy",
+                graph_resources=(probabilities,),
+            )
+        except BaseException:
+            # Nothing adopted either output: release both, in the same
+            # saved-state-then-output order maxpool2d uses.
+            probabilities.close()
+            loss_core.close()
+            raise
+
     def add(self, other):
         """self + other elementwise, natively. Identical shapes or
         NumPy-style broadcasting. Returns a new owning NativeTensor.

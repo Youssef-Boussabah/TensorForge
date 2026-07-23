@@ -10,9 +10,37 @@ tested, and readable. The Python framework line is complete as of
 v3.0; work continues on advanced branches (the experimental C++
 native line has completed Phase A — CPU runtime, Phase B — native
 autograd, Phase C — the native training stack, and Phase D — the
-native CNN stack, through Advanced C++ v3.16; a native classification
-stack, normalization/dropout/RNG, CPU optimization, and CUDA
-experiments are future work).
+native CNN stack, through Advanced C++ v3.16; Phase E — native
+classification and stable math — is *complete* (E0–E10), its contract
+locked
+in `docs/native_classification_design.md` with milestones E1–E4 (the
+differentiable native `exp`, `log`, and the fused stable `softmax` and
+`log_softmax`), E5 (the fused `cross_entropy` **Core** contract —
+`NativeTensorCore.cross_entropy_forward`/`cross_entropy_backward`), and
+E6 (the differentiable `NativeTensor.cross_entropy(targets,
+reduction="mean")`, one autograd node with graph-owned saved
+probabilities and no logits reread), and E7 (the stateless
+`NativeCrossEntropyLoss` module delegating to that operation, and the
+reporting-only `native_accuracy` — explicit `to_numpy()` + NumPy
+argmax, no graph, in the new `NATIVE_METRICS` inventory), and E8 (the
+deterministic classification training and exact checkpoint-resume proof
+— `examples/native_classification_training.py`: a three-class native
+CNN classifier over raw logits, 40 `NativeAdam(lr=0.05)` steps, loss
+1.159638 → 0.000101, accuracy 0.3333 → 1.0000, interrupted at step 15
+and resumed into a fresh model/optimizer pair that matches exactly;
+example, tests, and docs only — no new capability), and E9 (the honest
+characterization benchmark
+`benchmarks/benchmark_native_classification.py`: seven cases, each
+correctness-gated before timing, each labelled with the reference it
+used, medians with spread after warm-up, `--smoke`/`--json` modes, and
+**no speed assertion or timing threshold anywhere**), and E10 (phase
+closure: `tests/test_native_phase_e.py` cross-cutting integration,
+Release and Debug builds with 10/10 CTests each, Clang ASan/UBSan and
+LeakSanitizer validation, and documentation reconciliation — no new
+numerical capability) all shipped;
+normalization/dropout/RNG, data loaders, native integer tensors, further
+dtypes/devices, CPU optimization, and CUDA experiments are
+future work beyond it).
 Position the project as serious and systems-focused — never
 "educational", "toy", or "mini" — while staying honest: not
 production-ready, not a PyTorch replacement.
@@ -52,14 +80,17 @@ production-ready, not a PyTorch replacement.
   stats and a `main()` that prints, guarded by `__main__`.
 - `tests/` — pytest suite; every feature has tests.
 - `docs/` — project summary, architecture, autograd, training,
-  examples, roadmap, release history. When a milestone changes the
+  examples, roadmap, release history, and the native-line design
+  contracts (`native_cnn_design.md` for Phase D,
+  `native_classification_design.md` for Phase E). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the
   experimental C++ backend, hard-failing kernel smoke check, then
   pytest.
 - `cpp/` + `src/tensorforge/backends/` — the experimental C++ backend
-  (post-v3.0 line). Plain C-ABI kernels loaded via ctypes; built with
+  (post-v3.0 line; `cpp/src/classification.cpp` holds the Phase-E
+  classification kernels). Plain C-ABI kernels loaded via ctypes; built with
   `uv run python cpp/build.py` (`uv sync --group cpp` first if no
   compiler). Never imported by the main framework; importing the
   wrapper is always safe (lazy load) — check `cpp.is_available()` /

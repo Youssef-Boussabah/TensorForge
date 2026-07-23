@@ -766,12 +766,34 @@ def test_no_out_of_scope_capability_is_advertised():
     assert info["supported_devices"] == ("cpu",)
     assert info["dtype"] == "float64" and info["device"] == "cpu"
     assert info["stable_framework_integration"] is False
+    # Capabilities Phase D deliberately excluded and that no later
+    # milestone has shipped either. ("softmax" and "log_softmax" were in
+    # this list until Phase E milestones E3 and E4 implemented them —
+    # their contracts now live in tests/test_native_softmax.py and
+    # tests/test_native_log_softmax.py; "cross_entropy" left it at E5,
+    # which shipped its Core layer as "cross_entropy_forward"/
+    # "cross_entropy_backward", and E6 then shipped the differentiable
+    # operation — see tests/test_native_cross_entropy_core.py and
+    # tests/test_native_cross_entropy.py.)
     for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout", "softmax", "cross_entropy"):
+                   "dropout"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.NATIVE_MODULES
+    # The differentiable cross-entropy operation shipped at E6 and is
+    # reported as an autograd operation, not as a Core wrapper.
+    assert "cross_entropy" in cpp.AUTOGRAD_OPS
+    assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
+    assert "cross_entropy" not in cpp.UNSUPPORTED
+    # E7's loss module and metric shipped too, into their own layer
+    # inventories rather than into any operation inventory.
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+    for shipped in ("NativeCrossEntropyLoss", "native_accuracy"):
+        assert shipped not in cpp.UNSUPPORTED, shipped
+        assert shipped not in cpp.AUTOGRAD_OPS, shipped
+        assert shipped not in cpp.NATIVE_MODULES, shipped
     # Nothing Phase D shipped may still be listed as unsupported.
     for shipped in ("conv2d", "maxpool2d", "flatten", "NativeConv2d",
                     "NativeMaxPool2d", "NativeFlatten"):

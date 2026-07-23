@@ -699,9 +699,11 @@ def test_native_phase_c_public_surface_guardrails():
         "NativeModule", "NativeLinear", "NativeReLU", "NativeSequential",
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
-        "NativeFlatten",     # Phase D, milestone D1
-        "NativeConv2d",      # Phase D, milestone D7
-        "NativeMaxPool2d",   # Phase D, milestone D10
+        "NativeFlatten",             # Phase D, milestone D1
+        "NativeConv2d",              # Phase D, milestone D7
+        "NativeMaxPool2d",           # Phase D, milestone D10
+        "NativeCrossEntropyLoss",    # Phase E, milestone E7
+        "native_accuracy",           # Phase E, milestone E7
     }
     for name in experimental.__all__:
         assert not hasattr(tensorforge, name)

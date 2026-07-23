@@ -65,12 +65,15 @@ reached explicitly through `tensorforge.experimental` and
   tracking, NumPy-style broadcasting, sum/mean reductions, and
   float64/cpu dtype/device metadata over ctypes-loaded C++ kernels.
 - **Native autograd (Phase B, complete)**: a Python-managed
-  reverse-mode graph over autograd-unaware kernels — fourteen
-  differentiable operations (`add`, `subtract`, `multiply`, `relu`,
+  reverse-mode graph over autograd-unaware kernels — the differentiable
+  operations Phase B shipped (`add`, `subtract`, `multiply`, `relu`,
   `sqrt`, `reciprocal`, `matmul`, `sum`, `mean`, `reshape`,
-  `transpose`/`T`, `narrow`, `contiguous_copy`), broadcasting and view
+  `transpose`/`T`, `narrow`, `contiguous_copy`), joined by the Phase-D
+  `conv2d` and `maxpool2d` primitives below and the Phase-E
+  `exp`/`log`/`softmax`, plus broadcasting and view
   gradients, a native scatter backward for `narrow`, one-shot graph
-  release with `retain_graph` opt-in, and failure rollback.
+  release with `retain_graph` opt-in, and failure rollback. The backend's
+  `AUTOGRAD_OPS` registry is the exact, current list.
 - **Native training stack (Phase C, complete)**: `NativeParameter`
   (value versioning and a controlled mutation path with stale-graph
   detection), `NativeModule` with atomic `state_dict`/
@@ -92,6 +95,15 @@ reached explicitly through `tensorforge.experimental` and
   for 40 deterministic native Adam steps (98.6% loss reduction), then
   checkpoints mid-run and resumes into a fresh model/optimizer pair that
   reproduces the uninterrupted run exactly.
+- **A native classification proof**:
+  `examples/native_classification_training.py` trains the same layer
+  stack as a three-class classifier over **raw logits** into
+  `NativeCrossEntropyLoss` on twelve fixed 6×6 images, for 40
+  deterministic native Adam steps (loss 1.159638 → 0.000101, reporting
+  accuracy 0.3333 → 1.0000 via `native_accuracy`), then checkpoints at
+  step 15 and resumes into a fresh model/optimizer pair that reproduces
+  the remaining losses, parameters, optimizer state, logits,
+  predictions, and accuracy exactly.
 
 The exact operation-by-operation status lives in the
 [native support matrix](docs/native_support_matrix.md).
@@ -137,8 +149,11 @@ uv run python examples/native_autograd_demo.py    # native backward
 uv run python examples/native_mlp_training.py     # end-to-end native training
 uv run python examples/native_checkpoint_resume.py # save, restore, resume bit-for-bit
 uv run python examples/native_cnn_training.py     # end-to-end native CNN training + resume
+uv run python examples/native_classification_training.py  # native classification + exact resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke  # CNN characterization
+uv run python benchmarks/benchmark_native_classification.py --smoke        # classification characterization
+uv run python benchmarks/benchmark_native_classification.py --smoke --json # machine-readable JSON
 ```
 
 The native API mirrors the stable one, explicitly:
@@ -197,6 +212,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_design.md](docs/native_autograd_design.md) — design for native reverse-mode autograd over NativeTensor (Phase B)
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
+- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 
 ## Limitations
 
@@ -208,16 +224,20 @@ Honest expectations:
   experimental C++ **CPU** backend: float64/cpu only, no CUDA backend
   yet, no dtype promotion or casting, and no implicit dispatch into
   `tensorforge.Tensor`.
-- The native CNN stack (Phase D) is complete — `NativeFlatten`,
-  `NativeConv2d`, `NativeMaxPool2d`, and a deterministic training +
-  exact checkpoint-resume proof — but the native line stops there: no
-  native classification stack (softmax/cross-entropy), no normalization,
-  no dropout or native RNG, and native checkpoints capture no scheduler
-  or random state — see the
+- The native CNN stack (Phase D) and the native classification stack
+  (Phase E) are both complete — but "complete" means *these* capabilities
+  work and are validated, not that the native line is finished. What the
+  native line still does **not** have: normalization (BatchNorm /
+  LayerNorm), dropout or a native RNG, data loaders, native integer
+  tensors, further dtypes or devices, CUDA, AMP, and any implicit
+  dispatch into `tensorforge.Tensor`. Native checkpoints capture no
+  scheduler or random state, and the classification loss supports
+  `"mean"`/`"sum"` only — no `reduction="none"`, class weights,
+  `ignore_index`, label smoothing, or soft targets. See the
   [native support matrix](docs/native_support_matrix.md).
 - Both lines' convolution and pooling use deliberately naive loops (the
-  native kernels too: no im2col, BLAS, threading, or SIMD).
-- `Conv2d` and `MaxPool2d` (stable line) use deliberately naive loops.
+  stable `Conv2d`/`MaxPool2d` and the native kernels alike: no im2col,
+  BLAS, threading, or SIMD).
 - Benchmarks are hardware-specific characterizations with no universal
   speed claims; the naive native kernels can lose to NumPy's BLAS.
 - No real datasets and no external ML libraries; every example runs on
@@ -226,10 +246,11 @@ Honest expectations:
 ## Status
 
 **v3.0 — the stable Python framework line is complete**, covered by the
-test suite and documented. **The advanced branch has completed Phase D
-of its native line (Advanced C++ v3.16)**: Phase A (native CPU runtime),
-Phase B (native autograd), Phase C (the native training stack), and
-Phase D (the native CNN stack) are all complete. Phase C shipped
+test suite and documented. **The advanced branch has completed Phase E
+of its native line**: Phase A (native CPU runtime),
+Phase B (native autograd), Phase C (the native training stack),
+Phase D (the native CNN stack), and Phase E (native classification and
+stable math) are all complete. Phase C shipped
 parameters, modules, state dictionaries,
 Linear/ReLU/Sequential, MSE loss, parameter versioning with stale-graph
 safety, `sqrt`/`reciprocal` optimizer primitives, SGD and adaptive Adam,
@@ -244,10 +265,83 @@ end-to-end training + checkpoint-resume proof
 (`examples/native_cnn_training.py`: 40 deterministic steps, 98.6% loss
 reduction, and a checkpoint-interrupted run that reproduces the
 uninterrupted one exactly), cross-cutting integration tests, honest CNN
-benchmarks, and ASan/UBSan validation of the whole native stack. The next
-native phase — a classification stack, more activations/math,
-normalization, RNG/dropout, and CPU optimization — has not started, and
-CUDA/GPU experiments remain future work. See
+benchmarks, and ASan/UBSan validation of the whole native stack.
+**Phase E — Native Classification and Stable Math — is complete**
+(milestones E0–E10): its architecture contract is locked
+([docs/native_classification_design.md](docs/native_classification_design.md),
+milestone E0) and milestones **E1–E4 shipped the differentiable native
+`exp`, `log`, and the fused stable `softmax` and `log_softmax`** — C++
+kernels, self-validating guarded C ABI, `NativeTensorCore` and
+`NativeTensor` layers. `exp` and `log` are the phase's two backward
+archetypes: `exp` reads its saved output and records no parameter
+version, while `log` rereads the live input (`upstream × reciprocal(x)`,
+no division operation added) and version-guards a direct parameter so a
+post-forward mutation fails before any gradient moves. `softmax` and
+`log_softmax` are the phase's two fused probability transforms — a
+maximum-shift kernel and a log-sum-exp kernel over any axis behind a
+contiguous-only ABI, each with a saved-output backward composed from
+existing Core operations rather than a dedicated kernel. `log_softmax`
+is deliberately **never** `softmax().log()`: it forms no probability and
+performs no division, so it stays accurate where the composed form
+collapses to `-inf`. **E5 shipped the fused `cross_entropy` Core
+contract** — a single kernel producing the stable scalar loss *and* the
+private saved probabilities per row (never `-log(p[target])`), a
+backward that reads only those saved probabilities, the copied `int64`
+targets, and a native one-element upstream (**it never rereads the
+logits**), and strict targets that reject `bool` and floating-point
+labels and are copied so caller mutation cannot reach the kernel. **E6
+shipped the differentiable `NativeTensor.cross_entropy(targets,
+reduction="mean")`** over that contract, adding no kernel and no
+numerical change: one scalar-output autograd node whose private saved
+probabilities are **graph-owned** — retained under `retain_graph=True`,
+released exactly once with the graph history, closed immediately when no
+gradient is required — and whose backward never rereads the logits, so
+no parameter version is recorded and mutating the logits after the
+forward leaves the gradient correct for the forward that ran.
+**E7 completed the public surface**: `NativeCrossEntropyLoss`, a
+stateless module whose whole forward delegates to that operation, and
+`native_accuracy`, a deliberately **reporting-only** helper — no kernel,
+no Core method, no autograd node — that materializes once through the
+explicit public `to_numpy()` boundary, takes a NumPy argmax, and returns
+a plain `float` without building a graph or touching any gradient.
+**E8 proved the assembled stack end to end without adding anything to
+it**: `examples/native_classification_training.py` trains a
+`NativeConv2d(1, 4, 3)` → `NativeReLU` → `NativeMaxPool2d(2)` →
+`NativeFlatten` → `NativeLinear(16, 3)` classifier — no softmax layer,
+raw logits straight into `NativeCrossEntropyLoss` — on twelve fixed 6×6
+images in three classes for 40 deterministic `NativeAdam(lr=0.05)` steps
+(loss 1.159638 → 0.000101, reporting accuracy 0.3333 → 1.0000), then
+interrupts at step 15, checkpoints model **and** optimizer state through
+the existing pickle-free path (format **version 1**, unchanged), and
+resumes into a **fresh** model/optimizer pair that reproduces the
+uninterrupted run **exactly** — the whole remaining loss suffix, every
+parameter, both Adam moment buffers and step counters, the final logits,
+the predictions, and the accuracy. It is an integration proof on one
+fixed task: no speed and no generalization is claimed.
+**E9 added the characterization benchmark**,
+`benchmarks/benchmark_native_classification.py` — seven cases (`exp`,
+`log`, `softmax`, `log_softmax`, cross-entropy forward, cross-entropy
+backward, and one complete classification training step), each with a
+correctness gate that runs **before** any timing, each labelled with the
+reference it actually used (`stable_tensorforge`, `numpy` where the
+stable line has no direct operation, or `native_only`), and each reported
+as a median with min/max/spread over repeated `time.perf_counter_ns`
+measurements taken after warm-up with setup and cleanup outside the
+timer. It has `--smoke` and `--json` modes and writes no result file.
+Observed ratios are **local characterizations, not guarantees**: no test
+asserts a speed, no timing number is committed as a promise, and there is
+no CI performance gate. **E10 closed the phase with no new numerical
+capability**: cross-cutting integration tests
+(`tests/test_native_phase_e.py`), Release **and** Debug native builds
+(10/10 CTests each, zero warnings), Clang AddressSanitizer and
+UndefinedBehaviorSanitizer validation of the whole classification stack
+with zero diagnostics attributable to TensorForge, a practical
+LeakSanitizer pass finding no native leak, the full Python regression
+suite, and documentation reconciliation across every status surface.
+Phase E expanded nothing beyond float64/CPU and added no implicit
+stable/native dispatch. More
+activations/math, normalization, RNG/dropout, and CPU optimization sit
+beyond it, and CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 

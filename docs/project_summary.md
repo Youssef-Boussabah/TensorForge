@@ -61,9 +61,11 @@ complete** — `NativeStorage` → `NativeTensorView` → `NativeTensorCore`
 broadcasting, sum/mean reductions, and float64/cpu metadata over
 ctypes-loaded C++ kernels. **Phase B (native autograd) is complete** —
 a Python-managed reverse-mode graph over autograd-unaware kernels,
-with fourteen differentiable operations (the v3.11 optimizer math
-primitives sqrt and reciprocal included), view/broadcast gradients, and a
-defined graph lifetime. **Phase C (the native training stack) and
+covering every operation in the backend's `AUTOGRAD_OPS` registry
+(elementwise math including the v3.11 `sqrt`/`reciprocal` optimizer
+primitives, `matmul`, reductions, and the view ops at Phase-B
+completion; Phase D then added the `conv2d` and `maxpool2d` primitives),
+with view/broadcast gradients and a defined graph lifetime. **Phase C (the native training stack) and
 Phase D (the native CNN stack) are both complete** — the native line
 trains a convolutional model end to end and resumes it exactly from a
 checkpoint. Phase C provides: `NativeParameter` (value

@@ -6,7 +6,78 @@ framework** — `import tensorforge` never touches it, Tensor and
 autograd are unchanged, and every existing API works exactly as
 before.
 
-## C++ backend — v1.21 (current)
+**How to read this page.** It is written **newest-last within each
+milestone section but historical throughout**: every section records the
+state of the line *at the milestone it describes*, and later milestones
+routinely supersede earlier ones. The one place that always describes
+**today** is the "Where the line is now" section immediately below;
+the authoritative per-capability status lives in the
+[native support matrix](native_support_matrix.md) and the backend
+capability registry it mirrors.
+
+## Where the line is now
+
+Phase A (native CPU runtime), Phase B (native autograd), Phase C (the
+native training stack), and Phase D (the native CNN stack, milestones
+D0–D12) are all **complete**, through Advanced C++ v3.16. The native line
+today has an explicit storage/view/core/tensor runtime, a Python-managed
+reverse-mode autograd over autograd-unaware kernels, parameters, modules
+(`NativeLinear`, `NativeReLU`, `NativeFlatten`, `NativeConv2d`,
+`NativeMaxPool2d`, `NativeSequential`), `NativeMSELoss`, `NativeSGD` and
+`NativeAdam` with in-memory optimizer state, pickle-free native
+checkpoints with exact resume, and deterministic end-to-end MLP **and**
+CNN training proofs. The most recent phase — **Phase E, Native
+Classification and Stable Math** — has its architecture contract locked
+in [native_classification_design.md](native_classification_design.md)
+(E0) and is **complete** (E0–E10): milestones E1–E4 shipped the differentiable
+native `exp`, `log`, `softmax`, and `log_softmax`, and E5 shipped the
+fused `cross_entropy` **Core** contract
+(`NativeTensorCore.cross_entropy_forward` / `cross_entropy_backward`
+over two guarded, contiguous-only exports, with strict copied `int64`
+targets and private saved probabilities). E6 then shipped the
+differentiable `NativeTensor.cross_entropy(targets, reduction="mean")`
+over it — one autograd node with graph-owned saved probabilities, no
+logits reread, and no expected parameter version, adding no kernel and
+no ABI export. E7 then completed the public surface:
+`NativeCrossEntropyLoss`, a stateless `NativeModule` delegating entirely
+to that operation, and the reporting-only `native_accuracy` — explicit
+`to_numpy()` plus a NumPy argmax, returning a Python `float`, building
+no graph and touching no gradient, listed in the new `NATIVE_METRICS`
+inventory. **E8 then proved the whole stack trains and resumes**:
+`examples/native_classification_training.py` trains a native
+Conv2d→ReLU→MaxPool2d→Flatten→Linear classifier on twelve fixed 6×6
+images in three classes for 40 deterministic `NativeAdam(lr=0.05)` steps
+(loss 1.159638 → 0.000101, accuracy 0.3333 → 1.0000), then checkpoints at
+step 15 and resumes into a fresh model/optimizer pair that reproduces the
+remaining loss suffix, the parameters, the optimizer state, the logits,
+the predictions, and the accuracy **exactly** — an integration proof that
+added no kernel, ABI export, operation, module, optimizer, or schema
+change (native checkpoint format stays version 1). **E9** then
+characterized that stack honestly:
+`benchmarks/benchmark_native_classification.py` measures `exp`, `log`,
+`softmax`, `log_softmax`, the fused cross-entropy forward, its backward
+alone, and one complete classification training step — every case gated
+for correctness *before* timing, every case labelled with the reference
+it used (`stable_tensorforge`, `numpy`, or `native_only`), medians
+reported with min/max/spread after warm-up, `--smoke` and `--json` modes,
+and **no speed assertion or timing threshold anywhere**. **E10** closed
+the phase without adding any numerical capability: cross-cutting
+integration tests (`tests/test_native_phase_e.py`), Release **and** Debug
+native builds (10/10 CTests each, zero warnings), Clang ASan/UBSan
+validation of the whole classification stack with zero diagnostics
+attributable to TensorForge, a practical LeakSanitizer pass with no
+native leak, the full Python regression, and documentation
+reconciliation. Phase E therefore delivered stable native classification
+mathematics end to end — float64/CPU only, with no implicit
+stable/native dispatch and no change to the stable framework or the
+version-1 checkpoint format.
+
+## C++ backend — the raw kernel layer (v1.21, historical)
+
+*Historical: this section describes the raw NumPy-buffer kernel layer as
+it stood at v1.21, the bottom of the stack. Everything above it — the
+strided runtime, broadcasting, autograd, and the training stack — arrived
+in later milestones recorded below.*
 
 Proof that Python TensorForge can call compiled C++ code, now with a
 small family of kernels:
@@ -356,24 +427,40 @@ governing rule is **no implicit fallback**: an unavailable native
 operation raises with build instructions; it never quietly falls back
 to NumPy.
 
-### Current limitations
+### Limitations of the raw kernel layer
+
+*These are the limitations of the **raw NumPy-buffer kernels** described
+in this section (`elementwise_add` … `matmul_tiled`), which are
+deliberately frozen as the reference/benchmark set. Several were lifted
+**at higher layers** by later milestones; each is noted.*
 
 - float64 / CPU only. As of v1.21 this is **explicit, inspectable
   metadata** (`dtype`/`device` on the storage, core, and wrapper) rather
   than an unstated assumption, and unsupported dtype/device values are
   rejected at construction — but only `"float64"`/`"cpu"` exist, and
-  other inputs are still converted to float64.
-- Binary operations require identical shapes — no broadcasting.
-  `relu` is unary and accepts any shape.
+  other inputs are still converted to float64. *(Still true everywhere
+  today.)*
+- Binary **raw-buffer** operations require identical shapes — no
+  broadcasting. `relu` is unary and accepts any shape. *(Lifted above
+  this layer: the `NativeTensorCore` binary ops gained full NumPy-style
+  broadcasting in v1.17, and `NativeTensor` inherits it.)*
 - Division follows IEEE float64 rules (inf/NaN for zero denominators,
   the same values as NumPy) but does not emit NumPy's runtime warning.
+  *(`divide` remains a raw kernel only: there is still no `divide`
+  tensor operation or backward — `reciprocal` + `multiply` compose what
+  the stack needs.)*
 - Both matmuls are strictly 2-D — `(m, n) @ (n, p)` only, vectors must
   be passed as `(1, n)` / `(n, 1)` matrices. `matmul` is the naive
   triple loop; `matmul_tiled` adds cache blocking but remains
   single-threaded scalar code. NumPy's BLAS-backed matmul is expected
-  to stay faster.
-- Not connected to Tensor or autograd.
-- A proof of mechanism, not a performance claim.
+  to stay faster. *(Still true.)*
+- These raw kernels are not connected to Tensor or autograd. *(Still
+  true of the raw kernels, and the stable `tensorforge.Tensor` is still
+  never wired to any of this. But the native line above them **does**
+  have autograd: Phase B built a Python-managed reverse-mode graph at the
+  `NativeTensor` layer, and Phases C–D built a training stack on it.)*
+- A proof of mechanism, not a performance claim. *(Still true — every
+  benchmark on this page is a characterization.)*
 
 ## Benchmarks
 
@@ -2939,11 +3026,17 @@ file resume, and **v3.15 — native training stack guardrails and Phase C
 completion** (the integrated completion test suite, documentation
 completion, and build/CI/hygiene verification), which **closes Phase C
 in code**. A general `divide` operation remains deliberately unshipped
-(`reciprocal` + `multiply` compose what the stack needs). The current
-major native phase is the **native CNN stack** (Phase D), now under way
-and partly shipped — `NativeFlatten` and the differentiable Conv2d line
-(`NativeConv2d`) are in, while native max-pooling and the end-to-end CNN
-training + checkpoint-resume proof remain upcoming. CUDA experiments
+(`reciprocal` + `multiply` compose what the stack needs). The **native
+CNN stack (Phase D) then completed** across milestones D0–D12:
+`NativeFlatten`, the differentiable `conv2d` operation and its trainable
+`NativeConv2d` module, the `maxpool2d` operation with its private saved
+winners and the `NativeMaxPool2d` module, the deterministic end-to-end
+CNN training + exact checkpoint-resume proof, cross-cutting integration
+tests, honest CNN benchmarks, and ASan/UBSan validation. The next phase
+is **Phase E — Native Classification and Stable Math**, whose contract is
+locked in
+[native_classification_design.md](native_classification_design.md) (E0)
+and whose implementation has not begun. CUDA experiments
 remain a separate future branch (where `device` gains a second value),
 and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation

@@ -217,4 +217,117 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME maxpool2d_backward COMMAND test_maxpool2d_backward)
+
+  # Native exponential (Phase E, E1): links the elementwise source
+  # (elementwise.cpp) plus error.cpp, since the exports under test are
+  # guarded and reference the thread-local error slot. Unlike the conv2d
+  # and pooling targets this test drives the *exported* C ABI pair
+  # (tf_core_exp / tf_core_exp_contiguous) rather than a hidden tf::
+  # kernel — the exponential's compute is file-local to that translation
+  # unit, and the exports are where E1's own argument validation lives.
+  add_executable(test_exp
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_exp.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_exp PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_exp PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_exp PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_exp PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME exp COMMAND test_exp)
+
+  # Native logarithm (Phase E, E2): same target shape as the E1 exp test —
+  # it links elementwise.cpp plus error.cpp and drives the *exported*
+  # guarded pair (tf_core_log / tf_core_log_contiguous), since the
+  # logarithm's compute is file-local to that translation unit. It also
+  # regression-covers the validators E2 shares with exp.
+  add_executable(test_log
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_log.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_log PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_log PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_log PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_log PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME log COMMAND test_log)
+
+  # Fused softmax (Phase E, E3): links the new classification source unit
+  # plus error.cpp (the guarded export references the thread-local error
+  # slot). Like the pooling tests it drives *both* layers — the internal
+  # tf::softmax_forward_contiguous kernel for the numerics and the
+  # exported tf_core_softmax_forward wrapper for the validation matrix.
+  add_executable(test_softmax
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_softmax.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_softmax PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_softmax PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_softmax PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_softmax PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME softmax COMMAND test_softmax)
+
+  # Fused log-softmax (Phase E, E4): links the same classification source
+  # unit plus error.cpp. Like the softmax target it drives *both* layers —
+  # the internal tf::log_softmax_forward_contiguous kernel for the fused
+  # maximum-shift / log-sum-exp numerics and the exported
+  # tf_core_log_softmax_forward wrapper for the validation matrix. It also
+  # re-drives softmax's rejection matrix as regression coverage for the
+  # file-local validator E4 factored out of the two exports.
+  add_executable(test_log_softmax
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_log_softmax.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_log_softmax PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_log_softmax PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_log_softmax PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_log_softmax PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME log_softmax COMMAND test_log_softmax)
+
+  # Fused cross-entropy (Phase E, E5): links the same classification
+  # source unit plus error.cpp. Like the softmax and log-softmax targets
+  # it drives *both* layers — the internal
+  # tf::cross_entropy_forward_contiguous /
+  # tf::cross_entropy_backward_contiguous kernels for the fused
+  # maximum-shift / log-sum-exp numerics and the saved-probability
+  # gradient, and the exported tf_core_cross_entropy_forward /
+  # tf_core_cross_entropy_backward wrappers for the validation matrix,
+  # including the C++-side revalidation of every target index.
+  add_executable(test_cross_entropy
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cross_entropy.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_cross_entropy PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_cross_entropy PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_cross_entropy PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_cross_entropy PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME cross_entropy COMMAND test_cross_entropy)
 endif()

@@ -51,6 +51,9 @@ src/tensorforge/
     native_module.py     NativeModule + state_dict/load_state_dict
     native_linear.py     NativeLinear
     native_relu.py       NativeReLU
+    native_flatten.py    NativeFlatten (Phase D)
+    native_conv2d.py     NativeConv2d (Phase D)
+    native_maxpool2d.py  NativeMaxPool2d (Phase D)
     native_sequential.py NativeSequential
     native_mse_loss.py   NativeMSELoss
     native_sgd.py        NativeSGD
@@ -142,11 +145,15 @@ explicit layer at a time:
   executing in C++ kernels behind a plain C ABI, loaded with ctypes.
   The core and the kernels are completely autograd-unaware.
 - **`NativeTensor`** wraps one core and adds the **Python-managed
-  native autograd graph**: fourteen differentiable operations, gradient
-  un-broadcasting, view backwards (including a native scatter for
-  `narrow`), one-shot graph release with `retain_graph` opt-in, and
-  failure rollback. Backward math runs at the core level, so the graph
-  never leaks into C++.
+  native autograd graph**: every operation listed in the backend's
+  `AUTOGRAD_OPS` registry is differentiable (elementwise math, `matmul`,
+  reductions, the view ops, and the Phase-D `conv2d`/`maxpool2d`
+  primitives — the registry, mirrored in the
+  [native support matrix](native_support_matrix.md), is the exact list),
+  with gradient un-broadcasting, view backwards (including a native
+  scatter for `narrow`), one-shot graph release with `retain_graph`
+  opt-in, and failure rollback. Backward math runs at the core level, so
+  the graph never leaks into C++.
 - **The native training stack (Phase C, complete)** builds on that:
   `NativeParameter` (graph-free trainable leaves with value versioning,
   a controlled mutation path, and stale-graph detection), `NativeModule`

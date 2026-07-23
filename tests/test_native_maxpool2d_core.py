@@ -894,14 +894,26 @@ def test_native_call_failure_closes_output_and_winners(monkeypatch,
 def test_temporary_copy_released_when_allocation_fails(monkeypatch,
                                                        live_storages):
     created = []
+    inside_copy = []
     original_copy = cpp.NativeTensorCore.contiguous_copy
+    original_zeros = cpp.NativeTensorCore.zeros
 
     def tracking_copy(self):
-        result = original_copy(self)
+        # As of E3.1 the Policy-B copy is a native storage-to-storage
+        # gather that allocates its destination through zeros() too, so
+        # the flag below distinguishes the copy's own allocation from the
+        # operation's output allocation (which is what must fail here).
+        inside_copy.append(True)
+        try:
+            result = original_copy(self)
+        finally:
+            inside_copy.pop()
         created.append(result)
         return result
 
     def boom(*args, **kwargs):
+        if inside_copy:
+            return original_zeros(*args, **kwargs)
         raise MemoryError("simulated output allocation failure")
 
     monkeypatch.setattr(cpp.NativeTensorCore, "contiguous_copy", tracking_copy)

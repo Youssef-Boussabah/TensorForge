@@ -23,6 +23,7 @@ DOCS = (
     "native_autograd_benchmarks.md",
     "native_support_matrix.md",
     "native_cnn_design.md",
+    "native_classification_design.md",
 )
 
 EXAMPLE_FILES = (
@@ -241,6 +242,7 @@ def test_experimental_exports_stay_intentional():
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
+        "NativeCrossEntropyLoss", "native_accuracy",   # Phase E, E7
     }
     for name in experimental.__all__:
         assert hasattr(experimental, name)
@@ -390,9 +392,14 @@ def test_phase_d_status_is_consistent_across_docs_and_registry():
     assert (REPO_ROOT / "tests" / "test_native_phase_d.py").is_file()
 
     # Later phases must not be claimed. These are genuinely absent
-    # capabilities, checked against the registry rather than against prose.
+    # capabilities, checked against the registry rather than against
+    # prose. ("softmax" and "log_softmax" left this list when Phase E
+    # milestones E3 and E4 implemented them, "cross_entropy" when E5 and
+    # E6 implemented its Core and autograd layers, and
+    # "NativeCrossEntropyLoss"/"native_accuracy" when E7 shipped the
+    # public surface; the Phase-E boundary is tracked separately below.)
     for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout", "softmax", "cross_entropy"):
+                   "dropout"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS and absent not in cpp.NATIVE_MODULES
     assert cpp.SUPPORTED_DTYPES == ("float64",)
@@ -468,6 +475,875 @@ def test_docs_present_the_shipped_native_cnn_stack():
     matrix = _normalized_doc("docs/native_support_matrix.md")
     assert "Phase D" in matrix and "complete" in matrix.lower()
     assert "## Unsupported or future" in matrix
+
+
+# --- Phase E (native classification) — E0 contract guardrails -------------
+#
+# E0 is a design-and-reconciliation milestone: it adds no numerical
+# behavior. These guards therefore check two things — that the contract is
+# written and internally coherent, and that nothing it describes has been
+# accidentally advertised as implemented.
+
+PHASE_E_DESIGN = "docs/native_classification_design.md"
+
+
+def _design_section(token, relative_path=PHASE_E_DESIGN):
+    """The whitespace-normalized body of the first ``##``-level section
+    whose heading contains ``token``.
+
+    Anchoring on headings (not paragraphs) keeps these checks semantic:
+    the surrounding prose can be rewritten or rewrapped freely, but the
+    load-bearing statement has to stay inside its own section."""
+    text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    for chunk in re.split(r"\n#{2,4} ", text):
+        heading = chunk.split("\n", 1)[0]
+        if token in heading:
+            return re.sub(r"\s+", " ", chunk)
+    raise AssertionError(f"{relative_path} has no section naming {token!r}")
+
+
+def test_phase_e_design_exists_and_is_linked():
+    path = REPO_ROOT / PHASE_E_DESIGN
+    assert path.is_file(), f"missing {PHASE_E_DESIGN}"
+    assert path.read_text(encoding="utf-8").strip(), f"{PHASE_E_DESIGN} is empty"
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert PHASE_E_DESIGN in readme, f"README does not link to {PHASE_E_DESIGN}"
+
+
+def test_phase_e_design_locks_the_contract():
+    """The classification contract must name its phase, its whole public
+    surface, and the decisions later milestones inherit."""
+    text = _normalized_doc(PHASE_E_DESIGN)
+    assert "Phase E" in text
+    assert "Native Classification and Stable Math" in text
+    for token in ("exp", "log", "softmax", "log_softmax", "cross_entropy",
+                  "NativeCrossEntropyLoss", "native_accuracy"):
+        assert token in text, f"{PHASE_E_DESIGN} does not lock {token!r}"
+    # Targets are int64 host data (the native runtime has no integer dtype).
+    assert "int64" in text, "the design does not state the int64 target contract"
+    # The fused loss's private saved state and its graph lifetime.
+    assert "saved probabilities" in text
+    assert "retain_graph" in text
+    # The checkpoint schema is explicitly preserved.
+    assert re.search(r"checkpoint[^.]{0,80}format version 1", text), (
+        "the design does not preserve native checkpoint format version 1"
+    )
+
+
+def test_phase_e_milestone_ladder_is_ordered():
+    """E0 through E10 each have their own contract section, and those
+    sections appear in increasing order. Anchored on the milestone
+    headings, so status notes elsewhere in the document (which may name a
+    milestone) cannot perturb the check."""
+    text = _normalized_doc(PHASE_E_DESIGN)
+    positions = []
+    for i in range(11):
+        marker = f"### E{i} —"
+        assert marker in text, f"{PHASE_E_DESIGN} is missing milestone E{i}"
+        positions.append(text.index(marker))
+    assert positions == sorted(positions), (
+        "the E0-E10 milestone ladder is out of order"
+    )
+
+
+def test_phase_e_design_distinguishes_the_backward_read_contracts():
+    """The four distinct backward/versioning archetypes must each be
+    pinned in their own operation section — this is the subtlety the
+    whole phase turns on."""
+    exp = _design_section("NativeTensor.exp()")
+    assert "saved forward output" in exp
+    assert re.search(r"no (parameter )?version snapshot", exp), (
+        "exp must record no version snapshot (saved-output backward)"
+    )
+
+    log = _design_section("NativeTensor.log()")
+    assert "rereads the live input" in log
+    assert "version-checked" in log and "stale-graph" in log, (
+        "log must be version-checked (live-input backward)"
+    )
+
+    for token in ("NativeTensor.softmax(", "NativeTensor.log_softmax("):
+        section = _design_section(token)
+        assert "saved output" in section, f"{token} backward must read the saved output"
+        assert "no version snapshot" in section, f"{token} must record no version"
+
+    cross_entropy = _design_section("NativeTensor.cross_entropy(")
+    assert "saved probabilities" in cross_entropy
+    assert "no logits version snapshot" in cross_entropy
+
+
+def test_phase_e_implemented_surface_matches_the_milestones_reached():
+    """Phase E ships one milestone at a time, and the registries are the
+    honest record. E1-E4 implemented `exp`, `log`, `softmax`, and
+    `log_softmax`; E5 implemented cross-entropy's **Core layer**; E6 the
+    differentiable operation over it; E7 the public loss module and the
+    reporting metric. E8 is an integration proof and deliberately adds
+    **no** inventory entry, so the registries below must not grow."""
+    from tensorforge.backends import cpp
+
+    # E1/E2/E3/E4 — implemented, in the two inventories they belong to,
+    # no others.
+    for shipped in ("exp", "log", "softmax", "log_softmax"):
+        assert shipped in cpp.TENSOR_CORE_OPS, shipped
+        assert shipped in cpp.AUTOGRAD_OPS, shipped
+        assert shipped not in cpp.UNSUPPORTED, shipped
+        assert shipped not in cpp.NATIVE_MODULES, shipped
+        assert shipped not in cpp.NATIVE_LOSSES, shipped
+        # No raw NumPy-buffer stable-math kernel exists.
+        assert shipped not in cpp.RAW_KERNELS, shipped
+
+    # E5 — the layer-qualified Core wrappers, and nothing above them.
+    for core_op in ("cross_entropy_forward", "cross_entropy_backward"):
+        assert core_op in cpp.TENSOR_CORE_OPS, core_op
+        assert core_op not in cpp.AUTOGRAD_OPS, core_op
+        assert core_op not in cpp.UNSUPPORTED, core_op
+        assert core_op not in cpp.RAW_KERNELS, core_op
+        assert core_op not in cpp.NATIVE_MODULES, core_op
+        assert core_op not in cpp.NATIVE_LOSSES, core_op
+        assert hasattr(cpp.NativeTensorCore, core_op), core_op
+
+    # E6 — the differentiable operation, under the bare name and at the
+    # autograd layer only. It is deliberately NOT aliased into the Core
+    # inventory, and no NativeTensorCore.cross_entropy exists.
+    assert "cross_entropy" in cpp.AUTOGRAD_OPS
+    assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
+    assert "cross_entropy" not in cpp.UNSUPPORTED
+    assert "cross_entropy" not in cpp.RAW_KERNELS
+    assert "cross_entropy" not in cpp.NATIVE_MODULES
+    assert "cross_entropy" not in cpp.NATIVE_LOSSES
+    assert not hasattr(cpp.NativeTensorCore, "cross_entropy")
+    from tensorforge.experimental import NativeTensor
+    assert hasattr(NativeTensor, "cross_entropy")
+    assert callable(NativeTensor.cross_entropy)
+    # E6 added no C++ or ABI surface: no new checked export appeared.
+    for absent in ("tf_core_cross_entropy", "tf_core_nll_loss",
+                   "tf_core_accuracy"):
+        assert absent not in cpp._CHECKED_KERNELS, absent
+
+    # E7 — the public surface, each name in exactly one layer-appropriate
+    # inventory and none in an operation inventory.
+    import tensorforge.experimental as experimental
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    for name in ("NativeCrossEntropyLoss", "native_accuracy"):
+        assert name not in cpp.UNSUPPORTED, f"{name} is still unsupported"
+        assert name not in cpp.TENSOR_CORE_OPS, name
+        assert name not in cpp.AUTOGRAD_OPS, name
+        assert name not in cpp.RAW_KERNELS, name
+        assert hasattr(experimental, name), name
+        assert name in experimental.__all__, name
+    assert "NativeCrossEntropyLoss" not in cpp.NATIVE_METRICS
+    assert "native_accuracy" not in cpp.NATIVE_LOSSES
+    assert "native_accuracy" not in cpp.NATIVE_MODULES
+    # Neither probability transform became a module (E0 §1 excludes both).
+    for module in ("NativeSoftmax", "NativeLogSoftmax"):
+        assert module not in cpp.NATIVE_MODULES, module
+        assert not hasattr(experimental, module), module
+    # E3 created the classification source unit locked by E0 §9.1, and E4
+    # and E5 extended it; every kernel/export is defined there rather
+    # than in the elementwise unit. Checked by symbol definition, not by
+    # banning the word, so cross-referencing comments remain possible.
+    classification = (REPO_ROOT / "cpp" / "src" / "classification.cpp")
+    assert classification.is_file()
+    classification_text = classification.read_text(encoding="utf-8")
+    for export in ("tf_core_softmax_forward", "tf_core_log_softmax_forward",
+                   "tf_core_cross_entropy_forward",
+                   "tf_core_cross_entropy_backward"):
+        assert export in classification_text, export
+        assert export in cpp._CHECKED_KERNELS, export
+    # Neither fused transform has a backward ABI symbol: those gradients
+    # are composed from existing Core operations.
+    for absent in ("tf_core_softmax_backward",
+                   "tf_core_log_softmax_backward"):
+        assert absent not in classification_text, absent
+        assert absent not in cpp._CHECKED_KERNELS, absent
+    elementwise = (REPO_ROOT / "cpp" / "src" / "elementwise.cpp").read_text(
+        encoding="utf-8"
+    )
+    assert "tf_core_softmax_forward(" not in elementwise
+    assert "tf_core_log_softmax_forward(" not in elementwise
+
+
+def test_phase_e_milestone_status_is_reported_honestly():
+    """Every Phase-E milestone E0-E10 is marked complete, and the phase
+    itself is marked complete on every authoritative surface. Checked
+    semantically against the design document's status table and the live
+    registry — the milestone-era 'not yet shipped' rows are gone because
+    the phase closed, not because the check was relaxed."""
+    from tensorforge.backends import cpp
+
+    # The ladder's status table is the one place per-milestone status is
+    # declared, so the row checks run inside that section only.
+    ladder = _design_section("Milestone ladder")
+    for done in ("E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9",
+                 "E10"):
+        row = re.search(rf"\|\s*{done}\s*\|[^|]*\|([^|]*)\|", ladder)
+        assert row is not None, f"the ladder has no status row for {done}"
+        assert "complete" in row.group(1).lower(), (
+            f"the design does not mark {done} complete"
+        )
+    # Phase E as a whole is complete, stated positively, and no surface
+    # may regress to the milestone-era "in progress" wording.
+    design = _status_text(PHASE_E_DESIGN)
+    assert "Phase-E status: complete" in design
+    assert not re.search(r"Phase-E status: in progress", design)
+    assert not re.search(r"Phase E is [^.]{0,30}not[^.]{0,30}complete", design)
+    for surface in ("README.md", "docs/native_support_matrix.md",
+                    "docs/roadmap.md", "docs/backend_experiments.md",
+                    "docs/project_summary.md",
+                    "src/tensorforge/experimental/__init__.py"):
+        text = _status_text(surface)
+        assert not re.search(r"Phase E[^.]{0,40}in progress", text, re.I), (
+            f"{surface} still calls Phase E in progress"
+        )
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"Phase E[^.]{0,160}complete", matrix, re.I), (
+        "the support matrix no longer marks Phase E complete"
+    )
+    # The registry agrees: E1-E4's capabilities and E6's cross-entropy are
+    # live as differentiable operations, E5's Core wrappers at the Core
+    # layer, and E7's module and metric in their own layer inventories —
+    # while nothing E8-E10 delivered (a training proof, a benchmark, phase
+    # closure) is a capability name at all: those milestones shipped
+    # examples, benchmarks, and tests, never inventory entries.
+    for shipped in ("exp", "log", "softmax", "log_softmax"):
+        assert shipped in cpp.AUTOGRAD_OPS, shipped
+        assert shipped not in cpp.UNSUPPORTED, shipped
+    assert "cross_entropy_forward" in cpp.TENSOR_CORE_OPS
+    assert "cross_entropy_backward" in cpp.TENSOR_CORE_OPS
+    assert "cross_entropy" in cpp.AUTOGRAD_OPS
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+    for shipped in ("NativeCrossEntropyLoss", "native_accuracy"):
+        assert shipped not in cpp.UNSUPPORTED, shipped
+
+
+def test_docs_present_the_shipped_stable_math():
+    """The status surfaces must present `exp` and `log` as implemented
+    and keep documenting each one's load-bearing backward invariant —
+    the contrast is the whole point of shipping them as a pair."""
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    # Both are presented as differentiable forward operations.
+    for shipped in ("exp", "log"):
+        assert re.search(rf"`{shipped}`\s*\|\s*Yes\s*\|\s*Yes", matrix), (
+            f"the support matrix does not list {shipped} as a "
+            f"differentiable operation"
+        )
+    # exp: saved output, no version. log: live input, version-checked.
+    assert re.search(r"saved forward output", matrix)
+    assert re.search(r"live input", matrix), (
+        "the support matrix no longer documents log's live-input backward"
+    )
+    exp_section = _design_section("NativeTensor.exp()")
+    assert "E1" in exp_section and "implemented" in exp_section.lower()
+    assert "no version snapshot" in exp_section
+    log_section = _design_section("NativeTensor.log()")
+    assert "E2" in log_section and "implemented" in log_section.lower(), (
+        "the design does not record log as implemented"
+    )
+    assert "rereads the live input" in log_section
+    assert "version-checked" in log_section and "stale-graph" in log_section
+    # And the reciprocal-based derivative, which is why no division exists.
+    assert "reciprocal" in log_section
+
+
+def test_docs_present_the_shipped_softmax():
+    """E3's load-bearing decisions must stay documented: the fused
+    maximum shift, the contiguous-only ABI with Core-level Policy B, and
+    the saved-output backward composed at the Core layer."""
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    assert re.search(r"`softmax`\s*\|\s*Yes\s*\|\s*Yes", matrix), (
+        "the support matrix does not list softmax as a differentiable "
+        "operation"
+    )
+    section = _design_section("NativeTensor.softmax(")
+    assert "E3" in section and "implemented" in section.lower(), (
+        "the design does not record softmax as implemented"
+    )
+    lowered = section.lower()
+    # Fused stable forward — not a composition of public ops.
+    assert "maximum" in lowered and "shift" in lowered
+    assert "fused" in lowered
+    # Contiguous-only ABI + Policy-B copy at the Core layer.
+    assert "contiguous-only" in lowered
+    assert "policy-b" in lowered or "policy b" in lowered
+    # Saved-output backward, composed at the Core layer, no version.
+    assert "saved output" in lowered
+    assert "no parameter version snapshot" in lowered or (
+        "no version snapshot" in lowered
+    )
+    # And the two things E3 deliberately did NOT add.
+    design = _status_text(PHASE_E_DESIGN)
+    assert re.search(r"no dedicated .{0,30}backward kernel", design, re.I), (
+        "the design no longer records that softmax has no backward kernel"
+    )
+    # E3.1: the Policy-B copy is native storage-to-storage, and the docs
+    # must not describe a host NumPy round-trip as an accepted state.
+    assert re.search(r"storage.to.storage", design, re.I), (
+        "the design no longer records the native Policy-B copy"
+    )
+    assert re.search(r"no tensor.data NumPy round.trip", design, re.I), (
+        "the design no longer states that no tensor-data round-trip remains"
+    )
+    matrix_normalized = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"tensor data never round.trips", matrix_normalized,
+                     re.I), (
+        "the support matrix no longer documents the native contiguous copy"
+    )
+    # Softmax stays contiguous-only at the ABI while the Core handles
+    # strided inputs — both halves must remain stated.
+    assert "contiguous-only" in design.lower()
+
+
+def test_docs_present_the_shipped_log_softmax():
+    """E4's load-bearing decisions must stay documented: the fused
+    log-sum-exp forward that is explicitly never `softmax().log()`, the
+    contiguous-only ABI with Core-level Policy B, the saved-output
+    backward composed from Core ops with no backward kernel, and the
+    absence of a module."""
+    matrix = _normalized_doc("docs/native_support_matrix.md")
+    assert re.search(r"`log_softmax`\s*\|\s*Yes\s*\|\s*Yes", matrix), (
+        "the support matrix does not list log_softmax as a differentiable "
+        "operation"
+    )
+    section = _design_section("NativeTensor.log_softmax(")
+    assert "E4" in section and "implemented" in section.lower(), (
+        "the design does not record log_softmax as implemented"
+    )
+    lowered = section.lower()
+    # Fused stable forward — and explicitly not the composed form.
+    assert "fused" in lowered
+    assert "log-sum-exp" in lowered
+    assert re.search(r"never[^.]{0,40}softmax\(\)\.log\(\)", lowered), (
+        "the design no longer rejects softmax().log() as the implementation"
+    )
+    # Contiguous-only ABI + Policy-B copy at the Core layer.
+    assert "contiguous-only" in lowered
+    assert "policy-b" in lowered or "policy b" in lowered
+    # Saved-output backward, no version snapshot, no backward kernel.
+    assert "saved output" in lowered or "saved log probabilities" in lowered
+    assert "no version snapshot" in lowered
+    assert re.search(r"no dedicated log-softmax backward kernel", section,
+                     re.I), (
+        "the design no longer records that log_softmax has no backward kernel"
+    )
+    # The exact backward formula stays written down somewhere in the doc.
+    design = _normalized_doc(PHASE_E_DESIGN)
+    assert re.search(
+        r"upstream\s*[−-]\s*exp\(y\)\s*\*\s*"
+        r"sum\(upstream,\s*axis,\s*keepdims=True\)",
+        design,
+    ), "the design no longer states the log_softmax backward formula"
+    # log's live-input/version-checked contrast is preserved alongside it.
+    log_section = _design_section("NativeTensor.log()")
+    assert "rereads the live input" in log_section
+    assert "version-checked" in log_section
+    # No module was added at any layer.
+    from tensorforge.backends import cpp
+    import tensorforge.experimental as experimental
+
+    assert not hasattr(experimental, "NativeLogSoftmax")
+    assert "NativeLogSoftmax" not in cpp.NATIVE_MODULES
+
+
+def test_docs_present_the_shipped_cross_entropy_core():
+    """E5's load-bearing decisions must stay documented: rank-2 logits
+    with a fixed class axis, strict copied int64 targets (bool and
+    floating-point rejected) that caller mutation cannot reach,
+    mean/sum-only reduction, the fused stable forward with its private
+    saved probabilities, a backward that never rereads the logits, and
+    the contiguous-only ABI with Core-level Policy B."""
+    from tensorforge.backends import cpp
+
+    section = _design_section("NativeTensor.cross_entropy(")
+    lowered = section.lower()
+    assert "E5" in section and "implemented" in lowered, (
+        "the design does not record the cross-entropy Core layer as shipped"
+    )
+    # Shape and axis contract.
+    assert "rank" in lowered and "(batch_size, num_classes)" in section
+    assert "no `axis` argument" in section or "no axis argument" in lowered
+    # Fused stable forward — and explicitly not the naive form.
+    assert "fused" in lowered
+    assert "log-sum-exp" in lowered or "maximum-shift" in lowered
+    assert re.search(r"not\*{0,2}\s*`?-log\(p", lowered) or (
+        "−log(p[target])" in section) or ("-log(p[target])" in section), (
+        "the design no longer rejects -log(probability[target])"
+    )
+    # Private saved probabilities.
+    assert "saved probabilities" in lowered
+    assert "private" in lowered
+    # Backward reads the saved probabilities and never the logits.
+    assert re.search(r"never rereads? the logits", lowered), (
+        "the design no longer states that the backward never rereads logits"
+    )
+    # Strict int64 targets, copied, with bool/float rejected.
+    assert "int64" in lowered
+    assert "bool" in lowered and "floating-point" in lowered
+    assert re.search(r"caller mutation|mutation.{0,40}cannot", lowered), (
+        "the design no longer states target-copy mutation immunity"
+    )
+    # Reduction contract.
+    assert '"mean"' in section and '"sum"' in section
+    # Contiguous-only ABI + Policy-B copy at the Core layer.
+    assert "contiguous-only" in lowered
+    assert "policy-b" in lowered or "policy b" in lowered
+    # Both exports exist and are guarded.
+    for export in ("tf_core_cross_entropy_forward",
+                   "tf_core_cross_entropy_backward"):
+        assert export in section, export
+        assert export in cpp._CHECKED_KERNELS, export
+    # No tensor-data NumPy round-trip on this path.
+    design = _status_text(PHASE_E_DESIGN)
+    assert re.search(r"no tensor-data NumPy round-trip", design, re.I)
+    # The support matrix agrees about the Core layer.
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"E5[^.]{0,200}(Core|core)", matrix)
+    assert "cross_entropy_forward" in matrix
+    assert "cross_entropy_backward" in matrix
+    # The registry is the final authority: the Core wrappers stay
+    # layer-qualified and never acquire a bare Core alias.
+    assert "cross_entropy_forward" in cpp.TENSOR_CORE_OPS
+    assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
+    assert not hasattr(cpp.NativeTensorCore, "cross_entropy")
+
+
+def test_docs_present_the_shipped_cross_entropy_autograd():
+    """E6's load-bearing decisions must stay documented too: the public
+    scalar-output operation, graph-owned saved probabilities with their
+    retain/release rules, closure-owned immutable target metadata, no
+    logits reread and therefore no expected version, no-grad immediate
+    cleanup, and the fact that E6 added no C++ or ABI surface."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeTensor
+
+    section = _design_section("NativeTensor.cross_entropy(")
+    lowered = section.lower()
+    assert "E6" in section and "implemented" in lowered, (
+        "the design does not record the differentiable operation as shipped"
+    )
+    # The public signature, exactly as locked.
+    assert 'cross_entropy(targets, reduction="mean")' in section
+    assert hasattr(NativeTensor, "cross_entropy")
+    # Scalar output and mean/sum-only reduction.
+    assert "scalar" in lowered
+    assert '"mean"' in section and '"sum"' in section
+    # Graph-owned saved probabilities, with the lifetime rules stated.
+    assert re.search(r"graph-owned", lowered), (
+        "the design no longer calls the saved probabilities graph-owned"
+    )
+    assert "retain_graph" in section
+    assert re.search(r"no-grad forward closes it|closed immediately",
+                     lowered), (
+        "the design no longer states the no-grad immediate cleanup"
+    )
+    assert re.search(r"released exactly once", lowered), (
+        "the design no longer states single release of the saved state"
+    )
+    assert re.search(r"failed retryable backward", lowered), (
+        "the design no longer states retention across a failed backward"
+    )
+    # Closure-owned immutable target metadata, not a graph resource.
+    assert re.search(r"closure", lowered)
+    assert "int64" in lowered
+    # No logits reread, therefore no expected version.
+    assert re.search(r"never rereads? the logits", lowered)
+    assert re.search(r"_expected_versions == \(\)|no expected parameter "
+                     r"version|no logits version snapshot", lowered), (
+        "the design no longer states that no version snapshot is recorded"
+    )
+    # E6 added no numerical capability.
+    assert re.search(r"no numerical capability|added no numerical|no new "
+                     r"kernel|changed no c\+\+ file", lowered), (
+        "the design no longer states that E6 added no numerical capability"
+    )
+    # The saved-probability lifetime section is live now, not deferred.
+    lifetime = _design_section("Saved-probability lifetime")
+    assert re.search(r"live as of E6", lifetime), (
+        "the design no longer marks the saved-probability lifetime live"
+    )
+    assert "graph_resources" in lifetime
+    # The support matrix and the registry agree.
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"\| E6 \| \*\*Implemented\*\* \|",
+                     (REPO_ROOT / "docs/native_support_matrix.md").read_text(
+                         encoding="utf-8")), (
+        "the support matrix does not mark E6 implemented"
+    )
+    assert re.search(r"E6[^.]{0,200}differentiable", matrix, re.I)
+    assert "cross_entropy" in cpp.AUTOGRAD_OPS
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+
+
+def test_docs_present_the_shipped_classification_loss_module():
+    """E7's loss module must stay documented as what it is: a stateless
+    NativeModule that *delegates* to the E6 operation, supports mean and
+    sum only, and adds no kernel, ABI, or persistent state."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeCrossEntropyLoss
+
+    section = _design_section("NativeTensor.cross_entropy(")
+    lowered = section.lower()
+    assert "E7" in section and "NativeCrossEntropyLoss" in section, (
+        "the design does not record the loss module as shipped"
+    )
+    assert 'NativeCrossEntropyLoss(reduction="mean")' in section
+    # Delegation, not reimplementation.
+    assert re.search(r"delegat", lowered), (
+        "the design no longer states that the loss module delegates"
+    )
+    assert "logits.cross_entropy(targets" in section
+    # Stateless, and the reduction is configuration rather than state.
+    assert re.search(r"stateless|parameter-free|no parameters", lowered), (
+        "the design no longer states that the loss module is stateless"
+    )
+    assert re.search(r"buffer-free|no buffers", lowered)
+    assert re.search(r"state_dict\(\)`? is empty|no state-dictionary",
+                     lowered), (
+        "the design no longer states that state_dict() is empty"
+    )
+    assert re.search(r"constructor configuration", lowered), (
+        "the design no longer states that the reduction is not model state"
+    )
+    assert re.search(r"checkpoint format stays version 1|version 1", lowered)
+    assert '"mean"' in section and '"sum"' in section
+    # The registry and the export agree.
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "NativeCrossEntropyLoss" not in cpp.AUTOGRAD_OPS
+    assert NativeCrossEntropyLoss("sum").state_dict() == {}
+    # The support matrix presents it too.
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"NativeCrossEntropyLoss[^|]{0,400}Supported", matrix) or (
+        re.search(r"NativeCrossEntropyLoss", matrix)), (
+        "the support matrix does not present the loss module"
+    )
+
+
+def test_docs_present_the_reporting_only_accuracy_metric():
+    """E7's metric must stay documented **honestly**: reporting-only, a
+    Python float, an explicit `to_numpy()` conversion and a NumPy argmax,
+    no graph, and emphatically not native C++ compute."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeTensor, native_accuracy
+
+    section = _design_section("Metric contract")
+    lowered = section.lower()
+    assert "E7" in section and "implemented" in lowered, (
+        "the design does not record the metric as shipped"
+    )
+    assert "native_accuracy(logits, targets) -> float" in section
+    # Reporting-only, and not a kernel or an operation.
+    assert re.search(r"reporting", lowered)
+    assert re.search(r"not a native kernel|not native compute|no accuracy "
+                     r"kernel", lowered), (
+        "the design no longer denies that the metric is a native kernel"
+    )
+    assert re.search(r"not an autograd operation|no autograd node", lowered)
+    # The two mechanics that must never be hidden.
+    assert "to_numpy()" in section, (
+        "the design no longer documents the explicit to_numpy() conversion"
+    )
+    assert re.search(r"argmax", lowered), (
+        "the design no longer documents the NumPy argmax"
+    )
+    assert re.search(r"numpy", lowered)
+    # No graph, no gradients, and a Python float out.
+    assert re.search(r"build no graph|builds no graph", lowered)
+    assert re.search(r"python `?float", lowered)
+    # The shared strict target contract.
+    assert re.search(r"same contract as §6|same private|same strict",
+                     lowered), (
+        "the design no longer ties the metric to the §6 target contract"
+    )
+    # The inventory placement is stated, and the registry agrees.
+    assert "NATIVE_METRICS" in section
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    assert "native_accuracy" not in cpp.TENSOR_CORE_OPS
+    assert "native_accuracy" not in cpp.AUTOGRAD_OPS
+    assert "native_accuracy" not in cpp.NATIVE_MODULES
+    assert "native_accuracy" not in cpp.NATIVE_LOSSES
+    assert cpp.backend_info()["native_metrics"] == cpp.NATIVE_METRICS
+    # No native surface was invented for it.
+    assert not hasattr(NativeTensor, "native_accuracy")
+    assert not hasattr(NativeTensor, "argmax")
+    assert not hasattr(cpp.NativeTensorCore, "argmax")
+    for absent in ("tf_core_accuracy", "tf_core_argmax"):
+        assert absent not in cpp._CHECKED_KERNELS, absent
+    assert callable(native_accuracy)
+    # The support matrix says the same thing.
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"native_accuracy[^|]{0,600}(reporting|to_numpy)",
+                     matrix), (
+        "the support matrix does not present the metric as reporting-only"
+    )
+
+
+def test_docs_present_the_shipped_classification_training_proof():
+    """E8's proof must stay documented as what it is: a deterministic
+    fixed-task training and **exact** checkpoint-resume integration
+    result over the shipped stack, adding no capability — never a
+    benchmark, a speed claim, or a generalization claim."""
+    from tensorforge.backends import cpp
+
+    # The example the docs point at is really there, and it is the one
+    # the design document names.
+    example = REPO_ROOT / "examples" / "native_classification_training.py"
+    assert example.is_file()
+    assert (REPO_ROOT / "tests"
+            / "test_native_classification_training.py").is_file()
+
+    section = _design_section("E8 —")
+    lowered = section.lower()
+    assert "complete" in lowered, "the design does not record E8 as shipped"
+    assert "examples/native_classification_training.py" in section
+    # The load-bearing facts: a deterministic fixed multi-class dataset,
+    # the raw-logit path into the loss module, the reporting-only metric,
+    # the stateful optimizer, and the exact resume at a fixed split.
+    assert "three" in lowered and "deterministic" in lowered
+    assert "raw logits" in lowered
+    assert "NativeCrossEntropyLoss" in section
+    assert "native_accuracy" in section
+    assert re.search(r"reporting", lowered), (
+        "the design no longer marks the metric reporting-only in E8"
+    )
+    assert "NativeAdam" in section
+    assert re.search(r"no softmax or log-softmax", lowered), (
+        "the design no longer states that no final softmax layer exists"
+    )
+    assert re.search(r"exactly", lowered) and "resume" in lowered
+    assert re.search(r"format\s+\*{0,2}version 1", lowered), (
+        "the design no longer records the unchanged checkpoint format"
+    )
+    # No new capability, and honest framing.
+    assert re.search(r"no.{0,60}(kernel|capability)", lowered), (
+        "the design no longer states that E8 added no capability"
+    )
+    assert re.search(r"integration proof", lowered)
+    # The README documents the command and the proof.
+    readme = _status_text("README.md")
+    assert "examples/native_classification_training.py" in readme
+    assert re.search(
+        r"uv run python examples/native_classification_training.py", readme
+    ), "the README does not document the example's command"
+    # The support matrix presents it too, and the registries did not grow.
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert "native_classification_training.py" in matrix
+    assert re.search(r"E8 \| Implemented", matrix), (
+        "the support matrix does not mark E8 implemented"
+    )
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
+    assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,
+                      cpp.NATIVE_MODULES, cpp.NATIVE_LOSSES,
+                      cpp.NATIVE_METRICS):
+        for banned in ("classifier", "training", "checkpoint_resume"):
+            assert not [n for n in inventory if banned in n.lower()], banned
+
+
+def test_docs_present_the_shipped_classification_benchmark():
+    """E9's harness must stay documented as what it is: an honest local
+    characterization with correctness gated before timing and **no**
+    speed guarantee — never a performance contract or a CI gate."""
+    benchmark = REPO_ROOT / "benchmarks" / "benchmark_native_classification.py"
+    assert benchmark.is_file()
+    assert (REPO_ROOT / "tests"
+            / "test_native_classification_benchmark.py").is_file()
+
+    section = _design_section("E9 —")
+    lowered = section.lower()
+    assert "complete" in lowered, "the design does not record E9 as shipped"
+    assert "benchmarks/benchmark_native_classification.py" in section
+    # The seven measured operations are named.
+    for case in ("exp_forward", "log_forward", "softmax_forward",
+                 "log_softmax_forward", "cross_entropy_forward",
+                 "cross_entropy_backward", "classification_training_step"):
+        assert case in section, case
+    # The methodology commitments.
+    assert re.search(r"correctness before timing|correctness .{0,30}before",
+                     lowered), (
+        "the design no longer states that correctness runs before timing"
+    )
+    assert "median" in lowered and "spread" in lowered
+    assert "warm-up" in lowered or "warmup" in lowered
+    for label in ("stable_tensorforge", "numpy", "native_only"):
+        assert label in section, label
+    assert "--smoke" in section and "--json" in section
+    # And the honesty boundary, in the design and on the status surfaces.
+    assert re.search(r"no.{0,40}speed", lowered), (
+        "the design no longer states that no speed is asserted"
+    )
+    assert re.search(r"no ci timing threshold|no timing threshold", lowered)
+    readme = _status_text("README.md")
+    assert "benchmarks/benchmark_native_classification.py" in readme
+    assert re.search(
+        r"uv run python benchmarks/benchmark_native_classification.py --smoke",
+        readme,
+    ), "the README does not document the benchmark's smoke command"
+    assert "--json" in readme
+    for surface in ("README.md", "docs/native_support_matrix.md",
+                    "docs/roadmap.md"):
+        text = _status_text(surface)
+        assert re.search(r"(no speed|not a (performance )?(contract|guarantee)"
+                         r"|no timing threshold|no CI performance gate"
+                         r"|characterization)", text, re.I), surface
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"E9 \| Implemented", matrix), (
+        "the support matrix does not mark E9 implemented"
+    )
+
+
+def test_phase_e_closure_artifacts_exist_and_are_documented():
+    """E10 closed the phase. This replaces the milestone-era absence
+    checks (which asserted that the integration test and the benchmark
+    did *not* exist yet) with the durable positive form: the closure
+    artifacts are present, referenced, and described honestly."""
+    assert (REPO_ROOT / "tests" / "test_native_phase_e.py").is_file(), (
+        "the Phase-E cross-cutting integration test is missing"
+    )
+    section = _design_section("E10 —")
+    lowered = section.lower()
+    assert "complete" in lowered, "the design does not record E10 as shipped"
+    assert "tests/test_native_phase_e.py" in section
+    # The closure milestone's own deliverables, stated in its section.
+    for token in ("asan", "ubsan", "leaksanitizer", "release", "debug"):
+        assert token in lowered, token
+    assert re.search(r"no (new )?numerical (capability|behavior)", lowered), (
+        "the design no longer states that E10 added no numerical capability"
+    )
+    # The phase-completion statement exists and names what shipped.
+    completion = _status_text(PHASE_E_DESIGN)
+    assert "Phase-E status: complete" in completion
+    for token in ("exp", "log", "softmax", "log-softmax",
+                  "NativeCrossEntropyLoss", "native_accuracy",
+                  "checkpoint", "float64"):
+        assert token in completion, token
+
+
+def test_no_future_phase_is_claimed_by_phase_e_closure():
+    """Closing Phase E must not imply anything about what comes next: no
+    surface may present CUDA, AMP, other dtypes or devices, native
+    integer targets, normalization, RNG/dropout, or data loaders as
+    shipped, and the registry stays the authority."""
+    from tensorforge.backends import cpp
+
+    for future in ("cuda", "amp", "float32", "batchnorm", "layernorm",
+                   "dropout"):
+        assert future in cpp.UNSUPPORTED, future
+        assert future not in cpp.AUTOGRAD_OPS and future not in cpp.TENSOR_CORE_OPS
+        assert future not in cpp.NATIVE_MODULES
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert cpp.backend_info()["stable_framework_integration"] is False
+    claim = re.compile(
+        r"(CUDA|AMP|float32|float16|bfloat16|GPU|BatchNorm|LayerNorm|"
+        r"dropout|data loader|dataloader|native RNG|integer tensor)"
+        r"[^.]{0,60}(is|are|now)\s+(supported|implemented|shipped|available)",
+        re.I,
+    )
+    for surface in AUTHORITATIVE_STATUS_SURFACES + (PHASE_E_DESIGN,):
+        text = _status_text(surface)
+        match = claim.search(text)
+        assert match is None, (surface, match.group(0) if match else "")
+
+
+def test_no_committed_benchmark_timing_promise():
+    """Benchmark numbers are machine-specific characterizations, so no
+    status surface may publish a classification timing as a project
+    promise, and no benchmark result artifact may be tracked."""
+    for surface in ("README.md", "docs/native_support_matrix.md",
+                    "docs/roadmap.md", PHASE_E_DESIGN):
+        text = _status_text(surface)
+        window = re.findall(
+            r"[^.]{0,120}benchmark_native_classification[^.]{0,200}", text
+        )
+        for chunk in window:
+            assert not re.search(r"\d+\s*(us|ms|µs|microseconds|milliseconds)"
+                                 r"\b", chunk, re.I), (surface, chunk[:120])
+            assert not re.search(r"\bx faster|\bspeedup\b", chunk, re.I), surface
+    assert not list((REPO_ROOT / "benchmarks").glob("*.json"))
+    assert not list(REPO_ROOT.glob("benchmark*.json"))
+
+
+def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():
+    """Phase E adds no persistent state: the native checkpoint format
+    version stays 1, and the Phase-D surface is untouched."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+    import tensorforge.experimental as experimental
+
+    assert native_checkpoint._FORMAT_VERSION == 1
+    for module in ("NativeFlatten", "NativeConv2d", "NativeMaxPool2d"):
+        assert module in cpp.NATIVE_MODULES and module in experimental.__all__
+    for op in ("conv2d", "maxpool2d"):
+        assert op in cpp.AUTOGRAD_OPS
+    # Stable/native separation and the remaining future work stay explicit.
+    assert cpp.backend_info()["stable_framework_integration"] is False
+    for future in ("cuda", "float32", "amp", "batchnorm", "layernorm",
+                   "dropout"):
+        assert future in cpp.UNSUPPORTED, future
+
+
+# Where the *current* capability status is stated. Per-milestone historical
+# records (docs/native_cnn_design.md, the milestone log in
+# docs/backend_experiments.md) deliberately preserve superseded wording and
+# are not scanned.
+AUTHORITATIVE_STATUS_SURFACES = (
+    "README.md",
+    "docs/native_support_matrix.md",
+    "docs/architecture.md",
+    "docs/project_summary.md",
+    "docs/roadmap.md",
+    "src/tensorforge/backends/cpp.py",
+    "src/tensorforge/experimental/__init__.py",
+)
+
+
+# How a shipped Phase-D layer gets named in prose: by class name, or as
+# "the convolution/pooling module". Emphasis markers are stripped before
+# matching, so "the pooling *module*" and "`NativeMaxPool2d`" both count.
+_MODULE_SUBJECTS = {
+    "NativeConv2d": r"(NativeConv2d|convolution module|Conv2d module)",
+    "NativeMaxPool2d": (
+        r"(NativeMaxPool2d|pooling module|MaxPool2d module|max-pooling module)"
+    ),
+}
+_ABSENT_CLAIM = (
+    r"(not yet implemented|not implemented|still unsupported|is unsupported"
+    r"|does not exist|has not shipped)"
+)
+
+
+def _status_text(relative_path):
+    """Whitespace-normalized text with markdown emphasis stripped, so a
+    status claim is matched by meaning rather than by formatting."""
+    text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    return re.sub(r"\s+", " ", re.sub(r"[*`]", "", text))
+
+
+def test_authoritative_surfaces_do_not_call_shipped_modules_unimplemented():
+    """Semantic, not token-level: if a module is in the live registry and
+    the public exports, no authoritative current-status text may claim it
+    is missing. Both word orders are checked within a narrow same-sentence
+    window, so unrelated prose cannot trip the guard."""
+    from tensorforge.backends import cpp
+    import tensorforge.experimental as experimental
+
+    for module, subject in _MODULE_SUBJECTS.items():
+        # The premise: these really are implemented.
+        assert module in cpp.NATIVE_MODULES and module in experimental.__all__
+        forward = re.compile(subject + r"[^.]{0,120}?" + _ABSENT_CLAIM, re.I)
+        backward = re.compile(_ABSENT_CLAIM + r"[^.]{0,120}?" + subject, re.I)
+        for name in AUTHORITATIVE_STATUS_SURFACES:
+            text = _status_text(name)
+            for pattern in (forward, backward):
+                match = pattern.search(text)
+                assert match is None, (
+                    f"{name} claims {module} is unimplemented "
+                    f"({match.group(0)!r}), but it is in NATIVE_MODULES"
+                )
 
 
 def test_native_cnn_design_is_linked_and_referenced():

@@ -13,7 +13,8 @@ tensorforge.Tensor: the two autograd engines never mix, no conversion is
 implicit, and it shares no state with the stable framework. A full native
 training stack — parameters, modules, layers, a loss, optimizers, and
 pickle-free checkpoints — is built on it and described below. The native
-CNN stack (Phase D) has begun with ``NativeFlatten`` (milestone D1) and,
+CNN stack (Phase D) is **complete** (milestones D0–D12): it began with
+``NativeFlatten`` (milestone D1) and,
 as of milestone D6, the differentiable **``NativeTensor.conv2d``** operation
 (NCHW/OIHW cross-correlation with int/tuple stride and padding and optional
 bias; input, weight, and bias gradients through native backward kernels and
@@ -38,10 +39,37 @@ checkpoint paths. Milestone D11 proved the whole stack trains — see
 ``examples/native_cnn_training.py``, whose checkpoint-interrupted run
 reproduces the uninterrupted one exactly — and **milestone D12 closed
 Phase D** with cross-cutting integration tests, honest CNN benchmarks, and
-ASan/UBSan validation. What the native line still does **not** have: a
-classification stack (softmax/cross-entropy), further activations/math,
-normalization (BatchNorm/LayerNorm), dropout or a native RNG,
-float32/dtype expansion, CUDA, AMP, and data-pipeline abstractions.
+ASan/UBSan validation. The native **classification** stack
+(contracted for Phase E in docs/native_classification_design.md) is
+**complete**: milestones E1-E4 shipped the differentiable ``exp``,
+``log``, ``softmax``, and ``log_softmax``; E5 and E6 shipped the fused
+stable ``cross_entropy`` — its graph-unaware Core contract and then the
+differentiable ``NativeTensor.cross_entropy`` with graph-owned saved
+probabilities, no logits reread, and no expected version snapshot; and
+**milestone E7** adds the public surface described below,
+``NativeCrossEntropyLoss`` and ``native_accuracy``; and **milestone E8**
+proves the assembled stack end to end without adding to it —
+``examples/native_classification_training.py`` trains a native
+Conv2d/ReLU/MaxPool2d/Flatten/Linear classifier over **raw logits** on
+twelve fixed 6x6 images in three classes for 40 deterministic
+``NativeAdam(lr=0.05)`` steps (loss 1.159638 -> 0.000101, reporting
+accuracy 0.3333 -> 1.0000), then checkpoints at step 15 and resumes into
+a fresh model/optimizer pair that reproduces the remaining losses,
+parameters, optimizer state, logits, predictions, and accuracy exactly
+(native checkpoint format version 1 unchanged); and **milestone E9**
+characterizes that stack in
+``benchmarks/benchmark_native_classification.py`` — seven
+correctness-gated cases with honest reference labels, medians and spread
+after warm-up, ``--smoke``/``--json`` modes, and no speed assertion or
+timing threshold anywhere. **Milestone E10 closed Phase E** with
+cross-cutting integration tests (``tests/test_native_phase_e.py``),
+Release and Debug native builds, Clang ASan/UBSan and LeakSanitizer
+validation, and documentation reconciliation — adding no numerical
+capability. **Phase E is complete.** What the native line
+still does **not** have: further
+activations/math, normalization (BatchNorm/LayerNorm), dropout or a
+native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline
+abstractions.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
@@ -52,7 +80,10 @@ assignment, deterministic identity-deduplicated recursive traversal,
 recursive ``zero_grad()``, and ``train()``/``eval()`` state propagation
 — plus the in-memory state dictionary contract (Advanced C++ v3.3):
 ``state_dict()`` snapshots and atomic identity-preserving
-``load_state_dict()``, parameters only. ``NativeLinear`` (Advanced C++
+``load_state_dict()``. That contract began as parameters-only and, since
+the v3.15 buffer support (``register_buffer``/``buffers()``), covers
+**parameters and persistent buffers** — non-persistent buffers are never
+serialized. ``NativeLinear`` (Advanced C++
 v3.4) is the first concrete native layer: a fully connected
 ``y = x @ weight (+ bias)`` on NativeModule/NativeParameter with
 deterministic seeded initialization, strictly 2-D input semantics, and
@@ -110,6 +141,27 @@ separate from the stable ``tensorforge.serialization`` (no scheduler
 or random-state capture, no ``map_location``). Still fully separate
 from ``tensorforge.nn`` and ``tensorforge.optim``.
 
+``NativeCrossEntropyLoss`` (Phase E, milestone E7) is the native
+classification loss: a parameter-free, buffer-free ``NativeModule``
+whose forward is exactly
+``logits.cross_entropy(targets, reduction=self.reduction)``. It adds no
+kernel, ABI symbol, arithmetic, or target validation of its own, so it
+inherits every E5/E6 guarantee unchanged — strict copied ``int64``
+targets, the fused stable forward, a scalar output, graph-owned saved
+probabilities, no logits reread, no expected version snapshot, and full
+failure atomicity. Its ``"mean"``/``"sum"`` reduction is validated in the
+constructor by the operation's own validator and is **constructor
+configuration, not model state**: it contributes no ``state_dict()``
+entries and no checkpoint keys (format version 1 is unchanged).
+``native_accuracy(logits, targets) -> float`` (also E7) is a
+**reporting-only** helper, not native C++ compute and not an autograd
+operation: it validates rank-2 logits and targets under the same strict
+contract, materializes the logits **once** through the explicit public
+``to_numpy()`` boundary, takes ``numpy.argmax(axis=1)`` (first-maximal
+index on ties), and returns a plain ``float`` in ``[0.0, 1.0]`` — while
+building no graph, touching no gradient, parameter, or version, and
+retaining nothing.
+
 Constructors need the experimental C++ backend to be built; importing
 this package is always safe (the library loads lazily on first use).
 """
@@ -124,6 +176,8 @@ from .native_conv2d import NativeConv2d
 from .native_maxpool2d import NativeMaxPool2d
 from .native_sequential import NativeSequential
 from .native_mse_loss import NativeMSELoss
+from .native_cross_entropy_loss import NativeCrossEntropyLoss
+from .native_metrics import native_accuracy
 from .native_sgd import NativeSGD
 from .native_adam import NativeAdam
 from .native_checkpoint import load_native_checkpoint, save_native_checkpoint
@@ -140,6 +194,8 @@ __all__ = [
     "NativeMaxPool2d",
     "NativeSequential",
     "NativeMSELoss",
+    "NativeCrossEntropyLoss",
+    "native_accuracy",
     "NativeSGD",
     "NativeAdam",
     "save_native_checkpoint",
