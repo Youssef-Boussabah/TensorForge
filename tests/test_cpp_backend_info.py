@@ -201,6 +201,43 @@ def test_phase_e_boundary_is_reported_honestly():
     assert info["stable_framework_integration"] is False
 
 
+def test_e8_added_no_capability_inventory_entry():
+    """E8 is the deterministic classification training and exact
+    checkpoint-resume proof: an example plus integration tests. A proof
+    is an integration *result*, never a capability, so every inventory
+    must be exactly what E7 left behind — and no training, classifier,
+    dataset, or checkpoint-resume name may appear in any of them."""
+    info = cpp.backend_info()
+    assert tuple(info["raw_kernels"]) == EXPECTED_KERNELS
+    assert info["native_modules"] == (
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+    )
+    assert info["native_losses"] == ("NativeMSELoss", "NativeCrossEntropyLoss")
+    assert info["native_metrics"] == ("native_accuracy",)
+    assert info["native_optimizers"] == ("NativeSGD", "NativeAdam")
+    assert info["autograd_ops"][-1] == "cross_entropy"
+    assert info["state_support"] == (
+        "state_dict", "load_state_dict",
+        "save_native_checkpoint", "load_native_checkpoint",
+    )
+    for inventory in ("raw_kernels", "tensor_core_ops", "autograd_ops",
+                      "native_modules", "native_losses", "native_metrics",
+                      "native_optimizers"):
+        for banned in ("train", "classifier", "checkpoint_resume", "example",
+                       "dataset", "accuracy_kernel"):
+            offenders = [name for name in info[inventory]
+                         if banned in name.lower()]
+            assert offenders == [], (inventory, banned, offenders)
+    # No accuracy/argmax/training C ABI symbol was invented for the proof.
+    for absent in ("tf_core_accuracy", "tf_core_argmax", "tf_core_train_step"):
+        assert absent not in cpp._CHECKED_KERNELS, absent
+    # The proof persists nothing new: still float64/cpu, still separate.
+    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_devices"] == ("cpu",)
+    assert info["stable_framework_integration"] is False
+
+
 @needs_native
 def test_advertised_raw_kernels_are_callable_functions():
     for name in cpp.RAW_KERNELS:

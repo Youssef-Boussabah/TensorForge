@@ -50,9 +50,17 @@ recorded. E6 added **no** kernel, ABI export, or numerical change.
 Milestone **E7** completed the public surface: the stateless
 **`NativeCrossEntropyLoss`** module (whose entire forward delegates to
 that operation) and the reporting-only **`native_accuracy`** helper.
-**Everything else in Phase E (E8–E10) is still designed-only** — there
-is no deterministic native classification training or exact-resume proof,
-no classification benchmark, and no phase closure. See also
+Milestone **E8** then proved the assembled stack end to end
+(`examples/native_classification_training.py`): a deterministic native
+Conv2d→ReLU→MaxPool2d→Flatten→Linear classifier over raw logits on twelve
+fixed 6×6 images in three classes, 40 `NativeAdam(lr=0.05)` steps (loss
+1.159638 → 0.000101, accuracy 0.3333 → 1.0000), checkpointed at step 15
+and resumed into a **fresh** model/optimizer pair that reproduces the
+remaining loss suffix, parameters, optimizer state, logits, predictions,
+and accuracy **exactly** — adding **no** operation, module, optimizer,
+kernel, ABI symbol, or schema change (checkpoint format stays version 1).
+**Everything else in Phase E (E9–E10) is still designed-only** — there
+is no classification benchmark and no phase closure. See also
 [roadmap.md](roadmap.md). Everything Phase D
 deliberately excluded
 remains unsupported and is named in the "Unsupported or future" section
@@ -213,6 +221,7 @@ Milestone **E7** then added the public surface over that operation:
 | Checkpoint files / resume | Supported | v3.14: `save_native_checkpoint` / `load_native_checkpoint` — one pickle-free NPZ archive (format `"tensorforge.native_checkpoint"`, version 1) holding the model state, optionally one native optimizer's v3.13 state, and JSON-compatible metadata; UTF-8/JSON uint8 manifest, indexed float64 array entries, strict full-archive validation before any live mutation, strict optimizer presence/type matching, atomic temporary-file replacement, `allow_pickle=False` loading, deterministic bit-identical file resume (`examples/native_checkpoint_resume.py`); no scheduler or random-state capture, no `map_location` |
 | End-to-end MLP training | Proven | `examples/native_mlp_training.py`: 25 deterministic steps, monotonic 99.5% loss reduction |
 | End-to-end CNN training + checkpoint resume | Proven | D11: `examples/native_cnn_training.py` — convolution → activation → pooling → flatten → linear over eight fixed 6×6 images, learning a spatial edge-strength target with `NativeMSELoss` and `NativeAdam(lr=0.05)`; 40 deterministic steps, loss 0.771306 → 0.011085 (98.6% reduction); a run interrupted at step 15, checkpointed (model **and** optimizer state) and resumed into a fresh model/optimizer pair reproduces the uninterrupted run **exactly** — losses, predictions, parameter values, and optimizer state. Adds no kernel, operation, loss, optimizer, or checkpoint schema |
+| End-to-end classification training + checkpoint resume | Proven | E8: `examples/native_classification_training.py` — the same layer stack over **raw logits** into `NativeCrossEntropyLoss`, on twelve fixed 6×6 images in three classes with `NativeAdam(lr=0.05)`; 40 deterministic steps, loss 1.159638 → 0.000101 (99.99% reduction) and reporting accuracy 0.3333 → 1.0000 (`native_accuracy`, outside the training mathematics); a run interrupted at step 15, checkpointed (model **and** optimizer state, format version 1) and resumed into a fresh model/optimizer pair reproduces the uninterrupted run **exactly** — the whole remaining loss suffix, parameters, optimizer moments and step counters, logits, predictions, and accuracy. Adds no kernel, operation, module, loss, metric, optimizer, or checkpoint schema |
 
 ## Unsupported or future (native line)
 
@@ -239,16 +248,16 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- a **deterministic native classification training example and exact
-  checkpoint-resume proof** (E8), classification **benchmarks** (E9), and
-  Phase-E **closure and sanitizer validation** (E10). The classification
-  *capabilities* themselves are now present — E1–E4 shipped `exp`,
-  `log`, `softmax`, and `log_softmax`, E5 and E6 shipped the fused
-  `cross_entropy` Core contract and the differentiable operation over it,
-  and E7 shipped `NativeCrossEntropyLoss` and `native_accuracy` — but
-  nothing has yet trained a classifier end to end on the native line, so
-  the only proven end-to-end training runs remain the regression ones
-  through `NativeMSELoss`. See
+- classification **benchmarks** (E9) and Phase-E **closure and sanitizer
+  validation** (E10). The classification *capabilities* are all present
+  — E1–E4 shipped `exp`, `log`, `softmax`, and `log_softmax`, E5 and E6
+  shipped the fused `cross_entropy` Core contract and the differentiable
+  operation over it, E7 shipped `NativeCrossEntropyLoss` and
+  `native_accuracy`, and E8 proved deterministic classification training
+  and exact checkpoint resume
+  (`examples/native_classification_training.py`) — but that proof is a
+  fixed-task **integration** result, not a benchmark: no classification
+  timings are published and no speed is claimed. See
   [native_classification_design.md](native_classification_design.md)
 - `NLLLoss`, binary cross-entropy, class weights, `ignore_index`, label
   smoothing, soft/one-hot targets, and `reduction="none"` on the native
@@ -381,7 +390,7 @@ CUDA, AMP, BatchNorm, Dropout, im2col, or BLAS/threaded convolution.
 The architecture contract is locked in
 [native_classification_design.md](native_classification_design.md); the
 registry above (and `tensorforge.backends.cpp`) stays the authority on
-what is live. Seven of eleven milestones have landed.
+what is live. Eight of eleven milestones have landed.
 
 | Capability | Milestone | Status |
 |---|---|---|
@@ -393,12 +402,14 @@ what is live. Seven of eleven milestones have landed.
 | Fused `cross_entropy` **Core contract**: the internal fused forward (scalar loss **and** private saved probabilities in one pass) and saved-probability backward kernels, the guarded contiguous-only `tf_core_cross_entropy_forward` / `tf_core_cross_entropy_backward` exports (which revalidate every target index themselves), their ctypes registration, and the graph-unaware `NativeTensorCore.cross_entropy_forward` / `cross_entropy_backward` wrappers with strict copied-`int64` targets, `"mean"`/`"sum"` reductions, Policy-B copy-then-compute, and deterministic multiple-output failure cleanup | E5 | **Implemented** (the Core layer; the autograd node over it is the E6 row below) |
 | The differentiable `NativeTensor.cross_entropy(targets, reduction="mean")` operation over that Core contract: one scalar-output autograd node with **graph-owned** private saved probabilities (retained under `retain_graph=True` and a failed retryable backward, released exactly once with the graph history, closed immediately on a no-grad forward), closure-owned immutable `int64` target metadata, **no logits reread** and therefore **no expected parameter version**, and complete failure atomicity across E5 forward, graph construction, and backward. Adds no kernel, no ABI export, and no numerical change | E6 | **Implemented** |
 | The public classification surface: the stateless **`NativeCrossEntropyLoss`** module, whose entire forward delegates to the E6 operation (no kernel, ABI symbol, arithmetic, target validation, or state of its own), and the reporting-only **`native_accuracy`** helper (strict targets, one explicit `to_numpy()`, NumPy `argmax`, Python `float`, no graph/gradient/version/storage side effects) — plus the new `NATIVE_METRICS` inventory and its `backend_info()` key. Adds no training mathematics | E7 | **Implemented** |
-| Deterministic classification training + exact checkpoint resume | E8 | Not started |
+| Deterministic classification training + exact checkpoint resume: `examples/native_classification_training.py` — a `NativeConv2d(1, 4, 3, seed=0)` → `NativeReLU` → `NativeMaxPool2d(2)` → `NativeFlatten` → `NativeLinear(16, 3, seed=1)` classifier over **raw logits** into `NativeCrossEntropyLoss`, on twelve fixed 6×6 single-channel images in three classes (four per class, positions varying, committed as source literals, labels host integers), trained full-batch for **40** deterministic `NativeAdam(lr=0.05)` steps: loss **1.159638 → 0.000101** (99.99% reduction), reporting accuracy **0.3333 → 1.0000**, both the convolution and the linear head moving. Interrupted at step **15**, checkpointed (model **and** optimizer state, format **version 1**, no new keys) and resumed into a **fresh** model/optimizer pair, it reproduces the uninterrupted run **exactly** — remaining loss suffix, parameters, both Adam moment buffers, step counters, logits, predictions, and accuracy. `native_accuracy` is used for reporting only, never inside the training mathematics, and a tripwire proves one complete step reaches no NumPy compute or tensor-data conversion. Adds **no** operation, module, loss, metric, optimizer, kernel, ABI symbol, or schema change, and no inventory entry | E8 | **Implemented** (an integration proof on one fixed task — not a benchmark, not a generalization or speed claim) |
 | Classification benchmarks; phase integration, sanitizer, and closure | E9–E10 | Not started |
 
 Phase E adds **no** persistent state: the native checkpoint format stays
-**version 1**, and E1–E6 added no parameter, buffer, module, loss,
-metric, optimizer, schema, benchmark, or example — no division operation
+**version 1**, E1–E6 added no parameter, buffer, module, loss,
+metric, optimizer, schema, benchmark, or example, E7 added a stateless
+loss module and a stateless reporting helper, and E8 added only an
+example and integration tests — no division operation
 (`log`'s derivative composes from the existing `reciprocal`), no
 public `max`/`argmax`/`gather` (the softmax, log-softmax, and
 cross-entropy shifts and target lookups are internal to their kernels),
@@ -432,6 +443,7 @@ uv run python examples/native_autograd_demo.py         # native backward
 uv run python examples/native_mlp_training.py          # end-to-end training proof
 uv run python examples/native_checkpoint_resume.py     # save, restore, resume bit-for-bit
 uv run python examples/native_cnn_training.py          # end-to-end CNN training + resume proof
+uv run python examples/native_classification_training.py  # native classification + exact resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke   # CNN characterization
 uv run pytest                                          # full suite (native tests skip if unbuilt)

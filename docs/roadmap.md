@@ -703,7 +703,7 @@ The Python line is done; what remains is expansion on its own terms:
     milestone-era doc guardrails with durable semantic checks. See the
     [support matrix](native_support_matrix.md) for the finalized status.
   - **Phase E — Native Classification and Stable Math — in progress
-    (E0-E7 complete).** The **E0 architecture contract
+    (E0-E8 complete).** The **E0 architecture contract
     is written** —
     [native_classification_design.md](native_classification_design.md)
     locks the scope, the public API surface (`exp`, `log`, `softmax`,
@@ -839,9 +839,40 @@ The Python line is done; what remains is expansion on its own terms:
     inventories that describe their layers — ``NATIVE_LOSSES`` and the
     new ``NATIVE_METRICS``, reported by ``backend_info()`` — and with
     that, no classification name remains listed as unsupported.
+    **E8 has shipped the end-to-end proof**, and it too added no
+    numerical operation or runtime capability — it is Python example,
+    integration tests, and documentation only.
+    ``examples/native_classification_training.py`` trains a
+    ``NativeConv2d(1, 4, 3, seed=0)`` → ``NativeReLU`` →
+    ``NativeMaxPool2d(2)`` → ``NativeFlatten`` → ``NativeLinear(16, 3,
+    seed=1)`` classifier — a named ``NativeModule`` whose children are
+    registered through the ordinary assignment path — on twelve fixed
+    6×6 single-channel images in **three** classes (vertical bar,
+    horizontal bar, diagonal line; four positions each, committed as
+    source literals, labels host integers, nothing generated,
+    downloaded, augmented, or shuffled). Its **raw logits** go straight
+    to ``NativeCrossEntropyLoss`` — there is deliberately no softmax or
+    log-softmax layer, because the fused E5/E6 kernel is what keeps the
+    loss stable — and 40 full-batch ``NativeAdam(lr=0.05)`` steps take
+    the loss from **1.159638 to 0.000101** (99.99%) and the reporting
+    accuracy from **0.3333 to 1.0000**, with ``native_accuracy`` called
+    only outside the training mathematics (it converts to the host on
+    purpose). Interrupting at step **15**, checkpointing model **and**
+    optimizer state through the existing pickle-free path (format
+    **version 1**, no new keys, no graph data or target metadata
+    serialized), and resuming into a **fresh** model/optimizer pair
+    reproduces the uninterrupted run **exactly**: the whole remaining
+    loss suffix, every parameter, both ``NativeAdam`` moment buffers,
+    every step
+    counter, the final logits, the predictions, and the accuracy. Two
+    independent uninterrupted runs are exactly equal too, repeated steps
+    retain no completed graph or saved probability and grow no native
+    storage, and a tripwire proves one complete step reaches no NumPy
+    numerical routine and converts no tensor data. It is an
+    **integration proof on one fixed task** — not a benchmark, not a
+    speed claim, and not a generalization claim.
     **Everything else in Phase E is still designed-only**: the
-    deterministic native classification training and exact-resume proof
-    (E8), the classification benchmarks (E9), and phase closure with
+    classification benchmarks (E9) and phase closure with
     sanitizer validation (E10) have not started, and Phase E is **not**
     complete. Deliberately outside
     Phase E and still unplanned: more native activations beyond it, native

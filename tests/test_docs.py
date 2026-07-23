@@ -576,8 +576,9 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
     """Phase E ships one milestone at a time, and the registries are the
     honest record. E1-E4 implemented `exp`, `log`, `softmax`, and
     `log_softmax`; E5 implemented cross-entropy's **Core layer**; E6 the
-    differentiable operation over it. E7 has not landed, so every later
-    capability must still be absent from every implemented inventory."""
+    differentiable operation over it; E7 the public loss module and the
+    reporting metric. E8 is an integration proof and deliberately adds
+    **no** inventory entry, so the registries below must not grow."""
     from tensorforge.backends import cpp
 
     # E1/E2/E3/E4 — implemented, in the two inventories they belong to,
@@ -665,7 +666,7 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
 
 
 def test_phase_e_milestone_status_is_reported_honestly():
-    """E0-E5 are marked complete, E6-E10 are not, and Phase E itself is
+    """E0-E8 are marked complete, E9-E10 are not, and Phase E itself is
     never declared complete. Checked semantically against the design
     document's status table and the live registry."""
     from tensorforge.backends import cpp
@@ -673,13 +674,13 @@ def test_phase_e_milestone_status_is_reported_honestly():
     # The ladder's status table is the one place per-milestone status is
     # declared, so the row checks run inside that section only.
     ladder = _design_section("Milestone ladder")
-    for done in ("E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7"):
+    for done in ("E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"):
         row = re.search(rf"\|\s*{done}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {done}"
         assert "complete" in row.group(1).lower(), (
             f"the design does not mark {done} complete"
         )
-    for pending in ("E8", "E9", "E10"):
+    for pending in ("E9", "E10"):
         row = re.search(rf"\|\s*{pending}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {pending}"
         assert "complete" not in row.group(1).lower(), (
@@ -701,7 +702,8 @@ def test_phase_e_milestone_status_is_reported_honestly():
     # live as differentiable operations, E5's Core wrappers at the Core
     # layer, and E7's module and metric in their own layer inventories —
     # while nothing E8-E10 owns (a training proof, a benchmark, phase
-    # closure) is a capability name at all.
+    # closure) is a capability name at all. E8's proof is an example plus
+    # integration tests, so it added no inventory entry either.
     for shipped in ("exp", "log", "softmax", "log_softmax"):
         assert shipped in cpp.AUTOGRAD_OPS, shipped
         assert shipped not in cpp.UNSUPPORTED, shipped
@@ -1075,22 +1077,96 @@ def test_docs_present_the_reporting_only_accuracy_metric():
     )
 
 
+def test_docs_present_the_shipped_classification_training_proof():
+    """E8's proof must stay documented as what it is: a deterministic
+    fixed-task training and **exact** checkpoint-resume integration
+    result over the shipped stack, adding no capability — never a
+    benchmark, a speed claim, or a generalization claim."""
+    from tensorforge.backends import cpp
+
+    # The example the docs point at is really there, and it is the one
+    # the design document names.
+    example = REPO_ROOT / "examples" / "native_classification_training.py"
+    assert example.is_file()
+    assert (REPO_ROOT / "tests"
+            / "test_native_classification_training.py").is_file()
+
+    section = _design_section("E8 —")
+    lowered = section.lower()
+    assert "complete" in lowered, "the design does not record E8 as shipped"
+    assert "examples/native_classification_training.py" in section
+    # The load-bearing facts: a deterministic fixed multi-class dataset,
+    # the raw-logit path into the loss module, the reporting-only metric,
+    # the stateful optimizer, and the exact resume at a fixed split.
+    assert "three" in lowered and "deterministic" in lowered
+    assert "raw logits" in lowered
+    assert "NativeCrossEntropyLoss" in section
+    assert "native_accuracy" in section
+    assert re.search(r"reporting", lowered), (
+        "the design no longer marks the metric reporting-only in E8"
+    )
+    assert "NativeAdam" in section
+    assert re.search(r"no softmax or log-softmax", lowered), (
+        "the design no longer states that no final softmax layer exists"
+    )
+    assert re.search(r"exactly", lowered) and "resume" in lowered
+    assert re.search(r"format\s+\*{0,2}version 1", lowered), (
+        "the design no longer records the unchanged checkpoint format"
+    )
+    # No new capability, and honest framing.
+    assert re.search(r"no.{0,60}(kernel|capability)", lowered), (
+        "the design no longer states that E8 added no capability"
+    )
+    assert re.search(r"integration proof", lowered)
+    # The README documents the command and the proof.
+    readme = _status_text("README.md")
+    assert "examples/native_classification_training.py" in readme
+    assert re.search(
+        r"uv run python examples/native_classification_training.py", readme
+    ), "the README does not document the example's command"
+    # The support matrix presents it too, and the registries did not grow.
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert "native_classification_training.py" in matrix
+    assert re.search(r"E8 \| Implemented", matrix), (
+        "the support matrix does not mark E8 implemented"
+    )
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
+    assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,
+                      cpp.NATIVE_MODULES, cpp.NATIVE_LOSSES,
+                      cpp.NATIVE_METRICS):
+        for banned in ("classifier", "training", "checkpoint_resume"):
+            assert not [n for n in inventory if banned in n.lower()], banned
+
+
 def test_phase_e_remaining_milestones_are_not_claimed():
-    """E8-E10 own the training proof, the benchmarks, and phase closure.
-    None of them may be implied as done: no classification training
-    example or benchmark exists, and Phase E is still open."""
-    for missing in ("examples/native_classification_training.py",
-                    "benchmarks/benchmark_native_classification.py"):
+    """E9 and E10 own the benchmarks and phase closure. Neither may be
+    implied as done: no classification benchmark or phase-closure test
+    file exists, and Phase E is still open."""
+    for missing in ("benchmarks/benchmark_native_classification.py",
+                    "tests/test_native_phase_e.py"):
         assert not (REPO_ROOT / missing).exists(), (
-            f"{missing} exists, but E8/E9 have not shipped"
+            f"{missing} exists, but E9/E10 have not shipped"
         )
     design = _status_text(PHASE_E_DESIGN)
     assert re.search(r"Phase E is [^.]{0,30}not[^.]{0,30}complete", design)
     ladder = _design_section("Milestone ladder")
-    for pending in ("E8", "E9", "E10"):
+    for pending in ("E9", "E10"):
         row = re.search(rf"\|\s*{pending}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {pending}"
         assert "complete" not in row.group(1).lower(), pending
+    # No status surface may point at an E9 benchmark artifact, and the
+    # phase-level claim stays "in progress" everywhere it is stated.
+    for name in ("README.md", "docs/native_support_matrix.md",
+                 "docs/roadmap.md"):
+        text = _status_text(name)
+        # The E9 artifact is named only in the design document's plan for
+        # it, never presented as existing on a status surface.
+        assert "benchmark_native_classification" not in text, name
+        assert not re.search(r"Phase E[^.]{0,60}is complete", text), name
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"Phase E[^.]{0,120}in progress", matrix, re.I)
 
 
 def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():

@@ -21,9 +21,15 @@ reduction="mean")`, one autograd node with graph-owned saved
 probabilities and no logits reread), and E7 (the stateless
 `NativeCrossEntropyLoss` module delegating to that operation, and the
 reporting-only `native_accuracy` — explicit `to_numpy()` + NumPy
-argmax, no graph, in the new `NATIVE_METRICS` inventory) shipped, with
-deterministic classification training and exact resume (E8), benchmarks
-(E9), and phase closure (E10) still unimplemented;
+argmax, no graph, in the new `NATIVE_METRICS` inventory), and E8 (the
+deterministic classification training and exact checkpoint-resume proof
+— `examples/native_classification_training.py`: a three-class native
+CNN classifier over raw logits, 40 `NativeAdam(lr=0.05)` steps, loss
+1.159638 → 0.000101, accuracy 0.3333 → 1.0000, interrupted at step 15
+and resumed into a fresh model/optimizer pair that matches exactly;
+example, tests, and docs only — no new capability) shipped, with
+classification benchmarks (E9) and phase closure (E10) still
+unimplemented;
 normalization/dropout/RNG, CPU optimization, and CUDA experiments are
 future work beyond it).
 Position the project as serious and systems-focused — never

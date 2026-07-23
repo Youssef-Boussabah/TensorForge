@@ -47,9 +47,17 @@ stable ``cross_entropy`` — its graph-unaware Core contract and then the
 differentiable ``NativeTensor.cross_entropy`` with graph-owned saved
 probabilities, no logits reread, and no expected version snapshot; and
 **milestone E7** adds the public surface described below,
-``NativeCrossEntropyLoss`` and ``native_accuracy``. What the native line
-still does **not** have: a deterministic classification training and
-exact-resume proof (E8), classification benchmarks (E9), phase closure
+``NativeCrossEntropyLoss`` and ``native_accuracy``; and **milestone E8**
+proves the assembled stack end to end without adding to it —
+``examples/native_classification_training.py`` trains a native
+Conv2d/ReLU/MaxPool2d/Flatten/Linear classifier over **raw logits** on
+twelve fixed 6x6 images in three classes for 40 deterministic
+``NativeAdam(lr=0.05)`` steps (loss 1.159638 -> 0.000101, reporting
+accuracy 0.3333 -> 1.0000), then checkpoints at step 15 and resumes into
+a fresh model/optimizer pair that reproduces the remaining losses,
+parameters, optimizer state, logits, predictions, and accuracy exactly
+(native checkpoint format version 1 unchanged). What the native line
+still does **not** have: classification benchmarks (E9), phase closure
 and sanitizer validation (E10), further
 activations/math, normalization (BatchNorm/LayerNorm), dropout or a
 native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline

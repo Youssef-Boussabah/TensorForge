@@ -95,6 +95,15 @@ reached explicitly through `tensorforge.experimental` and
   for 40 deterministic native Adam steps (98.6% loss reduction), then
   checkpoints mid-run and resumes into a fresh model/optimizer pair that
   reproduces the uninterrupted run exactly.
+- **A native classification proof**:
+  `examples/native_classification_training.py` trains the same layer
+  stack as a three-class classifier over **raw logits** into
+  `NativeCrossEntropyLoss` on twelve fixed 6×6 images, for 40
+  deterministic native Adam steps (loss 1.159638 → 0.000101, reporting
+  accuracy 0.3333 → 1.0000 via `native_accuracy`), then checkpoints at
+  step 15 and resumes into a fresh model/optimizer pair that reproduces
+  the remaining losses, parameters, optimizer state, logits,
+  predictions, and accuracy exactly.
 
 The exact operation-by-operation status lives in the
 [native support matrix](docs/native_support_matrix.md).
@@ -140,6 +149,7 @@ uv run python examples/native_autograd_demo.py    # native backward
 uv run python examples/native_mlp_training.py     # end-to-end native training
 uv run python examples/native_checkpoint_resume.py # save, restore, resume bit-for-bit
 uv run python examples/native_cnn_training.py     # end-to-end native CNN training + resume
+uv run python examples/native_classification_training.py  # native classification + exact resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke  # CNN characterization
 ```
@@ -200,7 +210,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_design.md](docs/native_autograd_design.md) — design for native reverse-mode autograd over NativeTensor (Phase B)
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
-- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — in progress: E1–E7 shipped, E8–E10 designed only)
+- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — in progress: E1–E8 shipped, E9–E10 designed only)
 
 ## Limitations
 
@@ -220,10 +230,12 @@ Honest expectations:
   and milestones E1–E4 shipped the differentiable native `exp`, `log`,
   and the fused stable `softmax` and `log_softmax`, E5 shipped the
   fused `cross_entropy` **Core** forward/backward, E6 shipped the
-  differentiable `NativeTensor.cross_entropy` over it, and E7 shipped the
+  differentiable `NativeTensor.cross_entropy` over it, E7 shipped the
   public `NativeCrossEntropyLoss` module and the reporting-only
-  `native_accuracy` — but nothing has yet trained a native classifier
-  end to end (E8), and there are no classification benchmarks (E9).
+  `native_accuracy`, and E8 shipped the deterministic classification
+  training and exact checkpoint-resume proof — but that proof is a
+  fixed-task integration result, not a benchmark, and there are no
+  classification benchmarks (E9) or phase closure (E10) yet.
   Beyond that: no normalization, no dropout or native RNG, and native
   checkpoints capture no scheduler or random state — see the
   [native support matrix](docs/native_support_matrix.md).
@@ -294,9 +306,23 @@ stateless module whose whole forward delegates to that operation, and
 `native_accuracy`, a deliberately **reporting-only** helper — no kernel,
 no Core method, no autograd node — that materializes once through the
 explicit public `to_numpy()` boundary, takes a NumPy argmax, and returns
-a plain `float` without building a graph or touching any gradient. A
-deterministic native classification training and resume proof (E8) and
-classification benchmarks (E9) are designed but **not implemented**. More
+a plain `float` without building a graph or touching any gradient.
+**E8 proved the assembled stack end to end without adding anything to
+it**: `examples/native_classification_training.py` trains a
+`NativeConv2d(1, 4, 3)` → `NativeReLU` → `NativeMaxPool2d(2)` →
+`NativeFlatten` → `NativeLinear(16, 3)` classifier — no softmax layer,
+raw logits straight into `NativeCrossEntropyLoss` — on twelve fixed 6×6
+images in three classes for 40 deterministic `NativeAdam(lr=0.05)` steps
+(loss 1.159638 → 0.000101, reporting accuracy 0.3333 → 1.0000), then
+interrupts at step 15, checkpoints model **and** optimizer state through
+the existing pickle-free path (format **version 1**, unchanged), and
+resumes into a **fresh** model/optimizer pair that reproduces the
+uninterrupted run **exactly** — the whole remaining loss suffix, every
+parameter, both Adam moment buffers and step counters, the final logits,
+the predictions, and the accuracy. It is an integration proof on one
+fixed task: no speed and no generalization is claimed.
+Classification benchmarks (E9) and phase closure with sanitizer
+validation (E10) are designed but **not implemented**. More
 activations/math, normalization, RNG/dropout, and CPU optimization sit
 beyond it, and CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and

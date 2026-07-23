@@ -43,8 +43,17 @@ no ABI export. E7 then completed the public surface:
 to that operation, and the reporting-only `native_accuracy` — explicit
 `to_numpy()` plus a NumPy argmax, returning a Python `float`, building
 no graph and touching no gradient, listed in the new `NATIVE_METRICS`
-inventory. Deterministic native classification training and exact resume
-(E8), classification benchmarks (E9), and phase closure (E10) do not
+inventory. **E8 then proved the whole stack trains and resumes**:
+`examples/native_classification_training.py` trains a native
+Conv2d→ReLU→MaxPool2d→Flatten→Linear classifier on twelve fixed 6×6
+images in three classes for 40 deterministic `NativeAdam(lr=0.05)` steps
+(loss 1.159638 → 0.000101, accuracy 0.3333 → 1.0000), then checkpoints at
+step 15 and resumes into a fresh model/optimizer pair that reproduces the
+remaining loss suffix, the parameters, the optimizer state, the logits,
+the predictions, and the accuracy **exactly** — an integration proof that
+added no kernel, ABI export, operation, module, optimizer, or schema
+change (native checkpoint format stays version 1). Classification
+benchmarks (E9) and phase closure with sanitizer validation (E10) do not
 exist yet.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)

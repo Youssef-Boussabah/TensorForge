@@ -23,9 +23,13 @@ complete** (the fused, stable `NativeTensor.softmax()`), **E4 is
 complete** (the fused, stable `NativeTensor.log_softmax()`), **E5 is
 complete** (the fused cross-entropy **Core contract** — forward and
 backward), **E6 is complete** (the differentiable
-`NativeTensor.cross_entropy()`), and **E7 is complete** (the public
+`NativeTensor.cross_entropy()`), **E7 is complete** (the public
 `NativeCrossEntropyLoss` module and the reporting-only
-`native_accuracy`) — so `"exp"`, `"log"`, `"softmax"`, and
+`native_accuracy`), and **E8 is complete** (the deterministic
+classification training and exact checkpoint-resume proof —
+`examples/native_classification_training.py`, an integration milestone
+that added **no** numerical operation or runtime capability) — so
+`"exp"`, `"log"`, `"softmax"`, and
 `"log_softmax"` now live in `TENSOR_CORE_OPS` and `AUTOGRAD_OPS`,
 `"cross_entropy_forward"`/`"cross_entropy_backward"` live in
 `TENSOR_CORE_OPS`, `"cross_entropy"` lives in `AUTOGRAD_OPS`,
@@ -67,12 +71,30 @@ preparer, materializes once through the public `to_numpy()` boundary,
 takes a NumPy `argmax`, and returns a Python `float`, building no graph
 and touching no gradient, parameter, or version (§8).
 
-**Everything else in Phase E (E8–E10) is still designed-only**: there is
-no deterministic native classification training example or exact-resume
-proof (E8), no classification benchmark (E9), and no phase closure or
-sanitizer validation (E10). Per-milestone status is recorded in the
-ladder (§15); the completion criteria (§17) are **not** met, so Phase E
-is **not** complete.
+**E8 proved the assembled stack, and added nothing to it.**
+`examples/native_classification_training.py` builds a native
+`NativeConv2d(1, 4, 3, seed=0)` → `NativeReLU` → `NativeMaxPool2d(2)` →
+`NativeFlatten` → `NativeLinear(16, 3, seed=1)` classifier over a fixed
+twelve-image, three-class 6×6 dataset committed as source literals, feeds
+its **raw logits** to `NativeCrossEntropyLoss`, and trains it for 40
+deterministic `NativeAdam(lr=0.05)` full-batch steps: loss **1.159638 →
+0.000101** (a 99.99% reduction) and reporting accuracy **0.3333 →
+1.0000** on the fixed task. Interrupting that run at step **15**, saving
+model **and** optimizer state to one pickle-free checkpoint (format
+**version 1**, unchanged), and reloading into a **fresh** model/optimizer
+pair reproduces the uninterrupted run **exactly** — the entire remaining
+loss suffix, every parameter, every optimizer moment and step counter,
+the final logits, the predictions, and the accuracy. E8 is an
+**integration proof on one fixed task**, not a benchmark and not a
+generalization claim: it added no kernel, C ABI export, ctypes symbol,
+`NativeTensor`/`NativeTensorCore` operation, module, loss, metric,
+optimizer, or schema change, and no capability-inventory entry.
+
+**Everything else in Phase E (E9–E10) is still designed-only**: there is
+no classification benchmark (E9), and no phase closure or sanitizer
+validation (E10). Per-milestone status is recorded in the ladder (§15);
+the completion criteria (§17) are **not** met, so Phase E is **not**
+complete.
 
 The stable Python framework (`tensorforge.Tensor.exp/log/softmax`,
 `tensorforge.nn.cross_entropy`, `tensorforge.nn.accuracy`) is the
@@ -1157,6 +1179,14 @@ adds **no persistent model or optimizer state**:
   `load_native_checkpoint` paths, and a checkpoint written before Phase E
   remains loadable.
 
+**Proved by E8** (`tests/test_native_classification_training.py`): a
+classification checkpoint's manifest declares `"format_version": 1` and
+exactly the model's four parameter keys; the archive contains no graph
+data, no saved probabilities, no target metadata, and no loss or metric
+state; constructing the loss module and calling the metric leaves the
+saved archive byte-identical; and loading with `allow_pickle=False` is
+unchanged.
+
 ---
 
 ## 13. Testing contract
@@ -1219,7 +1249,7 @@ training step — against a stable-framework reference row.
 | E5 | Fused cross-entropy forward and backward Core contract | **complete** |
 | E6 | Differentiable `NativeTensor` cross-entropy | **complete** |
 | E7 | `NativeCrossEntropyLoss` and reporting-only `native_accuracy` | **complete** |
-| E8 | Deterministic native classification training and exact checkpoint resume | not started |
+| E8 | Deterministic native classification training and exact checkpoint resume | **complete** |
 | E9 | Native classification benchmark characterization | not started |
 | E10 | Phase-E integration, sanitizer validation, documentation reconciliation, and closure | not started |
 
@@ -1525,7 +1555,7 @@ summary, and the registry remains the authority on what is live.
   argmax, no integer tensor, and no schema change (the native checkpoint
   format stays version 1).
 
-### E8 — Deterministic native classification training and exact checkpoint resume
+### E8 — Deterministic native classification training and exact checkpoint resume — **complete**
 
 - **Objective:** prove the stack trains and resumes, end to end, with no
   new capability.
@@ -1545,6 +1575,67 @@ summary, and the registry remains the authority on what is live.
 - **Dependencies:** E7.
 - **Non-goals:** real datasets; data loaders; schedulers; any schema
   change.
+- **Shipped (E8).** Exactly the above, as **Python, tests, and
+  documentation only** — no C++ source, header, C ABI export, ctypes
+  symbol, CMake target, or C++ test changed, and no numerical runtime
+  file was touched.
+  - **Dataset.** Twelve fixed 6×6 single-channel images in **three**
+    classes (`vertical` / `horizontal` / `diagonal`), four per class,
+    committed as literals in the example (`IMAGE_VALUES` /
+    `TARGET_VALUES`). Every pixel is exactly `0.0` or `1.0`; the shape's
+    *position* varies within each class, so no fixed pixel template
+    separates them. Labels are **host integers** under the §6 contract —
+    nothing is generated at runtime, downloaded, read from disk,
+    augmented, shuffled, or split, and there is no dataset or loader
+    abstraction.
+  - **Model.** `NativeImageClassifier(NativeModule)`:
+    `NativeConv2d(1, 4, 3, seed=0)` → `NativeReLU` →
+    `NativeMaxPool2d(2)` → `NativeFlatten` → `NativeLinear(16, 3,
+    seed=1)`, every child registered through the normal attribute
+    path (parameters `conv.weight`, `conv.bias`, `linear.weight`,
+    `linear.bias`). **No softmax or log-softmax layer**: the head's
+    output goes to `NativeCrossEntropyLoss(reduction="mean")` unchanged,
+    because the fused stable loss consumes **raw logits** — which is the
+    whole point of E5/E6.
+  - **Determinism.** Both trainable layers draw fan-in uniform values
+    from a *local* seeded generator, so two independently constructed
+    models start numerically identical and the global NumPy RNG is never
+    touched or consulted.
+  - **Training.** Full-batch, 40 `NativeAdam(lr=0.05)` steps, no
+    scheduler, no early stopping, no shuffling, no retry. One step is
+    `logits = model(x)`, `loss = criterion(logits, targets)`,
+    `loss.backward()`, `optimizer.step()`, `optimizer.zero_grad()`, with
+    the logits and the loss closed after the one-shot backward has
+    released the graph — and with it max-pooling's saved winners and
+    cross-entropy's saved probabilities (§7). Verified: loss
+    **1.159638 → 0.000101** (99.99% reduction, every recorded loss
+    finite), reporting accuracy **0.3333 → 1.0000**, an all-one-class
+    initial prediction becoming the correct three-class assignment, and
+    both the convolution and the linear head moving materially.
+  - **Exact resume.** Interrupted at step **15**, saved through
+    `save_native_checkpoint` (model **and** optimizer state, format
+    **version 1**, no new keys) and reloaded into a **fresh**
+    model/optimizer pair, the run reproduces the uninterrupted one
+    **exactly**: the whole remaining loss suffix, every parameter, both
+    Adam moment buffers, every per-parameter step counter, the final
+    logits, the predictions, and the accuracy — compared with exact
+    equality, not tolerances. Two independent uninterrupted runs are
+    likewise exactly equal.
+  - **Boundaries.** `native_accuracy` is called only before and after
+    training and in reporting passes, never inside the training
+    mathematics; a tripwire test proves one complete step (forward,
+    loss, backward, optimizer update) reaches **no** NumPy numerical
+    routine and performs **no** tensor-data conversion. Storage does not
+    grow across repeated steps, no completed graph or saved probability
+    survives a step, and the checkpoint archive contains no graph data,
+    target metadata, or loss/metric state.
+  - E8 added **no** capability-inventory entry (`TENSOR_CORE_OPS`,
+    `AUTOGRAD_OPS`, `NATIVE_MODULES`, `NATIVE_LOSSES`, `NATIVE_METRICS`,
+    `RAW_KERNELS`, and `UNSUPPORTED` are unchanged), no optimizer or
+    optimizer feature, no RNG, dropout, or normalization, no benchmark
+    (E9), and no closure or sanitizer work (E10). The fixed-task result
+    is an **integration proof**, not a benchmark, a speed claim, or a
+    generalization claim.
 
 ### E9 — Native classification benchmark characterization
 
