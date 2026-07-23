@@ -666,7 +666,7 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
 
 
 def test_phase_e_milestone_status_is_reported_honestly():
-    """E0-E8 are marked complete, E9-E10 are not, and Phase E itself is
+    """E0-E9 are marked complete, E10 is not, and Phase E itself is
     never declared complete. Checked semantically against the design
     document's status table and the live registry."""
     from tensorforge.backends import cpp
@@ -674,18 +674,17 @@ def test_phase_e_milestone_status_is_reported_honestly():
     # The ladder's status table is the one place per-milestone status is
     # declared, so the row checks run inside that section only.
     ladder = _design_section("Milestone ladder")
-    for done in ("E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8"):
+    for done in ("E0", "E1", "E2", "E3", "E4", "E5", "E6", "E7", "E8", "E9"):
         row = re.search(rf"\|\s*{done}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {done}"
         assert "complete" in row.group(1).lower(), (
             f"the design does not mark {done} complete"
         )
-    for pending in ("E9", "E10"):
-        row = re.search(rf"\|\s*{pending}\s*\|[^|]*\|([^|]*)\|", ladder)
-        assert row is not None, f"the ladder has no status row for {pending}"
-        assert "complete" not in row.group(1).lower(), (
-            f"{pending} is marked complete but has not shipped"
-        )
+    row = re.search(r"\|\s*E10\s*\|[^|]*\|([^|]*)\|", ladder)
+    assert row is not None, "the ladder has no status row for E10"
+    assert "complete" not in row.group(1).lower(), (
+        "E10 is marked complete but has not shipped"
+    )
     # Phase E as a whole is in progress, and says so positively. (§17's
     # "Phase E is complete when ..." criteria list is a condition, not a
     # claim, so the check is on the status statement, not a banned word.)
@@ -1140,33 +1139,100 @@ def test_docs_present_the_shipped_classification_training_proof():
             assert not [n for n in inventory if banned in n.lower()], banned
 
 
+def test_docs_present_the_shipped_classification_benchmark():
+    """E9's harness must stay documented as what it is: an honest local
+    characterization with correctness gated before timing and **no**
+    speed guarantee — never a performance contract or a CI gate."""
+    benchmark = REPO_ROOT / "benchmarks" / "benchmark_native_classification.py"
+    assert benchmark.is_file()
+    assert (REPO_ROOT / "tests"
+            / "test_native_classification_benchmark.py").is_file()
+
+    section = _design_section("E9 —")
+    lowered = section.lower()
+    assert "complete" in lowered, "the design does not record E9 as shipped"
+    assert "benchmarks/benchmark_native_classification.py" in section
+    # The seven measured operations are named.
+    for case in ("exp_forward", "log_forward", "softmax_forward",
+                 "log_softmax_forward", "cross_entropy_forward",
+                 "cross_entropy_backward", "classification_training_step"):
+        assert case in section, case
+    # The methodology commitments.
+    assert re.search(r"correctness before timing|correctness .{0,30}before",
+                     lowered), (
+        "the design no longer states that correctness runs before timing"
+    )
+    assert "median" in lowered and "spread" in lowered
+    assert "warm-up" in lowered or "warmup" in lowered
+    for label in ("stable_tensorforge", "numpy", "native_only"):
+        assert label in section, label
+    assert "--smoke" in section and "--json" in section
+    # And the honesty boundary, in the design and on the status surfaces.
+    assert re.search(r"no.{0,40}speed", lowered), (
+        "the design no longer states that no speed is asserted"
+    )
+    assert re.search(r"no ci timing threshold|no timing threshold", lowered)
+    readme = _status_text("README.md")
+    assert "benchmarks/benchmark_native_classification.py" in readme
+    assert re.search(
+        r"uv run python benchmarks/benchmark_native_classification.py --smoke",
+        readme,
+    ), "the README does not document the benchmark's smoke command"
+    assert "--json" in readme
+    for surface in ("README.md", "docs/native_support_matrix.md",
+                    "docs/roadmap.md"):
+        text = _status_text(surface)
+        assert re.search(r"(no speed|not a (performance )?(contract|guarantee)"
+                         r"|no timing threshold|no CI performance gate"
+                         r"|characterization)", text, re.I), surface
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"E9 \| Implemented", matrix), (
+        "the support matrix does not mark E9 implemented"
+    )
+
+
 def test_phase_e_remaining_milestones_are_not_claimed():
-    """E9 and E10 own the benchmarks and phase closure. Neither may be
-    implied as done: no classification benchmark or phase-closure test
-    file exists, and Phase E is still open."""
-    for missing in ("benchmarks/benchmark_native_classification.py",
-                    "tests/test_native_phase_e.py"):
-        assert not (REPO_ROOT / missing).exists(), (
-            f"{missing} exists, but E9/E10 have not shipped"
-        )
+    """E10 owns phase closure and sanitizer validation. It may not be
+    implied as done: no phase-closure test file exists, and Phase E is
+    still open."""
+    assert not (REPO_ROOT / "tests" / "test_native_phase_e.py").exists(), (
+        "tests/test_native_phase_e.py exists, but E10 has not shipped"
+    )
     design = _status_text(PHASE_E_DESIGN)
     assert re.search(r"Phase E is [^.]{0,30}not[^.]{0,30}complete", design)
     ladder = _design_section("Milestone ladder")
-    for pending in ("E9", "E10"):
-        row = re.search(rf"\|\s*{pending}\s*\|[^|]*\|([^|]*)\|", ladder)
-        assert row is not None, f"the ladder has no status row for {pending}"
-        assert "complete" not in row.group(1).lower(), pending
-    # No status surface may point at an E9 benchmark artifact, and the
+    row = re.search(r"\|\s*E10\s*\|[^|]*\|([^|]*)\|", ladder)
+    assert row is not None, "the ladder has no status row for E10"
+    assert "complete" not in row.group(1).lower()
+    # No status surface may claim the sanitizer closure, and the
     # phase-level claim stays "in progress" everywhere it is stated.
     for name in ("README.md", "docs/native_support_matrix.md",
                  "docs/roadmap.md"):
         text = _status_text(name)
-        # The E9 artifact is named only in the design document's plan for
-        # it, never presented as existing on a status surface.
-        assert "benchmark_native_classification" not in text, name
         assert not re.search(r"Phase E[^.]{0,60}is complete", text), name
+        assert not re.search(r"(ASan|UBSan|sanitizer)[^.]{0,80}"
+                             r"(classification|Phase E)[^.]{0,40}"
+                             r"(passed|clean|validated)", text, re.I), name
     matrix = _status_text("docs/native_support_matrix.md")
     assert re.search(r"Phase E[^.]{0,120}in progress", matrix, re.I)
+
+
+def test_no_committed_benchmark_timing_promise():
+    """Benchmark numbers are machine-specific characterizations, so no
+    status surface may publish a classification timing as a project
+    promise, and no benchmark result artifact may be tracked."""
+    for surface in ("README.md", "docs/native_support_matrix.md",
+                    "docs/roadmap.md", PHASE_E_DESIGN):
+        text = _status_text(surface)
+        window = re.findall(
+            r"[^.]{0,120}benchmark_native_classification[^.]{0,200}", text
+        )
+        for chunk in window:
+            assert not re.search(r"\d+\s*(us|ms|µs|microseconds|milliseconds)"
+                                 r"\b", chunk, re.I), (surface, chunk[:120])
+            assert not re.search(r"\bx faster|\bspeedup\b", chunk, re.I), surface
+    assert not list((REPO_ROOT / "benchmarks").glob("*.json"))
+    assert not list(REPO_ROOT.glob("benchmark*.json"))
 
 
 def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():

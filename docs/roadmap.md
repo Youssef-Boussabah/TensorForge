@@ -703,7 +703,7 @@ The Python line is done; what remains is expansion on its own terms:
     milestone-era doc guardrails with durable semantic checks. See the
     [support matrix](native_support_matrix.md) for the finalized status.
   - **Phase E — Native Classification and Stable Math — in progress
-    (E0-E8 complete).** The **E0 architecture contract
+    (E0-E9 complete).** The **E0 architecture contract
     is written** —
     [native_classification_design.md](native_classification_design.md)
     locks the scope, the public API surface (`exp`, `log`, `softmax`,
@@ -871,10 +871,37 @@ The Python line is done; what remains is expansion on its own terms:
     numerical routine and converts no tensor data. It is an
     **integration proof on one fixed task** — not a benchmark, not a
     speed claim, and not a generalization claim.
-    **Everything else in Phase E is still designed-only**: the
-    classification benchmarks (E9) and phase closure with
-    sanitizer validation (E10) have not started, and Phase E is **not**
-    complete. Deliberately outside
+    **E9 has shipped the honest characterization benchmark**, and it
+    changed no numerical runtime file and tuned nothing.
+    ``benchmarks/benchmark_native_classification.py`` measures the seven
+    operations the phase built — ``exp``, ``log``, ``softmax``,
+    ``log_softmax``, the fused cross-entropy forward, its backward alone
+    (a fresh graph is built outside the timer every repetition; no graph
+    is reused and ``retain_graph`` is never used to skip the rebuild),
+    and one complete classification training step (``zero_grad`` →
+    forward → loss → ``backward`` → ``NativeAdam.step()``, with model,
+    optimizer, and dataset construction, checkpoint I/O,
+    ``native_accuracy``, and cleanup all outside the timed region).
+    **Correctness is gated before every measurement**: a case validates
+    shape, finiteness, reference parity, and input non-mutation — plus
+    gradients for the backward case, and a finite loss, a real parameter
+    update, an advanced optimizer step counter, a released graph, closed
+    transients, and stable-line parity for the training step — and a
+    failed gate exits nonzero and publishes no timing. Each case is
+    labelled with the reference it actually used: ``stable_tensorforge``
+    where a stable operation exists, ``numpy`` for ``log_softmax``
+    (the stable line has no direct one, and ``softmax().log()`` is
+    deliberately not used as the reference), and ``native_only`` where no
+    honest analogue would exist. Timing is ``time.perf_counter_ns`` with
+    warm-up, repeated measurements, setup and cleanup outside the timer,
+    and **median** reporting alongside min, max, and spread; ``--smoke``
+    and ``--json`` modes exist and no result file is written. The
+    observed ratio is a **local characterization**, never a speedup
+    claim: no test asserts a speed, no timing number is committed as a
+    promise, and there is no CI performance gate anywhere.
+    **Everything else in Phase E is still designed-only**: phase closure
+    with sanitizer validation (E10) has not started, and Phase E is
+    **not** complete. Deliberately outside
     Phase E and still unplanned: more native activations beyond it, native
     normalization, a native RNG and dropout, a CPU optimization phase for
     the deliberately naive kernels, and build/packaging evolution.

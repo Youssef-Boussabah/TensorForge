@@ -52,9 +52,16 @@ step 15 and resumes into a fresh model/optimizer pair that reproduces the
 remaining loss suffix, the parameters, the optimizer state, the logits,
 the predictions, and the accuracy **exactly** — an integration proof that
 added no kernel, ABI export, operation, module, optimizer, or schema
-change (native checkpoint format stays version 1). Classification
-benchmarks (E9) and phase closure with sanitizer validation (E10) do not
-exist yet.
+change (native checkpoint format stays version 1). **E9** then
+characterized that stack honestly:
+`benchmarks/benchmark_native_classification.py` measures `exp`, `log`,
+`softmax`, `log_softmax`, the fused cross-entropy forward, its backward
+alone, and one complete classification training step — every case gated
+for correctness *before* timing, every case labelled with the reference
+it used (`stable_tensorforge`, `numpy`, or `native_only`), medians
+reported with min/max/spread after warm-up, `--smoke` and `--json` modes,
+and **no speed assertion or timing threshold anywhere**. Phase closure
+with sanitizer validation (E10) does not exist yet.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 

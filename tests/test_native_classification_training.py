@@ -1129,7 +1129,19 @@ def test_e8_changes_no_checkpoint_schema_and_no_stable_framework():
         assert not hasattr(tensorforge, name), name
 
 
-def test_e9_and_e10_artifacts_are_still_absent():
-    assert not (REPO_ROOT / "benchmarks"
-                / "benchmark_native_classification.py").exists()
+def test_the_e8_proof_stays_separate_from_the_e9_benchmark():
+    """E9 shipped the characterization benchmark, and the split is
+    deliberate: this example owns deterministic correctness and exact
+    resume, the benchmark owns measurement. Neither may absorb the
+    other — the example times nothing, and E10's closure is still
+    absent."""
+    assert (REPO_ROOT / "benchmarks"
+            / "benchmark_native_classification.py").is_file()
     assert not (REPO_ROOT / "tests" / "test_native_phase_e.py").exists()
+    # Structural, not word-level: the example's prose may (and does)
+    # explain that measurement is E9's job, but it must measure nothing —
+    # it imports no timer and calls none.
+    text = EXAMPLE.read_text(encoding="utf-8")
+    for banned in ("perf_counter", "time.time(", "import time",
+                   "import timeit", "median_s"):
+        assert banned not in text, banned

@@ -56,8 +56,13 @@ twelve fixed 6x6 images in three classes for 40 deterministic
 accuracy 0.3333 -> 1.0000), then checkpoints at step 15 and resumes into
 a fresh model/optimizer pair that reproduces the remaining losses,
 parameters, optimizer state, logits, predictions, and accuracy exactly
-(native checkpoint format version 1 unchanged). What the native line
-still does **not** have: classification benchmarks (E9), phase closure
+(native checkpoint format version 1 unchanged); and **milestone E9**
+characterizes that stack in
+``benchmarks/benchmark_native_classification.py`` — seven
+correctness-gated cases with honest reference labels, medians and spread
+after warm-up, ``--smoke``/``--json`` modes, and no speed assertion or
+timing threshold anywhere. What the native line
+still does **not** have: phase closure
 and sanitizer validation (E10), further
 activations/math, normalization (BatchNorm/LayerNorm), dropout or a
 native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline

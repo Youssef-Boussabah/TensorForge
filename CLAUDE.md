@@ -27,8 +27,13 @@ deterministic classification training and exact checkpoint-resume proof
 CNN classifier over raw logits, 40 `NativeAdam(lr=0.05)` steps, loss
 1.159638 → 0.000101, accuracy 0.3333 → 1.0000, interrupted at step 15
 and resumed into a fresh model/optimizer pair that matches exactly;
-example, tests, and docs only — no new capability) shipped, with
-classification benchmarks (E9) and phase closure (E10) still
+example, tests, and docs only — no new capability), and E9 (the honest
+characterization benchmark
+`benchmarks/benchmark_native_classification.py`: seven cases, each
+correctness-gated before timing, each labelled with the reference it
+used, medians with spread after warm-up, `--smoke`/`--json` modes, and
+**no speed assertion or timing threshold anywhere**) shipped, with
+phase closure and sanitizer validation (E10) still
 unimplemented;
 normalization/dropout/RNG, CPU optimization, and CUDA experiments are
 future work beyond it).

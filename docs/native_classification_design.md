@@ -25,10 +25,13 @@ complete** (the fused cross-entropy **Core contract** — forward and
 backward), **E6 is complete** (the differentiable
 `NativeTensor.cross_entropy()`), **E7 is complete** (the public
 `NativeCrossEntropyLoss` module and the reporting-only
-`native_accuracy`), and **E8 is complete** (the deterministic
+`native_accuracy`), **E8 is complete** (the deterministic
 classification training and exact checkpoint-resume proof —
 `examples/native_classification_training.py`, an integration milestone
-that added **no** numerical operation or runtime capability) — so
+that added **no** numerical operation or runtime capability), and **E9
+is complete** (the honest characterization benchmark,
+`benchmarks/benchmark_native_classification.py` — measurement only, no
+capability, no speed assertion) — so
 `"exp"`, `"log"`, `"softmax"`, and
 `"log_softmax"` now live in `TENSOR_CORE_OPS` and `AUTOGRAD_OPS`,
 `"cross_entropy_forward"`/`"cross_entropy_backward"` live in
@@ -90,11 +93,25 @@ generalization claim: it added no kernel, C ABI export, ctypes symbol,
 `NativeTensor`/`NativeTensorCore` operation, module, loss, metric,
 optimizer, or schema change, and no capability-inventory entry.
 
-**Everything else in Phase E (E9–E10) is still designed-only**: there is
-no classification benchmark (E9), and no phase closure or sanitizer
-validation (E10). Per-milestone status is recorded in the ladder (§15);
-the completion criteria (§17) are **not** met, so Phase E is **not**
-complete.
+**E9 characterized the stack without changing it.**
+`benchmarks/benchmark_native_classification.py` measures the seven
+shipped operations — `exp`, `log`, `softmax`, `log_softmax`, the fused
+cross-entropy forward, its backward, and one complete classification
+training step — each behind a correctness gate that runs **before** any
+timing, each labelled with the reference it actually used
+(`stable_tensorforge`, `numpy`, or `native_only`), and each reported as
+a median with its minimum, maximum, and spread over repeated
+`time.perf_counter_ns` measurements taken after warm-up with setup and
+cleanup outside the timer. It has `--smoke` and `--json` modes, writes no
+result file, and **asserts no speed**: the observed ratios depend on
+machine, build, and workload, no test compares a duration to a constant,
+and no CI timing threshold exists. E9 changed no numerical runtime file
+and tuned nothing (§14).
+
+**Everything else in Phase E (E10) is still designed-only**: there is no
+phase closure or sanitizer validation. Per-milestone status is recorded
+in the ladder (§15); the completion criteria (§17) are **not** met, so
+Phase E is **not** complete.
 
 The stable Python framework (`tensorforge.Tensor.exp/log/softmax`,
 `tensorforge.nn.cross_entropy`, `tensorforge.nn.accuracy`) is the
@@ -1235,6 +1252,27 @@ assertions anywhere**. It measures what the phase actually built —
 cross-entropy forward and forward+backward, and a full classification
 training step — against a stable-framework reference row.
 
+**Shipped as `benchmarks/benchmark_native_classification.py`:**
+
+```
+uv run python benchmarks/benchmark_native_classification.py
+uv run python benchmarks/benchmark_native_classification.py --smoke
+uv run python benchmarks/benchmark_native_classification.py --smoke --json
+```
+
+Seven cases — `exp_forward`, `log_forward`, `softmax_forward`,
+`log_softmax_forward`, `cross_entropy_forward`,
+`cross_entropy_backward`, `classification_training_step` — each with a
+correctness gate that runs **before** any timing, an honest reference
+label (`stable_tensorforge`, `numpy`, or `native_only`), and
+median/min/max/spread over repeated `time.perf_counter_ns` measurements
+taken after warm-up, with setup and cleanup outside the timer. The JSON
+payload is `{"benchmark": "tensorforge.native_classification",
+"version", "mode", "environment", "cases"}`. Observed ratios are local
+characterizations, not guarantees: **nothing asserts a speed, and no
+timing threshold exists anywhere in the repository**. Timing numbers are
+never committed as project promises.
+
 ---
 
 ## 15. Milestone ladder (E0–E10)
@@ -1250,7 +1288,7 @@ training step — against a stable-framework reference row.
 | E6 | Differentiable `NativeTensor` cross-entropy | **complete** |
 | E7 | `NativeCrossEntropyLoss` and reporting-only `native_accuracy` | **complete** |
 | E8 | Deterministic native classification training and exact checkpoint resume | **complete** |
-| E9 | Native classification benchmark characterization | not started |
+| E9 | Native classification benchmark characterization | **complete** |
 | E10 | Phase-E integration, sanitizer validation, documentation reconciliation, and closure | not started |
 
 Each milestone's full contract follows; the table above is the status
@@ -1637,7 +1675,7 @@ summary, and the registry remains the authority on what is live.
     is an **integration proof**, not a benchmark, a speed claim, or a
     generalization claim.
 
-### E9 — Native classification benchmark characterization
+### E9 — Native classification benchmark characterization — **complete**
 
 - **Objective:** honest measurement of what Phase E built.
 - **Layer:** benchmarks only (measurement-only, no behavior).
@@ -1649,6 +1687,50 @@ summary, and the registry remains the authority on what is live.
   claims rather than characterizations.
 - **Dependencies:** E8.
 - **Non-goals:** CPU optimization; kernel tuning; threading; SIMD.
+- **Shipped (E9).** Exactly the above, as **benchmark code, benchmark
+  tests, and documentation only** — no C++ source, header, C ABI export,
+  ctypes symbol, CMake target, or numerical runtime file changed, and no
+  framework tuning was done.
+  - **Cases (seven, one per shipped operation).** `exp_forward`,
+    `log_forward`, `softmax_forward`, `log_softmax_forward`,
+    `cross_entropy_forward`, `cross_entropy_backward`, and
+    `classification_training_step`.
+  - **References, labelled per case.** `stable_tensorforge` for `exp`,
+    `log`, `softmax`, cross-entropy forward and backward, and the full
+    training step; `numpy` for `log_softmax`, because the stable line has
+    no direct `log_softmax` and `softmax().log()` — the composition §4.4
+    exists to avoid — is deliberately **not** used as the reference. The
+    `native_only` label exists for cases with no honest analogue; none is
+    needed today.
+  - **Correctness before timing, always.** Each case validates shape,
+    finiteness, reference parity, and input non-mutation before a single
+    measurement; the backward case additionally checks gradient presence,
+    shape, and parity against the analytic form; the training step checks
+    a finite scalar loss, that parameters actually changed, that the
+    optimizer's step counters advanced, that the completed graph and its
+    saved probabilities were released, that the transients were closed,
+    and that the loss and post-step parameters match the stable analogue.
+    A failed gate raises, exits nonzero, and publishes **no** timing for
+    that case.
+  - **Methodology.** `time.perf_counter_ns`; per-repetition setup and
+    cleanup outside the timer; warm-up repetitions discarded; **median**
+    primary, with minimum, maximum, spread, relative spread, and every
+    raw sample reported. No sample is discarded, no timer overhead is
+    subtracted, and the native and reference paths run under the same
+    setup discipline. Defaults: 3 warm-ups / 12 repetitions (the training
+    step declares 6 and reports it); `--smoke` uses 1 / 3, and `--json`
+    emits the machine-readable payload on stdout with no prose mixed in.
+  - **Honesty boundary.** The ratio is reported as
+    `native_to_reference_ratio` and described as a local observation that
+    depends on machine, build, workload, and runtime conditions — never
+    as a speedup or a guarantee. **No test asserts a speed and no CI
+    timing threshold exists**, which is itself enforced by a structural
+    test.
+  - The **E8 training proof stays separate**: it owns deterministic
+    correctness and exact checkpoint resume, E9 owns measurement only.
+    E9 added no numerical capability, no capability-inventory entry, and
+    no persistent artifact — the benchmark writes no result file, and the
+    native checkpoint format stays version 1.
 
 ### E10 — Phase-E integration, sanitizer validation, documentation reconciliation, and closure
 

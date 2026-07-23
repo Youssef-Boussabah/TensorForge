@@ -152,6 +152,8 @@ uv run python examples/native_cnn_training.py     # end-to-end native CNN traini
 uv run python examples/native_classification_training.py  # native classification + exact resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke  # CNN characterization
+uv run python benchmarks/benchmark_native_classification.py --smoke        # classification characterization
+uv run python benchmarks/benchmark_native_classification.py --smoke --json # machine-readable JSON
 ```
 
 The native API mirrors the stable one, explicitly:
@@ -210,7 +212,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_design.md](docs/native_autograd_design.md) — design for native reverse-mode autograd over NativeTensor (Phase B)
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
-- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — in progress: E1–E8 shipped, E9–E10 designed only)
+- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — in progress: E1–E9 shipped, E10 designed only)
 
 ## Limitations
 
@@ -232,10 +234,12 @@ Honest expectations:
   fused `cross_entropy` **Core** forward/backward, E6 shipped the
   differentiable `NativeTensor.cross_entropy` over it, E7 shipped the
   public `NativeCrossEntropyLoss` module and the reporting-only
-  `native_accuracy`, and E8 shipped the deterministic classification
-  training and exact checkpoint-resume proof — but that proof is a
-  fixed-task integration result, not a benchmark, and there are no
-  classification benchmarks (E9) or phase closure (E10) yet.
+  `native_accuracy`, E8 shipped the deterministic classification
+  training and exact checkpoint-resume proof (a fixed-task integration
+  result, not a benchmark), and E9 shipped the characterization
+  benchmark — which measures, and promises nothing: no timing number is
+  committed, no test asserts a speed, and no CI performance gate exists.
+  Phase closure and sanitizer validation (E10) are not done yet.
   Beyond that: no normalization, no dropout or native RNG, and native
   checkpoints capture no scheduler or random state — see the
   [native support matrix](docs/native_support_matrix.md).
@@ -321,8 +325,20 @@ uninterrupted run **exactly** — the whole remaining loss suffix, every
 parameter, both Adam moment buffers and step counters, the final logits,
 the predictions, and the accuracy. It is an integration proof on one
 fixed task: no speed and no generalization is claimed.
-Classification benchmarks (E9) and phase closure with sanitizer
-validation (E10) are designed but **not implemented**. More
+**E9 added the characterization benchmark**,
+`benchmarks/benchmark_native_classification.py` — seven cases (`exp`,
+`log`, `softmax`, `log_softmax`, cross-entropy forward, cross-entropy
+backward, and one complete classification training step), each with a
+correctness gate that runs **before** any timing, each labelled with the
+reference it actually used (`stable_tensorforge`, `numpy` where the
+stable line has no direct operation, or `native_only`), and each reported
+as a median with min/max/spread over repeated `time.perf_counter_ns`
+measurements taken after warm-up with setup and cleanup outside the
+timer. It has `--smoke` and `--json` modes and writes no result file.
+Observed ratios are **local characterizations, not guarantees**: no test
+asserts a speed, no timing number is committed as a promise, and there is
+no CI performance gate. Phase closure with sanitizer validation (E10) is
+designed but **not implemented**. More
 activations/math, normalization, RNG/dropout, and CPU optimization sit
 beyond it, and CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and
