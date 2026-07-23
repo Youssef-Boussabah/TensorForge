@@ -65,7 +65,25 @@ timing threshold anywhere. **Milestone E10 closed Phase E** with
 cross-cutting integration tests (``tests/test_native_phase_e.py``),
 Release and Debug native builds, Clang ASan/UBSan and LeakSanitizer
 validation, and documentation reconciliation — adding no numerical
-capability. **Phase E is complete.** What the native line
+capability. **Phase E is complete.**
+
+**Phase F — Native Normalization and Stateful Buffers — is the current
+phase, and it is designed but NOT numerically implemented.** Its
+architecture contract is locked in
+``docs/native_normalization_design.md`` (milestone **F0**, complete:
+design and repository reconciliation only, adding no numerical
+behavior). It specifies ``NativeLayerNorm``, ``NativeBatchNorm1d``, and
+``NativeBatchNorm2d`` **composed from existing native operations** —
+adding no kernel, C ABI export, ctypes declaration, or
+``NativeTensorCore`` method — with persistent native running statistics,
+the rule that a live mutable running buffer is never captured as a
+rereadable graph operand (eval mode takes independent graph-free
+snapshots, which is why buffers stay unversioned), atomic two-buffer
+running-statistics updates, and state/checkpoint integration with the
+format unchanged at version 1. **Milestones F1-F9 have not started**, so
+none of those modules exists or is exported here, and ``"batchnorm"`` /
+``"layernorm"`` remain in the backend registry's ``UNSUPPORTED`` tuple.
+What the native line
 still does **not** have: further
 activations/math, normalization (BatchNorm/LayerNorm), dropout or a
 native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline

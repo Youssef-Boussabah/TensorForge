@@ -1325,6 +1325,160 @@ feature, classification loss, normalization, dropout, or RNG: the native
 line remains float64/cpu, pickle-free, and explicit. The full suite
 stands at over 2000 tests with five native CTests in Release and Debug.
 
+### Phase E — native classification and stable math
+
+**Phase E completes the native classification stack** across eleven
+milestones (E0–E10) built on the Phase A–D foundation. **E0** locked the
+architecture contract in `docs/native_classification_design.md` — the
+public surface, the numerical-stability strategy (maximum shift and
+log-sum-exp, never `softmax().log()`), the backward-read and versioning
+matrix, the host `int64` target contract (the native runtime has no
+integer dtype), the graph-owned saved-probability lifetime, the C ABI
+families and the new `cpp/src/classification.cpp` unit, and the
+inventory placements — *before any numerical classification code was
+written*; **E0 added no numerical behavior**. **E1** and **E2** shipped
+the differentiable `exp` and `log` as a deliberate pair: the phase's two
+backward archetypes, `exp` reading its **saved forward output** and
+recording no parameter version, `log` rereading the **live input**
+(`upstream × reciprocal(x)`, composed from the existing `reciprocal` —
+no division operation was added) and therefore version-guarding a direct
+`NativeParameter` parent with a deterministic stale-graph error. **E3**
+and **E4** shipped the two fused probability transforms in the new
+classification translation unit: a maximum-shift `softmax` and a
+log-sum-exp `log_softmax` that is emphatically **not** `softmax().log()`
+— it forms no probability buffer and performs no division, so a
+probability too small to represent still gets an accurate finite
+log-probability. Both have contiguous-only C ABIs with Core-level
+Policy-B copy-then-compute, and both have saved-output backwards
+**composed from existing Core operations** with no dedicated backward
+kernel. **E5** shipped the fused `cross_entropy` **Core contract** — one
+deterministic pass per row producing the maximum, the log-sum-exp, the
+private saved probabilities, and the per-example loss, plus a backward
+that turns those saved probabilities, the copied targets, and a native
+one-element upstream into the gradient **without the logits even being
+an argument**. Both guarded exports revalidate every target index
+themselves rather than trusting Python, and targets are strictly
+validated (`bool` and floating-point labels rejected, including integral
+ones like `1.0`) and copied into independently owned read-only `int64`
+metadata. **E6** shipped the differentiable
+`NativeTensor.cross_entropy(targets, reduction="mean")` over that
+contract — one scalar-output autograd node adopting the private
+probabilities as **graph-owned state**, released exactly once with the
+graph history, retained under `retain_graph=True` and across a failed
+retryable backward — adding **no kernel, no ABI export, and no
+numerical change**. **E7** completed the public surface: the stateless
+`NativeCrossEntropyLoss`, whose entire forward delegates to that
+operation, and the deliberately **reporting-only** `native_accuracy` —
+no accuracy kernel, no C ABI export, no Core method, no autograd node,
+and no native `argmax`; it materializes once through the explicit public
+`to_numpy()` boundary, takes a NumPy `argmax`, and returns a plain
+Python `float`, landing in the new `NATIVE_METRICS` inventory. **E8**
+proved the assembled stack end to end without adding to it:
+`examples/native_classification_training.py` trains a
+`NativeConv2d(1, 4, 3, seed=0)` → `NativeReLU` → `NativeMaxPool2d(2)` →
+`NativeFlatten` → `NativeLinear(16, 3, seed=1)` classifier over **raw
+logits** on twelve fixed 6×6 images in three classes for 40
+deterministic `NativeAdam(lr=0.05)` steps (loss **1.159638 → 0.000101**,
+reporting accuracy **0.3333 → 1.0000**), and a run interrupted at step
+**15**, checkpointed with its optimizer state and resumed into a
+completely fresh model/optimizer pair reproduces the uninterrupted run
+**exactly**. **E9** characterized the stack honestly
+(`benchmarks/benchmark_native_classification.py`: seven cases, each
+correctness-gated *before* timing, each labelled with the reference it
+used, medians with spread after warm-up, `--smoke`/`--json` modes, and
+**no speed assertion or timing threshold anywhere**). **E10** closed the
+phase with cross-cutting integration tests
+(`tests/test_native_phase_e.py`), Release **and** Debug native builds
+(10/10 CTests each, zero warnings), Clang ASan/UBSan validation with
+zero diagnostics attributable to TensorForge, a practical LeakSanitizer
+pass with no native leak, and documentation reconciliation.
+
+Phase E added **no** new dtype, device, or checkpoint schema — the
+native checkpoint format stays `"tensorforge.native_checkpoint"`
+**version 1** — and no normalization, dropout, RNG, native integer
+tensor, division operation, or public `max`/`argmax`. The native line
+remains float64/cpu, pickle-free, explicit, and free of implicit
+stable/native dispatch.
+
+### Phase F — native normalization and stateful buffers (F0)
+
+**Milestone F0 opens Phase F, and it adds no numerical capability of any
+kind.** F0 is an architecture-contract, roadmap, and
+documentation-reconciliation milestone: it writes
+`docs/native_normalization_design.md` and corrects the status drift left
+behind after Phase E closed.
+
+The design document locks, *before any numerical normalization code is
+written*: the phase objective (a fully native, differentiable,
+state-safe normalization stack — `NativeLayerNorm`, `NativeBatchNorm1d`,
+and `NativeBatchNorm2d`); the public API and its naming (layer-norm
+`weight`/`bias`; batch-norm `gamma`/`beta` with `running_mean` and
+`running_var` buffers, matching the stable reference; no functional
+helper, no `NativeTensor` normalization operation, and no `dtype`/
+`device` constructor arguments while the runtime is float64/cpu only);
+the decision that normalization is **composed from existing native
+operations** (`mean`, `subtract`, `multiply`, `add`, `sqrt`,
+`reciprocal`, `reshape`, broadcasting, `contiguous_copy`) so the phase
+adds **no C++ kernel, no C ABI export, no ctypes declaration, and no
+`NativeTensorCore` method**, inheriting an exact backward — including
+differentiation through the batch mean and variance, which is never
+detached — from the existing autograd; the layer-norm contract
+(trailing-dimension normalization, population variance, `eps` inside the
+square root, no buffers, identical behavior in train and eval mode); the
+two batch-norm shape contracts (`(N, C)` reducing over the batch, and
+NCHW `(N, C, H, W)` reducing over N/H/W with `(1, C, 1, 1)`
+broadcasting); and three load-bearing safety rules.
+
+The first safety rule is the phase's central insight. Native persistent
+buffers carry **no value version**, and `multiply`'s backward **rereads
+a live operand** while the existing stale-version check covers only
+direct `NativeParameter` parents — so a live mutable `running_mean` or
+`running_var` captured in a graph could silently change an
+already-computed gradient with no error raised. The contract therefore
+forbids it: **eval-mode batch normalization must take independent,
+owning, graph-free snapshots** of the running statistics before using
+them in the output graph, which is exactly why the buffers need no
+version. The second rule is that the two running buffers update as **one
+atomic transaction** — validate, stage graph-free values, commit while
+preserving both buffers' Python identity, roll back completely on any
+failure or interruption, close replaced cores exactly once, and move no
+parameter version — reusing the staging/commit/rollback behavior
+`NativeModule.load_state_dict` already proves, which milestone F1 will
+extract into a private reusable primitive. The third is that
+**registration implies no exclusive ownership**: no `NativeModule.close()`
+is introduced, stateful examples and tests close both `parameters()` and
+`buffers()` explicitly, and no contract relies on garbage collection.
+Persistent running statistics ride the **existing** state-dictionary and
+pickle-free checkpoint infrastructure with the format **unchanged at
+version 1** — new persistent keys need no schema bump.
+
+The ladder is **F0–F9**: F0 (this contract and reconciliation), F1
+(atomic native-buffer state transactions and the `STATE_SUPPORT`
+persistent-buffer correction), F2 (`NativeLayerNorm`), F3
+(`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state, checkpoint,
+and graph-safety hardening), F6 (deterministic normalized training and
+exact resume), F7 (benchmark characterization with no speed assertion),
+F8 (cross-cutting integration and semantic guardrails), and F9 (phase
+closure). **F1–F9 have not started.**
+
+F0 also reconciled the documentation: the support matrix, roadmap,
+project summary, architecture doc, backend-experiments page, README, and
+the experimental package docstring now all state that **Phase E is
+complete and native classification is shipped**, that **Phase F is
+designed but not numerically implemented**, and that BatchNorm,
+LayerNorm, dropout, a native RNG, float32, CUDA, and AMP remain
+unsupported. This release-history document itself had no Phase-E entry
+before F0; the section above is that record. The documentation
+guardrails in `tests/test_docs.py` were extended with durable semantic
+checks derived from the live exports, registries, and files rather than
+from frozen prose.
+
+**F0 changed no numerical or runtime file**: no kernel, C ABI symbol,
+ctypes declaration, Core method, tensor operation, module, buffer
+helper, capability-inventory entry, export, benchmark, or example. The
+public `tensorforge.experimental` export set and every backend
+capability registry are byte-for-byte what Phase E left them.
+
 ### A hardening milestone before Phase D
 
 Between Phase C and the native CNN stack, a repair-and-hardening pass

@@ -56,6 +56,8 @@ src/tensorforge/
     native_maxpool2d.py  NativeMaxPool2d (Phase D)
     native_sequential.py NativeSequential
     native_mse_loss.py   NativeMSELoss
+    native_cross_entropy_loss.py  NativeCrossEntropyLoss (Phase E)
+    native_metrics.py    native_accuracy (Phase E, reporting only)
     native_sgd.py        NativeSGD
     native_adam.py       NativeAdam (persistent moment state)
     native_optimizer_state.py  optimizer state_dict schema helpers
@@ -147,8 +149,10 @@ explicit layer at a time:
 - **`NativeTensor`** wraps one core and adds the **Python-managed
   native autograd graph**: every operation listed in the backend's
   `AUTOGRAD_OPS` registry is differentiable (elementwise math, `matmul`,
-  reductions, the view ops, and the Phase-D `conv2d`/`maxpool2d`
-  primitives — the registry, mirrored in the
+  reductions, the view ops, the Phase-D `conv2d`/`maxpool2d`
+  primitives, and the Phase-E stable math — `exp`, `log`, the fused
+  `softmax` and `log_softmax`, and the fused `cross_entropy` from raw
+  logits — the registry, mirrored in the
   [native support matrix](native_support_matrix.md), is the exact list),
   with gradient un-broadcasting, view backwards (including a native
   scatter for `narrow`), one-shot graph release with `retain_graph`
@@ -173,6 +177,32 @@ explicit layer at a time:
   (`examples/native_cnn_training.py`) — proven end to end by
   `examples/native_mlp_training.py` and
   `examples/native_checkpoint_resume.py`.
+- **The native classification stack (Phase E, complete)** adds the
+  stable math the training stack needed to classify: differentiable
+  `exp` and `log` (the phase's two backward archetypes — `exp` reads its
+  saved output and records no parameter version, `log` rereads the live
+  input and version-guards a direct parameter), the fused, numerically
+  stable `softmax` (maximum shift) and `log_softmax` (its own
+  log-sum-exp kernel, never `softmax().log()`), and the fused
+  `cross_entropy` from raw logits — a Core contract plus one autograd
+  node whose graph-owned private saved probabilities drive the backward,
+  so the logits are never reread. On top of them sit the stateless
+  `NativeCrossEntropyLoss` module and the deliberately **reporting-only**
+  `native_accuracy`, which converts through the explicit public
+  `to_numpy()` boundary and builds no graph. Proven by
+  `examples/native_classification_training.py`, whose
+  checkpoint-interrupted run resumes exactly.
+- **Native normalization (Phase F) is designed, not implemented.** The
+  contract for `NativeLayerNorm`, `NativeBatchNorm1d`, and
+  `NativeBatchNorm2d` is locked in
+  [native_normalization_design.md](native_normalization_design.md)
+  (milestone F0), including the decision to **compose** normalization
+  from existing native operations rather than add any kernel, C ABI
+  export, or `NativeTensorCore` method, and the rule that a live mutable
+  running-statistics buffer is never captured as a rereadable graph
+  operand. Milestones F1–F9 have not started, so the native line has no
+  normalization capability today: `batchnorm` and `layernorm` are still
+  listed as unsupported in the backend registry.
 
 The execution path for a native training step is:
 

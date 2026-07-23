@@ -72,6 +72,25 @@ mathematics end to end — float64/CPU only, with no implicit
 stable/native dispatch and no change to the stable framework or the
 version-1 checkpoint format.
 
+**The current phase is Phase F — Native Normalization and Stateful
+Buffers — and it is *designed only*.** Milestone **F0** is complete: it
+locks the architecture contract in
+[native_normalization_design.md](native_normalization_design.md) —
+`NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d`
+**composed from existing native operations** with no new kernel, C ABI
+export, ctypes declaration, or `NativeTensorCore` method; persistent
+native running statistics as registered buffers; the rule that a live
+mutable running buffer is never captured as a rereadable graph operand
+(eval mode takes independent graph-free snapshots, which is exactly why
+buffers stay unversioned); atomic two-buffer running-statistics updates
+with rollback and preserved buffer identity; and state/checkpoint
+integration with the format unchanged at **version 1**. **F0 added
+design and documentation only — no numerical behavior.** Milestones
+**F1–F9 are planned and have not started**, so the native line has no
+normalization capability today and `batchnorm`/`layernorm` remain in the
+registry's `UNSUPPORTED` tuple. Dropout, a native RNG, and RNG
+checkpoint state are future work **beyond** Phase F.
+
 ## C++ backend — the raw kernel layer (v1.21, historical)
 
 *Historical: this section describes the raw NumPy-buffer kernel layer as
@@ -675,8 +694,12 @@ native CNN stack under Clang 18 on Linux with no TensorForge diagnostic
 (and a LeakSanitizer pass over the instrumented native CTests),
 documentation reconciliation, and durable capability guardrails replacing
 the milestone-era wording pins. **Phase D is complete**; the native line's
-next phase — a classification stack, more activations/math, normalization,
-RNG/dropout, and a CPU optimization pass — has not started, followed by
+next phase after it was **Phase E — Native Classification and Stable
+Math**, which has since completed (E0–E10), followed by **Phase F —
+Native Normalization and Stateful Buffers**, which is currently
+**designed only** (F0 complete; F1–F9 planned). Further activations and
+math, dropout with a native RNG, and a CPU optimization pass sit beyond
+Phase F, followed by
 the CUDA
 runtime, dtype/AMP work, Transformer/text experiments, distributed
 training, and the final portfolio release. Still float64/cpu only, still explicit and
@@ -3032,11 +3055,26 @@ CNN stack (Phase D) then completed** across milestones D0–D12:
 `NativeConv2d` module, the `maxpool2d` operation with its private saved
 winners and the `NativeMaxPool2d` module, the deterministic end-to-end
 CNN training + exact checkpoint-resume proof, cross-cutting integration
-tests, honest CNN benchmarks, and ASan/UBSan validation. The next phase
-is **Phase E — Native Classification and Stable Math**, whose contract is
-locked in
-[native_classification_design.md](native_classification_design.md) (E0)
-and whose implementation has not begun. CUDA experiments
+tests, honest CNN benchmarks, and ASan/UBSan validation. **Phase E —
+Native Classification and Stable Math — then completed** across
+milestones E0–E10, whose contract is locked in
+[native_classification_design.md](native_classification_design.md) (E0):
+the differentiable `exp` and `log`, the fused stable `softmax` and
+`log_softmax`, the fused `cross_entropy` Core contract and the
+differentiable operation over it, `NativeCrossEntropyLoss` and the
+reporting-only `native_accuracy`, a deterministic classification
+training run with exact checkpoint resume, an honest characterization
+benchmark, and phase closure under Release/Debug builds and Clang
+ASan/UBSan/LeakSanitizer. **The current phase is Phase F — Native
+Normalization and Stateful Buffers — and it is designed, not
+implemented.** Its contract is locked in
+[native_normalization_design.md](native_normalization_design.md)
+(milestone **F0**, complete: design and repository reconciliation only,
+adding no numerical behavior); milestones **F1–F9 are planned and have
+not started**, so no `NativeLayerNorm`, `NativeBatchNorm1d`, or
+`NativeBatchNorm2d` exists, no normalization operation is
+differentiable, and no normalization kernel or C ABI export exists.
+Dropout and a native RNG sit **beyond** Phase F. CUDA experiments
 remain a separate future branch (where `device` gains a second value),
 and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation

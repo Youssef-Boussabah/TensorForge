@@ -1,10 +1,13 @@
 # Native support matrix
 
 The canonical, authoritative statement of what the **experimental
-native C++ CPU line** supports today, as of Advanced C++ v3.16 —
-**Phase D (the native CNN stack) is complete**, closing the
+native C++ CPU line** supports today — **Phase E (native classification
+and stable math) is complete**, closing the
 Phase A (native CPU runtime) → Phase B (native autograd) → Phase C
-(native training stack) → Phase D arc in code. The stable Python
+(native training stack) → Phase D (native CNN stack) → Phase E arc in
+code. **Phase F (native normalization and stateful buffers) is designed
+but not implemented**, so nothing normalization-related appears as
+supported anywhere below. The stable Python
 framework's features (see
 [architecture.md](architecture.md)) are **not** listed here — a feature
 appears as supported only if the native stack itself provides it.
@@ -73,8 +76,19 @@ cross-cutting integration tests (`tests/test_native_phase_e.py`), Release
 ASan/UBSan validation of the whole classification stack with **zero
 diagnostics attributable to TensorForge**, a practical LeakSanitizer pass
 with **no native leak**, the full Python regression suite, and
-documentation reconciliation across every status surface. See also
-[roadmap.md](roadmap.md). Everything Phase D
+documentation reconciliation across every status surface.
+**Phase F — Native Normalization and Stateful Buffers — is the current
+phase and is *designed only*.** Its architecture contract is locked in
+[native_normalization_design.md](native_normalization_design.md)
+(milestone **F0**, complete — design and repository reconciliation, no
+numerical behavior); milestones **F1–F9 are planned and have not
+started**. No `NativeLayerNorm`, `NativeBatchNorm1d`, or
+`NativeBatchNorm2d` exists, no normalization operation is
+differentiable, and no normalization kernel or C ABI export exists —
+`batchnorm` and `layernorm` remain in the backend registry's
+`UNSUPPORTED` tuple and in the "Unsupported or future" section below.
+See also
+[roadmap.md](roadmap.md). Everything Phases D and E
 deliberately excluded
 remains unsupported and is named in the "Unsupported or future" section
 below, which stays the single place this document lists capabilities the
@@ -280,7 +294,12 @@ in the stable Python framework — that does not make them native.
   line; top-k, per-class, confusion-matrix, streaming, or stateful
   metrics; a `NativeSoftmax`/`NativeLogSoftmax` module; and a native
   `argmax` (the runtime has no integer dtype for one to return)
-- native normalization (BatchNorm/LayerNorm), dropout, or a native RNG
+- native normalization (BatchNorm/LayerNorm) — **Phase F is designed but
+  not implemented**: the contract is locked in
+  [native_normalization_design.md](native_normalization_design.md), and
+  `batchnorm`/`layernorm` stay in the registry's `UNSUPPORTED` tuple
+  until the milestones that implement them (F2 and F4) remove them
+- dropout or a native RNG — future work **beyond** Phase F
 - additional native activations/math beyond
   `relu`/`sqrt`/`reciprocal`/`exp`/`log`/`softmax`/`log_softmax`
 - CUDA / GPU execution
@@ -438,6 +457,59 @@ saved probabilities. Those saved probabilities are **private state** at
 both layers: Core-owned at E5, **graph-owned** by the E6 autograd node —
 never a public tensor, never a parameter or buffer, never serialized, and
 released exactly once with the graph history.
+
+## Phase F — native normalization and stateful buffers, **designed only**
+
+**Nothing in this section is implemented.** It records a locked
+architecture contract, not a capability. The authoritative statement of
+what exists is the backend registry, which still lists `batchnorm` and
+`layernorm` in `UNSUPPORTED` and contains no normalization entry in
+`TENSOR_CORE_OPS`, `AUTOGRAD_OPS`, `RAW_KERNELS`, `NATIVE_MODULES`,
+`NATIVE_LOSSES`, or `NATIVE_METRICS`.
+
+The Phase-F **architecture contract** is locked in
+[native_normalization_design.md](native_normalization_design.md)
+(milestone **F0**). It fixes, before any numerical code is written: the
+public API (`NativeLayerNorm(normalized_shape, eps=1e-5,
+elementwise_affine=True)` with `weight`/`bias`;
+`NativeBatchNorm1d(num_features, eps=1e-5, momentum=0.1)` and
+`NativeBatchNorm2d(...)` with `gamma`/`beta` and `running_mean` /
+`running_var`); the decision to **compose** normalization from existing
+native operations (`mean`, `subtract`, `multiply`, `add`, `sqrt`,
+`reciprocal`, `reshape`, broadcasting, `contiguous_copy`) so that **no
+kernel, C ABI export, ctypes declaration, or `NativeTensorCore` method
+is added** and the backward comes from the existing autograd; population
+variance with `eps` inside the square root; training statistics that are
+differentiated through; the rule that a **live mutable running buffer is
+never captured as a rereadable graph operand** (eval mode uses
+independent graph-free snapshots, which is why buffers stay unversioned);
+atomic two-buffer running-statistics updates with rollback and preserved
+buffer identity; and state/checkpoint integration with the format
+**unchanged at version 1**.
+
+| Milestone | Deliverable | Status |
+|---|---|---|
+| F0 | Phase-F architecture contract and repository reconciliation | **Complete** (design and documentation only — no numerical behavior) |
+| F1 | Atomic native-buffer state transactions (extracted from the existing `load_state_dict` staging/commit/rollback) and the `STATE_SUPPORT` persistent-buffer correction | Planned — not started |
+| F2 | `NativeLayerNorm` | Planned — not started |
+| F3 | `NativeBatchNorm1d` | Planned — not started |
+| F4 | `NativeBatchNorm2d` | Planned — not started |
+| F5 | Normalization state, checkpoint, and graph-safety hardening | Planned — not started |
+| F6 | Deterministic normalized training and exact resume | Planned — not started |
+| F7 | Native normalization benchmark characterization (no speed assertion) | Planned — not started |
+| F8 | Cross-cutting Phase-F integration and semantic guardrails | Planned — not started |
+| F9 | Phase-F closure | Planned — not started |
+
+Explicitly **outside** Phase F and still unplanned: dropout, a native
+RNG and RNG checkpoint state, `tanh`/`sigmoid`/GELU, more losses,
+schedulers, data loaders, native integer tensors, indexing/`gather`/
+`max`/`argmax`, float32/float16/bfloat16, casting or dtype promotion,
+CUDA, AMP, Tensor Core dispatch, pybind11, the Python C API, implicit
+stable/native dispatch or conversion, fused normalization kernels,
+normalization-specific C ABI exports, custom normalization backward
+kernels, synchronized/distributed BatchNorm, CPU optimization,
+performance thresholds, checkpoint format version changes, and real
+datasets or generalization claims.
 
 ## How to build and verify
 

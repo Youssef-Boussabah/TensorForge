@@ -213,6 +213,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
+- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **designed only**: F0 is complete, F1–F9 are planned and not implemented)
 
 ## Limitations
 
@@ -228,7 +229,9 @@ Honest expectations:
   (Phase E) are both complete — but "complete" means *these* capabilities
   work and are validated, not that the native line is finished. What the
   native line still does **not** have: normalization (BatchNorm /
-  LayerNorm), dropout or a native RNG, data loaders, native integer
+  LayerNorm) — **Phase F is designed but not implemented**, so no
+  normalization module, operation, or kernel exists — dropout or a native
+  RNG, data loaders, native integer
   tensors, further dtypes or devices, CUDA, AMP, and any implicit
   dispatch into `tensorforge.Tensor`. Native checkpoints capture no
   scheduler or random state, and the classification loss supports
@@ -339,9 +342,24 @@ with zero diagnostics attributable to TensorForge, a practical
 LeakSanitizer pass finding no native leak, the full Python regression
 suite, and documentation reconciliation across every status surface.
 Phase E expanded nothing beyond float64/CPU and added no implicit
-stable/native dispatch. More
-activations/math, normalization, RNG/dropout, and CPU optimization sit
-beyond it, and CUDA/GPU experiments remain future work. See
+stable/native dispatch.
+
+**Phase F — Native Normalization and Stateful Buffers — is now formally
+defined and designed, but not numerically implemented.** Its architecture
+contract is locked in
+[docs/native_normalization_design.md](docs/native_normalization_design.md)
+(milestone **F0**, complete: design and repository reconciliation only,
+adding no numerical behavior). Milestones **F1–F9** — the atomic native
+buffer state transaction, `NativeLayerNorm`, `NativeBatchNorm1d`,
+`NativeBatchNorm2d`, state/checkpoint and graph-safety hardening, a
+deterministic normalized training run with exact resume, an honest
+benchmark characterization, cross-cutting integration, and phase closure
+— are **planned and have not started**. Nothing normalization-related is
+shipped: `batchnorm` and `layernorm` remain listed as unsupported in the
+backend registry, and no normalization module, operation, kernel, or C
+ABI symbol exists. More activations/math, dropout and a native RNG, data
+loaders, and CPU optimization sit beyond Phase F, and CUDA/GPU
+experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 

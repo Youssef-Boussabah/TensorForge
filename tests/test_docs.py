@@ -24,6 +24,7 @@ DOCS = (
     "native_support_matrix.md",
     "native_cnn_design.md",
     "native_classification_design.md",
+    "native_normalization_design.md",
 )
 
 EXAMPLE_FILES = (
@@ -205,9 +206,9 @@ def test_phase_c_marked_complete_not_in_progress():
     assert re.search(r"checkpoint", readme, re.IGNORECASE), (
         "README no longer presents native checkpointing"
     )
-    # The native CNN stack (Phase D) is now under way — its Flatten and
-    # Conv2d milestones have shipped — while CUDA remains not started. The
-    # roadmap must keep naming the stack and keep marking CUDA future work.
+    # The native CNN stack (Phase D) is complete, while CUDA remains not
+    # started. The roadmap must keep naming the stack and keep marking
+    # CUDA future work.
     roadmap = _normalized_doc("docs/roadmap.md")
     assert "native CNN stack" in roadmap
     assert "not started" in roadmap
@@ -409,7 +410,8 @@ def test_phase_d_status_is_consistent_across_docs_and_registry():
 def test_native_flatten_is_implemented_as_a_native_module():
     """D1: NativeFlatten is a shipped native module, present in the modern
     native-module inventory and public surface, and is NOT a raw C++
-    kernel. Convolution and pooling stay unimplemented."""
+    kernel. Convolution (D7) and pooling (D10) are shipped modules too, so
+    neither is a lingering `UNSUPPORTED` entry."""
     from tensorforge.backends import cpp
     import tensorforge.experimental as experimental
 
@@ -1344,6 +1346,500 @@ def test_authoritative_surfaces_do_not_call_shipped_modules_unimplemented():
                     f"{name} claims {module} is unimplemented "
                     f"({match.group(0)!r}), but it is in NATIVE_MODULES"
                 )
+
+
+# --- Phase F (native normalization) — F0 contract guardrails -------------
+#
+# F0 is a design-and-reconciliation milestone: it adds no numerical
+# behavior. These guards therefore establish two things — that Phase E is
+# presented honestly as complete everywhere (the drift F0 was written to
+# repair), and that Phase F is presented honestly as *designed only*,
+# with nothing it describes accidentally advertised as implemented.
+#
+# Every check below derives from the live registry, the live exports, or
+# a real file wherever that is practical, rather than from frozen prose.
+
+PHASE_F_DESIGN = "docs/native_normalization_design.md"
+
+# Where a *phase status narrative* is written. This is deliberately not
+# AUTHORITATIVE_STATUS_SURFACES: that tuple includes the backend registry
+# module, which states capabilities rather than phase status. The registry
+# is still covered — by the negative and inventory checks below, which are
+# the stronger form for it.
+PHASE_STATUS_DOCS = (
+    "README.md",
+    "docs/native_support_matrix.md",
+    "docs/roadmap.md",
+    "docs/project_summary.md",
+    "docs/architecture.md",
+    "docs/backend_experiments.md",
+    "src/tensorforge/experimental/__init__.py",
+)
+
+# The names Phase F contracts but has NOT implemented, in each of the
+# forms a document or a registry might use them.
+_NORMALIZATION_MODULES = (
+    "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+)
+_NORMALIZATION_OP_NAMES = (
+    "layer_norm", "batch_norm", "layernorm", "batchnorm",
+    "layer_norm_forward", "batch_norm_forward",
+)
+
+
+def _top_level_section(token, relative_path=PHASE_F_DESIGN):
+    """The whitespace-normalized body of the first ``##``-level section
+    whose heading contains ``token``, **including** its ``###``
+    subsections.
+
+    ``_design_section`` splits on every heading level, which truncates a
+    section that has subsections (Phase F's §6, §7, and §14 all do). This
+    variant slices between top-level ``##`` headings only, so a check can
+    be scoped to one numbered section without pinning its internal
+    structure."""
+    text = (REPO_ROOT / relative_path).read_text(encoding="utf-8")
+    chunks = re.split(r"\n## ", text)
+    for chunk in chunks:
+        if token in chunk.split("\n", 1)[0]:
+            return re.sub(r"\s+", " ", chunk)
+    raise AssertionError(f"{relative_path} has no ## section naming {token!r}")
+
+
+def test_phase_e_is_positively_marked_complete_on_every_status_doc():
+    """Requirement 1 of the F0 audit. Before F0 several documents still
+    described Phase D as the latest native phase; each must now state
+    Phase E's completion positively, not merely avoid denying it."""
+    for surface in PHASE_STATUS_DOCS:
+        text = _status_text(surface)
+        assert re.search(r"Phase E.{0,300}?\bcomplete\b", text, re.I), (
+            f"{surface} does not positively state that Phase E is complete"
+        )
+
+
+def test_native_classification_is_presented_as_shipped_everywhere():
+    """Requirement 2. Phase E's public surface really exists, so every
+    status document must present it. The premise is checked against the
+    live registry and exports first, so this can never assert a doc claim
+    the code does not back."""
+    from tensorforge.backends import cpp
+    import tensorforge.experimental as experimental
+
+    # Premise: these are genuinely shipped.
+    assert "cross_entropy" in cpp.AUTOGRAD_OPS
+    assert "NativeCrossEntropyLoss" in cpp.NATIVE_LOSSES
+    assert "native_accuracy" in cpp.NATIVE_METRICS
+    for name in ("NativeCrossEntropyLoss", "native_accuracy"):
+        assert name in experimental.__all__
+
+    for surface in PHASE_STATUS_DOCS:
+        text = _status_text(surface)
+        assert "NativeCrossEntropyLoss" in text, (
+            f"{surface} does not present the shipped native classification "
+            f"loss"
+        )
+        assert re.search(r"cross.entropy", text, re.I), surface
+
+
+_CLASSIFICATION_SUBJECT = (
+    r"(native classification|classification stack|NativeCrossEntropyLoss"
+    r"|native_accuracy)"
+)
+_ABSENT_OR_PENDING = (
+    r"(not yet implemented|not implemented|unimplemented|has not begun"
+    r"|has not started|\bnot started\b|is unsupported|still unsupported"
+    r"|does not exist|has not shipped|is upcoming|are upcoming"
+    r"|still upcoming|in progress|under way|underway)"
+)
+# The third stale form the audit found: a bare negation ("no native
+# classification stack, normalization, dropout, or RNG") in a
+# limitations list, which neither word order above catches.
+_BARE_ABSENCE = r"\bno\s+(?:\w+\s+){0,2}?" + _CLASSIFICATION_SUBJECT
+
+
+def test_no_surface_calls_native_classification_absent_or_pending():
+    """Requirement 3. Both word orders, inside a narrow same-sentence
+    window so unrelated prose cannot trip the guard. This is the check
+    that would have caught the pre-F0 backend_experiments claim that
+    Phase E's 'implementation has not begun'."""
+    forward = re.compile(
+        _CLASSIFICATION_SUBJECT + r"[^.]{0,90}?" + _ABSENT_OR_PENDING, re.I
+    )
+    backward = re.compile(
+        _ABSENT_OR_PENDING + r"[^.]{0,90}?" + _CLASSIFICATION_SUBJECT, re.I
+    )
+    # "Phase E ... has not begun" phrased through the phase name, too.
+    phase_forms = re.compile(r"Phase E[^.]{0,90}?" + _ABSENT_OR_PENDING, re.I)
+    bare = re.compile(_BARE_ABSENCE, re.I)
+    for surface in AUTHORITATIVE_STATUS_SURFACES + PHASE_STATUS_DOCS:
+        text = _status_text(surface)
+        for pattern in (forward, backward, phase_forms, bare):
+            match = pattern.search(text)
+            assert match is None, (
+                f"{surface} presents native classification as absent or "
+                f"pending: {match.group(0)!r}" if match else ""
+            )
+
+
+def test_phase_f_design_exists_and_is_linked():
+    """Requirement 4, first half."""
+    path = REPO_ROOT / PHASE_F_DESIGN
+    assert path.is_file(), f"missing {PHASE_F_DESIGN}"
+    assert path.read_text(encoding="utf-8").strip(), f"{PHASE_F_DESIGN} is empty"
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert PHASE_F_DESIGN in readme, f"README does not link to {PHASE_F_DESIGN}"
+
+
+def test_phase_f_milestone_ladder_is_complete_and_ordered():
+    """Requirement 4, second half: F0 through F9 each have their own
+    contract section, and those sections appear in increasing order."""
+    text = _normalized_doc(PHASE_F_DESIGN)
+    positions = []
+    for i in range(10):
+        marker = f"### F{i} —"
+        assert marker in text, f"{PHASE_F_DESIGN} is missing milestone F{i}"
+        positions.append(text.index(marker))
+    assert positions == sorted(positions), (
+        "the F0-F9 milestone ladder is out of order"
+    )
+
+
+def test_phase_f_design_locks_its_load_bearing_decisions():
+    """The contract later milestones inherit must actually be written
+    down: the phase name, the three planned modules, the composition rule
+    that keeps Phase F out of C++, the normalization mathematics, the
+    mutable-buffer graph-safety rule, the atomic two-buffer transaction,
+    and the unchanged checkpoint format."""
+    text = _normalized_doc(PHASE_F_DESIGN)
+    assert "Phase F" in text
+    assert "Native Normalization and Stateful Buffers" in text
+    for module in _NORMALIZATION_MODULES:
+        assert module in text, f"{PHASE_F_DESIGN} does not lock {module!r}"
+    # The naming decisions (LayerNorm weight/bias vs BatchNorm gamma/beta).
+    for token in ("weight", "bias", "gamma", "beta",
+                  "running_mean", "running_var"):
+        assert token in text, f"{PHASE_F_DESIGN} does not lock {token!r}"
+    # Composition over existing ops, and therefore no new native surface.
+    for op in ("mean", "subtract", "multiply", "sqrt", "reciprocal",
+               "reshape", "contiguous_copy"):
+        assert op in text, f"the design does not list the composed op {op!r}"
+    assert re.search(r"no.{0,80}(kernel|C ABI export)", text, re.I), (
+        "the design no longer states that Phase F adds no kernel or export"
+    )
+    # The normalization mathematics that a later milestone could get wrong.
+    assert "population variance" in text.lower()
+    assert re.search(r"sqrt\(var \+ eps\)", text), (
+        "the design no longer pins epsilon inside the square root"
+    )
+    assert re.search(r"differentiat\w+ through the batch (mean|statistics)",
+                     text, re.I) or "through the batch mean and variance" in text, (
+        "the design no longer requires differentiating the batch statistics"
+    )
+    # Shapes.
+    assert "(N, C)" in text and "(N, C, H, W)" in text
+    assert "(1, C, 1, 1)" in text
+    # The checkpoint format is explicitly preserved.
+    assert re.search(r"version 1", text), (
+        "the design does not preserve native checkpoint format version 1"
+    )
+
+
+def test_phase_f_design_locks_the_mutable_buffer_safety_rule():
+    """The phase's central insight, pinned in its own section: a live
+    mutable running buffer is never a rereadable graph operand, eval mode
+    snapshots instead, and that is *why* buffers need no version."""
+    section = _top_level_section("Mutable-buffer graph safety")
+    lowered = section.lower()
+    assert "snapshot" in lowered
+    assert re.search(r"never be captured|never captured", lowered), (
+        "the design no longer forbids capturing the live buffer"
+    )
+    assert "graph-free" in lowered
+    # The two facts that make the hazard real, so the rule is justified
+    # rather than asserted.
+    assert re.search(r"no value version|unversioned", lowered)
+    assert re.search(r"reread", lowered)
+    assert "multiply" in lowered
+    assert "nativeparameter" in lowered
+    # And the explicit decision not to add buffer versions.
+    assert re.search(r"not.{0,40}add(ing)?.{0,40}version|versions are \*?\*?not",
+                     lowered) or "why buffer versions" in lowered, (
+        "the design no longer explains why buffer versions are not required"
+    )
+
+
+def test_phase_f_design_locks_the_atomic_running_stat_transaction():
+    """The second load-bearing rule: the two running buffers advance as
+    one transaction, with staging, identity-preserving commit, complete
+    rollback, and exactly-once closes — and no public in-place mutation
+    API on ordinary NativeTensor."""
+    section = _top_level_section("Running-statistics transaction")
+    lowered = section.lower()
+    for token in ("atomic", "stag", "commit", "rollback", "identity"):
+        assert token in lowered, f"the transaction section omits {token!r}"
+    assert re.search(r"exactly once", lowered), (
+        "the design no longer states exactly-once closing"
+    )
+    assert re.search(r"parameter versions do not move|no parameter version",
+                     lowered), (
+        "the design no longer states that parameter versions stay put"
+    )
+    assert re.search(r"no general public in-place mutation|not add a general",
+                     lowered), (
+        "the design no longer refuses a public in-place mutation API"
+    )
+    # F1 is named as the milestone that extracts the existing behavior.
+    assert "F1" in section and "load_state_dict" in section
+
+
+def test_phase_f_is_described_as_designed_but_not_implemented():
+    """Requirement 5. The design document states it about itself, and
+    every status document states it too — a contract is not a shipped
+    capability, and no reader may be left thinking otherwise."""
+    design = _status_text(PHASE_F_DESIGN)
+    assert re.search(r"Phase-F status: designed, not implemented", design), (
+        "the design document no longer states its own designed-only status"
+    )
+    assert re.search(r"F0 adds no numerical behavior|no numerical behavior",
+                     design, re.I)
+    for surface in PHASE_STATUS_DOCS:
+        text = _status_text(surface)
+        assert "Phase F" in text, f"{surface} does not name Phase F at all"
+        assert re.search(
+            r"Phase F.{0,200}?(designed|design).{0,120}?not"
+            r"|Phase F.{0,200}?not.{0,60}(numerically )?implemented"
+            r"|designed but not.{0,40}implemented",
+            text, re.I,
+        ), f"{surface} does not mark Phase F designed-but-not-implemented"
+        # And it must not claim the opposite. Direct forms only: a
+        # milestone statement like "F0 is complete" is honest and must
+        # keep being possible, so the guard is about the *phase*.
+        # The `[^.F]` window is deliberate: it forbids an intervening
+        # milestone label (F0 … F9), so "Phase F — designed only: F0 is
+        # complete" reads as the milestone claim it is, while "Phase F is
+        # now complete" is still caught.
+        claim = re.search(
+            r"Phase F\b[^.F]{0,40}?\b(is|was|are|now)\s+"
+            r"(complete|completed|shipped|implemented)\b",
+            text, re.I,
+        )
+        assert claim is None, (
+            f"{surface} claims Phase F is implemented: "
+            f"{claim.group(0)!r}" if claim else ""
+        )
+
+
+def test_normalization_stays_unsupported_and_unexported_during_f0():
+    """Requirements 6 and 7, checked against the live registry and the
+    live exports rather than against prose — the registry is the
+    authority on what exists."""
+    from tensorforge.backends import cpp
+    import tensorforge.experimental as experimental
+
+    # Still unsupported, by name.
+    for absent in ("batchnorm", "layernorm"):
+        assert absent in cpp.UNSUPPORTED, absent
+
+    # No normalization module exists, is exported, or is advertised.
+    for module in _NORMALIZATION_MODULES:
+        assert module not in cpp.NATIVE_MODULES, module
+        assert module not in cpp.NATIVE_LOSSES, module
+        assert module not in cpp.NATIVE_METRICS, module
+        assert module not in experimental.__all__, module
+        assert not hasattr(experimental, module), module
+
+    # No normalization operation at any layer, and no raw kernel.
+    for name in _NORMALIZATION_OP_NAMES:
+        assert name not in cpp.TENSOR_CORE_OPS, name
+        assert name not in cpp.AUTOGRAD_OPS, name
+        assert name not in cpp.RAW_KERNELS, name
+        assert not hasattr(cpp.NativeTensorCore, name), name
+
+    from tensorforge.experimental import NativeTensor
+    for name in ("layer_norm", "batch_norm", "layernorm", "batchnorm",
+                 "normalize"):
+        assert not hasattr(NativeTensor, name), name
+
+    # No normalization C ABI symbol is declared or guarded, and none is
+    # defined in any C++ source unit.
+    for symbol in ("tf_core_layer_norm", "tf_core_batch_norm",
+                   "tf_core_layer_norm_forward", "tf_core_batch_norm_forward",
+                   "tf_core_layer_norm_backward",
+                   "tf_core_batch_norm_backward"):
+        assert symbol not in cpp._CHECKED_KERNELS, symbol
+    for source in (REPO_ROOT / "cpp" / "src").glob("*.cpp"):
+        text = source.read_text(encoding="utf-8")
+        for symbol in ("tf_core_layer_norm", "tf_core_batch_norm"):
+            assert symbol not in text, f"{source.name} defines {symbol!r}"
+    # And no normalization source unit was created.
+    assert not (REPO_ROOT / "cpp" / "src" / "normalization.cpp").exists()
+
+
+def test_f0_leaves_the_public_experimental_surface_unchanged():
+    """Requirement 8. The export set is exactly what Phase E left, in
+    both directions — nothing added by F0, nothing lost."""
+    import tensorforge
+    import tensorforge.experimental as experimental
+
+    assert set(experimental.__all__) == {
+        "NativeTensor", "NativeParameter", "NativeParameterRegistry",
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeMSELoss", "NativeSGD", "NativeAdam",
+        "save_native_checkpoint", "load_native_checkpoint",
+        "NativeCrossEntropyLoss", "native_accuracy",
+    }
+    # No duplicates, and nothing leaks into the stable namespace.
+    assert len(experimental.__all__) == len(set(experimental.__all__))
+    for name in experimental.__all__:
+        assert hasattr(experimental, name)
+        assert not hasattr(tensorforge, name), name
+
+
+def test_f0_leaves_the_capability_registries_unchanged():
+    """Requirement 9. F0 is documentation-only, so every inventory must
+    still be exactly the Phase-E surface — including STATE_SUPPORT, whose
+    persistent-buffer correction is deliberately deferred to F1."""
+    from tensorforge.backends import cpp
+
+    assert cpp.NATIVE_MODULES == (
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+    )
+    assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    assert cpp.UNSUPPORTED == (
+        "batchnorm", "layernorm", "dropout", "float32", "cuda", "amp",
+    )
+    # STATE_SUPPORT is untouched by F0 (the design assigns its correction
+    # to F1). If this ever needs updating, the F1 milestone is the place.
+    assert cpp.STATE_SUPPORT == (
+        "state_dict", "load_state_dict",
+        "save_native_checkpoint", "load_native_checkpoint",
+    )
+    # The Phase-E operation surface is intact and nothing normalization
+    # shaped joined it.
+    for op in ("exp", "log", "softmax", "log_softmax", "cross_entropy"):
+        assert op in cpp.AUTOGRAD_OPS, op
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+
+
+def test_dropout_float32_cuda_and_amp_stay_unsupported_through_f0():
+    """Requirement 10. Phase F excludes all four explicitly, and its
+    design document must say so rather than leaving it to the registry."""
+    from tensorforge.backends import cpp
+
+    for future in ("dropout", "float32", "cuda", "amp"):
+        assert future in cpp.UNSUPPORTED, future
+        assert future not in cpp.AUTOGRAD_OPS
+        assert future not in cpp.TENSOR_CORE_OPS
+        assert future not in cpp.NATIVE_MODULES
+    design = _status_text(PHASE_F_DESIGN)
+    for excluded in ("dropout", "CUDA", "AMP", "float32"):
+        assert excluded in design, (
+            f"{PHASE_F_DESIGN} does not exclude {excluded!r}"
+        )
+    assert cpp.backend_info()["stable_framework_integration"] is False
+
+
+def test_status_docs_agree_on_the_phase_sequence():
+    """Requirement 11. Every status document that discusses the native
+    line must place the phases in the same order and must not invent one
+    beyond Phase F."""
+    for surface in PHASE_STATUS_DOCS:
+        text = _status_text(surface)
+        assert "Phase E" in text and "Phase F" in text, surface
+        # Phase F is the newest phase; nothing later may be named.
+        for beyond in ("Phase G", "Phase H"):
+            assert beyond not in text, f"{surface} names {beyond}"
+    # The phase sequence is A..F with no gaps: the set of phases a
+    # document names must be a contiguous prefix-suffix of that ladder,
+    # never a set that skips one. (Ordering *within* a document is not
+    # pinned — the support matrix legitimately leads with the newest
+    # phase and then recaps the ladder.)
+    ladder = "ABCDEF"
+    for surface in ("docs/native_support_matrix.md", "docs/roadmap.md",
+                    "docs/project_summary.md"):
+        text = _status_text(surface)
+        named = [letter for letter in ladder if f"Phase {letter}" in text]
+        assert named, surface
+        span = ladder[ladder.index(named[0]):ladder.index(named[-1]) + 1]
+        assert "".join(named) == span, (
+            f"{surface} skips a phase: names {named}, expected the "
+            f"contiguous run {list(span)}"
+        )
+        # The newest phase named must be F — no document may stop at E
+        # and thereby imply Phase E is still the current phase.
+        assert named[-1] == "F", (
+            f"{surface} stops at Phase {named[-1]}; Phase F is current"
+        )
+
+
+def test_every_doc_linked_from_the_readme_exists():
+    """Requirement 12, in the general form: not just the curated DOCS
+    tuple, but every docs/ path the README actually links to."""
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    referenced = sorted(set(re.findall(r"docs/([\w./-]+\.md)", readme)))
+    assert referenced, "README links to no documentation at all"
+    for name in referenced:
+        assert (REPO_ROOT / "docs" / name).is_file(), (
+            f"README links to docs/{name}, which does not exist"
+        )
+    # And the reverse for the design documents: a contract that exists but
+    # is unreachable from the README is an orphan.
+    for design in ("native_cnn_design.md", "native_classification_design.md",
+                   "native_normalization_design.md"):
+        assert design in referenced, f"docs/{design} is not linked"
+
+
+def test_phase_f_design_records_the_daedalus_comparison():
+    """The phase must record what it took from the comparable Daedalus
+    design and — more importantly — what it deliberately rejected, so the
+    architectural choices are justified rather than inherited."""
+    section = _top_level_section("Daedalus")
+    lowered = section.lower()
+    # Ideas taken.
+    assert "composition" in lowered or "composed" in lowered
+    assert "shared private" in lowered or "shared implementation" in lowered
+    # Ideas rejected — each one names a real architectural boundary.
+    for rejected in ("pybind11", "numpy", "detached", "host array"):
+        assert rejected in lowered, (
+            f"the Daedalus comparison does not record rejecting {rejected!r}"
+        )
+    assert re.search(r"c\+\+-managed autograd|autograd.{0,20}c\+\+", lowered), (
+        "the comparison no longer rejects C++-managed autograd"
+    )
+    assert re.search(r"cop(y|ied|ying)", lowered), (
+        "the comparison no longer states that no implementation is copied"
+    )
+
+
+def test_f0_claims_no_numerical_capability():
+    """The milestone's own honesty check: F0's section of the ladder must
+    say it added none, and the ladder must not mark any later milestone
+    complete or in progress."""
+    text = _normalized_doc(PHASE_F_DESIGN)
+    ladder = _design_section("Milestone ladder", relative_path=PHASE_F_DESIGN)
+    row = re.search(r"\|\s*F0\s*\|[^|]*\|([^|]*)\|", ladder)
+    assert row is not None, "the ladder has no status row for F0"
+    assert "complete" in row.group(1).lower()
+    for planned in range(1, 10):
+        row = re.search(rf"\|\s*F{planned}\s*\|[^|]*\|([^|]*)\|", ladder)
+        assert row is not None, f"the ladder has no status row for F{planned}"
+        status = row.group(1).lower()
+        assert "planned" in status, f"F{planned} is not marked planned"
+        assert "complete" not in status, f"F{planned} is marked complete"
+        assert "in progress" not in status, f"F{planned} is marked in progress"
+    # F0's own contract section denies adding numerical behavior.
+    f0 = _design_section("F0 —", relative_path=PHASE_F_DESIGN)
+    assert re.search(r"no.{0,60}numerical", f0, re.I), (
+        "the F0 section no longer denies adding numerical behavior"
+    )
+    # And the phase statement says the same thing plainly.
+    assert "Phase F is designed, not implemented" in re.sub(
+        r"[*`]", "", text
+    )
 
 
 def test_native_cnn_design_is_linked_and_referenced():

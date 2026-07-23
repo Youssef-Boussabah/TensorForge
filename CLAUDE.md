@@ -37,10 +37,21 @@ used, medians with spread after warm-up, `--smoke`/`--json` modes, and
 closure: `tests/test_native_phase_e.py` cross-cutting integration,
 Release and Debug builds with 10/10 CTests each, Clang ASan/UBSan and
 LeakSanitizer validation, and documentation reconciliation — no new
-numerical capability) all shipped;
-normalization/dropout/RNG, data loaders, native integer tensors, further
+numerical capability) all shipped. **Phase F — Native Normalization and
+Stateful Buffers — is the current phase and is *designed only*:**
+milestone F0 is complete (the architecture contract in
+`docs/native_normalization_design.md` plus repository reconciliation —
+**no numerical behavior**), and milestones F1–F9 (an atomic
+native-buffer state transaction, `NativeLayerNorm`, `NativeBatchNorm1d`,
+`NativeBatchNorm2d`, state/checkpoint and graph-safety hardening, a
+deterministic normalized training run with exact resume, a benchmark
+characterization, cross-cutting integration, and closure) have **not
+started** — so `batchnorm` and `layernorm` remain in the backend
+registry's `UNSUPPORTED` tuple and no normalization module, operation,
+kernel, or C ABI symbol exists.
+Dropout/RNG, data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
-future work beyond it).
+future work beyond Phase F.
 Position the project as serious and systems-focused — never
 "educational", "toy", or "mini" — while staying honest: not
 production-ready, not a PyTorch replacement.
@@ -82,7 +93,8 @@ production-ready, not a PyTorch replacement.
 - `docs/` — project summary, architecture, autograd, training,
   examples, roadmap, release history, and the native-line design
   contracts (`native_cnn_design.md` for Phase D,
-  `native_classification_design.md` for Phase E). When a milestone changes the
+  `native_classification_design.md` for Phase E,
+  `native_normalization_design.md` for Phase F — designed only). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the

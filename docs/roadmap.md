@@ -912,9 +912,68 @@ The Python line is done; what remains is expansion on its own terms:
     ones, and reconciliation of every authoritative status surface.
     **Phase E is complete**, and it expanded nothing beyond float64/CPU
     and added no implicit stable/native dispatch. Deliberately outside
-    Phase E and still unplanned: more native activations beyond it, native
-    normalization, a native RNG and dropout, a CPU optimization phase for
-    the deliberately naive kernels, and build/packaging evolution.
+    Phase E: more native activations beyond it, a native RNG and dropout,
+    a CPU optimization phase for the deliberately naive kernels, and
+    build/packaging evolution. Native normalization then became its own
+    phase, below.
+  - **Phase F — Native Normalization and Stateful Buffers — designed,
+    not implemented (F0 complete; F1–F9 planned).** The **F0
+    architecture contract is written** —
+    [native_normalization_design.md](native_normalization_design.md)
+    locks the phase's objective (a fully native, differentiable,
+    state-safe normalization stack: `NativeLayerNorm`,
+    `NativeBatchNorm1d`, and `NativeBatchNorm2d`), the public API and its
+    naming (layer-norm `weight`/`bias`; batch-norm `gamma`/`beta` plus
+    the `running_mean`/`running_var` buffers, matching the stable
+    reference), and — most consequentially — the decision that
+    normalization is **composed from existing native operations**
+    (`mean`, `subtract`, `multiply`, `add`, `sqrt`, `reciprocal`,
+    `reshape`, broadcasting, `contiguous_copy`) so the phase adds **no
+    C++ kernel, no C ABI export, no ctypes declaration, and no
+    `NativeTensorCore` method** and inherits an exact backward from the
+    existing autograd — including differentiation through the batch mean
+    and variance, which is never detached. It also locks the layer-norm
+    contract (trailing-dimension normalization, population variance,
+    `eps` inside the square root, no buffers, identical in train and eval
+    mode), the two batch-norm shape contracts (`(N, C)` reducing over the
+    batch; NCHW `(N, C, H, W)` reducing over N/H/W with `(1, C, 1, 1)`
+    broadcasting), and three load-bearing safety rules: a **live mutable
+    running buffer is never captured as a rereadable graph operand** (an
+    eval forward takes independent, owning, graph-free snapshots, which
+    is precisely why buffers need no value version — `multiply`'s
+    backward rereads a live operand, and the existing stale-version check
+    only covers direct `NativeParameter` parents); the two running
+    buffers update as **one atomic transaction** (validate, stage
+    graph-free values, commit preserving both buffers' Python identity,
+    roll back completely on any failure or interruption, close replaced
+    cores exactly once, move no parameter version); and **registration
+    implies no exclusive ownership**, so stateful examples and tests
+    close both `parameters()` and `buffers()` explicitly and no contract
+    relies on garbage collection. Persistent running statistics ride the
+    **existing** state-dictionary and pickle-free checkpoint
+    infrastructure with the format **unchanged at version 1** — new
+    persistent keys need no schema bump — and the eventual exact resume
+    must reproduce the loss suffix, parameters, optimizer state, running
+    means, running variances, final predictions, **and the
+    evaluation-mode output**. The ladder is **F0–F9**: F0 (this
+    contract and repository reconciliation), F1 (atomic native-buffer
+    state transactions, extracted and generalized from the existing
+    `load_state_dict` staging/commit/rollback, plus the `STATE_SUPPORT`
+    persistent-buffer correction), F2 (`NativeLayerNorm`), F3
+    (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state,
+    checkpoint, and graph-safety hardening), F6 (deterministic
+    normalized training and exact resume), F7 (benchmark
+    characterization, with no speed assertion), F8 (cross-cutting
+    integration and semantic guardrails), and F9 (phase closure).
+    **F0 added no numerical behavior** — it is a design-and-reconciliation
+    milestone — and **F1–F9 have not started**, so the native line has no
+    normalization capability today: `batchnorm` and `layernorm` remain in
+    the backend registry's `UNSUPPORTED` tuple, no normalization module
+    is exported, and no normalization operation or kernel exists.
+    Deliberately outside Phase F: dropout, a native RNG with its
+    checkpoint state, further activations, more losses, schedulers, data
+    loaders, native integer tensors, further dtypes or devices, CUDA,
+    AMP, fused normalization kernels, and CPU optimization.
   - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,
