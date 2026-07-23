@@ -704,6 +704,7 @@ def test_native_phase_c_public_surface_guardrails():
         "NativeMaxPool2d",           # Phase D, milestone D10
         "NativeCrossEntropyLoss",    # Phase E, milestone E7
         "native_accuracy",           # Phase E, milestone E7
+        "NativeLayerNorm",           # Phase F, milestone F2
     }
     for name in experimental.__all__:
         assert not hasattr(tensorforge, name)

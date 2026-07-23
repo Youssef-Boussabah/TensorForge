@@ -209,9 +209,13 @@ def test_e8_added_no_capability_inventory_entry():
     dataset, or checkpoint-resume name may appear in any of them."""
     info = cpp.backend_info()
     assert tuple(info["raw_kernels"]) == EXPECTED_KERNELS
+    # "NativeLayerNorm" joined this tuple in Phase F milestone F2 (the first
+    # native normalization module, composed from existing operations); it is
+    # unrelated to E8, which still added no module of its own.
     assert info["native_modules"] == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm",
     )
     assert info["native_losses"] == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert info["native_metrics"] == ("native_accuracy",)

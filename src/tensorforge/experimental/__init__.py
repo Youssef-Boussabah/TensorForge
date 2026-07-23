@@ -68,8 +68,7 @@ validation, and documentation reconciliation — adding no numerical
 capability. **Phase E is complete.**
 
 **Phase F — Native Normalization and Stateful Buffers — is the current
-phase, and it is designed but NOT numerically implemented.** Its
-architecture contract is locked in
+phase, and it is in progress.** Its architecture contract is locked in
 ``docs/native_normalization_design.md`` (milestone **F0**, complete:
 design and repository reconciliation only, adding no numerical
 behavior). It specifies ``NativeLayerNorm``, ``NativeBatchNorm1d``, and
@@ -80,21 +79,29 @@ the rule that a live mutable running buffer is never captured as a
 rereadable graph operand (eval mode takes independent graph-free
 snapshots, which is why buffers stay unversioned), atomic two-buffer
 running-statistics updates, and state/checkpoint integration with the
-format unchanged at version 1. **Milestone F1** has shipped the private
+format unchanged at version 1. **Milestone F1** shipped the private
 atomic native-buffer state transaction that contract requires
 (``_native_state.py`` — staging, an explicit commit boundary, complete
 rollback, exactly-once closing, and identity-preserving swaps), which
 ``NativeModule.load_state_dict`` now delegates to, plus the
 ``persistent_buffers`` entry in ``STATE_SUPPORT`` reconciling a
-capability that already existed. That is state management and capability
-reporting only. **Milestones F2-F9 have not started**, so
-none of those modules exists or is exported here, and ``"batchnorm"`` /
-``"layernorm"`` remain in the backend registry's ``UNSUPPORTED`` tuple.
-What the native line
-still does **not** have: further
-activations/math, normalization (BatchNorm/LayerNorm), dropout or a
-native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline
-abstractions.
+capability that already existed. **Milestone F2** ships
+``NativeLayerNorm`` below: the first native normalization module —
+stateless (no buffers, identical in train and eval), differentiable
+through the mean and the population variance, and **composed entirely
+from existing native operations** (``mean``, ``subtract``, ``multiply``,
+``add``, ``sqrt``, ``reciprocal``) with ``sqrt(var + eps)`` ordering and
+no kernel, ABI symbol, ``NativeTensorCore`` method, custom backward, or
+``NativeTensor`` normalization operation. It normalizes trailing
+one-or-more-dimensional shapes, holds ``weight`` and ``bias``
+``NativeParameter``s only when ``elementwise_affine=True`` (none
+otherwise), so ``"NativeLayerNorm"`` has joined ``NATIVE_MODULES`` and
+``"layernorm"`` has left ``UNSUPPORTED``. **Milestones F3-F9 have not
+started**, so the BatchNorm modules do not exist or export here and
+``"batchnorm"`` remains in the backend registry's ``UNSUPPORTED`` tuple
+(BatchNorm is next). What the native line still does **not** have:
+further activations/math, BatchNorm, dropout or a native RNG,
+float32/dtype expansion, CUDA, AMP, and data-pipeline abstractions.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
@@ -200,6 +207,7 @@ from .native_flatten import NativeFlatten
 from .native_conv2d import NativeConv2d
 from .native_maxpool2d import NativeMaxPool2d
 from .native_sequential import NativeSequential
+from .native_layernorm import NativeLayerNorm
 from .native_mse_loss import NativeMSELoss
 from .native_cross_entropy_loss import NativeCrossEntropyLoss
 from .native_metrics import native_accuracy
@@ -218,6 +226,7 @@ __all__ = [
     "NativeConv2d",
     "NativeMaxPool2d",
     "NativeSequential",
+    "NativeLayerNorm",
     "NativeMSELoss",
     "NativeCrossEntropyLoss",
     "native_accuracy",

@@ -916,8 +916,8 @@ The Python line is done; what remains is expansion on its own terms:
     a CPU optimization phase for the deliberately naive kernels, and
     build/packaging evolution. Native normalization then became its own
     phase, below.
-  - **Phase F — Native Normalization and Stateful Buffers — designed,
-    not implemented (F0 and F1 complete; F2–F9 planned).** The **F0
+  - **Phase F — Native Normalization and Stateful Buffers — in progress
+    (F0, F1, and F2 complete; F3–F9 planned).** The **F0
     architecture contract is written** —
     [native_normalization_design.md](native_normalization_design.md)
     locks the phase's objective (a fully native, differentiable,
@@ -973,10 +973,18 @@ The Python line is done; what remains is expansion on its own terms:
     plus the `persistent_buffers` correction to `STATE_SUPPORT` — an
     under-reported capability that has existed since before Phase D. F1
     is state management and capability reporting only and added **no
-    normalization mathematics**. **F2–F9 have not started**, so the native line has no
-    normalization capability today: `batchnorm` and `layernorm` remain in
-    the backend registry's `UNSUPPORTED` tuple, no normalization module
-    is exported, and no normalization operation or kernel exists.
+    normalization mathematics**. **F2 is complete**: `NativeLayerNorm`,
+    the first native normalization module — stateless (no buffers,
+    identical in train and eval), differentiable through the mean and the
+    population variance, and composed entirely from existing native
+    operations (`sqrt(var + eps)`, no Bessel correction) with no kernel,
+    ABI symbol, `NativeTensorCore` method, custom backward, or
+    `NativeTensor` normalization operation; `"NativeLayerNorm"` is now in
+    `NATIVE_MODULES` and the exports, and `"layernorm"` has left
+    `UNSUPPORTED`. **F3–F9 have not started**, so native BatchNorm does
+    not exist: `batchnorm` remains in the backend registry's `UNSUPPORTED`
+    tuple, no native BatchNorm module is exported, and no normalization
+    operation or kernel exists at all.
     Deliberately outside Phase F: dropout, a native RNG with its
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,

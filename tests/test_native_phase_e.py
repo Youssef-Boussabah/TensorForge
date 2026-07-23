@@ -257,8 +257,9 @@ def test_unsupported_stays_honest_after_closure():
         assert shipped not in cpp.UNSUPPORTED, shipped
     # ...and nothing still unimplemented may quietly disappear because the
     # phase closed. These are the boundaries Phase E deliberately kept.
-    for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout"):
+    # ("layernorm" left UNSUPPORTED in Phase F milestone F2, which shipped
+    # NativeLayerNorm as a composed module; "batchnorm" is still absent.)
+    for absent in ("float32", "cuda", "amp", "batchnorm", "dropout"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS

@@ -771,6 +771,7 @@ def test_d11_adds_no_capability_entries():
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm",   # Phase F, milestone F2 (unrelated to D11)
     )
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert "conv2d" in cpp.AUTOGRAD_OPS and "maxpool2d" in cpp.AUTOGRAD_OPS

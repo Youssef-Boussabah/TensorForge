@@ -18,22 +18,29 @@ closed. The backend capability registry (`tensorforge.backends.cpp` —
 `NATIVE_LOSSES`, `NATIVE_METRICS`, `STATE_SUPPORT`, and `UNSUPPORTED`),
 mirrored in [native_support_matrix.md](native_support_matrix.md), stays
 the **single source of truth** for what is actually live at any moment.
-At F0 that registry still lists `"batchnorm"` and `"layernorm"` in
-`UNSUPPORTED`, and it must keep listing them until the milestone that
-implements each one removes it.
+At F0 that registry listed `"batchnorm"` and `"layernorm"` in
+`UNSUPPORTED`, and it must keep listing each until the milestone that
+implements it removes it — as milestone F2 has now done for
+`"layernorm"`.
 
-**Phase-F status: designed, not implemented.** **F0 is complete** (this
-contract and the repository reconciliation that came with it) and **F1 is
-complete** (the private atomic native-buffer state transaction, the
-`load_state_dict` refactor onto it, and the `STATE_SUPPORT`
-persistent-buffer reconciliation — **state management and capability
-reporting only, no normalization mathematics**).
-**F2–F9 are planned and have not started.** Nothing in this document may
-be read as a statement that native normalization exists today: no
-`NativeLayerNorm`, `NativeBatchNorm1d`, or `NativeBatchNorm2d` is
-exported, no normalization operation is differentiable, no normalization
-kernel or C ABI symbol exists, and the native line's normalization
-support is exactly what it was at the end of Phase E — **none**.
+**Phase-F status: in progress.** **F0 is complete** (this contract and
+the repository reconciliation that came with it), **F1 is complete** (the
+private atomic native-buffer state transaction, the `load_state_dict`
+refactor onto it, and the `STATE_SUPPORT` persistent-buffer
+reconciliation — **state management and capability reporting only, no
+normalization mathematics**), and **F2 is complete** (`NativeLayerNorm` —
+the first native normalization module: stateless, differentiable through
+the mean and the population variance, and **composed entirely from
+existing native operations**, adding no kernel, C ABI symbol,
+`NativeTensorCore` method, custom backward, or `NativeTensor`
+normalization operation; `"NativeLayerNorm"` has joined `NATIVE_MODULES`
+and `"layernorm"` has left `UNSUPPORTED`).
+**F3–F9 are planned and have not started.** Nothing in this document may
+be read as a statement that native *BatchNorm* exists today: no
+`NativeBatchNorm1d` or `NativeBatchNorm2d` is exported, `"batchnorm"`
+remains in `UNSUPPORTED`, and no normalization *operation*, kernel, or C
+ABI symbol exists at all — `NativeLayerNorm` is a module composed from
+existing operations, not a numerical primitive.
 
 **What Phase F will deliver, in later milestones.** A fully native,
 differentiable, state-safe normalization stack:
@@ -855,7 +862,7 @@ copied.
 |---|---|---|
 | F0 | Phase-F architecture contract and repository reconciliation | **complete** |
 | F1 | Atomic native-buffer state transactions | **complete** |
-| F2 | `NativeLayerNorm` | planned |
+| F2 | `NativeLayerNorm` | **complete** |
 | F3 | `NativeBatchNorm1d` | planned |
 | F4 | `NativeBatchNorm2d` | planned |
 | F5 | Normalization state, checkpoint, and graph-safety hardening | planned |
@@ -865,8 +872,9 @@ copied.
 | F9 | Phase-F closure | planned |
 
 Each milestone's full contract follows; the table above is the status
-summary, and the registry remains the authority on what is live. **No
-milestone below F0 is complete or in progress.**
+summary, and the registry remains the authority on what is live. **F0,
+F1, and F2 are complete; F3 is the next milestone, and F3–F9 have not
+started.**
 
 ### F0 — Phase-F architecture contract and repository reconciliation *(this document)* — **complete**
 
@@ -1013,13 +1021,55 @@ milestone below F0 is complete or in progress.**
   - **F1 added no normalization capability of any kind** — no
     normalization module, formula, forward or backward pass, eval
     snapshot, running-statistic update, kernel, C ABI function, ctypes
-    declaration, public tensor operation, or experimental export. No
-    normalization code calls the helper yet; F3 will be its second
-    caller. `"batchnorm"` and `"layernorm"` remain in `UNSUPPORTED`, and
-    every operation and module inventory is byte-for-byte what Phase E
-    left. **F2 is the next milestone.**
+    declaration, public tensor operation, or experimental export. F1
+    itself is state management and capability reporting only; F3 will be
+    the transaction's second caller. (F1 left `"layernorm"` in
+    `UNSUPPORTED`; the *later* milestone F2 removed it when it shipped
+    `NativeLayerNorm`.)
 
-### F2 — `NativeLayerNorm` — planned
+### F2 — `NativeLayerNorm` — **complete**
+
+**Shipped (F2).** `NativeLayerNorm` is live in
+`src/tensorforge/experimental/native_layernorm.py`, exported from
+`tensorforge.experimental`, and listed in `NATIVE_MODULES`; `"layernorm"`
+has left `UNSUPPORTED` (`"batchnorm"` stays). It is the first native
+normalization module and it delivers the §5 contract exactly:
+
+- **Composed, not primitive.** Forward is built only from existing
+  differentiable `NativeTensor` operations — `mean`, `subtract`,
+  `multiply`, `add`, `sqrt`, `reciprocal` — so the existing native
+  autograd **is** the backward. F2 added **no** C++ code, normalization
+  kernel, C ABI symbol, ctypes declaration, `NativeTensorCore` method,
+  custom backward, functional `layer_norm`, or `NativeTensor.layer_norm`
+  operation. No operation inventory grew; only `NATIVE_MODULES` did.
+- **Population variance, `sqrt(var + eps)`.** The variance divides by the
+  element count (no Bessel correction) and epsilon is added inside the
+  square root, both proved against hand-computed values.
+- **Multi-axis by sequential single-axis means.** `NativeTensor.mean`
+  reduces one axis at a time; the trailing-`k` mean is taken as a
+  sequence of `mean(axis=a, keepdims=True)` calls, and because each
+  reduced dimension is retained at size 1 the axis numbers stay valid
+  across the sequence. No tuple-axis reduction was added to
+  `NativeTensor`.
+- **Stateless.** No buffers, no running statistics; identical output in
+  train and eval mode (forward never reads `training`). `weight`/`bias`
+  `NativeParameter`s exist only when `elementwise_affine=True` (registered
+  in that order, version 0), and `elementwise_affine=False` registers no
+  parameters and contributes no state keys.
+- **Owning contiguous output.** Every forward returns a fresh, owning,
+  row-major-contiguous tensor, never a `NativeParameter` or a borrowing
+  view. Construction validates before any native allocation, and a failed
+  bias allocation closes the already-created weight deterministically.
+- **State/checkpoint unchanged.** Affine parameters serialize through the
+  existing `state_dict`/`load_state_dict` and native checkpoint (format
+  version **1**, unchanged), with identity preserved and versions
+  advancing under the existing contract.
+
+F2 added no normalization *operation*, kernel, ABI symbol, or
+`NativeTensorCore` method; BatchNorm remains unsupported, and **F3
+(`NativeBatchNorm1d`) is the next milestone.**
+
+**Original F2 contract (preserved for reference).**
 
 - **Objective:** the first native normalization module — stateless,
   differentiable, composed from existing operations.
@@ -1319,9 +1369,9 @@ milestone below F0 is complete or in progress.**
 
 ## 17. Phase-F completion criteria
 
-Phase F will be complete only when **all** of the following hold. None is
-checked yet; F9 is the checkpoint at which each must be verified against
-reality.
+Phase F will be complete only when **all** of the following hold. Some
+already hold for LayerNorm (F2); F9 is the checkpoint at which every one
+must be verified against reality for the whole normalization surface.
 
 1. `NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d` are
    exported, tested, and registered in `NATIVE_MODULES` (F2–F4).
@@ -1360,27 +1410,34 @@ reality.
 
 ## 18. Phase-F status statement
 
-**Phase F is designed, not implemented.** As of F0 the experimental
-native line has **no** normalization capability of any kind:
+**Phase F is in progress: F0, F1, and F2 are complete; F3–F9 have not
+started.** The experimental native line now has its first normalization
+capability — LayerNorm — but not BatchNorm:
 
-- No `NativeLayerNorm`, `NativeBatchNorm1d`, or `NativeBatchNorm2d`
-  exists or is exported.
-- No normalization operation is differentiable, and none appears in any
-  operation inventory.
-- No normalization kernel, C ABI export, or ctypes declaration exists.
-- `"batchnorm"` and `"layernorm"` remain listed in `UNSUPPORTED`, exactly
-  as they were when Phase E closed.
+- `NativeLayerNorm` exists, is exported from `tensorforge.experimental`,
+  and is registered in `NATIVE_MODULES`; `"layernorm"` has left
+  `UNSUPPORTED`.
+- No `NativeBatchNorm1d` or `NativeBatchNorm2d` exists or is exported,
+  and `"batchnorm"` remains listed in `UNSUPPORTED`.
+- **No normalization *operation* is differentiable, and none appears in
+  any operation inventory** — `NativeLayerNorm` is composed from existing
+  operations, so no normalization kernel, C ABI export, ctypes
+  declaration, or `NativeTensorCore` method exists.
 
 What F0 delivered is this contract and the repository reconciliation that
 accompanied it — **no numerical behavior whatsoever**. What **F1**
 delivered is the private atomic state transaction of §8
 (`_native_state.py`), the `load_state_dict` refactor onto it, and the
 `STATE_SUPPORT` persistent-buffer reconciliation — **state management and
-capability reporting only**, with no normalization module, formula,
-forward or backward pass, eval snapshot, running-statistic update,
-kernel, C ABI symbol, ctypes declaration, tensor operation, or export.
-The capabilities described above are commitments about how Phase F *will*
-be built, not claims about what exists.
+capability reporting only**. What **F2** delivered is `NativeLayerNorm`
+itself: the stateless, differentiable, composed-from-existing-operations
+normalization module of §5, with `sqrt(var + eps)` ordering, population
+variance, identical train/eval behavior, and no kernel, ABI symbol,
+`NativeTensorCore` method, custom backward, or `NativeTensor`
+normalization operation. The remaining capabilities described above
+(BatchNorm, running statistics, the §7/§8 machinery in a live module) are
+commitments about how F3–F9 *will* build the rest of Phase F, not claims
+about what exists.
 
 Deliberately outside Phase F and still unplanned: dropout, a native RNG
 and RNG checkpoint state, further activations (`tanh`, `sigmoid`, GELU),

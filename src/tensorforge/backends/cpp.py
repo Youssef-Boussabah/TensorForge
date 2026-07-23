@@ -181,6 +181,16 @@ AUTOGRAD_OPS = (
 NATIVE_MODULES = (
     "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
     "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+    # "NativeLayerNorm" (Phase F, milestone F2) is the first native
+    # normalization module: stateless (no buffers, identical in train and
+    # eval), differentiable through the mean and the population variance,
+    # and composed entirely from existing native operations (mean,
+    # subtract, multiply, add, sqrt, reciprocal). It is a *module*, not an
+    # operation — there is no "layer_norm" kernel, C ABI symbol,
+    # NativeTensorCore method, or NativeTensor.layer_norm autograd op, so
+    # it appears here and nowhere in the op inventories. "layernorm" left
+    # UNSUPPORTED when it shipped; "batchnorm" stays there until F3/F4.
+    "NativeLayerNorm",
 )
 # Native loss *modules*. Losses are tracked here and deliberately not in
 # NATIVE_MODULES, which lists the model-building layers — the split that
@@ -274,8 +284,16 @@ STATE_SUPPORT = (
 # left this tuple, each into the one inventory that describes its actual
 # layer — nothing about cross-entropy or accuracy is unsupported.
 # What remains below is genuinely absent from the native line.
+#
+# Phase F milestone F2 shipped "NativeLayerNorm" (see NATIVE_MODULES), so
+# "layernorm" has left this tuple — the module is a composition of
+# existing operations, not a new kernel or ABI symbol, and there is still
+# no "layer_norm" operation, which is why nothing joined AUTOGRAD_OPS /
+# TENSOR_CORE_OPS / RAW_KERNELS. "batchnorm" stays here: NativeBatchNorm1d
+# (F3) and NativeBatchNorm2d (F4) have not started, and removing
+# "batchnorm" is only honest once both batch-normalization shapes exist.
 UNSUPPORTED = (
-    "batchnorm", "layernorm", "dropout",
+    "batchnorm", "dropout",
     "float32", "cuda", "amp",
 )
 

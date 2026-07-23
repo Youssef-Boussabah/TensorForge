@@ -852,15 +852,20 @@ def test_state_support_reports_persistent_buffers_exactly():
 
 
 def test_f1_changed_no_other_capability_inventory():
+    # F1 itself changed only STATE_SUPPORT. These tuples then moved in the
+    # *later* milestone F2, which shipped NativeLayerNorm (a composed
+    # module): "NativeLayerNorm" joined NATIVE_MODULES and "layernorm" left
+    # UNSUPPORTED. The values below are the current live registry.
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm",
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     assert cpp.UNSUPPORTED == (
-        "batchnorm", "layernorm", "dropout", "float32", "cuda", "amp",
+        "batchnorm", "dropout", "float32", "cuda", "amp",
     )
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
@@ -892,8 +897,10 @@ def test_the_transaction_helper_stays_private():
 def test_f1_added_no_normalization_module_or_operation():
     import tensorforge.experimental as experimental
 
-    for module in ("NativeLayerNorm", "NativeBatchNorm1d",
-                   "NativeBatchNorm2d"):
+    # NativeLayerNorm shipped at the *later* milestone F2 (a module composed
+    # from existing operations); BatchNorm is still absent. F1 itself, and
+    # F2, added no normalization *operation*, Core method, or C ABI symbol.
+    for module in ("NativeBatchNorm1d", "NativeBatchNorm2d"):
         assert not hasattr(experimental, module), module
         assert module not in experimental.__all__, module
         assert module not in cpp.NATIVE_MODULES, module

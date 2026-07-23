@@ -5,9 +5,9 @@ native C++ CPU line** supports today — **Phase E (native classification
 and stable math) is complete**, closing the
 Phase A (native CPU runtime) → Phase B (native autograd) → Phase C
 (native training stack) → Phase D (native CNN stack) → Phase E arc in
-code. **Phase F (native normalization and stateful buffers) is designed
-but not implemented**, so nothing normalization-related appears as
-supported anywhere below. The stable Python
+code. **Phase F (native normalization and stateful buffers) is in
+progress**: `NativeLayerNorm` (milestone F2) is supported, while native
+BatchNorm is not. The stable Python
 framework's features (see
 [architecture.md](architecture.md)) are **not** listed here — a feature
 appears as supported only if the native stack itself provides it.
@@ -78,18 +78,24 @@ diagnostics attributable to TensorForge**, a practical LeakSanitizer pass
 with **no native leak**, the full Python regression suite, and
 documentation reconciliation across every status surface.
 **Phase F — Native Normalization and Stateful Buffers — is the current
-phase and is *designed only*.** Its architecture contract is locked in
+phase and is *in progress*.** Its architecture contract is locked in
 [native_normalization_design.md](native_normalization_design.md)
 (milestone **F0**, complete — design and repository reconciliation, no
-numerical behavior) and **F1** is complete (the private atomic
+numerical behavior), **F1** is complete (the private atomic
 native-buffer state transaction, `load_state_dict` refactored onto it,
 and the `persistent_buffers` reconciliation in `STATE_SUPPORT` — state
 management and capability reporting only, **no normalization
-mathematics**); milestones **F2–F9 are planned and have not
-started**. No `NativeLayerNorm`, `NativeBatchNorm1d`, or
-`NativeBatchNorm2d` exists, no normalization operation is
+mathematics**), and **F2** is complete (`NativeLayerNorm` — the first
+native normalization module: stateless, differentiable through the mean
+and the population variance, composed entirely from existing native
+operations with `sqrt(var + eps)` ordering and no kernel, ABI symbol,
+`NativeTensorCore` method, custom backward, or `NativeTensor`
+normalization operation; now in `NATIVE_MODULES` and the exports, with
+`"layernorm"` removed from `UNSUPPORTED`); milestones **F3–F9 are planned
+and have not started**. No `NativeBatchNorm1d` or
+`NativeBatchNorm2d` exists, no normalization *operation* is
 differentiable, and no normalization kernel or C ABI export exists —
-`batchnorm` and `layernorm` remain in the backend registry's
+`batchnorm` remains in the backend registry's
 `UNSUPPORTED` tuple and in the "Unsupported or future" section below.
 See also
 [roadmap.md](roadmap.md). Everything Phases D and E
@@ -244,6 +250,7 @@ Milestone **E7** then added the public surface over that operation:
 | `NativeConv2d` | Supported | D7 (Phase D): the trainable convolution **module** over the differentiable `conv2d` operation — OIHW weight / optional `(O,)` bias `NativeParameter`s, deterministic uniform conv fan-in initialization, 4-D NCHW input validation; backward supplied entirely by the operation's autograd (no new kernel, ABI symbol, or custom module backward) |
 | `NativeMaxPool2d` | Supported | D10 (Phase D): the pooling **module** over the differentiable `maxpool2d` operation — parameter-free, buffer-free, normalized `(h, w)` `kernel_size`/`stride`/`padding` (`stride=None` ⇒ non-overlapping); no winner state between calls and no state-dictionary or checkpoint keys |
 | `NativeSequential` | Supported | Ordered container with contiguous integer-string slots |
+| `NativeLayerNorm` | Supported | F2 (Phase F): the first native normalization **module** — normalizes the trailing `len(normalized_shape)` dimensions, stateless (no buffers, identical in train and eval). Population variance with `sqrt(var + eps)` ordering; multi-axis reduction as sequential single-axis `mean(keepdims=True)` calls; composed entirely from existing native operations (`mean`, `subtract`, `multiply`, `add`, `sqrt`, `reciprocal`) so backward comes from the existing autograd. `weight`/`bias` `NativeParameter`s only when `elementwise_affine=True` (registered in that order); fresh owning contiguous output. No new kernel, ABI symbol, ctypes declaration, `NativeTensorCore` method, custom backward, functional helper, or `NativeTensor.layer_norm` operation |
 | `NativeMSELoss` | Supported | `"mean"` / `"sum"` reductions; exact shapes, no broadcasting |
 | `NativeCrossEntropyLoss` | Supported | E7 (Phase E): the classification **loss module** over the differentiable `cross_entropy` operation — parameter-free, buffer-free, `"mean"`/`"sum"` only (validated in the constructor by the operation's own validator, so an invalid reduction can never reach it), targets validated and copied by the operation itself. Its forward is exactly `logits.cross_entropy(targets, reduction=self.reduction)`: no new kernel, ABI symbol, arithmetic, or custom backward, and no state-dictionary or checkpoint keys |
 | `native_accuracy` | Supported (reporting only) | E7 (Phase E): **not** a native operation — a Python helper that validates rank-2 logits and strict `int64` targets, materializes once through the explicit public `to_numpy()` boundary, takes `numpy.argmax(axis=1)` (first-maximal index on ties), and returns a Python `float` in `[0.0, 1.0]`. Builds no graph, touches no gradient/parameter/version, allocates no native storage, retains nothing. Reported in the new `NATIVE_METRICS` inventory, never in the operation inventories |
@@ -299,11 +306,12 @@ in the stable Python framework — that does not make them native.
   line; top-k, per-class, confusion-matrix, streaming, or stateful
   metrics; a `NativeSoftmax`/`NativeLogSoftmax` module; and a native
   `argmax` (the runtime has no integer dtype for one to return)
-- native normalization (BatchNorm/LayerNorm) — **Phase F is designed but
-  not implemented**: the contract is locked in
+- native **BatchNorm** — **Phase F is in progress**: `NativeLayerNorm`
+  (milestone F2) has shipped and is listed in the training-stack table
+  above, but BatchNorm has not. The contract is locked in
   [native_normalization_design.md](native_normalization_design.md), and
-  `batchnorm`/`layernorm` stay in the registry's `UNSUPPORTED` tuple
-  until the milestones that implement them (F2 and F4) remove them
+  `batchnorm` stays in the registry's `UNSUPPORTED` tuple until milestone
+  F4 removes it (`layernorm` left at F2)
 - dropout or a native RNG — future work **beyond** Phase F
 - additional native activations/math beyond
   `relu`/`sqrt`/`reciprocal`/`exp`/`log`/`softmax`/`log_softmax`
@@ -463,14 +471,16 @@ both layers: Core-owned at E5, **graph-owned** by the E6 autograd node —
 never a public tensor, never a parameter or buffer, never serialized, and
 released exactly once with the graph history.
 
-## Phase F — native normalization and stateful buffers, **designed only**
+## Phase F — native normalization and stateful buffers, **in progress**
 
-**Nothing in this section is implemented.** It records a locked
-architecture contract, not a capability. The authoritative statement of
-what exists is the backend registry, which still lists `batchnorm` and
-`layernorm` in `UNSUPPORTED` and contains no normalization entry in
-`TENSOR_CORE_OPS`, `AUTOGRAD_OPS`, `RAW_KERNELS`, `NATIVE_MODULES`,
-`NATIVE_LOSSES`, or `NATIVE_METRICS`.
+**`NativeLayerNorm` (milestone F2) is the only normalization capability
+implemented so far.** The rest of this section records a locked
+architecture contract, not yet a capability. The authoritative statement
+of what exists is the backend registry: `"NativeLayerNorm"` is in
+`NATIVE_MODULES` and `"layernorm"` has left `UNSUPPORTED`, while
+`batchnorm` remains unsupported and there is **no** normalization entry in
+`TENSOR_CORE_OPS`, `AUTOGRAD_OPS`, or `RAW_KERNELS` (LayerNorm is a module
+composed from existing operations, not an operation).
 
 The Phase-F **architecture contract** is locked in
 [native_normalization_design.md](native_normalization_design.md)
@@ -496,7 +506,7 @@ buffer identity; and state/checkpoint integration with the format
 |---|---|---|
 | F0 | Phase-F architecture contract and repository reconciliation | **Complete** (design and documentation only — no numerical behavior) |
 | F1 | Atomic native-buffer state transactions: the private `_native_state.replace_native_state` primitive extracted and generalized from the existing `load_state_dict` staging/commit/rollback — validate-then-stage-then-commit with an explicit commit boundary (every core swap **and** every parameter-version increment), complete rollback of cores *and* versions before it, exactly-once closing of replaced and abandoned cores, identity-preserving swaps, and destination deduplication by object identity (conflicting values for one destination rejected before mutation). `NativeModule.load_state_dict` now delegates to it with its public signature, validation order, error messages, key reporting, version semantics, and atomicity unchanged. Reusable by F3/F4 to commit `running_mean` and `running_var` together **without** a state dictionary. Plus the `STATE_SUPPORT` persistent-buffer correction. Adds **no** normalization mathematics, module, kernel, ABI symbol, tensor operation, or export | **Complete** (state management and capability reporting only) |
-| F2 | `NativeLayerNorm` | Planned — not started |
+| F2 | `NativeLayerNorm` — the first native normalization module: stateless (no buffers, identical in train and eval), differentiable through the mean and the population variance, composed entirely from existing native operations (`mean`, `subtract`, `multiply`, `add`, `sqrt`, `reciprocal`; `sqrt(var + eps)`, no Bessel correction; multi-axis reduction as sequential single-axis means). `weight`/`bias` `NativeParameter`s only when `elementwise_affine=True`. Fresh owning contiguous output. Adds **no** kernel, C ABI symbol, ctypes declaration, `NativeTensorCore` method, custom backward, functional helper, or `NativeTensor.layer_norm` operation — only `NATIVE_MODULES` grew and `"layernorm"` left `UNSUPPORTED` | **Complete** (a module composed from existing operations) |
 | F3 | `NativeBatchNorm1d` | Planned — not started |
 | F4 | `NativeBatchNorm2d` | Planned — not started |
 | F5 | Normalization state, checkpoint, and graph-safety hardening | Planned — not started |

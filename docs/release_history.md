@@ -1556,6 +1556,51 @@ only public controlled-mutation primitive in the native line. No
 normalization code calls the helper yet — F3 will be its second caller.
 **F2, `NativeLayerNorm`, is the next milestone.**
 
+### Phase F — native normalization and stateful buffers (F2)
+
+**Milestone F2 ships `NativeLayerNorm` — the first native normalization
+module.** It is the stateless half of Phase F, and it exercises the
+composed normalization mathematics without touching the mutable-buffer
+machinery at all.
+
+`NativeLayerNorm(normalized_shape, eps=1e-5, elementwise_affine=True)`
+normalizes the trailing `len(normalized_shape)` dimensions of its input.
+The whole layer is **composed from existing differentiable
+`NativeTensor` operations** — `mean`, `subtract`, `multiply`, `add`,
+`sqrt`, and `reciprocal` — so the existing Python-managed native autograd
+**is** the backward: gradients flow to the input, and to `weight`/`bias`
+when affine, through the mean and the population variance for free. The
+forward is exactly `centered * reciprocal(sqrt(variance + eps))`, then
+`* weight + bias` when `elementwise_affine=True`, with the **population**
+variance (no Bessel correction) and epsilon **inside** the square root —
+`sqrt(var + eps)`, never `sqrt(var) + eps` — both proved against
+hand-computed values. Because `NativeTensor.mean` reduces one axis at a
+time, the multi-axis mean is taken as a sequence of single-axis
+`mean(keepdims=True)` calls; the retained size-1 dimensions keep the axis
+numbers valid across the sequence, and no tuple-axis reduction was added
+to `NativeTensor`.
+
+The module is **stateless**: no buffers, no running statistics, identical
+output in train and eval mode (forward never reads `training`).
+`weight` (ones) and `bias` (zeros) are `NativeParameter`s registered in
+that order, and only when `elementwise_affine=True`; the affine-free mode
+registers no parameters and contributes no state-dictionary keys.
+Construction validates every argument before any native allocation (a
+rejected call leaks nothing), and a failed bias allocation closes the
+already-created weight deterministically. Every forward returns a fresh,
+owning, row-major-contiguous tensor — never a `NativeParameter` or a
+borrowing view. Affine parameters ride the existing
+`state_dict`/`load_state_dict` and native checkpoint path with the format
+**unchanged at version 1**.
+
+**F2 added no C++ code, normalization kernel, C ABI symbol, ctypes
+declaration, `NativeTensorCore` method, custom backward, functional
+`layer_norm` helper, or `NativeTensor.layer_norm` operation** — LayerNorm
+is a *module composed from existing operations*, not a numerical
+primitive, so no operation inventory grew. Only `NATIVE_MODULES` gained
+`"NativeLayerNorm"` and `"layernorm"` left `UNSUPPORTED`; `"batchnorm"`
+stays there until F4. **F3, `NativeBatchNorm1d`, is the next milestone.**
+
 ### A hardening milestone before Phase D
 
 Between Phase C and the native CNN stack, a repair-and-hardening pass

@@ -73,7 +73,7 @@ stable/native dispatch and no change to the stable framework or the
 version-1 checkpoint format.
 
 **The current phase is Phase F — Native Normalization and Stateful
-Buffers — and it is *designed only*.** Milestone **F0** is complete: it
+Buffers — and it is *in progress*.** Milestone **F0** is complete: it
 locks the architecture contract in
 [native_normalization_design.md](native_normalization_design.md) —
 `NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d`
@@ -94,9 +94,19 @@ versions, exactly-once closing, and identity-preserving swaps), refactored
 and corrected `STATE_SUPPORT` to report the `persistent_buffers`
 capability that had existed since before Phase D — state management and
 capability reporting only, with **no normalization mathematics**.
+**F2** then shipped `NativeLayerNorm`
+(`src/tensorforge/experimental/native_layernorm.py`) — the first native
+normalization module: stateless (no buffers, identical in train and
+eval), differentiable through the mean and the population variance, and
+composed entirely from existing native operations (`mean`, `subtract`,
+`multiply`, `add`, `sqrt`, `reciprocal`, `sqrt(var + eps)`, no Bessel
+correction) with no kernel, C ABI symbol, `NativeTensorCore` method,
+custom backward, functional helper, or `NativeTensor.layer_norm`
+operation. `"NativeLayerNorm"` joined `NATIVE_MODULES` and the exports,
+and `"layernorm"` left `UNSUPPORTED`.
 Milestones
-**F2–F9 are planned and have not started**, so the native line has no
-normalization capability today and `batchnorm`/`layernorm` remain in the
+**F3–F9 are planned and have not started**, so native BatchNorm does not
+exist and `batchnorm` remains in the
 registry's `UNSUPPORTED` tuple. Dropout, a native RNG, and RNG
 checkpoint state are future work **beyond** Phase F.
 
@@ -706,7 +716,7 @@ the milestone-era wording pins. **Phase D is complete**; the native line's
 next phase after it was **Phase E — Native Classification and Stable
 Math**, which has since completed (E0–E10), followed by **Phase F —
 Native Normalization and Stateful Buffers**, which is currently
-**designed only** (F0 and F1 complete; F2–F9 planned). Further activations and
+**in progress** (F0, F1, and F2 complete; F3–F9 planned). Further activations and
 math, dropout with a native RNG, and a CPU optimization pass sit beyond
 Phase F, followed by
 the CUDA
@@ -3075,15 +3085,21 @@ reporting-only `native_accuracy`, a deterministic classification
 training run with exact checkpoint resume, an honest characterization
 benchmark, and phase closure under Release/Debug builds and Clang
 ASan/UBSan/LeakSanitizer. **The current phase is Phase F — Native
-Normalization and Stateful Buffers — and it is designed, not
-implemented.** Its contract is locked in
+Normalization and Stateful Buffers — and it is in progress.** Its
+contract is locked in
 [native_normalization_design.md](native_normalization_design.md)
 (milestone **F0**, complete: design and repository reconciliation only,
-adding no numerical behavior) and **F1** is complete (the private atomic
+adding no numerical behavior), **F1** is complete (the private atomic
 native-buffer state transaction, the `load_state_dict` refactor onto it,
 and the `persistent_buffers` capability reconciliation — no normalization
-mathematics); milestones **F2–F9 are planned and have
-not started**, so no `NativeLayerNorm`, `NativeBatchNorm1d`, or
+mathematics), and **F2** is complete (`NativeLayerNorm` — the first
+native normalization module: stateless, differentiable through the mean
+and the population variance, composed entirely from existing native
+operations with `sqrt(var + eps)` ordering and no kernel, ABI symbol,
+`NativeTensorCore` method, custom backward, or `NativeTensor`
+normalization operation; now in `NATIVE_MODULES` and the exports, with
+`"layernorm"` removed from `UNSUPPORTED`); milestones **F3–F9 are planned
+and have not started**, so no `NativeBatchNorm1d` or
 `NativeBatchNorm2d` exists, no normalization operation is
 differentiable, and no normalization kernel or C ABI export exists.
 Dropout and a native RNG sit **beyond** Phase F. CUDA experiments

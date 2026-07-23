@@ -135,9 +135,9 @@ Not production-ready and not a PyTorch replacement. The stable
 framework is NumPy on CPU; `Conv2d` and `MaxPool2d` use deliberately
 naive loops, and so do their native counterparts (direct nested loops —
 no im2col, BLAS, threading, or SIMD). The native line is float64/cpu
-only — no CUDA backend, no dtype promotion or casting, no
-normalization (BatchNorm/LayerNorm — Phase F is designed but **not
-implemented**), no dropout or native RNG, no data loaders or native
+only — no CUDA backend, no dtype promotion or casting, no native
+BatchNorm (Phase F is **in progress**: LayerNorm has shipped, BatchNorm
+has not), no dropout or native RNG, no data loaders or native
 integer tensors, no scheduler or
 random-state capture in native checkpoints, and
 no dispatch into `tensorforge.Tensor`. Benchmarks are hardware-specific
@@ -169,7 +169,7 @@ an honest characterization benchmark, and full closure validation — all
 still float64/CPU, with the checkpoint format unchanged at version 1.
 
 **Phase F — Native Normalization and Stateful Buffers — is the current
-phase, and it is designed but not numerically implemented.** Milestone
+phase, and it is in progress.** Milestone
 **F0** is complete: it locks the architecture contract in
 [native_normalization_design.md](native_normalization_design.md) —
 `NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d`
@@ -183,8 +183,16 @@ added design and documentation only — no numerical behavior.**
 transaction, `load_state_dict` refactored onto it, and the
 `persistent_buffers` capability-reporting correction, all with **no
 normalization mathematics**.
-Milestones **F2–F9 are planned and have not started**, so BatchNorm and
-LayerNorm remain unsupported on the native line today. Beyond Phase F
+**F2 is complete**: `NativeLayerNorm` — the first native normalization
+module, stateless (no buffers, identical in train and eval),
+differentiable through the mean and the population variance, and
+**composed entirely from existing native operations** (`sqrt(var + eps)`,
+no Bessel correction) with no kernel, ABI symbol, Core method, custom
+backward, or `NativeTensor` normalization operation. `"NativeLayerNorm"`
+has joined `NATIVE_MODULES` and `"layernorm"` has left `UNSUPPORTED`.
+Milestones **F3–F9 are planned and have not started**, so native
+BatchNorm remains unsupported and `"batchnorm"` stays in `UNSUPPORTED`
+today. Beyond Phase F
 (**not started**): dropout and a native RNG, more activations/math, data
 loaders, a CPU optimization phase, then the CUDA
 runtime, dtype/AMP work, and Transformer/text and distributed

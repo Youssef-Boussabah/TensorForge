@@ -228,10 +228,10 @@ Honest expectations:
 - The native CNN stack (Phase D) and the native classification stack
   (Phase E) are both complete — but "complete" means *these* capabilities
   work and are validated, not that the native line is finished. What the
-  native line still does **not** have: normalization (BatchNorm /
-  LayerNorm) — **Phase F is designed but not implemented**, so no
-  normalization module, operation, or kernel exists — dropout or a native
-  RNG, data loaders, native integer
+  native line still does **not** have: native **BatchNorm** — **Phase F is
+  in progress**, and while `NativeLayerNorm` has shipped (a module
+  composed from existing operations, no kernel), BatchNorm has not — dropout
+  or a native RNG, data loaders, native integer
   tensors, further dtypes or devices, CUDA, AMP, and any implicit
   dispatch into `tensorforge.Tensor`. Native checkpoints capture no
   scheduler or random state, and the classification loss supports
@@ -344,23 +344,30 @@ suite, and documentation reconciliation across every status surface.
 Phase E expanded nothing beyond float64/CPU and added no implicit
 stable/native dispatch.
 
-**Phase F — Native Normalization and Stateful Buffers — is now formally
-defined and designed, but not numerically implemented.** Its architecture
+**Phase F — Native Normalization and Stateful Buffers — is in progress.**
+Its architecture
 contract is locked in
 [docs/native_normalization_design.md](docs/native_normalization_design.md)
 (milestone **F0**, complete: design and repository reconciliation only,
 adding no numerical behavior), as is **F1** (a private atomic
 native-buffer state transaction, the `load_state_dict` refactor onto it,
 and the `STATE_SUPPORT` persistent-buffer reconciliation — state
-management and capability reporting only, no normalization mathematics).
-Milestones **F2–F9** — `NativeLayerNorm`, `NativeBatchNorm1d`,
+management and capability reporting only, no normalization mathematics),
+and **F2** (`NativeLayerNorm` — the first native normalization module:
+stateless, differentiable through the mean and the population variance,
+and composed entirely from existing native operations with `sqrt(var +
+eps)` ordering and no kernel, ABI symbol, `NativeTensorCore` method,
+custom backward, or `NativeTensor` normalization operation;
+`"NativeLayerNorm"` is now in `NATIVE_MODULES` and the exports, and
+`"layernorm"` has left `UNSUPPORTED`).
+Milestones **F3–F9** — `NativeBatchNorm1d`,
 `NativeBatchNorm2d`, state/checkpoint and graph-safety hardening, a
 deterministic normalized training run with exact resume, an honest
 benchmark characterization, cross-cutting integration, and phase closure
-— are **planned and have not started**. Nothing normalization-related is
-shipped: `batchnorm` and `layernorm` remain listed as unsupported in the
-backend registry, and no normalization module, operation, kernel, or C
-ABI symbol exists. More activations/math, dropout and a native RNG, data
+— are **planned and have not started**. Native BatchNorm is not shipped:
+`batchnorm` remains listed as unsupported in the
+backend registry, and no normalization *operation*, kernel, or C
+ABI symbol exists at all. More activations/math, dropout and a native RNG, data
 loaders, and CPU optimization sit beyond Phase F, and CUDA/GPU
 experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and

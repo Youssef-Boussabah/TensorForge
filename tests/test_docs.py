@@ -244,6 +244,7 @@ def test_experimental_exports_stay_intentional():
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
         "NativeCrossEntropyLoss", "native_accuracy",   # Phase E, E7
+        "NativeLayerNorm",                              # Phase F, F2
     }
     for name in experimental.__all__:
         assert hasattr(experimental, name)
@@ -399,8 +400,9 @@ def test_phase_d_status_is_consistent_across_docs_and_registry():
     # E6 implemented its Core and autograd layers, and
     # "NativeCrossEntropyLoss"/"native_accuracy" when E7 shipped the
     # public surface; the Phase-E boundary is tracked separately below.)
-    for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout"):
+    # ("layernorm" left UNSUPPORTED at Phase F milestone F2, which shipped
+    # NativeLayerNorm; "batchnorm" stays until F3/F4.)
+    for absent in ("float32", "cuda", "amp", "batchnorm", "dropout"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS and absent not in cpp.NATIVE_MODULES
     assert cpp.SUPPORTED_DTYPES == ("float64",)
@@ -1231,16 +1233,19 @@ def test_no_future_phase_is_claimed_by_phase_e_closure():
     shipped, and the registry stays the authority."""
     from tensorforge.backends import cpp
 
-    for future in ("cuda", "amp", "float32", "batchnorm", "layernorm",
-                   "dropout"):
+    # ("layernorm" is no longer future work — F2 shipped NativeLayerNorm;
+    # "batchnorm" remains.)
+    for future in ("cuda", "amp", "float32", "batchnorm", "dropout"):
         assert future in cpp.UNSUPPORTED, future
         assert future not in cpp.AUTOGRAD_OPS and future not in cpp.TENSOR_CORE_OPS
         assert future not in cpp.NATIVE_MODULES
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.backend_info()["stable_framework_integration"] is False
+    # ("LayerNorm" left this list at Phase F milestone F2, which shipped
+    # NativeLayerNorm; "BatchNorm" stays until F3/F4.)
     claim = re.compile(
-        r"(CUDA|AMP|float32|float16|bfloat16|GPU|BatchNorm|LayerNorm|"
+        r"(CUDA|AMP|float32|float16|bfloat16|GPU|BatchNorm|"
         r"dropout|data loader|dataloader|native RNG|integer tensor)"
         r"[^.]{0,60}(is|are|now)\s+(supported|implemented|shipped|available)",
         re.I,
@@ -1283,8 +1288,8 @@ def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():
         assert op in cpp.AUTOGRAD_OPS
     # Stable/native separation and the remaining future work stay explicit.
     assert cpp.backend_info()["stable_framework_integration"] is False
-    for future in ("cuda", "float32", "amp", "batchnorm", "layernorm",
-                   "dropout"):
+    # ("layernorm" left UNSUPPORTED at F2; "batchnorm" remains.)
+    for future in ("cuda", "float32", "amp", "batchnorm", "dropout"):
         assert future in cpp.UNSUPPORTED, future
 
 
@@ -1310,6 +1315,9 @@ _MODULE_SUBJECTS = {
     "NativeConv2d": r"(NativeConv2d|convolution module|Conv2d module)",
     "NativeMaxPool2d": (
         r"(NativeMaxPool2d|pooling module|MaxPool2d module|max-pooling module)"
+    ),
+    "NativeLayerNorm": (
+        r"(NativeLayerNorm|LayerNorm module|layer-normalization module)"
     ),
 }
 _ABSENT_CLAIM = (
@@ -1591,63 +1599,63 @@ def test_phase_f_design_locks_the_atomic_running_stat_transaction():
     assert "F1" in section and "load_state_dict" in section
 
 
-def test_phase_f_is_described_as_designed_but_not_implemented():
-    """Requirement 5. The design document states it about itself, and
-    every status document states it too — a contract is not a shipped
-    capability, and no reader may be left thinking otherwise."""
+def test_phase_f_is_described_as_in_progress_not_complete():
+    """Requirement 5, in its F2 form. Phase F is now *in progress* — F2
+    shipped a real module — but it is not finished. The design document
+    states this about itself, every status document names Phase F, and
+    none may claim the *phase* is complete (an honest per-milestone claim
+    like "F2 is complete" must keep being possible)."""
     design = _status_text(PHASE_F_DESIGN)
-    assert re.search(r"Phase-F status: designed, not implemented", design), (
-        "the design document no longer states its own designed-only status"
+    assert re.search(r"Phase-F status: in progress", design), (
+        "the design document no longer states its in-progress status"
     )
-    assert re.search(r"F0 adds no numerical behavior|no numerical behavior",
-                     design, re.I)
+    # F0/F1's no-numerical-behavior honesty is still recorded.
+    assert re.search(r"no numerical behavior", design, re.I)
     for surface in PHASE_STATUS_DOCS:
         text = _status_text(surface)
         assert "Phase F" in text, f"{surface} does not name Phase F at all"
-        assert re.search(
-            r"Phase F.{0,200}?(designed|design).{0,120}?not"
-            r"|Phase F.{0,200}?not.{0,60}(numerically )?implemented"
-            r"|designed but not.{0,40}implemented",
-            text, re.I,
-        ), f"{surface} does not mark Phase F designed-but-not-implemented"
-        # And it must not claim the opposite. Direct forms only: a
-        # milestone statement like "F0 is complete" is honest and must
-        # keep being possible, so the guard is about the *phase*.
-        # The `[^.F]` window is deliberate: it forbids an intervening
-        # milestone label (F0 … F9), so "Phase F — designed only: F0 is
-        # complete" reads as the milestone claim it is, while "Phase F is
-        # now complete" is still caught.
+        # It must not claim the *phase* is finished. The `[^.F]` window is
+        # deliberate: it forbids an intervening milestone label (F0 … F9),
+        # so "Phase F — in progress: F2 is complete" reads as the milestone
+        # claim it is, while "Phase F is now complete" is still caught.
         claim = re.search(
             r"Phase F\b[^.F]{0,40}?\b(is|was|are|now)\s+"
             r"(complete|completed|shipped|implemented)\b",
             text, re.I,
         )
         assert claim is None, (
-            f"{surface} claims Phase F is implemented: "
+            f"{surface} claims Phase F is complete: "
             f"{claim.group(0)!r}" if claim else ""
         )
 
 
-def test_normalization_stays_unsupported_and_unexported_during_f0():
-    """Requirements 6 and 7, checked against the live registry and the
-    live exports rather than against prose — the registry is the
-    authority on what exists."""
+def test_normalization_is_module_only_with_no_new_native_operation():
+    """Checked against the live registry and exports rather than prose.
+    Milestone F2 shipped ``NativeLayerNorm`` as a *module composed from
+    existing operations*: BatchNorm is still absent, and — for LayerNorm
+    and BatchNorm alike — there is no normalization operation, kernel,
+    Core method, ``NativeTensor`` method, or C ABI symbol anywhere. F2
+    added a module, not a numerical primitive."""
     from tensorforge.backends import cpp
     import tensorforge.experimental as experimental
 
-    # Still unsupported, by name.
-    for absent in ("batchnorm", "layernorm"):
-        assert absent in cpp.UNSUPPORTED, absent
-
-    # No normalization module exists, is exported, or is advertised.
-    for module in _NORMALIZATION_MODULES:
+    # LayerNorm shipped as a module (F2); BatchNorm has not (F3/F4).
+    assert "layernorm" not in cpp.UNSUPPORTED
+    assert "batchnorm" in cpp.UNSUPPORTED
+    assert "NativeLayerNorm" in cpp.NATIVE_MODULES
+    assert "NativeLayerNorm" in experimental.__all__
+    for module in ("NativeBatchNorm1d", "NativeBatchNorm2d"):
         assert module not in cpp.NATIVE_MODULES, module
-        assert module not in cpp.NATIVE_LOSSES, module
-        assert module not in cpp.NATIVE_METRICS, module
         assert module not in experimental.__all__, module
         assert not hasattr(experimental, module), module
 
-    # No normalization operation at any layer, and no raw kernel.
+    # No normalization module is a loss or a metric.
+    for module in _NORMALIZATION_MODULES:
+        assert module not in cpp.NATIVE_LOSSES, module
+        assert module not in cpp.NATIVE_METRICS, module
+
+    # No normalization *operation* at any layer, and no raw kernel — this is
+    # the load-bearing F2 fact: LayerNorm is a composition, not a primitive.
     for name in _NORMALIZATION_OP_NAMES:
         assert name not in cpp.TENSOR_CORE_OPS, name
         assert name not in cpp.AUTOGRAD_OPS, name
@@ -1658,6 +1666,10 @@ def test_normalization_stays_unsupported_and_unexported_during_f0():
     for name in ("layer_norm", "batch_norm", "layernorm", "batchnorm",
                  "normalize"):
         assert not hasattr(NativeTensor, name), name
+    # No functional normalization helper was exported either.
+    for name in ("layer_norm", "batch_norm"):
+        assert not hasattr(experimental, name), name
+        assert name not in experimental.__all__, name
 
     # No normalization C ABI symbol is declared or guarded, and none is
     # defined in any C++ source unit.
@@ -1674,9 +1686,11 @@ def test_normalization_stays_unsupported_and_unexported_during_f0():
     assert not (REPO_ROOT / "cpp" / "src" / "normalization.cpp").exists()
 
 
-def test_f0_leaves_the_public_experimental_surface_unchanged():
-    """Requirement 8. The export set is exactly what Phase E left, in
-    both directions — nothing added by F0, nothing lost."""
+def test_phase_f_export_surface_adds_only_native_layernorm():
+    """The public experimental surface is exactly what Phase E left plus
+    the one Phase-F addition so far — ``NativeLayerNorm`` (F2) — in both
+    directions: nothing else added, nothing lost. The BatchNorm modules
+    (F3/F4) have not shipped and must not appear here."""
     import tensorforge
     import tensorforge.experimental as experimental
 
@@ -1687,7 +1701,10 @@ def test_f0_leaves_the_public_experimental_surface_unchanged():
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
         "NativeCrossEntropyLoss", "native_accuracy",
+        "NativeLayerNorm",   # Phase F, milestone F2
     }
+    for absent in ("NativeBatchNorm1d", "NativeBatchNorm2d"):
+        assert absent not in experimental.__all__, absent
     # No duplicates, and nothing leaks into the stable namespace.
     assert len(experimental.__all__) == len(set(experimental.__all__))
     for name in experimental.__all__:
@@ -1695,31 +1712,35 @@ def test_f0_leaves_the_public_experimental_surface_unchanged():
         assert not hasattr(tensorforge, name), name
 
 
-def test_phase_f_leaves_the_capability_registries_unchanged():
-    """Requirement 9. Phase F adds no capability inventory entry: every
-    operation and module inventory must still be exactly the Phase-E
-    surface.
-
-    The one deliberate exception is ``STATE_SUPPORT``, which milestone F1
-    corrected to report the persistent-buffer capability that has existed
-    since before Phase D — reconciliation of an under-report, not a new
-    feature. It has its own guardrail below."""
+def test_phase_f_changes_only_the_layernorm_module_inventory():
+    """Phase F's only *operation*-surface change so far is milestone F2's
+    module: ``NativeLayerNorm`` joined ``NATIVE_MODULES`` and
+    ``"layernorm"`` left ``UNSUPPORTED``. Everything else is exactly the
+    Phase-E surface — no new operation, kernel, loss, metric, or dtype —
+    and ``STATE_SUPPORT``'s F1 reconciliation has its own guardrail below.
+    Because LayerNorm is a *module composed from existing operations*, no
+    operation inventory grew."""
     from tensorforge.backends import cpp
 
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm",
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     assert cpp.UNSUPPORTED == (
-        "batchnorm", "layernorm", "dropout", "float32", "cuda", "amp",
+        "batchnorm", "dropout", "float32", "cuda", "amp",
     )
     # The Phase-E operation surface is intact and nothing normalization
-    # shaped joined it.
+    # shaped joined it — LayerNorm added no operation.
     for op in ("exp", "log", "softmax", "log_softmax", "cross_entropy"):
         assert op in cpp.AUTOGRAD_OPS, op
+    for absent in ("layer_norm", "batch_norm", "layernorm", "batchnorm"):
+        assert absent not in cpp.AUTOGRAD_OPS, absent
+        assert absent not in cpp.TENSOR_CORE_OPS, absent
+        assert absent not in cpp.RAW_KERNELS, absent
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
@@ -1774,35 +1795,36 @@ def test_f1_added_no_normalization_capability():
     assert "_native_state" not in experimental.__all__
     assert "replace_native_state" not in experimental.__all__
     assert not hasattr(experimental, "replace_native_state")
-    # No normalization surface appeared alongside it.
-    for absent in ("batchnorm", "layernorm"):
-        assert absent in cpp.UNSUPPORTED, absent
+    # F1 itself added no normalization; "layernorm" only left UNSUPPORTED
+    # at the later milestone F2, and "batchnorm" is still absent.
+    assert "batchnorm" in cpp.UNSUPPORTED
 
 
-def test_no_document_claims_normalization_shipped_in_phase_f_so_far():
-    """The specific over-claims F1 makes newly tempting. F1 shipped real
-    code — a state transaction and a capability correction — so a
-    document could easily slide into describing it as normalization
-    support. None of these may appear on any status surface, and the
-    registry premise for each is checked first."""
+def test_no_document_claims_unshipped_normalization_is_done():
+    """After F2, LayerNorm really *is* shipped, so a document may say so.
+    What no status surface may claim is the part that has **not** shipped:
+    BatchNorm, the running statistics, any milestone from F3 on, or the
+    whole phase. The registry premise for each is checked first."""
     from tensorforge.backends import cpp
 
-    # Premises: none of this is implemented.
-    for absent in ("batchnorm", "layernorm"):
-        assert absent in cpp.UNSUPPORTED, absent
+    # Premise: BatchNorm and its running statistics are not implemented.
+    assert "batchnorm" in cpp.UNSUPPORTED
+    for module in ("NativeBatchNorm1d", "NativeBatchNorm2d"):
+        assert module not in cpp.NATIVE_MODULES
 
-    subject = (r"(normalization|BatchNorm|LayerNorm|NativeBatchNorm\w*"
-               r"|NativeLayerNorm|running_mean|running_var)")
+    # The subject is only the *unshipped* surface — LayerNorm is excluded
+    # because it has genuinely shipped.
+    subject = (r"(BatchNorm|NativeBatchNorm\w*|running_mean|running_var)")
     shipped = (r"(is|are|now)\s+(supported|implemented|shipped|complete"
                r"|available)")
     claims = (
-        # "normalization is implemented", either word order.
+        # "BatchNorm is implemented", either word order.
         re.compile(subject + r"[^.]{0,60}?" + shipped, re.I),
-        # "F1 shipped normalization", "F1 implemented BatchNorm", ...
-        re.compile(r"\bF1\b[^.]{0,60}?(ship|implement|add)\w*[^.]{0,30}?"
+        # "F3 shipped BatchNorm", "F4 implemented NativeBatchNorm2d", ...
+        re.compile(r"\bF[3-9]\b[^.]{0,60}?(ship|implement|add)\w*[^.]{0,30}?"
                    + subject, re.I),
-        # Any milestone from F2 on described as done.
-        re.compile(r"\bF[2-9]\b[^.]{0,40}?\b(is|was)\s+"
+        # Any milestone from F3 on described as done.
+        re.compile(r"\bF[3-9]\b[^.]{0,40}?\b(is|was)\s+"
                    r"(complete|completed|shipped|implemented)\b", re.I),
         # The phase itself described as finished.
         re.compile(r"Phase F\b[^.F]{0,40}?\b(is|was|are|now)\s+"
@@ -1832,6 +1854,42 @@ def test_no_document_claims_normalization_shipped_in_phase_f_so_far():
                     offenders.append(match.group(0))
             assert offenders == [], (
                 f"{surface} over-claims Phase F progress: {offenders[:3]}"
+            )
+
+
+def test_no_document_claims_layernorm_is_still_unsupported_or_planned():
+    """The inverse guard for F2: now that NativeLayerNorm has shipped, no
+    status surface may still describe LayerNorm as unsupported, planned,
+    unimplemented, or not started."""
+    from tensorforge.backends import cpp
+
+    assert "layernorm" not in cpp.UNSUPPORTED
+    assert "NativeLayerNorm" in cpp.NATIVE_MODULES
+    # A tight same-clause window: LayerNorm directly asserted unshipped.
+    # "layernorm has left UNSUPPORTED" and "layernorm removed from
+    # UNSUPPORTED; … F3–F9 are planned" are honest and must not trip it, so
+    # the claim word must sit close to the subject and matches whose window
+    # carries a shipped/removed marker are dropped.
+    stale = re.compile(
+        r"(NativeLayerNorm|LayerNorm)\s+"
+        r"(is|are|remains|stays|still)\s+"
+        r"(unsupported|planned|not implemented|unimplemented|not started"
+        r"|not yet implemented|absent|missing)",
+        re.I,
+    )
+    positive = re.compile(
+        r"(shipped|complete|left|removed|joined|now in|supported|exists)",
+        re.I,
+    )
+    for surface in AUTHORITATIVE_STATUS_SURFACES + PHASE_STATUS_DOCS + (
+        PHASE_F_DESIGN,
+    ):
+        text = _status_text(surface)
+        for match in stale.finditer(text):
+            window = text[max(0, match.start() - 40):match.end() + 20]
+            assert positive.search(window), (
+                f"{surface} still calls LayerNorm unsupported/planned: "
+                f"{match.group(0)!r}"
             )
 
 
@@ -1951,20 +2009,22 @@ def test_phase_f_design_records_the_daedalus_comparison():
     )
 
 
-def test_f0_claims_no_numerical_capability():
-    """The milestone's own honesty check: F0's section of the ladder must
-    say it added none, and the ladder must not mark any later milestone
-    complete or in progress."""
+def test_phase_f_ladder_marks_shipped_milestones_complete():
+    """The ladder's honesty check, in its F2 form: F0, F1, and F2 have
+    shipped and read complete; F3 through F9 have not started and read
+    planned. F0's section still denies adding numerical behavior, and the
+    phase statement reads in-progress, not complete."""
     text = _normalized_doc(PHASE_F_DESIGN)
     ladder = _design_section("Milestone ladder", relative_path=PHASE_F_DESIGN)
-    # F0 (the contract) and F1 (the state transaction) have shipped.
-    for done in (0, 1):
+    # F0 (the contract), F1 (the state transaction), and F2
+    # (NativeLayerNorm) have shipped.
+    for done in (0, 1, 2):
         row = re.search(rf"\|\s*F{done}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for F{done}"
         assert "complete" in row.group(1).lower(), f"F{done} is not complete"
-    # Everything from F2 on is the normalization mathematics itself, and
-    # none of it has started.
-    for planned in range(2, 10):
+    # Everything from F3 on is BatchNorm and the phase machinery, and none
+    # of it has started.
+    for planned in range(3, 10):
         row = re.search(rf"\|\s*F{planned}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for F{planned}"
         status = row.group(1).lower()
@@ -1976,10 +2036,10 @@ def test_f0_claims_no_numerical_capability():
     assert re.search(r"no.{0,60}numerical", f0, re.I), (
         "the F0 section no longer denies adding numerical behavior"
     )
-    # And the phase statement says the same thing plainly.
-    assert "Phase F is designed, not implemented" in re.sub(
-        r"[*`]", "", text
-    )
+    # And the phase statement reads in-progress, not complete.
+    plain = re.sub(r"[*`]", "", text)
+    assert "Phase F is in progress" in plain
+    assert "Phase F is designed, not implemented" not in plain
 
 
 def test_native_cnn_design_is_linked_and_referenced():

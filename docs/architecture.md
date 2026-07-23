@@ -192,7 +192,7 @@ explicit layer at a time:
   `to_numpy()` boundary and builds no graph. Proven by
   `examples/native_classification_training.py`, whose
   checkpoint-interrupted run resumes exactly.
-- **Native normalization (Phase F) is designed, not implemented.** The
+- **Native normalization (Phase F) is in progress.** The
   contract for `NativeLayerNorm`, `NativeBatchNorm1d`, and
   `NativeBatchNorm2d` is locked in
   [native_normalization_design.md](native_normalization_design.md)
@@ -200,11 +200,17 @@ explicit layer at a time:
   from existing native operations rather than add any kernel, C ABI
   export, or `NativeTensorCore` method, and the rule that a live mutable
   running-statistics buffer is never captured as a rereadable graph
-  operand. Milestone F1 has shipped the private atomic native-buffer
+  operand. Milestone F1 shipped the private atomic native-buffer
   state transaction that contract calls for (`_native_state.py`, now the
   single implementation behind `load_state_dict`) — state management
-  only. Milestones F2–F9 have not started, so the native line has no
-  normalization capability today: `batchnorm` and `layernorm` are still
+  only. **Milestone F2 shipped `NativeLayerNorm`** — the first native
+  normalization module, stateless and differentiable, composed entirely
+  from existing native operations (`mean`/`subtract`/`multiply`/`add`/
+  `sqrt`/`reciprocal`, `sqrt(var + eps)`, population variance) with no
+  kernel, ABI symbol, Core method, custom backward, or `NativeTensor`
+  normalization operation; `"NativeLayerNorm"` is in `NATIVE_MODULES` and
+  `"layernorm"` has left `UNSUPPORTED`. Milestones F3–F9 have not started,
+  so native BatchNorm does not exist yet and `"batchnorm"` is still
   listed as unsupported in the backend registry.
 
 The execution path for a native training step is:

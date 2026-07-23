@@ -1097,6 +1097,7 @@ def test_e8_adds_no_capability_inventory_entry():
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm",   # Phase F, milestone F2 (unrelated to E8)
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
