@@ -41,8 +41,12 @@ numerical capability) all shipped. **Phase F — Native Normalization and
 Stateful Buffers — is the current phase and is *designed only*:**
 milestone F0 is complete (the architecture contract in
 `docs/native_normalization_design.md` plus repository reconciliation —
-**no numerical behavior**), and milestones F1–F9 (an atomic
-native-buffer state transaction, `NativeLayerNorm`, `NativeBatchNorm1d`,
+**no numerical behavior**) and F1 is complete (the private atomic
+native-buffer state transaction in
+`src/tensorforge/experimental/_native_state.py`, `load_state_dict`
+refactored onto it, and `persistent_buffers` added to `STATE_SUPPORT` —
+state management and capability reporting only). Milestones F2–F9
+(`NativeLayerNorm`, `NativeBatchNorm1d`,
 `NativeBatchNorm2d`, state/checkpoint and graph-safety hardening, a
 deterministic normalized training run with exact resume, a benchmark
 characterization, cross-cutting integration, and closure) have **not

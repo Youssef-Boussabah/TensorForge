@@ -207,8 +207,18 @@ def test_capability_inventories_are_internally_consistent():
         assert callable(getattr(cpp, name)), name
     assert hasattr(NativeModule, "state_dict")
     assert hasattr(NativeModule, "load_state_dict")
+    # Every advertised state capability maps to something real. Four of
+    # the five name a callable directly; "persistent_buffers" (added by
+    # Phase F milestone F1 to reconcile a capability that already
+    # existed) names the register_buffer / buffers / named_buffers API,
+    # so it is resolved explicitly rather than by relaxing the check.
+    _STATE_CAPABILITY_API = {
+        "persistent_buffers": ("register_buffer", "buffers", "named_buffers"),
+    }
     for name in cpp.STATE_SUPPORT:
-        assert hasattr(experimental, name) or hasattr(NativeModule, name), name
+        for attribute in _STATE_CAPABILITY_API.get(name, (name,)):
+            assert (hasattr(experimental, attribute)
+                    or hasattr(NativeModule, attribute)), (name, attribute)
     # Implemented and unsupported names stay disjoint everywhere.
     implemented = (set(cpp.TENSOR_CORE_OPS) | set(cpp.AUTOGRAD_OPS)
                    | set(cpp.RAW_KERNELS) | set(cpp.NATIVE_MODULES)

@@ -1695,10 +1695,15 @@ def test_f0_leaves_the_public_experimental_surface_unchanged():
         assert not hasattr(tensorforge, name), name
 
 
-def test_f0_leaves_the_capability_registries_unchanged():
-    """Requirement 9. F0 is documentation-only, so every inventory must
-    still be exactly the Phase-E surface — including STATE_SUPPORT, whose
-    persistent-buffer correction is deliberately deferred to F1."""
+def test_phase_f_leaves_the_capability_registries_unchanged():
+    """Requirement 9. Phase F adds no capability inventory entry: every
+    operation and module inventory must still be exactly the Phase-E
+    surface.
+
+    The one deliberate exception is ``STATE_SUPPORT``, which milestone F1
+    corrected to report the persistent-buffer capability that has existed
+    since before Phase D — reconciliation of an under-report, not a new
+    feature. It has its own guardrail below."""
     from tensorforge.backends import cpp
 
     assert cpp.NATIVE_MODULES == (
@@ -1711,12 +1716,6 @@ def test_f0_leaves_the_capability_registries_unchanged():
     assert cpp.UNSUPPORTED == (
         "batchnorm", "layernorm", "dropout", "float32", "cuda", "amp",
     )
-    # STATE_SUPPORT is untouched by F0 (the design assigns its correction
-    # to F1). If this ever needs updating, the F1 milestone is the place.
-    assert cpp.STATE_SUPPORT == (
-        "state_dict", "load_state_dict",
-        "save_native_checkpoint", "load_native_checkpoint",
-    )
     # The Phase-E operation surface is intact and nothing normalization
     # shaped joined it.
     for op in ("exp", "log", "softmax", "log_softmax", "cross_entropy"):
@@ -1725,7 +1724,144 @@ def test_f0_leaves_the_capability_registries_unchanged():
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
 
-def test_dropout_float32_cuda_and_amp_stay_unsupported_through_f0():
+def test_state_support_reports_persistent_buffers():
+    """F1's capability reconciliation, pinned in both directions: the
+    tuple is exact, the new name really does map to a live API, and the
+    correction did not smuggle in a normalization claim."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeModule
+
+    assert cpp.STATE_SUPPORT == (
+        "persistent_buffers",
+        "state_dict", "load_state_dict",
+        "save_native_checkpoint", "load_native_checkpoint",
+    )
+    assert cpp.backend_info()["state_support"] == cpp.STATE_SUPPORT
+    # The advertised capability is real: this is the API behind the name.
+    for attribute in ("register_buffer", "buffers", "named_buffers",
+                      "state_dict", "load_state_dict"):
+        assert callable(getattr(NativeModule, attribute)), attribute
+    # A state capability is not an operation, a module, or a metric.
+    for inventory in (cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS, cpp.RAW_KERNELS,
+                      cpp.NATIVE_MODULES, cpp.NATIVE_LOSSES,
+                      cpp.NATIVE_METRICS, cpp.UNSUPPORTED):
+        assert "persistent_buffers" not in inventory
+
+
+def test_f1_added_no_normalization_capability():
+    """F1 is a state-management and reporting milestone. Its own design
+    section must say so, and the registry must still show no
+    normalization anything."""
+    from tensorforge.backends import cpp
+
+    f1 = _design_section("F1 —", relative_path=PHASE_F_DESIGN)
+    lowered = f1.lower()
+    assert "complete" in lowered, "the design does not record F1 as shipped"
+    assert re.search(r"no normalization", lowered), (
+        "the F1 section no longer states that it added no normalization"
+    )
+    assert "persistent_buffers" in f1 or "STATE_SUPPORT" in f1
+    # The private helper exists, is used, and stays private.
+    helper = REPO_ROOT / "src" / "tensorforge" / "experimental" / "_native_state.py"
+    assert helper.is_file(), "the F1 transaction helper is missing"
+    module_source = (
+        REPO_ROOT / "src" / "tensorforge" / "experimental" / "native_module.py"
+    ).read_text(encoding="utf-8")
+    assert "_native_state" in module_source, (
+        "load_state_dict no longer uses the shared state transaction"
+    )
+    import tensorforge.experimental as experimental
+    assert "_native_state" not in experimental.__all__
+    assert "replace_native_state" not in experimental.__all__
+    assert not hasattr(experimental, "replace_native_state")
+    # No normalization surface appeared alongside it.
+    for absent in ("batchnorm", "layernorm"):
+        assert absent in cpp.UNSUPPORTED, absent
+
+
+def test_no_document_claims_normalization_shipped_in_phase_f_so_far():
+    """The specific over-claims F1 makes newly tempting. F1 shipped real
+    code — a state transaction and a capability correction — so a
+    document could easily slide into describing it as normalization
+    support. None of these may appear on any status surface, and the
+    registry premise for each is checked first."""
+    from tensorforge.backends import cpp
+
+    # Premises: none of this is implemented.
+    for absent in ("batchnorm", "layernorm"):
+        assert absent in cpp.UNSUPPORTED, absent
+
+    subject = (r"(normalization|BatchNorm|LayerNorm|NativeBatchNorm\w*"
+               r"|NativeLayerNorm|running_mean|running_var)")
+    shipped = (r"(is|are|now)\s+(supported|implemented|shipped|complete"
+               r"|available)")
+    claims = (
+        # "normalization is implemented", either word order.
+        re.compile(subject + r"[^.]{0,60}?" + shipped, re.I),
+        # "F1 shipped normalization", "F1 implemented BatchNorm", ...
+        re.compile(r"\bF1\b[^.]{0,60}?(ship|implement|add)\w*[^.]{0,30}?"
+                   + subject, re.I),
+        # Any milestone from F2 on described as done.
+        re.compile(r"\bF[2-9]\b[^.]{0,40}?\b(is|was)\s+"
+                   r"(complete|completed|shipped|implemented)\b", re.I),
+        # The phase itself described as finished.
+        re.compile(r"Phase F\b[^.F]{0,40}?\b(is|was|are|now)\s+"
+                   r"(complete|completed|shipped|implemented)\b", re.I),
+    )
+    # A matched span that carries its own negation ("normalization is
+    # **not** implemented", "F2 is not complete") is the honest form, not
+    # an over-claim. Filtering on the matched text keeps the guard
+    # readable; the registry-derived tests above remain the authority on
+    # what actually exists, so this prose guard never has to be exact.
+    negations = re.compile(
+        r"\b(not|never|neither|nor|nothing|none|planned|unsupported)\b"
+        r"|\bno\b", re.I,
+    )
+    for surface in AUTHORITATIVE_STATUS_SURFACES + PHASE_STATUS_DOCS + (
+        PHASE_F_DESIGN,
+    ):
+        text = _status_text(surface)
+        for pattern in claims:
+            offenders = []
+            for match in pattern.finditer(text):
+                # Include a little context before the match: the negation
+                # often leads the sentence ("Nothing normalization-related
+                # is shipped").
+                window = text[max(0, match.start() - 45):match.end()]
+                if not negations.search(window):
+                    offenders.append(match.group(0))
+            assert offenders == [], (
+                f"{surface} over-claims Phase F progress: {offenders[:3]}"
+            )
+
+
+def test_no_document_claims_persistent_buffers_are_unreported():
+    """The inverse guard for F1's reconciliation: now that
+    STATE_SUPPORT reports persistent buffers, no document may still
+    describe that capability as missing from it."""
+    from tensorforge.backends import cpp
+
+    assert "persistent_buffers" in cpp.STATE_SUPPORT
+    stale = re.compile(
+        r"(STATE_SUPPORT|state_support)[^.]{0,120}?"
+        r"(does not|never|no longer|fails to|under-?report)"
+        r"[^.]{0,60}(buffer|persistent)"
+        r"|persistent buffers?[^.]{0,80}?(absent from|missing from|not in)"
+        r"[^.]{0,40}(STATE_SUPPORT|state_support)",
+        re.I,
+    )
+    for surface in AUTHORITATIVE_STATUS_SURFACES + PHASE_STATUS_DOCS + (
+        PHASE_F_DESIGN,
+    ):
+        text = _status_text(surface)
+        match = stale.search(text)
+        assert match is None, (
+            f"{surface} still says persistent buffers are unreported: "
+            f"{match.group(0)!r}" if match else ""
+        )
+
+
+def test_dropout_float32_cuda_and_amp_stay_unsupported_through_phase_f():
     """Requirement 10. Phase F excludes all four explicitly, and its
     design document must say so rather than leaving it to the registry."""
     from tensorforge.backends import cpp
@@ -1821,10 +1957,14 @@ def test_f0_claims_no_numerical_capability():
     complete or in progress."""
     text = _normalized_doc(PHASE_F_DESIGN)
     ladder = _design_section("Milestone ladder", relative_path=PHASE_F_DESIGN)
-    row = re.search(r"\|\s*F0\s*\|[^|]*\|([^|]*)\|", ladder)
-    assert row is not None, "the ladder has no status row for F0"
-    assert "complete" in row.group(1).lower()
-    for planned in range(1, 10):
+    # F0 (the contract) and F1 (the state transaction) have shipped.
+    for done in (0, 1):
+        row = re.search(rf"\|\s*F{done}\s*\|[^|]*\|([^|]*)\|", ladder)
+        assert row is not None, f"the ladder has no status row for F{done}"
+        assert "complete" in row.group(1).lower(), f"F{done} is not complete"
+    # Everything from F2 on is the normalization mathematics itself, and
+    # none of it has started.
+    for planned in range(2, 10):
         row = re.search(rf"\|\s*F{planned}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for F{planned}"
         status = row.group(1).lower()

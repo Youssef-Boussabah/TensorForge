@@ -917,7 +917,7 @@ The Python line is done; what remains is expansion on its own terms:
     build/packaging evolution. Native normalization then became its own
     phase, below.
   - **Phase F — Native Normalization and Stateful Buffers — designed,
-    not implemented (F0 complete; F1–F9 planned).** The **F0
+    not implemented (F0 and F1 complete; F2–F9 planned).** The **F0
     architecture contract is written** —
     [native_normalization_design.md](native_normalization_design.md)
     locks the phase's objective (a fully native, differentiable,
@@ -966,7 +966,14 @@ The Python line is done; what remains is expansion on its own terms:
     characterization, with no speed assertion), F8 (cross-cutting
     integration and semantic guardrails), and F9 (phase closure).
     **F0 added no numerical behavior** — it is a design-and-reconciliation
-    milestone — and **F1–F9 have not started**, so the native line has no
+    milestone — and **F1 is complete**: the private atomic native-buffer
+    state transaction (`_native_state.py`) that §8 of the contract calls
+    for, now the single implementation behind
+    `NativeModule.load_state_dict` (whose public behavior is unchanged),
+    plus the `persistent_buffers` correction to `STATE_SUPPORT` — an
+    under-reported capability that has existed since before Phase D. F1
+    is state management and capability reporting only and added **no
+    normalization mathematics**. **F2–F9 have not started**, so the native line has no
     normalization capability today: `batchnorm` and `layernorm` remain in
     the backend registry's `UNSUPPORTED` tuple, no normalization module
     is exported, and no normalization operation or kernel exists.

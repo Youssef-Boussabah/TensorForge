@@ -1459,7 +1459,7 @@ persistent-buffer correction), F2 (`NativeLayerNorm`), F3
 and graph-safety hardening), F6 (deterministic normalized training and
 exact resume), F7 (benchmark characterization with no speed assertion),
 F8 (cross-cutting integration and semantic guardrails), and F9 (phase
-closure). **F1–F9 have not started.**
+closure). **F2–F9 have not started.**
 
 F0 also reconciled the documentation: the support matrix, roadmap,
 project summary, architecture doc, backend-experiments page, README, and
@@ -1478,6 +1478,83 @@ ctypes declaration, Core method, tensor operation, module, buffer
 helper, capability-inventory entry, export, benchmark, or example. The
 public `tensorforge.experimental` export set and every backend
 capability registry are byte-for-byte what Phase E left them.
+
+**Milestone F1 — atomic native-buffer state transactions — is the
+phase's first code, and it is state management and capability reporting
+only: it adds no normalization mathematics.**
+
+The staging/commit/rollback logic that makes native state replacement
+safe already existed, inline, inside `NativeModule.load_state_dict`. F1
+extracts and generalizes it into one private, reusable transaction —
+`src/tensorforge/experimental/_native_state.py`, a
+`NativeStateEntry(label, destination, make_core, source)` record and one
+`replace_native_state(entries)` call — so the running-statistics update
+F3 needs does not become a second, parallel implementation of the subtle
+parts. That is exactly where a state-corruption bug would most likely be
+introduced, which is why the extraction precedes any normalization layer.
+
+The transaction runs in three phases with **one explicit commit
+boundary**. *Plan* validates every destination and deduplicates entries
+by destination **object identity**, so a shared parameter or buffer
+reachable under several registered names is one destination — swapped
+once, version-bumped once, released once; two entries for one
+destination are the same request only when they name the same source
+object, and any other duplicate is a genuine conflict rejected before
+anything is staged. *Stage* produces every replacement core before any
+destination is mutated, validating each one (open, owning, contiguous,
+metadata-matched, and sharing storage with neither its destination's
+current core nor another staged core); the transaction **takes ownership
+of every core a factory returns** and will install it or close it,
+exactly once, on every path. *Commit* swaps each destination's core and
+then increments each affected parameter's version — **both inside one
+rollback guard**, which is a refinement over the inline version, where
+the increments sat outside it. The commit boundary is the point at which
+every swap *and* every increment has succeeded: before it the
+transaction is fully reversible, and a failure at either step restores
+every swapped core and every moved version and closes every staged core,
+so a failed transaction moves no version at all. Only the release of the
+replaced cores is past the boundary; each is closed exactly once, every
+one is attempted even if an earlier close raises, and the first such
+failure is re-raised wrapped in a message that states plainly that the
+state change itself succeeded — never swallowed. A defensive re-check
+before each swap aborts the transaction if a destination's core changed
+between planning and commit.
+
+`NativeModule.load_state_dict` now delegates to that transaction. Its
+public signature, validation order, error messages, missing/unexpected
+key reporting, strictness, parameter and buffer identity guarantees,
+parameter-version semantics, atomicity, and ownership behavior are all
+unchanged, and its staging copies still go through the module's own
+`_native_copy`, so the long-standing staging seam and the tests that use
+it are untouched. `state_dict()` output, the checkpoint format, and the
+checkpoint version are unchanged. Every pre-existing state, buffer,
+module, and checkpoint test passes without modification.
+
+F1 also reconciles one under-report: `STATE_SUPPORT` now reads
+`("persistent_buffers", "state_dict", "load_state_dict",
+"save_native_checkpoint", "load_native_checkpoint")`. Native modules
+have held `NativeTensor`-backed non-parameter state — `register_buffer`,
+`buffers()` / `named_buffers()`, persistent buffers in `state_dict` and
+in checkpoints — since the pre-Phase-D hardening milestone, but this
+tuple never said so, so `backend_info()` under-reported an existing
+capability. Unlike the four names beside it, `persistent_buffers` names
+a capability rather than one callable, and the guardrails resolve it
+explicitly to that API rather than by relaxing the "every advertised
+name is real" check. No other inventory changed: `TENSOR_CORE_OPS`,
+`AUTOGRAD_OPS`, `RAW_KERNELS`, `NATIVE_MODULES`, `NATIVE_LOSSES`,
+`NATIVE_METRICS`, `NATIVE_OPTIMIZERS`, and `UNSUPPORTED` are all
+byte-for-byte what Phase E left, and `batchnorm` and `layernorm` remain
+unsupported.
+
+**F1 added no normalization capability of any kind** — no normalization
+module, formula, forward or backward pass, eval snapshot,
+running-statistic update, kernel, C ABI function, ctypes declaration,
+public tensor operation, or experimental export. The transaction helper
+is private (absent from `tensorforge.experimental.__all__`) and is not a
+public in-place mutation API; `NativeParameter.copy_value_` remains the
+only public controlled-mutation primitive in the native line. No
+normalization code calls the helper yet — F3 will be its second caller.
+**F2, `NativeLayerNorm`, is the next milestone.**
 
 ### A hardening milestone before Phase D
 

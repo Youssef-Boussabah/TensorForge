@@ -217,7 +217,13 @@ def test_e8_added_no_capability_inventory_entry():
     assert info["native_metrics"] == ("native_accuracy",)
     assert info["native_optimizers"] == ("NativeSGD", "NativeAdam")
     assert info["autograd_ops"][-1] == "cross_entropy"
+    # E8 added no state capability. "persistent_buffers" joined this
+    # tuple in Phase F milestone F1 as *reconciliation* of a capability
+    # that already existed (register_buffer / buffers / named_buffers,
+    # persistent buffers in state_dict and checkpoints) — not as anything
+    # E8 or any classification milestone contributed.
     assert info["state_support"] == (
+        "persistent_buffers",
         "state_dict", "load_state_dict",
         "save_native_checkpoint", "load_native_checkpoint",
     )

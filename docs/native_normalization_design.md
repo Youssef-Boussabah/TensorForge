@@ -23,8 +23,12 @@ At F0 that registry still lists `"batchnorm"` and `"layernorm"` in
 implements each one removes it.
 
 **Phase-F status: designed, not implemented.** **F0 is complete** (this
-contract and the repository reconciliation that came with it).
-**F1–F9 are planned and have not started.** Nothing in this document may
+contract and the repository reconciliation that came with it) and **F1 is
+complete** (the private atomic native-buffer state transaction, the
+`load_state_dict` refactor onto it, and the `STATE_SUPPORT`
+persistent-buffer reconciliation — **state management and capability
+reporting only, no normalization mathematics**).
+**F2–F9 are planned and have not started.** Nothing in this document may
 be read as a statement that native normalization exists today: no
 `NativeLayerNorm`, `NativeBatchNorm1d`, or `NativeBatchNorm2d` is
 exported, no normalization operation is differentiable, no normalization
@@ -850,7 +854,7 @@ copied.
 | Milestone | Deliverable | Status |
 |---|---|---|
 | F0 | Phase-F architecture contract and repository reconciliation | **complete** |
-| F1 | Atomic native-buffer state transactions | planned |
+| F1 | Atomic native-buffer state transactions | **complete** |
 | F2 | `NativeLayerNorm` | planned |
 | F3 | `NativeBatchNorm1d` | planned |
 | F4 | `NativeBatchNorm2d` | planned |
@@ -908,7 +912,7 @@ milestone below F0 is complete or in progress.**
   guardrails catch the stale claims found in the audit; focused and full
   test runs pass with no regression.
 
-### F1 — Atomic native-buffer state transactions — planned
+### F1 — Atomic native-buffer state transactions — **complete**
 
 - **Objective:** extract and generalize the staging/commit/rollback
   behavior already inside `NativeModule.load_state_dict` into a private,
@@ -941,6 +945,79 @@ milestone below F0 is complete or in progress.**
   both `load_state_dict` and (later) the running-statistics update; every
   pre-existing test passes untouched; `STATE_SUPPORT` reports persistent
   buffers and its guardrail proves the name is real.
+- **Shipped (F1).** Exactly the above, plus the refinements the
+  implementation settled:
+
+  - **The private helper is
+    `src/tensorforge/experimental/_native_state.py`** — a
+    `NativeStateEntry(label, destination, make_core, source)` record and
+    one `replace_native_state(entries)` transaction. It is deliberately
+    absent from `tensorforge.experimental.__all__` and is **not** a
+    public in-place mutation API; `NativeParameter.copy_value_` remains
+    the only public controlled-mutation primitive in the native line.
+  - **The transaction takes ownership of every core a factory returns**
+    — it installs it or closes it, exactly once, on every path. Staging
+    calls each entry's `make_core()` before any destination is mutated,
+    and validates the produced core (a `NativeTensorCore`, open, owning,
+    contiguous, metadata-matched, sharing storage with neither its
+    destination's current core nor any other staged core).
+  - **The commit boundary is the point at which every core swap *and*
+    every parameter-version increment has succeeded.** Both live inside
+    one `BaseException` rollback guard — a refinement over the inline
+    version, where the increments sat *outside* the guard. A failure at
+    either step now restores every swapped core **and** every moved
+    version and closes every staged core, so a failed transaction moves
+    no version at all. On success the outcome is identical to the
+    previous inline behavior, so nothing observable changed.
+  - **Only the release of the replaced cores is past the boundary.**
+    Each replaced core is closed exactly once; every one is attempted
+    even if an earlier close raises, so ownership is never ambiguous,
+    and the first failure is then re-raised wrapped in a `RuntimeError`
+    that states plainly that the state change itself succeeded. Since
+    `NativeTensorCore.close()` is idempotent and does not raise, this is
+    a defensive path only.
+  - **Deduplication is by destination object identity**, not by label: a
+    shared parameter or buffer reachable under several registered names
+    is one destination, swapped once, version-bumped once, released
+    once. Two entries for one destination are the same request only when
+    they name the same `source` object; any other duplicate is a
+    conflict — two different values for one object — and is rejected
+    during planning, before anything is staged or mutated.
+  - **A defensive re-check** runs immediately before each swap: the
+    destination's core must still be the one planning recorded, so a
+    factory side effect, signal handler, or reentrant caller that
+    changed it aborts the transaction before any change is made.
+  - **`NativeModule.load_state_dict` now delegates to it** with its
+    public signature, validation order, error messages, key reporting,
+    identity guarantees, version semantics, atomicity, and ownership
+    behavior all unchanged. Its staging copies still go through this
+    module's own `_native_copy`, so the long-standing staging seam (and
+    the tests that use it) is untouched. `state_dict()` output, the
+    checkpoint format, and the checkpoint version are unchanged.
+  - **`STATE_SUPPORT` now reads
+    `("persistent_buffers", "state_dict", "load_state_dict",
+    "save_native_checkpoint", "load_native_checkpoint")`.** This is
+    reconciliation of an under-report: `register_buffer` / `buffers()` /
+    `named_buffers()` and persistent buffers in `state_dict` and
+    checkpoints have existed since the pre-Phase-D hardening milestone.
+    Unlike the four names beside it, `persistent_buffers` names a
+    *capability* rather than one callable, and the guardrails resolve it
+    explicitly to that API rather than by relaxing the "every advertised
+    name is real" check.
+  - **The private seams** `_stage_entry`, `_install_core`,
+    `_restore_core`, `_bump_version`, `_restore_version`, and
+    `_release_core` are module-level functions so tests can inject a
+    failure at exactly one step. They are seams, not production flags:
+    nothing in the library ever replaces them and there is no
+    user-facing failure control.
+  - **F1 added no normalization capability of any kind** — no
+    normalization module, formula, forward or backward pass, eval
+    snapshot, running-statistic update, kernel, C ABI function, ctypes
+    declaration, public tensor operation, or experimental export. No
+    normalization code calls the helper yet; F3 will be its second
+    caller. `"batchnorm"` and `"layernorm"` remain in `UNSUPPORTED`, and
+    every operation and module inventory is byte-for-byte what Phase E
+    left. **F2 is the next milestone.**
 
 ### F2 — `NativeLayerNorm` — planned
 
@@ -1242,7 +1319,7 @@ milestone below F0 is complete or in progress.**
 
 ## 17. Phase-F completion criteria
 
-Phase F is complete only when **all** of the following hold. None is
+Phase F will be complete only when **all** of the following hold. None is
 checked yet; F9 is the checkpoint at which each must be verified against
 reality.
 
@@ -1295,9 +1372,15 @@ native line has **no** normalization capability of any kind:
   as they were when Phase E closed.
 
 What F0 delivered is this contract and the repository reconciliation that
-accompanied it — **no numerical behavior whatsoever**. The capabilities
-described above are commitments about how Phase F *will* be built, not
-claims about what exists.
+accompanied it — **no numerical behavior whatsoever**. What **F1**
+delivered is the private atomic state transaction of §8
+(`_native_state.py`), the `load_state_dict` refactor onto it, and the
+`STATE_SUPPORT` persistent-buffer reconciliation — **state management and
+capability reporting only**, with no normalization module, formula,
+forward or backward pass, eval snapshot, running-statistic update,
+kernel, C ABI symbol, ctypes declaration, tensor operation, or export.
+The capabilities described above are commitments about how Phase F *will*
+be built, not claims about what exists.
 
 Deliberately outside Phase F and still unplanned: dropout, a native RNG
 and RNG checkpoint state, further activations (`tanh`, `sigmoid`, GELU),

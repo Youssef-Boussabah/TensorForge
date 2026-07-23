@@ -80,7 +80,14 @@ the rule that a live mutable running buffer is never captured as a
 rereadable graph operand (eval mode takes independent graph-free
 snapshots, which is why buffers stay unversioned), atomic two-buffer
 running-statistics updates, and state/checkpoint integration with the
-format unchanged at version 1. **Milestones F1-F9 have not started**, so
+format unchanged at version 1. **Milestone F1** has shipped the private
+atomic native-buffer state transaction that contract requires
+(``_native_state.py`` — staging, an explicit commit boundary, complete
+rollback, exactly-once closing, and identity-preserving swaps), which
+``NativeModule.load_state_dict`` now delegates to, plus the
+``persistent_buffers`` entry in ``STATE_SUPPORT`` reconciling a
+capability that already existed. That is state management and capability
+reporting only. **Milestones F2-F9 have not started**, so
 none of those modules exists or is exported here, and ``"batchnorm"`` /
 ``"layernorm"`` remain in the backend registry's ``UNSUPPORTED`` tuple.
 What the native line

@@ -179,7 +179,11 @@ that a live mutable running buffer is never captured as a rereadable
 graph operand; atomic two-buffer running-statistics updates; and
 state/checkpoint integration with format version 1 unchanged. **F0
 added design and documentation only — no numerical behavior.**
-Milestones **F1–F9 are planned and have not started**, so BatchNorm and
+**F1 is complete** too — a private atomic native-buffer state
+transaction, `load_state_dict` refactored onto it, and the
+`persistent_buffers` capability-reporting correction, all with **no
+normalization mathematics**.
+Milestones **F2–F9 are planned and have not started**, so BatchNorm and
 LayerNorm remain unsupported on the native line today. Beyond Phase F
 (**not started**): dropout and a native RNG, more activations/math, data
 loaders, a CPU optimization phase, then the CUDA

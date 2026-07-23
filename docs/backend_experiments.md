@@ -85,8 +85,17 @@ mutable running buffer is never captured as a rereadable graph operand
 buffers stay unversioned); atomic two-buffer running-statistics updates
 with rollback and preserved buffer identity; and state/checkpoint
 integration with the format unchanged at **version 1**. **F0 added
-design and documentation only — no numerical behavior.** Milestones
-**F1–F9 are planned and have not started**, so the native line has no
+design and documentation only — no numerical behavior.** **F1** then
+shipped the private atomic native-buffer state transaction that contract
+calls for (`src/tensorforge/experimental/_native_state.py`: staging, an
+explicit commit boundary, complete rollback of both cores and parameter
+versions, exactly-once closing, and identity-preserving swaps), refactored
+`NativeModule.load_state_dict` onto it with its public behavior unchanged,
+and corrected `STATE_SUPPORT` to report the `persistent_buffers`
+capability that had existed since before Phase D — state management and
+capability reporting only, with **no normalization mathematics**.
+Milestones
+**F2–F9 are planned and have not started**, so the native line has no
 normalization capability today and `batchnorm`/`layernorm` remain in the
 registry's `UNSUPPORTED` tuple. Dropout, a native RNG, and RNG
 checkpoint state are future work **beyond** Phase F.
@@ -697,7 +706,7 @@ the milestone-era wording pins. **Phase D is complete**; the native line's
 next phase after it was **Phase E — Native Classification and Stable
 Math**, which has since completed (E0–E10), followed by **Phase F —
 Native Normalization and Stateful Buffers**, which is currently
-**designed only** (F0 complete; F1–F9 planned). Further activations and
+**designed only** (F0 and F1 complete; F2–F9 planned). Further activations and
 math, dropout with a native RNG, and a CPU optimization pass sit beyond
 Phase F, followed by
 the CUDA
@@ -3070,7 +3079,10 @@ Normalization and Stateful Buffers — and it is designed, not
 implemented.** Its contract is locked in
 [native_normalization_design.md](native_normalization_design.md)
 (milestone **F0**, complete: design and repository reconciliation only,
-adding no numerical behavior); milestones **F1–F9 are planned and have
+adding no numerical behavior) and **F1** is complete (the private atomic
+native-buffer state transaction, the `load_state_dict` refactor onto it,
+and the `persistent_buffers` capability reconciliation — no normalization
+mathematics); milestones **F2–F9 are planned and have
 not started**, so no `NativeLayerNorm`, `NativeBatchNorm1d`, or
 `NativeBatchNorm2d` exists, no normalization operation is
 differentiable, and no normalization kernel or C ABI export exists.

@@ -200,7 +200,10 @@ explicit layer at a time:
   from existing native operations rather than add any kernel, C ABI
   export, or `NativeTensorCore` method, and the rule that a live mutable
   running-statistics buffer is never captured as a rereadable graph
-  operand. Milestones F1–F9 have not started, so the native line has no
+  operand. Milestone F1 has shipped the private atomic native-buffer
+  state transaction that contract calls for (`_native_state.py`, now the
+  single implementation behind `load_state_dict`) — state management
+  only. Milestones F2–F9 have not started, so the native line has no
   normalization capability today: `batchnorm` and `layernorm` are still
   listed as unsupported in the backend registry.
 

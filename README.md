@@ -213,7 +213,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
-- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **designed only**: F0 is complete, F1–F9 are planned and not implemented)
+- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — normalization **not yet implemented**: F0 and F1 are complete, F2–F9 are planned)
 
 ## Limitations
 
@@ -349,8 +349,11 @@ defined and designed, but not numerically implemented.** Its architecture
 contract is locked in
 [docs/native_normalization_design.md](docs/native_normalization_design.md)
 (milestone **F0**, complete: design and repository reconciliation only,
-adding no numerical behavior). Milestones **F1–F9** — the atomic native
-buffer state transaction, `NativeLayerNorm`, `NativeBatchNorm1d`,
+adding no numerical behavior), as is **F1** (a private atomic
+native-buffer state transaction, the `load_state_dict` refactor onto it,
+and the `STATE_SUPPORT` persistent-buffer reconciliation — state
+management and capability reporting only, no normalization mathematics).
+Milestones **F2–F9** — `NativeLayerNorm`, `NativeBatchNorm1d`,
 `NativeBatchNorm2d`, state/checkpoint and graph-safety hardening, a
 deterministic normalized training run with exact resume, an honest
 benchmark characterization, cross-cutting integration, and phase closure

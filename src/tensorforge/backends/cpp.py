@@ -203,7 +203,22 @@ NATIVE_LOSSES = ("NativeMSELoss", "NativeCrossEntropyLoss")
 NATIVE_METRICS = ("native_accuracy",)
 
 NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
+# Native state and persistence capabilities.
+#
+# "persistent_buffers" (added in Phase F, milestone F1) is **capability
+# reconciliation, not a new feature**: NativeModule has held
+# NativeTensor-backed non-parameter state since the pre-Phase-D hardening
+# milestone — `register_buffer(name, tensor, persistent=True)`,
+# `buffers()` / `named_buffers()`, persistent buffers included in
+# `state_dict()` / `load_state_dict()` and in native checkpoints, and
+# non-persistent buffers never serialized — but this tuple never said so,
+# so `backend_info()` under-reported an existing capability. Unlike the
+# four names beside it, it names a *capability* rather than a single
+# callable: the API behind it is the register_buffer/buffers/
+# named_buffers trio (see tests/test_cpp_backend_info.py, which proves
+# every advertised name maps to something real).
 STATE_SUPPORT = (
+    "persistent_buffers",
     "state_dict",
     "load_state_dict",
     "save_native_checkpoint",

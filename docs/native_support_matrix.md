@@ -81,7 +81,11 @@ documentation reconciliation across every status surface.
 phase and is *designed only*.** Its architecture contract is locked in
 [native_normalization_design.md](native_normalization_design.md)
 (milestone **F0**, complete — design and repository reconciliation, no
-numerical behavior); milestones **F1–F9 are planned and have not
+numerical behavior) and **F1** is complete (the private atomic
+native-buffer state transaction, `load_state_dict` refactored onto it,
+and the `persistent_buffers` reconciliation in `STATE_SUPPORT` — state
+management and capability reporting only, **no normalization
+mathematics**); milestones **F2–F9 are planned and have not
 started**. No `NativeLayerNorm`, `NativeBatchNorm1d`, or
 `NativeBatchNorm2d` exists, no normalization operation is
 differentiable, and no normalization kernel or C ABI export exists —
@@ -231,8 +235,9 @@ Milestone **E7** then added the public surface over that operation:
 |---|---|---|
 | `NativeParameter` | Supported | Graph-free trainable leaf; value versioning; controlled `copy_value_` mutation |
 | `NativeModule` | Supported | Registration by assignment, recursive identity-deduplicated cycle-safe traversal, train/eval, `zero_grad()` |
-| Buffers | Supported | v3.15: `register_buffer(name, tensor, persistent=True)`, `buffers()` / `named_buffers()`; NativeTensor-backed non-`Parameter` persistent state (infrastructure for future BatchNorm/RNG state — no algorithm yet); identity-deduplicated, cycle-safe traversal; persistent buffers join `state_dict`/`load_state_dict` and checkpoints, non-persistent buffers are never serialized |
-| `state_dict` / `load_state_dict` | Supported | In-memory, parameters and persistent buffers, atomic validate-then-commit with rollback (buffer identity preserved on restore) |
+| Buffers | Supported | v3.15: `register_buffer(name, tensor, persistent=True)`, `buffers()` / `named_buffers()`; NativeTensor-backed non-`Parameter` persistent state (infrastructure for future BatchNorm/RNG state — no algorithm yet); identity-deduplicated, cycle-safe traversal; persistent buffers join `state_dict`/`load_state_dict` and checkpoints, non-persistent buffers are never serialized. Reported as `persistent_buffers` in `STATE_SUPPORT` since Phase F milestone **F1** — reconciliation of an under-reported capability, not a new feature |
+| `state_dict` / `load_state_dict` | Supported | In-memory, parameters and persistent buffers, atomic validate-then-commit with rollback (buffer identity preserved on restore). Since **F1** the replacement half runs through the private `_native_state.replace_native_state` transaction, shared with the future normalization running-statistics update; `load_state_dict`'s public signature, validation order, error messages, key reporting, version semantics, and atomicity are unchanged |
+| Atomic native state transaction | Supported (private) | **F1** (Phase F): `tensorforge.experimental._native_state.replace_native_state` — identity-preserving, exception-safe replacement of one or more registered `NativeParameter`/persistent-buffer cores as one all-or-nothing transaction. Validate → stage → commit, with the commit boundary at "every core swap **and** every parameter-version increment succeeded"; complete rollback of cores and versions before it; exactly-once closing of replaced and abandoned cores after it; destinations deduplicated by object identity (an aliased parameter is swapped, versioned, and released once; conflicting values for one destination are rejected before mutation). **Deliberately private** — absent from `tensorforge.experimental.__all__`, and *not* a public in-place mutation API for `NativeTensor` (`NativeParameter.copy_value_` remains the only public controlled-mutation primitive) |
 | `NativeLinear` | Supported | Seeded deterministic init; strictly 2-D input |
 | `NativeReLU` | Supported | Parameter-free activation module |
 | `NativeFlatten` | Supported | D1 (Phase D): parameter-free, buffer-free batch-preserving flatten `(N, …) → (N, features)`, Python-composed from the existing `reshape`/`contiguous_copy` ops and their autograd — no new kernel, no custom backward; returns an independent owning result so it composes safely in `NativeSequential` |
@@ -490,7 +495,7 @@ buffer identity; and state/checkpoint integration with the format
 | Milestone | Deliverable | Status |
 |---|---|---|
 | F0 | Phase-F architecture contract and repository reconciliation | **Complete** (design and documentation only — no numerical behavior) |
-| F1 | Atomic native-buffer state transactions (extracted from the existing `load_state_dict` staging/commit/rollback) and the `STATE_SUPPORT` persistent-buffer correction | Planned — not started |
+| F1 | Atomic native-buffer state transactions: the private `_native_state.replace_native_state` primitive extracted and generalized from the existing `load_state_dict` staging/commit/rollback — validate-then-stage-then-commit with an explicit commit boundary (every core swap **and** every parameter-version increment), complete rollback of cores *and* versions before it, exactly-once closing of replaced and abandoned cores, identity-preserving swaps, and destination deduplication by object identity (conflicting values for one destination rejected before mutation). `NativeModule.load_state_dict` now delegates to it with its public signature, validation order, error messages, key reporting, version semantics, and atomicity unchanged. Reusable by F3/F4 to commit `running_mean` and `running_var` together **without** a state dictionary. Plus the `STATE_SUPPORT` persistent-buffer correction. Adds **no** normalization mathematics, module, kernel, ABI symbol, tensor operation, or export | **Complete** (state management and capability reporting only) |
 | F2 | `NativeLayerNorm` | Planned — not started |
 | F3 | `NativeBatchNorm1d` | Planned — not started |
 | F4 | `NativeBatchNorm2d` | Planned — not started |
