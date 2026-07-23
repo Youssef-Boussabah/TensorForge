@@ -144,10 +144,12 @@ def test_advertised_autograd_ops_exist():
 
 def test_phase_e_boundary_is_reported_honestly():
     """Phase E ships one milestone at a time. E1 shipped the exponential,
-    E2 the logarithm, E3 the softmax, and E4 the log-softmax; the
-    registries must show exactly that — each implemented at the Core and
-    autograd layers, every later Phase-E capability still unsupported,
-    and nothing in the wrong inventory."""
+    E2 the logarithm, E3 the softmax, E4 the log-softmax, and E5 the
+    cross-entropy **Core** layer; the registries must show exactly that —
+    each transform implemented at the Core and autograd layers,
+    cross-entropy implemented at the Core layer *only*, every later
+    Phase-E capability still unsupported, and nothing in the wrong
+    inventory."""
     info = cpp.backend_info()
     for shipped in ("exp", "log", "softmax", "log_softmax"):
         assert shipped in info["tensor_core_ops"], shipped
@@ -161,9 +163,21 @@ def test_phase_e_boundary_is_reported_honestly():
     # log-sum-exp kernel — design §4.4 forbids composing it from the
     # shipped "log" and "softmax", and it did not become a module.)
     assert "log_softmax" not in info["native_modules"]
-    # E5-E7 are still genuinely absent from every implemented inventory.
-    for absent in ("cross_entropy",
-                   "NativeCrossEntropyLoss", "native_accuracy"):
+    # E5 shipped the layer-qualified cross-entropy Core wrappers — and
+    # only those. The differentiable operation is E6 and its absence is
+    # reported the way this registry always reports an unimplemented
+    # operation: by being absent from autograd_ops.
+    for core_op in ("cross_entropy_forward", "cross_entropy_backward"):
+        assert core_op in info["tensor_core_ops"], core_op
+        assert core_op not in info["autograd_ops"], core_op
+        assert core_op not in info["unsupported"], core_op
+        assert core_op not in info["native_modules"], core_op
+        assert core_op not in info["native_losses"], core_op
+        assert core_op not in info["raw_kernels"], core_op
+    assert "cross_entropy" not in info["autograd_ops"]
+    assert "cross_entropy" not in info["tensor_core_ops"]
+    # E6-E7 are still genuinely absent from every implemented inventory.
+    for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in info["unsupported"], absent
         assert absent not in info["tensor_core_ops"], absent
         assert absent not in info["autograd_ops"], absent

@@ -305,4 +305,29 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME log_softmax COMMAND test_log_softmax)
+
+  # Fused cross-entropy (Phase E, E5): links the same classification
+  # source unit plus error.cpp. Like the softmax and log-softmax targets
+  # it drives *both* layers — the internal
+  # tf::cross_entropy_forward_contiguous /
+  # tf::cross_entropy_backward_contiguous kernels for the fused
+  # maximum-shift / log-sum-exp numerics and the saved-probability
+  # gradient, and the exported tf_core_cross_entropy_forward /
+  # tf_core_cross_entropy_backward wrappers for the validation matrix,
+  # including the C++-side revalidation of every target index.
+  add_executable(test_cross_entropy
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_cross_entropy.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_cross_entropy PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_cross_entropy PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_cross_entropy PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_cross_entropy PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME cross_entropy COMMAND test_cross_entropy)
 endif()

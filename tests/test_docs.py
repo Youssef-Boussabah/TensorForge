@@ -393,10 +393,11 @@ def test_phase_d_status_is_consistent_across_docs_and_registry():
     # Later phases must not be claimed. These are genuinely absent
     # capabilities, checked against the registry rather than against
     # prose. ("softmax" and "log_softmax" left this list when Phase E
-    # milestones E3 and E4 implemented them; the Phase-E boundary is
-    # tracked separately below.)
+    # milestones E3 and E4 implemented them, and "cross_entropy" when E5
+    # implemented its Core layer; the Phase-E boundary is tracked
+    # separately below.)
     for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout", "cross_entropy"):
+                   "dropout", "NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS and absent not in cpp.NATIVE_MODULES
     assert cpp.SUPPORTED_DTYPES == ("float64",)
@@ -572,8 +573,9 @@ def test_phase_e_design_distinguishes_the_backward_read_contracts():
 def test_phase_e_implemented_surface_matches_the_milestones_reached():
     """Phase E ships one milestone at a time, and the registries are the
     honest record. E1-E4 implemented `exp`, `log`, `softmax`, and
-    `log_softmax`; E5-E7 have not landed, so every later capability must
-    still be absent from every implemented inventory."""
+    `log_softmax`; E5 implemented cross-entropy's **Core layer only**;
+    E6-E7 have not landed, so every later capability must still be absent
+    from every implemented inventory."""
     from tensorforge.backends import cpp
 
     # E1/E2/E3/E4 — implemented, in the two inventories they belong to,
@@ -587,9 +589,26 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
         # No raw NumPy-buffer stable-math kernel exists.
         assert shipped not in cpp.RAW_KERNELS, shipped
 
-    # E5-E7 — still designed only.
-    for name in ("cross_entropy",
-                 "NativeCrossEntropyLoss", "native_accuracy"):
+    # E5 — the layer-qualified Core wrappers, and nothing above them.
+    for core_op in ("cross_entropy_forward", "cross_entropy_backward"):
+        assert core_op in cpp.TENSOR_CORE_OPS, core_op
+        assert core_op not in cpp.AUTOGRAD_OPS, core_op
+        assert core_op not in cpp.UNSUPPORTED, core_op
+        assert core_op not in cpp.RAW_KERNELS, core_op
+        assert core_op not in cpp.NATIVE_MODULES, core_op
+        assert core_op not in cpp.NATIVE_LOSSES, core_op
+        assert hasattr(cpp.NativeTensorCore, core_op), core_op
+
+    # E6 — the differentiable operation is genuinely absent, reported the
+    # way this registry always reports an unimplemented operation.
+    assert "cross_entropy" not in cpp.AUTOGRAD_OPS
+    assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
+    assert not hasattr(cpp.NativeTensorCore, "cross_entropy")
+    from tensorforge.experimental import NativeTensor
+    assert not hasattr(NativeTensor, "cross_entropy")
+
+    # E7 — still designed only.
+    for name in ("NativeCrossEntropyLoss", "native_accuracy"):
         assert name in cpp.UNSUPPORTED, f"{name} left the unsupported boundary"
         assert name not in cpp.TENSOR_CORE_OPS, name
         assert name not in cpp.AUTOGRAD_OPS, name
@@ -604,13 +623,15 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
         assert module not in cpp.NATIVE_MODULES, module
         assert not hasattr(experimental, module), module
     # E3 created the classification source unit locked by E0 §9.1, and E4
-    # extended it; both forwards' kernels/exports are defined there rather
+    # and E5 extended it; every kernel/export is defined there rather
     # than in the elementwise unit. Checked by symbol definition, not by
     # banning the word, so cross-referencing comments remain possible.
     classification = (REPO_ROOT / "cpp" / "src" / "classification.cpp")
     assert classification.is_file()
     classification_text = classification.read_text(encoding="utf-8")
-    for export in ("tf_core_softmax_forward", "tf_core_log_softmax_forward"):
+    for export in ("tf_core_softmax_forward", "tf_core_log_softmax_forward",
+                   "tf_core_cross_entropy_forward",
+                   "tf_core_cross_entropy_backward"):
         assert export in classification_text, export
         assert export in cpp._CHECKED_KERNELS, export
     # Neither fused transform has a backward ABI symbol: those gradients
@@ -627,7 +648,7 @@ def test_phase_e_implemented_surface_matches_the_milestones_reached():
 
 
 def test_phase_e_milestone_status_is_reported_honestly():
-    """E0-E4 are marked complete, E5-E10 are not, and Phase E itself is
+    """E0-E5 are marked complete, E6-E10 are not, and Phase E itself is
     never declared complete. Checked semantically against the design
     document's status table and the live registry."""
     from tensorforge.backends import cpp
@@ -635,13 +656,13 @@ def test_phase_e_milestone_status_is_reported_honestly():
     # The ladder's status table is the one place per-milestone status is
     # declared, so the row checks run inside that section only.
     ladder = _design_section("Milestone ladder")
-    for done in ("E0", "E1", "E2", "E3", "E4"):
+    for done in ("E0", "E1", "E2", "E3", "E4", "E5"):
         row = re.search(rf"\|\s*{done}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {done}"
         assert "complete" in row.group(1).lower(), (
             f"the design does not mark {done} complete"
         )
-    for pending in ("E5", "E6", "E7", "E8", "E9", "E10"):
+    for pending in ("E6", "E7", "E8", "E9", "E10"):
         row = re.search(rf"\|\s*{pending}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for {pending}"
         assert "complete" not in row.group(1).lower(), (
@@ -659,12 +680,17 @@ def test_phase_e_milestone_status_is_reported_honestly():
     assert re.search(r"Phase E[^.]{0,120}in progress", matrix, re.I), (
         "the support matrix no longer marks Phase E in progress"
     )
-    # The registry agrees: exactly the E1-E4 capabilities are live and
-    # the next milestone's capability is not.
+    # The registry agrees: exactly the E1-E4 capabilities are live as
+    # differentiable operations, E5's Core wrappers are live at the Core
+    # layer only, and the next milestone's capability is not live at all.
     for shipped in ("exp", "log", "softmax", "log_softmax"):
         assert shipped in cpp.AUTOGRAD_OPS, shipped
         assert shipped not in cpp.UNSUPPORTED, shipped
-    assert "cross_entropy" in cpp.UNSUPPORTED
+    assert "cross_entropy_forward" in cpp.TENSOR_CORE_OPS
+    assert "cross_entropy_backward" in cpp.TENSOR_CORE_OPS
+    assert "cross_entropy" not in cpp.AUTOGRAD_OPS
+    assert "NativeCrossEntropyLoss" in cpp.UNSUPPORTED
+    assert "native_accuracy" in cpp.UNSUPPORTED
 
 
 def test_docs_present_the_shipped_stable_math():
@@ -793,6 +819,82 @@ def test_docs_present_the_shipped_log_softmax():
 
     assert not hasattr(experimental, "NativeLogSoftmax")
     assert "NativeLogSoftmax" not in cpp.NATIVE_MODULES
+
+
+def test_docs_present_the_shipped_cross_entropy_core():
+    """E5's load-bearing decisions must stay documented: rank-2 logits
+    with a fixed class axis, strict copied int64 targets (bool and
+    floating-point rejected) that caller mutation cannot reach,
+    mean/sum-only reduction, the fused stable forward with its private
+    saved probabilities, a backward that never rereads the logits, the
+    contiguous-only ABI with Core-level Policy B — and, above all, that
+    E5 is **Core-only**."""
+    from tensorforge.backends import cpp
+
+    section = _design_section("NativeTensor.cross_entropy(")
+    lowered = section.lower()
+    assert "E5" in section and "implemented" in lowered, (
+        "the design does not record the cross-entropy Core layer as shipped"
+    )
+    # Core-only: the autograd operation is explicitly still absent.
+    assert re.search(r"core[- ]only", lowered), (
+        "the design no longer states that E5 is Core-only"
+    )
+    assert re.search(r"nativetensor\.cross_entropy[^.]{0,60}(does not exist|"
+                     r"not exist)", lowered), (
+        "the design no longer states that NativeTensor.cross_entropy is absent"
+    )
+    # Shape and axis contract.
+    assert "rank" in lowered and "(batch_size, num_classes)" in section
+    assert "no `axis` argument" in section or "no axis argument" in lowered
+    # Fused stable forward — and explicitly not the naive form.
+    assert "fused" in lowered
+    assert "log-sum-exp" in lowered or "maximum-shift" in lowered
+    assert re.search(r"not\*{0,2}\s*`?-log\(p", lowered) or (
+        "−log(p[target])" in section) or ("-log(p[target])" in section), (
+        "the design no longer rejects -log(probability[target])"
+    )
+    # Private saved probabilities.
+    assert "saved probabilities" in lowered
+    assert "private" in lowered
+    # Backward reads the saved probabilities and never the logits.
+    assert re.search(r"never rereads? the logits", lowered), (
+        "the design no longer states that the backward never rereads logits"
+    )
+    # Strict int64 targets, copied, with bool/float rejected.
+    assert "int64" in lowered
+    assert "bool" in lowered and "floating-point" in lowered
+    assert re.search(r"caller mutation|mutation.{0,40}cannot", lowered), (
+        "the design no longer states target-copy mutation immunity"
+    )
+    # Reduction contract.
+    assert '"mean"' in section and '"sum"' in section
+    # Contiguous-only ABI + Policy-B copy at the Core layer.
+    assert "contiguous-only" in lowered
+    assert "policy-b" in lowered or "policy b" in lowered
+    # Both exports exist and are guarded.
+    for export in ("tf_core_cross_entropy_forward",
+                   "tf_core_cross_entropy_backward"):
+        assert export in section, export
+        assert export in cpp._CHECKED_KERNELS, export
+    # No tensor-data NumPy round-trip on this path.
+    design = _status_text(PHASE_E_DESIGN)
+    assert re.search(r"no tensor-data NumPy round-trip", design, re.I)
+    # The saved-probability lifetime section records that no graph
+    # ownership exists yet.
+    lifetime = _design_section("Saved-probability lifetime")
+    assert re.search(r"no graph exists yet|graph_resources entry", lifetime), (
+        "the design no longer states that E5 adds no graph resource"
+    )
+    # The support matrix agrees, and does not advertise a differentiable
+    # cross-entropy operation.
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"E5[^.]{0,200}(Core|core)", matrix)
+    assert "cross_entropy_forward" in matrix
+    assert "cross_entropy_backward" in matrix
+    # The registry is the final authority, and it says Core-only.
+    assert "cross_entropy_forward" in cpp.TENSOR_CORE_OPS
+    assert "cross_entropy" not in cpp.AUTOGRAD_OPS
 
 
 def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():

@@ -770,14 +770,17 @@ def test_no_out_of_scope_capability_is_advertised():
     # milestone has shipped either. ("softmax" and "log_softmax" were in
     # this list until Phase E milestones E3 and E4 implemented them —
     # their contracts now live in tests/test_native_softmax.py and
-    # tests/test_native_log_softmax.py; "cross_entropy" remains genuinely
-    # absent.)
+    # tests/test_native_log_softmax.py; "cross_entropy" left it at E5,
+    # which shipped its Core layer as "cross_entropy_forward"/
+    # "cross_entropy_backward" — see tests/test_native_cross_entropy_core.py.)
     for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout", "cross_entropy"):
+                   "dropout", "NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.NATIVE_MODULES
+    # The differentiable cross-entropy operation (E6) is still absent.
+    assert "cross_entropy" not in cpp.AUTOGRAD_OPS
     # Nothing Phase D shipped may still be listed as unsupported.
     for shipped in ("conv2d", "maxpool2d", "flatten", "NativeConv2d",
                     "NativeMaxPool2d", "NativeFlatten"):

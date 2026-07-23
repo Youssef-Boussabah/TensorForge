@@ -160,12 +160,19 @@ def test_native_softmax_registry_placement():
     assert "softmax" not in info["unsupported"]
     # E4 landed "log_softmax" as a distinct fused capability, deliberately
     # not composed from log and softmax (its contract lives in
-    # tests/test_native_log_softmax.py). E5-E7 are still genuinely absent.
+    # tests/test_native_log_softmax.py), and E5 landed the cross-entropy
+    # **Core** layer (tests/test_native_cross_entropy_core.py).
     assert "log_softmax" in cpp.TENSOR_CORE_OPS
     assert "log_softmax" in cpp.AUTOGRAD_OPS
     assert "log_softmax" not in cpp.UNSUPPORTED
-    for absent in ("cross_entropy",
-                   "NativeCrossEntropyLoss", "native_accuracy"):
+    # E5 is Core-only: no differentiable operation (E6), no module or
+    # metric (E7).
+    for core_op in ("cross_entropy_forward", "cross_entropy_backward"):
+        assert core_op in cpp.TENSOR_CORE_OPS, core_op
+        assert core_op not in cpp.AUTOGRAD_OPS, core_op
+    assert "cross_entropy" not in cpp.AUTOGRAD_OPS
+    assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
+    for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.AUTOGRAD_OPS

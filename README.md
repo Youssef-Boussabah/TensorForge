@@ -200,7 +200,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_design.md](docs/native_autograd_design.md) — design for native reverse-mode autograd over NativeTensor (Phase B)
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
-- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — designed, not implemented)
+- [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — in progress: E1–E5 shipped, E6–E10 designed only)
 
 ## Limitations
 
@@ -218,7 +218,9 @@ Honest expectations:
   stable math) is *in progress*: its contract is locked in
   [docs/native_classification_design.md](docs/native_classification_design.md)
   and milestones E1–E4 shipped the differentiable native `exp`, `log`,
-  and the fused stable `softmax` and `log_softmax`, but `cross_entropy`,
+  and the fused stable `softmax` and `log_softmax` while E5 shipped the
+  fused `cross_entropy` **Core** forward/backward, but the
+  differentiable `NativeTensor.cross_entropy`,
   `NativeCrossEntropyLoss`, and `native_accuracy` **do not exist yet**.
   Beyond that: no normalization, no dropout or native RNG, and native
   checkpoints capture no scheduler or random state — see the
@@ -270,9 +272,16 @@ contiguous-only ABI, each with a saved-output backward composed from
 existing Core operations rather than a dedicated kernel. `log_softmax`
 is deliberately **never** `softmax().log()`: it forms no probability and
 performs no division, so it stays accurate where the composed form
-collapses to `-inf`. The rest of the phase (the fused `cross_entropy`,
-`NativeCrossEntropyLoss`, and `native_accuracy`) is designed but **not
-implemented**. More
+collapses to `-inf`. **E5 shipped the fused `cross_entropy` Core
+contract** — a single kernel producing the stable scalar loss *and* the
+private saved probabilities per row (never `-log(p[target])`), a
+backward that reads only those saved probabilities, the copied `int64`
+targets, and a native one-element upstream (**it never rereads the
+logits**), and strict targets that reject `bool` and floating-point
+labels and are copied so caller mutation cannot reach the kernel. E5 is
+**Core-only**: `NativeTensor.cross_entropy` and its graph-owned saved
+state (E6), plus `NativeCrossEntropyLoss` and `native_accuracy` (E7),
+are designed but **not implemented**. More
 activations/math, normalization, RNG/dropout, and CPU optimization sit
 beyond it, and CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and

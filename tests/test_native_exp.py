@@ -99,12 +99,19 @@ def test_native_exp_registry_placement():
     info = cpp.backend_info()
     assert "exp" in info["tensor_core_ops"] and "exp" in info["autograd_ops"]
     assert "exp" not in info["unsupported"]
-    # E2/E3/E4 landed `log`, `softmax`, and `log_softmax` beside it
-    # (their contracts live in tests/test_native_log.py,
-    # tests/test_native_softmax.py, and tests/test_native_log_softmax.py);
-    # everything after E4 is still absent.
-    for absent in ("cross_entropy",
-                   "NativeCrossEntropyLoss", "native_accuracy"):
+    # E2/E3/E4 landed `log`, `softmax`, and `log_softmax` beside it, and
+    # E5 landed the cross-entropy **Core** layer (their contracts live in
+    # tests/test_native_log.py, tests/test_native_softmax.py,
+    # tests/test_native_log_softmax.py, and
+    # tests/test_native_cross_entropy_core.py). E5 is Core-only: the
+    # differentiable operation (E6) and the loss module and metric (E7)
+    # are still absent.
+    for core_op in ("cross_entropy_forward", "cross_entropy_backward"):
+        assert core_op in cpp.TENSOR_CORE_OPS, core_op
+        assert core_op not in cpp.AUTOGRAD_OPS, core_op
+    assert "cross_entropy" not in cpp.AUTOGRAD_OPS
+    assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
+    for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.AUTOGRAD_OPS

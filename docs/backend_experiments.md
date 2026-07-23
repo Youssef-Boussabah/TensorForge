@@ -30,9 +30,13 @@ CNN training proofs. The current phase — **Phase E, Native
 Classification and Stable Math** — has its architecture contract locked
 in [native_classification_design.md](native_classification_design.md)
 (E0) and is **in progress**: milestones E1–E4 shipped the differentiable
-native `exp`, `log`, `softmax`, and `log_softmax`, while
-`cross_entropy`, `NativeCrossEntropyLoss`, and `native_accuracy` do not
-exist yet.
+native `exp`, `log`, `softmax`, and `log_softmax`, and E5 shipped the
+fused `cross_entropy` **Core** contract
+(`NativeTensorCore.cross_entropy_forward` / `cross_entropy_backward`
+over two guarded, contiguous-only exports, with strict copied `int64`
+targets and private saved probabilities). E5 is **Core-only**: the
+differentiable `NativeTensor.cross_entropy` (E6),
+`NativeCrossEntropyLoss`, and `native_accuracy` (E7) do not exist yet.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 

@@ -112,6 +112,19 @@ TENSOR_CORE_OPS = (
     # stays internal state — never a public tensor, op, or dtype.
     "maxpool2d_forward",       # D8
     "maxpool2d_backward",      # D9
+    # Phase E fused cross-entropy at the Core layer (E5) — the
+    # layer-qualified, **graph-unaware** forward and backward wrappers over
+    # the exported tf_core_cross_entropy_* kernels, exactly the naming the
+    # E0 contract locks (design §11) and the conv2d/maxpool2d precedent.
+    # The forward returns a scalar loss, the private saved probabilities,
+    # the independently copied int64 targets, and the normalized reduction;
+    # the backward turns those saved probabilities (never the logits) plus
+    # a native one-element upstream into a fresh gradient. There is
+    # deliberately **no** "cross_entropy" entry here and none in
+    # AUTOGRAD_OPS: the differentiable NativeTensor.cross_entropy operation
+    # is E6 and does not exist yet.
+    "cross_entropy_forward",   # E5
+    "cross_entropy_backward",  # E5
 )
 
 # Operations the NativeTensor autograd layer (Phase B) differentiates.
@@ -197,11 +210,22 @@ STATE_SUPPORT = (
 # implements it removes it. Milestones E1-E4 implemented the exponential,
 # the logarithm, the softmax, and the log-softmax, so "exp", "log",
 # "softmax", and "log_softmax" left this tuple for TENSOR_CORE_OPS and
-# AUTOGRAD_OPS; the rest of Phase E (E5-E7) is still genuinely absent.
-# "log_softmax" shipped as its own fused log-sum-exp kernel, deliberately
-# NOT composed from the shipped "log" and "softmax" (design §4.4).
+# AUTOGRAD_OPS. "log_softmax" shipped as its own fused log-sum-exp kernel,
+# deliberately NOT composed from the shipped "log" and "softmax"
+# (design §4.4).
+#
+# Cross-entropy left this tuple at **E5**, which shipped its Core layer:
+# the fused forward and the saved-probability backward as
+# "cross_entropy_forward"/"cross_entropy_backward" in TENSOR_CORE_OPS.
+# That is the layer-specific inventory contract (design §11) the Conv2d
+# and MaxPool2d milestones already followed — a Core wrapper and a
+# differentiable operation are different capabilities with different
+# names. **E5 is Core-only**: there is no NativeTensor.cross_entropy, no
+# autograd node, and no graph-owned saved state yet, and that absence is
+# reported the way this registry always reports it — by "cross_entropy"
+# being absent from AUTOGRAD_OPS (E6 adds it). The loss module and the
+# metric (E7) have not started and stay listed below.
 UNSUPPORTED = (
-    "cross_entropy",
     "NativeCrossEntropyLoss", "native_accuracy",
     "batchnorm", "layernorm", "dropout",
     "float32", "cuda", "amp",
@@ -218,6 +242,8 @@ SUPPORTED_DEVICES = ("cpu",)
 
 # Largest element count the native int64 storage/ABI arithmetic addresses.
 _INT64_MAX = 2 ** 63 - 1
+# ...and the low end, for the class labels that cross as int64 metadata.
+_INT64_MIN = -(2 ** 63)
 # IEEE float64 represents every integer in [-(2**53), 2**53] exactly, so a
 # flat plane offset stored as a float64 (the internal MaxPool2d winner
 # buffer, docs/native_cnn_design.md §12) is exact iff the plane holds at
@@ -473,6 +499,38 @@ def _load_library():
         ctypes.c_void_p,                   # destination handle
     ] + [ctypes.c_int64] * 3
     library.tf_core_log_softmax_forward.restype = None
+    # Fused cross-entropy forward (Phase E, E5): the exported wrapper over
+    # the fused maximum-shift / log-sum-exp kernel in the same translation
+    # unit. **Contiguous storage only** for the tensor data (Policy-B
+    # copy-then-compute happens at the Core layer), with only the logits
+    # carrying an offset — the scalar loss and the saved probabilities are
+    # both caller-allocated at offset 0. The targets are the one
+    # non-tensor operand: a contiguous host int64 array plus its length,
+    # marshalled exactly like the shape/stride metadata arrays because
+    # that is what they are — host metadata, never native tensor data (the
+    # runtime has no integer dtype). The three trailing int64s are
+    # batch_size, num_classes, and the reduction code (0 = mean,
+    # 1 = sum).
+    library.tf_core_cross_entropy_forward.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # logits handle, offset
+        i64_array, ctypes.c_int64,         # targets, target_count
+        ctypes.c_void_p,                   # loss handle (scalar)
+        ctypes.c_void_p,                   # probabilities handle
+    ] + [ctypes.c_int64] * 3
+    library.tf_core_cross_entropy_forward.restype = None
+    # Fused cross-entropy backward (E5): reads the **saved probabilities**,
+    # the copied targets, and one upstream value; the logits are neither
+    # passed nor reachable, which is the structural half of "backward
+    # never rereads the logits". Both the probabilities and the upstream
+    # carry an offset (the upstream is a single element wherever it sits);
+    # the gradient is caller-allocated at offset 0.
+    library.tf_core_cross_entropy_backward.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # probabilities handle, offset
+        i64_array, ctypes.c_int64,         # targets, target_count
+        ctypes.c_void_p, ctypes.c_int64,   # upstream handle, offset
+        ctypes.c_void_p,                   # grad_logits handle
+    ] + [ctypes.c_int64] * 3
+    library.tf_core_cross_entropy_backward.restype = None
 
     _configure_error_contract(library)
     return library
@@ -540,6 +598,13 @@ _CHECKED_KERNELS = (
     # existing Core ops.
     "tf_core_softmax_forward",
     "tf_core_log_softmax_forward",
+    # Phase E, E5: the fused cross-entropy forward and backward. Both
+    # self-validate every trust-boundary argument — including the range of
+    # every target index they dereference, which Python is never trusted
+    # for at this boundary — and write nothing to any destination when
+    # they reject. IEEE NaN/inf results stay values, not errors.
+    "tf_core_cross_entropy_forward",
+    "tf_core_cross_entropy_backward",
 )
 
 
@@ -1314,6 +1379,245 @@ class NativeTensorCore:
             # call succeeded or raised — the caller's input is untouched.
             for temp in temporaries:
                 temp.close()
+
+    # -- fused cross-entropy (Phase E, E5: the graph-unaware Core
+    #    contract E6 will build its autograd node on) --------------------
+
+    def cross_entropy_forward(self, targets, reduction="mean"):
+        """Fused multi-class cross-entropy over this tensor's logits.
+
+        ``self`` is the ``(batch_size, num_classes)`` logits block — rank
+        exactly 2, float64/cpu, open. The class axis is fixed at axis 1;
+        there is deliberately no ``axis`` argument, no broadcasting, and
+        no implicit reshape, so rank-1, rank-3, and flattened logits are
+        rejected by shape.
+
+        ``targets`` is a **one-dimensional sequence of integer class
+        labels**, one per row — a list or tuple of Python ints, or a 1-D
+        NumPy array of signed or unsigned integer dtype. Targets are not
+        native tensors (the runtime has no integer dtype, design §6), and
+        validation is **strict**: ``bool`` is rejected, floating-point
+        values are rejected *including* integral ones like ``1.0``
+        (nothing is silently truncated), and so are complex values,
+        strings, bytes, nested/ragged sequences, rank-2 arrays, scalars,
+        object arrays holding non-integers, values outside the int64
+        range, and any label outside ``[0, num_classes)``. Type problems
+        raise TypeError; shape, length, and range problems raise
+        ValueError naming the offending index and value.
+
+        The accepted labels are **copied into an independently owned,
+        contiguous, read-only ``int64`` array** before anything is
+        allocated — even when the caller already passed a contiguous
+        ``int64`` array. Mutating the caller's list or array afterwards
+        therefore cannot affect this forward or the backward built on it.
+
+        ``reduction`` is exactly ``"mean"`` or ``"sum"``, validated by
+        exact string match (no case or whitespace normalization, no
+        coercion, no ``"none"``) — the ``NativeMSELoss`` precedent — and
+        mapped once here to the small integer code the ABI carries.
+        ``"sum"`` is the total of the per-example negative log
+        likelihoods; ``"mean"`` divides that total once by
+        ``batch_size`` (never by ``num_classes``).
+
+        Returns a private ``_CrossEntropyForwardResult`` carrying:
+
+        * ``loss`` — a fresh owning **scalar** core (shape ``()``), the
+          repository's scalar convention;
+        * ``probabilities`` — a fresh owning contiguous
+          ``(batch_size, num_classes)`` core holding the softmax the
+          backward needs, aliasing nothing;
+        * ``targets`` — the owned ``int64`` copy;
+        * ``reduction`` — the normalized name.
+
+        The caller owns both cores and releases them with
+        ``result.close()`` (or individually). The forward is **fused**:
+        one kernel computes each row's maximum, its log-sum-exp, its
+        probabilities, and its loss in a single deterministic pass — it
+        never computes ``-log(probabilities[target])``, never forms a
+        public softmax or log-softmax first, clamps nothing, and inserts
+        no epsilon.
+
+        The C ABI is **contiguous-only** for tensor data, so a
+        non-contiguous logits view is materialized into a private
+        contiguous copy (Policy B) closed the moment the native call
+        returns; an already-contiguous view is passed through with its
+        offset. Validation runs entirely before any allocation, and a
+        failure at any later stage closes **every** object this method
+        allocated, returns no partial result, and leaves the caller's
+        logits open and unchanged.
+
+        **Graph-unaware**, like every Core op: no autograd node is built,
+        nothing claims graph ownership, and no version is recorded. The
+        differentiable ``NativeTensor.cross_entropy`` is milestone E6 and
+        does not exist yet."""
+        self._require_open()
+        if self.ndim != 2:
+            raise ValueError(
+                f"cross_entropy_forward requires 2-D (batch_size, "
+                f"num_classes) logits, got shape {self.shape}"
+            )
+        if self.dtype != "float64" or self.device != "cpu":
+            raise ValueError(
+                f"cross_entropy_forward requires float64/cpu logits, got "
+                f"{self.dtype}/{self.device}"
+            )
+        batch_size, num_classes = self.shape
+        # Reduction first: it is the cheapest check and the one most
+        # likely to be a caller typo, and normalizing it here keeps the
+        # string off the ABI entirely.
+        reduction_name, reduction_code = _normalize_reduction(
+            reduction, "cross_entropy_forward"
+        )
+        # Then the targets — validated and copied before a single native
+        # allocation, so a rejected call allocates nothing at all.
+        target_copy = _prepare_class_targets(
+            targets, batch_size, num_classes, "cross_entropy_forward"
+        )
+        # Python ints are arbitrary precision, so this check cannot itself
+        # overflow; the C ABI re-proves the product in int64 anyway.
+        if batch_size * num_classes > _INT64_MAX:
+            raise ValueError(
+                f"cross_entropy_forward logits element count "
+                f"{batch_size * num_classes} exceeds the int64 range the "
+                f"native runtime addresses"
+            )
+
+        temporaries = []
+        loss = None
+        probabilities = None
+        try:
+            logits = (
+                self if self.contiguous else self._contiguous_temp(temporaries)
+            )
+            # Deterministic allocation order: the scalar loss, then the
+            # probability block. If the second allocation fails the first
+            # is closed below, so a failed forward leaves nothing
+            # half-built and returns no result object.
+            loss = NativeTensorCore.zeros(
+                (), dtype=self.dtype, device=self.device
+            )
+            probabilities = NativeTensorCore.zeros(
+                (batch_size, num_classes), dtype=self.dtype, device=self.device
+            )
+            self._storage._lib.tf_core_cross_entropy_forward(
+                logits._storage._require_open(), logits.offset,
+                target_copy, int(target_copy.size),
+                loss._storage._require_open(),
+                probabilities._storage._require_open(),
+                batch_size, num_classes, reduction_code,
+            )
+            return _CrossEntropyForwardResult(
+                loss, probabilities, target_copy, reduction_name
+            )
+        except BaseException:
+            # Close whichever outputs were successfully allocated — never
+            # rely on garbage collection for native memory, and never let
+            # a half-built output escape.
+            for allocated in (probabilities, loss):
+                if allocated is not None:
+                    allocated.close()
+            raise
+        finally:
+            # Close the private contiguous copy (if any) exactly once,
+            # whether the call succeeded or raised.
+            for temp in temporaries:
+                temp.close()
+
+    def cross_entropy_backward(self, targets, upstream, reduction="mean"):
+        """Gradient of the fused cross-entropy w.r.t. its logits (E5).
+
+        ``self`` is the **saved probability core** the forward produced —
+        rank 2, contiguous, float64/cpu, open. ``targets`` is that
+        forward's owned ``int64`` copy (the internal trusted-copy
+        contract: an independently owned, C-contiguous 1-D ``int64``
+        NumPy array, re-checked here for dtype, layout, length, and class
+        range before the ABI is entered, and re-checked *again* in C++
+        for every index it dereferences). ``upstream`` is an open
+        **one-element** NativeTensorCore — the scalar gradient flowing
+        into the loss, whatever its logical shape (``()``, ``(1,)``,
+        ``(1, 1)``, or a one-element view at a nonzero offset): its
+        storage handle and offset are passed straight to the kernel, so
+        the value is **never extracted through NumPy**. ``reduction`` is
+        the forward's normalized ``"mean"`` or ``"sum"``.
+
+        Returns a fresh **owning** row-major contiguous
+        ``(batch_size, num_classes)`` core:
+
+            grad[n, c] = upstream * (p[n, c] - [c == target_n]) / N
+
+        with the ``/ N`` only for ``"mean"``. The logits are neither
+        accepted nor reachable here — **backward never rereads them** and
+        never recomputes a softmax, a log-softmax, or the forward loss.
+        Neither the probabilities, the targets, nor the upstream is
+        mutated, and a failure closes the freshly allocated gradient
+        before propagating.
+
+        Graph-unaware: this is a numerical helper, not gradient
+        accumulation. The E6 autograd node will call it from its single
+        input-gradient callback."""
+        self._require_open()
+        if self.ndim != 2:
+            raise ValueError(
+                f"cross_entropy_backward requires a 2-D (batch_size, "
+                f"num_classes) probability core, got shape {self.shape}"
+            )
+        if not self.contiguous:
+            raise ValueError(
+                f"cross_entropy_backward requires contiguous saved "
+                f"probabilities, got strides {self.strides} for shape "
+                f"{self.shape}"
+            )
+        if self.dtype != "float64" or self.device != "cpu":
+            raise ValueError(
+                f"cross_entropy_backward requires a float64/cpu probability "
+                f"core, got {self.dtype}/{self.device}"
+            )
+        batch_size, num_classes = self.shape
+        # Only the ABI code is needed here; the name is the forward's.
+        _, reduction_code = _normalize_reduction(
+            reduction, "cross_entropy_backward"
+        )
+        target_copy = _require_target_copy(
+            targets, batch_size, num_classes, "cross_entropy_backward"
+        )
+        if not isinstance(upstream, NativeTensorCore):
+            raise TypeError(
+                f"cross_entropy_backward requires a NativeTensorCore "
+                f"upstream gradient, got {type(upstream).__name__}"
+            )
+        upstream._require_open()
+        self._require_matching_metadata(upstream, "cross_entropy_backward")
+        if upstream.numel != 1:
+            raise ValueError(
+                f"cross_entropy_backward requires a one-element upstream "
+                f"gradient (the loss is a scalar), got shape "
+                f"{upstream.shape} with {upstream.numel} elements"
+            )
+        if batch_size * num_classes > _INT64_MAX:
+            raise ValueError(
+                f"cross_entropy_backward gradient element count "
+                f"{batch_size * num_classes} exceeds the int64 range the "
+                f"native runtime addresses"
+            )
+
+        out = None
+        try:
+            out = NativeTensorCore.zeros(
+                (batch_size, num_classes), dtype=self.dtype, device=self.device
+            )
+            self._storage._lib.tf_core_cross_entropy_backward(
+                self._storage._require_open(), self.offset,
+                target_copy, int(target_copy.size),
+                upstream._storage._require_open(), upstream.offset,
+                out._storage._require_open(),
+                batch_size, num_classes, reduction_code,
+            )
+            return out
+        except BaseException:
+            # A failed backward returns no half-built gradient.
+            if out is not None:
+                out.close()
+            raise
 
     def relu_backward(self, upstream):
         """The gradient of ``relu`` at this tensor's forward value:
@@ -2281,6 +2585,232 @@ class NativeTensorCore:
         return (
             f"NativeTensorCore(shape={self.shape}, strides={self.strides}, "
             f"contiguous={self.contiguous}{state})"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase-E classification Core plumbing (E5)
+#
+# The reduction mapping, the strict target contract (design §6), and the
+# small result type NativeTensorCore.cross_entropy_forward returns. All
+# private: none of this is public API, and none of it knows about the
+# autograd graph — E6 consumes it, it does not consume E6.
+# ---------------------------------------------------------------------------
+
+# The reduction codes the C ABI carries (design §9.2). A small integer,
+# never a string: the ABI stays free of allocation and encoding concerns,
+# and both sides validate the code. These literals are mirrored by
+# tf::kCrossEntropyReduction{Mean,Sum} in
+# cpp/include/tf_classification_internal.h.
+_REDUCTION_CODES = {"mean": 0, "sum": 1}
+
+
+def _normalize_reduction(reduction, op_name):
+    """Validate a cross-entropy reduction and map it to its ABI code.
+
+    Exactly ``"mean"`` and ``"sum"``, by exact string match — no case or
+    whitespace normalization, no coercion, and no ``"none"`` (both
+    supported reductions produce a scalar, which is what a backward seed
+    needs). The ``NativeMSELoss`` precedent, including its error types: a
+    non-string (``None``, a bool, an int, a float, a list) raises
+    TypeError; an unrecognized string raises ValueError. Returns the
+    ``(name, code)`` pair. Pure Python — never touches the library, so it
+    can run before anything is allocated."""
+    if not isinstance(reduction, str):
+        raise TypeError(
+            f"{op_name} reduction must be a str, got "
+            f"{type(reduction).__name__}"
+        )
+    if reduction not in _REDUCTION_CODES:
+        # Exact match only: "Mean", "SUM", " mean ", "none", "" all land
+        # here — nothing is normalized or coerced.
+        raise ValueError(
+            f"{op_name} reduction must be one of {list(_REDUCTION_CODES)}, "
+            f"got {reduction!r}"
+        )
+    return reduction, _REDUCTION_CODES[reduction]
+
+
+def _prepare_class_targets(targets, batch_size, num_classes, op_name):
+    """Validate class labels and copy them into owned int64 metadata.
+
+    The strict half of the Phase-E target contract (design §6). Targets
+    are **not** native tensors — the runtime has no integer dtype — so
+    they arrive as ordinary Python or NumPy integer data and leave as an
+    independently owned, C-contiguous, read-only ``np.int64`` array of
+    length ``batch_size``.
+
+    Validation happens **before** the copy and before any native
+    allocation, and it is deliberately stricter than
+    ``np.asarray(targets, dtype=np.int64)``, which would silently
+    truncate ``1.9`` and reinterpret ``True``:
+
+    1. a ``str``/``bytes``/``bytearray`` is not a label sequence, even
+       though iterating one yields ints (TypeError);
+    2. a NumPy array must have an integer dtype — ``bool_``, floating,
+       complex, object, and string dtypes are all rejected (TypeError) —
+       and must be one-dimensional (ValueError naming the shape);
+    3. any other object goes through the existing ``_as_int_tuple``
+       contract: it must be a sequence whose every element is an actual
+       integer scalar and not a ``bool`` (TypeError). Nested and ragged
+       sequences fail here because their elements are not integers;
+    4. the length must equal ``batch_size`` exactly (ValueError);
+    5. every value must be representable as int64 (ValueError) and lie in
+       ``[0, num_classes)`` (ValueError naming the index and the value).
+
+    Only then is the copy taken. It is always a copy, even when the
+    caller passed an already contiguous ``int64`` array, so no view into
+    caller memory is ever retained and post-forward caller mutation
+    cannot reach the kernel. The result is marked read-only so the
+    forward's own saved copy cannot be edited in place either.
+
+    Pure Python + one NumPy array construction: the values are compared
+    as Python ints, never through NumPy arithmetic, so this stays clear
+    of the numerical-NumPy tripwire that guards the native paths."""
+    if isinstance(targets, (str, bytes, bytearray)):
+        raise TypeError(
+            f"{op_name} targets must be a one-dimensional sequence of "
+            f"integer class labels, got {type(targets).__name__}"
+        )
+    if isinstance(targets, np.ndarray):
+        if targets.dtype == np.bool_ or not np.issubdtype(
+            targets.dtype, np.integer
+        ):
+            raise TypeError(
+                f"{op_name} targets must be integer class labels, got a "
+                f"NumPy array of dtype {targets.dtype} (bool and "
+                f"floating-point targets are rejected outright — nothing is "
+                f"truncated or reinterpreted)"
+            )
+        if targets.ndim != 1:
+            raise ValueError(
+                f"{op_name} targets must be one-dimensional, got shape "
+                f"{targets.shape}"
+            )
+        # .tolist() yields exact Python ints for every integer dtype,
+        # including uint64 values above the int64 maximum (caught below).
+        values = targets.tolist()
+    elif isinstance(targets, (int, np.integer, float, np.floating, complex,
+                              bool, np.bool_)):
+        raise TypeError(
+            f"{op_name} targets must be a one-dimensional sequence of "
+            f"{batch_size} integer class labels, got the scalar {targets!r}"
+        )
+    else:
+        # Lists, tuples, and other simple sequences. _as_int_tuple is the
+        # runtime's existing "sequence of real ints" contract: it rejects
+        # non-sequences, bools, floats (1.0 included), complex values,
+        # strings, and nested elements, all as TypeError.
+        values = _as_int_tuple(targets, f"{op_name} targets")
+
+    if len(values) != batch_size:
+        raise ValueError(
+            f"{op_name} needs exactly {batch_size} targets (one per logits "
+            f"row), got {len(values)}"
+        )
+    for index, value in enumerate(values):
+        value = int(value)
+        if value < _INT64_MIN or value > _INT64_MAX:
+            raise ValueError(
+                f"{op_name} target at index {index} is {value}, outside the "
+                f"int64 range the native runtime addresses"
+            )
+        if value < 0 or value >= num_classes:
+            raise ValueError(
+                f"{op_name} target at index {index} is {value}, outside the "
+                f"valid class range [0, {num_classes})"
+            )
+    copy = np.array(values, dtype=np.int64)
+    copy.flags.writeable = False
+    return copy
+
+
+def _require_target_copy(targets, batch_size, num_classes, op_name):
+    """Re-validate an already prepared int64 target copy (E5 backward).
+
+    The backward consumes the copy its own forward produced, so this is
+    the *internal* trusted-copy contract rather than the permissive
+    public one: the object must already be a 1-D, C-contiguous
+    ``np.int64`` array. Its length and every class label are still
+    re-checked before the ABI is entered (and C++ re-checks every index
+    it dereferences), because a corrupted or hand-built copy must raise
+    instead of reaching a kernel. Returns the array unchanged — no second
+    copy is taken."""
+    if not isinstance(targets, np.ndarray):
+        raise TypeError(
+            f"{op_name} requires the int64 target copy the forward produced, "
+            f"got {type(targets).__name__}"
+        )
+    if targets.dtype != np.int64:
+        raise TypeError(
+            f"{op_name} requires an int64 target copy, got dtype "
+            f"{targets.dtype}"
+        )
+    if targets.ndim != 1:
+        raise ValueError(
+            f"{op_name} requires a one-dimensional target copy, got shape "
+            f"{targets.shape}"
+        )
+    if not targets.flags["C_CONTIGUOUS"]:
+        raise ValueError(f"{op_name} requires a contiguous target copy")
+    if targets.size != batch_size:
+        raise ValueError(
+            f"{op_name} needs exactly {batch_size} targets (one per "
+            f"probability row), got {targets.size}"
+        )
+    # Plain Python comparison over the labels — no NumPy arithmetic, so
+    # this stays clear of the numerical tripwire guarding the native path.
+    for index, value in enumerate(targets.tolist()):
+        if value < 0 or value >= num_classes:
+            raise ValueError(
+                f"{op_name} target at index {index} is {value}, outside the "
+                f"valid class range [0, {num_classes})"
+            )
+    return targets
+
+
+class _CrossEntropyForwardResult:
+    """What ``NativeTensorCore.cross_entropy_forward`` hands back (E5).
+
+    A deliberately minimal, **graph-unaware** record of one fused forward
+    — not a module, not a graph node, and not a public API object:
+
+    * ``loss`` — a fresh owning scalar core (shape ``()``);
+    * ``probabilities`` — a fresh owning contiguous
+      ``(batch_size, num_classes)`` core, the softmax the backward
+      consumes. It is **private state**: never a public NativeTensor,
+      never a parameter or buffer, never in a ``state_dict()`` or a
+      checkpoint, and never advertised in any capability inventory;
+    * ``targets`` — the independently owned, read-only ``int64`` copy of
+      the class labels;
+    * ``reduction`` — the normalized ``"mean"``/``"sum"`` name.
+
+    Ownership is explicit, as everywhere in the native runtime: the
+    caller owns both cores and releases them with ``close()`` (which
+    closes both and is idempotent, since ``NativeTensorCore.close()`` is)
+    or by closing them individually. There is deliberately **no**
+    ``__del__`` here — nothing is finalized behind the caller's back, and
+    nothing claims graph ownership. E6 will adopt the probabilities as a
+    graph resource; at E5 they are simply the caller's."""
+
+    __slots__ = ("loss", "probabilities", "targets", "reduction")
+
+    def __init__(self, loss, probabilities, targets, reduction):
+        self.loss = loss
+        self.probabilities = probabilities
+        self.targets = targets
+        self.reduction = reduction
+
+    def close(self):
+        """Release both native outputs. Idempotent; safe in any order."""
+        self.probabilities.close()
+        self.loss.close()
+
+    def __repr__(self):
+        return (
+            f"_CrossEntropyForwardResult(reduction={self.reduction!r}, "
+            f"probabilities={self.probabilities.shape}, "
+            f"targets={self.targets.size})"
         )
 
 

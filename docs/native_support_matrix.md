@@ -37,9 +37,16 @@ contract is locked in
 (milestone **E0**, complete) and milestones **E1**, **E2**, **E3**, and
 **E4** have shipped the differentiable native `exp`, `log`, `softmax`,
 and `log_softmax` — the phase's two backward archetypes (saved-output vs
-live-input) plus both of its fused probability transforms.
-**Everything else in Phase E (E5–E10) is still designed-only** —
-`cross_entropy`, `NativeCrossEntropyLoss`, and `native_accuracy` do not
+live-input) plus both of its fused probability transforms — while
+milestone **E5** has shipped the fused `cross_entropy` **Core contract**
+(`NativeTensorCore.cross_entropy_forward` /
+`cross_entropy_backward` over the guarded
+`tf_core_cross_entropy_forward` / `tf_core_cross_entropy_backward`
+exports). **E5 is Core-only**: there is still **no
+`NativeTensor.cross_entropy`** operation, no autograd node, and no
+graph-owned saved state — that is E6.
+**Everything else in Phase E (E6–E10) is still designed-only** —
+`NativeCrossEntropyLoss` and `native_accuracy` do not
 exist in code and stay listed as unsupported below. See also
 [roadmap.md](roadmap.md). Everything Phase D
 deliberately excluded
@@ -89,6 +96,41 @@ differentiable *operation* and an implemented *module* are different
 things and are tracked separately: operations here, the modules that
 compose them in the training-stack table below. For Conv2d and MaxPool2d
 both halves shipped in Phase D.
+
+**`cross_entropy` is deliberately absent from this table.** Phase E
+milestone **E5** shipped its **`NativeTensorCore` layer only** —
+`cross_entropy_forward` and `cross_entropy_backward`, listed among the
+Core operations, not here. They are graph-unaware runtime helpers:
+
+- **Forward** takes rank-2 `(batch_size, num_classes)` logits (the class
+  axis is fixed at axis 1 — there is no `axis` argument) plus a
+  one-dimensional sequence of integer class labels and a `"mean"` or
+  `"sum"` reduction, and returns a **scalar** loss core, the **private
+  saved probabilities**, the copied labels, and the normalized
+  reduction. It is one **fused** kernel — row maximum, log-sum-exp,
+  probabilities, and loss in a single pass — and is never
+  `-log(probability[target])`, never `softmax().log()`-then-index, and
+  never `log_softmax()`-then-gather.
+- **Targets** are not native tensors (the runtime has no integer dtype):
+  they are copied into an independently owned, contiguous, read-only
+  `int64` array before anything is allocated. `bool` and floating-point
+  labels are rejected outright — including integral ones like `1.0` —
+  and mutating the caller's list or array afterwards cannot affect the
+  forward or the backward.
+- **Backward** consumes only the saved probabilities, the copied labels,
+  the reduction, and a **native one-element upstream core** (read
+  straight from its storage, never through NumPy), and produces
+  `upstream · (p − onehot) / N`. **It never rereads the logits** — they
+  are not even an argument.
+- Both C ABI exports are **contiguous-only** for tensor data (Policy-B
+  copy-then-compute handles strided logits at the Core layer), validate
+  every argument including every target index before writing anything,
+  and leave every destination byte-for-byte unchanged when they reject.
+
+The differentiable `NativeTensor.cross_entropy(targets,
+reduction="mean")` operation, its graph-owned saved probabilities, the
+`NativeCrossEntropyLoss` module, and `native_accuracy` are **E6 and E7 —
+not implemented**.
 
 ## Autograd engine
 
@@ -153,14 +195,17 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
-- native classification **losses and metrics**: `cross_entropy`,
-  `NativeCrossEntropyLoss`, or `native_accuracy` — none exists, so the
-  native line still trains regression through `NativeMSELoss`. The whole
-  surface is contracted for Phase E in
+- native classification **losses and metrics**: the differentiable
+  `NativeTensor.cross_entropy` operation, `NativeCrossEntropyLoss`, and
+  `native_accuracy` — none exists, so the native line still trains
+  regression through `NativeMSELoss`. The whole surface is contracted
+  for Phase E in
   [native_classification_design.md](native_classification_design.md);
   a locked contract is not an implementation. Phase E has begun — E1–E4
-  shipped `exp`, `log`, `softmax`, and `log_softmax` — but no
-  classification loss, metric, or probability-transform module exists
+  shipped `exp`, `log`, `softmax`, and `log_softmax`, and E5 shipped the
+  cross-entropy **Core** forward/backward described above — but no
+  differentiable cross-entropy operation, classification loss, metric, or
+  probability-transform module exists
 - native normalization (BatchNorm/LayerNorm), dropout, or a native RNG
 - additional native activations/math beyond
   `relu`/`sqrt`/`reciprocal`/`exp`/`log`/`softmax`/`log_softmax`
@@ -296,18 +341,24 @@ what is live. Five of eleven milestones have landed.
 | Native `log`: the same four layers, reusing E1's self-validating export contract unchanged; backward is `upstream × reciprocal(live input)`, so a direct `NativeParameter` parent **is** version-checked and a stale graph fails before any gradient moves — the deliberate contrast with `exp` | E2 | **Implemented** |
 | Stable `softmax`: the fused maximum-shift kernel in the new `cpp/src/classification.cpp`, the contiguous-only `tf_core_softmax_forward` export, `NativeTensorCore.softmax(axis=-1)` with Policy-B copy-then-compute, and the differentiable `NativeTensor.softmax(axis=-1)` whose saved-output backward is composed from existing Core ops | E3 | **Implemented** |
 | Stable `log_softmax`: its own fused log-sum-exp kernel in `cpp/src/classification.cpp` (**never** `softmax().log()` — no probability buffer, no division), the contiguous-only `tf_core_log_softmax_forward` export sharing E3's call shape and trust-boundary validator, `NativeTensorCore.log_softmax(axis=-1)` with the same Policy-B copy-then-compute, and the differentiable `NativeTensor.log_softmax(axis=-1)` whose saved-output backward — `upstream − exp(y) · sum(upstream, axis, keepdims)` — is composed from existing Core ops with no backward kernel and no version snapshot | E4 | **Implemented** |
-| Fused `cross_entropy` Core contract, then its differentiable operation | E5–E6 | Not started |
+| Fused `cross_entropy` **Core contract**: the internal fused forward (scalar loss **and** private saved probabilities in one pass) and saved-probability backward kernels, the guarded contiguous-only `tf_core_cross_entropy_forward` / `tf_core_cross_entropy_backward` exports (which revalidate every target index themselves), their ctypes registration, and the graph-unaware `NativeTensorCore.cross_entropy_forward` / `cross_entropy_backward` wrappers with strict copied-`int64` targets, `"mean"`/`"sum"` reductions, Policy-B copy-then-compute, and deterministic multiple-output failure cleanup | E5 | **Implemented (Core only — no autograd node)** |
+| The differentiable `NativeTensor.cross_entropy` operation over that Core contract, with graph-owned saved probabilities | E6 | Not started |
 | `NativeCrossEntropyLoss` and reporting-only `native_accuracy` | E7 | Not started |
 | Deterministic classification training + exact checkpoint resume | E8 | Not started |
 | Classification benchmarks; phase integration, sanitizer, and closure | E9–E10 | Not started |
 
 Phase E adds **no** persistent state: the native checkpoint format stays
-**version 1**, and E1–E4 added no parameter, buffer, module, loss,
+**version 1**, and E1–E5 added no parameter, buffer, module, loss,
 metric, optimizer, schema, benchmark, or example — no division operation
-(`log`'s derivative composes from the existing `reciprocal`), and no
-public `max`/`argmax` (the softmax and log-softmax shifts are internal to
-their kernels). Neither probability transform has a backward kernel:
-both gradients are composed from existing Core operations.
+(`log`'s derivative composes from the existing `reciprocal`), no
+public `max`/`argmax`/`gather` (the softmax, log-softmax, and
+cross-entropy shifts and target lookups are internal to their kernels),
+and no native integer tensor (cross-entropy targets are copied host
+`int64` metadata). Neither probability transform has a backward kernel:
+both gradients are composed from existing Core operations. Cross-entropy
+*does* have one, because its gradient is a distinct closed form over the
+saved probabilities. E5's saved probabilities are **private Core state**:
+never a public tensor, never a parameter or buffer, never serialized.
 
 ## How to build and verify
 

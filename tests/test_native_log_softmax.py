@@ -235,9 +235,15 @@ def test_native_log_softmax_registry_placement():
     assert "log_softmax" in info["tensor_core_ops"]
     assert "log_softmax" in info["autograd_ops"]
     assert "log_softmax" not in info["unsupported"]
-    # E5-E7 are still genuinely absent.
-    for absent in ("cross_entropy", "NativeCrossEntropyLoss",
-                   "native_accuracy"):
+    # E5 landed the cross-entropy **Core** layer only (its contract lives
+    # in tests/test_native_cross_entropy_core.py); the differentiable
+    # operation (E6) and the loss module and metric (E7) are still absent.
+    for core_op in ("cross_entropy_forward", "cross_entropy_backward"):
+        assert core_op in cpp.TENSOR_CORE_OPS, core_op
+        assert core_op not in cpp.AUTOGRAD_OPS, core_op
+    assert "cross_entropy" not in cpp.AUTOGRAD_OPS
+    assert "cross_entropy" not in cpp.TENSOR_CORE_OPS
+    for absent in ("NativeCrossEntropyLoss", "native_accuracy"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.AUTOGRAD_OPS

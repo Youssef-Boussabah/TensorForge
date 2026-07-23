@@ -703,7 +703,7 @@ The Python line is done; what remains is expansion on its own terms:
     milestone-era doc guardrails with durable semantic checks. See the
     [support matrix](native_support_matrix.md) for the finalized status.
   - **Phase E — Native Classification and Stable Math — in progress
-    (E0, E1, E2, E3, and E4 complete).** The **E0 architecture contract
+    (E0, E1, E2, E3, E4, and E5 complete).** The **E0 architecture contract
     is written** —
     [native_classification_design.md](native_classification_design.md)
     locks the scope, the public API surface (`exp`, `log`, `softmax`,
@@ -763,10 +763,36 @@ The Python line is done; what remains is expansion on its own terms:
     existing Core operations** — no backward kernel; `exp(y)` recovers
     the probabilities from the saved log probabilities — so it too reads
     only the saved output and records no parameter version. E4 added no
-    `NativeLogSoftmax` module and no `NLLLoss`. **Everything else in
-    Phase E is still designed-only**: `cross_entropy`,
-    `NativeCrossEntropyLoss`, and `native_accuracy` remain listed as
-    unsupported in the [support matrix](native_support_matrix.md), and
+    `NativeLogSoftmax` module and no `NLLLoss`. **E5 has shipped the
+    fused cross-entropy Core contract** — and *only* the Core layer. Two
+    new kernels in the same classification unit: a forward that, in one
+    deterministic pass per row, computes the maximum, the log-sum-exp,
+    the **saved probabilities**, and the per-example loss
+    (`log(Σ exp(x − m)) − (x[target] − m)`, reduced by `"sum"` or once by
+    the batch size for `"mean"`) — never `-log(p[target])`, never
+    `softmax().log()`-then-index, never `log_softmax()`-then-gather — and
+    a backward that turns those **saved probabilities**, the copied
+    targets, the reduction, and a **native one-element upstream** into
+    `upstream · (p − onehot) / N` **without ever rereading the logits**,
+    which are not even an argument. Both guarded exports
+    (`tf_core_cross_entropy_forward`/`tf_core_cross_entropy_backward`)
+    are contiguous-only for tensor data, revalidate **every target index**
+    themselves rather than trusting Python, and leave every destination
+    byte-for-byte unchanged when they reject. Targets are not native
+    tensors (the runtime has no integer dtype): they are strictly
+    validated — `bool` and floating-point labels rejected outright,
+    including integral ones like `1.0` — and copied into independently
+    owned contiguous read-only `int64` metadata, so mutating the caller's
+    list or array afterwards cannot reach the kernel. The forward's two
+    outputs fail atomically: any failure closes everything it allocated
+    and returns no partial result. **E5 added no
+    `NativeTensor.cross_entropy`, no autograd node, and no graph-owned
+    saved state** — the private probabilities are Core-level state the
+    caller owns. **Everything else in Phase E is still designed-only**:
+    the differentiable `cross_entropy` operation (E6),
+    `NativeCrossEntropyLoss`, and `native_accuracy` (E7) do not exist —
+    the latter two remain listed as unsupported in the
+    [support matrix](native_support_matrix.md), and
     Phase E is **not** complete. Deliberately outside
     Phase E and still unplanned: more native activations beyond it, native
     normalization, a native RNG and dropout, a CPU optimization phase for
