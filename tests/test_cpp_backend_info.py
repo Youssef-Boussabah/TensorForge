@@ -320,3 +320,42 @@ def test_f4_reports_both_batchnorm_shapes_and_frees_the_capability():
     assert info["supported_dtypes"] == ("float64",)
     assert info["supported_devices"] == ("cpu",)
     assert info["stable_framework_integration"] is False
+
+
+def test_f8_registers_nothing_and_backend_info_mirrors_the_live_registry():
+    """Phase F milestone F8 is a cross-cutting integration and guardrail
+    milestone: it adds one test file and registers **nothing**. Checked
+    against reality rather than prose — every reported inventory is the
+    live registry tuple, and no integration or test artifact leaked into
+    any of them."""
+    from pathlib import Path
+
+    import tensorforge.experimental as experimental
+
+    info = cpp.backend_info()
+    mirrored = {
+        "raw_kernels": cpp.RAW_KERNELS,
+        "tensor_core_ops": cpp.TENSOR_CORE_OPS,
+        "autograd_ops": cpp.AUTOGRAD_OPS,
+        "native_modules": cpp.NATIVE_MODULES,
+        "native_losses": cpp.NATIVE_LOSSES,
+        "native_metrics": cpp.NATIVE_METRICS,
+        "native_optimizers": cpp.NATIVE_OPTIMIZERS,
+        "state_support": cpp.STATE_SUPPORT,
+        "unsupported": cpp.UNSUPPORTED,
+        "supported_dtypes": cpp.SUPPORTED_DTYPES,
+        "supported_devices": cpp.SUPPORTED_DEVICES,
+    }
+    for key, registry in mirrored.items():
+        assert tuple(info[key]) == registry, key
+        for entry in registry:
+            for banned in ("phase_f", "phasef", "integration", "guardrail",
+                           "benchmark", "characterization"):
+                assert banned not in entry.lower(), (key, entry, banned)
+    # The integration file exists and is a *test*, never a registered
+    # capability or an importable runtime surface.
+    assert (Path(__file__).resolve().parent
+            / "test_native_phase_f.py").is_file()
+    for name in ("NativePhaseFClassifier", "test_native_phase_f"):
+        assert not hasattr(experimental, name), name
+        assert name not in experimental.__all__, name

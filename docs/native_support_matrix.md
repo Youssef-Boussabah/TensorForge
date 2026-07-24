@@ -16,8 +16,10 @@ and documentation only, no new capability), and **F7 shipped the honest
 benchmark characterization**
 (`benchmarks/benchmark_native_normalization.py` — measurement only, no
 new capability, no committed timing number, and no speed assertion),
-while the phase's remaining milestones (F8-F9: integration and closure)
-have not started. The stable Python
+and **F8 shipped the cross-cutting integration and semantic guardrails**
+(`tests/test_native_phase_f.py` — tests and documentation only, no new
+capability), while the phase's remaining milestone (F9: the closure) has
+not started. The stable Python
 framework's features (see
 [architecture.md](architecture.md)) are **not** listed here — a feature
 appears as supported only if the native stack itself provides it.
@@ -164,10 +166,23 @@ NCHW/transformed-oracle correctness gate), reporting the median with min,
 max, and spread after warm-up, with `--smoke`/`--json` modes, **no result
 file, no speed assertion, no committed timing number, and no CI timing
 threshold** — measurement only, adding no capability. Milestones
-**F8-F9 are planned and have not started**: there is no cross-cutting
-Phase-F integration file and no phase closure. No normalization
-*operation* is differentiable, and no normalization kernel or C ABI
-export exists.
+**F8 is complete**: `tests/test_native_phase_f.py` proves the
+cross-cutting interactions — one integrated `Conv2d → BatchNorm2d → ReLU
+→ MaxPool2d → Flatten → Linear → BatchNorm1d → ReLU → LayerNorm →
+Linear` classifier over raw logits and the fused loss, trained by
+`NativeAdam` and resumed **exactly** from one version-1 checkpoint
+including all four running-statistic buffers and the evaluation-mode
+output; BatchNorm snapshots, MaxPool2d winners, and cross-entropy
+probabilities coexisting in one eval graph and releasing exactly once;
+buffer mutation leaving an earlier graph valid while parameter mutation
+correctly stales it; the versioning archetypes; shared and frozen
+parameters; a non-contiguous NCHW input; strict stable/native separation;
+honest per-boundary failure atomicity; error-state recovery; the NumPy
+boundary; live-storage baselines; and reality-derived capability, export,
+and artifact guardrails — tests and documentation only, adding no
+capability. Milestone **F9 is planned and has not started**: there is no
+phase closure. No normalization *operation* is differentiable, and no
+normalization kernel or C ABI export exists.
 See also
 [roadmap.md](roadmap.md). Everything Phases D and E
 deliberately excluded
@@ -569,7 +584,7 @@ backend registry: all three modules are in `NATIVE_MODULES`, both
 `"layernorm"` and `"batchnorm"` have left `UNSUPPORTED`, and there is
 **no** normalization entry in `TENSOR_CORE_OPS`, `AUTOGRAD_OPS`, or
 `RAW_KERNELS` (all three modules are compositions of existing operations,
-not operations). The remaining Phase-F work (F8–F9) records commitments,
+not operations). The remaining Phase-F work (F9) records commitments,
 not yet capabilities.
 
 The Phase-F **architecture contract** is locked in
@@ -602,7 +617,7 @@ buffer identity; and state/checkpoint integration with the format
 | F5 | Normalization state, checkpoint, and graph-safety hardening: a focused `tests/test_native_normalization_state.py` plus narrow additions to the generic buffer and checkpoint suites, proving §7–§10 by executable test — canonical dotted buffer keys, independent state snapshots (storage-independent in both directions), strict/non-strict buffer-key loads, exact never-casting shape/dtype/device validation, identity-preserving mixed loads, mixed parameter/buffer transaction rollback, the version-1 checkpoint manifest/archive gaining no normalization field with BatchNorm buffers as ordinary entries, exact eval-output reproduction across a round trip, the buffer-only-versus-full stale-graph distinction, the corrupt/staging/save failure boundaries, eval-graph snapshot safety under `retain_graph` and a failed retryable backward, and explicit parameter/buffer closure to baseline. Adds **no** capability, module, operation, kernel, ABI symbol, or checkpoint schema field | **Complete** (tests and documentation only — no numerical behavior) |
 | F6 | Deterministic normalized training and exact resume: `examples/native_normalization_training.py` trains a `Linear → BatchNorm1d → ReLU → LayerNorm → Linear` regressor for 24 deterministic `NativeAdam` steps with `NativeMSELoss` (98.9% loss reduction), proves two uninterrupted runs bit-identical, and resumes an interrupted run into a fresh model/optimizer pair that reproduces the remaining losses, every parameter, the NativeAdam state, both BatchNorm `running_mean`/`running_var`, the final training-step prediction, and the final evaluation-mode output exactly (format version 1 unchanged, training flags runtime-only). One example and its integration test; adds **no** capability, operation, kernel, schema field, benchmark, or export | **Complete** (integration proof only — no numerical behavior) |
 | F7 | Native normalization benchmark characterization: `benchmarks/benchmark_native_normalization.py` — nine cases (`layernorm_forward`, `layernorm_backward`, `batchnorm1d_training_forward`, `batchnorm1d_eval_forward`, `batchnorm1d_backward`, `batchnorm2d_training_forward`, `batchnorm2d_eval_forward`, `batchnorm2d_backward`, `normalized_training_step`), each **correctness-gated before any timing** (a failed gate exits nonzero and publishes nothing), each labelled with the reference it actually used: `stable_tensorforge` for the six cases with a real stable counterpart, run on identical inputs, epsilon, momentum, affine values, running state, initial parameters, and optimizer hyperparameters; `native_only` for the three BatchNorm2d cases, because the stable line has **no public `BatchNorm2d`** to time against — those publish no ratio while keeping a rigorous correctness oracle (an explicit NumPy NCHW population-statistics formula, a channelwise-affine probe, eval-mode state neutrality, and for the backward the stable `BatchNorm1d` on the equivalent `(N*H*W, C)` sample matrix transformed back to NCHW, which is a correctness oracle only and deliberately not timed). `time.perf_counter_ns()` with warm-up, one timed call per sample, every sample retained, setup and cleanup outside the timer, medians reported with min/max/spread, `--smoke`/`--json`, **no result file written, no speed assertion, no committed timing number, and no CI timing threshold**. Adds **no** capability, operation, kernel, ABI symbol, ctypes declaration, schema field, example, or export | **Complete** (measurement only — no numerical behavior) |
-| F8 | Cross-cutting Phase-F integration and semantic guardrails | Planned — not started |
+| F8 | Cross-cutting Phase-F integration and semantic guardrails: `tests/test_native_phase_f.py` — one test-only integrated classifier (`NativeConv2d(1, 4, 3)` → `NativeBatchNorm2d(4)` → `NativeReLU` → `NativeMaxPool2d(2)` → `NativeFlatten` → `NativeLinear(16, 8)` → `NativeBatchNorm1d(8)` → `NativeReLU` → `NativeLayerNorm(8)` → `NativeLinear(8, 3)` → **raw logits** → `NativeCrossEntropyLoss`) over the fixed twelve-image three-class dataset, trained for 12 deterministic `NativeAdam(lr=0.05)` steps, interrupted at step 5, checkpointed, and resumed into a **fresh** model/optimizer pair reproducing the loss suffix, every parameter, the NativeAdam state, **all four** running-statistic buffers, the final training logits, and the final evaluation-mode logits/predictions/accuracy by **exact equality** (format version 1 unchanged, training flag runtime-only, identities preserved). Also proves: BatchNorm eval snapshots, MaxPool2d winners, and cross-entropy probabilities coexisting in one eval graph with no registered buffer object *or storage* reachable, releasing exactly once; buffer-only mutation (including a real buffer-only `load_native_checkpoint()` over all four registered objects) leaving an earlier eval graph's gradients equal to a clean control, while a full checkpoint load or an affine `copy_value_` correctly stales it through the unchanged v3.7 **parameter** rule; the Phase-E versioning archetypes meeting a normalized graph; shared parameters deduplicating to one slot/update/version increment; frozen parameters registered, persisted, and skipped; a non-contiguous NCHW input through the whole stack in both modes; strict stable/native separation; **honest** per-boundary failure atomicity (transactions are **per module** — one whole training step is *not* globally transactional); error-state recovery; a NumPy/conversion tripwire over one complete integrated step; live-storage baselines across success **and** failure cycles; and reality-derived capability/export/artifact guardrails. Adds **no** capability, operation, kernel, ABI symbol, ctypes declaration, schema field, example, benchmark, or export | **Complete** (tests and documentation only — no numerical behavior) |
 | F9 | Phase-F closure | Planned — not started |
 
 Explicitly **outside** Phase F and still unplanned: dropout, a native

@@ -161,11 +161,52 @@ written**, and **no speed assertion, committed timing number, or CI timing
 threshold exists anywhere**; **measurement only — one harness and its
 test, no capability, operation, kernel, C ABI symbol, ctypes declaration,
 Core method, schema field, example, or export, and no production behavior
-changed**). Milestones F8–F9 (cross-cutting
-integration and closure) have **not started** — so there is
-no Phase-F integration file and no phase
+changed**). **F8 is complete** (the cross-cutting integration and
+semantic guardrails — `tests/test_native_phase_f.py`: one test-only
+`NativePhaseFClassifier` (`NativeConv2d(1, 4, 3)` → `NativeBatchNorm2d(4)`
+→ `NativeReLU` → `NativeMaxPool2d(2)` → `NativeFlatten` →
+`NativeLinear(16, 8)` → `NativeBatchNorm1d(8)` → `NativeReLU` →
+`NativeLayerNorm(8)` → `NativeLinear(8, 3)` → **raw logits** →
+`NativeCrossEntropyLoss`) over the E8 fixed twelve-image three-class
+dataset, trained for 12 deterministic `NativeAdam(lr=0.05)` steps,
+interrupted at step 5, checkpointed, and resumed into a **fresh**
+model/optimizer pair that reproduces the loss suffix, every parameter,
+the NativeAdam state, **all four** running-statistic buffers, the final
+training logits, and the final evaluation-mode logits, predictions, and
+accuracy by **exact equality** (format version 1 unchanged, training flag
+runtime-only, identities preserved). It also proves the three
+saved-resource families — BatchNorm eval snapshots, MaxPool2d winners,
+and cross-entropy probabilities — coexisting in one eval graph and
+releasing exactly once with no registered buffer object *or storage*
+reachable from the graph; buffer-only mutation (including a real
+buffer-only `load_native_checkpoint()` over all four registered objects)
+leaving an earlier eval graph's gradients exactly equal to a clean
+control, while a full checkpoint load or a `copy_value_` on a
+normalization affine parameter correctly stales it through the unchanged
+v3.7 **parameter** rule; the Phase-E versioning archetypes (saved-output
+`exp`, live-reread `log`, saved-probability cross-entropy) meeting
+BatchNorm snapshots; shared parameters deduplicating to one slot/one
+update/one version increment; frozen parameters staying registered and
+persisted but skipped; a non-contiguous NCHW input through the whole
+stack in both modes; strict stable/native separation; **honest**
+per-boundary failure atomicity (A: a BatchNorm transaction failure rolls
+*that pair* back while an earlier module's committed transaction
+legitimately stands — transactions are **per module**, and one whole
+training step is *not* globally transactional; B: a post-forward failure
+does not retroactively roll back committed running updates; C: an
+optimizer staging failure commits nothing and leaves the gradients
+retryable; D: a stale-parameter backward keeps the forward's update; E: a
+checkpoint-load commit failure restores everything); error-state
+recovery; a NumPy/conversion tripwire over one complete integrated step;
+live-storage baselines across success **and** failure cycles; and
+semantic capability/export/artifact guardrails derived from real
+registries and files. **Tests and documentation only — no capability,
+operation, kernel, C ABI symbol, ctypes declaration, schema field,
+example, benchmark, or export, and no production behavior changed.**)
+Milestone F9 (the phase closure) has **not started** — so there is
+no Release/Debug revalidation, no sanitizer pass, and no phase
 closure, and no normalization operation, kernel, C ABI symbol, or custom
-backward exists at all. F8 is next.
+backward exists at all. F9 is next.
 Dropout/RNG, data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase F.
@@ -211,7 +252,7 @@ production-ready, not a PyTorch replacement.
   examples, roadmap, release history, and the native-line design
   contracts (`native_cnn_design.md` for Phase D,
   `native_classification_design.md` for Phase E,
-  `native_normalization_design.md` for Phase F — F0–F7 shipped). When a milestone changes the
+  `native_normalization_design.md` for Phase F — F0–F8 shipped). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the

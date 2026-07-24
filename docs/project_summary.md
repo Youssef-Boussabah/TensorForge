@@ -259,8 +259,18 @@ NCHW and transformed-oracle correctness gate. Medians with min, max, and
 spread after warm-up; `--smoke`/`--json`; **no result file, no speed
 assertion, no committed timing number, and no CI timing threshold** —
 measurement only, adding no capability. But Phase F is not finished.
-Milestones **F8–F9 are planned and have not started**: no cross-cutting
-integration, no closure.
+**F8 is complete**: `tests/test_native_phase_f.py` proves the
+cross-cutting interactions — one integrated convolution / BatchNorm2d /
+pooling / linear / BatchNorm1d / LayerNorm classifier over raw logits and
+the fused loss, trained by `NativeAdam` and resumed **exactly** from one
+version-1 checkpoint (all four running-statistic buffers and the
+evaluation-mode output included); the three saved-resource families
+coexisting safely in one eval graph; buffer versus parameter mutation
+attributed to the right cause; the versioning archetypes; shared and
+frozen parameters; a non-contiguous NCHW input; honest per-boundary
+failure atomicity; and reality-derived capability guardrails — tests and
+documentation only, adding no capability. But Phase F is not finished.
+Milestone **F9 is planned and has not started**: no phase closure.
 Beyond Phase F
 (**not started**): dropout and a native RNG, more activations/math, data
 loaders, a CPU optimization phase, then the CUDA

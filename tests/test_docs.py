@@ -1993,17 +1993,17 @@ def test_f3_scopes_the_snapshot_rule_to_buffer_only_mutation():
 
 
 def test_no_document_claims_unshipped_normalization_is_done():
-    """After F7 the module surface, its hardening, one deterministic
-    normalized training/resume proof, and the benchmark characterization
-    really are shipped, so a document may say so. What no status surface
-    may claim is the part that has **not**: any milestone from F8 on, the
-    phase itself, or a normalization family Phase F never scoped. The
-    registry/file premise for each is checked first."""
+    """After F8 the module surface, its hardening, one deterministic
+    normalized training/resume proof, the benchmark characterization, and
+    the cross-cutting integration really are shipped, so a document may
+    say so. What no status surface may claim is the part that has
+    **not**: F9, the phase itself, or a normalization family Phase F
+    never scoped. The registry/file premise for each is checked first."""
     from tensorforge.backends import cpp
     import tensorforge.experimental as experimental
 
-    # Premise: the modules, the hardening, the F6 example, and the F7
-    # benchmark shipped; the Phase-F integration file did not.
+    # Premise: the modules, the hardening, the F6 example, the F7
+    # benchmark, and the F8 integration file all shipped.
     for module in _NORMALIZATION_MODULES:
         assert module in cpp.NATIVE_MODULES, module
     assert "batchnorm" not in cpp.UNSUPPORTED
@@ -2011,7 +2011,7 @@ def test_no_document_claims_unshipped_normalization_is_done():
             / "native_normalization_training.py").is_file()
     assert (REPO_ROOT / "benchmarks"
             / "benchmark_native_normalization.py").is_file()
-    assert not (REPO_ROOT / "tests" / "test_native_phase_f.py").exists()
+    assert (REPO_ROOT / "tests" / "test_native_phase_f.py").is_file()
 
     # The subject is only the *unshipped* surface — the shipped modules are
     # excluded because they genuinely exist.
@@ -2023,17 +2023,17 @@ def test_no_document_claims_unshipped_normalization_is_done():
     claims = (
         # "GroupNorm is implemented", either word order.
         re.compile(subject + r"[^.]{0,60}?" + shipped, re.I),
-        # "F8 shipped integration", "F9 added closure", ...
-        # (F6 shipped its training/resume example and F7 its benchmark, so
-        # both are excluded here.)
-        re.compile(r"\bF[8-9]\b[^.]{0,60}?(ship|implement|add)\w*", re.I),
-        # Any milestone from F8 on described as done.
-        re.compile(r"\bF[8-9]\b[^.]{0,40}?\b(is|was)\s+"
+        # "F9 shipped closure", "F9 added the sanitizer pass", ...
+        # (F6 shipped its example, F7 its benchmark, and F8 its
+        # integration suite, so all three are excluded here.)
+        re.compile(r"\bF9\b[^.]{0,60}?(ship|implement|add)\w*", re.I),
+        # F9 described as done.
+        re.compile(r"\bF9\b[^.]{0,40}?\b(is|was)\s+"
                    r"(complete|completed|shipped|implemented)\b", re.I),
-        # The cross-cutting Phase-F integration claimed as shipped (F8's
-        # work: the file does not exist).
-        re.compile(r"(cross-cutting|Phase-F)\s+integration[^.]{0,40}?"
-                   + shipped, re.I),
+        # The phase closure or its sanitizer/build revalidation claimed as
+        # shipped (F9's work: it has not started).
+        re.compile(r"(phase.f closure|sanitizer|ASan|UBSan|LeakSanitizer"
+                   r"|Debug build)[^.]{0,60}?" + shipped, re.I),
         # The phase itself described as finished.
         re.compile(r"Phase F\b[^.F]{0,40}?\b(is|was|are|now)\s+"
                    r"(complete|completed|shipped|implemented)\b", re.I),
@@ -2308,38 +2308,35 @@ def test_both_batchnorm_shapes_share_one_private_implementation():
     assert "def _backward" not in source
 
 
-def test_phase_f_is_still_in_progress_after_f7():
-    """F7 shipped the benchmark characterization — one harness and its
-    test, measurement only — not the phase. F8-F9 have not shipped, so
-    their deliverables must not exist and no surface may describe the
-    phase as finished."""
+def test_phase_f_is_still_in_progress_after_f8():
+    """F8 shipped the cross-cutting integration and semantic guardrails —
+    one test suite, tests and documentation only — not the phase. F9 has
+    not shipped, so no surface may describe the phase, its closure, or
+    its build/sanitizer revalidation as finished."""
     from tensorforge.backends import cpp
 
-    # Premise, from the live tree: F8-F9's deliverables do not exist.
-    assert not (REPO_ROOT / "tests" / "test_native_phase_f.py").exists()
-    # ...while F6's and F7's own deliverables do.
-    assert (REPO_ROOT / "examples"
-            / "native_normalization_training.py").is_file()
-    assert (REPO_ROOT / "tests"
-            / "test_native_normalization_training.py").is_file()
-    assert (REPO_ROOT / "benchmarks"
-            / "benchmark_native_normalization.py").is_file()
-    assert (REPO_ROOT / "tests"
-            / "test_native_normalization_benchmark.py").is_file()
-    # The design still says in-progress, and names F8 as next.
+    # Premise, from the live tree: F6's, F7's, and F8's own deliverables
+    # all exist.
+    for relative in ("examples/native_normalization_training.py",
+                     "tests/test_native_normalization_training.py",
+                     "benchmarks/benchmark_native_normalization.py",
+                     "tests/test_native_normalization_benchmark.py",
+                     "tests/test_native_phase_f.py"):
+        assert (REPO_ROOT / relative).is_file(), relative
+    # The design still says in-progress, and names F9 as next.
     design = _status_text(PHASE_F_DESIGN)
     assert "Phase-F status: in progress" in design
-    assert re.search(r"F8[^.]{0,80}(next|planned|not started)", design, re.I), (
-        "the design does not name F8 as the next milestone"
+    assert re.search(r"F9[^.]{0,80}(next|planned|not started)", design, re.I), (
+        "the design does not name F9 as the next milestone"
     )
-    # ...and the ladder still lists F8-F9 as planned.
+    # ...and the ladder still lists F9 as planned.
     ladder = _design_section("Milestone ladder", relative_path=PHASE_F_DESIGN)
-    for planned in range(8, 10):
-        row = re.search(rf"\|\s*F{planned}\s*\|[^|]*\|([^|]*)\|", ladder)
-        assert row is not None, planned
-        assert "planned" in row.group(1).lower(), planned
+    row = re.search(r"\|\s*F9\s*\|[^|]*\|([^|]*)\|", ladder)
+    assert row is not None
+    assert "planned" in row.group(1).lower()
+    assert "complete" not in row.group(1).lower()
     # The registry is unchanged where F7-F9 would touch it — F7 measured
-    # only, and F8-F9 add nothing either.
+    # only, F8 tested only, and F9 adds nothing either.
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
 
 
@@ -2495,6 +2492,98 @@ def test_docs_present_the_shipped_normalization_benchmark():
     )
 
 
+def test_docs_present_the_shipped_phase_f_integration_suite():
+    """F8's deliverable must stay documented as what it is: one
+    cross-cutting integration and guardrail suite that adds **no**
+    capability — never a new feature, and never the phase closure. The
+    premise is checked against the live tree and the live registry
+    first."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    suite = REPO_ROOT / "tests" / "test_native_phase_f.py"
+    assert suite.is_file()
+    source = suite.read_text(encoding="utf-8")
+    # The integrated model really combines every family the docs claim.
+    for piece in ("NativeConv2d", "NativeBatchNorm2d", "NativeReLU",
+                  "NativeMaxPool2d", "NativeFlatten", "NativeLinear",
+                  "NativeBatchNorm1d", "NativeLayerNorm",
+                  "NativeCrossEntropyLoss", "NativeAdam"):
+        assert piece in source, piece
+    # ...and it declares no runtime surface of its own: it imports no
+    # ctypes machinery and defines no ABI entry point. Scanned as
+    # top-of-line imports and definitions, so the guard cannot match the
+    # suite's own assertions about the production modules.
+    imported = re.findall(r"^(?:import|from)\s+([\w.]+)", source, re.M)
+    assert not [name for name in imported if name.split(".")[0] == "ctypes"]
+    assert re.search(r"^def tf_", source, re.M) is None
+    assert re.search(r"^\s+_from_op\(", source, re.M) is None
+
+    section = _design_section("F8 —", relative_path=PHASE_F_DESIGN)
+    lowered = section.lower()
+    assert "complete" in lowered, "the design does not record F8 as shipped"
+    assert "tests/test_native_phase_f.py" in section
+    # The interactions the milestone claims, named in its own section.
+    for claim in ("batchnorm2d", "batchnorm1d", "layernorm", "maxpool2d",
+                  "cross-entropy", "nativeadam", "checkpoint", "snapshot",
+                  "shared", "frozen", "non-contiguous", "version"):
+        assert claim in lowered, claim
+    # It is scoped to tests and documentation, adding no capability.
+    assert re.search(r"tests and documentation only|no capability|adds no",
+                     lowered), (
+        "the F8 section no longer scopes itself to tests and documentation"
+    )
+    assert "version 1" in lowered
+    # The honest failure-boundary statement survives: transactions are per
+    # module, so one whole training step is not globally transactional.
+    assert re.search(r"per.module", lowered), (
+        "the F8 section no longer states that transactions are per module"
+    )
+    assert re.search(r"not\W{0,10}globally transactional", lowered), (
+        "the F8 section no longer denies whole-step global transactionality"
+    )
+    # F9 is named as the next milestone, and is not claimed complete.
+    design = _status_text(PHASE_F_DESIGN)
+    assert re.search(r"F9[^.]{0,80}(next|planned|not started)", design, re.I)
+
+    # Nothing changed in the registry, exports, or checkpoint format.
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.NATIVE_MODULES == (
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+    )
+    assert native_checkpoint._FORMAT_VERSION == 1
+
+    # Every authoritative status surface agrees that F8 shipped and F9
+    # has not.
+    for surface in ("README.md", "docs/native_support_matrix.md",
+                    "docs/roadmap.md", "docs/project_summary.md",
+                    "docs/architecture.md", "docs/backend_experiments.md",
+                    "CLAUDE.md"):
+        text = _status_text(surface)
+        assert re.search(r"F8[^.]{0,60}(complete|shipped)", text, re.I), surface
+        assert re.search(r"F9[^.]{0,80}(next|planned|not started|not finished)",
+                         text, re.I), surface
+
+
+def test_the_phase_f_integration_suite_claims_no_closure_work():
+    """F9 owns the build, sanitizer, and completion work. No surface may
+    present any of it as done while the phase is still in progress."""
+    premise = _status_text(PHASE_F_DESIGN)
+    assert "Phase-F status: in progress" in premise
+    claim = re.compile(
+        r"Phase.F[^.]{0,80}(ASan|UBSan|LeakSanitizer|sanitizer|Debug build)"
+        r"[^.]{0,60}(is|are|was|were|now)\s+"
+        r"(complete|completed|passed|validated|clean)",
+        re.I,
+    )
+    for surface in PHASE_STATUS_DOCS + (PHASE_F_DESIGN,):
+        text = _status_text(surface)
+        match = claim.search(text)
+        assert match is None, (surface, match.group(0) if match else "")
+
+
 def test_the_normalization_benchmark_is_registered_nowhere():
     """A benchmark is a measurement tool, never a capability: it must not
     appear in any runtime inventory, and it must add no export."""
@@ -2540,11 +2629,14 @@ def test_phase_f_ladder_marks_shipped_milestones_complete():
         shipped.append(5)
     if (REPO_ROOT / "examples" / "native_normalization_training.py").exists():
         shipped.append(6)
-    # F7 (the benchmark characterization) is likewise detected from its own
-    # deliverable: it adds no capability, so the registry cannot show it.
+    # F7 (the benchmark characterization) and F8 (the cross-cutting
+    # integration) are likewise detected from their own deliverables: each
+    # adds no capability, so the registry cannot show them.
     if (REPO_ROOT / "benchmarks"
             / "benchmark_native_normalization.py").exists():
         shipped.append(7)
+    if (REPO_ROOT / "tests" / "test_native_phase_f.py").exists():
+        shipped.append(8)
     # The shipped set must be a contiguous prefix — no milestone may be
     # skipped.
     assert shipped == list(range(len(shipped))), shipped

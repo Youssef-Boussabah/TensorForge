@@ -94,10 +94,25 @@ spread after warm-up, with `--smoke`/`--json` modes and **no result file,
 no speed assertion, and no timing threshold anywhere**. The BatchNorm2d
 cases keep a rigorous correctness oracle even without a timed reference;
 **measurement only — no capability, operation, kernel, C ABI symbol,
-schema field, or export**). **F8–F9 are planned and have not started**,
-so Phase F itself is *not* complete: the cross-cutting integration and
-the phase closure have neither of them happened — there is no Phase-F
-integration file and no phase closure. And no normalization *operation*,
+schema field, or export**). And **F8 is complete** (the cross-cutting
+integration and semantic guardrails — `tests/test_native_phase_f.py`: one
+integrated `Conv2d → BatchNorm2d → ReLU → MaxPool2d → Flatten → Linear →
+BatchNorm1d → ReLU → LayerNorm → Linear` classifier over raw logits and
+the fused loss, trained by `NativeAdam` and resumed **exactly** from one
+version-1 checkpoint including all four running-statistic buffers and the
+evaluation-mode output; three saved-resource families (BatchNorm
+snapshots, MaxPool2d winners, cross-entropy probabilities) coexisting and
+releasing exactly once; buffer mutation versus parameter mutation
+attributed to the right cause; the Phase-E versioning archetypes meeting
+a normalized graph; shared and frozen parameters; a non-contiguous NCHW
+input through the whole stack; each failure boundary tested honestly
+without claiming a whole step is globally transactional; and semantic
+capability/export/artifact guardrails derived from real registries and
+files. **Tests and documentation only — no capability, and no production
+behavior changed**). **F9 is planned and has not started**,
+so Phase F itself is *not* complete: the phase closure has not happened —
+there is no Release/Debug revalidation, no sanitizer pass, and no
+completion statement. And no normalization *operation*,
 kernel, or C ABI symbol exists at all — all three modules are
 compositions of existing operations, not numerical primitives.
 
@@ -966,13 +981,13 @@ copied.
 | F5 | Normalization state, checkpoint, and graph-safety hardening | **complete** |
 | F6 | Deterministic normalized training and exact resume | **complete** |
 | F7 | Native normalization benchmark characterization | **complete** |
-| F8 | Cross-cutting Phase-F integration and semantic guardrails | planned |
+| F8 | Cross-cutting Phase-F integration and semantic guardrails | **complete** |
 | F9 | Phase-F closure | planned |
 
 Each milestone's full contract follows; the table above is the status
 summary, and the registry remains the authority on what is live. **F0,
-F1, F2, F3, F4, F5, F6, and F7 are complete; F8 is the next milestone,
-and F8–F9 have not started.**
+F1, F2, F3, F4, F5, F6, F7, and F8 are complete; F9 is the next
+milestone, and F9 has not started.**
 
 ### F0 — Phase-F architecture contract and repository reconciliation *(this document)* — **complete**
 
@@ -1767,7 +1782,7 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
     file was touched. **F8 (the cross-cutting Phase-F integration) is
     next.**
 
-### F8 — Cross-cutting Phase-F integration and semantic guardrails — planned
+### F8 — Cross-cutting Phase-F integration and semantic guardrails — **complete**
 
 - **Objective:** prove the normalization stack composes correctly with
   everything the earlier phases built, and lock the phase's invariants
@@ -1792,6 +1807,123 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
 - **Completion criteria:** the integration file covers the interactions
   no single-module test can, and the guardrails derive their checks from
   real exports, registries, and files.
+- **Shipped (F8).** Exactly the above — **one cross-cutting integration
+  suite (`tests/test_native_phase_f.py`) plus guardrail updates to
+  `tests/test_docs.py` and `tests/test_cpp_backend_info.py`: tests and
+  documentation only, no capability, operation, kernel, C ABI symbol,
+  ctypes declaration, `NativeTensorCore` method, custom backward,
+  checkpoint schema field, example, benchmark, or export; no inventory
+  changed, the checkpoint format stays version 1, and no production file
+  was modified.** What it delivered:
+
+  - **One integrated model, `NativePhaseFClassifier`** (test-only, not a
+    production class): `NativeConv2d(1, 4, 3)` → `NativeBatchNorm2d(4)` →
+    `NativeReLU` → `NativeMaxPool2d(2)` → `NativeFlatten` →
+    `NativeLinear(16, 8)` → `NativeBatchNorm1d(8)` → `NativeReLU` →
+    `NativeLayerNorm(8)` → `NativeLinear(8, 3)` → **raw logits** →
+    `NativeCrossEntropyLoss`, over the E8 fixed twelve-image three-class
+    dataset. Every Phase-D module family, **both** BatchNorm shapes, and
+    LayerNorm participate in one graph; no softmax or log-softmax module
+    is inserted; `NativeAdam` sees the twelve parameters and never the
+    four buffers.
+  - **The full forward/backward/optimizer interaction.** One graph
+    reaches every trainable parameter with a finite, correctly shaped
+    gradient; the buffers receive none; both BatchNorm pairs advance
+    together during the training forward; parameter versions and
+    optimizer step counters each advance exactly once; parameter and
+    buffer identities never move; and the one-shot backward releases the
+    MaxPool2d winners and the cross-entropy probabilities exactly once.
+  - **Deterministic integrated training and exact resume.** Twelve
+    `NativeAdam(lr=0.05)` steps over the fixed batch, interrupted at step
+    5, checkpointed (model **and** optimizer, format **version 1**),
+    reloaded into a **completely fresh** model/optimizer pair, and
+    continued. The prefix, the remaining loss suffix, the whole loss
+    history, every parameter, the complete NativeAdam state, **all four**
+    running-statistic buffers, the final training logits, and the final
+    evaluation-mode logits, predictions, and accuracy all match by
+    **exact equality**. The fresh target is deliberately put in eval mode
+    before loading and stays there afterwards, proving the training flag
+    is runtime-only; parameter and buffer identities survive the load.
+  - **Three saved-resource families in one eval graph.** BatchNorm
+    snapshots (`(1, 4, 1, 1)` and `(1, 8)`), MaxPool2d winners, and
+    cross-entropy probabilities coexist; neither registered running
+    buffer — object **or** storage — is reachable from the graph, while
+    `gamma`/`beta` legitimately are; one backward releases all three
+    families exactly once, a second release is a no-op, the registered
+    buffers stay open and unchanged, and an abandoned eval graph releases
+    its snapshots without touching registered state.
+  - **Buffer mutation versus parameter mutation, attributed correctly.**
+    A buffer-only `load_native_checkpoint()` over a parameter-free holder
+    aliasing all four registered buffer objects — and, separately, a full
+    training step — leave an earlier eval graph's gradients exactly equal
+    to a clean control, with every buffer identity preserved and no
+    parameter version moved. A **full** checkpoint load and a direct
+    `copy_value_` on a normalization affine parameter each stale the
+    graph through the unchanged v3.7 **parameter** rule, commit no
+    partial gradient, and leave a fresh forward working.
+  - **The versioning archetypes meeting a normalized graph.** One graph
+    combining the integrated classification loss with an `exp` branch and
+    a `log` branch: mutating all four running buffers and the `exp`
+    parameter after the forward leaves every saved-state edge valid and
+    reproduces a clean control exactly, while mutating the live-reread
+    `log` parameter invalidates the **whole** graph before any branch
+    commits a gradient.
+  - **Shared and frozen parameters through normalization.** A parameter
+    registered under two paths and used twice in one forward is exposed
+    once under its first-discovered canonical name, deduplicated by
+    identity in `parameters()`, given one NativeAdam state slot,
+    accumulates both uses into one gradient (checked against an
+    independent two-parameter control), updates once with exactly one
+    version increment, survives a checkpoint round trip with both aliases
+    pointing at the same object, and closes exactly once. A registered
+    `requires_grad=False` parameter that really participates in the
+    forward stays discoverable, may sit in the optimizer's list, builds
+    no gradient, is skipped with its value, version, step counter, and
+    Adam moments untouched, still persists numerically, and reloads still
+    frozen — while the normalization buffers update normally.
+  - **A non-contiguous NCHW input through the whole stack**, in both
+    train and eval mode, matching the contiguous form for the logits, the
+    loss, every trainable gradient, and all four running statistics,
+    producing fresh owning contiguous logits and leaving the caller's
+    base and view untouched.
+  - **Strict stable/native separation through normalization**, and a
+    representative stable `LayerNorm`/`BatchNorm1d` train-and-eval path
+    proved unchanged.
+  - **Failure boundaries, tested honestly and never over-claimed.**
+    **A** — a BatchNorm running-state transaction failure rolls *that
+    pair* back completely, while an earlier module's already-committed
+    transaction legitimately stands: transactions are **per module**, and
+    one whole training step is *not* globally transactional. **B** — a
+    loss or backward failure after a successful forward does **not**
+    retroactively roll back the running updates the forward committed,
+    and commits no gradient or optimizer change. **C** — an optimizer
+    staging failure commits nothing, closes every staged temporary, and
+    leaves the gradients usable for a clean retry. **D** — a
+    stale-parameter backward keeps the forward's committed buffer update,
+    commits nothing, and releases its saved resources on explicit close.
+    **E** — a commit failure while loading a real integrated checkpoint
+    (twelve parameters, four buffers, and the NativeAdam state) restores
+    every value, identity, and version and leaks no staged storage.
+  - **Error-state recovery, the NumPy boundary, and ownership.** Handled
+    Python and native failures leave `tf_last_error_code() == TF_OK` and
+    the next normalized operation succeeds; one complete integrated step
+    reaches no NumPy numerical routine and no tensor-data conversion path
+    (`native_accuracy` stays deliberately outside); and repeated success
+    **and** failure cycles, an exact resume cycle, aliases, frozen
+    parameters, and non-contiguous inputs all return the native
+    live-storage counters to their baseline.
+  - **Semantic guardrails derived from reality**, not from prose: every
+    `NATIVE_MODULES` entry resolves to a real exported callable class,
+    `_NativeBatchNorm` stays private, no normalization name appears in
+    any kernel/operation registry or in `_CHECKED_KERNELS`, no
+    `NativeTensor`/`NativeTensorCore` normalization method exists, every
+    `STATE_SUPPORT` name maps to a real API, `UNSUPPORTED` still reads
+    exactly `("dropout", "float32", "cuda", "amp")`, the shipped Phase-F
+    artifacts all exist, and no Phase-F C++ source, header, or CTest was
+    added.
+  - **No production behavior changed.** The suite composes shipped public
+    APIs only; no locked-contract bug was found, so no `src/` numerical
+    file was touched. **F9 (the phase closure) is next.**
 
 ### F9 — Phase-F closure — planned
 
@@ -1901,8 +2033,8 @@ must be verified against reality for the whole normalization surface.
 
 ## 18. Phase-F status statement
 
-**Phase F is in progress: F0, F1, F2, F3, F4, F5, F6, and F7 are
-complete; F8–F9 have not started.** The experimental native line now has
+**Phase F is in progress: F0, F1, F2, F3, F4, F5, F6, F7, and F8 are
+complete; F9 has not started.** The experimental native line now has
 the complete numerical normalization *module* surface — LayerNorm and
 both BatchNorm shapes — their state, checkpoint, ownership, and
 graph-safety contracts are proved by executable test, a deterministic
@@ -1970,9 +2102,28 @@ is not finished:
   duration**. **Measurement only — one harness and its test, no
   capability, operation, kernel, C ABI symbol, schema field, example, or
   export, and no production behavior changed.**
-- **Phase F is still in progress.** F8–F9 — the cross-cutting
-  integration and the closure — have not started. There is no Phase-F
-  integration file and no phase closure.
+- **F8 is complete.** `tests/test_native_phase_f.py` proves the
+  interactions no single-module suite can: one integrated
+  convolution/normalization/pooling/classification model trained by
+  `NativeAdam` and resumed **exactly** (all four running buffers, the
+  final training logits, and the evaluation-mode logits, predictions, and
+  accuracy included); BatchNorm snapshots, MaxPool2d winners, and
+  cross-entropy probabilities coexisting in one eval graph and releasing
+  exactly once; buffer mutation leaving an earlier graph valid while
+  parameter mutation correctly stales it; the Phase-E versioning
+  archetypes meeting a normalized graph; shared and frozen parameters;
+  a non-contiguous NCHW input through the whole stack; strict
+  stable/native separation; each failure boundary tested honestly —
+  including the explicit statement that BatchNorm transactions are **per
+  module** and that one whole training step is *not* globally
+  transactional; error-state recovery; the NumPy boundary; live-storage
+  baselines across success and failure cycles; and semantic capability,
+  export, and artifact guardrails derived from real registries and files.
+  **Tests and documentation only — no capability, no operation, no
+  kernel, no schema change, and no production behavior changed.**
+- **Phase F is still in progress.** F9 — the phase closure — has not
+  started. There is no Release/Debug revalidation, no sanitizer pass, and
+  no phase-completion statement.
 - **No normalization *operation* is differentiable, and none appears in
   any operation inventory** — `NativeLayerNorm`, `NativeBatchNorm1d`,
   and `NativeBatchNorm2d` are all composed from existing operations, so
@@ -2015,9 +2166,18 @@ cases, correctness gated before every measurement, honest
 max, and spread, `--smoke`/`--json` modes, no result file, and no speed
 assertion, committed timing number, or CI timing threshold anywhere —
 **measurement only, one harness and one test, no capability and no
-production change.** The remaining work described above (the integration,
-the closure) is a set of commitments about how F8–F9 *will* finish Phase
-F, not claims about what exists.
+production change.** What **F8** delivered is
+`tests/test_native_phase_f.py` and the guardrail updates that came with
+it: the cross-cutting proof that the normalization stack composes
+correctly with everything Phases A–E built — one integrated classifier
+trained and resumed exactly, three saved-resource families coexisting in
+one eval graph, the buffer/parameter mutation distinction attributed to
+the right cause, the versioning archetypes, shared and frozen parameters,
+a non-contiguous NCHW input, honest per-boundary failure atomicity, and
+capability/export/artifact guardrails derived from reality — **tests and
+documentation only, no capability and no production change.** The
+remaining work described above (the closure) is a set of commitments
+about how F9 *will* finish Phase F, not claims about what exists.
 
 Deliberately outside Phase F and still unplanned: dropout, a native RNG
 and RNG checkpoint state, further activations (`tanh`, `sigmoid`, GELU),

@@ -1960,8 +1960,84 @@ every inventory exactly what F6 left and the checkpoint format at
 public APIs only, and no locked-contract bug was found. The JSON payload
 is fully JSON-native, the human report ends in the local-characterization
 disclaimer, **no result file of any kind is written**, and **no test, CI
-job, or document asserts or commits a duration**. **F8 (the cross-cutting
-Phase-F integration) is the next milestone.**
+job, or document asserts or commits a duration**.
+
+### Phase F — native normalization and stateful buffers (F8)
+
+**F8 is complete: the cross-cutting integration and semantic guardrails
+— `tests/test_native_phase_f.py`, plus guardrail updates to
+`tests/test_docs.py` and `tests/test_cpp_backend_info.py`. Tests and
+documentation only: no numerical behavior and no new capability.** F8
+proves the *interactions* the per-milestone suites cannot, and locks the
+Phase-F surface with guardrails derived from real registries, exports,
+and files.
+
+**One integrated model.** The test-only `NativePhaseFClassifier` runs
+`NativeConv2d(1, 4, 3)` → `NativeBatchNorm2d(4)` → `NativeReLU` →
+`NativeMaxPool2d(2)` → `NativeFlatten` → `NativeLinear(16, 8)` →
+`NativeBatchNorm1d(8)` → `NativeReLU` → `NativeLayerNorm(8)` →
+`NativeLinear(8, 3)`, feeding **raw logits** to
+`NativeCrossEntropyLoss` over the E8 fixed twelve-image three-class
+dataset. Every Phase-D module family, **both** BatchNorm shapes, and
+LayerNorm participate in one graph; no probability transform is inserted;
+`NativeAdam` sees the twelve parameters and never the four buffers.
+
+**The full interaction.** One graph reaches every trainable parameter
+with a finite, correctly shaped gradient; the buffers receive none; both
+BatchNorm pairs advance together in the training forward; parameter
+versions and optimizer step counters each advance exactly once;
+parameter and buffer identities never move; and one backward releases
+the MaxPool2d winners and the cross-entropy probabilities exactly once.
+
+**Deterministic training and exact resume.** Twelve deterministic
+`NativeAdam(lr=0.05)` steps, interrupted at step 5, checkpointed (model
+**and** optimizer, format **version 1**), reloaded into a completely
+fresh pair, and continued. The prefix, the remaining loss suffix, the
+whole loss history, every parameter, the complete NativeAdam state,
+**all four** running-statistic buffers, the final training logits, and
+the final evaluation-mode logits, predictions, and accuracy all match by
+**exact equality**. The fresh target is deliberately in eval mode before
+the load and stays there afterwards, proving the training flag is
+runtime-only.
+
+**Three saved-resource families at once.** BatchNorm eval snapshots
+(`(1, 4, 1, 1)` and `(1, 8)`), MaxPool2d winners, and cross-entropy
+probabilities coexist in one eval graph; neither registered running
+buffer — object **or** storage — is reachable from it, while
+`gamma`/`beta` legitimately are; one backward releases all three
+families exactly once and a second release is a no-op; and an abandoned
+eval graph releases its snapshots without touching registered state.
+
+**Mutation attributed correctly.** A buffer-only
+`load_native_checkpoint()` over a parameter-free holder aliasing all four
+registered buffer objects — and, separately, a full training step — leave
+an earlier eval graph's gradients exactly equal to a clean control, with
+every buffer identity preserved and no parameter version moved. A **full**
+checkpoint load and a direct `copy_value_` on a normalization affine
+parameter each stale the graph through the unchanged v3.7 **parameter**
+rule, commit no partial gradient, and leave a fresh forward working.
+
+**Failure boundaries, stated honestly.** **A** — a BatchNorm
+running-state transaction failure rolls *that pair* back completely,
+while an earlier module's already-committed transaction legitimately
+stands: transactions are **per module**, and one whole training step is
+*not* globally transactional. **B** — a loss or backward failure after a
+successful forward does not retroactively roll back the committed running
+updates, and commits no gradient or optimizer change. **C** — an
+optimizer staging failure commits nothing, closes every staged temporary,
+and leaves the gradients usable for a clean retry. **D** — a
+stale-parameter backward keeps the forward's committed update and
+releases its saved resources on explicit close. **E** — a commit failure
+while loading a real integrated checkpoint restores every value,
+identity, and version and leaks no staged storage.
+
+**F8 added no C++ code, module, operation, kernel, C ABI symbol, ctypes
+declaration, `NativeTensorCore` method, custom backward, checkpoint
+schema field, example, benchmark, or export** — one integration suite and
+its guardrails, with every inventory exactly what F7 left and the
+checkpoint format at **version 1**. No production file changed: the suite
+composes shipped public APIs only, and no locked-contract bug was found.
+**F9 (the phase closure) is the next milestone.**
 
 ### A hardening milestone before Phase D
 

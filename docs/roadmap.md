@@ -917,7 +917,7 @@ The Python line is done; what remains is expansion on its own terms:
     build/packaging evolution. Native normalization then became its own
     phase, below.
   - **Phase F — Native Normalization and Stateful Buffers — in progress
-    (F0, F1, F2, F3, F4, F5, F6, and F7 complete; F8–F9 planned).** The **F0
+    (F0, F1, F2, F3, F4, F5, F6, F7, and F8 complete; F9 planned).** The **F0
     architecture contract is written** —
     [native_normalization_design.md](native_normalization_design.md)
     locks the phase's objective (a fully native, differentiable,
@@ -1051,9 +1051,26 @@ The Python line is done; what remains is expansion on its own terms:
     max, and spread after warm-up; `--smoke` and `--json` modes exist;
     **no result file is written, no speed is asserted, no timing number is
     committed, and no CI timing threshold exists** — measurement only,
-    adding no capability. **F8–F9 have not started** — no cross-cutting
-    integration file and no phase closure — and no normalization
-    operation or kernel exists at all. **F8 is next.**
+    adding no capability. **F8 is complete**:
+    `tests/test_native_phase_f.py` proves the cross-cutting interactions —
+    one integrated `NativeConv2d → NativeBatchNorm2d → NativeReLU →
+    NativeMaxPool2d → NativeFlatten → NativeLinear → NativeBatchNorm1d →
+    NativeReLU → NativeLayerNorm → NativeLinear` classifier over raw
+    logits and the fused classification loss, trained by `NativeAdam` and
+    resumed **exactly** from one version-1 checkpoint (all four
+    running-statistic buffers, the final training logits, and the
+    evaluation-mode logits, predictions, and accuracy included); the
+    three saved-resource families coexisting in one eval graph and
+    releasing exactly once; buffer mutation leaving an earlier graph
+    valid while parameter mutation correctly stales it; the versioning
+    archetypes; shared and frozen parameters; a non-contiguous NCHW
+    input; strict stable/native separation; honest per-boundary failure
+    atomicity (transactions are per module — one whole training step is
+    *not* globally transactional); error-state recovery; the NumPy
+    boundary; live-storage baselines; and reality-derived capability
+    guardrails — tests and documentation only, adding no capability.
+    **F9 has not started** — no phase closure — and no normalization
+    operation or kernel exists at all. **F9 is next.**
     Deliberately outside Phase F: dropout, a native RNG with its
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,

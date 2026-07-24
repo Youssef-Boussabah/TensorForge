@@ -227,7 +227,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
-- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **in progress**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), and F7 (the honest benchmark characterization) are complete; F8–F9 are planned)
+- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **in progress**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), and F8 (the cross-cutting integration and semantic guardrails) are complete; F9 is planned)
 
 ## Limitations
 
@@ -242,18 +242,19 @@ Honest expectations:
 - The native CNN stack (Phase D) and the native classification stack
   (Phase E) are both complete — but "complete" means *these* capabilities
   work and are validated, not that the native line is finished. What the
-  native line still does **not** have: a **cross-cutting Phase-F
-  integration file or phase closure** —
+  native line still does **not** have: a **Phase-F closure** —
   **Phase F is in progress**: all three normalization modules
   (`NativeLayerNorm`, `NativeBatchNorm1d`, `NativeBatchNorm2d`) have
   shipped as modules composed from existing operations with no kernel, F5
   proved their state/checkpoint/ownership/graph-safety contracts by
   exhaustive test, F6 shipped a deterministic normalized training
   example with exact checkpoint resume
-  (`examples/native_normalization_training.py`), and F7 shipped the
+  (`examples/native_normalization_training.py`), F7 shipped the
   honest benchmark characterization
-  (`benchmarks/benchmark_native_normalization.py`), but the phase's
-  integration and closure milestones have not — dropout
+  (`benchmarks/benchmark_native_normalization.py`), and F8 shipped the
+  cross-cutting integration and semantic guardrails
+  (`tests/test_native_phase_f.py`), but the phase's closure milestone
+  has not — dropout
   or a native RNG, data loaders, native integer
   tensors, further dtypes or devices, CUDA, AMP, and any implicit
   dispatch into `tensorforge.Tensor`. Native checkpoints capture no
@@ -454,10 +455,28 @@ formula, and for the backward the stable `BatchNorm1d` on the equivalent
 reported with min, max, and spread after warm-up, `--smoke` and `--json`
 modes exist, **no result file is written, no speed is asserted, no timing
 number is committed, and no CI job asserts a duration** — measurement
-only, adding no capability. But Phase F is not finished.
-Milestones **F8–F9** — cross-cutting
-integration and phase closure — are **planned and have not started**:
-there is no Phase-F integration file and no phase closure, and no
+only, adding no capability. **F8 is complete**:
+`tests/test_native_phase_f.py` proves the cross-cutting interactions no
+single-module suite can — one integrated `Conv2d → BatchNorm2d → ReLU →
+MaxPool2d → Flatten → Linear → BatchNorm1d → ReLU → LayerNorm → Linear`
+classifier over **raw logits** and the fused loss, trained by
+`NativeAdam` and resumed **exactly** from one version-1 checkpoint (the
+loss suffix, every parameter, the NativeAdam state, **all four**
+running-statistic buffers, the final training logits, and the final
+evaluation-mode logits, predictions, and accuracy); BatchNorm eval
+snapshots, MaxPool2d winners, and cross-entropy probabilities coexisting
+in one eval graph and releasing exactly once; buffer-only mutation
+leaving an earlier eval graph valid while a full checkpoint load or an
+affine `copy_value_` correctly stales it through the unchanged parameter
+rule; the versioning archetypes; shared and frozen parameters; a
+non-contiguous NCHW input through the whole stack; strict stable/native
+separation; and each failure boundary tested **honestly** — BatchNorm
+transactions are per module, so one whole training step is *not*
+presented as globally transactional. Tests and documentation only,
+adding no capability. But Phase F is not finished.
+Milestone **F9** — the phase closure — is **planned and has not
+started**: there is no Release/Debug revalidation, no sanitizer pass, and
+no completion statement, and no
 normalization *operation*, kernel, or C ABI symbol exists at all. More activations/math, dropout and a native RNG, data
 loaders, and CPU optimization sit beyond Phase F, and CUDA/GPU
 experiments remain future work. See

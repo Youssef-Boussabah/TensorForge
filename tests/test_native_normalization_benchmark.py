@@ -1104,8 +1104,18 @@ def test_f7_touches_no_production_normalization_source():
         assert banned not in source, banned
 
 
-def test_the_phase_f_integration_file_is_still_f8s_work():
-    """F7 ships a benchmark and its test — not the cross-cutting Phase-F
-    integration file, which is F8's deliverable."""
-    assert not (REPO_ROOT / "tests" / "test_native_phase_f.py").exists()
+def test_the_benchmark_stays_separate_from_the_phase_f_integration_suite():
+    """F8 added the cross-cutting integration suite. That file owns
+    stack-level guarantees; this benchmark stays measurement only, and
+    neither absorbs the other — the integration suite times nothing and
+    asserts no duration."""
+    integration = REPO_ROOT / "tests" / "test_native_phase_f.py"
+    assert integration.is_file()
+    source = integration.read_text(encoding="utf-8")
+    imported = re.findall(r"^(?:import|from)\s+(\w+)", source, re.M)
+    for module_name in ("time", "timeit"):
+        assert module_name not in imported, module_name
+    assert "perf_counter" not in source
+    assert "median_s" not in source
+    # ...and the benchmark never became an example.
     assert not list((REPO_ROOT / "examples").glob("*normalization_benchmark*"))

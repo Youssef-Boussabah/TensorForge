@@ -276,9 +276,24 @@ explicit layer at a time:
   reported with min, max, and spread after warm-up, `--smoke`/`--json`
   modes exist, and **no result file is written, no speed is asserted, no
   timing number is committed, and no CI job asserts a duration** —
-  measurement only, no capability. Milestones F8–F9 — cross-cutting
-  integration and closure — have not started, so Phase F itself is still
-  in progress.
+  measurement only, no capability. **Milestone F8 shipped the
+  cross-cutting integration and semantic guardrails**
+  (`tests/test_native_phase_f.py`): one integrated `Conv2d → BatchNorm2d
+  → ReLU → MaxPool2d → Flatten → Linear → BatchNorm1d → ReLU → LayerNorm
+  → Linear` classifier over raw logits and the fused loss, trained by
+  `NativeAdam` and resumed **exactly** from one version-1 checkpoint —
+  all four running-statistic buffers, the final training logits, and the
+  evaluation-mode logits, predictions, and accuracy included. It also
+  proves BatchNorm snapshots, MaxPool2d winners, and cross-entropy
+  probabilities coexisting in one eval graph and releasing exactly once;
+  buffer mutation leaving an earlier graph valid while parameter mutation
+  correctly stales it; the versioning archetypes; shared and frozen
+  parameters; a non-contiguous NCHW input; strict stable/native
+  separation; and each failure boundary tested honestly — BatchNorm
+  transactions are **per module**, and one whole training step is *not*
+  presented as globally transactional. Tests and documentation only, no
+  capability. Milestone F9 — the phase closure — has not started, so
+  Phase F itself is still in progress.
 
 The execution path for a native training step is:
 

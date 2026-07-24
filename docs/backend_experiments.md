@@ -184,10 +184,25 @@ transformed-oracle correctness gate. Medians with min, max, and spread
 after warm-up; `--smoke` and `--json` modes; **no result file, no speed
 assertion, no committed timing number, and no CI timing threshold** —
 measurement only, adding no capability and changing no production
-behavior. But Phase F is not finished: milestones **F8–F9 are planned and
-have not started** — the cross-cutting integration and the closure. There
-is no Phase-F integration file and no phase closure. Dropout, a native
-RNG, and RNG checkpoint state are future work **beyond** Phase F.
+behavior. And **F8 is complete** — the cross-cutting integration and
+semantic guardrails `tests/test_native_phase_f.py`: one integrated
+`Conv2d → BatchNorm2d → ReLU → MaxPool2d → Flatten → Linear →
+BatchNorm1d → ReLU → LayerNorm → Linear` classifier over raw logits and
+the fused loss, trained by `NativeAdam` and resumed **exactly** from one
+version-1 checkpoint (all four running-statistic buffers and the
+evaluation-mode output included); three saved-resource families
+(BatchNorm snapshots, MaxPool2d winners, cross-entropy probabilities)
+coexisting in one eval graph and releasing exactly once; buffer versus
+parameter mutation attributed to the right cause; the versioning
+archetypes; shared and frozen parameters; a non-contiguous NCHW input;
+honest per-boundary failure atomicity (BatchNorm transactions are per
+module — one whole training step is *not* globally transactional); and
+capability/export/artifact guardrails derived from real registries and
+files — **tests and documentation only, no capability and no production
+change**. But Phase F is not finished: milestone **F9 is planned and has
+not started** — the phase closure. There is no Release/Debug
+revalidation, no sanitizer pass, and no completion statement. Dropout, a
+native RNG, and RNG checkpoint state are future work **beyond** Phase F.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 
@@ -795,7 +810,7 @@ the milestone-era wording pins. **Phase D is complete**; the native line's
 next phase after it was **Phase E — Native Classification and Stable
 Math**, which has since completed (E0–E10), followed by **Phase F —
 Native Normalization and Stateful Buffers**, which is currently
-**in progress** (F0-F7 complete; F8–F9 planned). Further activations and
+**in progress** (F0-F8 complete; F9 planned). Further activations and
 math, dropout with a native RNG, and a CPU optimization pass sit beyond
 Phase F, followed by
 the CUDA
@@ -3219,10 +3234,16 @@ assertion, no committed timing number, and no CI timing threshold**;
 **measurement only, no capability and no production change**). The
 numerical normalization module surface, its state/checkpoint/graph-safety
 contracts, one exact normalized resume, and the honest characterization
-are therefore complete; milestones **F8–F9 are planned and have not
-started**, so there is no cross-cutting Phase-F integration file and no
-phase closure — and still no normalization operation, kernel, or C ABI
-export.
+are therefore complete, and **F8** is complete too (the cross-cutting
+integration and semantic guardrails `tests/test_native_phase_f.py` — an
+integrated convolution/normalization/pooling/classification model trained
+and resumed exactly, the three saved-resource families proved to coexist
+safely, the buffer/parameter mutation distinction, the versioning
+archetypes, shared and frozen parameters, a non-contiguous NCHW input,
+honest per-boundary failure atomicity, and reality-derived capability
+guardrails; **tests and documentation only, no capability**). Milestone
+**F9 is planned and has not started**, so there is no phase closure —
+and still no normalization operation, kernel, or C ABI export.
 Dropout and a native RNG sit **beyond** Phase F. CUDA experiments
 remain a separate future branch (where `device` gains a second value),
 and an AMP / Tensor Core path is where `dtype` later gains

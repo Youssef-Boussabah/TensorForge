@@ -163,10 +163,24 @@ min, max, and spread after warm-up; ``--smoke``/``--json`` modes; **no
 result file, no speed assertion, no committed timing number, and no CI
 timing threshold** — **measurement only, no capability, operation,
 kernel, C ABI symbol, schema field, example, or export, and no production
-behavior changed**. **Phase F is not finished: milestones F8-F9 have not
-started**, so there is no cross-cutting Phase-F integration and no phase
-closure. What the native line still does
-**not** have: further
+behavior changed**. **Milestone F8 is complete** — the cross-cutting
+integration and semantic guardrails ``tests/test_native_phase_f.py``: one
+integrated ``Conv2d -> BatchNorm2d -> ReLU -> MaxPool2d -> Flatten ->
+Linear -> BatchNorm1d -> ReLU -> LayerNorm -> Linear`` classifier over
+raw logits and the fused loss, trained by ``NativeAdam`` and resumed
+**exactly** from one version-1 checkpoint (all four running-statistic
+buffers and the evaluation-mode output included); the three
+saved-resource families (BatchNorm snapshots, MaxPool2d winners,
+cross-entropy probabilities) coexisting in one eval graph and releasing
+exactly once; buffer mutation leaving an earlier graph valid while
+parameter mutation correctly stales it; the versioning archetypes; shared
+and frozen parameters; a non-contiguous NCHW input; strict stable/native
+separation; honest per-boundary failure atomicity; error-state recovery;
+the NumPy boundary; live-storage baselines; and reality-derived
+capability guardrails — **tests and documentation only, no capability and
+no production behavior changed**. **Phase F is not finished: milestone F9
+has not started**, so there is no phase closure. What the native line
+still does **not** have: further
 activations/math, dropout or a native RNG, float32/dtype expansion, CUDA,
 AMP, and data-pipeline abstractions.
 
