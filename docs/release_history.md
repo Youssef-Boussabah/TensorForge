@@ -1827,6 +1827,74 @@ closure) have not started, so there is still no normalized end-to-end
 training example, no normalization benchmark, and no Phase-F integration
 file. **F6 is the next milestone.**
 
+### Phase F — native normalization and stateful buffers (F6)
+
+**F6 is complete: the deterministic normalized training and exact
+checkpoint-resume proof — one example and its integration test, no
+numerical behavior and no new capability.** F6 assembles the pieces F0–F5
+shipped into a single end-to-end proof that a native model running **both**
+normalization families trains deterministically and resumes from a
+checkpoint exactly.
+
+`examples/native_normalization_training.py` trains
+`NativeNormalizedRegressor` — a named `NativeModule` subclass
+`hidden: NativeLinear(2, 8, seed=0)` → `batch_norm:
+NativeBatchNorm1d(8, momentum=0.1)` → `relu: NativeReLU()` → `layer_norm:
+NativeLayerNorm(8)` → `output: NativeLinear(8, 1, seed=1)`, so both
+normalization families run in every forward and the state keys are
+readable dotted names. `batch_norm` is the only stateful module
+(persistent `running_mean`/`running_var`); `layer_norm` contributes
+`weight`/`bias` affine parameters but **no buffers**. There is
+deliberately no `NativeBatchNorm2d` or convolutional layer — the full
+convolutional integration model is F8's scope. The task is one fixed
+eight-sample two-feature regression over frozen literals (nothing
+generated, shuffled, or sampled), the full batch in fixed order every
+step, driven by `NativeMSELoss` and `NativeAdam(lr=0.05)` for 24 steps.
+
+The training loss falls from ≈2.440245 to ≈0.027000 (a 98.9% reduction);
+two independently constructed uninterrupted runs are **bit-identical** in
+the whole loss history, every final parameter, the NativeAdam state, the
+running statistics, the final training-step prediction, and the final
+evaluation-mode output; and the global NumPy RNG cannot perturb the seeded
+construction. Every parameter is reached by backward, the running buffers
+receive no gradient and are excluded from the optimizer, BatchNorm running
+state advances once per training forward, and evaluation reads it without
+updating it. `run_resume_proof()` runs the schedule uninterrupted, then
+interrupted at step 10 — saving model **and** optimizer state (the
+BatchNorm running buffers ride as ordinary model state, format **version
+1**), reloading into a **completely fresh** model/optimizer pair, and
+continuing. The two agree **exactly** (equality, never a tolerance): the
+prefix, the whole remaining loss suffix, the first resumed loss at the
+split, every parameter, the complete model state, both `running_mean` and
+`running_var`, the NativeAdam hyperparameters/counters/`m`/`v`, the final
+training-step prediction, and the final **evaluation-mode** output. The
+fresh target's parameter and buffer identities survive the load; it is
+deliberately put in **eval** mode before loading and stays there
+afterwards, proving the training flag is runtime state and not serialized
+(it is switched back to train explicitly before continuing). Parameter
+versions are not compared across the load — the checkpoint does not
+serialize them, by design.
+
+A complete normalized update — forward through BatchNorm and LayerNorm
+(with the running-statistics update), scalar MSE, backward, the NativeAdam
+step, and zero_grad — passes a strict NumPy/conversion tripwire, producing
+exactly the unarmed reference's values. Every public helper representing a
+completed run returns plain Python values only; the reporting helpers
+close their `state_dict()` and optimizer-state snapshots; each run
+explicitly closes its parameters **and** its buffers (there is no
+`NativeModule.close()`); repeated steps and eval passes grow no native
+storage; and the checkpoint lives in a temporary directory removed
+automatically.
+
+**F6 added no C++ code, module, operation, kernel, C ABI symbol, ctypes
+declaration, `NativeTensorCore` method, custom backward, checkpoint schema
+field, benchmark, or export** — one example and its integration test, with
+every inventory exactly what F5 left and the checkpoint format at **version
+1**. The example composed only existing modules, loss, optimizer, and
+checkpoint APIs; no locked-contract bug was found, so no production file
+changed. **F7 (the honest benchmark characterization) is the next
+milestone.**
+
 ### A hardening milestone before Phase D
 
 Between Phase C and the native CNN stack, a repair-and-hardening pass

@@ -109,9 +109,10 @@ under Release and Debug builds with Clang ASan/UBSan and LeakSanitizer.
 progress**: the normalization module surface is complete —
 `NativeLayerNorm` (F2), `NativeBatchNorm1d` (F3, the first stateful
 native numerical module), and `NativeBatchNorm2d` (F4, NCHW) have all
-shipped, and **F5 has proved their state/checkpoint/ownership/graph-safety
-contracts by exhaustive test (tests and documentation only, no new
-capability)** — while the phase's end-to-end proof, benchmark,
+shipped, **F5 has proved their state/checkpoint/ownership/graph-safety
+contracts by exhaustive test**, and **F6 has shipped a deterministic
+normalized training example with exact checkpoint resume** (tests and
+documentation only, no new capability) — while the phase's benchmark,
 integration, and closure milestones have not — see below. The two
 engines never mix: explicit entry via
 `NativeTensor.from_array`, explicit exit via `to_numpy()`, no implicit
@@ -233,10 +234,19 @@ buffer-only-versus-full stale-graph distinction, the save/corrupt-load
 failure boundaries, eval-graph snapshot safety under `retain_graph` and a
 failed retryable backward, and the live-storage baselines). F5 is **tests
 and documentation only** — no numerical behavior, no new public
-capability, and the checkpoint format stays version 1. But Phase F is not
-finished. Milestones **F6–F9 are planned and have not started**: no
-deterministic normalized training run with exact resume, no normalization
-benchmark, no cross-cutting integration, no closure.
+capability, and the checkpoint format stays version 1. **F6 is complete**:
+`examples/native_normalization_training.py` trains a
+`Linear → BatchNorm1d → ReLU → LayerNorm → Linear` regressor for 24
+deterministic `NativeAdam` steps with `NativeMSELoss` (98.9% loss
+reduction), proves two uninterrupted runs bit-identical, and resumes an
+interrupted run into a fresh model/optimizer pair that reproduces the
+remaining losses, every parameter, the NativeAdam state, both BatchNorm
+`running_mean`/`running_var`, the final training-step prediction, and the
+final evaluation-mode output exactly (format version 1 unchanged, training
+flags runtime-only) — one example and its integration test, adding no
+capability. But Phase F is not finished. Milestones **F7–F9 are planned
+and have not started**: no normalization benchmark, no cross-cutting
+integration, no closure.
 Beyond Phase F
 (**not started**): dropout and a native RNG, more activations/math, data
 loaders, a CPU optimization phase, then the CUDA

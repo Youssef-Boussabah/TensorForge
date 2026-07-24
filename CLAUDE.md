@@ -115,13 +115,25 @@ safety under `retain_graph` and a failed retryable backward, and the
 live-storage baselines; **tests and documentation only — no numerical
 behavior and no new public capability**, with the exports, every
 capability registry, and the version-1 checkpoint format all exactly what
-F4 left, and no production behavior changed). Milestones
-F6–F9 (a deterministic
-normalized training run with exact resume, a benchmark characterization,
-cross-cutting integration, and closure) have **not started** — so there
-is no normalized training example, no normalization benchmark, no Phase-F
-integration file, and no phase closure, and no normalization operation,
-kernel, C ABI symbol, or custom backward exists at all. F6 is next.
+F4 left, and no production behavior changed). **F6 is complete** (the
+deterministic normalized training and exact checkpoint-resume proof —
+`examples/native_normalization_training.py`: a `NativeNormalizedRegressor`
+(`Linear → BatchNorm1d → ReLU → LayerNorm → Linear`, both normalization
+families in every forward, BatchNorm the only stateful module) trained for
+24 deterministic `NativeAdam` steps with `NativeMSELoss` (98.9% loss
+reduction), with two uninterrupted runs proved bit-identical and an
+interrupted run resumed into a **fresh** model/optimizer pair that
+reproduces the remaining loss suffix, every parameter, the NativeAdam
+state, both BatchNorm `running_mean`/`running_var`, the final
+training-step prediction, and the final **evaluation-mode** output exactly
+— checkpoint format version 1 unchanged, training flags runtime-only;
+**one example and its integration test, adding no capability, operation,
+kernel, schema field, benchmark, or export, and changing no production
+behavior**). Milestones F7–F9 (a benchmark characterization, cross-cutting
+integration, and closure) have **not started** — so there is no
+normalization benchmark, no Phase-F integration file, and no phase
+closure, and no normalization operation, kernel, C ABI symbol, or custom
+backward exists at all. F7 is next.
 Dropout/RNG, data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase F.
@@ -167,7 +179,7 @@ production-ready, not a PyTorch replacement.
   examples, roadmap, release history, and the native-line design
   contracts (`native_cnn_design.md` for Phase D,
   `native_classification_design.md` for Phase E,
-  `native_normalization_design.md` for Phase F — F0–F5 shipped). When a milestone changes the
+  `native_normalization_design.md` for Phase F — F0–F6 shipped). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the

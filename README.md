@@ -104,6 +104,17 @@ reached explicitly through `tensorforge.experimental` and
   step 15 and resumes into a fresh model/optimizer pair that reproduces
   the remaining losses, parameters, optimizer state, logits,
   predictions, and accuracy exactly.
+- **A native normalized-training proof**:
+  `examples/native_normalization_training.py` trains a
+  `Linear → BatchNorm1d → ReLU → LayerNorm → Linear` regressor — running
+  **both** normalization families in every forward, with `NativeBatchNorm1d`
+  the only stateful module — for 24 deterministic native Adam steps with
+  `NativeMSELoss` (98.9% loss reduction), then checkpoints at step 10 and
+  resumes into a fresh model/optimizer pair that reproduces the remaining
+  losses, every parameter, the NativeAdam state, the **BatchNorm running
+  statistics**, the final training-step prediction, and the final
+  **evaluation-mode** output exactly (format version 1, training flags
+  runtime-only).
 
 The exact operation-by-operation status lives in the
 [native support matrix](docs/native_support_matrix.md).
@@ -150,6 +161,7 @@ uv run python examples/native_mlp_training.py     # end-to-end native training
 uv run python examples/native_checkpoint_resume.py # save, restore, resume bit-for-bit
 uv run python examples/native_cnn_training.py     # end-to-end native CNN training + resume
 uv run python examples/native_classification_training.py  # native classification + exact resume
+uv run python examples/native_normalization_training.py   # native BatchNorm+LayerNorm training + exact resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke  # CNN characterization
 uv run python benchmarks/benchmark_native_classification.py --smoke        # classification characterization
@@ -213,7 +225,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
-- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **in progress**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), and F5 (state/checkpoint/graph-safety hardening — tests and documentation only) are complete, so the normalization *module* surface and its state/checkpoint/graph-safety contracts are proved; F6–F9 are planned)
+- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **in progress**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), and F6 (a deterministic normalized training example with exact resume) are complete; F7–F9 are planned)
 
 ## Limitations
 
@@ -228,15 +240,15 @@ Honest expectations:
 - The native CNN stack (Phase D) and the native classification stack
   (Phase E) are both complete — but "complete" means *these* capabilities
   work and are validated, not that the native line is finished. What the
-  native line still does **not** have: a **normalized end-to-end
-  training example or normalization benchmark** — **Phase F is in
-  progress**: all three normalization modules (`NativeLayerNorm`,
-  `NativeBatchNorm1d`, `NativeBatchNorm2d`) have shipped as modules
-  composed from existing operations with no kernel, and F5 has proved
-  their state/checkpoint/ownership/graph-safety contracts by exhaustive
-  test (tests and documentation only, no new capability), but the phase's
-  exact-resume proof, benchmark, integration, and closure
-  milestones have not — dropout
+  native line still does **not** have: a **normalization benchmark** —
+  **Phase F is in progress**: all three normalization modules
+  (`NativeLayerNorm`, `NativeBatchNorm1d`, `NativeBatchNorm2d`) have
+  shipped as modules composed from existing operations with no kernel, F5
+  proved their state/checkpoint/ownership/graph-safety contracts by
+  exhaustive test, and F6 shipped a deterministic normalized training
+  example with exact checkpoint resume
+  (`examples/native_normalization_training.py`), but the phase's
+  benchmark, integration, and closure milestones have not — dropout
   or a native RNG, data loaders, native integer
   tensors, further dtypes or devices, CUDA, AMP, and any implicit
   dispatch into `tensorforge.Tensor`. Native checkpoints capture no
@@ -409,13 +421,21 @@ distinction, the save/corrupt-load failure boundaries, eval-graph snapshot
 safety under `retain_graph` and a failed retryable backward, and the
 live-storage baselines); it is **tests and documentation only — no
 numerical behavior, no new capability, and the checkpoint format stays
-version 1**. But Phase F is not finished. Milestones **F6–F9** — a
-deterministic normalized training run with exact resume, an honest
-benchmark characterization, cross-cutting integration, and phase closure
-— are **planned and have not started**: there is no normalized training
-example, no normalization benchmark, and no phase closure, and no
-normalization *operation*, kernel, or C
-ABI symbol exists at all. More activations/math, dropout and a native RNG, data
+version 1**. **F6 is complete**: `examples/native_normalization_training.py`
+trains a `Linear → BatchNorm1d → ReLU → LayerNorm → Linear` regressor for
+24 deterministic `NativeAdam` steps with `NativeMSELoss` (a 98.9% loss
+reduction), then checkpoints at step 10 and resumes into a completely
+fresh model/optimizer pair that reproduces the remaining losses, every
+parameter, the NativeAdam state, the **BatchNorm running statistics**, the
+final training-step prediction, and the final **evaluation-mode** output
+exactly — proving two uninterrupted runs are bit-identical and the
+interrupted resume is exact (format version 1 unchanged, training flags
+runtime-only). It **adds no capability**: one example and its integration
+test, no operation, kernel, or schema change. But Phase F is not finished.
+Milestones **F7–F9** — an honest benchmark characterization, cross-cutting
+integration, and phase closure — are **planned and have not started**:
+there is no normalization benchmark and no phase closure, and no
+normalization *operation*, kernel, or C ABI symbol exists at all. More activations/math, dropout and a native RNG, data
 loaders, and CPU optimization sit beyond Phase F, and CUDA/GPU
 experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and

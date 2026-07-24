@@ -252,10 +252,20 @@ explicit layer at a time:
   `retain_graph` and a failed retryable backward, and explicit
   parameter/buffer closure returning storage to baseline. F5 is **tests
   and documentation only** — no numerical behavior, no new public
-  capability, and the checkpoint format stays version 1. Milestones F6–F9
-  — a deterministic normalized training proof with exact resume, a
-  benchmark, integration, and closure — have not started, so Phase F
-  itself is still in progress.
+  capability, and the checkpoint format stays version 1. **Milestone F6
+  shipped the deterministic normalized training and exact-resume proof**
+  (`examples/native_normalization_training.py`): a
+  `Linear → BatchNorm1d → ReLU → LayerNorm → Linear` regressor trained for
+  24 deterministic `NativeAdam` steps with `NativeMSELoss`, whose two
+  uninterrupted runs are bit-identical and whose interrupted checkpoint
+  resume into a fresh model/optimizer pair reproduces the remaining loss
+  suffix, every parameter, the NativeAdam state, both BatchNorm
+  `running_mean`/`running_var`, the final training-step prediction, and
+  the final evaluation-mode output exactly — one example and its
+  integration test, no capability or schema change, format version 1
+  unchanged, training flags runtime-only. Milestones F7–F9 — a benchmark,
+  integration, and closure — have not started, so Phase F itself is still
+  in progress.
 
 The execution path for a native training step is:
 

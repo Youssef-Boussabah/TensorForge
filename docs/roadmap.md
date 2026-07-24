@@ -917,7 +917,7 @@ The Python line is done; what remains is expansion on its own terms:
     build/packaging evolution. Native normalization then became its own
     phase, below.
   - **Phase F — Native Normalization and Stateful Buffers — in progress
-    (F0, F1, F2, F3, F4, and F5 complete; F6–F9 planned).** The **F0
+    (F0, F1, F2, F3, F4, F5, and F6 complete; F7–F9 planned).** The **F0
     architecture contract is written** —
     [native_normalization_design.md](native_normalization_design.md)
     locks the phase's objective (a fully native, differentiable,
@@ -1026,10 +1026,19 @@ The Python line is done; what remains is expansion on its own terms:
     `retain_graph` and a failed retryable backward, and the live-storage
     baselines); it is **tests and documentation only** — no numerical
     behavior, no new capability, and the checkpoint format stays version
-    1. **F6–F9 have not started** — no deterministic normalized training
-    example with exact resume, no normalization benchmark, no cross-cutting
-    integration file, and no phase closure — and no normalization
-    operation or kernel exists at all. **F6 is next.**
+    1. **F6 is complete**: `examples/native_normalization_training.py`
+    trains a `NativeLinear → NativeBatchNorm1d → NativeReLU →
+    NativeLayerNorm → NativeLinear` regressor for 24 deterministic
+    `NativeAdam` steps with `NativeMSELoss` (98.9% loss reduction), proves
+    two uninterrupted runs bit-identical, and resumes an interrupted run
+    into a fresh model/optimizer pair that reproduces the remaining losses,
+    every parameter, the NativeAdam state, both running statistics
+    (`running_mean`/`running_var`), the final training-step prediction, and
+    the final evaluation-mode output exactly (format version 1 unchanged,
+    training flags runtime-only) — one example and its integration test,
+    adding no capability. **F7–F9 have not started** — no normalization
+    benchmark, no cross-cutting integration file, and no phase closure —
+    and no normalization operation or kernel exists at all. **F7 is next.**
     Deliberately outside Phase F: dropout, a native RNG with its
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,

@@ -137,11 +137,21 @@ plus narrow additions to the generic buffer and checkpoint suites),
 proving §7-§10 of the design by executable test rather than by prose:
 **tests and documentation only, no numerical behavior and no new public
 capability**, with the exports, every capability registry, and the
-version-1 checkpoint format all exactly what F4 left. **Phase F is not
-finished: milestones F6-F9 have not started**, so there is no
-deterministic normalized training example with exact resume, no
-normalization benchmark, no cross-cutting Phase-F integration, and no
-phase closure. What the native line still does **not** have: further
+version-1 checkpoint format all exactly what F4 left. **Milestone F6 is
+complete** — the deterministic normalized training and exact
+checkpoint-resume proof ``examples/native_normalization_training.py``: a
+``Linear -> BatchNorm1d -> ReLU -> LayerNorm -> Linear`` regressor
+(both normalization families in every forward, BatchNorm the only stateful
+module) trained with ``NativeAdam``/``NativeMSELoss``, whose two
+uninterrupted runs are bit-identical and whose interrupted checkpoint
+resume into a fresh model/optimizer pair reproduces the losses,
+parameters, NativeAdam state, BatchNorm running statistics, final training
+prediction, and evaluation-mode output exactly — **one example and its
+integration test, no capability or schema change, format version 1
+unchanged**. **Phase F is not finished: milestones F7-F9 have not
+started**, so there is no normalization benchmark, no cross-cutting
+Phase-F integration, and no phase closure. What the native line still does
+**not** have: further
 activations/math, dropout or a native RNG, float32/dtype expansion, CUDA,
 AMP, and data-pipeline abstractions.
 

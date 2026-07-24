@@ -67,15 +67,25 @@ symbol, or custom backward exists).
 **The numerical normalization *module* surface is therefore complete**:
 `NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d` all
 exist and are exported, and the state/checkpoint/ownership/graph-safety
-contracts are proved by test. **F6–F9 are planned and have not started**,
-so Phase F itself is *not* complete: the deterministic normalized
-training run with exact resume, the benchmark characterization, the
-cross-cutting integration, and the phase closure have none of them
-happened — there is no normalized end-to-end training example, no
-normalization benchmark, and no Phase-F integration file. And no
-normalization *operation*, kernel, or C ABI symbol exists at all — all
-three modules are compositions of existing operations, not numerical
-primitives.
+contracts are proved by test. And **F6 is complete** (the deterministic
+normalized training and exact checkpoint-resume proof —
+`examples/native_normalization_training.py`: a
+`Linear → BatchNorm1d → ReLU → LayerNorm → Linear` regressor trained for
+24 deterministic `NativeAdam` steps with `NativeMSELoss` (a 98.9% loss
+reduction), whose two uninterrupted runs are bit-identical and whose
+interrupted checkpoint resume into a **fresh** model/optimizer pair
+reproduces the remaining loss suffix, every parameter, the NativeAdam
+state, both BatchNorm `running_mean` and `running_var`, the final
+training-step prediction, and the final **evaluation-mode** output
+exactly, with format version 1 unchanged and training flags runtime-only;
+**one example and its integration test, adding no capability, operation,
+kernel, schema field, benchmark, or export**). **F7–F9 are planned and
+have not started**, so Phase F itself is *not* complete: the benchmark
+characterization, the cross-cutting integration, and the phase closure
+have none of them happened — there is no normalization benchmark and no
+Phase-F integration file. And no normalization *operation*, kernel, or C
+ABI symbol exists at all — all three modules are compositions of existing
+operations, not numerical primitives.
 
 **What Phase F will deliver, in later milestones.** A fully native,
 differentiable, state-safe normalization stack:
@@ -928,15 +938,15 @@ copied.
 | F3 | `NativeBatchNorm1d` | **complete** |
 | F4 | `NativeBatchNorm2d` | **complete** |
 | F5 | Normalization state, checkpoint, and graph-safety hardening | **complete** |
-| F6 | Deterministic normalized training and exact resume | planned |
+| F6 | Deterministic normalized training and exact resume | **complete** |
 | F7 | Native normalization benchmark characterization | planned |
 | F8 | Cross-cutting Phase-F integration and semantic guardrails | planned |
 | F9 | Phase-F closure | planned |
 
 Each milestone's full contract follows; the table above is the status
 summary, and the registry remains the authority on what is live. **F0,
-F1, F2, F3, F4, and F5 are complete; F6 is the next milestone, and F6–F9
-have not started.**
+F1, F2, F3, F4, F5, and F6 are complete; F7 is the next milestone, and
+F7–F9 have not started.**
 
 ### F0 — Phase-F architecture contract and repository reconciliation *(this document)* — **complete**
 
@@ -1533,7 +1543,7 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
     have not started, so there is still no normalized end-to-end training
     example, no normalization benchmark, and no Phase-F integration file.
 
-### F6 — Deterministic normalized training and exact resume — planned
+### F6 — Deterministic normalized training and exact resume — **complete**
 
 - **Objective:** an end-to-end integration proof — a deterministic
   training run over a normalized native model, interrupted and resumed
@@ -1566,6 +1576,68 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
   claims; timing claims; any new capability.
 - **Completion criteria:** the example runs deterministically, the exact
   resume covers every element listed in §10, and no inventory grew.
+- **Shipped (F6).** Exactly the above — **one example and its integration
+  test, no capability, operation, kernel, C ABI symbol, `NativeTensorCore`
+  method, custom backward, checkpoint schema field, benchmark, or export;
+  no inventory changed and the checkpoint format stays version 1.** What
+  it delivered:
+
+  - **`examples/native_normalization_training.py`** trains
+    `NativeNormalizedRegressor` — a **named** `NativeModule` subclass
+    `hidden: NativeLinear(2, 8, seed=0)` → `batch_norm:
+    NativeBatchNorm1d(8, momentum=0.1)` → `relu: NativeReLU()` →
+    `layer_norm: NativeLayerNorm(8)` → `output: NativeLinear(8, 1,
+    seed=1)`, so **both** normalization families run in every forward and
+    the state keys are readable dotted names. `batch_norm` is the only
+    stateful module (persistent `running_mean`/`running_var`);
+    `layer_norm` contributes `weight`/`bias` affine parameters but **no
+    buffers**. There is deliberately no `NativeBatchNorm2d` or
+    convolutional layer — the full convolutional integration model is F8's
+    scope. The task is one fixed eight-sample two-feature regression over
+    frozen literals (nothing generated, shuffled, or sampled), the full
+    batch in fixed order every step, driven by `NativeMSELoss` and
+    `NativeAdam(lr=0.05)` for 24 steps.
+  - **The deterministic evidence, observed and asserted exactly.** The
+    training loss falls from ≈2.440245 to ≈0.027000 (a 98.9% reduction);
+    two independently constructed uninterrupted runs are **bit-identical**
+    in the whole loss history, every final parameter, the NativeAdam
+    state, the running statistics, the final training-step prediction, and
+    the final evaluation-mode output; and the global NumPy RNG cannot
+    perturb the seeded construction. Every parameter is reached by
+    backward, the running buffers receive no gradient and are excluded
+    from the optimizer, and BatchNorm running state advances once per
+    training forward while evaluation reads it without updating it.
+  - **The exact checkpoint resume.** `run_resume_proof()` runs the
+    schedule uninterrupted, then interrupted at step 10 — saving model
+    **and** optimizer state (the BatchNorm running buffers ride as
+    ordinary model state, format **version 1**), reloading into a
+    **completely fresh** model/optimizer pair, and continuing. The two
+    agree **exactly** (equality, never a tolerance): the prefix, the whole
+    remaining loss suffix, the first resumed loss at the split, every
+    parameter, the complete model state, both `running_mean` and
+    `running_var`, the NativeAdam hyperparameters/counters/`m`/`v`, the
+    final training-step prediction, and the final **evaluation-mode**
+    output. The fresh target's parameter and buffer identities survive the
+    load; the target is deliberately put in **eval** mode before loading
+    and stays there afterwards, proving the training flag is runtime state
+    and not serialized (it is switched back to train explicitly before
+    continuing). Parameter *versions* are not compared across the load —
+    the checkpoint does not serialize them, by design.
+  - **Native and clean.** A complete normalized update — forward through
+    BatchNorm and LayerNorm (with the running-statistics update), scalar
+    MSE, backward, the NativeAdam step, and zero_grad — passes a strict
+    NumPy/conversion tripwire, producing exactly the unarmed reference's
+    values. Every public helper representing a completed run returns
+    plain Python values only; the reporting helpers close their
+    `state_dict()` and optimizer-state snapshots; each run explicitly
+    closes its parameters **and** its buffers (there is no
+    `NativeModule.close()`); repeated steps and eval passes grow no native
+    storage; and the checkpoint lives in a temporary directory removed
+    automatically.
+  - **No production behavior changed.** The example composed only existing
+    modules, loss, optimizer, and checkpoint APIs; no locked-contract bug
+    was found, so no production file was touched. **F7 (the honest
+    benchmark characterization) is next.**
 
 ### F7 — Native normalization benchmark characterization — planned
 
@@ -1724,11 +1796,13 @@ must be verified against reality for the whole normalization surface.
 
 ## 18. Phase-F status statement
 
-**Phase F is in progress: F0, F1, F2, F3, F4, and F5 are complete; F6–F9
-have not started.** The experimental native line now has the complete
-numerical normalization *module* surface — LayerNorm and both BatchNorm
-shapes — and their state, checkpoint, ownership, and graph-safety
-contracts are proved by executable test, but the phase is not finished:
+**Phase F is in progress: F0, F1, F2, F3, F4, F5, and F6 are complete;
+F7–F9 have not started.** The experimental native line now has the
+complete numerical normalization *module* surface — LayerNorm and both
+BatchNorm shapes — their state, checkpoint, ownership, and graph-safety
+contracts are proved by executable test, and a deterministic normalized
+training run resumes exactly from a checkpoint, but the phase is not
+finished:
 
 - `NativeLayerNorm` exists, is exported from `tensorforge.experimental`,
   and is registered in `NATIVE_MODULES`; `"layernorm"` has left
@@ -1761,11 +1835,23 @@ contracts are proved by executable test, but the phase is not finished:
   **Tests and documentation only — no numerical behavior, no new public
   capability, no checkpoint schema change; the checkpoint format stays
   version 1.**
-- **Phase F is still in progress.** F6–F9 — the deterministic normalized
-  training run with exact resume, the benchmark characterization, the
-  cross-cutting integration, and the closure — have not started. There is
-  no normalized end-to-end training example, no normalization benchmark,
-  and no Phase-F integration file.
+- **F6 is complete.** `examples/native_normalization_training.py` trains
+  `NativeNormalizedRegressor` (`Linear → BatchNorm1d → ReLU → LayerNorm →
+  Linear`, both normalization families in every forward, BatchNorm the
+  only stateful module) for 24 deterministic `NativeAdam` steps with
+  `NativeMSELoss` (98.9% loss reduction), proves two uninterrupted runs
+  bit-identical, and resumes an interrupted run into a **fresh**
+  model/optimizer pair that reproduces the remaining loss suffix, every
+  parameter, the NativeAdam state, both `running_mean` and `running_var`,
+  the final training-step prediction, and the final **evaluation-mode**
+  output exactly — with buffer/parameter identities preserved across the
+  load, the training flag proved runtime-only, and the checkpoint format
+  version **1**. **One example and its integration test — no capability,
+  operation, kernel, schema field, or benchmark.**
+- **Phase F is still in progress.** F7–F9 — the benchmark
+  characterization, the cross-cutting integration, and the closure — have
+  not started. There is no normalization benchmark and no Phase-F
+  integration file.
 - **No normalization *operation* is differentiable, and none appears in
   any operation inventory** — `NativeLayerNorm`, `NativeBatchNorm1d`,
   and `NativeBatchNorm2d` are all composed from existing operations, so
@@ -1793,10 +1879,17 @@ shape needed — and the removal of `"batchnorm"` from `UNSUPPORTED`. What
 hardening test surface for §7–§10, and the documentation reconciliation
 that came with it — **tests and documentation only, no numerical behavior
 and no new capability, with the exports, every capability registry, and
-the version-1 checkpoint format all exactly what F4 left.** The remaining
-work described above (the exact normalized resume, the benchmark, the
-integration, the closure) is a set of commitments about how F6–F9 *will*
-finish Phase F, not claims about what exists.
+the version-1 checkpoint format all exactly what F4 left.** What **F6**
+delivered is `examples/native_normalization_training.py` and its
+integration test: a deterministic normalized training run whose two
+uninterrupted repetitions are bit-identical and whose interrupted
+checkpoint resume into a fresh model/optimizer pair is exact — the
+running statistics, the NativeAdam state, the final training-step
+prediction, and the evaluation-mode output all reproduced — **one example
+and one test, no capability and no schema change.** The remaining work
+described above (the benchmark, the integration, the closure) is a set of
+commitments about how F7–F9 *will* finish Phase F, not claims about what
+exists.
 
 Deliberately outside Phase F and still unplanned: dropout, a native RNG
 and RNG checkpoint state, further activations (`tanh`, `sigmoid`, GELU),
