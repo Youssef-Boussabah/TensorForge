@@ -245,6 +245,7 @@ def test_experimental_exports_stay_intentional():
         "save_native_checkpoint", "load_native_checkpoint",
         "NativeCrossEntropyLoss", "native_accuracy",   # Phase E, E7
         "NativeLayerNorm",                              # Phase F, F2
+        "NativeBatchNorm1d",                            # Phase F, F3
     }
     for name in experimental.__all__:
         assert hasattr(experimental, name)
@@ -1631,20 +1632,24 @@ def test_phase_f_is_described_as_in_progress_not_complete():
 
 def test_normalization_is_module_only_with_no_new_native_operation():
     """Checked against the live registry and exports rather than prose.
-    Milestone F2 shipped ``NativeLayerNorm`` as a *module composed from
-    existing operations*: BatchNorm is still absent, and — for LayerNorm
-    and BatchNorm alike — there is no normalization operation, kernel,
-    Core method, ``NativeTensor`` method, or C ABI symbol anywhere. F2
-    added a module, not a numerical primitive."""
+    Milestone F2 shipped ``NativeLayerNorm`` and milestone F3 shipped
+    ``NativeBatchNorm1d``, each as a *module composed from existing
+    operations*: the NCHW BatchNorm is still absent, and — for every
+    normalization shape alike — there is no normalization operation,
+    kernel, Core method, ``NativeTensor`` method, or C ABI symbol
+    anywhere. F2 and F3 added modules, not numerical primitives."""
     from tensorforge.backends import cpp
     import tensorforge.experimental as experimental
 
-    # LayerNorm shipped as a module (F2); BatchNorm has not (F3/F4).
+    # LayerNorm shipped as a module (F2), the (N, C) BatchNorm as another
+    # (F3); the NCHW shape has not (F4), which is exactly why the
+    # unqualified "batchnorm" capability is still unsupported.
     assert "layernorm" not in cpp.UNSUPPORTED
     assert "batchnorm" in cpp.UNSUPPORTED
-    assert "NativeLayerNorm" in cpp.NATIVE_MODULES
-    assert "NativeLayerNorm" in experimental.__all__
-    for module in ("NativeBatchNorm1d", "NativeBatchNorm2d"):
+    for module in ("NativeLayerNorm", "NativeBatchNorm1d"):
+        assert module in cpp.NATIVE_MODULES, module
+        assert module in experimental.__all__, module
+    for module in ("NativeBatchNorm2d",):
         assert module not in cpp.NATIVE_MODULES, module
         assert module not in experimental.__all__, module
         assert not hasattr(experimental, module), module
@@ -1654,8 +1659,9 @@ def test_normalization_is_module_only_with_no_new_native_operation():
         assert module not in cpp.NATIVE_LOSSES, module
         assert module not in cpp.NATIVE_METRICS, module
 
-    # No normalization *operation* at any layer, and no raw kernel — this is
-    # the load-bearing F2 fact: LayerNorm is a composition, not a primitive.
+    # No normalization *operation* at any layer, and no raw kernel — this
+    # is the load-bearing F2/F3 fact: both are compositions, not
+    # primitives.
     for name in _NORMALIZATION_OP_NAMES:
         assert name not in cpp.TENSOR_CORE_OPS, name
         assert name not in cpp.AUTOGRAD_OPS, name
@@ -1686,11 +1692,12 @@ def test_normalization_is_module_only_with_no_new_native_operation():
     assert not (REPO_ROOT / "cpp" / "src" / "normalization.cpp").exists()
 
 
-def test_phase_f_export_surface_adds_only_native_layernorm():
+def test_phase_f_export_surface_adds_only_the_shipped_normalization_modules():
     """The public experimental surface is exactly what Phase E left plus
-    the one Phase-F addition so far — ``NativeLayerNorm`` (F2) — in both
-    directions: nothing else added, nothing lost. The BatchNorm modules
-    (F3/F4) have not shipped and must not appear here."""
+    the Phase-F additions so far — ``NativeLayerNorm`` (F2) and
+    ``NativeBatchNorm1d`` (F3) — in both directions: nothing else added,
+    nothing lost. ``NativeBatchNorm2d`` (F4) has not shipped and must not
+    appear here."""
     import tensorforge
     import tensorforge.experimental as experimental
 
@@ -1701,9 +1708,10 @@ def test_phase_f_export_surface_adds_only_native_layernorm():
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
         "NativeCrossEntropyLoss", "native_accuracy",
-        "NativeLayerNorm",   # Phase F, milestone F2
+        "NativeLayerNorm",       # Phase F, milestone F2
+        "NativeBatchNorm1d",     # Phase F, milestone F3
     }
-    for absent in ("NativeBatchNorm1d", "NativeBatchNorm2d"):
+    for absent in ("NativeBatchNorm2d",):
         assert absent not in experimental.__all__, absent
     # No duplicates, and nothing leaks into the stable namespace.
     assert len(experimental.__all__) == len(set(experimental.__all__))
@@ -1712,20 +1720,21 @@ def test_phase_f_export_surface_adds_only_native_layernorm():
         assert not hasattr(tensorforge, name), name
 
 
-def test_phase_f_changes_only_the_layernorm_module_inventory():
-    """Phase F's only *operation*-surface change so far is milestone F2's
-    module: ``NativeLayerNorm`` joined ``NATIVE_MODULES`` and
-    ``"layernorm"`` left ``UNSUPPORTED``. Everything else is exactly the
-    Phase-E surface — no new operation, kernel, loss, metric, or dtype —
-    and ``STATE_SUPPORT``'s F1 reconciliation has its own guardrail below.
-    Because LayerNorm is a *module composed from existing operations*, no
-    operation inventory grew."""
+def test_phase_f_changes_only_the_normalization_module_inventory():
+    """Phase F's only *operation*-surface changes so far are two modules:
+    ``NativeLayerNorm`` (F2) and ``NativeBatchNorm1d`` (F3) joined
+    ``NATIVE_MODULES``, and ``"layernorm"`` left ``UNSUPPORTED`` while
+    ``"batchnorm"`` stayed (F4 has not shipped the NCHW shape). Everything
+    else is exactly the Phase-E surface — no new operation, kernel, loss,
+    metric, or dtype — and ``STATE_SUPPORT``'s F1 reconciliation has its
+    own guardrail below. Because both are *modules composed from existing
+    operations*, no operation inventory grew."""
     from tensorforge.backends import cpp
 
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
-        "NativeLayerNorm",
+        "NativeLayerNorm", "NativeBatchNorm1d",
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
@@ -1800,32 +1809,209 @@ def test_f1_added_no_normalization_capability():
     assert "batchnorm" in cpp.UNSUPPORTED
 
 
-def test_no_document_claims_unshipped_normalization_is_done():
-    """After F2, LayerNorm really *is* shipped, so a document may say so.
-    What no status surface may claim is the part that has **not** shipped:
-    BatchNorm, the running statistics, any milestone from F3 on, or the
-    whole phase. The registry premise for each is checked first."""
+def test_f3_shipped_the_first_stateful_native_module():
+    """F3's own claims, checked against the live code and registry: the
+    module exists and is exported, it is the first *stateful* native
+    numerical module (parameters **and** persistent buffers), it added no
+    operation/Core/kernel/ABI capability, the checkpoint format is still
+    version 1, and the design section records it as complete while
+    naming F4 as the milestone that may finally free ``"batchnorm"``."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+    import tensorforge.experimental as experimental
+
+    # It exists, is exported, and is in exactly one inventory.
+    assert "NativeBatchNorm1d" in cpp.NATIVE_MODULES
+    assert "NativeBatchNorm1d" in experimental.__all__
+    assert hasattr(experimental, "NativeBatchNorm1d")
+    for inventory in (cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS, cpp.RAW_KERNELS,
+                      cpp.NATIVE_LOSSES, cpp.NATIVE_METRICS,
+                      cpp.NATIVE_OPTIMIZERS, cpp.STATE_SUPPORT,
+                      cpp.UNSUPPORTED):
+        assert "NativeBatchNorm1d" not in inventory
+
+    # It really is stateful: parameters first, persistent buffers second.
+    module = experimental.NativeBatchNorm1d(3)
+    try:
+        assert [name for name, _ in module.named_parameters()] == [
+            "gamma", "beta"
+        ]
+        assert [name for name, _ in module.named_buffers()] == [
+            "running_mean", "running_var"
+        ]
+        state = module.state_dict()
+        assert list(state) == [
+            "gamma", "beta", "running_mean", "running_var"
+        ]
+        for snapshot in state.values():
+            snapshot.close()
+    finally:
+        for tensor in module.parameters() + module.buffers():
+            tensor.close()
+
+    # The checkpoint format did not move for the new persistent keys.
+    assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
+    assert native_checkpoint._FORMAT_VERSION == 1
+
+    # No numerical primitive appeared at any layer, and no C++ unit.
+    for name in ("batch_norm", "batchnorm", "batch_norm_forward",
+                 "batch_norm_backward"):
+        assert name not in cpp.TENSOR_CORE_OPS, name
+        assert name not in cpp.AUTOGRAD_OPS, name
+        assert name not in cpp.RAW_KERNELS, name
+        assert not hasattr(cpp.NativeTensorCore, name), name
+    for symbol in ("tf_core_batch_norm", "tf_core_batch_norm_forward",
+                   "tf_core_batch_norm_backward"):
+        assert symbol not in cpp._CHECKED_KERNELS, symbol
+    for source in (REPO_ROOT / "cpp" / "src").glob("*.cpp"):
+        assert "batch_norm" not in source.read_text(encoding="utf-8"), source.name
+    # And no custom BatchNorm backward was written in Python either.
+    implementation = (
+        REPO_ROOT / "src" / "tensorforge" / "experimental" / "native_batchnorm.py"
+    ).read_text(encoding="utf-8")
+    assert "_from_op(" not in implementation
+    assert "def _backward" not in implementation
+    # It does use the F1 transaction rather than a second one.
+    assert "_native_state" in implementation
+    assert "replace_native_state" in implementation
+    # ...and it never routes a running update through the public loader.
+    assert not re.search(r"\.load_state_dict\(", implementation)
+
+    # The design records F3 complete and keeps F4 as the batchnorm gate.
+    f3 = _design_section("F3 —", relative_path=PHASE_F_DESIGN)
+    assert "complete" in f3.lower(), "the design does not record F3 as shipped"
+    assert "batchnorm" in cpp.UNSUPPORTED
+
+
+def test_f3_documents_the_running_buffers_and_the_graph_capture_ban():
+    """The two load-bearing F3 facts must be written down where a reader
+    finds them: the running statistics are *persistent native state*, and
+    capturing a live registered buffer in a graph is forbidden."""
     from tensorforge.backends import cpp
 
-    # Premise: BatchNorm and its running statistics are not implemented.
-    assert "batchnorm" in cpp.UNSUPPORTED
-    for module in ("NativeBatchNorm1d", "NativeBatchNorm2d"):
-        assert module not in cpp.NATIVE_MODULES
+    assert "NativeBatchNorm1d" in cpp.NATIVE_MODULES     # premise
 
-    # The subject is only the *unshipped* surface — LayerNorm is excluded
-    # because it has genuinely shipped.
-    subject = (r"(BatchNorm|NativeBatchNorm\w*|running_mean|running_var)")
+    design = _status_text(PHASE_F_DESIGN)
+    matrix = _status_text("docs/native_support_matrix.md")
+    implementation = (
+        REPO_ROOT / "src" / "tensorforge" / "experimental" / "native_batchnorm.py"
+    ).read_text(encoding="utf-8")
+
+    for text, where in ((design, PHASE_F_DESIGN),
+                        (matrix, "docs/native_support_matrix.md"),
+                        (implementation, "native_batchnorm.py")):
+        lowered = text.lower()
+        assert "running_mean" in text and "running_var" in text, where
+        assert "persistent" in lowered, where
+        assert "snapshot" in lowered, where
+        assert re.search(r"never.{0,60}(captur|rereadable|graph operand)"
+                         r"|graph-free snapshot|immutable snapshot", lowered), where
+        assert "atomic" in lowered, where
+    # The registry-level premise for the ban: buffers still carry no
+    # value version, which is only safe because graphs never read them.
+    from tensorforge.experimental import NativeParameter, NativeTensor
+    assert hasattr(NativeParameter, "version")
+    assert not hasattr(NativeTensor, "version")
+
+
+def test_f3_scopes_the_snapshot_rule_to_buffer_only_mutation():
+    """The §7 snapshot rule protects an eval graph from *running-buffer*
+    mutation. A full checkpoint load also replaces ``gamma``/``beta``, and
+    the pre-existing parameter-version guard then correctly stales that
+    graph. No status surface may flatten the two into "any checkpoint load
+    leaves an earlier eval graph valid", and the design must say which is
+    which — while still forbidding live-buffer capture."""
+    from tensorforge.backends import cpp
+
+    assert "NativeBatchNorm1d" in cpp.NATIVE_MODULES     # premise
+
+    # The design states the distinction explicitly, in §7 and in F3.
+    section = _top_level_section("Mutable-buffer graph safety")
+    lowered = section.lower()
+    assert "gamma" in lowered and "beta" in lowered, (
+        "§7 no longer says which state a full load *does* stale"
+    )
+    assert re.search(r"buffer.only|only\s+running_mean", lowered), (
+        "§7 no longer scopes the rule to buffer-only loads"
+    )
+    assert re.search(r"stale.?parameter|stale-value guard|parameter contract",
+                     lowered), (
+        "§7 no longer names the parameter-version guard as the other case"
+    )
+    # ...and it still forbids capturing the live buffer.
+    assert re.search(r"never be captured|never captured", lowered)
+
+    f3 = _design_section("F3 —", relative_path=PHASE_F_DESIGN)
+    f3_lowered = f3.lower()
+    assert "load_native_checkpoint" in f3_lowered, (
+        "the F3 record does not name the real checkpoint path it proved"
+    )
+    assert re.search(r"buffer.only", f3_lowered), (
+        "the F3 record does not scope its checkpoint proof to a "
+        "buffer-only load"
+    )
+
+    # No surface may make the unqualified claim.
+    overclaim = re.compile(
+        r"(any|every|a)\s+checkpoint load[^.]{0,80}?"
+        r"(leaves|keeps)[^.]{0,60}(valid|unchanged|correct)",
+        re.I,
+    )
+    for surface in AUTHORITATIVE_STATUS_SURFACES + PHASE_STATUS_DOCS + (
+        PHASE_F_DESIGN,
+    ):
+        text = _status_text(surface)
+        match = overclaim.search(text)
+        assert match is None, (surface, match.group(0) if match else "")
+
+    # The test that proves the checkpoint half really drives the archive
+    # path over the module's own buffer objects, not a state dictionary.
+    suite = (REPO_ROOT / "tests" / "test_native_batchnorm1d.py").read_text(
+        encoding="utf-8"
+    )
+    assert "test_buffer_only_checkpoint_load_cannot_change_an_earlier_eval_backward" in suite
+    assert "test_full_checkpoint_load_stales_the_graph_through_parameters_not_buffers" in suite
+    assert "load_native_checkpoint" in suite
+    # ...and the buffer-only holder it uses stayed test-only.
+    import tensorforge.experimental as experimental
+    for name in ("_RunningStatHolder", "RunningStatHolder"):
+        assert not hasattr(experimental, name), name
+        assert name not in experimental.__all__, name
+
+
+def test_no_document_claims_unshipped_normalization_is_done():
+    """After F2 and F3, LayerNorm and the ``(N, C)`` BatchNorm really
+    *are* shipped, so a document may say so — running statistics
+    included. What no status surface may claim is the part that has
+    **not** shipped: ``NativeBatchNorm2d`` / the NCHW shape, any milestone
+    from F4 on, the unqualified ``batchnorm`` capability, or the whole
+    phase. The registry premise for each is checked first."""
+    from tensorforge.backends import cpp
+
+    # Premise: the NCHW BatchNorm is not implemented, so the unqualified
+    # capability stays unsupported.
+    assert "batchnorm" in cpp.UNSUPPORTED
+    assert "NativeBatchNorm1d" in cpp.NATIVE_MODULES
+    assert "NativeBatchNorm2d" not in cpp.NATIVE_MODULES
+
+    # The subject is only the *unshipped* surface — LayerNorm and the 1-D
+    # BatchNorm (running statistics included) are excluded because they
+    # have genuinely shipped.
+    subject = r"(NativeBatchNorm2d|NCHW BatchNorm|BatchNorm2d)"
     shipped = (r"(is|are|now)\s+(supported|implemented|shipped|complete"
                r"|available)")
     claims = (
-        # "BatchNorm is implemented", either word order.
+        # "NativeBatchNorm2d is implemented", either word order.
         re.compile(subject + r"[^.]{0,60}?" + shipped, re.I),
-        # "F3 shipped BatchNorm", "F4 implemented NativeBatchNorm2d", ...
-        re.compile(r"\bF[3-9]\b[^.]{0,60}?(ship|implement|add)\w*[^.]{0,30}?"
+        # "F4 shipped NativeBatchNorm2d", ...
+        re.compile(r"\bF[4-9]\b[^.]{0,60}?(ship|implement|add)\w*[^.]{0,30}?"
                    + subject, re.I),
-        # Any milestone from F3 on described as done.
-        re.compile(r"\bF[3-9]\b[^.]{0,40}?\b(is|was)\s+"
+        # Any milestone from F4 on described as done.
+        re.compile(r"\bF[4-9]\b[^.]{0,40}?\b(is|was)\s+"
                    r"(complete|completed|shipped|implemented)\b", re.I),
+        # The unqualified capability described as finished.
+        re.compile(r"BatchNorm[^.]{0,40}?(support|capability)[^.]{0,30}?"
+                   r"\b(is|are)\s+complete", re.I),
         # The phase itself described as finished.
         re.compile(r"Phase F\b[^.F]{0,40}?\b(is|was|are|now)\s+"
                    r"(complete|completed|shipped|implemented)\b", re.I),
@@ -2010,21 +2196,33 @@ def test_phase_f_design_records_the_daedalus_comparison():
 
 
 def test_phase_f_ladder_marks_shipped_milestones_complete():
-    """The ladder's honesty check, in its F2 form: F0, F1, and F2 have
-    shipped and read complete; F3 through F9 have not started and read
-    planned. F0's section still denies adding numerical behavior, and the
-    phase statement reads in-progress, not complete."""
+    """The ladder's honesty check, derived from the live registry rather
+    than from a hard-coded milestone number: every module milestone whose
+    module is actually in ``NATIVE_MODULES`` must read complete, and every
+    milestone after the last shipped one must read planned. F0's section
+    still denies adding numerical behavior, and the phase statement reads
+    in-progress, not complete."""
+    from tensorforge.backends import cpp
+
     text = _normalized_doc(PHASE_F_DESIGN)
     ladder = _design_section("Milestone ladder", relative_path=PHASE_F_DESIGN)
-    # F0 (the contract), F1 (the state transaction), and F2
-    # (NativeLayerNorm) have shipped.
-    for done in (0, 1, 2):
+    # F0 (the contract) and F1 (the state transaction) always ship first;
+    # F2/F3/F4 ship exactly when their module reaches the registry.
+    shipped = [0, 1]
+    for milestone, module in ((2, "NativeLayerNorm"),
+                              (3, "NativeBatchNorm1d"),
+                              (4, "NativeBatchNorm2d")):
+        if module in cpp.NATIVE_MODULES:
+            shipped.append(milestone)
+    # The shipped set must be a contiguous prefix — no milestone may be
+    # skipped.
+    assert shipped == list(range(len(shipped))), shipped
+    for done in shipped:
         row = re.search(rf"\|\s*F{done}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for F{done}"
         assert "complete" in row.group(1).lower(), f"F{done} is not complete"
-    # Everything from F3 on is BatchNorm and the phase machinery, and none
-    # of it has started.
-    for planned in range(3, 10):
+    # Everything after the last shipped milestone has not started.
+    for planned in range(len(shipped), 10):
         row = re.search(rf"\|\s*F{planned}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for F{planned}"
         status = row.group(1).lower()

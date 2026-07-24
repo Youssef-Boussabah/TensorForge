@@ -104,11 +104,36 @@ correction) with no kernel, C ABI symbol, `NativeTensorCore` method,
 custom backward, functional helper, or `NativeTensor.layer_norm`
 operation. `"NativeLayerNorm"` joined `NATIVE_MODULES` and the exports,
 and `"layernorm"` left `UNSUPPORTED`.
+**F3** then shipped `NativeBatchNorm1d`
+(`src/tensorforge/experimental/native_batchnorm.py`) — the **first
+stateful native numerical module**: `(N, C)` batch normalization whose
+training statistics are differentiable (gradients flow through the batch
+mean *and* the population variance, never detached), whose
+`running_mean`/`running_var` are persistent native buffers advanced by
+`(1 − momentum)·running + momentum·batch` from the *same* batch
+statistics — computed graph-free and committed as one **atomic
+two-buffer transaction** through the F1 primitive, preserving both
+identities, closing each replaced core exactly once, and moving no
+parameter version — and whose evaluation mode reads **independent owning
+graph-free snapshots** of those buffers, so no registered buffer is ever
+a rereadable graph operand and a later training step, buffer-only
+`load_state_dict()`, or buffer-only `load_native_checkpoint()` cannot
+change an earlier eval graph's gradient (a full checkpoint load also
+replaces `gamma`/`beta`, so the unchanged v3.7 parameter-version guard
+correctly stales that graph — a parameter contract, never a buffer
+effect). It too
+is composed entirely from existing native operations, adding no kernel, C
+ABI symbol, `NativeTensorCore` method, custom backward, functional
+helper, or `NativeTensor.batch_norm` operation, and the native checkpoint
+format stays at **version 1**. `"NativeBatchNorm1d"` joined
+`NATIVE_MODULES` and the exports, while `"batchnorm"` **stayed** in
+`UNSUPPORTED` — the unqualified name is only honest once the NCHW shape
+exists too.
 Milestones
-**F3–F9 are planned and have not started**, so native BatchNorm does not
-exist and `batchnorm` remains in the
-registry's `UNSUPPORTED` tuple. Dropout, a native RNG, and RNG
-checkpoint state are future work **beyond** Phase F.
+**F4–F9 are planned and have not started**, so the NCHW
+`NativeBatchNorm2d` does not exist and the unqualified `batchnorm`
+remains in the registry's `UNSUPPORTED` tuple. Dropout, a native RNG, and
+RNG checkpoint state are future work **beyond** Phase F.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 
@@ -716,7 +741,7 @@ the milestone-era wording pins. **Phase D is complete**; the native line's
 next phase after it was **Phase E — Native Classification and Stable
 Math**, which has since completed (E0–E10), followed by **Phase F —
 Native Normalization and Stateful Buffers**, which is currently
-**in progress** (F0, F1, and F2 complete; F3–F9 planned). Further activations and
+**in progress** (F0, F1, F2, and F3 complete; F4–F9 planned). Further activations and
 math, dropout with a native RNG, and a CPU optimization pass sit beyond
 Phase F, followed by
 the CUDA
@@ -3098,10 +3123,19 @@ and the population variance, composed entirely from existing native
 operations with `sqrt(var + eps)` ordering and no kernel, ABI symbol,
 `NativeTensorCore` method, custom backward, or `NativeTensor`
 normalization operation; now in `NATIVE_MODULES` and the exports, with
-`"layernorm"` removed from `UNSUPPORTED`); milestones **F3–F9 are planned
-and have not started**, so no `NativeBatchNorm1d` or
-`NativeBatchNorm2d` exists, no normalization operation is
-differentiable, and no normalization kernel or C ABI export exists.
+`"layernorm"` removed from `UNSUPPORTED`), and **F3** is complete
+(`NativeBatchNorm1d` — the first stateful native numerical module:
+`(N, C)` batch normalization with differentiable training statistics,
+persistent native running-statistic buffers advanced by a graph-free
+atomic two-buffer transaction, and evaluation from graph-safe immutable
+snapshots; again composed from existing operations, so again no kernel,
+ABI symbol, `NativeTensorCore` method, custom backward, or
+`NativeTensor.batch_norm` operation, and the checkpoint format stays at
+version 1; now in `NATIVE_MODULES` and the exports, with `"batchnorm"`
+**kept** in `UNSUPPORTED` until the NCHW shape ships); milestones
+**F4–F9 are planned and have not started**, so no `NativeBatchNorm2d`
+exists, no normalization operation is differentiable, and no
+normalization kernel or C ABI export exists.
 Dropout and a native RNG sit **beyond** Phase F. CUDA experiments
 remain a separate future branch (where `device` gains a second value),
 and an AMP / Tensor Core path is where `dtype` later gains

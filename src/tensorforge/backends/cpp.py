@@ -189,8 +189,20 @@ NATIVE_MODULES = (
     # operation — there is no "layer_norm" kernel, C ABI symbol,
     # NativeTensorCore method, or NativeTensor.layer_norm autograd op, so
     # it appears here and nowhere in the op inventories. "layernorm" left
-    # UNSUPPORTED when it shipped; "batchnorm" stays there until F3/F4.
+    # UNSUPPORTED when it shipped; "batchnorm" stays there until F4.
     "NativeLayerNorm",
+    # "NativeBatchNorm1d" (Phase F, milestone F3) is the first *stateful*
+    # native numerical module: (N, C) batch normalization with
+    # differentiable training statistics, persistent native
+    # running_mean/running_var buffers advanced by a graph-free atomic
+    # two-buffer transaction, and graph-safe immutable snapshots in eval
+    # mode. It is composed from the same existing operations, so — like
+    # LayerNorm — it adds no "batch_norm" kernel, C ABI symbol,
+    # NativeTensorCore method, or NativeTensor.batch_norm autograd op, and
+    # appears here and nowhere in the op inventories. "batchnorm" stays in
+    # UNSUPPORTED: the unqualified name is only honest once the NCHW shape
+    # exists too, which is milestone F4's job.
+    "NativeBatchNorm1d",
 )
 # Native loss *modules*. Losses are tracked here and deliberately not in
 # NATIVE_MODULES, which lists the model-building layers — the split that
@@ -289,9 +301,16 @@ STATE_SUPPORT = (
 # "layernorm" has left this tuple — the module is a composition of
 # existing operations, not a new kernel or ABI symbol, and there is still
 # no "layer_norm" operation, which is why nothing joined AUTOGRAD_OPS /
-# TENSOR_CORE_OPS / RAW_KERNELS. "batchnorm" stays here: NativeBatchNorm1d
-# (F3) and NativeBatchNorm2d (F4) have not started, and removing
-# "batchnorm" is only honest once both batch-normalization shapes exist.
+# TENSOR_CORE_OPS / RAW_KERNELS.
+#
+# "batchnorm" **stays here** after milestone F3. F3 shipped
+# "NativeBatchNorm1d" (see NATIVE_MODULES) — the (N, C) shape, again a
+# module composed from existing operations, so again nothing joined
+# AUTOGRAD_OPS / TENSOR_CORE_OPS / RAW_KERNELS and there is still no
+# "batch_norm" operation. But the name here is unqualified, and
+# NativeBatchNorm2d (F4) has not shipped: removing "batchnorm" while only
+# the 1-D form exists would over-claim. It leaves this tuple at F4, when
+# both batch-normalization shapes exist.
 UNSUPPORTED = (
     "batchnorm", "dropout",
     "float32", "cuda", "amp",

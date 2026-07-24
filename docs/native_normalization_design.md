@@ -28,19 +28,28 @@ the repository reconciliation that came with it), **F1 is complete** (the
 private atomic native-buffer state transaction, the `load_state_dict`
 refactor onto it, and the `STATE_SUPPORT` persistent-buffer
 reconciliation — **state management and capability reporting only, no
-normalization mathematics**), and **F2 is complete** (`NativeLayerNorm` —
+normalization mathematics**), **F2 is complete** (`NativeLayerNorm` —
 the first native normalization module: stateless, differentiable through
 the mean and the population variance, and **composed entirely from
 existing native operations**, adding no kernel, C ABI symbol,
 `NativeTensorCore` method, custom backward, or `NativeTensor`
 normalization operation; `"NativeLayerNorm"` has joined `NATIVE_MODULES`
-and `"layernorm"` has left `UNSUPPORTED`).
-**F3–F9 are planned and have not started.** Nothing in this document may
-be read as a statement that native *BatchNorm* exists today: no
-`NativeBatchNorm1d` or `NativeBatchNorm2d` is exported, `"batchnorm"`
+and `"layernorm"` has left `UNSUPPORTED`), and **F3 is complete**
+(`NativeBatchNorm1d` — the first **stateful** native numerical module:
+`(N, C)` batch normalization with differentiable training statistics,
+persistent native `running_mean`/`running_var` buffers advanced by a
+graph-free atomic two-buffer transaction, and evaluation from graph-safe
+immutable snapshots; again composed entirely from existing operations,
+adding no kernel, C ABI symbol, `NativeTensorCore` method, custom
+backward, or `NativeTensor.batch_norm` operation; `"NativeBatchNorm1d"`
+has joined `NATIVE_MODULES` while `"batchnorm"` **stays** in
+`UNSUPPORTED`).
+**F4–F9 are planned and have not started.** Nothing in this document may
+be read as a statement that the NCHW native BatchNorm exists today: no
+`NativeBatchNorm2d` is exported, the unqualified `"batchnorm"`
 remains in `UNSUPPORTED`, and no normalization *operation*, kernel, or C
-ABI symbol exists at all — `NativeLayerNorm` is a module composed from
-existing operations, not a numerical primitive.
+ABI symbol exists at all — `NativeLayerNorm` and `NativeBatchNorm1d` are
+modules composed from existing operations, not numerical primitives.
 
 **What Phase F will deliver, in later milestones.** A fully native,
 differentiable, state-safe normalization stack:
@@ -488,6 +497,24 @@ Concretely, for milestones F3 onward:
 - Training-mode forwards never read the running buffers at all — they use
   the batch's own statistics — so the rule costs nothing on the hot path.
 
+**Scope, stated precisely.** This rule is about the *running buffers*, and
+that is the whole of what it promises. A state or checkpoint load that
+replaces **only** `running_mean`/`running_var` leaves an already-built
+eval graph **valid and numerically unchanged** — it moves no parameter
+version and the graph never read those objects. A load that *also*
+replaces `gamma` or `beta` is a different thing: those are
+`NativeParameter`s, an eval graph does hold them directly as `multiply`
+operands, and the pre-existing v3.7 stale-value guard therefore
+**intentionally rejects** the old graph with its deterministic
+stale-parameter error, exactly as it does for any other layer. That is
+the parameter contract working, not a buffer failure, and normalization
+must neither bypass nor weaken it. Because the ordinary
+`load_native_checkpoint()` of a whole BatchNorm model replaces all four
+state entries at once, **the buffer half of the rule has to be proved on
+its own** — over the real checkpoint path, not only over
+`load_state_dict()` — which is what F3's buffer-only checkpoint test
+does (§15, F3).
+
 ### 7.3 Why buffer versions are *not* being added
 
 An obvious alternative is to give buffers a monotonic value version, as
@@ -655,7 +682,10 @@ Locked:
   checkpoint load, `model.bn.running_mean` is the *same Python object* it
   was before, holding new values.
 - **Buffer loads increment no parameter version**, and make no existing
-  graph stale.
+  graph stale. A load that *also* carries `gamma`/`beta` does increment
+  those parameters' versions and therefore does stale a graph that reads
+  them — the unchanged v3.7 rule, caused by the parameters and never by
+  the buffers (§7.2).
 - **Parameter versions behave exactly as before**: one increment per
   matched canonical parameter, after the atomic commit.
 - **Exact resume must eventually include** — proved end to end in F6 —
@@ -756,9 +786,15 @@ these must all hold:
   output differs between modes on the same input, and eval mode's output
   depends only on the running statistics and the affine parameters.
 - **Buffer graph safety** (§7): an eval graph must not hold the
-  registered buffer object; a training step, a `load_state_dict()`, and a
-  checkpoint load performed *after* an eval forward must leave that
-  graph's backward unchanged and non-raising.
+  registered buffer object; a training step, a **buffer-only**
+  `load_state_dict()`, and a **buffer-only** `load_native_checkpoint()`
+  performed *after* an eval forward must each leave that graph's backward
+  unchanged and non-raising. The checkpoint half must exercise the real
+  archive path over the *same* registered buffer objects — a
+  state-dictionary test does not stand in for it. Separately, a **full**
+  model checkpoint load, which also replaces `gamma`/`beta`, must raise
+  the existing stale-*parameter* error, and a test must attribute that
+  raise to the parameter versions rather than to the buffers.
 - **Transaction atomicity** (§8): an injected failure during staging and
   during commit each leaves both buffers, both parameters, every version,
   and every gradient exactly as before, with no leaked staged core and no
@@ -863,7 +899,7 @@ copied.
 | F0 | Phase-F architecture contract and repository reconciliation | **complete** |
 | F1 | Atomic native-buffer state transactions | **complete** |
 | F2 | `NativeLayerNorm` | **complete** |
-| F3 | `NativeBatchNorm1d` | planned |
+| F3 | `NativeBatchNorm1d` | **complete** |
 | F4 | `NativeBatchNorm2d` | planned |
 | F5 | Normalization state, checkpoint, and graph-safety hardening | planned |
 | F6 | Deterministic normalized training and exact resume | planned |
@@ -873,8 +909,8 @@ copied.
 
 Each milestone's full contract follows; the table above is the status
 summary, and the registry remains the authority on what is live. **F0,
-F1, and F2 are complete; F3 is the next milestone, and F3–F9 have not
-started.**
+F1, F2, and F3 are complete; F4 is the next milestone, and F4–F9 have
+not started.**
 
 ### F0 — Phase-F architecture contract and repository reconciliation *(this document)* — **complete**
 
@@ -1107,7 +1143,7 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
   and the exports, `"layernorm"` has left `UNSUPPORTED`, and
   `"batchnorm"` has not.
 
-### F3 — `NativeBatchNorm1d` — planned
+### F3 — `NativeBatchNorm1d` — **complete**
 
 - **Objective:** the first **stateful** native module: `(N, C)` batch
   normalization with persistent running statistics, distinct train/eval
@@ -1130,8 +1166,11 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
   update; the exact momentum convention; central finite differences for
   the input, `gamma`, and `beta` **through** the batch statistics; the §7
   snapshot rule (an eval graph does not hold the registered buffer
-  object; a later training step, state load, or checkpoint load leaves
-  that graph's backward unchanged); the §8 transaction (failure during
+  object; a later training step, a buffer-only state load, and a
+  buffer-only `load_native_checkpoint()` over the same registered buffer
+  objects each leave that graph's backward unchanged, while a full
+  checkpoint load that also replaces `gamma`/`beta` legitimately raises
+  the existing stale-*parameter* error); the §8 transaction (failure during
   staging and during commit each leave both buffers, parameters,
   versions, and gradients unchanged, with nothing leaked and a later
   forward succeeding); no parameter version moves on a running update;
@@ -1152,6 +1191,108 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
   finite-difference verified, §7 and §8 are proved by tests,
   `"NativeBatchNorm1d"` is in `NATIVE_MODULES` and the exports, and
   `"batchnorm"` is still listed in `UNSUPPORTED`.
+- **Shipped (F3).** Exactly the above, plus the refinements the
+  implementation settled:
+
+  - **`src/tensorforge/experimental/native_batchnorm.py`** holds one
+    shared private `_NativeBatchNorm(NativeModule)` carrying *every*
+    behavior — constructor validation, parameter and buffer creation,
+    forward-state validation, both modes' mathematics, the eval
+    snapshots, the running update, the transaction, and the cleanup —
+    and the public `NativeBatchNorm1d` subclass supplies **only** shape
+    configuration: `_INPUT_NDIM = 2`, `_REDUCTION_AXES = (0,)`,
+    `_TRAILING_DIMS = 0`, `_LAYOUT = "(N, C)"`. It declares no callable
+    of its own, so F4 adds the NCHW shape by supplying `4`, `(0, 2, 3)`,
+    `2`, and `"(N, C, H, W)"` — never a second implementation. The
+    private base is not exported.
+  - **Composed, never primitive.** Forward is built only from existing
+    differentiable `NativeTensor` operations — `mean`, `subtract`,
+    `multiply`, `add`, `sqrt`, `reciprocal`, plus `reshape`,
+    `contiguous_copy`, and `detach` for the graph-free state — so the
+    existing autograd **is** the backward. F3 added **no** C++ code,
+    normalization kernel, C ABI symbol, ctypes declaration,
+    `NativeTensorCore` method, custom backward, functional `batch_norm`
+    helper, or `NativeTensor.batch_norm` operation. No operation
+    inventory grew; only `NATIVE_MODULES` did.
+  - **Training statistics are differentiated through**, verified by
+    central finite differences for the input, `gamma`, and `beta`, and
+    by a direct test that the gradient is *not* the detached-statistics
+    form. Population variance, `sqrt(var + eps)`, no Bessel correction.
+  - **The same batch statistics drive both** the normalization graph and
+    the running update; nothing is recomputed. They enter the update
+    through `detach()` — a native storage-to-storage copy, no NumPy
+    round trip — so the blend `(1 - momentum) * running + momentum *
+    batch` builds no autograd node and no gradient path reaches it.
+    `momentum=0.0` leaves both running values numerically unchanged;
+    `momentum=1.0` makes them exactly the batch statistics.
+  - **One atomic two-buffer commit** through
+    `_native_state.replace_native_state` with two `NativeStateEntry`
+    records — no fabricated state dictionary, no internal
+    `load_state_dict()`, no attribute reassignment, no second
+    transaction system. The transaction owns each factory-produced core,
+    so the factories hand it independent copies of the prepared values.
+    Injected failures at first-entry staging, second-entry staging,
+    first-core install, and second-core install (the interrupted-swap
+    case) each leave both buffers, both parameters, every version, and
+    every gradient exactly as before, with no staged core leaked and a
+    later valid forward succeeding.
+  - **Forward ordering** is validate → build the complete output graph →
+    prepare both graph-free replacement values → commit atomically →
+    return the already-built output. A failure at any earlier point
+    changes no running state, and once the commit succeeds no further
+    numerical operation can fail before the return.
+  - **Deterministic cleanup, without GC.** Two tracking lists with
+    different lifetimes: graph temporaries (the output included) are
+    closed only on failure, most-recent first; pure scratch (the eps
+    constant, the detached statistics, the momentum-blend intermediates,
+    the consumed variance snapshot) is closed on every path. Injected
+    failures after every intermediate — the batch mean, the centering,
+    the squaring, the variance, `sqrt`, `reciprocal`, the affine
+    multiply and add, the detached statistics, the blend intermediates,
+    and both transaction seams — each return the native live-storage
+    counters to the pre-forward baseline **with no `gc.collect()`**,
+    which the `sqrt`/`reciprocal` result-capturing cycles would
+    otherwise require.
+  - **The §7 snapshot rule is implemented and proved structurally.**
+    Evaluation copies each running buffer into an independent, owning,
+    contiguous, graph-free, gradient-free `(1, C)` tensor through a
+    borrowing `reshape` view materialized by `contiguous_copy` — no
+    NumPy, no host materialization, and no borrowing view in the graph.
+    A recursive walk of the returned graph's parents *and*
+    `graph_resources` cannot find either registered buffer by identity,
+    and a training step, a buffer-only `load_state_dict()`, **or a
+    buffer-only `load_native_checkpoint()` over the same registered
+    buffer objects** leaves that graph's backward non-raising and
+    numerically identical to the forward-time values. The checkpoint half
+    is driven through a test-only buffer-only `NativeModule` that
+    registers the BatchNorm's own `running_mean`/`running_var` as
+    persistent aliases, so the real archive path replaces exactly those
+    two objects while `gamma`/`beta` stay untouched; no production helper
+    or public API was added for it. A **full** BatchNorm checkpoint load
+    also replaces `gamma`/`beta`, so it moves their versions and the
+    existing v3.7 guard rejects the old graph — proved by its own test,
+    which attributes the raise to the parameter versions, shows the
+    buffers are unchanged in identity and absent from the graph, and
+    re-proves the buffer half of the *same* archive leaves an earlier eval
+    graph valid.
+  - **Snapshot lifetime rides the existing D9 `graph_resources`
+    contract**, not a new one: the two values a backward could read (the
+    mean snapshot and the derived inverse standard deviation) are
+    adopted by the output node's history through one private adoption
+    helper, so `retain_graph=True` keeps them, a one-shot `backward()`
+    releases them exactly once, an abandoned graph frees them on
+    `close()`, and a forward that builds no graph releases them
+    immediately. No public operation and no second autograd
+    implementation was added to achieve it.
+  - **State and checkpoints unchanged.** State order is `gamma`,
+    `beta`, `running_mean`, `running_var`; buffer and parameter
+    identities survive `load_state_dict()` and checkpoint loading; a
+    buffer-only load moves no parameter version; the archive format
+    stays `"tensorforge.native_checkpoint"` **version 1**; `training` is
+    not serialized.
+  - **`"batchnorm"` deliberately stayed in `UNSUPPORTED`.** The name is
+    unqualified, and F4 has not shipped `NativeBatchNorm2d`, so removing
+    it now would over-claim.
 
 ### F4 — `NativeBatchNorm2d` — planned
 
@@ -1384,8 +1525,12 @@ must be verified against reality for the whole normalization surface.
    variance, verified by central finite differences for the input and
    every affine parameter, for both BatchNorm shapes.
 5. The §7 mutable-buffer graph-safety rule is proved by tests: an eval
-   graph never holds a registered buffer object, and later mutation
-   cannot change its gradient.
+   graph never holds a registered buffer object, and later **running
+   buffer** mutation — a training step, a buffer-only `load_state_dict()`,
+   or a buffer-only `load_native_checkpoint()` — cannot change its
+   gradient. (A load that also replaces `gamma`/`beta` staling the graph
+   through the unchanged v3.7 parameter rule is the *correct* behavior,
+   not a violation.)
 6. The §8 transaction is proved: all-or-nothing updates, preserved buffer
    identity, exactly-once closes, unmoved parameter versions, and no
    partial state after any failure.
@@ -1410,19 +1555,27 @@ must be verified against reality for the whole normalization surface.
 
 ## 18. Phase-F status statement
 
-**Phase F is in progress: F0, F1, and F2 are complete; F3–F9 have not
-started.** The experimental native line now has its first normalization
-capability — LayerNorm — but not BatchNorm:
+**Phase F is in progress: F0, F1, F2, and F3 are complete; F4–F9 have
+not started.** The experimental native line now has LayerNorm and the
+`(N, C)` BatchNorm, but not the NCHW shape:
 
 - `NativeLayerNorm` exists, is exported from `tensorforge.experimental`,
   and is registered in `NATIVE_MODULES`; `"layernorm"` has left
   `UNSUPPORTED`.
-- No `NativeBatchNorm1d` or `NativeBatchNorm2d` exists or is exported,
-  and `"batchnorm"` remains listed in `UNSUPPORTED`.
+- `NativeBatchNorm1d` exists, is exported, and is registered in
+  `NATIVE_MODULES`. It is the first **stateful** native numerical
+  module: differentiable training statistics, persistent native
+  `running_mean`/`running_var` buffers advanced by a graph-free atomic
+  two-buffer transaction, and evaluation from graph-safe immutable
+  snapshots.
+- No `NativeBatchNorm2d` exists or is exported, and the unqualified
+  `"batchnorm"` remains listed in `UNSUPPORTED` — removing it while only
+  the 1-D shape ships would over-claim.
 - **No normalization *operation* is differentiable, and none appears in
-  any operation inventory** — `NativeLayerNorm` is composed from existing
-  operations, so no normalization kernel, C ABI export, ctypes
-  declaration, or `NativeTensorCore` method exists.
+  any operation inventory** — both `NativeLayerNorm` and
+  `NativeBatchNorm1d` are composed from existing operations, so no
+  normalization kernel, C ABI export, ctypes declaration, or
+  `NativeTensorCore` method exists.
 
 What F0 delivered is this contract and the repository reconciliation that
 accompanied it — **no numerical behavior whatsoever**. What **F1**
@@ -1434,10 +1587,13 @@ itself: the stateless, differentiable, composed-from-existing-operations
 normalization module of §5, with `sqrt(var + eps)` ordering, population
 variance, identical train/eval behavior, and no kernel, ABI symbol,
 `NativeTensorCore` method, custom backward, or `NativeTensor`
-normalization operation. The remaining capabilities described above
-(BatchNorm, running statistics, the §7/§8 machinery in a live module) are
-commitments about how F3–F9 *will* build the rest of Phase F, not claims
-about what exists.
+normalization operation. What **F3** delivered is `NativeBatchNorm1d`:
+the §6.1 contract, the §7 snapshot rule, and the §8 atomic two-buffer
+transaction, all live in one shared private implementation, with the
+checkpoint format unchanged at version 1. The remaining capabilities
+described above (the NCHW shape, the exhaustive hardening matrix, the
+exact normalized resume, the benchmark) are commitments about how F4–F9
+*will* build the rest of Phase F, not claims about what exists.
 
 Deliberately outside Phase F and still unplanned: dropout, a native RNG
 and RNG checkpoint state, further activations (`tanh`, `sigmoid`, GELU),

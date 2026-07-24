@@ -1601,6 +1601,88 @@ primitive, so no operation inventory grew. Only `NATIVE_MODULES` gained
 `"NativeLayerNorm"` and `"layernorm"` left `UNSUPPORTED`; `"batchnorm"`
 stays there until F4. **F3, `NativeBatchNorm1d`, is the next milestone.**
 
+### Phase F — native normalization and stateful buffers (F3)
+
+**Milestone F3 ships `NativeBatchNorm1d` — the first *stateful* native
+numerical module.** It adds exactly one new thing to F2's working
+composition: mutable model state, with the snapshot rule and the
+transaction that make it safe.
+
+`NativeBatchNorm1d(num_features, eps=1e-5, momentum=0.1)` accepts only
+`(N, C)` input with `C == num_features`. **Training mode** normalizes
+with this batch's own statistics —
+`mean(input, axis=0, keepdims=True)`, then the **population** variance of
+the deviations, then `reciprocal(sqrt(var + eps))`, then `* gamma +
+beta`. Those statistics are computed with the *differentiable* native
+operations, so the **training backward differentiates through the batch
+mean and the batch variance**; detaching them would give a different,
+wrong gradient, and central finite differences verify the input,
+`gamma`, and `beta` gradients through them. **Evaluation mode**
+normalizes with the stored running statistics instead and updates
+nothing, so a single sample normalizes consistently.
+
+The running statistics are **persistent native buffers**: `running_mean`
+(zeros) and `running_var` (ones), plain owning contiguous gradient-free
+`NativeTensor`s registered through the existing
+`register_buffer(..., persistent=True)`. They never appear in
+`parameters()`, no optimizer sees them, and no gradient reaches them.
+State order is `gamma`, `beta`, `running_mean`, `running_var`, and they
+ride the existing `state_dict`/`load_state_dict` and pickle-free
+checkpoint path with the format **unchanged at version 1** — new
+persistent keys need no schema bump.
+
+Each training forward advances them by `(1 − momentum) * running +
+momentum * batch`, using the **same** population `batch_var` that
+normalized the batch (nothing is recomputed). The update values are built
+as independent **graph-free** native state — the batch statistics enter
+through `detach()`, a native storage-to-storage copy with no NumPy round
+trip — and both buffers are committed as **one atomic transaction**
+through the private F1 primitive (`_native_state.replace_native_state`):
+both replacements are staged before anything mutates, both Python
+identities survive, the old cores stay valid until the commit succeeds
+and are then closed exactly once, a failure before the commit boundary
+restores both buffers and closes every staged core, and **no parameter
+version moves** — so advancing the statistics never makes an existing
+graph stale. At the boundaries the convention is exact: `momentum=0.0`
+leaves both running values numerically unchanged, `momentum=1.0` makes
+them exactly the current batch statistics.
+
+The load-bearing safety rule of §7 is implemented and proved: **a live
+registered running buffer is never a rereadable graph operand.**
+Evaluation first takes independent, owning, contiguous, graph-free
+`(1, C)` snapshots of both buffers through the native copy path, and the
+returned graph reads only those. A structural walk of the graph's
+parents and graph-owned resources cannot find either registered buffer
+by identity, and a training step, a `load_state_dict()`, or a checkpoint
+load performed *after* an eval forward leaves that graph's backward
+non-raising and numerically identical to the values used at forward
+time. The snapshots are adopted as the output node's `graph_resources` —
+the same D9 contract that owns MaxPool2d's winner buffer — so
+`retain_graph=True` keeps them, an abandoned graph still frees them, and
+they are released exactly once with the graph history.
+
+Forward ordering makes a *failed* forward harmless: validate all live
+state, build the complete differentiable output graph, prepare both
+graph-free replacement values, commit them atomically, and only then
+return the already-built output. An injected failure at any of those
+points — including inside the transaction's staging and commit seams —
+leaves both buffers, both parameters, every version, and every gradient
+exactly as they were, with the native live-storage counters back at
+their pre-forward baseline **without** `gc.collect()`, and a later valid
+forward succeeds.
+
+**F3 added no C++ code, normalization kernel, C ABI symbol, ctypes
+declaration, `NativeTensorCore` method, custom BatchNorm backward,
+functional `batch_norm` helper, or `NativeTensor.batch_norm`
+operation** — BatchNorm too is a *module composed from existing
+operations*, so no operation inventory grew. Only `NATIVE_MODULES`
+gained `"NativeBatchNorm1d"`. `"batchnorm"` **stays** in `UNSUPPORTED`:
+the name is unqualified, and removing it while only the 1-D shape exists
+would over-claim. Every behavior lives in one shared private
+implementation, so F4 supplies nothing but the NCHW rank, reduction
+axes, and broadcast layout. **F4, `NativeBatchNorm2d`, is the next
+milestone.**
+
 ### A hardening milestone before Phase D
 
 Between Phase C and the native CNN stack, a repair-and-hardening pass

@@ -213,7 +213,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
-- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — normalization **not yet implemented**: F0 and F1 are complete, F2–F9 are planned)
+- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **in progress**: F0, F1, F2 (`NativeLayerNorm`), and F3 (`NativeBatchNorm1d`) are complete, F4–F9 are planned)
 
 ## Limitations
 
@@ -228,9 +228,10 @@ Honest expectations:
 - The native CNN stack (Phase D) and the native classification stack
   (Phase E) are both complete — but "complete" means *these* capabilities
   work and are validated, not that the native line is finished. What the
-  native line still does **not** have: native **BatchNorm** — **Phase F is
-  in progress**, and while `NativeLayerNorm` has shipped (a module
-  composed from existing operations, no kernel), BatchNorm has not — dropout
+  native line still does **not** have: native **NCHW BatchNorm** —
+  **Phase F is in progress**, and while `NativeLayerNorm` and the
+  `(N, C)` `NativeBatchNorm1d` have shipped (both modules composed from
+  existing operations, no kernel), `NativeBatchNorm2d` has not — dropout
   or a native RNG, data loaders, native integer
   tensors, further dtypes or devices, CUDA, AMP, and any implicit
   dispatch into `tensorforge.Tensor`. Native checkpoints capture no
@@ -359,14 +360,31 @@ and composed entirely from existing native operations with `sqrt(var +
 eps)` ordering and no kernel, ABI symbol, `NativeTensorCore` method,
 custom backward, or `NativeTensor` normalization operation;
 `"NativeLayerNorm"` is now in `NATIVE_MODULES` and the exports, and
-`"layernorm"` has left `UNSUPPORTED`).
-Milestones **F3–F9** — `NativeBatchNorm1d`,
+`"layernorm"` has left `UNSUPPORTED`), and **F3**
+(`NativeBatchNorm1d` — the **first stateful native numerical module**:
+`(N, C)` batch normalization with differentiable training statistics
+(gradients flow through the batch mean *and* the population variance),
+persistent native `running_mean`/`running_var` buffers advanced
+graph-free by one **atomic two-buffer transaction** over the F1
+primitive (both identities preserved, replaced cores closed exactly
+once, no parameter version moved), and evaluation from **graph-safe
+immutable snapshots** of those buffers, so a later training step, or a
+buffer-only state or checkpoint load, can never change an earlier eval
+graph's gradient — while a *full* checkpoint load that also replaces
+`gamma`/`beta` still stales that graph through the unchanged
+parameter-version rule, which is correct and deliberately unweakened; again composed from existing operations, so again no kernel,
+ABI symbol, `NativeTensorCore` method, custom backward, or
+`NativeTensor.batch_norm` operation, and the native checkpoint format
+stays at version 1; `"NativeBatchNorm1d"` is now in `NATIVE_MODULES` and
+the exports, while `"batchnorm"` **stays** in `UNSUPPORTED`).
+Milestones **F4–F9** —
 `NativeBatchNorm2d`, state/checkpoint and graph-safety hardening, a
 deterministic normalized training run with exact resume, an honest
 benchmark characterization, cross-cutting integration, and phase closure
-— are **planned and have not started**. Native BatchNorm is not shipped:
-`batchnorm` remains listed as unsupported in the
-backend registry, and no normalization *operation*, kernel, or C
+— are **planned and have not started**. The NCHW BatchNorm is not
+shipped, so the unqualified `batchnorm` remains listed as unsupported in
+the backend registry (removing it while only the 1-D shape exists would
+over-claim), and no normalization *operation*, kernel, or C
 ABI symbol exists at all. More activations/math, dropout and a native RNG, data
 loaders, and CPU optimization sit beyond Phase F, and CUDA/GPU
 experiments remain future work. See

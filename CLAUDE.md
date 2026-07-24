@@ -55,14 +55,42 @@ code, kernel, C ABI symbol, ctypes declaration, `NativeTensorCore`
 method, custom backward, functional helper, or `NativeTensor.layer_norm`
 operation; `weight`/`bias` `NativeParameter`s only when
 `elementwise_affine=True`; `"NativeLayerNorm"` in `NATIVE_MODULES` and
-the exports, and `"layernorm"` removed from `UNSUPPORTED`). Milestones
-F3–F9 (`NativeBatchNorm1d`,
-`NativeBatchNorm2d`, state/checkpoint and graph-safety hardening, a
-deterministic normalized training run with exact resume, a benchmark
+the exports, and `"layernorm"` removed from `UNSUPPORTED`), and F3 is
+complete (`NativeBatchNorm1d` in
+`src/tensorforge/experimental/native_batchnorm.py` — the **first
+stateful native numerical module**: strictly `(N, C)` batch
+normalization, again composed entirely from existing native operations,
+adding no C++ code, kernel, C ABI symbol, ctypes declaration,
+`NativeTensorCore` method, custom backward, functional helper, or
+`NativeTensor.batch_norm` operation. Training normalizes with this
+batch's **differentiable** population statistics (`sqrt(var + eps)`, no
+Bessel correction, gradients through the mean *and* the variance) and
+advances the persistent native `running_mean`/`running_var` buffers by
+`(1 - momentum)*running + momentum*batch` from the *same* batch
+statistics — computed **graph-free** via `detach()` and committed as one
+**atomic two-buffer transaction** through the F1 primitive, preserving
+both Python identities, closing each replaced core exactly once, and
+moving **no** parameter version. Evaluation reads **independent owning
+graph-free `(1, C)` snapshots** of those buffers, so no registered
+buffer is ever a rereadable graph operand and a later training step, a
+buffer-only `load_state_dict()`, or a buffer-only
+`load_native_checkpoint()` cannot change an earlier eval graph's
+gradient (a *full* checkpoint load also replaces `gamma`/`beta`, so the
+unchanged v3.7 parameter-version guard correctly stales that graph — a
+parameter contract, never a buffer effect); the snapshots ride the existing `graph_resources`
+contract and release exactly once with the graph history. `gamma`/`beta`
+always exist (no `affine=False`, `track_running_stats`, or
+`num_batches_tracked`); state order is `gamma`, `beta`, `running_mean`,
+`running_var`; the checkpoint format stays version 1;
+`"NativeBatchNorm1d"` is in `NATIVE_MODULES` and the exports, while
+`"batchnorm"` **stays** in `UNSUPPORTED`). Milestones
+F4–F9 (`NativeBatchNorm2d`, state/checkpoint and graph-safety hardening,
+a deterministic normalized training run with exact resume, a benchmark
 characterization, cross-cutting integration, and closure) have **not
-started** — so `batchnorm` remains in the backend
-registry's `UNSUPPORTED` tuple and no BatchNorm module and no
-normalization operation, kernel, or C ABI symbol exists.
+started** — so the unqualified `batchnorm` remains in the backend
+registry's `UNSUPPORTED` tuple (removing it while only the 1-D shape
+ships would over-claim), no NCHW BatchNorm module exists, and no
+normalization operation, kernel, or C ABI symbol exists at all.
 Dropout/RNG, data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase F.

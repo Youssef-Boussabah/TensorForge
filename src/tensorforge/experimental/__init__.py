@@ -96,12 +96,26 @@ no kernel, ABI symbol, ``NativeTensorCore`` method, custom backward, or
 one-or-more-dimensional shapes, holds ``weight`` and ``bias``
 ``NativeParameter``s only when ``elementwise_affine=True`` (none
 otherwise), so ``"NativeLayerNorm"`` has joined ``NATIVE_MODULES`` and
-``"layernorm"`` has left ``UNSUPPORTED``. **Milestones F3-F9 have not
-started**, so the BatchNorm modules do not exist or export here and
-``"batchnorm"`` remains in the backend registry's ``UNSUPPORTED`` tuple
-(BatchNorm is next). What the native line still does **not** have:
-further activations/math, BatchNorm, dropout or a native RNG,
-float32/dtype expansion, CUDA, AMP, and data-pipeline abstractions.
+``"layernorm"`` has left ``UNSUPPORTED``. **Milestone F3** ships
+``NativeBatchNorm1d`` — the **first stateful native numerical module**:
+``(N, C)`` batch normalization whose training statistics are
+differentiable (gradients flow through the batch mean and the population
+variance), whose ``running_mean``/``running_var`` are **persistent native
+buffers** advanced by a graph-free, atomic two-buffer update through the
+F1 transaction (identities preserved, no parameter version moved), and
+whose evaluation mode reads **graph-safe immutable snapshots** of those
+buffers rather than the live objects. It is composed from the same
+existing operations — no kernel, C ABI symbol, ctypes declaration,
+``NativeTensorCore`` method, ``NativeTensor.batch_norm`` operation, or
+custom BatchNorm backward — and the native checkpoint format stays
+version 1. ``"NativeBatchNorm1d"`` has joined ``NATIVE_MODULES``, while
+``"batchnorm"`` **remains** in ``UNSUPPORTED``: the unqualified name is
+only honest once ``NativeBatchNorm2d`` ships too. **Milestone F4
+(``NativeBatchNorm2d``) is next, and F4-F9 have not started**, so no
+NCHW BatchNorm exists or exports here. What the native line still does
+**not** have: further activations/math, NCHW BatchNorm, dropout or a
+native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline
+abstractions.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
@@ -208,6 +222,7 @@ from .native_conv2d import NativeConv2d
 from .native_maxpool2d import NativeMaxPool2d
 from .native_sequential import NativeSequential
 from .native_layernorm import NativeLayerNorm
+from .native_batchnorm import NativeBatchNorm1d
 from .native_mse_loss import NativeMSELoss
 from .native_cross_entropy_loss import NativeCrossEntropyLoss
 from .native_metrics import native_accuracy
@@ -227,6 +242,7 @@ __all__ = [
     "NativeMaxPool2d",
     "NativeSequential",
     "NativeLayerNorm",
+    "NativeBatchNorm1d",
     "NativeMSELoss",
     "NativeCrossEntropyLoss",
     "native_accuracy",

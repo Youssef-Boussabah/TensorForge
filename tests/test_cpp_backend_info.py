@@ -210,12 +210,13 @@ def test_e8_added_no_capability_inventory_entry():
     info = cpp.backend_info()
     assert tuple(info["raw_kernels"]) == EXPECTED_KERNELS
     # "NativeLayerNorm" joined this tuple in Phase F milestone F2 (the first
-    # native normalization module, composed from existing operations); it is
-    # unrelated to E8, which still added no module of its own.
+    # native normalization module) and "NativeBatchNorm1d" in milestone F3
+    # (the first stateful one) — both composed from existing operations,
+    # and both unrelated to E8, which still added no module of its own.
     assert info["native_modules"] == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
-        "NativeLayerNorm",
+        "NativeLayerNorm", "NativeBatchNorm1d",
     )
     assert info["native_losses"] == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert info["native_metrics"] == ("native_accuracy",)
@@ -278,3 +279,37 @@ def test_advertised_state_support_names_import():
 def test_is_available_true_when_built():
     assert cpp.is_available() is True
     assert cpp.backend_info()["available"] is True
+
+
+def test_f3_reports_native_batchnorm1d_and_keeps_batchnorm_unsupported():
+    """Phase F milestone F3 shipped `NativeBatchNorm1d`, so
+    `backend_info()` must report it as a **module** — and only as a
+    module. The unqualified `batchnorm` capability stays unsupported
+    until F4 ships `NativeBatchNorm2d` as well, so the registry must not
+    advertise a normalization operation, kernel, or C ABI symbol either.
+    """
+    import tensorforge.experimental as experimental
+
+    info = cpp.backend_info()
+    assert "NativeBatchNorm1d" in info["native_modules"]
+    assert hasattr(experimental, "NativeBatchNorm1d")
+    # A module, and nothing else.
+    for key in ("raw_kernels", "tensor_core_ops", "autograd_ops",
+                "native_losses", "native_metrics", "native_optimizers",
+                "state_support", "unsupported"):
+        assert "NativeBatchNorm1d" not in tuple(info[key]), key
+    # The NCHW shape has not shipped, so the unqualified name stays.
+    assert "NativeBatchNorm2d" not in info["native_modules"]
+    assert not hasattr(experimental, "NativeBatchNorm2d")
+    assert "batchnorm" in info["unsupported"]
+    # And F3 introduced no normalization primitive at any layer.
+    for name in ("batch_norm", "batchnorm", "layer_norm", "layernorm"):
+        assert name not in tuple(info["raw_kernels"]), name
+        assert name not in tuple(info["tensor_core_ops"]), name
+        assert name not in tuple(info["autograd_ops"]), name
+    for symbol in ("tf_core_batch_norm", "tf_core_batch_norm_forward",
+                   "tf_core_batch_norm_backward"):
+        assert symbol not in cpp._CHECKED_KERNELS, symbol
+    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_devices"] == ("cpu",)
+    assert info["stable_framework_integration"] is False

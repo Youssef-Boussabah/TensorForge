@@ -853,13 +853,15 @@ def test_state_support_reports_persistent_buffers_exactly():
 
 def test_f1_changed_no_other_capability_inventory():
     # F1 itself changed only STATE_SUPPORT. These tuples then moved in the
-    # *later* milestone F2, which shipped NativeLayerNorm (a composed
-    # module): "NativeLayerNorm" joined NATIVE_MODULES and "layernorm" left
-    # UNSUPPORTED. The values below are the current live registry.
+    # *later* milestones: F2 shipped NativeLayerNorm and F3 shipped
+    # NativeBatchNorm1d (both composed modules), so both joined
+    # NATIVE_MODULES and "layernorm" left UNSUPPORTED — while "batchnorm"
+    # stays there until F4 ships the NCHW shape. The values below are the
+    # current live registry.
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
-        "NativeLayerNorm",
+        "NativeLayerNorm", "NativeBatchNorm1d",
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
@@ -897,13 +899,15 @@ def test_the_transaction_helper_stays_private():
 def test_f1_added_no_normalization_module_or_operation():
     import tensorforge.experimental as experimental
 
-    # NativeLayerNorm shipped at the *later* milestone F2 (a module composed
-    # from existing operations); BatchNorm is still absent. F1 itself, and
-    # F2, added no normalization *operation*, Core method, or C ABI symbol.
-    for module in ("NativeBatchNorm1d", "NativeBatchNorm2d"):
+    # NativeLayerNorm shipped at the *later* milestone F2 and
+    # NativeBatchNorm1d at F3 — both modules composed from existing
+    # operations; the NCHW BatchNorm is still absent. None of F1, F2, or
+    # F3 added a normalization *operation*, Core method, or C ABI symbol.
+    for module in ("NativeBatchNorm2d",):
         assert not hasattr(experimental, module), module
         assert module not in experimental.__all__, module
         assert module not in cpp.NATIVE_MODULES, module
+    assert "batchnorm" in cpp.UNSUPPORTED
     for operation in ("layer_norm", "batch_norm", "normalize"):
         assert not hasattr(NativeTensor, operation), operation
         assert not hasattr(cpp.NativeTensorCore, operation), operation

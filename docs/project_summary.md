@@ -105,8 +105,10 @@ and reproduces the uninterrupted run exactly), characterized by
 `benchmarks/benchmark_native_classification.py` (seven
 correctness-gated cases, no speed assertion anywhere), and validated
 under Release and Debug builds with Clang ASan/UBSan and LeakSanitizer.
-**Phase F (native normalization and stateful buffers) is designed but
-not implemented** — see below. The two
+**Phase F (native normalization and stateful buffers) is in
+progress**: `NativeLayerNorm` (F2) and `NativeBatchNorm1d` (F3, the
+first stateful native numerical module) have shipped, while the NCHW
+`NativeBatchNorm2d` has not — see below. The two
 engines never mix: explicit entry via
 `NativeTensor.from_array`, explicit exit via `to_numpy()`, no implicit
 dispatch. The exact per-operation status lives in the
@@ -136,8 +138,9 @@ framework is NumPy on CPU; `Conv2d` and `MaxPool2d` use deliberately
 naive loops, and so do their native counterparts (direct nested loops —
 no im2col, BLAS, threading, or SIMD). The native line is float64/cpu
 only — no CUDA backend, no dtype promotion or casting, no native
-BatchNorm (Phase F is **in progress**: LayerNorm has shipped, BatchNorm
-has not), no dropout or native RNG, no data loaders or native
+NCHW BatchNorm (Phase F is **in progress**: `NativeLayerNorm` and the
+`(N, C)` `NativeBatchNorm1d` have shipped, `NativeBatchNorm2d` has not),
+no dropout or native RNG, no data loaders or native
 integer tensors, no scheduler or
 random-state capture in native checkpoints, and
 no dispatch into `tensorforge.Tensor`. Benchmarks are hardware-specific
@@ -190,9 +193,24 @@ differentiable through the mean and the population variance, and
 no Bessel correction) with no kernel, ABI symbol, Core method, custom
 backward, or `NativeTensor` normalization operation. `"NativeLayerNorm"`
 has joined `NATIVE_MODULES` and `"layernorm"` has left `UNSUPPORTED`.
-Milestones **F3–F9 are planned and have not started**, so native
-BatchNorm remains unsupported and `"batchnorm"` stays in `UNSUPPORTED`
-today. Beyond Phase F
+**F3 is complete**: `NativeBatchNorm1d` — the **first stateful native
+numerical module**, `(N, C)` batch normalization with differentiable
+training statistics (gradients through the batch mean *and* the
+population variance), persistent native `running_mean`/`running_var`
+buffers advanced graph-free by one **atomic two-buffer transaction**
+(identities preserved, no parameter version moved), and evaluation from
+**graph-safe immutable snapshots** of those buffers, so a later training
+step, or a buffer-only state or checkpoint load, cannot change an earlier
+eval graph's gradient (a full checkpoint load also replaces
+`gamma`/`beta`, which correctly stales that graph through the unchanged
+parameter-version rule). It too is composed from existing operations — no
+kernel, ABI symbol, Core method, custom backward, or
+`NativeTensor.batch_norm` operation — and the checkpoint format stays at
+version 1. `"NativeBatchNorm1d"` has joined `NATIVE_MODULES`, while
+`"batchnorm"` **stays** in `UNSUPPORTED` because the unqualified name is
+only honest once the NCHW shape ships. Milestones **F4–F9 are planned
+and have not started**, so `NativeBatchNorm2d` does not exist today.
+Beyond Phase F
 (**not started**): dropout and a native RNG, more activations/math, data
 loaders, a CPU optimization phase, then the CUDA
 runtime, dtype/AMP work, and Transformer/text and distributed

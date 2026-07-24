@@ -1306,13 +1306,17 @@ def test_f2_added_no_operation_kernel_core_or_abi():
     assert "layer_norm" not in experimental.__all__
 
 
-def test_f3_and_f4_capabilities_are_not_advertised():
-    # BatchNorm is F3/F4 — nothing of it exists or is exported yet.
+def test_f4_capabilities_are_not_advertised():
+    # F3 shipped the (N, C) shape, so NativeBatchNorm1d legitimately
+    # exists; the NCHW shape is F4 and nothing of it exists yet. The
+    # unqualified "batchnorm" capability therefore stays unsupported.
     import tensorforge.experimental as experimental
-    for name in ("NativeBatchNorm1d", "NativeBatchNorm2d"):
-        assert name not in cpp.NATIVE_MODULES, name
-        assert not hasattr(experimental, name), name
-        assert name not in experimental.__all__, name
+    assert "NativeBatchNorm1d" in cpp.NATIVE_MODULES
+    assert "NativeBatchNorm1d" in experimental.__all__
+    assert "NativeBatchNorm2d" not in cpp.NATIVE_MODULES
+    assert not hasattr(experimental, "NativeBatchNorm2d")
+    assert "NativeBatchNorm2d" not in experimental.__all__
+    assert "batchnorm" in cpp.UNSUPPORTED
 
 
 def test_other_capability_tuples_remain_exact():

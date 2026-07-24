@@ -209,9 +209,26 @@ explicit layer at a time:
   `sqrt`/`reciprocal`, `sqrt(var + eps)`, population variance) with no
   kernel, ABI symbol, Core method, custom backward, or `NativeTensor`
   normalization operation; `"NativeLayerNorm"` is in `NATIVE_MODULES` and
-  `"layernorm"` has left `UNSUPPORTED`. Milestones F3–F9 have not started,
-  so native BatchNorm does not exist yet and `"batchnorm"` is still
-  listed as unsupported in the backend registry.
+  `"layernorm"` has left `UNSUPPORTED`. **Milestone F3 shipped
+  `NativeBatchNorm1d`** — the first *stateful* native numerical module:
+  `(N, C)` batch normalization with differentiable current-batch
+  statistics, persistent native `running_mean`/`running_var` buffers
+  advanced graph-free by one **atomic two-buffer transaction** over the
+  F1 primitive (both identities preserved, no parameter version moved),
+  and evaluation from **independent graph-free snapshots** of those
+  buffers, so the §7 rule above holds by construction: no running-buffer
+  mutation — a training step, a buffer-only `load_state_dict()`, or a
+  buffer-only `load_native_checkpoint()` — can change an earlier eval
+  graph's gradient. (A full checkpoint load also replaces `gamma`/`beta`
+  and therefore still stales such a graph through the unchanged
+  parameter-version rule, which BatchNorm neither bypasses nor weakens.) It is composed
+  from the same existing operations, so again no kernel, ABI symbol,
+  Core method, custom backward, or `NativeTensor.batch_norm` operation
+  exists, and the native checkpoint format stays at version 1;
+  `"NativeBatchNorm1d"` is in `NATIVE_MODULES`, while `"batchnorm"`
+  **remains** listed as unsupported in the backend registry because the
+  unqualified name is only honest once the NCHW shape ships. Milestones
+  F4–F9 have not started, so `NativeBatchNorm2d` does not exist yet.
 
 The execution path for a native training step is:
 

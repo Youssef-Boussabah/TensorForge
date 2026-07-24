@@ -268,10 +268,13 @@ def test_unsupported_stays_honest_after_closure():
 
     # Classification extensions that were explicitly out of scope never
     # appeared as exports or operations.
+    # (NativeBatchNorm1d is deliberately absent from this list: Phase F
+    # milestone F3 shipped it, which is unrelated to Phase E's scope. The
+    # NCHW shape, F4's job, has not shipped.)
     for never in ("NativeNLLLoss", "NativeBCELoss", "NativeSoftmax",
                   "NativeLogSoftmax", "native_top_k_accuracy",
                   "native_confusion_matrix", "NativeDataLoader",
-                  "NativeBatchNorm1d", "NativeDropout"):
+                  "NativeBatchNorm2d", "NativeDropout"):
         assert not hasattr(experimental, never), never
     for never in ("argmax", "nll_loss", "one_hot", "randn", "rand"):
         assert not hasattr(NativeTensor, never), never
