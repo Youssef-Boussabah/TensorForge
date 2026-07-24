@@ -47,14 +47,32 @@ has joined `NATIVE_MODULES` while `"batchnorm"` stayed in
 `(N, C, H, W)` batch normalization reducing over N, H, and W, built on
 the **same** shared private implementation as `NativeBatchNorm1d`;
 `"NativeBatchNorm2d"` has joined `NATIVE_MODULES` and, with both shapes
-now live, `"batchnorm"` has finally left `UNSUPPORTED`).
+now live, `"batchnorm"` has finally left `UNSUPPORTED`), and **F5 is
+complete** (the exhaustive state, checkpoint, ownership, and graph-safety
+hardening — a focused `tests/test_native_normalization_state.py` plus
+narrow additions to the generic buffer and checkpoint suites, proving
+§7–§10 by executable test rather than by prose: canonical dotted buffer
+keys, independent state snapshots, strict/non-strict buffer-key handling,
+exact never-casting metadata validation, identity-preserving mixed loads,
+mixed parameter/buffer transaction rollback, the version-1 checkpoint
+schema gaining no normalization field, exact eval-output reproduction
+across a round trip, the buffer-only-versus-full stale-graph distinction,
+the corrupt/staging/save failure boundaries, eval-graph structural safety
+under `retain_graph` and a failed retryable backward, and the
+live-storage baseline over the whole matrix. **Tests and documentation
+only — no numerical behavior and no new public capability**: the exports
+and every capability registry are exactly what F4 left, the checkpoint
+format stays version 1, and no normalization operation, kernel, C ABI
+symbol, or custom backward exists).
 **The numerical normalization *module* surface is therefore complete**:
 `NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d` all
-exist and are exported. **F5–F9 are planned and have not started**, so
-Phase F itself is *not* complete: the exhaustive state/checkpoint and
-graph-safety hardening, the deterministic normalized training run with
-exact resume, the benchmark characterization, the cross-cutting
-integration, and the phase closure have none of them happened. And no
+exist and are exported, and the state/checkpoint/ownership/graph-safety
+contracts are proved by test. **F6–F9 are planned and have not started**,
+so Phase F itself is *not* complete: the deterministic normalized
+training run with exact resume, the benchmark characterization, the
+cross-cutting integration, and the phase closure have none of them
+happened — there is no normalized end-to-end training example, no
+normalization benchmark, and no Phase-F integration file. And no
 normalization *operation*, kernel, or C ABI symbol exists at all — all
 three modules are compositions of existing operations, not numerical
 primitives.
@@ -909,7 +927,7 @@ copied.
 | F2 | `NativeLayerNorm` | **complete** |
 | F3 | `NativeBatchNorm1d` | **complete** |
 | F4 | `NativeBatchNorm2d` | **complete** |
-| F5 | Normalization state, checkpoint, and graph-safety hardening | planned |
+| F5 | Normalization state, checkpoint, and graph-safety hardening | **complete** |
 | F6 | Deterministic normalized training and exact resume | planned |
 | F7 | Native normalization benchmark characterization | planned |
 | F8 | Cross-cutting Phase-F integration and semantic guardrails | planned |
@@ -917,7 +935,7 @@ copied.
 
 Each milestone's full contract follows; the table above is the status
 summary, and the registry remains the authority on what is live. **F0,
-F1, F2, F3, and F4 are complete; F5 is the next milestone, and F5–F9
+F1, F2, F3, F4, and F5 are complete; F6 is the next milestone, and F6–F9
 have not started.**
 
 ### F0 — Phase-F architecture contract and repository reconciliation *(this document)* — **complete**
@@ -1410,7 +1428,7 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
   - **F4 completes the normalization *module* surface, not Phase F.**
     F5 (state/checkpoint and graph-safety hardening) is next.
 
-### F5 — Normalization state, checkpoint, and graph-safety hardening — planned
+### F5 — Normalization state, checkpoint, and graph-safety hardening — **complete**
 
 - **Objective:** prove the state, checkpoint, ownership, and graph-safety
   contracts for the running buffers exhaustively — no new capability.
@@ -1441,6 +1459,79 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
   change.
 - **Completion criteria:** §7, §8, §9, and §10 are each proved by tests
   rather than asserted by prose.
+- **Shipped (F5).** Exactly the above — **tests and documentation only,
+  no numerical behavior and no new public capability.** F5 added no
+  module, operation, kernel, C ABI symbol, ctypes declaration,
+  `NativeTensorCore` method, custom backward, checkpoint schema field, or
+  export; the exports, `NATIVE_MODULES`, `STATE_SUPPORT`, `UNSUPPORTED`,
+  and every operation inventory are exactly what F4 left, and the
+  checkpoint format stays version 1. What it delivered:
+
+  - **The focused `tests/test_native_normalization_state.py`** carries the
+    cross-cutting proofs the single-module milestones could not: it builds
+    small test-only fixtures — a nested 1-D model (BatchNorm1d under a
+    child `NativeSequential`, dotted keys asserted), a nested 2-D model
+    (BatchNorm2d beside `NativeConv2d`/`NativeMaxPool2d`), a mixed model
+    (`NativeLinear` + `NativeLayerNorm` + `NativeBatchNorm1d` +
+    `NativeBatchNorm2d`, so parameter-only, stateless-normalization, and
+    persistent-buffer state coexist), a shared-child-module fixture, and
+    an exact buffer-alias fixture — and proves against them: exact ordered
+    canonical dotted state keys (parameters in `named_parameters()` order,
+    then persistent buffers in `named_buffers()` order, with the BatchNorm
+    local order `gamma`, `beta`, `running_mean`, `running_var`);
+    identity-deduplicated traversal under shared modules and exact buffer
+    aliases with the first-discovered name winning, and cycle-safe
+    traversal; graph-free, owning, contiguous, metadata-matched
+    `state_dict()` snapshots independent of the model **in both directions
+    by storage identity**; a snapshot failure after a partial mapping
+    spanning both categories closing every created snapshot with no gc;
+    the full strict missing/unexpected/both-lists matrix over the buffer
+    keys; non-strict partial loads (`running_mean`-only, `running_var`-only,
+    both, `gamma`-plus-a-buffer, nested dotted keys) touching only the
+    matching subset, advancing only loaded-parameter versions, moving no
+    version on a buffer-only load, and aborting the whole matching subset
+    atomically on one invalid entry; exact shape/dtype/device validation
+    that never casts, reshapes, or moves — the dtype/device half driven
+    through the narrowest property seam, since the runtime is float64/cpu
+    only; identity-, version-, gradient-, and traversal-preserving
+    successful mixed loads; mixed parameter/buffer transaction rollback at
+    staging, first install, a later install after swaps, version
+    adjustment, and a `KeyboardInterrupt` between swaps; the version-1
+    checkpoint manifest and archive gaining no normalization-specific
+    field, with BatchNorm buffers serializing as ordinary model entries;
+    exact **eval-output** reproduction across a round trip for both shapes
+    (with the training-mode output shown to be insufficient) and through
+    the full NCHW convolutional stack; buffer-only checkpoint loads over
+    the module's own registered buffers replacing exactly those objects
+    while sparing the parameters and leaving an earlier eval graph valid;
+    the complementary **full** checkpoint load staling the graph through
+    the *parameter*-version guard (attributed to `NativeParameter`, never
+    to a buffer); a corrupt-archive matrix targeting the persistent
+    running-buffer keys (manifest identity, model section, and archive
+    arrays) mutating nothing; checkpoint staging/commit and atomic-save
+    failure boundaries that leak nothing and preserve an existing
+    destination byte-for-byte; eval graphs holding no registered buffer
+    object or storage, only independent `(1, C)` / `(1, C, 1, 1)`
+    snapshots, with repeated forwards taking independent snapshot storage;
+    the §7 rule under `retain_graph=True` (snapshots retained until the
+    final one-shot release, ignoring an intervening buffer mutation) and
+    across a **failed retryable backward** (no partial commit, graph not
+    freed, retry matching a clean control that ignores the mutated running
+    values); and a live-storage baseline over the whole matrix, including
+    explicit closes over `parameters()` **and** `buffers()` and
+    identity-deduplicated closing of shared state.
+  - **Two narrow generic-infrastructure additions** — a `state_dict()`
+    partial-snapshot-failure cleanup test in
+    `tests/test_native_buffers.py` and a checkpoint load-staging-failure
+    rollback test in `tests/test_native_checkpoint.py` — both useful
+    beyond normalization.
+  - **No production behavior changed.** Every F5 proof passed against the
+    F0–F4 implementation as shipped; no locked-contract bug was found, so
+    no production file was touched.
+  - **F5 completes the hardening, not the phase.** F6 (the deterministic
+    normalized training run with exact resume) is the next milestone; F6–F9
+    have not started, so there is still no normalized end-to-end training
+    example, no normalization benchmark, and no Phase-F integration file.
 
 ### F6 — Deterministic normalized training and exact resume — planned
 
@@ -1633,10 +1724,11 @@ must be verified against reality for the whole normalization surface.
 
 ## 18. Phase-F status statement
 
-**Phase F is in progress: F0, F1, F2, F3, and F4 are complete; F5–F9
+**Phase F is in progress: F0, F1, F2, F3, F4, and F5 are complete; F6–F9
 have not started.** The experimental native line now has the complete
 numerical normalization *module* surface — LayerNorm and both BatchNorm
-shapes — but the phase is not finished:
+shapes — and their state, checkpoint, ownership, and graph-safety
+contracts are proved by executable test, but the phase is not finished:
 
 - `NativeLayerNorm` exists, is exported from `tensorforge.experimental`,
   and is registered in `NATIVE_MODULES`; `"layernorm"` has left
@@ -1655,12 +1747,25 @@ shapes — but the phase is not finished:
   channels-last permutation its rank-1 affine parameters need.
 - With both shapes live, `"batchnorm"` has left `UNSUPPORTED`, which now
   reads exactly `("dropout", "float32", "cuda", "amp")`.
-- **Phase F is still in progress.** F5–F9 — the exhaustive
-  state/checkpoint and graph-safety hardening, the deterministic
-  normalized training run with exact resume, the benchmark
-  characterization, the cross-cutting integration, and the closure —
-  have not started. There is no normalized end-to-end training example
-  and no normalization benchmark.
+- **F5 is complete.** The exhaustive state/checkpoint, ownership, and
+  graph-safety hardening — a focused `tests/test_native_normalization_state.py`
+  plus narrow additions to the generic buffer and checkpoint suites —
+  proves §7–§10 by executable test rather than by prose: canonical dotted
+  buffer keys, independent state snapshots, strict/non-strict loads, exact
+  never-casting metadata validation, mixed parameter/buffer transaction
+  atomicity, buffer identity across state and checkpoint loads, exact
+  eval-output reproduction, the buffer-only-versus-full stale-graph
+  distinction, the save/corrupt-load failure boundaries, eval-graph
+  snapshot safety under `retain_graph` and a failed retryable backward,
+  and explicit parameter/buffer closure returning storage to baseline.
+  **Tests and documentation only — no numerical behavior, no new public
+  capability, no checkpoint schema change; the checkpoint format stays
+  version 1.**
+- **Phase F is still in progress.** F6–F9 — the deterministic normalized
+  training run with exact resume, the benchmark characterization, the
+  cross-cutting integration, and the closure — have not started. There is
+  no normalized end-to-end training example, no normalization benchmark,
+  and no Phase-F integration file.
 - **No normalization *operation* is differentiable, and none appears in
   any operation inventory** — `NativeLayerNorm`, `NativeBatchNorm1d`,
   and `NativeBatchNorm2d` are all composed from existing operations, so
@@ -1683,11 +1788,15 @@ transaction, all live in one shared private implementation, with the
 checkpoint format unchanged at version 1. What **F4** delivered is
 `NativeBatchNorm2d`: the §6.2 NCHW contract over that same
 implementation, plus the one shared affine-layout refinement the 4-D
-shape needed — and the removal of `"batchnorm"` from `UNSUPPORTED`. The
-remaining work described above (the exhaustive hardening matrix, the
-exact normalized resume, the benchmark, the integration, the closure) is
-a set of commitments about how F5–F9 *will* finish Phase F, not claims
-about what exists.
+shape needed — and the removal of `"batchnorm"` from `UNSUPPORTED`. What
+**F5** delivered is the exhaustive state/checkpoint/ownership/graph-safety
+hardening test surface for §7–§10, and the documentation reconciliation
+that came with it — **tests and documentation only, no numerical behavior
+and no new capability, with the exports, every capability registry, and
+the version-1 checkpoint format all exactly what F4 left.** The remaining
+work described above (the exact normalized resume, the benchmark, the
+integration, the closure) is a set of commitments about how F6–F9 *will*
+finish Phase F, not claims about what exists.
 
 Deliberately outside Phase F and still unplanned: dropout, a native RNG
 and RNG checkpoint state, further activations (`tanh`, `sigmoid`, GELU),

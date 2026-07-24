@@ -2022,10 +2022,11 @@ def test_no_document_claims_unshipped_normalization_is_done():
     claims = (
         # "GroupNorm is implemented", either word order.
         re.compile(subject + r"[^.]{0,60}?" + shipped, re.I),
-        # "F5 shipped the hardening", "F7 added the benchmark", ...
-        re.compile(r"\bF[5-9]\b[^.]{0,60}?(ship|implement|add)\w*", re.I),
-        # Any milestone from F5 on described as done.
-        re.compile(r"\bF[5-9]\b[^.]{0,40}?\b(is|was)\s+"
+        # "F6 shipped the training proof", "F7 added the benchmark", ...
+        # (F5 shipped its hardening tests, so it is excluded here.)
+        re.compile(r"\bF[6-9]\b[^.]{0,60}?(ship|implement|add)\w*", re.I),
+        # Any milestone from F6 on described as done.
+        re.compile(r"\bF[6-9]\b[^.]{0,40}?\b(is|was)\s+"
                    r"(complete|completed|shipped|implemented)\b", re.I),
         # An end-to-end normalized proof or benchmark claimed.
         re.compile(r"(normalized|normalization)[^.]{0,50}?"
@@ -2305,34 +2306,103 @@ def test_both_batchnorm_shapes_share_one_private_implementation():
     assert "def _backward" not in source
 
 
-def test_phase_f_is_still_in_progress_after_f4():
-    """F4 completed the module surface, not the phase. F5-F9 have not
+def test_phase_f_is_still_in_progress_after_f5():
+    """F5 completed the state/checkpoint/graph-safety hardening — tests and
+    documentation only, no capability — not the phase. F6-F9 have not
     shipped, so their deliverables must not exist and no surface may
     describe the phase as finished."""
     from tensorforge.backends import cpp
 
-    # Premise, from the live tree: none of F5-F9's deliverables exist.
+    # Premise, from the live tree: F6-F9's deliverables do not exist.
     assert not (REPO_ROOT / "examples"
                 / "native_normalization_training.py").exists()
     assert not (REPO_ROOT / "benchmarks"
                 / "benchmark_native_normalization.py").exists()
     assert not (REPO_ROOT / "tests" / "test_native_phase_f.py").exists()
-    assert not (REPO_ROOT / "tests"
-                / "test_native_normalization_state.py").exists()
-    # The design still says in-progress, and names F5 as next.
+    # ...while F5's own deliverable — the focused state test file — does.
+    assert (REPO_ROOT / "tests"
+            / "test_native_normalization_state.py").exists()
+    # The design still says in-progress, and names F6 as next.
     design = _status_text(PHASE_F_DESIGN)
     assert "Phase-F status: in progress" in design
-    assert re.search(r"F5[^.]{0,80}(next|planned|not started)", design, re.I), (
-        "the design does not name F5 as the next milestone"
+    assert re.search(r"F6[^.]{0,80}(next|planned|not started)", design, re.I), (
+        "the design does not name F6 as the next milestone"
     )
-    # ...and the ladder still lists F5-F9 as planned.
+    # ...and the ladder still lists F6-F9 as planned.
     ladder = _design_section("Milestone ladder", relative_path=PHASE_F_DESIGN)
-    for planned in range(5, 10):
+    for planned in range(6, 10):
         row = re.search(rf"\|\s*F{planned}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, planned
         assert "planned" in row.group(1).lower(), planned
-    # The registry is unchanged where F5-F9 would touch it.
+    # The registry is unchanged where F6-F9 would touch it.
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+
+
+def test_f5_hardened_state_and_graph_safety_with_no_new_capability():
+    """F5's own claims, checked against the live tree and registry: the
+    focused state test file exists, the design records F5 complete and
+    scopes it to tests/hardening only, the export set and every capability
+    registry are exactly what F4 left, and the checkpoint format is still
+    version 1. F0-F5 are therefore a contiguous complete prefix, F6-F9 are
+    not shipped, and F6 is named next."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+    import tensorforge.experimental as experimental
+
+    # F5's deliverable exists; F6-F9's do not.
+    assert (REPO_ROOT / "tests"
+            / "test_native_normalization_state.py").is_file()
+    assert not (REPO_ROOT / "examples"
+                / "native_normalization_training.py").exists()
+    assert not (REPO_ROOT / "benchmarks"
+                / "benchmark_native_normalization.py").exists()
+    assert not (REPO_ROOT / "tests" / "test_native_phase_f.py").exists()
+
+    # The design records F5 complete and scopes it to tests/hardening only.
+    f5 = _design_section("F5 —", relative_path=PHASE_F_DESIGN)
+    lowered = f5.lower()
+    assert "complete" in lowered, "the design does not record F5 as shipped"
+    assert re.search(r"test|hardening", lowered), (
+        "the F5 section no longer scopes itself to tests/hardening"
+    )
+    assert re.search(r"no .{0,40}(capability|behavior)|adds no", lowered), (
+        "the F5 section no longer denies adding capability"
+    )
+
+    # Exports and every capability registry are exactly what F4 left.
+    assert set(experimental.__all__) == {
+        "NativeTensor", "NativeParameter", "NativeParameterRegistry",
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeMSELoss", "NativeSGD", "NativeAdam",
+        "save_native_checkpoint", "load_native_checkpoint",
+        "NativeCrossEntropyLoss", "native_accuracy",
+        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+    }
+    assert cpp.NATIVE_MODULES == (
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+    )
+    assert cpp.STATE_SUPPORT == (
+        "persistent_buffers", "state_dict", "load_state_dict",
+        "save_native_checkpoint", "load_native_checkpoint",
+    )
+    assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    # No normalization operation, kernel, or checkpoint-schema change.
+    for name in ("layer_norm", "batch_norm", "layernorm", "batchnorm"):
+        assert name not in cpp.TENSOR_CORE_OPS
+        assert name not in cpp.AUTOGRAD_OPS
+        assert name not in cpp.RAW_KERNELS
+    assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
+    assert native_checkpoint._FORMAT_VERSION == 1
+
+    # F6 is named as the next milestone.
+    design = _status_text(PHASE_F_DESIGN)
+    assert re.search(r"F6[^.]{0,80}(next|planned|not started)", design, re.I)
 
 
 def test_phase_f_ladder_marks_shipped_milestones_complete():
@@ -2354,6 +2424,11 @@ def test_phase_f_ladder_marks_shipped_milestones_complete():
                               (4, "NativeBatchNorm2d")):
         if module in cpp.NATIVE_MODULES:
             shipped.append(milestone)
+    # F5 is a tests/hardening milestone (no module, no inventory entry), so
+    # it is detected from its own deliverable — the focused state test file
+    # — rather than from the registry.
+    if (REPO_ROOT / "tests" / "test_native_normalization_state.py").exists():
+        shipped.append(5)
     # The shipped set must be a contiguous prefix — no milestone may be
     # skipped.
     assert shipped == list(range(len(shipped))), shipped

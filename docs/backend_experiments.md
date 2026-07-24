@@ -146,13 +146,25 @@ guard exactly. Running buffers stay `(C,)`, eval snapshots are owning
 `(1, C, 1, 1)` copies, and the checkpoint format stays version 1.
 `"NativeBatchNorm2d"` joined `NATIVE_MODULES` and the exports, and with
 both shapes live `"batchnorm"` **left** `UNSUPPORTED`.
-The numerical normalization module surface is therefore complete, but
-Phase F is not: milestones
-**F5–F9 are planned and have not started** — the exhaustive
-state/checkpoint and graph-safety hardening, the deterministic
-normalized training run with exact resume, the benchmark
-characterization, the cross-cutting integration, and the closure.
-Dropout, a native RNG, and
+The numerical normalization module surface is therefore complete, and
+**F5 is complete** — the exhaustive state/checkpoint, ownership, and
+graph-safety hardening (a focused
+`tests/test_native_normalization_state.py` plus narrow additions to the
+generic buffer and checkpoint suites), proving §7–§10 by executable test
+rather than by prose: canonical dotted buffer keys, independent state
+snapshots, strict/non-strict loads, exact never-casting metadata
+validation, mixed parameter/buffer transaction atomicity, buffer identity
+across state and checkpoint loads, exact eval-output reproduction, the
+buffer-only-versus-full stale-graph distinction, the save/corrupt-load
+failure boundaries, eval-graph snapshot safety under `retain_graph` and a
+failed retryable backward, and explicit parameter/buffer closure. F5 is
+**tests and documentation only** — no numerical behavior, no new public
+capability, and the checkpoint format stays version 1. But Phase F is not
+finished: milestones **F6–F9 are planned and have not started** — the
+deterministic normalized training run with exact resume, the benchmark
+characterization, the cross-cutting integration, and the closure. There
+is no normalized end-to-end training example, no normalization benchmark,
+and no Phase-F integration file. Dropout, a native RNG, and
 RNG checkpoint state are future work **beyond** Phase F.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
@@ -761,7 +773,7 @@ the milestone-era wording pins. **Phase D is complete**; the native line's
 next phase after it was **Phase E — Native Classification and Stable
 Math**, which has since completed (E0–E10), followed by **Phase F —
 Native Normalization and Stateful Buffers**, which is currently
-**in progress** (F0-F4 complete; F5–F9 planned). Further activations and
+**in progress** (F0-F5 complete; F6–F9 planned). Further activations and
 math, dropout with a native RNG, and a CPU optimization pass sit beyond
 Phase F, followed by
 the CUDA
@@ -3157,12 +3169,18 @@ complete (`NativeBatchNorm2d` — NCHW `(N, C, H, W)` batch normalization
 reducing over N, H, and W, over the same shared private implementation
 and adding only shape/layout configuration plus the shared channelwise
 affine step; now in `NATIVE_MODULES` and the exports, and with both
-shapes live `"batchnorm"` has **left** `UNSUPPORTED`). The numerical
-normalization module surface is complete; milestones
-**F5–F9 are planned and have not started**, so there is no normalization
-hardening suite, no normalized training example, no normalization
-benchmark, and no phase closure — and still no normalization operation,
-kernel, or C ABI export.
+shapes live `"batchnorm"` has **left** `UNSUPPORTED`), and **F5** is
+complete (the exhaustive state/checkpoint, ownership, and graph-safety
+hardening — a focused `tests/test_native_normalization_state.py` plus
+narrow additions to the generic buffer and checkpoint suites — proving
+§7–§10 of the design by executable test rather than by prose; **tests and
+documentation only, no numerical behavior and no new capability**, with
+the exports, every capability registry, and the version-1 checkpoint
+format all unchanged). The numerical normalization module surface and its
+state/checkpoint/graph-safety contracts are therefore both complete;
+milestones **F6–F9 are planned and have not started**, so there is no
+normalized training example, no normalization benchmark, and no phase
+closure — and still no normalization operation, kernel, or C ABI export.
 Dropout and a native RNG sit **beyond** Phase F. CUDA experiments
 remain a separate future branch (where `device` gains a second value),
 and an AMP / Tensor Core path is where `dtype` later gains

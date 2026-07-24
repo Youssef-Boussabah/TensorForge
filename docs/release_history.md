@@ -1760,6 +1760,73 @@ not started, so there is no normalized training example, no
 normalization benchmark, and no phase closure. **F5 is the next
 milestone.**
 
+### Phase F — native normalization and stateful buffers (F5)
+
+**F5 is complete: the exhaustive state, checkpoint, ownership, and
+graph-safety hardening — tests and documentation only, no numerical
+behavior and no new public capability.** F5 proved the §7–§10 contracts
+the F3/F4 modules already obey by *executable test* rather than by prose,
+so the state/checkpoint/graph-safety guarantees are demonstrated rather
+than asserted.
+
+A focused `tests/test_native_normalization_state.py` carries the
+cross-cutting proofs the single-module milestones could not, over small
+test-only fixtures — a nested 1-D model (`NativeBatchNorm1d` under a child
+`NativeSequential`), a nested 2-D model (`NativeBatchNorm2d` beside
+`NativeConv2d`/`NativeMaxPool2d`), a mixed model where a `NativeLinear`,
+a `NativeLayerNorm`, and both BatchNorm shapes coexist, a shared-child
+module, and an exact buffer-alias holder. It proves: exact ordered
+canonical dotted state keys (parameters first, then persistent buffers,
+BatchNorm local order `gamma`, `beta`, `running_mean`, `running_var`);
+identity-deduplicated, first-discovered, cycle-safe traversal under shared
+modules and buffer aliases; graph-free, owning, contiguous,
+metadata-matched `state_dict()` snapshots independent of the model **in
+both directions by storage identity**, with a partial-snapshot failure
+closing every created snapshot without GC; the full strict
+missing/unexpected/both-lists matrix and the non-strict partial-load
+matrix over the buffer keys (only loaded parameters advance versions, a
+buffer-only load moves none, one invalid matching entry aborts the whole
+subset); exact shape/dtype/device validation that never casts, reshapes,
+or moves (the dtype/device half driven through the narrowest property
+seam, since the runtime is float64/cpu only); identity-, version-,
+gradient-, and traversal-preserving successful mixed loads; mixed
+parameter/buffer transaction rollback at staging, first install, a later
+install after swaps, version adjustment, and a `KeyboardInterrupt` between
+swaps; the **version-1** checkpoint manifest and archive gaining no
+normalization-specific field, with BatchNorm buffers serializing as
+ordinary model entries; exact **eval-output** reproduction across a round
+trip for both shapes and through the full NCHW convolutional stack;
+buffer-only checkpoint loads over the module's own registered buffers
+replacing exactly those objects while sparing the parameters and leaving
+an earlier eval graph valid, versus the **full** load staling the graph
+through the *parameter*-version guard (attributed to `NativeParameter`,
+never a buffer); a corrupt-archive matrix targeting the persistent
+running-buffer keys mutating nothing; the checkpoint staging/commit and
+atomic-save failure boundaries leaking nothing and preserving an existing
+destination byte-for-byte; eval graphs holding no registered buffer object
+or storage, only independent `(1, C)` / `(1, C, 1, 1)` snapshots; the §7
+rule under `retain_graph=True` and across a **failed retryable backward**
+(no partial commit, graph not freed, retry matching a clean control that
+ignores the mutated running values); and a live-storage baseline over the
+whole matrix, including explicit closes over `parameters()` **and**
+`buffers()`. Two narrow generic-infrastructure additions — a
+`state_dict()` partial-snapshot-failure test in
+`tests/test_native_buffers.py` and a checkpoint load-staging-failure test
+in `tests/test_native_checkpoint.py` — round out the coverage.
+
+**F5 added no C++ code, module, operation, kernel, C ABI symbol, ctypes
+declaration, `NativeTensorCore` method, custom backward, checkpoint schema
+field, or export.** The exports, `NATIVE_MODULES`, `STATE_SUPPORT`,
+`UNSUPPORTED`, and every operation inventory are exactly what F4 left, and
+the checkpoint format stays at **version 1**. Every F5 proof passed
+against the F0–F4 implementation as shipped; no locked-contract bug was
+found, so no production file changed. **F5 completes the hardening, not
+the phase.** F6–F9 (a deterministic normalized training run with exact
+resume, a benchmark characterization, cross-cutting integration, and
+closure) have not started, so there is still no normalized end-to-end
+training example, no normalization benchmark, and no Phase-F integration
+file. **F6 is the next milestone.**
+
 ### A hardening milestone before Phase D
 
 Between Phase C and the native CNN stack, a repair-and-hardening pass

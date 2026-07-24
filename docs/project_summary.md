@@ -109,7 +109,9 @@ under Release and Debug builds with Clang ASan/UBSan and LeakSanitizer.
 progress**: the normalization module surface is complete —
 `NativeLayerNorm` (F2), `NativeBatchNorm1d` (F3, the first stateful
 native numerical module), and `NativeBatchNorm2d` (F4, NCHW) have all
-shipped — while the phase's hardening, end-to-end proof, benchmark,
+shipped, and **F5 has proved their state/checkpoint/ownership/graph-safety
+contracts by exhaustive test (tests and documentation only, no new
+capability)** — while the phase's end-to-end proof, benchmark,
 integration, and closure milestones have not — see below. The two
 engines never mix: explicit entry via
 `NativeTensor.from_array`, explicit exit via `to_numpy()`, no implicit
@@ -219,10 +221,22 @@ layout, and the channels-last permutation its rank-1 affine parameters
 need. `"NativeBatchNorm2d"` has joined `NATIVE_MODULES`, and with both
 shapes live `"batchnorm"` has **left** `UNSUPPORTED`, which now reads
 exactly `("dropout", "float32", "cuda", "amp")`. That completes the
-numerical normalization **module** surface — not Phase F. Milestones
-**F5–F9 are planned and have not started**: no normalization hardening
-suite, no deterministic normalized training run with exact resume, no
-normalization benchmark, no cross-cutting integration, no closure.
+numerical normalization **module** surface. **F5 is complete**: the
+exhaustive state/checkpoint, ownership, and graph-safety hardening — a
+focused `tests/test_native_normalization_state.py` plus narrow additions
+to the generic buffer and checkpoint suites — proves §7–§10 by executable
+test (canonical dotted buffer keys, independent state snapshots,
+strict/non-strict loads, exact never-casting metadata validation, mixed
+parameter/buffer transaction atomicity, buffer identity across state and
+checkpoint loads, exact eval-output reproduction, the
+buffer-only-versus-full stale-graph distinction, the save/corrupt-load
+failure boundaries, eval-graph snapshot safety under `retain_graph` and a
+failed retryable backward, and the live-storage baselines). F5 is **tests
+and documentation only** — no numerical behavior, no new public
+capability, and the checkpoint format stays version 1. But Phase F is not
+finished. Milestones **F6–F9 are planned and have not started**: no
+deterministic normalized training run with exact resume, no normalization
+benchmark, no cross-cutting integration, no closure.
 Beyond Phase F
 (**not started**): dropout and a native RNG, more activations/math, data
 loaders, a CPU optimization phase, then the CUDA

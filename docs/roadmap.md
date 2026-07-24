@@ -917,7 +917,7 @@ The Python line is done; what remains is expansion on its own terms:
     build/packaging evolution. Native normalization then became its own
     phase, below.
   - **Phase F — Native Normalization and Stateful Buffers — in progress
-    (F0, F1, F2, F3, and F4 complete; F5–F9 planned).** The **F0
+    (F0, F1, F2, F3, F4, and F5 complete; F6–F9 planned).** The **F0
     architecture contract is written** —
     [native_normalization_design.md](native_normalization_design.md)
     locks the phase's objective (a fully native, differentiable,
@@ -1012,13 +1012,24 @@ The Python line is done; what remains is expansion on its own terms:
     `"NativeBatchNorm2d"` is now in `NATIVE_MODULES` and the exports,
     and with both shapes live **`batchnorm` has left `UNSUPPORTED`**,
     which now reads exactly `("dropout", "float32", "cuda", "amp")`.
-    **The numerical normalization module surface is complete; Phase F is
-    not.** **F5–F9 have not started** — no exhaustive normalization
-    state/checkpoint and graph-safety hardening suite, no deterministic
-    normalized training example with exact resume, no normalization
-    benchmark, no cross-cutting integration file, and no phase closure —
-    and no normalization operation or kernel exists at all. **F5 is
-    next.**
+    **The numerical normalization module surface is complete, and F5 has
+    hardened it; Phase F is still not finished.** **F5 is complete**: the
+    exhaustive state/checkpoint, ownership, and graph-safety hardening — a
+    focused `tests/test_native_normalization_state.py` plus narrow
+    additions to the generic buffer and checkpoint suites — proves §7–§10
+    by executable test (canonical dotted buffer keys, independent state
+    snapshots, strict/non-strict loads, exact never-casting metadata
+    validation, mixed parameter/buffer transaction atomicity, buffer
+    identity across state and checkpoint loads, exact eval-output
+    reproduction, the buffer-only-versus-full stale-graph distinction, the
+    save/corrupt-load failure boundaries, eval-graph snapshot safety under
+    `retain_graph` and a failed retryable backward, and the live-storage
+    baselines); it is **tests and documentation only** — no numerical
+    behavior, no new capability, and the checkpoint format stays version
+    1. **F6–F9 have not started** — no deterministic normalized training
+    example with exact resume, no normalization benchmark, no cross-cutting
+    integration file, and no phase closure — and no normalization
+    operation or kernel exists at all. **F6 is next.**
     Deliberately outside Phase F: dropout, a native RNG with its
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,

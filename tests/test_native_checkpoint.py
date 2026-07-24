@@ -518,6 +518,43 @@ def test_native_checkpoint_atomic_overwrite_and_failure_cleanup(
 
 
 @needs_native
+def test_native_checkpoint_load_staging_failure_leaves_model_untouched(
+    tmp_path, monkeypatch
+):
+    """A failure while staging a model tensor during load (phase 2, before
+    the commit) must close every staged NativeTensor and leave the live
+    model byte-for-byte unchanged, then recover on a valid load. Generic
+    checkpoint infrastructure: the ``NativeTensor.from_array`` staging seam
+    is the same for any model, with or without buffers."""
+    model = _mlp()
+    _set_grads(model)
+    path = tmp_path / "stage.npz"
+    save_native_checkpoint(path, model)
+    fingerprint = _model_fingerprint(model)
+
+    real_from_array = NativeTensor.from_array
+    calls = {"n": 0}
+
+    def failing_from_array(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:            # a later staged model tensor
+            raise MemoryError("forced staging failure")
+        return real_from_array(*args, **kwargs)
+
+    monkeypatch.setattr(
+        NativeTensor, "from_array", staticmethod(failing_from_array)
+    )
+    with pytest.raises(MemoryError):
+        load_native_checkpoint(path, model)
+    monkeypatch.undo()
+
+    _assert_model_untouched(model, fingerprint)
+    # Recovers completely on a valid load (versions +1 per parameter).
+    load_native_checkpoint(path, model)
+    assert [p.version for p in model.parameters()] == [1, 1, 1, 1]
+
+
+@needs_native
 def test_native_checkpoint_snapshot_failure_creates_nothing(tmp_path):
     # A model with a closed parameter fails inside its own state_dict
     # (which cleans up its partial snapshots) before any file exists.

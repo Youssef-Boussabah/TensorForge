@@ -240,9 +240,22 @@ explicit layer at a time:
   exactly. Running buffers stay `(C,)`. All three normalization modules
   are now in `NATIVE_MODULES` and the exports, and `"batchnorm"` has
   **left** `UNSUPPORTED`. That completes the normalization **module**
-  surface; milestones F5–F9 — hardening, a deterministic normalized
-  training proof, a benchmark, integration, and closure — have not
-  started, so Phase F itself is still in progress.
+  surface. **Milestone F5 shipped the state/checkpoint/graph-safety
+  hardening** — a focused `tests/test_native_normalization_state.py` plus
+  narrow additions to the generic buffer and checkpoint suites — proving
+  §7–§10 by executable test: canonical dotted buffer keys, independent
+  state snapshots, strict/non-strict loads, exact never-casting metadata
+  validation, mixed parameter/buffer transaction atomicity, buffer
+  identity across state and checkpoint loads, exact eval-output
+  reproduction, the buffer-only-versus-full stale-graph distinction, the
+  save/corrupt-load failure boundaries, eval-graph snapshot safety under
+  `retain_graph` and a failed retryable backward, and explicit
+  parameter/buffer closure returning storage to baseline. F5 is **tests
+  and documentation only** — no numerical behavior, no new public
+  capability, and the checkpoint format stays version 1. Milestones F6–F9
+  — a deterministic normalized training proof with exact resume, a
+  benchmark, integration, and closure — have not started, so Phase F
+  itself is still in progress.
 
 The execution path for a native training step is:
 

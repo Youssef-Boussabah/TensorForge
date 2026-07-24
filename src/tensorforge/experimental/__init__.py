@@ -130,13 +130,20 @@ owning ``(1, C, 1, 1)`` snapshots, the checkpoint format stays version
 ``"NativeBatchNorm2d"`` has joined ``NATIVE_MODULES`` and the exports,
 and with both shapes live ``"batchnorm"`` has **left** ``UNSUPPORTED``,
 which now reads exactly ``("dropout", "float32", "cuda", "amp")``.
-**That completes the numerical normalization module surface — not Phase
-F: milestones F5-F9 have not started**, so there is no normalization
-state/checkpoint hardening suite, no deterministic normalized training
-example with exact resume, no normalization benchmark, no cross-cutting
-Phase-F integration, and no phase closure. What the native line still
-does **not** have: further activations/math, dropout or a native RNG,
-float32/dtype expansion, CUDA, AMP, and data-pipeline abstractions.
+**That completes the numerical normalization module surface. Milestone
+F5 is complete** — the exhaustive state, checkpoint, ownership, and
+graph-safety hardening (a focused ``tests/test_native_normalization_state.py``
+plus narrow additions to the generic buffer and checkpoint suites),
+proving §7-§10 of the design by executable test rather than by prose:
+**tests and documentation only, no numerical behavior and no new public
+capability**, with the exports, every capability registry, and the
+version-1 checkpoint format all exactly what F4 left. **Phase F is not
+finished: milestones F6-F9 have not started**, so there is no
+deterministic normalized training example with exact resume, no
+normalization benchmark, no cross-cutting Phase-F integration, and no
+phase closure. What the native line still does **not** have: further
+activations/math, dropout or a native RNG, float32/dtype expansion, CUDA,
+AMP, and data-pipeline abstractions.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf

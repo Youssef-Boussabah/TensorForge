@@ -101,13 +101,27 @@ buffers stay `(C,)`, the checkpoint format stays version 1, and
 `"NativeBatchNorm2d"` is in `NATIVE_MODULES` and the exports; with both
 shapes live `"batchnorm"` has **left** `UNSUPPORTED`, which now reads
 exactly `("dropout", "float32", "cuda", "amp")`). **That completes the
-numerical normalization *module* surface — not Phase F.** Milestones
-F5–F9 (state/checkpoint and graph-safety hardening, a deterministic
+numerical normalization *module* surface — not Phase F.** **F5 is
+complete** (the exhaustive state, checkpoint, ownership, and graph-safety
+hardening — a focused `tests/test_native_normalization_state.py` plus
+narrow additions to the generic buffer and checkpoint suites, proving
+§7–§10 of the design by executable test rather than by prose: canonical
+dotted buffer keys, independent state snapshots, strict/non-strict loads,
+exact never-casting metadata validation, mixed parameter/buffer
+transaction atomicity, buffer identity across state and checkpoint loads,
+exact eval-output reproduction, the buffer-only-versus-full stale-graph
+distinction, the save/corrupt-load failure boundaries, eval-graph snapshot
+safety under `retain_graph` and a failed retryable backward, and the
+live-storage baselines; **tests and documentation only — no numerical
+behavior and no new public capability**, with the exports, every
+capability registry, and the version-1 checkpoint format all exactly what
+F4 left, and no production behavior changed). Milestones
+F6–F9 (a deterministic
 normalized training run with exact resume, a benchmark characterization,
 cross-cutting integration, and closure) have **not started** — so there
-is no normalized training example, no normalization benchmark, and no
-phase closure, and no normalization operation, kernel, C ABI symbol, or
-custom backward exists at all.
+is no normalized training example, no normalization benchmark, no Phase-F
+integration file, and no phase closure, and no normalization operation,
+kernel, C ABI symbol, or custom backward exists at all. F6 is next.
 Dropout/RNG, data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase F.
@@ -153,7 +167,7 @@ production-ready, not a PyTorch replacement.
   examples, roadmap, release history, and the native-line design
   contracts (`native_cnn_design.md` for Phase D,
   `native_classification_design.md` for Phase E,
-  `native_normalization_design.md` for Phase F — designed only). When a milestone changes the
+  `native_normalization_design.md` for Phase F — F0–F5 shipped). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the

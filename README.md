@@ -213,7 +213,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
-- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **in progress**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), and F4 (`NativeBatchNorm2d`) are complete, so the normalization *module* surface is done; F5–F9 are planned)
+- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **in progress**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), and F5 (state/checkpoint/graph-safety hardening — tests and documentation only) are complete, so the normalization *module* surface and its state/checkpoint/graph-safety contracts are proved; F6–F9 are planned)
 
 ## Limitations
 
@@ -232,8 +232,10 @@ Honest expectations:
   training example or normalization benchmark** — **Phase F is in
   progress**: all three normalization modules (`NativeLayerNorm`,
   `NativeBatchNorm1d`, `NativeBatchNorm2d`) have shipped as modules
-  composed from existing operations with no kernel, but the phase's
-  hardening, exact-resume proof, benchmark, integration, and closure
+  composed from existing operations with no kernel, and F5 has proved
+  their state/checkpoint/ownership/graph-safety contracts by exhaustive
+  test (tests and documentation only, no new capability), but the phase's
+  exact-resume proof, benchmark, integration, and closure
   milestones have not — dropout
   or a native RNG, data loaders, native integer
   tensors, further dtypes or devices, CUDA, AMP, and any implicit
@@ -394,9 +396,20 @@ operation, and the checkpoint format stays version 1;
 `"NativeBatchNorm2d"` is now in `NATIVE_MODULES` and the exports, and
 with both shapes live **`batchnorm` has left `UNSUPPORTED`**, which now
 reads exactly `("dropout", "float32", "cuda", "amp")`).
-**That completes the numerical normalization *module* surface — not
-Phase F.** Milestones **F5–F9** —
-state/checkpoint and graph-safety hardening, a
+**That completes the numerical normalization *module* surface.** **F5 is
+complete**: the exhaustive state/checkpoint, ownership, and graph-safety
+hardening — a focused `tests/test_native_normalization_state.py` plus
+narrow additions to the generic buffer and checkpoint suites — proves the
+design's §7–§10 contracts by executable test (canonical dotted buffer
+keys, independent state snapshots, strict/non-strict loads, exact
+never-casting metadata validation, mixed parameter/buffer transaction
+atomicity, buffer identity across state and checkpoint loads, exact
+eval-output reproduction, the buffer-only-versus-full stale-graph
+distinction, the save/corrupt-load failure boundaries, eval-graph snapshot
+safety under `retain_graph` and a failed retryable backward, and the
+live-storage baselines); it is **tests and documentation only — no
+numerical behavior, no new capability, and the checkpoint format stays
+version 1**. But Phase F is not finished. Milestones **F6–F9** — a
 deterministic normalized training run with exact resume, an honest
 benchmark characterization, cross-cutting integration, and phase closure
 — are **planned and have not started**: there is no normalized training
