@@ -110,10 +110,13 @@ progress**: the normalization module surface is complete —
 `NativeLayerNorm` (F2), `NativeBatchNorm1d` (F3, the first stateful
 native numerical module), and `NativeBatchNorm2d` (F4, NCHW) have all
 shipped, **F5 has proved their state/checkpoint/ownership/graph-safety
-contracts by exhaustive test**, and **F6 has shipped a deterministic
+contracts by exhaustive test**, **F6 has shipped a deterministic
 normalized training example with exact checkpoint resume** (tests and
-documentation only, no new capability) — while the phase's benchmark,
-integration, and closure milestones have not — see below. The two
+documentation only, no new capability), and **F7 has shipped the honest
+benchmark characterization**
+(`benchmarks/benchmark_native_normalization.py` — nine correctness-gated
+cases, no speed assertion anywhere) — while the phase's integration and
+closure milestones have not — see below. The two
 engines never mix: explicit entry via
 `NativeTensor.from_array`, explicit exit via `to_numpy()`, no implicit
 dispatch. The exact per-operation status lives in the
@@ -244,8 +247,19 @@ remaining losses, every parameter, the NativeAdam state, both BatchNorm
 `running_mean`/`running_var`, the final training-step prediction, and the
 final evaluation-mode output exactly (format version 1 unchanged, training
 flags runtime-only) — one example and its integration test, adding no
-capability. But Phase F is not finished. Milestones **F7–F9 are planned
-and have not started**: no normalization benchmark, no cross-cutting
+capability. **F7 is complete**:
+`benchmarks/benchmark_native_normalization.py` characterizes the stack
+with nine cases (both LayerNorm directions, all three BatchNorm1d paths,
+all three BatchNorm2d paths, and one complete F6-style normalized
+training step), each **correctness-gated before any timing**, six against
+`stable_tensorforge` equivalents on identical state and three (the
+BatchNorm2d shapes) labelled `native_only` because the stable line has no
+public `BatchNorm2d` to time against, though those keep a rigorous NumPy
+NCHW and transformed-oracle correctness gate. Medians with min, max, and
+spread after warm-up; `--smoke`/`--json`; **no result file, no speed
+assertion, no committed timing number, and no CI timing threshold** —
+measurement only, adding no capability. But Phase F is not finished.
+Milestones **F8–F9 are planned and have not started**: no cross-cutting
 integration, no closure.
 Beyond Phase F
 (**not started**): dropout and a native RNG, more activations/math, data

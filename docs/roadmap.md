@@ -917,7 +917,7 @@ The Python line is done; what remains is expansion on its own terms:
     build/packaging evolution. Native normalization then became its own
     phase, below.
   - **Phase F — Native Normalization and Stateful Buffers — in progress
-    (F0, F1, F2, F3, F4, F5, and F6 complete; F7–F9 planned).** The **F0
+    (F0, F1, F2, F3, F4, F5, F6, and F7 complete; F8–F9 planned).** The **F0
     architecture contract is written** —
     [native_normalization_design.md](native_normalization_design.md)
     locks the phase's objective (a fully native, differentiable,
@@ -1036,9 +1036,24 @@ The Python line is done; what remains is expansion on its own terms:
     (`running_mean`/`running_var`), the final training-step prediction, and
     the final evaluation-mode output exactly (format version 1 unchanged,
     training flags runtime-only) — one example and its integration test,
-    adding no capability. **F7–F9 have not started** — no normalization
-    benchmark, no cross-cutting integration file, and no phase closure —
-    and no normalization operation or kernel exists at all. **F7 is next.**
+    adding no capability. **F7 is complete**:
+    `benchmarks/benchmark_native_normalization.py` characterizes the stack
+    with nine cases — the `NativeLayerNorm` forward and backward, the
+    `NativeBatchNorm1d` training forward, evaluation forward, and
+    backward, the `NativeBatchNorm2d` training forward, evaluation
+    forward, and backward, and one complete F6-style normalized training
+    step — each **correctness-gated before any timing**, six against
+    `stable_tensorforge` equivalents on identical state and three (the
+    `NativeBatchNorm2d` shapes) labelled `native_only` because the stable
+    line has no public 2-D batch-normalization module to time against,
+    though those keep a rigorous NumPy NCHW and transformed-oracle
+    correctness gate. Medians are reported with min,
+    max, and spread after warm-up; `--smoke` and `--json` modes exist;
+    **no result file is written, no speed is asserted, no timing number is
+    committed, and no CI timing threshold exists** — measurement only,
+    adding no capability. **F8–F9 have not started** — no cross-cutting
+    integration file and no phase closure — and no normalization
+    operation or kernel exists at all. **F8 is next.**
     Deliberately outside Phase F: dropout, a native RNG with its
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,

@@ -1993,24 +1993,24 @@ def test_f3_scopes_the_snapshot_rule_to_buffer_only_mutation():
 
 
 def test_no_document_claims_unshipped_normalization_is_done():
-    """After F6 the module surface, its hardening, and one deterministic
-    normalized training/resume proof really are shipped, so a document may
-    say so. What no status surface may claim is the part that has **not**:
-    any milestone from F7 on, the phase itself, a normalization benchmark,
-    or a normalization family Phase F never scoped. The registry/file
-    premise for each is checked first."""
+    """After F7 the module surface, its hardening, one deterministic
+    normalized training/resume proof, and the benchmark characterization
+    really are shipped, so a document may say so. What no status surface
+    may claim is the part that has **not**: any milestone from F8 on, the
+    phase itself, or a normalization family Phase F never scoped. The
+    registry/file premise for each is checked first."""
     from tensorforge.backends import cpp
     import tensorforge.experimental as experimental
 
-    # Premise: the modules, the hardening, and the F6 example shipped; the
-    # benchmark and the Phase-F integration file did not.
+    # Premise: the modules, the hardening, the F6 example, and the F7
+    # benchmark shipped; the Phase-F integration file did not.
     for module in _NORMALIZATION_MODULES:
         assert module in cpp.NATIVE_MODULES, module
     assert "batchnorm" not in cpp.UNSUPPORTED
     assert (REPO_ROOT / "examples"
             / "native_normalization_training.py").is_file()
-    assert not (REPO_ROOT / "benchmarks"
-                / "benchmark_native_normalization.py").exists()
+    assert (REPO_ROOT / "benchmarks"
+            / "benchmark_native_normalization.py").is_file()
     assert not (REPO_ROOT / "tests" / "test_native_phase_f.py").exists()
 
     # The subject is only the *unshipped* surface — the shipped modules are
@@ -2023,15 +2023,17 @@ def test_no_document_claims_unshipped_normalization_is_done():
     claims = (
         # "GroupNorm is implemented", either word order.
         re.compile(subject + r"[^.]{0,60}?" + shipped, re.I),
-        # "F7 added the benchmark", "F8 shipped integration", ...
-        # (F6 shipped its training/resume example, so it is excluded here.)
-        re.compile(r"\bF[7-9]\b[^.]{0,60}?(ship|implement|add)\w*", re.I),
-        # Any milestone from F7 on described as done.
-        re.compile(r"\bF[7-9]\b[^.]{0,40}?\b(is|was)\s+"
+        # "F8 shipped integration", "F9 added closure", ...
+        # (F6 shipped its training/resume example and F7 its benchmark, so
+        # both are excluded here.)
+        re.compile(r"\bF[8-9]\b[^.]{0,60}?(ship|implement|add)\w*", re.I),
+        # Any milestone from F8 on described as done.
+        re.compile(r"\bF[8-9]\b[^.]{0,40}?\b(is|was)\s+"
                    r"(complete|completed|shipped|implemented)\b", re.I),
-        # A normalization *benchmark* claimed as shipped (still F7's work).
-        re.compile(r"(normalized|normalization)[^.]{0,50}?benchmark"
-                   r"[^.]{0,40}?" + shipped, re.I),
+        # The cross-cutting Phase-F integration claimed as shipped (F8's
+        # work: the file does not exist).
+        re.compile(r"(cross-cutting|Phase-F)\s+integration[^.]{0,40}?"
+                   + shipped, re.I),
         # The phase itself described as finished.
         re.compile(r"Phase F\b[^.F]{0,40}?\b(is|was|are|now)\s+"
                    r"(complete|completed|shipped|implemented)\b", re.I),
@@ -2306,35 +2308,38 @@ def test_both_batchnorm_shapes_share_one_private_implementation():
     assert "def _backward" not in source
 
 
-def test_phase_f_is_still_in_progress_after_f6():
-    """F6 shipped the deterministic normalized training and exact-resume
-    proof — one example and its integration test, no capability — not the
-    phase. F7-F9 have not shipped, so their deliverables must not exist and
-    no surface may describe the phase as finished."""
+def test_phase_f_is_still_in_progress_after_f7():
+    """F7 shipped the benchmark characterization — one harness and its
+    test, measurement only — not the phase. F8-F9 have not shipped, so
+    their deliverables must not exist and no surface may describe the
+    phase as finished."""
     from tensorforge.backends import cpp
 
-    # Premise, from the live tree: F7-F9's deliverables do not exist.
-    assert not (REPO_ROOT / "benchmarks"
-                / "benchmark_native_normalization.py").exists()
+    # Premise, from the live tree: F8-F9's deliverables do not exist.
     assert not (REPO_ROOT / "tests" / "test_native_phase_f.py").exists()
-    # ...while F6's own deliverables — the example and its test — do.
+    # ...while F6's and F7's own deliverables do.
     assert (REPO_ROOT / "examples"
             / "native_normalization_training.py").is_file()
     assert (REPO_ROOT / "tests"
             / "test_native_normalization_training.py").is_file()
-    # The design still says in-progress, and names F7 as next.
+    assert (REPO_ROOT / "benchmarks"
+            / "benchmark_native_normalization.py").is_file()
+    assert (REPO_ROOT / "tests"
+            / "test_native_normalization_benchmark.py").is_file()
+    # The design still says in-progress, and names F8 as next.
     design = _status_text(PHASE_F_DESIGN)
     assert "Phase-F status: in progress" in design
-    assert re.search(r"F7[^.]{0,80}(next|planned|not started)", design, re.I), (
-        "the design does not name F7 as the next milestone"
+    assert re.search(r"F8[^.]{0,80}(next|planned|not started)", design, re.I), (
+        "the design does not name F8 as the next milestone"
     )
-    # ...and the ladder still lists F7-F9 as planned.
+    # ...and the ladder still lists F8-F9 as planned.
     ladder = _design_section("Milestone ladder", relative_path=PHASE_F_DESIGN)
-    for planned in range(7, 10):
+    for planned in range(8, 10):
         row = re.search(rf"\|\s*F{planned}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, planned
         assert "planned" in row.group(1).lower(), planned
-    # The registry is unchanged where F7-F9 would touch it.
+    # The registry is unchanged where F7-F9 would touch it — F7 measured
+    # only, and F8-F9 add nothing either.
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
 
 
@@ -2343,8 +2348,8 @@ def test_f6_shipped_the_normalized_training_and_resume_proof():
     example and its integration test exist and use the two normalization
     families, the design records F6 complete as an integration proof only,
     and the export set and every capability registry are exactly what F4
-    left, with the checkpoint format still version 1. F0-F6 are therefore a
-    contiguous complete prefix, F7-F9 are not shipped, and F7 is named
+    left, with the checkpoint format still version 1. F0-F7 are therefore a
+    contiguous complete prefix, F8-F9 are not shipped, and F8 is named
     next."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
@@ -2416,9 +2421,97 @@ def test_f6_shipped_the_normalized_training_and_resume_proof():
     # F5's own design section still records the hardening milestone.
     f5 = _design_section("F5 —", relative_path=PHASE_F_DESIGN)
     assert "complete" in f5.lower()
-    # F7 is named as the next milestone.
+    # F8 is named as the next milestone.
     design = _status_text(PHASE_F_DESIGN)
-    assert re.search(r"F7[^.]{0,80}(next|planned|not started)", design, re.I)
+    assert re.search(r"F8[^.]{0,80}(next|planned|not started)", design, re.I)
+
+
+def test_docs_present_the_shipped_normalization_benchmark():
+    """F7's harness must stay documented as what it is: an honest local
+    characterization with correctness gated before timing, honest
+    reference labels, and **no** speed guarantee — never a performance
+    contract or a CI gate. The premise is checked against the live tree
+    first."""
+    benchmark = REPO_ROOT / "benchmarks" / "benchmark_native_normalization.py"
+    assert benchmark.is_file()
+    assert (REPO_ROOT / "tests"
+            / "test_native_normalization_benchmark.py").is_file()
+
+    section = _design_section("F7 —", relative_path=PHASE_F_DESIGN)
+    lowered = section.lower()
+    assert "complete" in lowered, "the design does not record F7 as shipped"
+    assert "benchmarks/benchmark_native_normalization.py" in section
+    # The nine measured cases are named, and they are the ones the harness
+    # actually declares.
+    from benchmarks import benchmark_native_normalization as harness
+
+    assert len(harness.CASES) == 9
+    for case in harness.CASES:
+        assert case in section, case
+    # The methodology commitments.
+    assert re.search(r"correctness.{0,40}before.{0,20}timing", lowered), (
+        "the design no longer states that correctness runs before timing"
+    )
+    assert "median" in lowered and "spread" in lowered
+    assert "warm-up" in lowered or "warmup" in lowered
+    for label in ("stable_tensorforge", "native_only"):
+        assert label in section, label
+    assert "--smoke" in section and "--json" in section
+    # The BatchNorm2d timing-label decision is justified, not asserted.
+    assert re.search(r"no public .?BatchNorm2d", section, re.I), (
+        "the design does not say why the BatchNorm2d cases are native_only"
+    )
+    assert "oracle" in lowered
+    # And the honesty boundary, in the design and on the status surfaces.
+    assert re.search(r"no.{0,40}speed", lowered), (
+        "the design no longer states that no speed is asserted"
+    )
+    assert re.search(r"no ci timing threshold|no timing threshold", lowered)
+    assert re.search(r"no result file", lowered)
+    readme = _status_text("README.md")
+    assert "benchmarks/benchmark_native_normalization.py" in readme
+    for command in ("uv run python benchmarks/benchmark_native_normalization"
+                    ".py --smoke",
+                    "uv run python benchmarks/benchmark_native_normalization"
+                    ".py --smoke --json"):
+        assert command in readme, command
+    for surface in ("README.md", "docs/native_support_matrix.md",
+                    "docs/roadmap.md", "docs/project_summary.md",
+                    "docs/architecture.md"):
+        text = _status_text(surface)
+        # A raw character window, not a sentence one: the file name itself
+        # contains a period, which would truncate a "[^.]" span.
+        window = [text[max(0, match.start() - 400):match.end() + 600]
+                  for match in re.finditer("benchmark_native_normalization",
+                                           text)]
+        assert window, surface
+        assert any(re.search(
+            r"(no speed|not a (performance )?(contract|guarantee)"
+            r"|no timing threshold|no committed timing|characteriz)",
+            chunk, re.I) for chunk in window), surface
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"\|\s*F7\s*\|[^|]*\|[^|]*Complete", matrix), (
+        "the support matrix does not mark F7 complete"
+    )
+
+
+def test_the_normalization_benchmark_is_registered_nowhere():
+    """A benchmark is a measurement tool, never a capability: it must not
+    appear in any runtime inventory, and it must add no export."""
+    from tensorforge.backends import cpp
+    import tensorforge.experimental as experimental
+
+    for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS,
+                      cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,
+                      cpp.NATIVE_MODULES, cpp.NATIVE_LOSSES,
+                      cpp.NATIVE_METRICS, cpp.NATIVE_OPTIMIZERS,
+                      cpp.STATE_SUPPORT, cpp.UNSUPPORTED):
+        for banned in ("benchmark", "characterization", "normalization"):
+            assert not [n for n in inventory if banned in n.lower()], banned
+    for banned in ("benchmark_native_normalization", "run_benchmark",
+                   "format_report"):
+        assert banned not in experimental.__all__, banned
+        assert not hasattr(experimental, banned), banned
 
 
 def test_phase_f_ladder_marks_shipped_milestones_complete():
@@ -2447,6 +2540,11 @@ def test_phase_f_ladder_marks_shipped_milestones_complete():
         shipped.append(5)
     if (REPO_ROOT / "examples" / "native_normalization_training.py").exists():
         shipped.append(6)
+    # F7 (the benchmark characterization) is likewise detected from its own
+    # deliverable: it adds no capability, so the registry cannot show it.
+    if (REPO_ROOT / "benchmarks"
+            / "benchmark_native_normalization.py").exists():
+        shipped.append(7)
     # The shipped set must be a contiguous prefix — no milestone may be
     # skipped.
     assert shipped == list(range(len(shipped))), shipped

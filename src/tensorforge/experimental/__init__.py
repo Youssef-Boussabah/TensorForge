@@ -148,9 +148,24 @@ resume into a fresh model/optimizer pair reproduces the losses,
 parameters, NativeAdam state, BatchNorm running statistics, final training
 prediction, and evaluation-mode output exactly — **one example and its
 integration test, no capability or schema change, format version 1
-unchanged**. **Phase F is not finished: milestones F7-F9 have not
-started**, so there is no normalization benchmark, no cross-cutting
-Phase-F integration, and no phase closure. What the native line still does
+unchanged**. **Milestone F7 is complete** — the honest benchmark
+characterization ``benchmarks/benchmark_native_normalization.py``: nine
+cases (the LayerNorm forward and backward, the BatchNorm1d training
+forward, evaluation forward, and backward, the BatchNorm2d training
+forward, evaluation forward, and backward, and one complete F6-style
+normalized training step), each **correctness-gated before any timing**,
+six labelled ``stable_tensorforge`` against ``tensorforge.nn``
+equivalents on identical state and three (the BatchNorm2d shapes)
+labelled ``native_only`` because the stable line has no public
+``BatchNorm2d`` to time against — those publish no ratio while keeping a
+rigorous NumPy NCHW and transformed-oracle correctness gate. Medians with
+min, max, and spread after warm-up; ``--smoke``/``--json`` modes; **no
+result file, no speed assertion, no committed timing number, and no CI
+timing threshold** — **measurement only, no capability, operation,
+kernel, C ABI symbol, schema field, example, or export, and no production
+behavior changed**. **Phase F is not finished: milestones F8-F9 have not
+started**, so there is no cross-cutting Phase-F integration and no phase
+closure. What the native line still does
 **not** have: further
 activations/math, dropout or a native RNG, float32/dtype expansion, CUDA,
 AMP, and data-pipeline abstractions.

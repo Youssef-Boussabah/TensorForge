@@ -129,11 +129,43 @@ training-step prediction, and the final **evaluation-mode** output exactly
 — checkpoint format version 1 unchanged, training flags runtime-only;
 **one example and its integration test, adding no capability, operation,
 kernel, schema field, benchmark, or export, and changing no production
-behavior**). Milestones F7–F9 (a benchmark characterization, cross-cutting
-integration, and closure) have **not started** — so there is no
-normalization benchmark, no Phase-F integration file, and no phase
+behavior**). **F7 is complete** (the honest benchmark characterization —
+`benchmarks/benchmark_native_normalization.py`, `BENCHMARK_NAME =
+"tensorforge.native_normalization"`, version `"1.0"`: exactly nine cases
+in this order — `layernorm_forward`, `layernorm_backward`,
+`batchnorm1d_training_forward`, `batchnorm1d_eval_forward`,
+`batchnorm1d_backward`, `batchnorm2d_training_forward`,
+`batchnorm2d_eval_forward`, `batchnorm2d_backward`, and
+`normalized_training_step`. Every case runs its correctness gate
+**before** the timing helper is ever reached, so a failed gate publishes
+no timing and the CLI exits nonzero with a clean stdout. Six cases are
+labelled `stable_tensorforge` and run `tensorforge.nn`/`tensorforge.optim`
+on the *same* inputs, epsilon, momentum, affine values, running state,
+initial parameters, and optimizer hyperparameters; the three
+**BatchNorm2d** cases are labelled `native_only` and publish **no** timing
+ratio, because the stable line has no public `BatchNorm2d` — they keep a
+rigorous correctness oracle instead (an explicit NumPy NCHW
+population-statistics formula, an independent channelwise-affine probe,
+eval-mode state neutrality with the registered buffers proved absent from
+the graph, and for the backward the stable `BatchNorm1d` on the
+equivalent `(N*H*W, C)` sample matrix transformed back to NCHW, which is a
+correctness oracle **only** and deliberately not timed). Timing uses
+`time.perf_counter_ns()` with warm-up, one call per sample, every sample
+retained, setup and cleanup outside the timer (graph construction inside
+it for the forward and training-step cases, outside it for the
+backward-only cases), a fresh module per training-mode repetition because
+the forward advances persistent state, and median/min/max/spread
+reporting. `--case`/`--warmup`/`--repetitions`/`--smoke`/`--json` exist,
+the payload is fully JSON-native, **no result file of any kind is
+written**, and **no speed assertion, committed timing number, or CI timing
+threshold exists anywhere**; **measurement only — one harness and its
+test, no capability, operation, kernel, C ABI symbol, ctypes declaration,
+Core method, schema field, example, or export, and no production behavior
+changed**). Milestones F8–F9 (cross-cutting
+integration and closure) have **not started** — so there is
+no Phase-F integration file and no phase
 closure, and no normalization operation, kernel, C ABI symbol, or custom
-backward exists at all. F7 is next.
+backward exists at all. F8 is next.
 Dropout/RNG, data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase F.
@@ -179,7 +211,7 @@ production-ready, not a PyTorch replacement.
   examples, roadmap, release history, and the native-line design
   contracts (`native_cnn_design.md` for Phase D,
   `native_classification_design.md` for Phase E,
-  `native_normalization_design.md` for Phase F — F0–F6 shipped). When a milestone changes the
+  `native_normalization_design.md` for Phase F — F0–F7 shipped). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the
@@ -194,8 +226,12 @@ production-ready, not a PyTorch replacement.
   `cpp.backend_info()`; kernels raise ImportError at call time when
   unbuilt, and the backend tests skip. `benchmarks/cpp_backend.py`
   compares kernels against NumPy honestly (no performance assertions
-  anywhere), and `benchmarks/benchmark_native_cnn.py` characterizes the
-  Phase-D CNN stack the same way. `scripts/smoke_cpp_backend.py` is the
+  anywhere), while `benchmarks/benchmark_native_cnn.py`,
+  `benchmarks/benchmark_native_classification.py`, and
+  `benchmarks/benchmark_native_normalization.py` characterize the Phase-D
+  CNN, Phase-E classification, and Phase-F normalization stacks the same
+  way (correctness gated before timing, honest reference labels, no
+  result file, no speed asserted). `scripts/smoke_cpp_backend.py` is the
   hard-failing smoke check CI runs after building. Dependency-free C++
   CTests live in `cpp/tests/` and build only with `-DTF_BUILD_TESTS=ON`;
   sanitizer validation uses Clang on Linux

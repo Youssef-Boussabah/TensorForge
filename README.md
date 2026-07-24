@@ -166,6 +166,8 @@ uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke  # CNN characterization
 uv run python benchmarks/benchmark_native_classification.py --smoke        # classification characterization
 uv run python benchmarks/benchmark_native_classification.py --smoke --json # machine-readable JSON
+uv run python benchmarks/benchmark_native_normalization.py --smoke         # normalization characterization
+uv run python benchmarks/benchmark_native_normalization.py --smoke --json  # machine-readable JSON
 ```
 
 The native API mirrors the stable one, explicitly:
@@ -225,7 +227,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
-- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **in progress**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), and F6 (a deterministic normalized training example with exact resume) are complete; F7–F9 are planned)
+- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **in progress**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), and F7 (the honest benchmark characterization) are complete; F8–F9 are planned)
 
 ## Limitations
 
@@ -240,15 +242,18 @@ Honest expectations:
 - The native CNN stack (Phase D) and the native classification stack
   (Phase E) are both complete — but "complete" means *these* capabilities
   work and are validated, not that the native line is finished. What the
-  native line still does **not** have: a **normalization benchmark** —
+  native line still does **not** have: a **cross-cutting Phase-F
+  integration file or phase closure** —
   **Phase F is in progress**: all three normalization modules
   (`NativeLayerNorm`, `NativeBatchNorm1d`, `NativeBatchNorm2d`) have
   shipped as modules composed from existing operations with no kernel, F5
   proved their state/checkpoint/ownership/graph-safety contracts by
-  exhaustive test, and F6 shipped a deterministic normalized training
+  exhaustive test, F6 shipped a deterministic normalized training
   example with exact checkpoint resume
-  (`examples/native_normalization_training.py`), but the phase's
-  benchmark, integration, and closure milestones have not — dropout
+  (`examples/native_normalization_training.py`), and F7 shipped the
+  honest benchmark characterization
+  (`benchmarks/benchmark_native_normalization.py`), but the phase's
+  integration and closure milestones have not — dropout
   or a native RNG, data loaders, native integer
   tensors, further dtypes or devices, CUDA, AMP, and any implicit
   dispatch into `tensorforge.Tensor`. Native checkpoints capture no
@@ -431,10 +436,28 @@ final training-step prediction, and the final **evaluation-mode** output
 exactly — proving two uninterrupted runs are bit-identical and the
 interrupted resume is exact (format version 1 unchanged, training flags
 runtime-only). It **adds no capability**: one example and its integration
-test, no operation, kernel, or schema change. But Phase F is not finished.
-Milestones **F7–F9** — an honest benchmark characterization, cross-cutting
-integration, and phase closure — are **planned and have not started**:
-there is no normalization benchmark and no phase closure, and no
+test, no operation, kernel, or schema change. **F7 is complete**:
+`benchmarks/benchmark_native_normalization.py` characterizes the stack
+with nine cases — the LayerNorm forward and backward, the BatchNorm1d
+training forward, evaluation forward, and backward, the BatchNorm2d
+training forward, evaluation forward, and backward, and one complete
+F6-style normalized training step. Every case is **correctness-gated
+before any timing** (a failed gate exits nonzero and publishes nothing);
+six are measured against `stable_tensorforge` equivalents on the same
+inputs, epsilon, momentum, affine values, running state, initial
+parameters, and optimizer hyperparameters, while the three BatchNorm2d
+cases are labelled `native_only` for timing because the stable line has
+**no public `BatchNorm2d`** to compare against — they still carry a
+rigorous correctness oracle (an explicit NumPy NCHW population-statistics
+formula, and for the backward the stable `BatchNorm1d` on the equivalent
+`(N*H*W, C)` sample matrix transformed back to NCHW). Medians are
+reported with min, max, and spread after warm-up, `--smoke` and `--json`
+modes exist, **no result file is written, no speed is asserted, no timing
+number is committed, and no CI job asserts a duration** — measurement
+only, adding no capability. But Phase F is not finished.
+Milestones **F8–F9** — cross-cutting
+integration and phase closure — are **planned and have not started**:
+there is no Phase-F integration file and no phase closure, and no
 normalization *operation*, kernel, or C ABI symbol exists at all. More activations/math, dropout and a native RNG, data
 loaders, and CPU optimization sit beyond Phase F, and CUDA/GPU
 experiments remain future work. See

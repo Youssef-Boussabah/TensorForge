@@ -79,13 +79,27 @@ state, both BatchNorm `running_mean` and `running_var`, the final
 training-step prediction, and the final **evaluation-mode** output
 exactly, with format version 1 unchanged and training flags runtime-only;
 **one example and its integration test, adding no capability, operation,
-kernel, schema field, benchmark, or export**). **F7–F9 are planned and
-have not started**, so Phase F itself is *not* complete: the benchmark
-characterization, the cross-cutting integration, and the phase closure
-have none of them happened — there is no normalization benchmark and no
-Phase-F integration file. And no normalization *operation*, kernel, or C
-ABI symbol exists at all — all three modules are compositions of existing
-operations, not numerical primitives.
+kernel, schema field, benchmark, or export**). And **F7 is complete** (the
+honest benchmark characterization —
+`benchmarks/benchmark_native_normalization.py`: nine cases covering the
+LayerNorm forward and backward, the BatchNorm1d training forward,
+evaluation forward, and backward, the BatchNorm2d training forward,
+evaluation forward, and backward, and one complete F6-style normalized
+training step. Every case is **correctness-gated before any timing**, is
+labelled with the reference it actually used — `stable_tensorforge` for
+the six cases with a real stable counterpart, `native_only` for the three
+BatchNorm2d cases because the stable line has no public `BatchNorm2d` to
+time against — and reports the median with the minimum, maximum, and
+spread after warm-up, with `--smoke`/`--json` modes and **no result file,
+no speed assertion, and no timing threshold anywhere**. The BatchNorm2d
+cases keep a rigorous correctness oracle even without a timed reference;
+**measurement only — no capability, operation, kernel, C ABI symbol,
+schema field, or export**). **F8–F9 are planned and have not started**,
+so Phase F itself is *not* complete: the cross-cutting integration and
+the phase closure have neither of them happened — there is no Phase-F
+integration file and no phase closure. And no normalization *operation*,
+kernel, or C ABI symbol exists at all — all three modules are
+compositions of existing operations, not numerical primitives.
 
 **What Phase F will deliver, in later milestones.** A fully native,
 differentiable, state-safe normalization stack:
@@ -873,6 +887,18 @@ which are not negotiable:
   threshold anywhere.** Observed ratios are local characterizations, never
   promises.
 
+**Shipped.** `benchmarks/benchmark_native_normalization.py` implements
+exactly this contract — nine correctness-gated cases (LayerNorm forward
+and backward; BatchNorm1d training forward, evaluation forward, and
+backward; BatchNorm2d training forward, evaluation forward, and backward;
+and one complete F6-style normalized training step), with
+`stable_tensorforge` labels where a real stable counterpart exists and
+`native_only` for the three BatchNorm2d cases, which publish no timing
+ratio because the stable line has no public `BatchNorm2d` and a
+layout-transformed stand-in would make the ratio misleading. Those cases
+keep a rigorous correctness oracle regardless. See the F7 milestone entry
+in §15 for the full record.
+
 ---
 
 ## 14. Comparison with the Daedalus design
@@ -939,14 +965,14 @@ copied.
 | F4 | `NativeBatchNorm2d` | **complete** |
 | F5 | Normalization state, checkpoint, and graph-safety hardening | **complete** |
 | F6 | Deterministic normalized training and exact resume | **complete** |
-| F7 | Native normalization benchmark characterization | planned |
+| F7 | Native normalization benchmark characterization | **complete** |
 | F8 | Cross-cutting Phase-F integration and semantic guardrails | planned |
 | F9 | Phase-F closure | planned |
 
 Each milestone's full contract follows; the table above is the status
 summary, and the registry remains the authority on what is live. **F0,
-F1, F2, F3, F4, F5, and F6 are complete; F7 is the next milestone, and
-F7–F9 have not started.**
+F1, F2, F3, F4, F5, F6, and F7 are complete; F8 is the next milestone,
+and F8–F9 have not started.**
 
 ### F0 — Phase-F architecture contract and repository reconciliation *(this document)* — **complete**
 
@@ -1639,7 +1665,7 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
     was found, so no production file was touched. **F7 (the honest
     benchmark characterization) is next.**
 
-### F7 — Native normalization benchmark characterization — planned
+### F7 — Native normalization benchmark characterization — **complete**
 
 - **Objective:** characterize the normalization stack honestly under the
   §13 rules. Measurement only.
@@ -1661,6 +1687,85 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
 - **Completion criteria:** the harness exists, gates correctness first,
   reports medians with spread and honest reference labels, and asserts no
   speed anywhere.
+- **Shipped (F7).** Exactly the above — **one benchmark harness and its
+  test, measurement only: no capability, operation, kernel, C ABI symbol,
+  ctypes declaration, `NativeTensorCore` method, custom backward,
+  checkpoint schema field, example, or export; no inventory changed, the
+  checkpoint format stays version 1, and no production file was
+  modified.** What it delivered:
+
+  - **`benchmarks/benchmark_native_normalization.py`** —
+    `BENCHMARK_NAME = "tensorforge.native_normalization"`,
+    `BENCHMARK_VERSION = "1.0"` — with exactly **nine** cases, in this
+    order: `layernorm_forward`, `layernorm_backward`,
+    `batchnorm1d_training_forward`, `batchnorm1d_eval_forward`,
+    `batchnorm1d_backward`, `batchnorm2d_training_forward`,
+    `batchnorm2d_eval_forward`, `batchnorm2d_backward`, and
+    `normalized_training_step`. Nothing else is measured: no checkpoint
+    I/O, no `state_dict()`/`load_state_dict()`, no constructor
+    validation, no failure path, no `retain_graph`, no fault injection,
+    and no isolated running-state transaction — the training-forward
+    cases already include the real running-statistics update.
+  - **Correctness before timing, structurally.** `_measure_case` calls
+    the case's `check()` **before** it reaches the timing helper, so a
+    failed gate raises before a single sample is taken and publishes no
+    timing; the CLI turns that into `correctness gate failed: …` on
+    stderr with a nonzero exit and a completely clean stdout. The tests
+    prove it by replacing a native path with a finite, correctly shaped,
+    but numerically wrong result (and separately with a non-finite one)
+    and asserting that the timing helper was never called.
+  - **Honest reference labels.** `stable_tensorforge` for the six cases
+    with a real stable counterpart — the LayerNorm forward and backward,
+    the BatchNorm1d training forward, evaluation forward, and backward,
+    and the normalized training step — each running
+    `tensorforge.nn`/`tensorforge.optim` on the *same* input values,
+    epsilon, momentum, affine values, running state, initial parameters,
+    optimizer hyperparameters, and reduction semantics.
+    **`native_only`** for all three `NativeBatchNorm2d` cases, because
+    the stable line has **no public `BatchNorm2d`**; they publish no
+    native-to-stable ratio at all. Their correctness gates are still
+    real: an explicit NumPy NCHW population-statistics formula for the
+    output and both running buffers, a channelwise-affine probe (smoke
+    mode uses unequal `C`/`H`/`W` so a channel/spatial broadcast mistake
+    cannot hide), state neutrality in eval mode, and — for the backward —
+    the stable `BatchNorm1d` applied to the equivalent `(N*H*W, C)`
+    sample matrix with the input gradient transformed back to NCHW and
+    the `gamma`/`beta` gradients compared directly. That transformed
+    computation is a **correctness oracle only**: timing it as a
+    "BatchNorm2d reference" would compare a different module plus two
+    layout transformations, so the ratio would be misleading, and both
+    `reference_detail` and the case's notes say so explicitly.
+  - **Timing methodology.** `time.perf_counter_ns()`, warm-up before
+    measurement, one measured sample per operation call, **every** sample
+    retained, no fastest-only reporting, and no timer-overhead
+    subtraction. `prepare()` and `cleanup()` run outside the timed
+    region on every path; graph construction is inside the timer for the
+    forward and training-step cases (it is part of the call) and outside
+    it for the backward-only cases, which time exactly one one-shot
+    `backward()` on a graph rebuilt from cleared gradients each
+    repetition. Because a BatchNorm training forward advances persistent
+    state, every training-mode repetition builds a **fresh** module from
+    the same deterministic state — a state-advanced module is never
+    reused as a sample. Reported per timed path: `sample_count`,
+    `samples_s`, `median_s`, `min_s`, `max_s`, `spread_s`,
+    `relative_spread`, and `units = "seconds_per_call"`.
+  - **A JSON-native payload** (`benchmark`, `version`, `mode`,
+    `environment`, `cases`) that survives
+    `json.loads(json.dumps(payload)) == payload`, with `--case`,
+    `--warmup`, `--repetitions`, `--smoke`, and `--json`; unknown cases
+    and non-positive/`bool`/non-`int` counts rejected; **no file of any
+    kind written**, and a human report that ends in the local
+    characterization disclaimer and carries no speed verdict.
+  - **No speed is asserted and there is no CI timing threshold.** The
+    only float constants the harness defines are correctness tolerances
+    (`FORWARD_ATOL`, `GRADIENT_ATOL`, `STATE_ATOL`, `LOSS_ATOL`,
+    `PARAMETER_ATOL`) and module arguments; no test compares a measured
+    duration or ratio against a nonzero constant; no timing number is
+    committed to any document; and CI runs no benchmark at all.
+  - **No production behavior changed.** The harness only composes shipped
+    public APIs; no locked-contract bug was found, so no `src/` numerical
+    file was touched. **F8 (the cross-cutting Phase-F integration) is
+    next.**
 
 ### F8 — Cross-cutting Phase-F integration and semantic guardrails — planned
 
@@ -1796,13 +1901,14 @@ must be verified against reality for the whole normalization surface.
 
 ## 18. Phase-F status statement
 
-**Phase F is in progress: F0, F1, F2, F3, F4, F5, and F6 are complete;
-F7–F9 have not started.** The experimental native line now has the
-complete numerical normalization *module* surface — LayerNorm and both
-BatchNorm shapes — their state, checkpoint, ownership, and graph-safety
-contracts are proved by executable test, and a deterministic normalized
-training run resumes exactly from a checkpoint, but the phase is not
-finished:
+**Phase F is in progress: F0, F1, F2, F3, F4, F5, F6, and F7 are
+complete; F8–F9 have not started.** The experimental native line now has
+the complete numerical normalization *module* surface — LayerNorm and
+both BatchNorm shapes — their state, checkpoint, ownership, and
+graph-safety contracts are proved by executable test, a deterministic
+normalized training run resumes exactly from a checkpoint, and the stack
+is characterized by an honest correctness-gated benchmark, but the phase
+is not finished:
 
 - `NativeLayerNorm` exists, is exported from `tensorforge.experimental`,
   and is registered in `NATIVE_MODULES`; `"layernorm"` has left
@@ -1848,10 +1954,25 @@ finished:
   load, the training flag proved runtime-only, and the checkpoint format
   version **1**. **One example and its integration test — no capability,
   operation, kernel, schema field, or benchmark.**
-- **Phase F is still in progress.** F7–F9 — the benchmark
-  characterization, the cross-cutting integration, and the closure — have
-  not started. There is no normalization benchmark and no Phase-F
-  integration file.
+- **F7 is complete.** `benchmarks/benchmark_native_normalization.py`
+  characterizes the stack with nine correctness-gated cases — the
+  LayerNorm forward and backward, the BatchNorm1d training forward,
+  evaluation forward, and backward, the BatchNorm2d training forward,
+  evaluation forward, and backward, and one complete F6-style normalized
+  training step. Correctness runs before any timing and a failed gate
+  publishes none; six cases are measured against `stable_tensorforge`
+  equivalents on identical state, while the three BatchNorm2d cases are
+  `native_only` for timing (there is no public stable `BatchNorm2d`) and
+  keep a rigorous NumPy/transformed-oracle correctness gate instead;
+  medians are reported with min, max, and spread after warm-up;
+  `--smoke` and `--json` exist; and **no result file is written, no speed
+  is asserted, no timing number is committed, and no CI job asserts a
+  duration**. **Measurement only — one harness and its test, no
+  capability, operation, kernel, C ABI symbol, schema field, example, or
+  export, and no production behavior changed.**
+- **Phase F is still in progress.** F8–F9 — the cross-cutting
+  integration and the closure — have not started. There is no Phase-F
+  integration file and no phase closure.
 - **No normalization *operation* is differentiable, and none appears in
   any operation inventory** — `NativeLayerNorm`, `NativeBatchNorm1d`,
   and `NativeBatchNorm2d` are all composed from existing operations, so
@@ -1886,10 +2007,17 @@ uninterrupted repetitions are bit-identical and whose interrupted
 checkpoint resume into a fresh model/optimizer pair is exact — the
 running statistics, the NativeAdam state, the final training-step
 prediction, and the evaluation-mode output all reproduced — **one example
-and one test, no capability and no schema change.** The remaining work
-described above (the benchmark, the integration, the closure) is a set of
-commitments about how F7–F9 *will* finish Phase F, not claims about what
-exists.
+and one test, no capability and no schema change.** What **F7** delivered
+is `benchmarks/benchmark_native_normalization.py` and its test: the
+honest §13 characterization of the whole normalization stack — nine
+cases, correctness gated before every measurement, honest
+`stable_tensorforge`/`native_only` reference labels, medians with min,
+max, and spread, `--smoke`/`--json` modes, no result file, and no speed
+assertion, committed timing number, or CI timing threshold anywhere —
+**measurement only, one harness and one test, no capability and no
+production change.** The remaining work described above (the integration,
+the closure) is a set of commitments about how F8–F9 *will* finish Phase
+F, not claims about what exists.
 
 Deliberately outside Phase F and still unplanned: dropout, a native RNG
 and RNG checkpoint state, further activations (`tanh`, `sigmoid`, GELU),

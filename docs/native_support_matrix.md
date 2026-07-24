@@ -10,11 +10,14 @@ progress**: the numerical normalization *module* surface is complete —
 `NativeLayerNorm` (F2), `NativeBatchNorm1d` (F3), and
 `NativeBatchNorm2d` (F4) are all supported — **F5 proved the
 state/checkpoint/ownership/graph-safety contracts by exhaustive test**,
-and **F6 shipped a deterministic normalized training example with exact
+**F6 shipped a deterministic normalized training example with exact
 checkpoint resume** (`examples/native_normalization_training.py` — tests
-and documentation only, no new capability), while the phase's remaining
-milestones (F7-F9: a benchmark, integration, and closure) have not
-started. The stable Python
+and documentation only, no new capability), and **F7 shipped the honest
+benchmark characterization**
+(`benchmarks/benchmark_native_normalization.py` — measurement only, no
+new capability, no committed timing number, and no speed assertion),
+while the phase's remaining milestones (F8-F9: integration and closure)
+have not started. The stable Python
 framework's features (see
 [architecture.md](architecture.md)) are **not** listed here — a feature
 appears as supported only if the native stack itself provides it.
@@ -147,10 +150,24 @@ remaining losses, every parameter, the NativeAdam state, both BatchNorm
 `running_mean`/`running_var`, the final training-step prediction, and the
 final evaluation-mode output exactly (format version 1 unchanged, training
 flags runtime-only) — one example and its integration test, adding no
-capability. Milestones **F7-F9 are planned and have not started**: there
-is no normalization benchmark, no cross-cutting Phase-F integration file,
-and no phase closure. No normalization *operation* is differentiable, and
-no normalization kernel or C ABI export exists.
+capability. **F7 is complete**:
+`benchmarks/benchmark_native_normalization.py` characterizes the stack
+with nine cases — the LayerNorm forward and backward, the BatchNorm1d
+training forward, evaluation forward, and backward, the BatchNorm2d
+training forward, evaluation forward, and backward, and one complete
+F6-style normalized training step — each **correctness-gated before any
+timing**, each labelled with the reference it actually used
+(`stable_tensorforge` where a real stable counterpart exists;
+`native_only` for the three BatchNorm2d cases, because the stable line
+has no public `BatchNorm2d`, though those keep a rigorous NumPy
+NCHW/transformed-oracle correctness gate), reporting the median with min,
+max, and spread after warm-up, with `--smoke`/`--json` modes, **no result
+file, no speed assertion, no committed timing number, and no CI timing
+threshold** — measurement only, adding no capability. Milestones
+**F8-F9 are planned and have not started**: there is no cross-cutting
+Phase-F integration file and no phase closure. No normalization
+*operation* is differentiable, and no normalization kernel or C ABI
+export exists.
 See also
 [roadmap.md](roadmap.md). Everything Phases D and E
 deliberately excluded
@@ -362,18 +379,20 @@ in the stable Python framework — that does not make them native.
   line; top-k, per-class, confusion-matrix, streaming, or stateful
   metrics; a `NativeSoftmax`/`NativeLogSoftmax` module; and a native
   `argmax` (the runtime has no integer dtype for one to return)
-- a **normalization benchmark** — **Phase F is in
-  progress**. All three normalization *modules* have shipped and are
-  listed in the training-stack table above (`NativeLayerNorm` at F2,
-  `NativeBatchNorm1d` at F3, `NativeBatchNorm2d` at F4), so `layernorm`
-  and `batchnorm` have both left the registry's `UNSUPPORTED` tuple, **F5
-  proved their state/checkpoint/ownership/graph-safety contracts by
-  exhaustive test**, and **F6 shipped a deterministic normalized training
-  example with exact checkpoint resume**
-  (`examples/native_normalization_training.py`, tests and documentation
-  only, no new capability). What has **not** shipped is the rest of the
-  phase: F7 (the benchmark characterization), F8 (cross-cutting
-  integration), and F9 (closure). The contract is locked in
+- a **cross-cutting Phase-F integration file and phase closure** —
+  **Phase F is in progress**. All three normalization *modules* have
+  shipped and are listed in the training-stack table above
+  (`NativeLayerNorm` at F2, `NativeBatchNorm1d` at F3,
+  `NativeBatchNorm2d` at F4), so `layernorm` and `batchnorm` have both
+  left the registry's `UNSUPPORTED` tuple, **F5 proved their
+  state/checkpoint/ownership/graph-safety contracts by exhaustive test**,
+  **F6 shipped a deterministic normalized training example with exact
+  checkpoint resume** (`examples/native_normalization_training.py`, tests
+  and documentation only, no new capability), and **F7 shipped the honest
+  benchmark characterization**
+  (`benchmarks/benchmark_native_normalization.py`, measurement only, no
+  new capability). What has **not** shipped is the rest of the phase: F8
+  (cross-cutting integration) and F9 (closure). The contract is locked in
   [native_normalization_design.md](native_normalization_design.md)
 - `BatchNorm3d`, `InstanceNorm`, `GroupNorm`, `RMSNorm`, synchronized or
   distributed BatchNorm, a fused normalization kernel, a functional
@@ -542,14 +561,15 @@ released exactly once with the graph history.
 
 **`NativeLayerNorm` (F2), `NativeBatchNorm1d` (F3), and
 `NativeBatchNorm2d` (F4) are all implemented, F5 has proved their
-state/checkpoint/ownership/graph-safety contracts by exhaustive test, and
-F6 has shipped a deterministic normalized training example with exact
-checkpoint resume.** The authoritative statement of what exists is the
+state/checkpoint/ownership/graph-safety contracts by exhaustive test, F6
+has shipped a deterministic normalized training example with exact
+checkpoint resume, and F7 has shipped the honest benchmark
+characterization.** The authoritative statement of what exists is the
 backend registry: all three modules are in `NATIVE_MODULES`, both
 `"layernorm"` and `"batchnorm"` have left `UNSUPPORTED`, and there is
 **no** normalization entry in `TENSOR_CORE_OPS`, `AUTOGRAD_OPS`, or
 `RAW_KERNELS` (all three modules are compositions of existing operations,
-not operations). The remaining Phase-F work (F7–F9) records commitments,
+not operations). The remaining Phase-F work (F8–F9) records commitments,
 not yet capabilities.
 
 The Phase-F **architecture contract** is locked in
@@ -581,7 +601,7 @@ buffer identity; and state/checkpoint integration with the format
 | F4 | `NativeBatchNorm2d` — the NCHW `(N, C, H, W)` shape over the **same** shared private implementation: the public class supplies only its rank, its `(0, 2, 3)` reduction axes, its `(1, C, 1, 1)` broadcast layout, and the channels-last permutation its rank-1 affine parameters need, and inherits every method by function identity. Reduces over N, H, and W and never over C; `(C,)` running buffers and `(1, C, 1, 1)` snapshots unchanged. The one shared addition is the channelwise affine step, which transposes the *activation* rather than reshaping `gamma`/`beta` so the existing direct-parameter stale-value guard survives. Adds **no** kernel, C ABI symbol, ctypes declaration, `NativeTensorCore` method, custom backward, or `NativeTensor.batch_norm` operation — `"batchnorm"` finally left `UNSUPPORTED` here, once *both* shapes existed | **Complete** (the normalization module surface, not the phase) |
 | F5 | Normalization state, checkpoint, and graph-safety hardening: a focused `tests/test_native_normalization_state.py` plus narrow additions to the generic buffer and checkpoint suites, proving §7–§10 by executable test — canonical dotted buffer keys, independent state snapshots (storage-independent in both directions), strict/non-strict buffer-key loads, exact never-casting shape/dtype/device validation, identity-preserving mixed loads, mixed parameter/buffer transaction rollback, the version-1 checkpoint manifest/archive gaining no normalization field with BatchNorm buffers as ordinary entries, exact eval-output reproduction across a round trip, the buffer-only-versus-full stale-graph distinction, the corrupt/staging/save failure boundaries, eval-graph snapshot safety under `retain_graph` and a failed retryable backward, and explicit parameter/buffer closure to baseline. Adds **no** capability, module, operation, kernel, ABI symbol, or checkpoint schema field | **Complete** (tests and documentation only — no numerical behavior) |
 | F6 | Deterministic normalized training and exact resume: `examples/native_normalization_training.py` trains a `Linear → BatchNorm1d → ReLU → LayerNorm → Linear` regressor for 24 deterministic `NativeAdam` steps with `NativeMSELoss` (98.9% loss reduction), proves two uninterrupted runs bit-identical, and resumes an interrupted run into a fresh model/optimizer pair that reproduces the remaining losses, every parameter, the NativeAdam state, both BatchNorm `running_mean`/`running_var`, the final training-step prediction, and the final evaluation-mode output exactly (format version 1 unchanged, training flags runtime-only). One example and its integration test; adds **no** capability, operation, kernel, schema field, benchmark, or export | **Complete** (integration proof only — no numerical behavior) |
-| F7 | Native normalization benchmark characterization (no speed assertion) | Planned — not started |
+| F7 | Native normalization benchmark characterization: `benchmarks/benchmark_native_normalization.py` — nine cases (`layernorm_forward`, `layernorm_backward`, `batchnorm1d_training_forward`, `batchnorm1d_eval_forward`, `batchnorm1d_backward`, `batchnorm2d_training_forward`, `batchnorm2d_eval_forward`, `batchnorm2d_backward`, `normalized_training_step`), each **correctness-gated before any timing** (a failed gate exits nonzero and publishes nothing), each labelled with the reference it actually used: `stable_tensorforge` for the six cases with a real stable counterpart, run on identical inputs, epsilon, momentum, affine values, running state, initial parameters, and optimizer hyperparameters; `native_only` for the three BatchNorm2d cases, because the stable line has **no public `BatchNorm2d`** to time against — those publish no ratio while keeping a rigorous correctness oracle (an explicit NumPy NCHW population-statistics formula, a channelwise-affine probe, eval-mode state neutrality, and for the backward the stable `BatchNorm1d` on the equivalent `(N*H*W, C)` sample matrix transformed back to NCHW, which is a correctness oracle only and deliberately not timed). `time.perf_counter_ns()` with warm-up, one timed call per sample, every sample retained, setup and cleanup outside the timer, medians reported with min/max/spread, `--smoke`/`--json`, **no result file written, no speed assertion, no committed timing number, and no CI timing threshold**. Adds **no** capability, operation, kernel, ABI symbol, ctypes declaration, schema field, example, or export | **Complete** (measurement only — no numerical behavior) |
 | F8 | Cross-cutting Phase-F integration and semantic guardrails | Planned — not started |
 | F9 | Phase-F closure | Planned — not started |
 

@@ -170,11 +170,24 @@ the remaining loss suffix, every parameter, the NativeAdam state, both
 BatchNorm `running_mean`/`running_var`, the final training-step
 prediction, and the final evaluation-mode output exactly (format version 1
 unchanged, training flags runtime-only) — one example and its integration
-test, adding no capability. But Phase F is not finished: milestones
-**F7–F9 are planned and have not started** — the benchmark
-characterization, the cross-cutting integration, and the closure. There
-is no normalization benchmark and no Phase-F integration file. Dropout, a
-native RNG, and RNG checkpoint state are future work **beyond** Phase F.
+test, adding no capability. And **F7 is complete** — the honest benchmark
+characterization `benchmarks/benchmark_native_normalization.py`: nine
+cases (the LayerNorm forward and backward, the BatchNorm1d training
+forward, evaluation forward, and backward, the BatchNorm2d training
+forward, evaluation forward, and backward, and one complete F6-style
+normalized training step), each **correctness-gated before any timing**,
+six labelled `stable_tensorforge` against `tensorforge.nn` equivalents on
+identical state and three (the BatchNorm2d shapes) labelled `native_only`
+because the stable line has no public `BatchNorm2d` to time against —
+those publish no ratio while keeping a rigorous NumPy NCHW and
+transformed-oracle correctness gate. Medians with min, max, and spread
+after warm-up; `--smoke` and `--json` modes; **no result file, no speed
+assertion, no committed timing number, and no CI timing threshold** —
+measurement only, adding no capability and changing no production
+behavior. But Phase F is not finished: milestones **F8–F9 are planned and
+have not started** — the cross-cutting integration and the closure. There
+is no Phase-F integration file and no phase closure. Dropout, a native
+RNG, and RNG checkpoint state are future work **beyond** Phase F.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 
@@ -782,7 +795,7 @@ the milestone-era wording pins. **Phase D is complete**; the native line's
 next phase after it was **Phase E — Native Classification and Stable
 Math**, which has since completed (E0–E10), followed by **Phase F —
 Native Normalization and Stateful Buffers**, which is currently
-**in progress** (F0-F6 complete; F7–F9 planned). Further activations and
+**in progress** (F0-F7 complete; F8–F9 planned). Further activations and
 math, dropout with a native RNG, and a CPU optimization pass sit beyond
 Phase F, followed by
 the CUDA
@@ -3194,10 +3207,20 @@ normalization families in every forward, trained with `NativeAdam` and
 pair that reproduces the losses, parameters, NativeAdam state, BatchNorm
 running statistics, final training prediction, and evaluation-mode output
 exactly; **one example and its integration test, no capability or schema
-change, format version 1 unchanged**). The numerical normalization module
-surface, its state/checkpoint/graph-safety contracts, and one exact
-normalized resume are therefore complete; milestones **F7–F9 are planned
-and have not started**, so there is no normalization benchmark and no
+change, format version 1 unchanged**), and **F7** is complete (the honest
+benchmark characterization `benchmarks/benchmark_native_normalization.py`
+— nine correctness-gated cases covering both LayerNorm directions, all
+three BatchNorm1d paths, all three BatchNorm2d paths, and one complete
+normalized training step, with `stable_tensorforge` references where an
+honest equivalent exists and `native_only` timing for the three
+BatchNorm2d cases (no public stable `BatchNorm2d` exists), medians with
+min/max/spread, `--smoke`/`--json`, and **no result file, no speed
+assertion, no committed timing number, and no CI timing threshold**;
+**measurement only, no capability and no production change**). The
+numerical normalization module surface, its state/checkpoint/graph-safety
+contracts, one exact normalized resume, and the honest characterization
+are therefore complete; milestones **F8–F9 are planned and have not
+started**, so there is no cross-cutting Phase-F integration file and no
 phase closure — and still no normalization operation, kernel, or C ABI
 export.
 Dropout and a native RNG sit **beyond** Phase F. CUDA experiments

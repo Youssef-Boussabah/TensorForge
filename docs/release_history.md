@@ -1892,8 +1892,76 @@ field, benchmark, or export** — one example and its integration test, with
 every inventory exactly what F5 left and the checkpoint format at **version
 1**. The example composed only existing modules, loss, optimizer, and
 checkpoint APIs; no locked-contract bug was found, so no production file
-changed. **F7 (the honest benchmark characterization) is the next
-milestone.**
+changed.
+
+### Phase F — native normalization and stateful buffers (F7)
+
+**F7 is complete: the honest benchmark characterization —
+`benchmarks/benchmark_native_normalization.py` and its test.
+Measurement only: no numerical behavior and no new capability.** F7
+characterizes what F2–F6 already shipped; it does not try to make
+anything take less time, and it asserts no speed anywhere.
+
+The harness (`BENCHMARK_NAME = "tensorforge.native_normalization"`,
+`BENCHMARK_VERSION = "1.0"`) has exactly **nine** cases, in this order:
+`layernorm_forward`, `layernorm_backward`,
+`batchnorm1d_training_forward`, `batchnorm1d_eval_forward`,
+`batchnorm1d_backward`, `batchnorm2d_training_forward`,
+`batchnorm2d_eval_forward`, `batchnorm2d_backward`, and
+`normalized_training_step`. Nothing else is measured — no checkpoint
+I/O, no state-dictionary work, no constructor validation, no failure
+path, no fault injection, and no isolated running-state transaction,
+because the training-forward cases already include the real
+running-statistics update.
+
+**Correctness runs before timing, structurally.** Each case's gate is
+called before the timing helper is ever reached, so a failed gate raises
+before a single sample is taken and publishes no timing; the CLI turns
+that into `correctness gate failed: …` on stderr with a nonzero exit and
+a clean stdout. The tests prove it by substituting a finite, correctly
+shaped, but numerically wrong native result (and separately a non-finite
+one) and asserting the timer never started.
+
+**Reference labels are honest.** Six cases carry `stable_tensorforge`
+and run `tensorforge.nn`/`tensorforge.optim` on the *same* inputs,
+epsilon, momentum, affine values, running state, initial parameters, and
+optimizer hyperparameters. The three BatchNorm2d cases carry
+`native_only` and publish **no** timing ratio, because the stable line
+has no public `BatchNorm2d`. Their correctness gates remain rigorous: an
+explicit NumPy NCHW population-statistics formula, an independent
+channelwise-affine probe (smoke mode uses unequal `C`/`H`/`W` so a
+channel/spatial broadcast mistake cannot hide), eval-mode state
+neutrality with the registered buffers proved absent from the graph, and
+for the backward the stable `BatchNorm1d` applied to the equivalent
+`(N*H*W, C)` sample matrix with the input gradient transformed back to
+NCHW. That transformed computation is a **correctness oracle only** —
+timing it as a "BatchNorm2d reference" would compare a different module
+plus two layout transformations, so the ratio would be misleading, and
+the case says so.
+
+**Methodology.** `time.perf_counter_ns()`, warm-up before measurement,
+one measured sample per operation call, every sample retained, no
+fastest-only reporting, and no timer-overhead subtraction. Setup and
+cleanup run outside the timed region on every path; graph construction is
+inside the timer for the forward and training-step cases and outside it
+for the backward-only cases, which time exactly one one-shot
+`backward()` on a graph rebuilt from cleared gradients each repetition.
+Because a BatchNorm training forward advances persistent state, every
+training-mode repetition builds a **fresh** module from the same
+deterministic state. Each timed path reports `sample_count`,
+`samples_s`, `median_s`, `min_s`, `max_s`, `spread_s`,
+`relative_spread`, and `units`.
+
+**F7 added no C++ code, module, operation, kernel, C ABI symbol, ctypes
+declaration, `NativeTensorCore` method, custom backward, checkpoint
+schema field, example, or export** — one benchmark and its test, with
+every inventory exactly what F6 left and the checkpoint format at
+**version 1**. No production file changed: the harness composes shipped
+public APIs only, and no locked-contract bug was found. The JSON payload
+is fully JSON-native, the human report ends in the local-characterization
+disclaimer, **no result file of any kind is written**, and **no test, CI
+job, or document asserts or commits a duration**. **F8 (the cross-cutting
+Phase-F integration) is the next milestone.**
 
 ### A hardening milestone before Phase D
 

@@ -263,8 +263,21 @@ explicit layer at a time:
   `running_mean`/`running_var`, the final training-step prediction, and
   the final evaluation-mode output exactly — one example and its
   integration test, no capability or schema change, format version 1
-  unchanged, training flags runtime-only. Milestones F7–F9 — a benchmark,
-  integration, and closure — have not started, so Phase F itself is still
+  unchanged, training flags runtime-only. **Milestone F7 shipped the
+  honest benchmark characterization**
+  (`benchmarks/benchmark_native_normalization.py`): nine cases — both
+  LayerNorm directions, all three BatchNorm1d paths, all three
+  BatchNorm2d paths, and one complete F6-style normalized training step —
+  each **correctness-gated before any timing**, six measured against
+  `stable_tensorforge` equivalents on identical state and three (the
+  BatchNorm2d shapes) labelled `native_only` because the stable line has
+  no public `BatchNorm2d` to time against, though those keep a rigorous
+  NumPy NCHW and transformed-oracle correctness gate. Medians are
+  reported with min, max, and spread after warm-up, `--smoke`/`--json`
+  modes exist, and **no result file is written, no speed is asserted, no
+  timing number is committed, and no CI job asserts a duration** —
+  measurement only, no capability. Milestones F8–F9 — cross-cutting
+  integration and closure — have not started, so Phase F itself is still
   in progress.
 
 The execution path for a native training step is:
