@@ -917,7 +917,7 @@ The Python line is done; what remains is expansion on its own terms:
     build/packaging evolution. Native normalization then became its own
     phase, below.
   - **Phase F — Native Normalization and Stateful Buffers — in progress
-    (F0, F1, F2, and F3 complete; F4–F9 planned).** The **F0
+    (F0, F1, F2, F3, and F4 complete; F5–F9 planned).** The **F0
     architecture contract is written** —
     [native_normalization_design.md](native_normalization_design.md)
     locks the phase's objective (a fully native, differentiable,
@@ -1000,11 +1000,25 @@ The Python line is done; what remains is expansion on its own terms:
     method, custom backward, or `NativeTensor.batch_norm` operation — and
     the native checkpoint format stays at version 1;
     `"NativeBatchNorm1d"` is now in `NATIVE_MODULES` and the exports.
-    **F4–F9 have not started**, so the NCHW `NativeBatchNorm2d` does not
-    exist and is not exported, the unqualified `batchnorm` remains in the
-    backend registry's `UNSUPPORTED` tuple (removing it while only the
-    1-D shape ships would over-claim), and no normalization operation or
-    kernel exists at all. **F4 is next.**
+    **F4 is complete**: `NativeBatchNorm2d`, NCHW `(N, C, H, W)` batch
+    normalization reducing over N, H, and W — one population mean and
+    variance per channel over `N * H * W` values — built on the **same**
+    shared private implementation as the 1-D shape, which it extends with
+    nothing but its rank, its reduction axes, its `(1, C, 1, 1)`
+    broadcast layout, and the channels-last permutation its rank-1
+    `gamma`/`beta` need (the activation is transposed for the affine
+    application, never the parameters, so the existing direct-parameter
+    stale-value guard is preserved exactly). Running buffers stay `(C,)`.
+    `"NativeBatchNorm2d"` is now in `NATIVE_MODULES` and the exports,
+    and with both shapes live **`batchnorm` has left `UNSUPPORTED`**,
+    which now reads exactly `("dropout", "float32", "cuda", "amp")`.
+    **The numerical normalization module surface is complete; Phase F is
+    not.** **F5–F9 have not started** — no exhaustive normalization
+    state/checkpoint and graph-safety hardening suite, no deterministic
+    normalized training example with exact resume, no normalization
+    benchmark, no cross-cutting integration file, and no phase closure —
+    and no normalization operation or kernel exists at all. **F5 is
+    next.**
     Deliberately outside Phase F: dropout, a native RNG with its
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,

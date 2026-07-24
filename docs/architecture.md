@@ -226,9 +226,23 @@ explicit layer at a time:
   Core method, custom backward, or `NativeTensor.batch_norm` operation
   exists, and the native checkpoint format stays at version 1;
   `"NativeBatchNorm1d"` is in `NATIVE_MODULES`, while `"batchnorm"`
-  **remains** listed as unsupported in the backend registry because the
-  unqualified name is only honest once the NCHW shape ships. Milestones
-  F4–F9 have not started, so `NativeBatchNorm2d` does not exist yet.
+  stayed listed as unsupported until the NCHW shape shipped.
+  **Milestone F4 shipped `NativeBatchNorm2d`** — NCHW `(N, C, H, W)`
+  batch normalization reducing over N, H, and W, so each channel gets
+  one population mean and one population variance over `N * H * W`
+  values. It is built on the **same** shared private implementation and
+  declares nothing but its rank, its reduction axes, its `(1, C, 1, 1)`
+  broadcast layout, and the channels-last permutation its rank-1
+  `gamma`/`beta` need: rank-1 parameters broadcast from the *trailing*
+  axis, so the **activation** is transposed for the affine step and back
+  again rather than the parameters being reshaped — which keeps `gamma` a
+  direct versioned `multiply` operand and preserves the stale-value guard
+  exactly. Running buffers stay `(C,)`. All three normalization modules
+  are now in `NATIVE_MODULES` and the exports, and `"batchnorm"` has
+  **left** `UNSUPPORTED`. That completes the normalization **module**
+  surface; milestones F5–F9 — hardening, a deterministic normalized
+  training proof, a benchmark, integration, and closure — have not
+  started, so Phase F itself is still in progress.
 
 The execution path for a native training step is:
 

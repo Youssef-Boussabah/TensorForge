@@ -2470,19 +2470,22 @@ def test_registration_failure_releases_every_earlier_allocation(
 # ==========================================================================
 
 @needs_native
-def test_f3_ships_only_the_1d_module():
+def test_f3_module_is_exported_and_registered():
+    """F3's own surface, still exactly where F3 put it. (The NCHW shape
+    and the removal of ``"batchnorm"`` from ``UNSUPPORTED`` are F4's, and
+    are pinned in tests/test_native_batchnorm2d.py.)"""
     import tensorforge.experimental as experimental
 
     assert "NativeBatchNorm1d" in experimental.__all__
     assert experimental.NativeBatchNorm1d is NativeBatchNorm1d
     assert "NativeBatchNorm1d" in cpp.NATIVE_MODULES
-    # F4 has not started.
-    assert "NativeBatchNorm2d" not in experimental.__all__
-    assert not hasattr(experimental, "NativeBatchNorm2d")
-    assert not hasattr(native_batchnorm, "NativeBatchNorm2d")
-    assert "NativeBatchNorm2d" not in cpp.NATIVE_MODULES
-    # The unqualified capability stays unsupported until both shapes ship.
-    assert "batchnorm" in cpp.UNSUPPORTED
+    assert NativeBatchNorm1d._INPUT_NDIM == 2
+    # F3 remains a *module*: it is in no operation or capability tuple.
+    for inventory in (cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS, cpp.RAW_KERNELS,
+                      cpp.NATIVE_LOSSES, cpp.NATIVE_METRICS,
+                      cpp.NATIVE_OPTIMIZERS, cpp.STATE_SUPPORT,
+                      cpp.UNSUPPORTED):
+        assert "NativeBatchNorm1d" not in inventory
 
 
 @needs_native
@@ -2517,12 +2520,18 @@ def test_the_shared_implementation_is_private_and_reusable():
     assert NativeBatchNorm1d._INPUT_NDIM == 2
     assert NativeBatchNorm1d._REDUCTION_AXES == (0,)
     assert NativeBatchNorm1d._TRAILING_DIMS == 0
-    # The subclass adds no behavior of its own: only the four shape
-    # configuration slots, and not one callable.
+    # The channel axis is already trailing here, so no affine transposition.
+    assert NativeBatchNorm1d._CHANNELS_LAST is None
+    # The subclass adds no behavior of its own: only shape configuration
+    # slots, and not one callable.
     declared = {
         name for name in vars(NativeBatchNorm1d) if not name.startswith("__")
     }
-    assert declared == {
+    assert declared <= {
+        "_INPUT_NDIM", "_REDUCTION_AXES", "_TRAILING_DIMS", "_LAYOUT",
+        "_CHANNELS_LAST",
+    }
+    assert declared >= {
         "_INPUT_NDIM", "_REDUCTION_AXES", "_TRAILING_DIMS", "_LAYOUT",
     }
     assert not any(callable(vars(NativeBatchNorm1d)[name]) for name in declared)

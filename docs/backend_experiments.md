@@ -129,10 +129,30 @@ format stays at **version 1**. `"NativeBatchNorm1d"` joined
 `NATIVE_MODULES` and the exports, while `"batchnorm"` **stayed** in
 `UNSUPPORTED` — the unqualified name is only honest once the NCHW shape
 exists too.
-Milestones
-**F4–F9 are planned and have not started**, so the NCHW
-`NativeBatchNorm2d` does not exist and the unqualified `batchnorm`
-remains in the registry's `UNSUPPORTED` tuple. Dropout, a native RNG, and
+**F4** then shipped `NativeBatchNorm2d` (the second public class in the
+same file) — NCHW `(N, C, H, W)` batch normalization reducing over **N,
+H, and W**, so each channel gets one population mean and one population
+variance over `N * H * W` values. It is built on the **same** shared
+private implementation: it declares only `_INPUT_NDIM = 4`,
+`_REDUCTION_AXES = (0, 2, 3)`, `_TRAILING_DIMS = 2`, its layout string,
+and `_CHANNELS_LAST = (0, 2, 3, 1)`, and inherits every method by
+function identity. The one shared refinement it needed is the
+channelwise affine: rank-1 `gamma`/`beta` broadcast from the *trailing*
+axis, so the **activation** is transposed to channels-last for the
+affine application and back again (then materialized contiguous) rather
+than reshaping the parameters — which keeps `gamma` a direct versioned
+`multiply` operand and therefore preserves the existing stale-parameter
+guard exactly. Running buffers stay `(C,)`, eval snapshots are owning
+`(1, C, 1, 1)` copies, and the checkpoint format stays version 1.
+`"NativeBatchNorm2d"` joined `NATIVE_MODULES` and the exports, and with
+both shapes live `"batchnorm"` **left** `UNSUPPORTED`.
+The numerical normalization module surface is therefore complete, but
+Phase F is not: milestones
+**F5–F9 are planned and have not started** — the exhaustive
+state/checkpoint and graph-safety hardening, the deterministic
+normalized training run with exact resume, the benchmark
+characterization, the cross-cutting integration, and the closure.
+Dropout, a native RNG, and
 RNG checkpoint state are future work **beyond** Phase F.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
@@ -741,7 +761,7 @@ the milestone-era wording pins. **Phase D is complete**; the native line's
 next phase after it was **Phase E — Native Classification and Stable
 Math**, which has since completed (E0–E10), followed by **Phase F —
 Native Normalization and Stateful Buffers**, which is currently
-**in progress** (F0, F1, F2, and F3 complete; F4–F9 planned). Further activations and
+**in progress** (F0-F4 complete; F5–F9 planned). Further activations and
 math, dropout with a native RNG, and a CPU optimization pass sit beyond
 Phase F, followed by
 the CUDA
@@ -3132,10 +3152,17 @@ snapshots; again composed from existing operations, so again no kernel,
 ABI symbol, `NativeTensorCore` method, custom backward, or
 `NativeTensor.batch_norm` operation, and the checkpoint format stays at
 version 1; now in `NATIVE_MODULES` and the exports, with `"batchnorm"`
-**kept** in `UNSUPPORTED` until the NCHW shape ships); milestones
-**F4–F9 are planned and have not started**, so no `NativeBatchNorm2d`
-exists, no normalization operation is differentiable, and no
-normalization kernel or C ABI export exists.
+**kept** in `UNSUPPORTED` until the NCHW shape ships), and **F4** is
+complete (`NativeBatchNorm2d` — NCHW `(N, C, H, W)` batch normalization
+reducing over N, H, and W, over the same shared private implementation
+and adding only shape/layout configuration plus the shared channelwise
+affine step; now in `NATIVE_MODULES` and the exports, and with both
+shapes live `"batchnorm"` has **left** `UNSUPPORTED`). The numerical
+normalization module surface is complete; milestones
+**F5–F9 are planned and have not started**, so there is no normalization
+hardening suite, no normalized training example, no normalization
+benchmark, and no phase closure — and still no normalization operation,
+kernel, or C ABI export.
 Dropout and a native RNG sit **beyond** Phase F. CUDA experiments
 remain a separate future branch (where `device` gains a second value),
 and an AMP / Tensor Core path is where `dtype` later gains

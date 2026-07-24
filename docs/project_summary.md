@@ -106,9 +106,11 @@ and reproduces the uninterrupted run exactly), characterized by
 correctness-gated cases, no speed assertion anywhere), and validated
 under Release and Debug builds with Clang ASan/UBSan and LeakSanitizer.
 **Phase F (native normalization and stateful buffers) is in
-progress**: `NativeLayerNorm` (F2) and `NativeBatchNorm1d` (F3, the
-first stateful native numerical module) have shipped, while the NCHW
-`NativeBatchNorm2d` has not — see below. The two
+progress**: the normalization module surface is complete —
+`NativeLayerNorm` (F2), `NativeBatchNorm1d` (F3, the first stateful
+native numerical module), and `NativeBatchNorm2d` (F4, NCHW) have all
+shipped — while the phase's hardening, end-to-end proof, benchmark,
+integration, and closure milestones have not — see below. The two
 engines never mix: explicit entry via
 `NativeTensor.from_array`, explicit exit via `to_numpy()`, no implicit
 dispatch. The exact per-operation status lives in the
@@ -138,8 +140,9 @@ framework is NumPy on CPU; `Conv2d` and `MaxPool2d` use deliberately
 naive loops, and so do their native counterparts (direct nested loops —
 no im2col, BLAS, threading, or SIMD). The native line is float64/cpu
 only — no CUDA backend, no dtype promotion or casting, no native
-NCHW BatchNorm (Phase F is **in progress**: `NativeLayerNorm` and the
-`(N, C)` `NativeBatchNorm1d` have shipped, `NativeBatchNorm2d` has not),
+normalized training example or normalization benchmark (Phase F is
+**in progress**: all three normalization modules have shipped, its
+remaining hardening/proof/benchmark milestones have not),
 no dropout or native RNG, no data loaders or native
 integer tensors, no scheduler or
 random-state capture in native checkpoints, and
@@ -208,8 +211,18 @@ kernel, ABI symbol, Core method, custom backward, or
 `NativeTensor.batch_norm` operation — and the checkpoint format stays at
 version 1. `"NativeBatchNorm1d"` has joined `NATIVE_MODULES`, while
 `"batchnorm"` **stays** in `UNSUPPORTED` because the unqualified name is
-only honest once the NCHW shape ships. Milestones **F4–F9 are planned
-and have not started**, so `NativeBatchNorm2d` does not exist today.
+only honest once the NCHW shape ships. **F4 is complete**:
+`NativeBatchNorm2d` — NCHW `(N, C, H, W)` batch normalization reducing
+over N, H, and W, over the **same** shared private implementation, which
+it extends with only its rank, reduction axes, `(1, C, 1, 1)` broadcast
+layout, and the channels-last permutation its rank-1 affine parameters
+need. `"NativeBatchNorm2d"` has joined `NATIVE_MODULES`, and with both
+shapes live `"batchnorm"` has **left** `UNSUPPORTED`, which now reads
+exactly `("dropout", "float32", "cuda", "amp")`. That completes the
+numerical normalization **module** surface — not Phase F. Milestones
+**F5–F9 are planned and have not started**: no normalization hardening
+suite, no deterministic normalized training run with exact resume, no
+normalization benchmark, no cross-cutting integration, no closure.
 Beyond Phase F
 (**not started**): dropout and a native RNG, more activations/math, data
 loaders, a CPU optimization phase, then the CUDA

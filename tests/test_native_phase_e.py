@@ -257,9 +257,10 @@ def test_unsupported_stays_honest_after_closure():
         assert shipped not in cpp.UNSUPPORTED, shipped
     # ...and nothing still unimplemented may quietly disappear because the
     # phase closed. These are the boundaries Phase E deliberately kept.
-    # ("layernorm" left UNSUPPORTED in Phase F milestone F2, which shipped
-    # NativeLayerNorm as a composed module; "batchnorm" is still absent.)
-    for absent in ("float32", "cuda", "amp", "batchnorm", "dropout"):
+    # ("layernorm" left UNSUPPORTED in Phase F milestone F2 and
+    # "batchnorm" in F4, once both BatchNorm shapes shipped as composed
+    # modules. Neither was ever a Phase-E boundary.)
+    for absent in ("float32", "cuda", "amp", "dropout"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS
@@ -268,13 +269,13 @@ def test_unsupported_stays_honest_after_closure():
 
     # Classification extensions that were explicitly out of scope never
     # appeared as exports or operations.
-    # (NativeBatchNorm1d is deliberately absent from this list: Phase F
-    # milestone F3 shipped it, which is unrelated to Phase E's scope. The
-    # NCHW shape, F4's job, has not shipped.)
+    # (Both BatchNorm shapes are deliberately absent from this list:
+    # Phase F milestones F3 and F4 shipped them, which is unrelated to
+    # Phase E's scope.)
     for never in ("NativeNLLLoss", "NativeBCELoss", "NativeSoftmax",
                   "NativeLogSoftmax", "native_top_k_accuracy",
                   "native_confusion_matrix", "NativeDataLoader",
-                  "NativeBatchNorm2d", "NativeDropout"):
+                  "NativeBatchNorm3d", "NativeDropout"):
         assert not hasattr(experimental, never), never
     for never in ("argmax", "nll_loss", "one_hot", "randn", "rand"):
         assert not hasattr(NativeTensor, never), never

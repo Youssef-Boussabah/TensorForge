@@ -1284,9 +1284,12 @@ def test_native_layernorm_is_in_native_modules_only():
         assert "NativeLayerNorm" not in inventory
 
 
-def test_layernorm_left_unsupported_batchnorm_did_not():
+def test_layernorm_left_unsupported_at_f2():
+    # "layernorm" left UNSUPPORTED when F2 shipped NativeLayerNorm.
+    # ("batchnorm" stayed until F4 shipped the second BatchNorm shape;
+    # that removal is pinned in tests/test_native_batchnorm2d.py.)
     assert "layernorm" not in cpp.UNSUPPORTED
-    assert "batchnorm" in cpp.UNSUPPORTED
+    assert "NativeLayerNorm" in cpp.NATIVE_MODULES
 
 
 def test_f2_added_no_operation_kernel_core_or_abi():
@@ -1306,17 +1309,20 @@ def test_f2_added_no_operation_kernel_core_or_abi():
     assert "layer_norm" not in experimental.__all__
 
 
-def test_f4_capabilities_are_not_advertised():
-    # F3 shipped the (N, C) shape, so NativeBatchNorm1d legitimately
-    # exists; the NCHW shape is F4 and nothing of it exists yet. The
-    # unqualified "batchnorm" capability therefore stays unsupported.
+def test_layernorm_is_one_of_three_shipped_normalization_modules():
+    # F2 shipped LayerNorm, F3 the (N, C) BatchNorm, F4 the NCHW one.
+    # LayerNorm stays exactly what it was: a separate, stateless module.
     import tensorforge.experimental as experimental
-    assert "NativeBatchNorm1d" in cpp.NATIVE_MODULES
-    assert "NativeBatchNorm1d" in experimental.__all__
-    assert "NativeBatchNorm2d" not in cpp.NATIVE_MODULES
-    assert not hasattr(experimental, "NativeBatchNorm2d")
-    assert "NativeBatchNorm2d" not in experimental.__all__
-    assert "batchnorm" in cpp.UNSUPPORTED
+    for module in ("NativeLayerNorm", "NativeBatchNorm1d",
+                   "NativeBatchNorm2d"):
+        assert module in cpp.NATIVE_MODULES, module
+        assert module in experimental.__all__, module
+    assert "layernorm" not in cpp.UNSUPPORTED
+    assert "batchnorm" not in cpp.UNSUPPORTED
+    # LayerNorm is not a BatchNorm: it shares no implementation with them
+    # and still holds no buffers.
+    from tensorforge.experimental import native_batchnorm
+    assert not issubclass(NativeLayerNorm, native_batchnorm._NativeBatchNorm)
 
 
 def test_other_capability_tuples_remain_exact():
@@ -1329,4 +1335,4 @@ def test_other_capability_tuples_remain_exact():
     )
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert cpp.UNSUPPORTED == ("batchnorm", "dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")

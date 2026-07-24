@@ -1,5 +1,8 @@
-"""NativeBatchNorm1d — the first **stateful** native numerical module
-(Phase F, milestone F3; see docs/native_normalization_design.md §6-§10).
+"""Native batch normalization — ``NativeBatchNorm1d`` (Phase F,
+milestone F3: the first **stateful** native numerical module) and
+``NativeBatchNorm2d`` (milestone F4: the NCHW shape), over **one**
+shared private implementation. See
+docs/native_normalization_design.md §6-§10.
 
 Batch normalization normalizes each feature across the *batch*, so —
 unlike ``NativeLayerNorm`` — other samples participate, the layer carries
@@ -171,12 +174,34 @@ parameters, and the buffer storage, and never a ``NativeParameter`` or a
 borrowing view. The module stores no per-forward tensor attributes.
 Fully separate from ``tensorforge.nn.BatchNorm1d``; float64/cpu only.
 
-Only ``NativeBatchNorm1d`` is public in F3. ``_NativeBatchNorm`` below
-holds every piece of behavior — validation, both modes' mathematics, the
-snapshot rule, the running update, the transaction, and the cleanup — so
-that the NCHW shape planned for F4 needs to supply nothing but its rank,
-its reduction axes, and its broadcast layout. It is private and is not a
-public normalization subsystem.
+One implementation, two public shapes
+-------------------------------------
+
+``_NativeBatchNorm`` below holds every piece of behavior — validation,
+both modes' mathematics, the snapshot rule, the running update, the
+transaction, and the cleanup. The two public classes declare **only**
+shape configuration and inherit every method by function identity:
+
+===========================  =================  ============================
+                             ``NativeBatchNorm1d``  ``NativeBatchNorm2d``
+===========================  =================  ============================
+``_INPUT_NDIM``              2                  4
+``_REDUCTION_AXES``          ``(0,)``           ``(0, 2, 3)``
+``_TRAILING_DIMS``           0                  2
+``_LAYOUT``                  ``(N, C)``         ``(N, C, H, W)``
+``_CHANNELS_LAST``           ``None``           ``(0, 2, 3, 1)``
+===========================  =================  ============================
+
+So the 4-D shape reduces over the batch **and both spatial axes** and
+never over channels — each channel gets one population mean and one
+population variance over all ``N * H * W`` of its values — while its
+per-channel broadcast layout is ``(1, C, 1, 1)``. The persistent running
+buffers stay ``(C,)`` for both shapes. ``_CHANNELS_LAST`` is the only
+piece of configuration that is not purely about ranks and axes; see
+``_affine`` for what it is for and why it is not a public layout mode.
+
+``_NativeBatchNorm`` is private: it is not exported, not a public
+normalization subsystem, and not a stable base class.
 """
 
 import numbers
@@ -223,6 +248,19 @@ def _validate_momentum(momentum):
         )
     if not 0.0 <= momentum <= 1.0:
         raise ValueError(f"momentum must be in [0, 1], got {momentum!r}")
+
+
+def _inverse_permutation(permutation):
+    """The permutation that undoes ``permutation``.
+
+    Derived rather than configured so the "move channels last" and "put
+    them back" halves can never drift apart — a silent transposition bug
+    would be invisible in the output's *shape* and wrong only in its
+    values."""
+    inverse = [0] * len(permutation)
+    for position, axis in enumerate(permutation):
+        inverse[axis] = position
+    return tuple(inverse)
 
 
 def _adopt_graph_resources(node, resources):
@@ -277,10 +315,16 @@ class _NativeBatchNorm(NativeModule):
     #                      per-feature broadcast shape carries after
     #                      ``(1, C)``.
     # ``_LAYOUT``          the accepted layout, for error messages.
+    # ``_CHANNELS_LAST``   the axis permutation that moves the channel
+    #                      axis to the *trailing* position for the affine
+    #                      application, or ``None`` when it is already
+    #                      trailing. See ``_affine`` for why this exists.
+    #                      The inverse is derived, never configured.
     _INPUT_NDIM = None
     _REDUCTION_AXES = ()
     _TRAILING_DIMS = 0
     _LAYOUT = ""
+    _CHANNELS_LAST = None
 
     def __init__(self, num_features, eps=1e-5, momentum=0.1):
         # Validate every Python argument before any native allocation, so
@@ -293,9 +337,15 @@ class _NativeBatchNorm(NativeModule):
         self.num_features = num_features
         self.eps = float(eps)
         self.momentum = float(momentum)
-        # The per-feature broadcast layout: (1, C) here, (1, C, 1, 1) for
-        # the NCHW shape F4 will add.
+        # The per-feature broadcast layout: (1, C) for the 2-D shape,
+        # (1, C, 1, 1) for NCHW.
         self._stat_shape = (1, num_features) + (1,) * self._TRAILING_DIMS
+        # The affine round trip's return leg, derived from its outbound
+        # permutation so the two can never disagree.
+        self._channels_first = (
+            None if self._CHANNELS_LAST is None
+            else _inverse_permutation(self._CHANNELS_LAST)
+        )
 
         # A stateful module owns up to four native objects. Track each one
         # the moment it exists so a later failure closes exactly the
@@ -416,8 +466,7 @@ class _NativeBatchNorm(NativeModule):
         batch_var = self._mean_over(squared, keep)
         inverse_std = keep(self._inverse_std(batch_var, input, keep))
         normalized = keep(centered.multiply(inverse_std))
-        scaled = keep(normalized.multiply(gamma))
-        output = keep(scaled.add(beta))
+        output = self._affine(normalized, gamma, beta, keep)
 
         # -- 2. the graph-free replacement values, from the *same* batch
         # statistics the normalization used — nothing is recomputed, and
@@ -453,8 +502,7 @@ class _NativeBatchNorm(NativeModule):
 
         centered = keep(input.subtract(mean_snapshot))
         normalized = keep(centered.multiply(inverse_std))
-        scaled = keep(normalized.multiply(gamma))
-        output = keep(scaled.add(beta))
+        output = self._affine(normalized, gamma, beta, keep)
 
         # The two values a backward could read are handed to the graph's
         # history, so they live exactly as long as it does and are
@@ -478,6 +526,52 @@ class _NativeBatchNorm(NativeModule):
         for axis in self._REDUCTION_AXES:
             value = track(value.mean(axis=axis, keepdims=True))
         return value
+
+    def _affine(self, normalized, gamma, beta, track):
+        """Scale by ``gamma`` and shift by ``beta`` **per channel**,
+        returning the fresh owning contiguous output.
+
+        The rank-1 parameters are ``(C,)``, and NumPy-style broadcasting
+        aligns from the *trailing* axis. For ``(N, C)`` the channel axis
+        already is the trailing one, so ``normalized * gamma + beta`` is
+        exactly right — the F3 path, kept unchanged.
+
+        For NCHW it is exactly wrong: ``(N, C, H, W) * (C,)`` would line
+        ``gamma`` up with **W**, silently scaling by spatial position (and
+        only even running when ``W == C``). The fix deliberately keeps the
+        parameters rank-1 rather than reshaping them to ``(1, C, 1, 1)``,
+        because ``multiply`` records a stale-value guard entry **only for
+        a direct operand carrying a value version** — a reshaped
+        ``gamma`` would be an ordinary unversioned view, and mutating
+        ``gamma`` after a forward would then silently change that graph's
+        gradient instead of raising. That is precisely the §7 hazard, and
+        it must not be reintroduced for parameters.
+
+        So the *activation* moves instead of the parameter: a borrowing
+        ``transpose`` carries the channel axis to the trailing position
+        (NCHW → NHWC), ``gamma`` and ``beta`` apply as direct rank-1
+        operands there, and a second borrowing ``transpose`` carries the
+        result back before it is materialized. Both transposes are
+        metadata-only and already differentiable, so this adds no
+        gradient logic: ``multiply``'s existing broadcast-aware backward
+        reduces ``gamma``'s gradient over N, H, and W, ``add``'s does the
+        same for ``beta``, and ``transpose``'s backward applies the
+        inverse permutation. Channels-last is an internal step, never a
+        public layout mode."""
+        if self._CHANNELS_LAST is None:
+            scaled = track(normalized.multiply(gamma))
+            return track(scaled.add(beta))
+        # NCHW -> NHWC (metadata only; the result borrows ``normalized``).
+        channels_last = track(normalized.transpose(self._CHANNELS_LAST))
+        # gamma and beta stay *direct* rank-1 operands, so both keep the
+        # existing direct-parameter version guard.
+        scaled = track(channels_last.multiply(gamma))
+        shifted = track(scaled.add(beta))
+        # NHWC -> NCHW, then materialize: a transpose result is a
+        # borrowing strided view, and this layer's contract is a fresh
+        # owning contiguous output.
+        channels_first = track(shifted.transpose(self._channels_first))
+        return track(channels_first.contiguous_copy())
 
     def _inverse_std(self, variance, like, track):
         """``reciprocal(sqrt(variance + eps))`` — epsilon **inside** the
@@ -701,3 +795,35 @@ class NativeBatchNorm1d(_NativeBatchNorm):
     _REDUCTION_AXES = (0,)
     _TRAILING_DIMS = 0
     _LAYOUT = "(N, C)"
+    # The channel axis is already trailing, so the rank-1 affine
+    # parameters broadcast directly and no transposition is needed.
+    _CHANNELS_LAST = None
+
+
+class NativeBatchNorm2d(_NativeBatchNorm):
+    """Native batch normalization over NCHW ``(N, C, H, W)`` activations.
+
+    ``NativeBatchNorm2d(num_features, eps=1e-5, momentum=0.1)`` — the same
+    stateful module as ``NativeBatchNorm1d`` over the Phase-D activation
+    layout, and **the same implementation**: this class supplies nothing
+    but the shape configuration below. Each channel gets one population
+    mean and one population variance over all ``N * H * W`` of its values,
+    the persistent ``running_mean``/``running_var`` buffers stay ``(C,)``,
+    and ``gamma``/``beta`` scale and shift **per channel** at every
+    spatial position. See the module docstring for the full contract."""
+
+    _INPUT_NDIM = 4
+    # Reduce over the batch and both spatial axes, never over channels:
+    # each channel gets one mean and one variance over N * H * W values.
+    # Applied as sequential single-axis means with keepdims=True, so
+    # (N, C, H, W) -> (1, C, H, W) -> (1, C, 1, W) -> (1, C, 1, 1) and the
+    # axis numbers stay valid throughout.
+    _REDUCTION_AXES = (0, 2, 3)
+    # ...giving the (1, C, 1, 1) per-channel broadcast layout.
+    _TRAILING_DIMS = 2
+    _LAYOUT = "(N, C, H, W)"
+    # NCHW -> NHWC for the affine application only, so the rank-1 gamma
+    # and beta line up with the *channel* axis instead of W — see
+    # ``_NativeBatchNorm._affine`` for why the activation moves rather
+    # than the parameters. The return leg is derived from this.
+    _CHANNELS_LAST = (0, 2, 3, 1)

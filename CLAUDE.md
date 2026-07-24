@@ -83,14 +83,31 @@ always exist (no `affine=False`, `track_running_stats`, or
 `num_batches_tracked`); state order is `gamma`, `beta`, `running_mean`,
 `running_var`; the checkpoint format stays version 1;
 `"NativeBatchNorm1d"` is in `NATIVE_MODULES` and the exports, while
-`"batchnorm"` **stays** in `UNSUPPORTED`). Milestones
-F4–F9 (`NativeBatchNorm2d`, state/checkpoint and graph-safety hardening,
-a deterministic normalized training run with exact resume, a benchmark
-characterization, cross-cutting integration, and closure) have **not
-started** — so the unqualified `batchnorm` remains in the backend
-registry's `UNSUPPORTED` tuple (removing it while only the 1-D shape
-ships would over-claim), no NCHW BatchNorm module exists, and no
-normalization operation, kernel, or C ABI symbol exists at all.
+`"batchnorm"` stayed in `UNSUPPORTED`), and F4 is complete
+(`NativeBatchNorm2d`, the second public class in the same file — NCHW
+`(N, C, H, W)` batch normalization reducing over **N, H, and W**, so
+each channel gets one population mean and variance over `N * H * W`
+values. It is built on the **same** private `_NativeBatchNorm` and
+declares *only* `_INPUT_NDIM = 4`, `_REDUCTION_AXES = (0, 2, 3)`,
+`_TRAILING_DIMS = 2`, `_LAYOUT`, and `_CHANNELS_LAST = (0, 2, 3, 1)` —
+every method is inherited by function identity. The one shared piece F4
+added is the channelwise affine: rank-1 `gamma`/`beta` broadcast from
+the *trailing* axis, so the **activation** is transposed to
+channels-last for the affine step and back again (then materialized
+contiguous) rather than reshaping the parameters — which keeps `gamma` a
+direct versioned `multiply` operand and preserves the existing
+stale-parameter guard exactly. Statistics are `(1, C, 1, 1)`, running
+buffers stay `(C,)`, the checkpoint format stays version 1, and
+`"NativeBatchNorm2d"` is in `NATIVE_MODULES` and the exports; with both
+shapes live `"batchnorm"` has **left** `UNSUPPORTED`, which now reads
+exactly `("dropout", "float32", "cuda", "amp")`). **That completes the
+numerical normalization *module* surface — not Phase F.** Milestones
+F5–F9 (state/checkpoint and graph-safety hardening, a deterministic
+normalized training run with exact resume, a benchmark characterization,
+cross-cutting integration, and closure) have **not started** — so there
+is no normalized training example, no normalization benchmark, and no
+phase closure, and no normalization operation, kernel, C ABI symbol, or
+custom backward exists at all.
 Dropout/RNG, data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase F.

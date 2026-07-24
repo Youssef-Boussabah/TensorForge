@@ -199,10 +199,19 @@ NATIVE_MODULES = (
     # mode. It is composed from the same existing operations, so — like
     # LayerNorm — it adds no "batch_norm" kernel, C ABI symbol,
     # NativeTensorCore method, or NativeTensor.batch_norm autograd op, and
-    # appears here and nowhere in the op inventories. "batchnorm" stays in
-    # UNSUPPORTED: the unqualified name is only honest once the NCHW shape
-    # exists too, which is milestone F4's job.
+    # appears here and nowhere in the op inventories. "batchnorm" stayed
+    # in UNSUPPORTED at F3, because the unqualified name is only honest
+    # once the NCHW shape exists too.
     "NativeBatchNorm1d",
+    # "NativeBatchNorm2d" (Phase F, milestone F4) is the NCHW
+    # (N, C, H, W) shape of the same capability, built on the **same**
+    # shared private implementation as NativeBatchNorm1d — it supplies
+    # only its rank, its (N, H, W) reduction axes, its (1, C, 1, 1)
+    # broadcast layout, and the channels-last permutation the rank-1
+    # affine parameters need. It adds no numerical surface of its own, so
+    # again nothing joined the op inventories. With both shapes now live,
+    # "batchnorm" has finally left UNSUPPORTED.
+    "NativeBatchNorm2d",
 )
 # Native loss *modules*. Losses are tracked here and deliberately not in
 # NATIVE_MODULES, which lists the model-building layers — the split that
@@ -303,16 +312,20 @@ STATE_SUPPORT = (
 # no "layer_norm" operation, which is why nothing joined AUTOGRAD_OPS /
 # TENSOR_CORE_OPS / RAW_KERNELS.
 #
-# "batchnorm" **stays here** after milestone F3. F3 shipped
-# "NativeBatchNorm1d" (see NATIVE_MODULES) — the (N, C) shape, again a
-# module composed from existing operations, so again nothing joined
-# AUTOGRAD_OPS / TENSOR_CORE_OPS / RAW_KERNELS and there is still no
-# "batch_norm" operation. But the name here is unqualified, and
-# NativeBatchNorm2d (F4) has not shipped: removing "batchnorm" while only
-# the 1-D form exists would over-claim. It leaves this tuple at F4, when
-# both batch-normalization shapes exist.
+# "batchnorm" has now left this tuple too. F3 shipped "NativeBatchNorm1d"
+# (the (N, C) shape) and F4 "NativeBatchNorm2d" (NCHW), both in
+# NATIVE_MODULES and both modules composed from existing operations — so
+# again nothing joined AUTOGRAD_OPS / TENSOR_CORE_OPS / RAW_KERNELS and
+# there is still no "batch_norm" operation, kernel, or C ABI symbol. The
+# name here is unqualified, which is exactly why it stayed through F3 and
+# is only removed now, at the milestone where *both* batch-normalization
+# shapes exist. The numerical normalization *module* surface is complete;
+# Phase F itself is not (F5-F9 are hardening, an end-to-end proof, a
+# benchmark, integration, and closure — none of which is a capability).
+#
+# What remains below is genuinely absent from the native line.
 UNSUPPORTED = (
-    "batchnorm", "dropout",
+    "dropout",
     "float32", "cuda", "amp",
 )
 

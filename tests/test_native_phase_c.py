@@ -706,6 +706,7 @@ def test_native_phase_c_public_surface_guardrails():
         "native_accuracy",           # Phase E, milestone E7
         "NativeLayerNorm",           # Phase F, milestone F2
         "NativeBatchNorm1d",         # Phase F, milestone F3
+        "NativeBatchNorm2d",         # Phase F, milestone F4
     }
     for name in experimental.__all__:
         assert not hasattr(tensorforge, name)
@@ -733,11 +734,10 @@ def test_native_phase_c_public_surface_guardrails():
     assert "momentum" not in inspect.signature(NativeSGD.__init__).parameters
     # No regularization API and no CUDA/dtype expansion appeared.
     # (NativeFlatten shipped in Phase D milestone D1, NativeConv2d in D7,
-    # NativeMaxPool2d in D10, NativeLayerNorm in Phase F milestone F2, and
-    # NativeBatchNorm1d in F3; all five are asserted present in the
-    # surface set above. NativeBatchNorm2d is F4's job and has not
-    # shipped.)
-    for absent in ("NativeDropout", "NativeBatchNorm2d", "NativeAvgPool2d"):
+    # NativeMaxPool2d in D10, NativeLayerNorm in Phase F milestone F2,
+    # NativeBatchNorm1d in F3, and NativeBatchNorm2d in F4; all six are
+    # asserted present in the surface set above.)
+    for absent in ("NativeDropout", "NativeBatchNorm3d", "NativeAvgPool2d"):
         assert not hasattr(experimental, absent)
     info = cpp.backend_info()
     assert info["device"] == "cpu" and info["dtype"] == "float64"

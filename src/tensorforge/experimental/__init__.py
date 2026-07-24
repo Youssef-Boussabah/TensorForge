@@ -109,13 +109,34 @@ existing operations — no kernel, C ABI symbol, ctypes declaration,
 ``NativeTensorCore`` method, ``NativeTensor.batch_norm`` operation, or
 custom BatchNorm backward — and the native checkpoint format stays
 version 1. ``"NativeBatchNorm1d"`` has joined ``NATIVE_MODULES``, while
-``"batchnorm"`` **remains** in ``UNSUPPORTED``: the unqualified name is
-only honest once ``NativeBatchNorm2d`` ships too. **Milestone F4
-(``NativeBatchNorm2d``) is next, and F4-F9 have not started**, so no
-NCHW BatchNorm exists or exports here. What the native line still does
-**not** have: further activations/math, NCHW BatchNorm, dropout or a
-native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline
-abstractions.
+``"batchnorm"`` stayed in ``UNSUPPORTED``: the unqualified name is only
+honest once ``NativeBatchNorm2d`` ships too. **Milestone F4** ships
+``NativeBatchNorm2d`` below — NCHW ``(N, C, H, W)`` batch normalization
+reducing over **N, H, and W**, so each channel gets one population mean
+and one population variance over ``N * H * W`` values. It is built on
+the **same** shared private implementation as ``NativeBatchNorm1d`` and
+declares nothing but its rank, its reduction axes, its ``(1, C, 1, 1)``
+broadcast layout, and the channels-last permutation its rank-1
+``gamma``/``beta`` need: rank-1 parameters broadcast from the *trailing*
+axis, so the **activation** is transposed for the affine application and
+back again (then materialized contiguous) rather than the parameters
+being reshaped — which keeps ``gamma`` a direct versioned ``multiply``
+operand and preserves the existing stale-parameter guard exactly.
+Running statistics stay ``(C,)`` persistent buffers, evaluation reads
+owning ``(1, C, 1, 1)`` snapshots, the checkpoint format stays version
+1, and again no kernel, C ABI symbol, ctypes declaration,
+``NativeTensorCore`` method, custom backward, or
+``NativeTensor.batch_norm`` operation exists.
+``"NativeBatchNorm2d"`` has joined ``NATIVE_MODULES`` and the exports,
+and with both shapes live ``"batchnorm"`` has **left** ``UNSUPPORTED``,
+which now reads exactly ``("dropout", "float32", "cuda", "amp")``.
+**That completes the numerical normalization module surface — not Phase
+F: milestones F5-F9 have not started**, so there is no normalization
+state/checkpoint hardening suite, no deterministic normalized training
+example with exact resume, no normalization benchmark, no cross-cutting
+Phase-F integration, and no phase closure. What the native line still
+does **not** have: further activations/math, dropout or a native RNG,
+float32/dtype expansion, CUDA, AMP, and data-pipeline abstractions.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
@@ -222,7 +243,7 @@ from .native_conv2d import NativeConv2d
 from .native_maxpool2d import NativeMaxPool2d
 from .native_sequential import NativeSequential
 from .native_layernorm import NativeLayerNorm
-from .native_batchnorm import NativeBatchNorm1d
+from .native_batchnorm import NativeBatchNorm1d, NativeBatchNorm2d
 from .native_mse_loss import NativeMSELoss
 from .native_cross_entropy_loss import NativeCrossEntropyLoss
 from .native_metrics import native_accuracy
@@ -243,6 +264,7 @@ __all__ = [
     "NativeSequential",
     "NativeLayerNorm",
     "NativeBatchNorm1d",
+    "NativeBatchNorm2d",
     "NativeMSELoss",
     "NativeCrossEntropyLoss",
     "native_accuracy",

@@ -42,14 +42,22 @@ graph-free atomic two-buffer transaction, and evaluation from graph-safe
 immutable snapshots; again composed entirely from existing operations,
 adding no kernel, C ABI symbol, `NativeTensorCore` method, custom
 backward, or `NativeTensor.batch_norm` operation; `"NativeBatchNorm1d"`
-has joined `NATIVE_MODULES` while `"batchnorm"` **stays** in
-`UNSUPPORTED`).
-**F4–F9 are planned and have not started.** Nothing in this document may
-be read as a statement that the NCHW native BatchNorm exists today: no
-`NativeBatchNorm2d` is exported, the unqualified `"batchnorm"`
-remains in `UNSUPPORTED`, and no normalization *operation*, kernel, or C
-ABI symbol exists at all — `NativeLayerNorm` and `NativeBatchNorm1d` are
-modules composed from existing operations, not numerical primitives.
+has joined `NATIVE_MODULES` while `"batchnorm"` stayed in
+`UNSUPPORTED`), and **F4 is complete** (`NativeBatchNorm2d` — NCHW
+`(N, C, H, W)` batch normalization reducing over N, H, and W, built on
+the **same** shared private implementation as `NativeBatchNorm1d`;
+`"NativeBatchNorm2d"` has joined `NATIVE_MODULES` and, with both shapes
+now live, `"batchnorm"` has finally left `UNSUPPORTED`).
+**The numerical normalization *module* surface is therefore complete**:
+`NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d` all
+exist and are exported. **F5–F9 are planned and have not started**, so
+Phase F itself is *not* complete: the exhaustive state/checkpoint and
+graph-safety hardening, the deterministic normalized training run with
+exact resume, the benchmark characterization, the cross-cutting
+integration, and the phase closure have none of them happened. And no
+normalization *operation*, kernel, or C ABI symbol exists at all — all
+three modules are compositions of existing operations, not numerical
+primitives.
 
 **What Phase F will deliver, in later milestones.** A fully native,
 differentiable, state-safe normalization stack:
@@ -900,7 +908,7 @@ copied.
 | F1 | Atomic native-buffer state transactions | **complete** |
 | F2 | `NativeLayerNorm` | **complete** |
 | F3 | `NativeBatchNorm1d` | **complete** |
-| F4 | `NativeBatchNorm2d` | planned |
+| F4 | `NativeBatchNorm2d` | **complete** |
 | F5 | Normalization state, checkpoint, and graph-safety hardening | planned |
 | F6 | Deterministic normalized training and exact resume | planned |
 | F7 | Native normalization benchmark characterization | planned |
@@ -909,8 +917,8 @@ copied.
 
 Each milestone's full contract follows; the table above is the status
 summary, and the registry remains the authority on what is live. **F0,
-F1, F2, and F3 are complete; F4 is the next milestone, and F4–F9 have
-not started.**
+F1, F2, F3, and F4 are complete; F5 is the next milestone, and F5–F9
+have not started.**
 
 ### F0 — Phase-F architecture contract and repository reconciliation *(this document)* — **complete**
 
@@ -1294,7 +1302,7 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
     unqualified, and F4 has not shipped `NativeBatchNorm2d`, so removing
     it now would over-claim.
 
-### F4 — `NativeBatchNorm2d` — planned
+### F4 — `NativeBatchNorm2d` — **complete**
 
 - **Objective:** NCHW `(N, C, H, W)` batch normalization over the **same**
   shared private implementation, completing the normalization surface.
@@ -1331,6 +1339,76 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
   `NATIVE_MODULES` and the exports, and `"batchnorm"` and `"layernorm"`
   have both left `UNSUPPORTED` while `"dropout"`, `"float32"`,
   `"cuda"`, and `"amp"` remain.
+- **Shipped (F4).** Exactly the above, plus the one refinement the NCHW
+  shape forced:
+
+  - **`NativeBatchNorm2d` declares only shape configuration** —
+    `_INPUT_NDIM = 4`, `_REDUCTION_AXES = (0, 2, 3)`,
+    `_TRAILING_DIMS = 2`, `_LAYOUT = "(N, C, H, W)"`, and
+    `_CHANNELS_LAST = (0, 2, 3, 1)`. It defines a docstring and not one
+    callable. Every method — `forward`, `_training_forward`,
+    `_eval_forward`, `_mean_over`, `_inverse_std`, `_snapshot`,
+    `_blend`, `_affine`, `_commit_running_state`, `_validate_forward`,
+    `_registered_running`, `__init__`, `__repr__` — is inherited from
+    `_NativeBatchNorm` **by function identity**, proved per method by a
+    test, and the source contains exactly one definition of each.
+  - **The reduction is three sequential single-axis means** with
+    `keepdims=True`: `(N, C, H, W)` → `(1, C, H, W)` → `(1, C, 1, W)` →
+    `(1, C, 1, 1)`. Because every reduced dimension is retained at size
+    1 the axis numbers stay valid across the sequence, so no tuple-axis
+    reduction was added to `NativeTensor`. Each mean is over a full axis
+    of equal extent, so the composition is exactly the population mean
+    over `N * H * W`. The channel axis is never reduced.
+  - **The channelwise-affine refinement.** This is the one genuinely new
+    problem the 4-D shape poses, and it is worth stating plainly.
+    NumPy-style broadcasting aligns from the *trailing* axis, so
+    `(N, C, H, W) * (C,)` would line `gamma` up with **W**, not with the
+    channel axis — silently wrong whenever `W == C`, and a shape error
+    otherwise. The obvious fix, reshaping `gamma` to `(1, C, 1, 1)`, is
+    **rejected**: `multiply` records a stale-value guard entry only for a
+    direct operand carrying a value version, and a reshaped `gamma` is an
+    ordinary unversioned view. Under that alternative, mutating `gamma`
+    after a forward stops raising the deterministic stale-parameter error
+    and instead surfaces a bare "this NativeStorage has been closed" —
+    exactly the confusing failure §7.1 names, and a silent-wrong-gradient
+    hazard whenever the old storage happens to outlive the mutation.
+    **So the activation moves instead of the parameter**: a borrowing
+    `transpose` carries the channel axis to the trailing position
+    (NCHW → NHWC), `gamma` and `beta` apply there as **direct rank-1
+    operands** — keeping the existing version guard exactly as F3 left
+    it — a second borrowing `transpose` carries the result back, and
+    `contiguous_copy` materializes the fresh owning contiguous NCHW
+    output. Both transposes are metadata-only and already
+    differentiable, so **no gradient logic was added**: `multiply`'s
+    existing broadcast-aware backward reduces `gamma`'s gradient over N,
+    H, and W, `add`'s does the same for `beta`, and `transpose`'s
+    backward applies the inverse permutation. The return permutation is
+    *derived* from `_CHANNELS_LAST` rather than configured, so the two
+    halves can never drift apart. Channels-last is an internal step of
+    one method, never a public layout mode.
+  - **`_affine` is the only shared method F4 added**, and it keeps the
+    `(N, C)` path byte-identical to F3's (`_CHANNELS_LAST is None` means
+    the channel axis is already trailing, so the parameters apply
+    directly). Every F3 numerical, snapshot, transaction, and
+    cleanup test passes unchanged.
+  - **Everything else is inherited and re-proved for the 4-D shape**:
+    `(1, C, 1, 1)` batch statistics and eval snapshots, `(C,)` running
+    buffers, the population variance driving both the output and the
+    running update, the graph-free atomic two-buffer commit, the
+    registered buffers' absence from eval graphs by object identity
+    *and* by storage, the buffer-only versus full-checkpoint
+    distinction, deterministic mid-forward cleanup without GC (including
+    at the new transpose/contiguous-copy points), non-contiguous NCHW
+    input, and composition beside `NativeConv2d`/`NativeMaxPool2d`/
+    `NativeFlatten` in a `NativeSequential`.
+  - **`"batchnorm"` has left `UNSUPPORTED`**, which is only honest now
+    that both shapes exist. `UNSUPPORTED` is exactly
+    `("dropout", "float32", "cuda", "amp")`. The checkpoint format is
+    unchanged at **version 1**, and F4 added no C++ code, kernel, C ABI
+    symbol, ctypes declaration, `NativeTensorCore` method,
+    `NativeTensor.batch_norm` operation, or custom BatchNorm backward.
+  - **F4 completes the normalization *module* surface, not Phase F.**
+    F5 (state/checkpoint and graph-safety hardening) is next.
 
 ### F5 — Normalization state, checkpoint, and graph-safety hardening — planned
 
@@ -1555,9 +1633,10 @@ must be verified against reality for the whole normalization surface.
 
 ## 18. Phase-F status statement
 
-**Phase F is in progress: F0, F1, F2, and F3 are complete; F4–F9 have
-not started.** The experimental native line now has LayerNorm and the
-`(N, C)` BatchNorm, but not the NCHW shape:
+**Phase F is in progress: F0, F1, F2, F3, and F4 are complete; F5–F9
+have not started.** The experimental native line now has the complete
+numerical normalization *module* surface — LayerNorm and both BatchNorm
+shapes — but the phase is not finished:
 
 - `NativeLayerNorm` exists, is exported from `tensorforge.experimental`,
   and is registered in `NATIVE_MODULES`; `"layernorm"` has left
@@ -1568,13 +1647,24 @@ not started.** The experimental native line now has LayerNorm and the
   `running_mean`/`running_var` buffers advanced by a graph-free atomic
   two-buffer transaction, and evaluation from graph-safe immutable
   snapshots.
-- No `NativeBatchNorm2d` exists or is exported, and the unqualified
-  `"batchnorm"` remains listed in `UNSUPPORTED` — removing it while only
-  the 1-D shape ships would over-claim.
+- `NativeBatchNorm2d` exists, is exported, and is registered in
+  `NATIVE_MODULES`. It is NCHW `(N, C, H, W)` batch normalization
+  reducing over N, H, and W, built on the **same** shared private
+  implementation as `NativeBatchNorm1d` — it declares only its rank, its
+  reduction axes, its `(1, C, 1, 1)` broadcast layout, and the
+  channels-last permutation its rank-1 affine parameters need.
+- With both shapes live, `"batchnorm"` has left `UNSUPPORTED`, which now
+  reads exactly `("dropout", "float32", "cuda", "amp")`.
+- **Phase F is still in progress.** F5–F9 — the exhaustive
+  state/checkpoint and graph-safety hardening, the deterministic
+  normalized training run with exact resume, the benchmark
+  characterization, the cross-cutting integration, and the closure —
+  have not started. There is no normalized end-to-end training example
+  and no normalization benchmark.
 - **No normalization *operation* is differentiable, and none appears in
-  any operation inventory** — both `NativeLayerNorm` and
-  `NativeBatchNorm1d` are composed from existing operations, so no
-  normalization kernel, C ABI export, ctypes declaration, or
+  any operation inventory** — `NativeLayerNorm`, `NativeBatchNorm1d`,
+  and `NativeBatchNorm2d` are all composed from existing operations, so
+  no normalization kernel, C ABI export, ctypes declaration, or
   `NativeTensorCore` method exists.
 
 What F0 delivered is this contract and the repository reconciliation that
@@ -1590,10 +1680,14 @@ variance, identical train/eval behavior, and no kernel, ABI symbol,
 normalization operation. What **F3** delivered is `NativeBatchNorm1d`:
 the §6.1 contract, the §7 snapshot rule, and the §8 atomic two-buffer
 transaction, all live in one shared private implementation, with the
-checkpoint format unchanged at version 1. The remaining capabilities
-described above (the NCHW shape, the exhaustive hardening matrix, the
-exact normalized resume, the benchmark) are commitments about how F4–F9
-*will* build the rest of Phase F, not claims about what exists.
+checkpoint format unchanged at version 1. What **F4** delivered is
+`NativeBatchNorm2d`: the §6.2 NCHW contract over that same
+implementation, plus the one shared affine-layout refinement the 4-D
+shape needed — and the removal of `"batchnorm"` from `UNSUPPORTED`. The
+remaining work described above (the exhaustive hardening matrix, the
+exact normalized resume, the benchmark, the integration, the closure) is
+a set of commitments about how F5–F9 *will* finish Phase F, not claims
+about what exists.
 
 Deliberately outside Phase F and still unplanned: dropout, a native RNG
 and RNG checkpoint state, further activations (`tanh`, `sigmoid`, GELU),
