@@ -26,7 +26,7 @@ reverse-mode autograd over autograd-unaware kernels, parameters, modules
 `NativeMaxPool2d`, `NativeSequential`), `NativeMSELoss`, `NativeSGD` and
 `NativeAdam` with in-memory optimizer state, pickle-free native
 checkpoints with exact resume, and deterministic end-to-end MLP **and**
-CNN training proofs. The most recent phase — **Phase E, Native
+CNN training proofs. The phase that followed them — **Phase E, Native
 Classification and Stable Math** — has its architecture contract locked
 in [native_classification_design.md](native_classification_design.md)
 (E0) and is **complete** (E0–E10): milestones E1–E4 shipped the differentiable

@@ -7,8 +7,10 @@ Python + NumPy — a serious ML systems project covering PyTorch-style
 framework internals, inspired by Daedalus ML but not a copy. It was
 developed milestone by milestone (v0.1 … v3.0), each one small,
 tested, and readable. The Python framework line is complete as of
-v3.0; work continues on advanced branches (the experimental C++
-native line has completed Phase A — CPU runtime, Phase B — native
+v3.0. The experimental C++ native line is merged into `main` and lives
+in the explicit `tensorforge.backends` / `tensorforge.experimental`
+namespaces rather than on a separate advanced branch. It
+has completed Phases A–F: Phase A — CPU runtime, Phase B — native
 autograd, Phase C — the native training stack, and Phase D — the
 native CNN stack, through Advanced C++ v3.16; Phase E — native
 classification and stable math — is *complete* (E0–E10), its contract

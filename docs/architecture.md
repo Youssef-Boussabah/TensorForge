@@ -4,11 +4,12 @@ TensorForge is a from-scratch deep learning and ML systems framework
 with **two strictly separate lines**. The **stable Python framework**
 reimplements how a framework like PyTorch works under the hood in
 Python + NumPy, with every piece kept deliberately small and readable.
-The **experimental native line** (the advanced branch) is a
+The **experimental native line** is a
 ctypes-loaded C++ CPU runtime with its own explicit tensor, a
 Python-managed native autograd graph, and a native training stack —
-living in its own namespaces (`tensorforge.backends`,
-`tensorforge.experimental`) that the stable framework never imports
+merged into `main` and living in its own explicit namespaces
+(`tensorforge.backends`, `tensorforge.experimental`), which the stable
+framework never imports
 (see [backend_experiments.md](backend_experiments.md) and the
 [native support matrix](native_support_matrix.md)).
 

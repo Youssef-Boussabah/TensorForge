@@ -53,9 +53,10 @@ dependency-free, and finish in seconds.
 
 ## The experimental native line
 
-The advanced branch adds a second, strictly separate framework line: a
-native C++ CPU backend reached explicitly through
-`tensorforge.experimental`. **Phase A (native CPU runtime) is
+The explicit experimental native line is a second, strictly separate
+framework line: a native C++ CPU backend, merged into `main` and reached
+only through the `tensorforge.backends` and `tensorforge.experimental`
+namespaces. **Phase A (native CPU runtime) is
 complete** — `NativeStorage` → `NativeTensorView` → `NativeTensorCore`
 → `NativeTensor`, with explicit ownership/lifetime, strided views,
 broadcasting, sum/mean reductions, and float64/cpu metadata over
@@ -127,20 +128,30 @@ dispatch. The exact per-operation status lives in the
 
 ## Testing and reliability (both lines)
 
-Over 2000 pytest tests cover every feature of both lines: known-value
+Over 3,600 pytest tests cover every feature of both lines: known-value
 checks against hand-computed math, finite-difference gradient
 verification (stable and native), exact resume-equivalence tests for
 checkpointing, NumPy-tripwire tests proving the native paths never
-fall back, cross-cutting Phase C, **Phase D, and Phase E** integration
+fall back, cross-cutting Phase C, **Phase D, Phase E, and Phase F**
+integration
 guardrails
 (shared/frozen/late-active parameters, failure recovery at every
-boundary, graph-version interactions, saved-winner and
-saved-probability lifetime, and
+boundary, graph-version interactions, saved-winner,
+saved-probability, and normalization-snapshot lifetime, atomic
+running-statistics transactions, and
 lifetime discipline), and guardrail tests keeping docs, examples, and
 the public API from drifting. The native C++ kernels additionally have
 dependency-free CTest binaries, validated under ASan/UBSan. Native tests
 skip cleanly when the backend is not built; CI builds it from source
 and runs everything.
+
+The completed Phase-F workflow's final full Python run reported
+**3,632 passed and 5 skipped** with the Release backend active. All five
+skips are the standing "the backend *is* built, so the unavailable path
+cannot be forced" cases — never a missing-backend skip. Alongside it,
+Phase F's closure recorded 10/10 native CTests in both Release and Debug
+and 1,968 sanitized normalization-focused Python tests with zero ASan
+and zero UBSan diagnostics.
 
 ## Current limitations
 

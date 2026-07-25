@@ -351,9 +351,10 @@ The Python line is done; what remains is expansion on its own terms:
   Transformer/text experiments, distributed training, and the final
   portfolio release. CUDA/GPU experiments are still entirely future
   work. The Python framework stays the reference implementation.
-- **The Daedalus-class native roadmap** — the longer arc the advanced
-  branch is building toward, in phases, each landing only when the
-  previous is tested and documented:
+- **The Daedalus-class native roadmap** — the longer arc the explicit
+  experimental native line (`tensorforge.backends`,
+  `tensorforge.experimental`) is building toward, in phases, each landing
+  only when the previous is tested and documented:
   - **Phase A — native CPU runtime.** A1: the contiguous elementwise
     fast path — **complete** (designed v1.13, implemented v1.14,
     benchmark impact reported v1.15). A2: broadcasting for elementwise

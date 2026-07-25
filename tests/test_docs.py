@@ -1783,10 +1783,10 @@ def test_normalization_is_module_only_with_no_new_native_operation():
 
 def test_phase_f_export_surface_adds_only_the_shipped_normalization_modules():
     """The public experimental surface is exactly what Phase E left plus
-    the Phase-F additions so far — ``NativeLayerNorm`` (F2) and
-    ``NativeBatchNorm1d`` (F3) — in both directions: nothing else added,
-    nothing lost. ``NativeBatchNorm2d`` (F4) has not shipped and must not
-    appear here."""
+    Phase F's three normalization modules — ``NativeLayerNorm`` (F2),
+    ``NativeBatchNorm1d`` (F3), and ``NativeBatchNorm2d`` (F4) — in both
+    directions: nothing else added, nothing lost. F5-F9 added no export at
+    all, so the closed phase's surface is exactly F4's."""
     import tensorforge
     import tensorforge.experimental as experimental
 
@@ -2294,7 +2294,10 @@ def test_f4_completed_the_normalization_module_surface_not_the_phase():
     NCHW shape exists and is exported, all three normalization modules
     are registered, both capability names have left ``UNSUPPORTED``, the
     remaining boundary is untouched, and no operation/Core/kernel/ABI
-    surface grew. The *phase* is still in progress."""
+    surface grew. F4 completed the normalization *module* surface, not the
+    phase — F5-F9 (hardening, the training proof, the benchmark, the
+    integration suite, and the closure) followed, none of them adding a
+    capability, so the boundary asserted here is still the current one."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
     import tensorforge.experimental as experimental
@@ -2416,9 +2419,9 @@ def test_f6_shipped_the_normalized_training_and_resume_proof():
     example and its integration test exist and use the two normalization
     families, the design records F6 complete as an integration proof only,
     and the export set and every capability registry are exactly what F4
-    left, with the checkpoint format still version 1. F0-F7 are therefore a
-    contiguous complete prefix, F8-F9 are not shipped, and F8 is named
-    next."""
+    left, with the checkpoint format still version 1. The design also keeps
+    the ladder's own history readable: at F7 the next milestone was F8, and
+    the record still says so in the past tense now that both have shipped."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
     import tensorforge.experimental as experimental
@@ -2761,3 +2764,321 @@ def test_native_cnn_design_is_linked_and_referenced():
     )
     for doc in (roadmap, matrix):
         assert "native_cnn_design.md" in doc
+
+
+# --- Post-Phase-F repository-status reconciliation ------------------------
+#
+# Phases A-F are all complete, and the native line is merged into `main`,
+# reached only through the explicit `tensorforge.backends` /
+# `tensorforge.experimental` namespaces. The per-milestone guards above
+# already pin what *shipped*; these pin the way the repository currently
+# *describes itself*, which is where the post-merge drift collected: a
+# high-level status still stopping at Phase E, an architecture sentence
+# still placing the native line on "the advanced branch", a testing
+# inventory written before Phase F, a native-example count contradicting
+# the tree, and a capability comment still calling Phase F unfinished.
+#
+# Every check derives its premise from the live registry, the live
+# exports, or the real tree, and matches meaning rather than wording, so
+# an honest rewrite survives and a regression does not.
+
+NATIVE_PHASES = "ABCDEF"
+
+# "Phase F is unfinished", in the forms that survive a rewrite. This is
+# deliberately a *different* vocabulary from the pending-phase guard
+# above: that one catches "in progress"/"not started", this one catches
+# the completion-denial forms ("itself is not", "is incomplete") that a
+# closure pass can leave behind in explanatory prose.
+_PHASE_F_UNFINISHED = (
+    r"(is not complete|is not finished|itself is not|is incomplete"
+    r"|not yet complete|remains incomplete|still incomplete|is unfinished"
+    r"|awaiting (?:its )?closure|awaits closure|yet to close)"
+)
+
+# A present-tense claim that the native line lives on a separate advanced
+# branch. Past-tense development history ("the advanced branch then built
+# the native line", "leaving `advanced/cpp-backend` ready for its first
+# pull request") is accurate and is deliberately not matched.
+_PRESENT_TENSE_BRANCH = re.compile(
+    r"\(\s*(?:this|the)\s+advanced\s+branch\s*\)"
+    r"|(?:this|the)\s+advanced\s+branch\s+"
+    r"(?:is|are|has|have|holds?|carries|adds?|contains?|provides?|lives?"
+    r"|hosts?|owns?|keeps?|currently)\b"
+    # "work continues on advanced branches" — the same claim without the
+    # definite article, which the two forms above cannot see.
+    r"|\b(?:continues?|continuing|lives?|happens?|proceeds?|sits?|resides?"
+    r"|is|are)\s+(?:\w+\s+){0,3}?(?:on|in)\s+(?:the\s+|an?\s+)?"
+    r"advanced\s+branch(?:es)?\b",
+    re.I,
+)
+
+# A headline naming an *earlier* phase as the native line's newest
+# completion — the exact drift the post-merge README carried ("the
+# advanced branch has completed Phase E of its native line") — while
+# leaving the range form ("has completed Phases A-F") alone.
+_STALE_NEWEST_PHASE = re.compile(
+    r"(?:has|have|had)\s+completed\s+Phase\s+([A-E])\b", re.I
+)
+
+_NUMBER_WORDS = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
+    "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+}
+
+
+def test_high_level_status_states_phases_a_through_f_complete():
+    """The README's own status must say the native line has completed
+    Phases A-F — as a range ("Phases A-F ... complete") or phase by phase —
+    and must never stop at an earlier phase again. The premise is the live
+    registry: each phase's headline capability really is there, so this can
+    only ever demand a claim the code already backs."""
+    from tensorforge.backends import cpp
+
+    assert "matmul" in cpp.TENSOR_CORE_OPS                        # Phase A
+    assert cpp.backend_info()["native_autograd"] is True          # Phase B
+    assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")   # Phase C
+    assert "NativeConv2d" in cpp.NATIVE_MODULES                   # Phase D
+    assert "cross_entropy" in cpp.AUTOGRAD_OPS                    # Phase E
+    for module in _NORMALIZATION_MODULES:                         # Phase F
+        assert module in cpp.NATIVE_MODULES, module
+
+    readme = _status_text("README.md")
+    span = r"Phases?\s+A\s*(?:-|–|—|through|to)\s*F\b"
+    ranged = (
+        re.search(span + r"[^.]{0,160}?\bcomplet", readme, re.I)
+        or re.search(r"\bcomplet\w*[^.]{0,160}?" + span, readme, re.I)
+    )
+    per_phase = all(
+        re.search(rf"Phase {letter}\b[^.]{{0,300}}?\bcomplete\b", readme, re.I)
+        for letter in NATIVE_PHASES
+    )
+    assert ranged or per_phase, (
+        "README's status no longer states that Phases A-F are complete"
+    )
+    # And it must not stop early: no headline may present an earlier phase
+    # as the newest one the native line has completed.
+    for surface in ("README.md", "docs/project_summary.md",
+                    "docs/architecture.md", "CLAUDE.md"):
+        text = _status_text(surface)
+        assert "Phase F" in text, surface
+        # An enumeration that reaches Phase F right there ("has completed
+        # Phase A ... through Phase F") is the honest form and is excused;
+        # a claim that stops earlier is the drift.
+        offenders = [
+            match.group(0) for match in _STALE_NEWEST_PHASE.finditer(text)
+            if "Phase F" not in text[match.start():match.end() + 200]
+        ]
+        assert offenders == [], (
+            f"{surface} presents an earlier phase as the newest completed "
+            f"native phase: {offenders[:3]}"
+        )
+
+
+def test_no_current_status_surface_calls_phase_f_unfinished():
+    """The completion-denial form of the pending-phase guard, extended to
+    every authoritative surface — including the backend registry module,
+    which the phase-narrative tuple deliberately excludes. This is the check
+    that catches a capability comment left behind at F4 ("the module surface
+    is complete; Phase F itself is not")."""
+    from tensorforge.backends import cpp
+
+    for module in _NORMALIZATION_MODULES:       # premise: the phase shipped
+        assert module in cpp.NATIVE_MODULES, module
+
+    forward = re.compile(r"Phase.F\b[^.]{0,70}?" + _PHASE_F_UNFINISHED, re.I)
+    backward = re.compile(_PHASE_F_UNFINISHED + r"[^.]{0,70}?Phase.F\b", re.I)
+    for surface in AUTHORITATIVE_STATUS_SURFACES + PHASE_STATUS_DOCS + (
+        "CLAUDE.md", "docs/backend_experiments.md", PHASE_F_DESIGN,
+    ):
+        text = _status_text(surface)
+        for pattern in (forward, backward):
+            match = pattern.search(text)
+            assert match is None, (
+                f"{surface} still describes Phase F as unfinished: "
+                f"{match.group(0)!r}" if match else ""
+            )
+
+
+def test_no_surface_places_the_native_line_on_an_advanced_branch_today():
+    """The native line is merged into `main` and reached through the
+    explicit `tensorforge.backends` / `tensorforge.experimental`
+    namespaces, so no *present-tense* description may still confine it to a
+    separate advanced branch. Historical branch references stay legal —
+    only the present-tense forms are matched — and the surfaces that
+    describe where the line lives must name the real namespaces."""
+    import tensorforge.experimental as experimental
+    from tensorforge.backends import cpp
+
+    # Premise: those namespaces are the real, importable home.
+    assert experimental.__name__ == "tensorforge.experimental"
+    assert cpp.__name__ == "tensorforge.backends.cpp"
+
+    for surface in AUTHORITATIVE_STATUS_SURFACES + PHASE_STATUS_DOCS + (
+        "CLAUDE.md", "docs/backend_experiments.md",
+    ):
+        text = _status_text(surface)
+        match = _PRESENT_TENSE_BRANCH.search(text)
+        assert match is None, (
+            f"{surface} still places the native line on an advanced branch: "
+            f"{match.group(0)!r}" if match else ""
+        )
+    for surface in ("README.md", "docs/architecture.md",
+                    "docs/project_summary.md"):
+        text = _status_text(surface)
+        for namespace in ("tensorforge.backends", "tensorforge.experimental"):
+            assert namespace in text, (
+                f"{surface} does not name {namespace} as where the native "
+                f"line lives"
+            )
+
+
+def test_project_summary_testing_inventory_covers_phase_f():
+    """The summary's testing section must cover every cross-cutting
+    phase-integration suite that actually exists — Phase F included — and
+    must not understate the suite's size. The size floor comes from the real
+    test files, so a stale "Over 2000" cannot survive a far larger suite,
+    while any honest larger number passes."""
+    integration_suites = {
+        "C": "test_native_phase_c.py",
+        "D": "test_native_phase_d.py",
+        "E": "test_native_phase_e.py",
+        "F": "test_native_phase_f.py",
+    }
+    for name in integration_suites.values():
+        assert (REPO_ROOT / "tests" / name).is_file(), name
+
+    summary = _status_text("docs/project_summary.md")
+    assert "Testing and reliability" in summary
+    testing = summary.split("Testing and reliability", 1)[1]
+    testing = testing.split("Current limitations", 1)[0]
+    for phase in integration_suites:
+        assert re.search(rf"Phase {phase}\b", testing), (
+            f"the project summary's testing inventory omits Phase {phase}"
+        )
+
+    # Every `def test_...` in tests/ is at least one collected test, so a
+    # claimed suite size below that count is stale by construction.
+    floor = sum(
+        len(re.findall(r"^\s*def test_\w+", path.read_text(encoding="utf-8"),
+                       re.M))
+        for path in (REPO_ROOT / "tests").glob("test_*.py")
+    )
+    assert floor > 0
+    claimed = [int(number.replace(",", ""))
+               for number in re.findall(r"([\d][\d,]*)\s+(?:pytest\s+)?tests\b",
+                                        testing)]
+    assert claimed, "the project summary states no test-suite size at all"
+    for count in claimed:
+        assert count >= floor, (
+            f"the project summary claims {count} tests, but tests/ already "
+            f"defines {floor} test functions"
+        )
+
+
+def test_readme_native_example_wording_matches_the_tree():
+    """Every native example script must appear in the README, and any
+    *counted* claim about them ("the four native examples") must match the
+    real count. Uncounted, durable wording ("the native examples ... are
+    listed in the native quickstart above") is deliberately allowed: the
+    point is that a number can never silently contradict the tree."""
+    native = sorted(path.name
+                    for path in (REPO_ROOT / "examples").glob("native_*.py"))
+    assert native, "no native example scripts exist"
+    raw = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    for name in native:
+        assert name in raw, f"README does not mention examples/{name}"
+
+    readme = _status_text("README.md")
+    for match in re.finditer(
+        r"\b(\w+)\s+native\s+(?:examples|demos|scripts)\b", readme, re.I
+    ):
+        token = match.group(1).lower()
+        count = int(token) if token.isdigit() else _NUMBER_WORDS.get(token)
+        if count is None:
+            continue        # durable, uncounted wording — exactly what we want
+        assert count == len(native), (
+            f"README claims {count} native examples, but examples/ holds "
+            f"{len(native)}: {native}"
+        )
+
+
+def test_capability_commentary_keeps_the_boundary_and_the_closed_phase():
+    """`UNSUPPORTED` and the prose around it are the capability boundary's
+    own record. The tuple is exactly what F4 left and F9 closed on, and its
+    explanatory comment must describe a *closed* Phase F. Registry first,
+    commentary second — and only comment lines are scanned, so the tuples
+    themselves are never matched as prose."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.backend_info()["unsupported"] == cpp.UNSUPPORTED
+    assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
+    assert native_checkpoint._FORMAT_VERSION == 1
+    for module in _NORMALIZATION_MODULES:
+        assert module in cpp.NATIVE_MODULES, module
+
+    source = (REPO_ROOT / "src" / "tensorforge" / "backends"
+              / "cpp.py").read_text(encoding="utf-8")
+    commentary = " ".join(
+        line.strip().lstrip("#").strip()
+        for line in source.splitlines()
+        if line.strip().startswith("#")
+    )
+    assert "UNSUPPORTED" in commentary, "the boundary lost its commentary"
+    forward = re.compile(r"Phase.F\b[^.]{0,70}?" + _PHASE_F_UNFINISHED, re.I)
+    backward = re.compile(_PHASE_F_UNFINISHED + r"[^.]{0,70}?Phase.F\b", re.I)
+    for pattern in (forward, backward):
+        match = pattern.search(commentary)
+        assert match is None, (
+            f"cpp.py's capability commentary still calls Phase F "
+            f"unfinished: {match.group(0)!r}" if match else ""
+        )
+
+
+def test_the_status_reconciliation_moved_no_capability_surface():
+    """A status reconciliation is documentation: it must move nothing real.
+    The public exports, every capability registry, the checkpoint format,
+    and normalization's module-only nature are exactly what the closed
+    Phase F left."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeTensor, native_checkpoint
+    import tensorforge.experimental as experimental
+
+    assert set(experimental.__all__) == {
+        "NativeTensor", "NativeParameter", "NativeParameterRegistry",
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeMSELoss", "NativeSGD", "NativeAdam",
+        "save_native_checkpoint", "load_native_checkpoint",
+        "NativeCrossEntropyLoss", "native_accuracy",
+        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+    }
+    assert cpp.NATIVE_MODULES == (
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+    )
+    assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    assert cpp.STATE_SUPPORT == (
+        "persistent_buffers", "state_dict", "load_state_dict",
+        "save_native_checkpoint", "load_native_checkpoint",
+    )
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert cpp.backend_info()["stable_framework_integration"] is False
+    assert native_checkpoint._FORMAT_VERSION == 1
+    # Normalization stayed module composition: no operation, Core method,
+    # NativeTensor method, or guarded C ABI symbol anywhere.
+    for name in _NORMALIZATION_OP_NAMES:
+        assert name not in cpp.TENSOR_CORE_OPS, name
+        assert name not in cpp.AUTOGRAD_OPS, name
+        assert name not in cpp.RAW_KERNELS, name
+        assert not hasattr(cpp.NativeTensorCore, name), name
+        assert not hasattr(NativeTensor, name), name
+    for symbol in ("tf_core_layer_norm", "tf_core_batch_norm",
+                   "tf_core_layer_norm_forward", "tf_core_batch_norm_forward"):
+        assert symbol not in cpp._CHECKED_KERNELS, symbol
