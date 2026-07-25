@@ -3,8 +3,9 @@
 A from-scratch deep learning and ML systems framework in two
 lines: a **stable Python framework** built on NumPy — PyTorch-style
 autograd, modules, optimizers, checkpointing, and CNN support, complete
-as of v3.0 — and an **experimental native C++ CPU backend** (this
-advanced branch) with its own explicit tensor runtime, Python-managed
+as of v3.0 — and an **experimental native C++ CPU backend**, living in
+its own `tensorforge.backends` / `tensorforge.experimental` namespaces,
+with its own explicit tensor runtime, Python-managed
 native autograd, and a native training stack that already trains an MLP
 end to end. The two lines stay strictly separate: `NativeTensor` never
 masquerades as `tensorforge.Tensor`, nothing dispatches implicitly, and
@@ -55,9 +56,9 @@ stale-graph detection, and honest benchmarks.
 
 ## Features — experimental native C++ backend
 
-The advanced branch carries a complete native CPU training line,
-reached explicitly through `tensorforge.experimental` and
-`tensorforge.backends` (the stable framework never imports it):
+The explicit experimental native line — merged into `main` and reached
+only through `tensorforge.experimental` and `tensorforge.backends`, never
+by the stable framework — carries a complete native CPU training line:
 
 - **Native runtime**: `NativeStorage` → `NativeTensorView` →
   `NativeTensorCore` → `NativeTensor` — explicit ownership and
@@ -204,7 +205,7 @@ uv run python examples/train_tiny_cnn.py             # convolution and pooling
 ```
 
 What each one teaches, and what to expect: [docs/examples.md](docs/examples.md).
-The four native examples are listed in the native quickstart above.
+The native examples and demos are listed in the native quickstart above.
 
 ## Documentation
 
@@ -274,11 +275,14 @@ Honest expectations:
 ## Status
 
 **v3.0 — the stable Python framework line is complete**, covered by the
-test suite and documented. **The advanced branch has completed Phase E
-of its native line**: Phase A (native CPU runtime),
+test suite and documented. **The experimental native line — merged into
+`main`, and reached only through the explicit `tensorforge.backends` and
+`tensorforge.experimental` namespaces — has completed Phases A–F**:
+Phase A (native CPU runtime),
 Phase B (native autograd), Phase C (the native training stack),
-Phase D (the native CNN stack), and Phase E (native classification and
-stable math) are all complete. Phase C shipped
+Phase D (the native CNN stack), Phase E (native classification and
+stable math), and Phase F (native normalization and stateful buffers)
+are all complete. Phase C shipped
 parameters, modules, state dictionaries,
 Linear/ReLU/Sequential, MSE loss, parameter versioning with stale-graph
 safety, `sqrt`/`reciprocal` optimizer primitives, SGD and adaptive Adam,

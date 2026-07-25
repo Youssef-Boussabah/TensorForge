@@ -189,7 +189,7 @@ NATIVE_MODULES = (
     # operation — there is no "layer_norm" kernel, C ABI symbol,
     # NativeTensorCore method, or NativeTensor.layer_norm autograd op, so
     # it appears here and nowhere in the op inventories. "layernorm" left
-    # UNSUPPORTED when it shipped; "batchnorm" stays there until F4.
+    # UNSUPPORTED when it shipped; "batchnorm" stayed there until F4.
     "NativeLayerNorm",
     # "NativeBatchNorm1d" (Phase F, milestone F3) is the first *stateful*
     # native numerical module: (N, C) batch normalization with
@@ -318,10 +318,11 @@ STATE_SUPPORT = (
 # again nothing joined AUTOGRAD_OPS / TENSOR_CORE_OPS / RAW_KERNELS and
 # there is still no "batch_norm" operation, kernel, or C ABI symbol. The
 # name here is unqualified, which is exactly why it stayed through F3 and
-# is only removed now, at the milestone where *both* batch-normalization
-# shapes exist. The numerical normalization *module* surface is complete;
-# Phase F itself is not (F5-F9 are hardening, an end-to-end proof, a
-# benchmark, integration, and closure — none of which is a capability).
+# was removed at F4, the milestone where *both* batch-normalization
+# shapes exist. That completed the numerical normalization *module*
+# surface, and Phase F has since closed (F0-F9): F5-F9 were hardening, an
+# end-to-end proof, a benchmark, integration, and closure — none of them
+# a capability — so this tuple is exactly what F4 left.
 #
 # What remains below is genuinely absent from the native line.
 UNSUPPORTED = (
