@@ -1,6 +1,6 @@
 # TensorForge
 
-A serious from-scratch deep learning and ML systems framework in two
+A from-scratch deep learning and ML systems framework in two
 lines: a **stable Python framework** built on NumPy — PyTorch-style
 autograd, modules, optimizers, checkpointing, and CNN support, complete
 as of v3.0 — and an **experimental native C++ CPU backend** (this
