@@ -536,11 +536,18 @@ def test_e9_adds_no_capability_inventory_entry():
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm",     # Phase F, milestone F2 (unrelated to E9)
+        "NativeBatchNorm1d",   # Phase F, milestone F3 (unrelated to E9)
+        "NativeBatchNorm2d",   # Phase F, milestone F4 (unrelated to E9)
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    # "persistent_buffers" joined this tuple in Phase F milestone F1, as
+    # reconciliation of a capability that predates Phase E entirely; E9
+    # (a measurement-only milestone) contributed nothing here.
     assert cpp.STATE_SUPPORT == (
+        "persistent_buffers",
         "state_dict", "load_state_dict",
         "save_native_checkpoint", "load_native_checkpoint",
     )

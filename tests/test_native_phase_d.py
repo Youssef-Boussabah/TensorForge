@@ -775,8 +775,10 @@ def test_no_out_of_scope_capability_is_advertised():
     # "cross_entropy_backward", and E6 then shipped the differentiable
     # operation — see tests/test_native_cross_entropy_core.py and
     # tests/test_native_cross_entropy.py.)
-    for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout"):
+    # ("layernorm" left UNSUPPORTED in Phase F milestone F2 and
+    # "batchnorm" in F4, once both BatchNorm shapes shipped as composed
+    # modules; neither is out-of-scope work any more.)
+    for absent in ("float32", "cuda", "amp", "dropout"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS

@@ -209,15 +209,26 @@ def test_e8_added_no_capability_inventory_entry():
     dataset, or checkpoint-resume name may appear in any of them."""
     info = cpp.backend_info()
     assert tuple(info["raw_kernels"]) == EXPECTED_KERNELS
+    # "NativeLayerNorm" joined this tuple in Phase F milestone F2 (the first
+    # native normalization module) and "NativeBatchNorm1d" in milestone F3
+    # (the first stateful one) — both composed from existing operations,
+    # and both unrelated to E8, which still added no module of its own.
     assert info["native_modules"] == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
     )
     assert info["native_losses"] == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert info["native_metrics"] == ("native_accuracy",)
     assert info["native_optimizers"] == ("NativeSGD", "NativeAdam")
     assert info["autograd_ops"][-1] == "cross_entropy"
+    # E8 added no state capability. "persistent_buffers" joined this
+    # tuple in Phase F milestone F1 as *reconciliation* of a capability
+    # that already existed (register_buffer / buffers / named_buffers,
+    # persistent buffers in state_dict and checkpoints) — not as anything
+    # E8 or any classification milestone contributed.
     assert info["state_support"] == (
+        "persistent_buffers",
         "state_dict", "load_state_dict",
         "save_native_checkpoint", "load_native_checkpoint",
     )
@@ -268,3 +279,134 @@ def test_advertised_state_support_names_import():
 def test_is_available_true_when_built():
     assert cpp.is_available() is True
     assert cpp.backend_info()["available"] is True
+
+
+def test_f4_reports_both_batchnorm_shapes_and_frees_the_capability():
+    """Phase F milestone F3 shipped `NativeBatchNorm1d` and F4
+    `NativeBatchNorm2d`, so `backend_info()` must report both as
+    **modules** — and only as modules. With both shapes live the
+    unqualified `batchnorm` capability has finally left `unsupported`,
+    while the registry still advertises no normalization operation,
+    kernel, or C ABI symbol.
+    """
+    import tensorforge.experimental as experimental
+
+    info = cpp.backend_info()
+    for module in ("NativeLayerNorm", "NativeBatchNorm1d",
+                   "NativeBatchNorm2d"):
+        assert module in info["native_modules"], module
+        assert hasattr(experimental, module), module
+        # A module, and nothing else.
+        for key in ("raw_kernels", "tensor_core_ops", "autograd_ops",
+                    "native_losses", "native_metrics", "native_optimizers",
+                    "state_support", "unsupported"):
+            assert module not in tuple(info[key]), (module, key)
+    # Both normalization capability names are now supported...
+    assert "batchnorm" not in info["unsupported"]
+    assert "layernorm" not in info["unsupported"]
+    # ...and the remaining boundary is exactly what it was.
+    assert info["unsupported"] == ("dropout", "float32", "cuda", "amp")
+    # BatchNorm3d was never in scope.
+    assert "NativeBatchNorm3d" not in info["native_modules"]
+    assert not hasattr(experimental, "NativeBatchNorm3d")
+    # And neither milestone introduced a normalization primitive.
+    for name in ("batch_norm", "batchnorm", "layer_norm", "layernorm"):
+        assert name not in tuple(info["raw_kernels"]), name
+        assert name not in tuple(info["tensor_core_ops"]), name
+        assert name not in tuple(info["autograd_ops"]), name
+    for symbol in ("tf_core_batch_norm", "tf_core_batch_norm_forward",
+                   "tf_core_batch_norm_backward", "tf_core_layer_norm"):
+        assert symbol not in cpp._CHECKED_KERNELS, symbol
+    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_devices"] == ("cpu",)
+    assert info["stable_framework_integration"] is False
+
+
+def test_f8_registers_nothing_and_backend_info_mirrors_the_live_registry():
+    """Phase F milestone F8 is a cross-cutting integration and guardrail
+    milestone: it adds one test file and registers **nothing**. Checked
+    against reality rather than prose — every reported inventory is the
+    live registry tuple, and no integration or test artifact leaked into
+    any of them."""
+    from pathlib import Path
+
+    import tensorforge.experimental as experimental
+
+    info = cpp.backend_info()
+    mirrored = {
+        "raw_kernels": cpp.RAW_KERNELS,
+        "tensor_core_ops": cpp.TENSOR_CORE_OPS,
+        "autograd_ops": cpp.AUTOGRAD_OPS,
+        "native_modules": cpp.NATIVE_MODULES,
+        "native_losses": cpp.NATIVE_LOSSES,
+        "native_metrics": cpp.NATIVE_METRICS,
+        "native_optimizers": cpp.NATIVE_OPTIMIZERS,
+        "state_support": cpp.STATE_SUPPORT,
+        "unsupported": cpp.UNSUPPORTED,
+        "supported_dtypes": cpp.SUPPORTED_DTYPES,
+        "supported_devices": cpp.SUPPORTED_DEVICES,
+    }
+    for key, registry in mirrored.items():
+        assert tuple(info[key]) == registry, key
+        for entry in registry:
+            for banned in ("phase_f", "phasef", "integration", "guardrail",
+                           "benchmark", "characterization"):
+                assert banned not in entry.lower(), (key, entry, banned)
+    # The integration file exists and is a *test*, never a registered
+    # capability or an importable runtime surface.
+    assert (Path(__file__).resolve().parent
+            / "test_native_phase_f.py").is_file()
+    for name in ("NativePhaseFClassifier", "test_native_phase_f"):
+        assert not hasattr(experimental, name), name
+        assert name not in experimental.__all__, name
+
+
+def test_f9_closed_phase_f_without_registering_anything():
+    """Phase F milestone F9 is the phase closure: builds, sanitizers, and
+    documentation. It registers **nothing**, so the capability boundary
+    at closure must be exactly what F4 left — checked against the live
+    registry, never against prose.
+
+    This is the durable form of the closure claim. If a later change ever
+    smuggles a capability in under a "documentation" banner, the tuples
+    below stop matching and this fails."""
+    assert cpp.NATIVE_MODULES == (
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+    )
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    assert cpp.STATE_SUPPORT == (
+        "persistent_buffers", "state_dict", "load_state_dict",
+        "save_native_checkpoint", "load_native_checkpoint",
+    )
+    # No normalization *operation* exists at any numerical layer, and no
+    # closure/validation artifact became a capability name.
+    for name in ("layer_norm", "batch_norm", "layernorm", "batchnorm",
+                 "layer_norm_forward", "batch_norm_forward",
+                 "batch_norm_backward"):
+        assert name not in cpp.TENSOR_CORE_OPS, name
+        assert name not in cpp.AUTOGRAD_OPS, name
+        assert name not in cpp.RAW_KERNELS, name
+        assert name not in cpp.TENSOR_CORE_KERNELS, name
+        assert not hasattr(cpp.NativeTensorCore, name), name
+        assert name not in cpp._CHECKED_KERNELS, name
+        assert f"tf_core_{name}" not in cpp._CHECKED_KERNELS, name
+    for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_OPS,
+                      cpp.AUTOGRAD_OPS, cpp.NATIVE_MODULES,
+                      cpp.NATIVE_LOSSES, cpp.NATIVE_METRICS,
+                      cpp.NATIVE_OPTIMIZERS, cpp.STATE_SUPPORT,
+                      cpp.UNSUPPORTED):
+        for entry in inventory:
+            for banned in ("closure", "sanitizer", "asan", "ubsan", "leak",
+                           "release", "debug", "ctest"):
+                assert banned not in entry.lower(), (entry, banned)
+    # The checkpoint format did not move at closure.
+    from tensorforge.experimental import native_checkpoint
+
+    assert native_checkpoint._FORMAT_VERSION == 1

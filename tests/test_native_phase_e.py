@@ -207,8 +207,18 @@ def test_capability_inventories_are_internally_consistent():
         assert callable(getattr(cpp, name)), name
     assert hasattr(NativeModule, "state_dict")
     assert hasattr(NativeModule, "load_state_dict")
+    # Every advertised state capability maps to something real. Four of
+    # the five name a callable directly; "persistent_buffers" (added by
+    # Phase F milestone F1 to reconcile a capability that already
+    # existed) names the register_buffer / buffers / named_buffers API,
+    # so it is resolved explicitly rather than by relaxing the check.
+    _STATE_CAPABILITY_API = {
+        "persistent_buffers": ("register_buffer", "buffers", "named_buffers"),
+    }
     for name in cpp.STATE_SUPPORT:
-        assert hasattr(experimental, name) or hasattr(NativeModule, name), name
+        for attribute in _STATE_CAPABILITY_API.get(name, (name,)):
+            assert (hasattr(experimental, attribute)
+                    or hasattr(NativeModule, attribute)), (name, attribute)
     # Implemented and unsupported names stay disjoint everywhere.
     implemented = (set(cpp.TENSOR_CORE_OPS) | set(cpp.AUTOGRAD_OPS)
                    | set(cpp.RAW_KERNELS) | set(cpp.NATIVE_MODULES)
@@ -247,8 +257,10 @@ def test_unsupported_stays_honest_after_closure():
         assert shipped not in cpp.UNSUPPORTED, shipped
     # ...and nothing still unimplemented may quietly disappear because the
     # phase closed. These are the boundaries Phase E deliberately kept.
-    for absent in ("float32", "cuda", "amp", "batchnorm", "layernorm",
-                   "dropout"):
+    # ("layernorm" left UNSUPPORTED in Phase F milestone F2 and
+    # "batchnorm" in F4, once both BatchNorm shapes shipped as composed
+    # modules. Neither was ever a Phase-E boundary.)
+    for absent in ("float32", "cuda", "amp", "dropout"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS
@@ -257,10 +269,13 @@ def test_unsupported_stays_honest_after_closure():
 
     # Classification extensions that were explicitly out of scope never
     # appeared as exports or operations.
+    # (Both BatchNorm shapes are deliberately absent from this list:
+    # Phase F milestones F3 and F4 shipped them, which is unrelated to
+    # Phase E's scope.)
     for never in ("NativeNLLLoss", "NativeBCELoss", "NativeSoftmax",
                   "NativeLogSoftmax", "native_top_k_accuracy",
                   "native_confusion_matrix", "NativeDataLoader",
-                  "NativeBatchNorm1d", "NativeDropout"):
+                  "NativeBatchNorm3d", "NativeDropout"):
         assert not hasattr(experimental, never), never
     for never in ("argmax", "nll_loss", "one_hot", "randn", "rand"):
         assert not hasattr(NativeTensor, never), never

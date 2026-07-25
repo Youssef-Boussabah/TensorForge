@@ -202,3 +202,49 @@ def test_native_checkpoint_rejects_buffer_shape_mismatch(tmp_path):
     mismatched = _model_with_buffer([[0.0, 0.0]], [0.0, 0.0, 0.0])
     with pytest.raises(ValueError):
         load_native_checkpoint(path, mismatched)
+
+
+@needs_native
+def test_state_dict_snapshot_failure_closes_partial_snapshots(monkeypatch):
+    """A failure part-way through building ``state_dict()`` snapshots must
+    close every snapshot already created and return no mapping, so a
+    failure never leaks native memory or yields a partial state dict.
+    Generic buffer/state infrastructure, independent of any layer: the
+    module here mixes a parameter and a persistent buffer, and the failure
+    is injected after the parameter snapshot exists. Uses the private
+    ``_native_copy`` seam rather than a production failure flag."""
+    from tensorforge.experimental import native_module
+
+    m = NativeModule()
+    m.weight = NativeParameter(np.ones((2, 2)))
+    buf = _tensor([1.0, 2.0])
+    m.register_buffer("stat", buf, persistent=True)
+
+    real_copy = native_module._native_copy
+    created = []
+    calls = {"n": 0}
+
+    def failing_copy(core):
+        calls["n"] += 1
+        if calls["n"] == 2:            # after the parameter snapshot exists
+            raise MemoryError("forced snapshot failure")
+        result = real_copy(core)
+        created.append(result)
+        return result
+
+    monkeypatch.setattr(native_module, "_native_copy", failing_copy)
+    with pytest.raises(MemoryError):
+        m.state_dict()
+    monkeypatch.undo()
+
+    # The one snapshot that was created was closed; nothing lingers, and
+    # no partial mapping was returned (the call raised).
+    assert len(created) == 1
+    assert created[0]._closed is True
+    # The model is untouched, and a valid snapshot now succeeds completely.
+    assert np.allclose(m.weight.to_numpy(), np.ones((2, 2)))
+    assert np.allclose(buf.to_numpy(), [1.0, 2.0])
+    state = m.state_dict()
+    assert set(state) == {"weight", "stat"}
+    for snap in state.values():
+        snap.close()

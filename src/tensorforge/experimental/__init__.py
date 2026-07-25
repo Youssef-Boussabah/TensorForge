@@ -65,11 +65,139 @@ timing threshold anywhere. **Milestone E10 closed Phase E** with
 cross-cutting integration tests (``tests/test_native_phase_e.py``),
 Release and Debug native builds, Clang ASan/UBSan and LeakSanitizer
 validation, and documentation reconciliation — adding no numerical
-capability. **Phase E is complete.** What the native line
-still does **not** have: further
-activations/math, normalization (BatchNorm/LayerNorm), dropout or a
-native RNG, float32/dtype expansion, CUDA, AMP, and data-pipeline
-abstractions.
+capability. **Phase E is complete.**
+
+**Phase F — Native Normalization and Stateful Buffers — is the latest
+phase, and it is complete (F0-F9).** Its architecture contract is locked in
+``docs/native_normalization_design.md`` (milestone **F0**, complete:
+design and repository reconciliation only, adding no numerical
+behavior). It specifies ``NativeLayerNorm``, ``NativeBatchNorm1d``, and
+``NativeBatchNorm2d`` **composed from existing native operations** —
+adding no kernel, C ABI export, ctypes declaration, or
+``NativeTensorCore`` method — with persistent native running statistics,
+the rule that a live mutable running buffer is never captured as a
+rereadable graph operand (eval mode takes independent graph-free
+snapshots, which is why buffers stay unversioned), atomic two-buffer
+running-statistics updates, and state/checkpoint integration with the
+format unchanged at version 1. **Milestone F1** shipped the private
+atomic native-buffer state transaction that contract requires
+(``_native_state.py`` — staging, an explicit commit boundary, complete
+rollback, exactly-once closing, and identity-preserving swaps), which
+``NativeModule.load_state_dict`` now delegates to, plus the
+``persistent_buffers`` entry in ``STATE_SUPPORT`` reconciling a
+capability that already existed. **Milestone F2** ships
+``NativeLayerNorm`` below: the first native normalization module —
+stateless (no buffers, identical in train and eval), differentiable
+through the mean and the population variance, and **composed entirely
+from existing native operations** (``mean``, ``subtract``, ``multiply``,
+``add``, ``sqrt``, ``reciprocal``) with ``sqrt(var + eps)`` ordering and
+no kernel, ABI symbol, ``NativeTensorCore`` method, custom backward, or
+``NativeTensor`` normalization operation. It normalizes trailing
+one-or-more-dimensional shapes, holds ``weight`` and ``bias``
+``NativeParameter``s only when ``elementwise_affine=True`` (none
+otherwise), so ``"NativeLayerNorm"`` has joined ``NATIVE_MODULES`` and
+``"layernorm"`` has left ``UNSUPPORTED``. **Milestone F3** ships
+``NativeBatchNorm1d`` — the **first stateful native numerical module**:
+``(N, C)`` batch normalization whose training statistics are
+differentiable (gradients flow through the batch mean and the population
+variance), whose ``running_mean``/``running_var`` are **persistent native
+buffers** advanced by a graph-free, atomic two-buffer update through the
+F1 transaction (identities preserved, no parameter version moved), and
+whose evaluation mode reads **graph-safe immutable snapshots** of those
+buffers rather than the live objects. It is composed from the same
+existing operations — no kernel, C ABI symbol, ctypes declaration,
+``NativeTensorCore`` method, ``NativeTensor.batch_norm`` operation, or
+custom BatchNorm backward — and the native checkpoint format stays
+version 1. ``"NativeBatchNorm1d"`` has joined ``NATIVE_MODULES``, while
+``"batchnorm"`` stayed in ``UNSUPPORTED``: the unqualified name is only
+honest once ``NativeBatchNorm2d`` ships too. **Milestone F4** ships
+``NativeBatchNorm2d`` below — NCHW ``(N, C, H, W)`` batch normalization
+reducing over **N, H, and W**, so each channel gets one population mean
+and one population variance over ``N * H * W`` values. It is built on
+the **same** shared private implementation as ``NativeBatchNorm1d`` and
+declares nothing but its rank, its reduction axes, its ``(1, C, 1, 1)``
+broadcast layout, and the channels-last permutation its rank-1
+``gamma``/``beta`` need: rank-1 parameters broadcast from the *trailing*
+axis, so the **activation** is transposed for the affine application and
+back again (then materialized contiguous) rather than the parameters
+being reshaped — which keeps ``gamma`` a direct versioned ``multiply``
+operand and preserves the existing stale-parameter guard exactly.
+Running statistics stay ``(C,)`` persistent buffers, evaluation reads
+owning ``(1, C, 1, 1)`` snapshots, the checkpoint format stays version
+1, and again no kernel, C ABI symbol, ctypes declaration,
+``NativeTensorCore`` method, custom backward, or
+``NativeTensor.batch_norm`` operation exists.
+``"NativeBatchNorm2d"`` has joined ``NATIVE_MODULES`` and the exports,
+and with both shapes live ``"batchnorm"`` has **left** ``UNSUPPORTED``,
+which now reads exactly ``("dropout", "float32", "cuda", "amp")``.
+**That completes the numerical normalization module surface. Milestone
+F5 is complete** — the exhaustive state, checkpoint, ownership, and
+graph-safety hardening (a focused ``tests/test_native_normalization_state.py``
+plus narrow additions to the generic buffer and checkpoint suites),
+proving §7-§10 of the design by executable test rather than by prose:
+**tests and documentation only, no numerical behavior and no new public
+capability**, with the exports, every capability registry, and the
+version-1 checkpoint format all exactly what F4 left. **Milestone F6 is
+complete** — the deterministic normalized training and exact
+checkpoint-resume proof ``examples/native_normalization_training.py``: a
+``Linear -> BatchNorm1d -> ReLU -> LayerNorm -> Linear`` regressor
+(both normalization families in every forward, BatchNorm the only stateful
+module) trained with ``NativeAdam``/``NativeMSELoss``, whose two
+uninterrupted runs are bit-identical and whose interrupted checkpoint
+resume into a fresh model/optimizer pair reproduces the losses,
+parameters, NativeAdam state, BatchNorm running statistics, final training
+prediction, and evaluation-mode output exactly — **one example and its
+integration test, no capability or schema change, format version 1
+unchanged**. **Milestone F7 is complete** — the honest benchmark
+characterization ``benchmarks/benchmark_native_normalization.py``: nine
+cases (the LayerNorm forward and backward, the BatchNorm1d training
+forward, evaluation forward, and backward, the BatchNorm2d training
+forward, evaluation forward, and backward, and one complete F6-style
+normalized training step), each **correctness-gated before any timing**,
+six labelled ``stable_tensorforge`` against ``tensorforge.nn``
+equivalents on identical state and three (the BatchNorm2d shapes)
+labelled ``native_only`` because the stable line has no public
+``BatchNorm2d`` to time against — those publish no ratio while keeping a
+rigorous NumPy NCHW and transformed-oracle correctness gate. Medians with
+min, max, and spread after warm-up; ``--smoke``/``--json`` modes; **no
+result file, no speed assertion, no committed timing number, and no CI
+timing threshold** — **measurement only, no capability, operation,
+kernel, C ABI symbol, schema field, example, or export, and no production
+behavior changed**. **Milestone F8 is complete** — the cross-cutting
+integration and semantic guardrails ``tests/test_native_phase_f.py``: one
+integrated ``Conv2d -> BatchNorm2d -> ReLU -> MaxPool2d -> Flatten ->
+Linear -> BatchNorm1d -> ReLU -> LayerNorm -> Linear`` classifier over
+raw logits and the fused loss, trained by ``NativeAdam`` and resumed
+**exactly** from one version-1 checkpoint (all four running-statistic
+buffers and the evaluation-mode output included); the three
+saved-resource families (BatchNorm snapshots, MaxPool2d winners,
+cross-entropy probabilities) coexisting in one eval graph and releasing
+exactly once; buffer mutation leaving an earlier graph valid while
+parameter mutation correctly stales it; the versioning archetypes; shared
+and frozen parameters; a non-contiguous NCHW input; strict stable/native
+separation; honest per-boundary failure atomicity; error-state recovery;
+the NumPy boundary; live-storage baselines; and reality-derived
+capability guardrails — **tests and documentation only, no capability and
+no production behavior changed**. **Milestone F9 is complete** — the
+phase closure: fresh Windows Release **and** Debug builds each passing
+the full existing 10-test CTest suite with zero project warnings and the
+active runtime proved to stay Release; a fresh Clang 18.1.3 ASan+UBSan
+build whose instrumentation is *proved* (22 ``__asan*`` and 13
+``__ubsan*`` dynamic symbols, and a library that will not load without
+the sanitizer runtime); 10/10 sanitized native CTests with leak
+detection enabled; 1,968 sanitized normalization-focused Python tests
+with zero ASan and zero UBSan diagnostics; the F6 example and the F7
+benchmark smoke path clean under the sanitized library; and a practical
+LeakSanitizer lifecycle returning native live storage **exactly** to
+baseline, with the remaining process-exit allocations identified
+honestly as CPython/NumPy shutdown retention containing no TensorForge
+frame and no suppression file — **validation and documentation only, no
+numerical capability, no C++, no CTest, no ABI or ctypes surface, and no
+production behavior changed**. **Phase F is complete.** Closing it
+closes that phase only: what the native line
+still does **not** have is further
+activations/math, dropout or a native RNG, float32/dtype expansion, CUDA,
+AMP, and data-pipeline abstractions.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
@@ -175,6 +303,8 @@ from .native_flatten import NativeFlatten
 from .native_conv2d import NativeConv2d
 from .native_maxpool2d import NativeMaxPool2d
 from .native_sequential import NativeSequential
+from .native_layernorm import NativeLayerNorm
+from .native_batchnorm import NativeBatchNorm1d, NativeBatchNorm2d
 from .native_mse_loss import NativeMSELoss
 from .native_cross_entropy_loss import NativeCrossEntropyLoss
 from .native_metrics import native_accuracy
@@ -193,6 +323,9 @@ __all__ = [
     "NativeConv2d",
     "NativeMaxPool2d",
     "NativeSequential",
+    "NativeLayerNorm",
+    "NativeBatchNorm1d",
+    "NativeBatchNorm2d",
     "NativeMSELoss",
     "NativeCrossEntropyLoss",
     "native_accuracy",

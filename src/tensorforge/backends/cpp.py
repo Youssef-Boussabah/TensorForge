@@ -181,6 +181,37 @@ AUTOGRAD_OPS = (
 NATIVE_MODULES = (
     "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
     "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+    # "NativeLayerNorm" (Phase F, milestone F2) is the first native
+    # normalization module: stateless (no buffers, identical in train and
+    # eval), differentiable through the mean and the population variance,
+    # and composed entirely from existing native operations (mean,
+    # subtract, multiply, add, sqrt, reciprocal). It is a *module*, not an
+    # operation — there is no "layer_norm" kernel, C ABI symbol,
+    # NativeTensorCore method, or NativeTensor.layer_norm autograd op, so
+    # it appears here and nowhere in the op inventories. "layernorm" left
+    # UNSUPPORTED when it shipped; "batchnorm" stays there until F4.
+    "NativeLayerNorm",
+    # "NativeBatchNorm1d" (Phase F, milestone F3) is the first *stateful*
+    # native numerical module: (N, C) batch normalization with
+    # differentiable training statistics, persistent native
+    # running_mean/running_var buffers advanced by a graph-free atomic
+    # two-buffer transaction, and graph-safe immutable snapshots in eval
+    # mode. It is composed from the same existing operations, so — like
+    # LayerNorm — it adds no "batch_norm" kernel, C ABI symbol,
+    # NativeTensorCore method, or NativeTensor.batch_norm autograd op, and
+    # appears here and nowhere in the op inventories. "batchnorm" stayed
+    # in UNSUPPORTED at F3, because the unqualified name is only honest
+    # once the NCHW shape exists too.
+    "NativeBatchNorm1d",
+    # "NativeBatchNorm2d" (Phase F, milestone F4) is the NCHW
+    # (N, C, H, W) shape of the same capability, built on the **same**
+    # shared private implementation as NativeBatchNorm1d — it supplies
+    # only its rank, its (N, H, W) reduction axes, its (1, C, 1, 1)
+    # broadcast layout, and the channels-last permutation the rank-1
+    # affine parameters need. It adds no numerical surface of its own, so
+    # again nothing joined the op inventories. With both shapes now live,
+    # "batchnorm" has finally left UNSUPPORTED.
+    "NativeBatchNorm2d",
 )
 # Native loss *modules*. Losses are tracked here and deliberately not in
 # NATIVE_MODULES, which lists the model-building layers — the split that
@@ -203,7 +234,22 @@ NATIVE_LOSSES = ("NativeMSELoss", "NativeCrossEntropyLoss")
 NATIVE_METRICS = ("native_accuracy",)
 
 NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
+# Native state and persistence capabilities.
+#
+# "persistent_buffers" (added in Phase F, milestone F1) is **capability
+# reconciliation, not a new feature**: NativeModule has held
+# NativeTensor-backed non-parameter state since the pre-Phase-D hardening
+# milestone — `register_buffer(name, tensor, persistent=True)`,
+# `buffers()` / `named_buffers()`, persistent buffers included in
+# `state_dict()` / `load_state_dict()` and in native checkpoints, and
+# non-persistent buffers never serialized — but this tuple never said so,
+# so `backend_info()` under-reported an existing capability. Unlike the
+# four names beside it, it names a *capability* rather than a single
+# callable: the API behind it is the register_buffer/buffers/
+# named_buffers trio (see tests/test_cpp_backend_info.py, which proves
+# every advertised name maps to something real).
 STATE_SUPPORT = (
+    "persistent_buffers",
     "state_dict",
     "load_state_dict",
     "save_native_checkpoint",
@@ -259,8 +305,27 @@ STATE_SUPPORT = (
 # left this tuple, each into the one inventory that describes its actual
 # layer — nothing about cross-entropy or accuracy is unsupported.
 # What remains below is genuinely absent from the native line.
+#
+# Phase F milestone F2 shipped "NativeLayerNorm" (see NATIVE_MODULES), so
+# "layernorm" has left this tuple — the module is a composition of
+# existing operations, not a new kernel or ABI symbol, and there is still
+# no "layer_norm" operation, which is why nothing joined AUTOGRAD_OPS /
+# TENSOR_CORE_OPS / RAW_KERNELS.
+#
+# "batchnorm" has now left this tuple too. F3 shipped "NativeBatchNorm1d"
+# (the (N, C) shape) and F4 "NativeBatchNorm2d" (NCHW), both in
+# NATIVE_MODULES and both modules composed from existing operations — so
+# again nothing joined AUTOGRAD_OPS / TENSOR_CORE_OPS / RAW_KERNELS and
+# there is still no "batch_norm" operation, kernel, or C ABI symbol. The
+# name here is unqualified, which is exactly why it stayed through F3 and
+# is only removed now, at the milestone where *both* batch-normalization
+# shapes exist. The numerical normalization *module* surface is complete;
+# Phase F itself is not (F5-F9 are hardening, an end-to-end proof, a
+# benchmark, integration, and closure — none of which is a capability).
+#
+# What remains below is genuinely absent from the native line.
 UNSUPPORTED = (
-    "batchnorm", "layernorm", "dropout",
+    "dropout",
     "float32", "cuda", "amp",
 )
 

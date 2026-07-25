@@ -120,6 +120,7 @@ from .native_parameter import (
     _validate_registration_name,
 )
 from .native_tensor import NativeTensor, _native_copy
+from . import _native_state
 
 # What load_state_dict returns: the key-compatibility report, immutable.
 # ``missing_keys`` are canonical parameter names the input did not
@@ -609,7 +610,13 @@ class NativeModule:
         after every swap succeeds are the old cores released, exactly
         once. No failure at any stage leaves the model partially
         updated, closes an input tensor, or invalidates existing
-        snapshots.
+        snapshots. Steps (8) and (9) run through the shared private state
+        transaction (``_native_state.replace_native_state``, Phase F
+        milestone F1), which is where the staging, commit-boundary,
+        rollback, and exactly-once-close rules actually live — the same
+        primitive a future stateful layer uses to replace several
+        registered buffers atomically without a state dictionary. The
+        public behavior described here is unchanged by that refactor.
 
         Persistent buffers (v3.15) participate on equal footing: their
         canonical ``named_buffers()`` keys join the expected set, their
@@ -695,57 +702,28 @@ class NativeModule:
                     f"{value.device}"
                 )
 
-        # Stage an independent owning contiguous native copy of every
-        # matching value (any strided/offset view source materializes at
-        # its logical shape). Nothing has mutated yet, so a staging
-        # failure only has staged copies to release.
-        staged = []
-        try:
-            for name, destination, value in matching:
-                staged.append(
-                    (destination, _native_copy(value._require_open()))
-                )
-        except BaseException:
-            for _, new_core in staged:
-                new_core.close()
-            raise
-
-        # Commit: swap every destination's core for its staged copy.
-        # A NativeParameter swaps through its validated _adopt_value_core;
-        # a buffer (plain NativeTensor) swaps its owning _core directly.
-        # Each swap is a pure reference assignment, but the rollback guard
-        # still restores every original core if anything (even a
-        # KeyboardInterrupt between swaps) interrupts — parameters and
-        # buffers roll back together, so a failed load never leaves the
-        # model partially updated.
-        adopted = []
-        try:
-            for destination, new_core in staged:
-                if isinstance(destination, NativeParameter):
-                    old_core = destination._adopt_value_core(new_core)
-                else:
-                    old_core = destination._require_open()
-                    destination._core = new_core
-                adopted.append((destination, old_core))
-        except BaseException:
-            for destination, old_core in adopted:
-                destination._core = old_core
-            for _, new_core in staged:
-                new_core.close()
-            raise
-        # Fully committed. Count one value replacement per loaded
-        # parameter (v3.7) — pure int increments that cannot fail, done
-        # before the closes so versions and released storage can never
-        # disagree — then release each replaced core exactly once.
-        # Buffers carry no version, so they are skipped here. Versions
-        # move only at this point, after every swap has succeeded, so the
-        # rollback above never has anything to decrement: a failed load
-        # leaves every version exactly as it was.
-        for destination, _ in adopted:
-            if isinstance(destination, NativeParameter):
-                destination._version += 1
-        for _, old_core in adopted:
-            old_core.close()
+        # Hand the whole replacement — parameters and persistent buffers
+        # alike — to the one private state transaction (F1,
+        # _native_state.py). It stages an independent owning contiguous
+        # native copy of every matching value before touching anything,
+        # swaps every destination's core while preserving its Python
+        # identity, moves each loaded parameter's version exactly once,
+        # and releases each replaced core exactly once — rolling the whole
+        # thing back if anything (a KeyboardInterrupt between two swaps
+        # included) interrupts before the commit boundary. The staging
+        # copy still goes through this module's ``_native_copy``, so the
+        # long-standing staging seam is unchanged.
+        _native_state.replace_native_state(
+            _native_state.NativeStateEntry(
+                label=name,
+                destination=destination,
+                make_core=(
+                    lambda value=value: _native_copy(value._require_open())
+                ),
+                source=value,
+            )
+            for name, destination, value in matching
+        )
         return LoadStateDictResult(missing, unexpected)
 
     # -- gradients and mode -----------------------------------------------
