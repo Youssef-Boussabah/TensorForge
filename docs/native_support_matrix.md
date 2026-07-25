@@ -22,7 +22,15 @@ capability), and **F9 closed the phase** — Release and Debug builds each
 passing the full existing CTest suite, Clang ASan/UBSan and
 LeakSanitizer finding nothing attributable to TensorForge, and the
 documentation reconciled — **validation and documentation only, adding
-no numerical capability**. The stable Python
+no numerical capability**. **Phase G (native RNG and Dropout) is the
+current phase and is in progress: only milestone G0, the architecture
+contract in [native_rng_dropout_design.md](native_rng_dropout_design.md),
+has landed, and it adds no numerical capability.** Nothing Phase G
+describes is implemented yet — no `NativeGenerator`, no random kernel, no
+C ABI symbol, no Core method, no `NativeTensor.dropout`, no
+`NativeDropout`, and no export — so `dropout` is still listed in the
+unsupported section below, the checkpoint format is still version 1, and
+every table in this document is exactly what Phase F left. The stable Python
 framework's features (see
 [architecture.md](architecture.md)) are **not** listed here — a feature
 appears as supported only if the native stack itself provides it.
@@ -414,7 +422,18 @@ in the stable Python framework — that does not make them native.
   distributed BatchNorm, a fused normalization kernel, a functional
   `batch_norm`, and a `NativeTensor.batch_norm` operation — none is in
   Phase F's scope
-- dropout or a native RNG — future work **beyond** Phase F
+- dropout, a `NativeGenerator`, any random kernel, and RNG checkpoint
+  state — **contracted by Phase G's G0 design lock but not implemented**.
+  `"dropout"` stays in `UNSUPPORTED` (beside `float32`, `cuda`, and
+  `amp`) for the whole of **G0–G9**: G4 implements and exports
+  `NativeDropout` but deliberately does not move the boundary, and the
+  name is removed only at **G10**, after the full Phase-G closure matrix
+  passes. The checkpoint format stays at version 1 until **G5**. See
+  [native_rng_dropout_design.md](native_rng_dropout_design.md)
+- a generic `rand`/`randn`/Bernoulli/sampling or distribution API, any
+  global or process-wide random state, NumPy global-RNG integration,
+  `Dropout2d`/`Dropout3d`, stochastic depth, and attention dropout —
+  none is in Phase G's scope
 - additional native activations/math beyond
   `relu`/`sqrt`/`reciprocal`/`exp`/`log`/`softmax`/`log_softmax`
 - CUDA / GPU execution

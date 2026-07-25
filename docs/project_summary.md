@@ -120,7 +120,17 @@ cases, no speed assertion anywhere), **F8 shipped the cross-cutting
 integration and semantic guardrails** (`tests/test_native_phase_f.py`),
 and **F9 closed the phase** under Release and Debug builds with Clang
 ASan/UBSan and LeakSanitizer — validation and documentation only, adding
-no numerical capability. The two
+no numerical capability. **Phase G (native RNG and Dropout) is the
+current phase and is in progress: only milestone G0, the architecture
+contract in [native_rng_dropout_design.md](native_rng_dropout_design.md),
+has landed.** It locks Python-managed generator state, stateless native
+random kernels, inverted Dropout with a graph-owned multiplier mask, one
+generator call consumed per successful stochastic forward, generator
+registration on `NativeModule`, and native checkpoint version 2 — as
+**design, documentation, and guardrails only**, so no generator, kernel,
+operation, module, or export exists yet, the checkpoint format is still
+version 1, and `dropout` is still listed unsupported beside `float32`,
+`cuda`, and `amp`. The two
 engines never mix: explicit entry via
 `NativeTensor.from_array`, explicit exit via `to_numpy()`, no implicit
 dispatch. The exact per-operation status lives in the
@@ -297,8 +307,30 @@ no TensorForge frame and no suppression file — **validation and
 documentation only, adding no numerical capability**. Closing Phase F
 closes that phase only; the native line remains experimental,
 float64/CPU, and explicitly scoped.
-Beyond Phase F
-(**not started**): dropout and a native RNG, more activations/math, data
+
+**Phase G — Native RNG and Dropout — then opened, and it is in
+progress.** Milestone **G0 is complete**: the architecture contract in
+[native_rng_dropout_design.md](native_rng_dropout_design.md), which locks
+`NativeGenerator` (an explicit 64-bit seed and call counter with an
+algorithm identifier, owning no native resource), stateless native random
+kernels, inverted Dropout with a graph-owned multiplier mask, the
+one-call-per-successful-forward transaction and the lock-protected,
+token-validated reservation protocol that guarantees it (no two callers
+can receive the same call index; state replacement is refused while a
+reservation is live; parallel stochastic execution is explicitly not
+claimed), generator state as a fourth `NativeModule` registration
+category, native checkpoint version 2 recording the generator **alias
+topology** — every registered path and its canonical target, so
+shared-versus-independent identity is restored and every mismatch fails
+before any live state changes — with its version-1 compatibility rule,
+whole-checkpoint transaction atomicity under any ordinary synchronous
+failure (external process death being the only documented exception),
+and the G0–G10 ladder — **design,
+documentation, and guardrails only, adding no numerical behavior**.
+**G1–G10 have not started**, and `dropout` stays listed unsupported
+through G9, leaving that list only at G10 after the closure matrix.
+Beyond Phase G
+(**not started**): more activations/math, data
 loaders, a CPU optimization phase, then the CUDA
 runtime, dtype/AMP work, and Transformer/text and distributed
 experiments. See [roadmap.md](roadmap.md) and

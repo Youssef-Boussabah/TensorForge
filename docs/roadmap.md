@@ -1094,6 +1094,70 @@ The Python line is done; what remains is expansion on its own terms:
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,
     AMP, fused normalization kernels, and CPU optimization.
+  - **Phase G — Native RNG and Dropout — in progress; only G0 has
+    landed.** The **G0 architecture contract is written** —
+    [native_rng_dropout_design.md](native_rng_dropout_design.md) locks
+    the phase's central split (random state is Python-managed; native
+    random kernels are stateless and receive the complete key for one
+    call), the `NativeGenerator` contract (an explicit unsigned 64-bit
+    seed and call counter plus an algorithm identifier and version, no
+    native resource and therefore no `close()`, identity equality, and no
+    global or process-wide state anywhere), the deterministic
+    counter-based algorithm and its known-answer requirements, the
+    call-consumption transaction (**one successful stochastic forward
+    consumes exactly one call**; a validation, allocation, kernel, or
+    graph-construction failure consumes none, and neither does evaluation
+    mode, `p == 0`, or backward) and the lock-protected, token-validated
+    reservation protocol that carries it (one private lock covering
+    reservation, commit, cancellation, and every state read and write,
+    with native computation outside it; opaque single-use tokens so a
+    stale, foreign, or duplicated commit changes nothing; at most one
+    live reservation, so a concurrent or reentrant caller fails **before
+    an index is minted** and no two callers can ever receive the same
+    call index; and seed or counter replacement refused while a
+    reservation is live — serialization for correctness, with parallel
+    stochastic execution explicitly not claimed), the probability contract
+    (`0 <= p < 1`, with `p == 1` rejected so inverted scaling never
+    divides by zero), the stateless forward boundary (one new kernel
+    producing the output **and** a private multiplier mask, no backward
+    kernel, logical-order element indexing independent of physical
+    strides), the differentiable operation whose backward reads **only**
+    that graph-owned mask — never the input, never the generator — the
+    module surface, generator registration as a fourth `NativeModule`
+    state category, native checkpoint **version 2** whose generator
+    section records the **alias topology** — every registered generator
+    path and its canonical target, so shared-versus-independent generator
+    identity is restored and not merely the states, with every topology
+    mismatch failing in prevalidation before any live state changes — and
+    an explicit version-1 compatibility rule that never fabricates a seed
+    or counter, **whole-checkpoint transaction atomicity** (validate
+    everything, stage everything that can allocate or raise, then commit
+    under one rollback guard, so any ordinary synchronous failure — and
+    any deliverable asynchronous one, including `KeyboardInterrupt` —
+    restores parameters, persistent buffers, optimizer state, and
+    generator state together with every object identity intact, leaving
+    external process or interpreter death as the only documented
+    exception), the ownership and failure matrices, and the **G0–G10**
+    milestone sequence. **G0 added no numerical behavior**: it is design,
+    documentation, and semantic guardrails only, so no generator, kernel,
+    C ABI symbol, ctypes declaration, Core method, tensor operation,
+    module, export, or registry entry exists, the checkpoint format is
+    still version 1, and `dropout` is still listed unsupported beside
+    `float32`, `cuda`, and `amp`. **`dropout` stays listed unsupported
+    for the whole of G0–G9** — G4 implements and exports `NativeDropout`
+    but deliberately does not move the boundary, because a capability
+    whose value is exact reproducibility is not finished until
+    reproducibility has been demonstrated under fresh Release and Debug
+    builds and the sanitizers — and the name is removed only at **G10**,
+    after the closure matrix passes, leaving `float32`, `cuda`, and
+    `amp`. The format version moves at **G5**. Deliberately outside Phase G: a generic
+    sampling or distribution API, global random state, NumPy
+    global-random-state integration, parameter-initialization changes,
+    data-loader shuffling,
+    augmentation, 2-D and 3-D dropout variants, stochastic depth, attention
+    dropout, integer tensors, embeddings, float32, CUDA, AMP,
+    schedulers, new optimizers, CPU performance tuning, and any stable
+    framework change.
   - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

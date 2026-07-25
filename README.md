@@ -229,6 +229,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
+- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, is complete; G1–G10 have not started, and no generator, kernel, operation, module, or export exists yet)
 
 ## Limitations
 
@@ -500,9 +501,33 @@ So **Phase F is complete**, and no
 normalization *operation*, kernel, or C ABI symbol exists at all.
 Closing Phase F closes that phase, not the project: the native line is
 still experimental, still float64/CPU only, and still not
-production-ready. More activations/math, dropout and a native RNG, data
-loaders, and CPU optimization sit beyond Phase F, and CUDA/GPU
-experiments remain future work. See
+production-ready.
+
+**Phase G — Native RNG and Dropout — is the current phase, and it is in
+progress.** Only its first milestone has landed: **G0**, the architecture
+contract locked in
+[docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) —
+Python-managed generator state (an explicit 64-bit seed and call counter
+with an algorithm identifier), stateless native random kernels, inverted
+Dropout with a graph-owned multiplier mask, one generator call consumed
+per *successful* stochastic forward and none on any failure — behind a
+lock-protected, token-validated reservation protocol so no two callers
+can ever receive the same call index — generator state registered on
+`NativeModule`, native checkpoint **version 2** that records the
+generator *alias topology* (which layers share a stream, not just the
+saved states) with a locked version-1 compatibility rule, and
+whole-checkpoint transaction atomicity in which any ordinary synchronous
+commit failure rolls back parameters, buffers, optimizer state, and
+generator state together. **G0 is design,
+documentation, and guardrails only**: milestones G1–G10 have not started,
+no `NativeGenerator`, kernel, C ABI symbol, operation, module, or export
+exists yet, the checkpoint format is still version 1, and `dropout`
+(with `float32`, `cuda`, and `amp`) is still listed as unsupported —
+G4 will implement and export `NativeDropout` without moving that
+boundary, and `dropout` leaves the unsupported list only at **G10**,
+after the full closure matrix passes. More
+activations/math, data loaders, and CPU optimization sit beyond Phase G,
+and CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 

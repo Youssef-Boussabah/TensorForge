@@ -244,8 +244,69 @@ baseline. F9 is **validation and documentation only** — no numerical
 capability, no C++, no CTest, no ABI or ctypes surface, no example, no
 benchmark, and no production behavior changed.
 
-Dropout, a native RNG, and RNG checkpoint state are future work
-**beyond** Phase F.
+**The current phase is Phase G — Native RNG and Dropout — and it is in
+progress; only milestone G0 has landed.** G0 is the architecture
+contract, [native_rng_dropout_design.md](native_rng_dropout_design.md),
+and it adds **no numerical behavior**. It locks: random state is
+**Python-managed** while native random kernels stay **stateless** and
+receive the complete key (an unsigned 64-bit seed plus the call index)
+for one operation; `NativeGenerator` holds exactly an algorithm
+identifier, an algorithm version, a 64-bit seed, and a 64-bit call
+counter, owns no native storage and therefore has no `close()`, and
+never consults a global or process-wide random source (a `seed=None`
+constructor draws once from OS entropy and the value is immediately
+explicit and serializable); a deterministic counter-based algorithm with
+committed known-answer vectors that must agree between the Windows and
+Linux builds; **one successful stochastic forward consumes exactly one
+generator call**, while validation, allocation, kernel, and
+graph-construction failures consume none — as do evaluation mode,
+`p == 0`, and backward; a lock-protected, token-validated reservation
+protocol behind that guarantee (one private lock covering reservation,
+commit, cancellation, and every counter and state read or write, with
+native computation outside it; opaque single-use tokens, so a stale,
+foreign, duplicated, or already-finished commit or cancel changes
+nothing; at most one live reservation, so a concurrent or reentrant
+caller fails **before** an index is minted and no two callers can ever
+receive the same call index; exhaustion checked under the lock; and
+seed/counter replacement refused while a reservation is live — this is
+serialization for correctness, and parallel stochastic execution is
+explicitly not claimed); `0 <= p < 1`, with `p == 1` rejected so the
+inverted-Dropout scale never divides by zero; one new forward kernel
+producing the output **and** a private multiplier mask, with **no**
+backward kernel (the gradient is the existing elementwise multiply
+against that mask) and logical, stride-independent element indexing; a
+differentiable operation whose backward reads only the graph-owned mask —
+never the input value and never the generator — so a later generator
+change or checkpoint load cannot alter an existing graph; generator state
+as a **fourth** `NativeModule` registration category beside parameters,
+buffers, and child modules, with its own state section rather than a
+tensor-shaped entry in `state_dict()`; native checkpoint **version 2**
+whose generator section records the full **alias topology** — every
+registered generator path together with its canonical target, so a resume
+restores *which layers share a stream* and not merely the saved states,
+with a saved-shared/live-independent mismatch (or the reverse) failing in
+prevalidation before any live state changes — and which fails loudly
+rather than fabricating a seed or counter, with version-1 archives still
+loadable into models that have no registered generators; and
+**whole-checkpoint transaction atomicity**, where the loader validates
+the entire archive, stages every value that can allocate or raise, and
+then commits under a single rollback guard, so any ordinary synchronous
+failure — and any deliverable asynchronous one, `KeyboardInterrupt`
+included — restores parameters, persistent buffers, optimizer state, and
+generator state *together*, with every object identity preserved, no
+partially loaded component observable, and pre-existing graph-owned masks
+untouched, leaving external process or interpreter death as the only
+documented exception. Milestones **G1–G10 have not started**: no
+generator, kernel, C ABI symbol, ctypes declaration, Core method, tensor
+operation, module, export, or registry entry exists yet, the checkpoint
+format is still version 1, and `dropout` is still listed unsupported
+beside `float32`, `cuda`, and `amp`. `dropout` stays listed unsupported
+for the whole of **G0–G9** — G4 implements and exports `NativeDropout`
+without moving the boundary, because a capability whose value is exact
+reproducibility is not finished until reproducibility has been shown
+under fresh Release and Debug builds and the sanitizers — and the name is
+removed only at **G10**, after the closure matrix passes. The format
+version moves at **G5**.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 

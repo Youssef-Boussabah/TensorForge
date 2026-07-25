@@ -25,7 +25,13 @@ DOCS = (
     "native_cnn_design.md",
     "native_classification_design.md",
     "native_normalization_design.md",
+    "native_rng_dropout_design.md",
 )
+
+# The native line's phase ladder, oldest to newest. Phases A-F are
+# complete; Phase G (native RNG and Dropout) is the current one and is in
+# progress. Nothing after G exists.
+NATIVE_PHASE_LADDER = "ABCDEFG"
 
 EXAMPLE_FILES = (
     "train_linear_regression.py",
@@ -80,7 +86,10 @@ def test_roadmap_does_not_list_shipped_stable_features_as_future():
     thing and legitimately can be future work — the native line has its
     own phase sequence — so explicitly native phrasings are stripped
     before the scan. (This generalizes the long-standing "NativeAdam"
-    exemption instead of banning honest native-line statements.)"""
+    exemption instead of banning honest native-line statements.) The
+    "native <thing>" strip is case-insensitive and keeps capitalized
+    follow-words, so a phase title like "Native RNG and Dropout" counts
+    as the native phrasing it is."""
     import re
 
     text = (REPO_ROOT / "docs" / "roadmap.md").read_text(encoding="utf-8")
@@ -89,7 +98,8 @@ def test_roadmap_does_not_list_shipped_stable_features_as_future():
     # Strip "Native<Thing>" identifiers and "native <thing>" prose: both
     # name the native counterpart, never the shipped stable feature.
     future = re.sub(r"Native[A-Z]\w*", "", future)
-    future = re.sub(r"native [a-zA-Z/]+(\s+[a-z/]+){0,2}", "", future)
+    future = re.sub(r"\bnative [A-Za-z/]+(\s+[A-Za-z/]+){0,2}", "", future,
+                    flags=re.IGNORECASE)
     shipped_features = (
         "Dropout",
         "BatchNorm",
@@ -2220,19 +2230,23 @@ def test_dropout_float32_cuda_and_amp_stay_unsupported_through_phase_f():
 def test_status_docs_agree_on_the_phase_sequence():
     """Requirement 11. Every status document that discusses the native
     line must place the phases in the same order and must not invent one
-    beyond Phase F."""
+    beyond the current phase.
+
+    Phase G (native RNG and Dropout) opened with milestone G0, so naming
+    it is now correct rather than an over-claim — what it may not do is
+    claim a Phase-G *capability* exists, which the Phase-G guardrails
+    below check against the live registry. Phase H is still invented."""
     for surface in PHASE_STATUS_DOCS:
         text = _status_text(surface)
         assert "Phase E" in text and "Phase F" in text, surface
-        # Phase F is the newest phase; nothing later may be named.
-        for beyond in ("Phase G", "Phase H"):
-            assert beyond not in text, f"{surface} names {beyond}"
-    # The phase sequence is A..F with no gaps: the set of phases a
+        # Phase G is the newest phase; nothing later may be named.
+        assert "Phase H" not in text, f"{surface} names Phase H"
+    # The phase sequence is A..G with no gaps: the set of phases a
     # document names must be a contiguous prefix-suffix of that ladder,
     # never a set that skips one. (Ordering *within* a document is not
     # pinned — the support matrix legitimately leads with the newest
     # phase and then recaps the ladder.)
-    ladder = "ABCDEF"
+    ladder = NATIVE_PHASE_LADDER
     for surface in ("docs/native_support_matrix.md", "docs/roadmap.md",
                     "docs/project_summary.md"):
         text = _status_text(surface)
@@ -2243,10 +2257,10 @@ def test_status_docs_agree_on_the_phase_sequence():
             f"{surface} skips a phase: names {named}, expected the "
             f"contiguous run {list(span)}"
         )
-        # The newest phase named must be F — no document may stop at E
-        # and thereby imply Phase E is still the current phase.
-        assert named[-1] == "F", (
-            f"{surface} stops at Phase {named[-1]}; Phase F is current"
+        # The newest phase named must be G — no document may stop at F
+        # and thereby imply Phase F is still the current phase.
+        assert named[-1] == "G", (
+            f"{surface} stops at Phase {named[-1]}; Phase G is current"
         )
 
 
@@ -2263,7 +2277,8 @@ def test_every_doc_linked_from_the_readme_exists():
     # And the reverse for the design documents: a contract that exists but
     # is unreachable from the README is an orphan.
     for design in ("native_cnn_design.md", "native_classification_design.md",
-                   "native_normalization_design.md"):
+                   "native_normalization_design.md",
+                   "native_rng_dropout_design.md"):
         assert design in referenced, f"docs/{design} is not linked"
 
 
@@ -2647,14 +2662,21 @@ def test_the_phase_f_closure_claims_no_later_phase():
     and completion work, and that work is now legitimately described as
     done — but closing Phase F must not become a claim about anything
     after it. No surface may present a *later* phase, or a capability
-    Phase F never scoped, as started, in progress, or complete."""
+    neither Phase F nor Phase G has delivered, as started, in progress,
+    or complete.
+
+    Phase G itself left this subject list when milestone G0 opened it:
+    "Phase G is in progress" is now simply true. What Phase G may not
+    claim is that a Phase-G *capability* exists, which
+    ``test_no_surface_claims_a_phase_g_capability_exists`` checks against
+    the live registry — a stronger check than a phase-name scan."""
     premise = _status_text(PHASE_F_DESIGN)
     assert "Phase-F status: complete" in premise
 
     started = (r"(is|are|was|were|now|has|have)\s+"
                r"(begun|started|under way|underway|in progress|complete"
                r"|completed|shipped|implemented|supported)")
-    later = (r"(Phase G|Phase H|dropout phase|native RNG|CUDA (phase|runtime|"
+    later = (r"(Phase H|CUDA (phase|runtime|"
              r"backend)|AMP (phase|path)|Tensor Core|CPU optimization phase"
              r"|distributed (phase|training)|float16|bfloat16)")
     # Negated or explicitly-future forms are the honest ones.
@@ -3082,3 +3104,929 @@ def test_the_status_reconciliation_moved_no_capability_surface():
     for symbol in ("tf_core_layer_norm", "tf_core_batch_norm",
                    "tf_core_layer_norm_forward", "tf_core_batch_norm_forward"):
         assert symbol not in cpp._CHECKED_KERNELS, symbol
+
+
+# --- Phase G (native RNG and Dropout) — G0 contract guardrails -----------
+#
+# G0 is a design-and-lock milestone: it adds no numerical behavior, no
+# runtime surface, and no capability. These guards therefore establish
+# two things — that the contract is written and internally coherent, and
+# that **nothing it describes has been built**. Every premise is derived
+# from the live registry, the live exports, the real file tree, or the
+# C++ sources rather than from prose, so a guard can never assert a claim
+# the code does not back.
+
+PHASE_G_DESIGN = "docs/native_rng_dropout_design.md"
+
+# The names Phase G contracts but has NOT implemented, in each of the
+# forms a document, a registry, an export, or a C ABI might use them.
+_PHASE_G_PUBLIC_NAMES = ("NativeGenerator", "NativeDropout")
+_PHASE_G_OP_NAMES = (
+    "dropout", "dropout_forward", "dropout_backward",
+    "random", "rand", "randn", "bernoulli", "uniform",
+)
+_PHASE_G_ABI_SYMBOLS = (
+    "tf_core_dropout", "tf_core_dropout_forward", "tf_core_dropout_backward",
+    "tf_core_random", "tf_core_random_mask", "tf_core_bernoulli",
+    "tf_core_uniform", "tf_core_philox", "tf_core_splitmix64",
+)
+
+
+def test_phase_g_design_exists_and_is_linked():
+    """The contract is a real, non-empty file reachable from the README —
+    an unreachable design document is an orphan, not a contract."""
+    path = REPO_ROOT / PHASE_G_DESIGN
+    assert path.is_file(), f"missing {PHASE_G_DESIGN}"
+    assert path.read_text(encoding="utf-8").strip(), f"{PHASE_G_DESIGN} is empty"
+    readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert PHASE_G_DESIGN in readme, f"README does not link to {PHASE_G_DESIGN}"
+
+
+def test_phase_g_is_named_and_scoped():
+    """Guardrail 1: Phase G exists, is named *Native RNG and Dropout*, and
+    every status surface that tracks the phase sequence names it."""
+    design = _status_text(PHASE_G_DESIGN)
+    assert "Phase G" in design
+    assert re.search(r"Native RNG and Dropout", design, re.I), (
+        f"{PHASE_G_DESIGN} does not name the phase"
+    )
+    for surface in ("README.md", "docs/roadmap.md",
+                    "docs/project_summary.md",
+                    "docs/native_support_matrix.md",
+                    "docs/backend_experiments.md", "CLAUDE.md"):
+        text = _status_text(surface)
+        assert "Phase G" in text, f"{surface} does not name Phase G"
+        assert re.search(r"Native RNG and Dropout", text, re.I), surface
+
+
+def test_phase_g_milestone_ladder_is_complete_and_ordered():
+    """Guardrail 2: G0 through G10 each get exactly one milestone section,
+    and those sections appear in increasing order. Anchored on the
+    ``### G<n> —`` headings, so a milestone named in ordinary prose cannot
+    perturb the check — and *exactly one* section each, so a ladder can
+    never grow a duplicate milestone."""
+    text = _normalized_doc(PHASE_G_DESIGN)
+    positions = []
+    for i in range(11):
+        marker = f"### G{i} —"
+        assert text.count(marker) == 1, (
+            f"{PHASE_G_DESIGN} must define milestone G{i} exactly once, "
+            f"found {text.count(marker)}"
+        )
+        positions.append(text.index(marker))
+    assert positions == sorted(positions), (
+        "the G0-G10 milestone ladder is out of order"
+    )
+    # And the ladder table records each milestone's status.
+    for i in range(11):
+        row = re.search(rf"\|\s*G{i}\s*\|[^|]*\|([^|]*)\|", text)
+        assert row is not None, f"the ladder has no status row for G{i}"
+
+
+def test_phase_g_design_locks_its_load_bearing_decisions():
+    """The decisions later milestones inherit must actually be written
+    down, not left to be re-derived: the generator contract, the stateless
+    kernel rule, the call-consumption transaction, the probability
+    boundary, the saved multiplier mask, and the checkpoint story."""
+    text = _normalized_doc(PHASE_G_DESIGN)
+    lowered = text.lower()
+    for token in ("NativeGenerator", "NativeDropout", "NativeTensor.dropout",
+                  "register_generator", "named_generators"):
+        assert token in text, f"{PHASE_G_DESIGN} does not lock {token!r}"
+    # The state representation: an explicit seed, counter, and algorithm id.
+    for token in ("seed", "algorithm", "counter", "64-bit"):
+        assert token in lowered, f"the design does not lock {token!r}"
+    # The probability contract, including the rejected endpoint.
+    assert re.search(r"0\s*<?=?\s*p\s*<\s*1", text), (
+        "the design no longer pins the probability interval"
+    )
+    assert re.search(r"p\s*==\s*1[^.]{0,60}(reject|ValueError)", text, re.I), (
+        "the design no longer rejects p == 1"
+    )
+    assert "1 / (1 - p)" in text or "1.0 / (1.0 - p)" in text or (
+        "1/(1-p)" in text), "the design no longer states the inverted scale"
+    # Inverted dropout, and the mask as the saved multiplier.
+    assert "inverted" in lowered
+    # Ownership and failure matrices exist as matrices, not as prose.
+    assert re.search(r"ownership and lifecycle matrix", lowered)
+    assert re.search(r"failure matrix", lowered)
+
+
+def test_phase_g_design_forbids_global_rng_and_stateful_kernels():
+    """Guardrails 7 and the phase's central architectural split: random
+    state is Python-managed, native kernels are stateless and receive the
+    whole key for one call, and no global or process-wide random state
+    exists anywhere."""
+    text = _normalized_doc(PHASE_G_DESIGN)
+    lowered = text.lower()
+    assert re.search(r"stateless", lowered), (
+        "the design no longer requires stateless native kernels"
+    )
+    assert re.search(r"kernels? (are|remain|stay) stateless"
+                     r"|stateless native (random )?kernel", lowered), (
+        "the design no longer states the stateless-kernel rule directly"
+    )
+    assert re.search(r"python-managed", lowered), (
+        "the design no longer states that random state is Python-managed"
+    )
+    # No global state, and no NumPy global RNG.
+    assert re.search(r"no (process-)?global|global .{0,20}state[^.]{0,40}"
+                     r"(forbidden|not|never)", lowered), (
+        "the design no longer forbids global random state"
+    )
+    assert re.search(r"numpy global", lowered), (
+        "the design no longer excludes the NumPy global RNG"
+    )
+    # The key handed across the boundary is complete and explicit.
+    assert re.search(r"call[_ ]index", lowered)
+    assert re.search(r"no .{0,40}(std::random_device|mt19937)", lowered) or (
+        "std::random_device" in text and "mt19937" in lowered
+    ), "the design no longer excludes the standard-library RNG sources"
+
+
+def test_phase_g_design_locks_the_call_consumption_transaction():
+    """Guardrail 8, the invariant the whole resume story rests on: one
+    successful stochastic forward consumes exactly one generator call, and
+    failures, evaluation mode, ``p == 0``, and backward consume none."""
+    text = _normalized_doc(PHASE_G_DESIGN)
+    lowered = text.lower()
+    assert re.search(r"exactly one (generator )?call", lowered), (
+        "the design no longer states the one-call-per-success rule"
+    )
+    # Each no-consumption case is named somewhere in the contract.
+    for case in ("evaluation", "backward", "validation", "allocation",
+                 "kernel", "graph"):
+        assert case in lowered, f"the transaction omits the {case!r} case"
+    assert re.search(r"p\s*==\s*0", text), (
+        "the design no longer covers the p == 0 case"
+    )
+    # The transaction boundary is named, not implied.
+    assert re.search(r"reserv", lowered) and re.search(r"commit", lowered)
+    assert re.search(r"abandon", lowered)
+
+
+def test_phase_g_design_locks_the_saved_mask_backward():
+    """Guardrail 9: Dropout's backward uses a saved **private** multiplier
+    mask — never a reread of the input, never the generator — and the mask
+    is graph-owned and released exactly once."""
+    text = _normalized_doc(PHASE_G_DESIGN)
+    lowered = text.lower()
+    assert "mask" in lowered
+    assert re.search(r"multiplier mask", lowered), (
+        "the design no longer calls the saved state a multiplier mask"
+    )
+    assert re.search(r"graph[- ]owned", lowered)
+    assert "graph_resources" in text, (
+        "the design no longer reuses the existing graph-resource contract"
+    )
+    assert re.search(r"released exactly once|exactly once", lowered)
+    assert re.search(r"never rereads? the input|does not reread", lowered), (
+        "the design no longer forbids rereading the input in backward"
+    )
+    assert re.search(r"private", lowered)
+    # The mask must not become public state of any kind.
+    assert re.search(r"never (a )?public|never a parameter or buffer"
+                     r"|never in a state_dict", lowered), (
+        "the design no longer keeps the mask out of the public surface"
+    )
+
+
+def test_phase_g_design_locks_the_checkpoint_versioning_contract():
+    """Guardrail 10: the version-2 extension and, more importantly, the
+    version-1 compatibility rule — a v1 archive stays loadable into a
+    model with no generators, fails loudly into one that has them, and no
+    seed or counter is ever fabricated."""
+    from tensorforge.experimental import native_checkpoint
+
+    text = _normalized_doc(PHASE_G_DESIGN)
+    lowered = text.lower()
+    # The format name never moves; only the version does, and only later.
+    assert native_checkpoint._FORMAT in text, (
+        "the design no longer pins the unchanged checkpoint format name"
+    )
+    assert re.search(r"version 2", lowered)
+    assert re.search(r"version 1", lowered)
+    assert re.search(r"(version 1|v1)[^.]{0,120}(loadable|remains loadable)",
+                     lowered), (
+        "the design no longer defines version-1 compatibility"
+    )
+    assert re.search(r"fabricat|invent", lowered), (
+        "the design no longer forbids fabricating a seed or counter"
+    )
+    # The generator section and its exact fields.
+    assert '"generators"' in text or "generators" in lowered
+    for field in ("algorithm", "algorithm_version", "seed", "calls"):
+        assert field in text, f"the design does not lock the {field!r} field"
+    # And the version really has not moved yet.
+    assert native_checkpoint._FORMAT_VERSION == 1
+
+
+def test_phase_g_design_states_the_stable_native_separation_and_non_goals():
+    """Guardrail 11: stable/native separation is explicit, and float32,
+    CUDA, and AMP stay non-goals."""
+    text = _normalized_doc(PHASE_G_DESIGN)
+    lowered = text.lower()
+    assert re.search(r"stable\s*/\s*native separation", lowered), (
+        "the design has no stable/native separation section"
+    )
+    assert "tensorforge.nn.Dropout" in text, (
+        "the design does not say what happens to the stable Dropout"
+    )
+    for phrase in ("no automatic backend dispatch", "implicit"):
+        assert phrase.lower() in lowered, phrase
+    # Non-goals, stated as non-goals.
+    assert re.search(r"non-goal", lowered)
+    for excluded in ("float32", "CUDA", "AMP", "Dropout2d",
+                     "stochastic depth"):
+        assert excluded.lower() in lowered, (
+            f"{PHASE_G_DESIGN} does not exclude {excluded!r}"
+        )
+
+
+def test_g0_changed_no_capability_registry_or_runtime_surface():
+    """Guardrails 4, 5, 6, 12, and 13, all derived from reality: G0 is
+    documentation and guardrails only, so every registry, the export set,
+    the dtype/device boundary, the checkpoint format, the C ABI, the
+    ctypes declarations, the Core surface, and the C++ sources are exactly
+    what Phase F closed with."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeTensor, native_checkpoint
+    import tensorforge
+    import tensorforge.experimental as experimental
+
+    # The capability boundary is untouched.
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.backend_info()["unsupported"] == cpp.UNSUPPORTED
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert cpp.backend_info()["stable_framework_integration"] is False
+
+    # The checkpoint format has not moved.
+    assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
+    assert native_checkpoint._FORMAT_VERSION == 1
+
+    # No Phase-G public name exists anywhere.
+    for name in _PHASE_G_PUBLIC_NAMES:
+        assert name not in experimental.__all__, name
+        assert not hasattr(experimental, name), name
+        assert not hasattr(tensorforge, name), name
+        for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS,
+                          cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,
+                          cpp.NATIVE_MODULES, cpp.NATIVE_LOSSES,
+                          cpp.NATIVE_METRICS, cpp.NATIVE_OPTIMIZERS,
+                          cpp.STATE_SUPPORT):
+            assert name not in inventory, (name, inventory)
+
+    # No Phase-G operation exists at any numerical layer, and no Core or
+    # NativeTensor method answers to one.
+    for name in _PHASE_G_OP_NAMES:
+        assert name not in cpp.TENSOR_CORE_OPS, name
+        assert name not in cpp.AUTOGRAD_OPS, name
+        assert name not in cpp.RAW_KERNELS, name
+        assert name not in cpp.TENSOR_CORE_KERNELS, name
+        assert not hasattr(cpp.NativeTensorCore, name), name
+        assert not hasattr(NativeTensor, name), name
+        assert not hasattr(experimental, name), name
+    # "dropout" is a capability name only, and only in UNSUPPORTED.
+    assert "dropout" in cpp.UNSUPPORTED
+
+    # No Phase-G C ABI symbol is declared, guarded, or defined.
+    for symbol in _PHASE_G_ABI_SYMBOLS:
+        assert symbol not in cpp._CHECKED_KERNELS, symbol
+    cpp_source = (REPO_ROOT / "src" / "tensorforge" / "backends"
+                  / "cpp.py").read_text(encoding="utf-8")
+    for symbol in _PHASE_G_ABI_SYMBOLS:
+        assert f"{symbol}.argtypes" not in cpp_source, symbol
+    for source in (REPO_ROOT / "cpp" / "src").glob("*.cpp"):
+        text = source.read_text(encoding="utf-8")
+        for symbol in ("tf_core_dropout", "tf_core_random"):
+            assert symbol not in text, f"{source.name} defines {symbol!r}"
+    # And no RNG/Dropout source unit or header was created.
+    for absent in ("cpp/src/random.cpp", "cpp/src/dropout.cpp",
+                   "cpp/include/tf_random_internal.h",
+                   "src/tensorforge/experimental/native_generator.py",
+                   "src/tensorforge/experimental/native_dropout.py"):
+        assert not (REPO_ROOT / absent).exists(), (
+            f"{absent} exists, but G0 is documentation only"
+        )
+
+    # Generator registration is a G1 capability: NativeModule has none yet.
+    from tensorforge.experimental import NativeModule
+    for attribute in ("register_generator", "generators", "named_generators",
+                      "generator_state_dict", "load_generator_state_dict"):
+        assert not hasattr(NativeModule, attribute), attribute
+
+
+def test_no_surface_claims_a_phase_g_capability_exists():
+    """Guardrail 3, and the replacement for the phase-name scan the
+    Phase-F closure guard used to run: naming Phase G is now correct, but
+    no surface may claim a Phase-G *capability* is supported, implemented,
+    shipped, or available. The premise comes from the live registry, so
+    this guard tracks reality rather than a frozen expectation."""
+    from tensorforge.backends import cpp
+    import tensorforge.experimental as experimental
+
+    # Premise: none of it exists.
+    assert "dropout" in cpp.UNSUPPORTED
+    for name in _PHASE_G_PUBLIC_NAMES:
+        assert not hasattr(experimental, name), name
+
+    subject = (r"(NativeDropout|NativeGenerator|NativeTensor\.dropout"
+               r"|native RNG|native dropout|native random)")
+    claim = (r"(is|are|now|has been|have been)\s+"
+             r"(supported|implemented|shipped|available|complete|completed"
+             r"|live)")
+    # A span that carries its own negation is the honest form.
+    negations = re.compile(
+        r"\b(not|never|neither|nor|nothing|none|no|planned|unsupported"
+        r"|future|beyond|until|once|when|will|would)\b", re.I,
+    )
+    patterns = (
+        re.compile(subject + r"[^.]{0,70}?" + claim, re.I),
+        re.compile(claim + r"[^.]{0,70}?" + subject, re.I),
+    )
+    for surface in AUTHORITATIVE_STATUS_SURFACES + PHASE_STATUS_DOCS + (
+        "CLAUDE.md", "docs/backend_experiments.md", PHASE_G_DESIGN,
+    ):
+        text = _status_text(surface)
+        for pattern in patterns:
+            offenders = [
+                match.group(0) for match in pattern.finditer(text)
+                if not negations.search(
+                    text[max(0, match.start() - 50):match.end() + 20]
+                )
+            ]
+            assert offenders == [], (
+                f"{surface} claims a Phase-G capability exists: "
+                f"{offenders[:3]}"
+            )
+
+
+def test_phase_g_is_presented_as_in_progress_not_complete():
+    """The mirror of the Phase-F completion guard. G0 has landed and
+    G1-G10 have not, so no surface may present Phase G — or the phase's
+    later milestones — as finished. The design states its own status
+    positively, so "in progress" is a claim rather than an omission."""
+    design = _status_text(PHASE_G_DESIGN)
+    assert re.search(r"Phase-G status: in progress", design), (
+        "the design document no longer states its in-progress status"
+    )
+    assert re.search(r"G0 is complete", design)
+    assert re.search(r"G1.{0,4}G10 have not started", design), (
+        "the design no longer states that G1-G10 have not started"
+    )
+    finished = re.compile(
+        r"Phase.G\b[^.]{0,70}?\b(is|are|was|has been)\s+"
+        r"(complete|completed|finished|closed|shipped)\b", re.I,
+    )
+    # "Phase G — in progress: milestone G0 ... is complete" is the honest
+    # form: the completion belongs to a milestone, not to the phase. A
+    # span that names a milestone or says "in progress" is therefore not
+    # a phase-completion claim.
+    scoped = re.compile(r"in progress|\bG\d\b|milestone", re.I)
+    for surface in ("README.md", "docs/roadmap.md",
+                    "docs/project_summary.md",
+                    "docs/native_support_matrix.md",
+                    "docs/backend_experiments.md", "CLAUDE.md",
+                    PHASE_G_DESIGN):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in finished.finditer(text)
+            if not scoped.search(match.group(0))
+        ]
+        assert offenders == [], (
+            f"{surface} presents Phase G as complete: {offenders[:3]}"
+        )
+        # ...and each one says what G0 actually was.
+        assert re.search(r"G0", text), f"{surface} does not name milestone G0"
+
+
+def _phase_g_milestone(index):
+    """The body of one ``### G<n> —`` block of the Phase-G ladder,
+    whitespace-collapsed and with markdown emphasis stripped.
+
+    Scoping a check to a single milestone is what makes "this rule holds
+    at G4 but not at G10" testable at all: a document-wide search would
+    happily accept a rule stated once and contradicted per milestone."""
+    text = (REPO_ROOT / PHASE_G_DESIGN).read_text(encoding="utf-8")
+    # Scope to the ladder section first: without that bound, the last
+    # milestone's block would run on into whatever follows it.
+    for chunk in re.split(r"\n## ", text):
+        if "Milestone ladder" in chunk.split("\n", 1)[0]:
+            break
+    else:
+        raise AssertionError(f"{PHASE_G_DESIGN} has no milestone ladder")
+    for block in re.split(r"\n#{3,4} (?=G\d+ )", chunk):
+        if re.match(rf"G{index}\s*[-—]", block):
+            return re.sub(r"\s+", " ", re.sub(r"[*`]", "", block))
+    raise AssertionError(
+        f"{PHASE_G_DESIGN} has no milestone block for G{index}"
+    )
+
+
+def test_phase_g_keeps_dropout_unsupported_until_the_g10_closure():
+    """Revised guardrail 1. ``"dropout"`` is a *closure* capability, not an
+    implementation one: G4 implements and exports ``NativeDropout``, but
+    the registry does not advertise Dropout until the whole Phase-G
+    closure matrix has passed at G10.
+
+    This is checked per milestone rather than document-wide, because the
+    failure this guards against is exactly a later milestone quietly
+    reinstating the old "move it at G4" rule."""
+    from tensorforge.backends import cpp
+
+    # Premise, straight from the live registry: it is unsupported today,
+    # and G0 did not move it.
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+
+    text = _status_text(PHASE_G_DESIGN)
+    # The opening contract summary — what a reader sees before §1 — must
+    # carry both tuples and the timing, not bury them in a milestone.
+    header = text.split("## 1.")[0]
+    assert '("dropout", "float32", "cuda", "amp")' in header, (
+        "the design header no longer pins the current UNSUPPORTED tuple"
+    )
+    assert '("float32", "cuda", "amp")' in header, (
+        "the design header no longer pins the post-closure UNSUPPORTED tuple"
+    )
+    assert re.search(r"G0.{0,3}G9|through G9", header), (
+        "the design header no longer says the name is held through G9"
+    )
+    # The removal is bound to G10 and to the closure matrix, never to G4.
+    assert re.search(r"(leaves?|left|removed?|remove)\b[^.]{0,120}\bG10\b"
+                     r"|\bG10\b[^.]{0,120}(leaves?|removes?|removed)", text), (
+        "the design no longer binds the UNSUPPORTED removal to G10"
+    )
+
+    # Every milestone from G1 through G9 says the name stays put...
+    keeps = re.compile(r"(stays|still|remains)\s+(?:\w+\s+){0,3}?in"
+                       r"\s+UNSUPPORTED"
+                       r"|any change to UNSUPPORTED"
+                       r"|UNSUPPORTED still reads", re.I)
+    # ...and none of them may claim it leaves.
+    leaves = re.compile(r"(leaves?|left|removed?|drops? out of|gone from)"
+                        r"\s+(?:\w+\s+){0,4}?UNSUPPORTED", re.I)
+    for index in range(0, 10):
+        block = _phase_g_milestone(index)
+        if index:
+            assert keeps.search(block), (
+                f"milestone G{index} no longer states that \"dropout\" "
+                f"stays in UNSUPPORTED"
+            )
+        assert not leaves.search(block), (
+            f"milestone G{index} claims \"dropout\" leaves UNSUPPORTED, "
+            f"but only G10 may do that"
+        )
+
+    # G10 is where it actually happens, and it happens after the matrix.
+    closure = _phase_g_milestone(10)
+    assert re.search(r"(removed?|remove)\b[^.]{0,120}UNSUPPORTED"
+                     r"|UNSUPPORTED[^.]{0,120}(removed?|remove)",
+                     closure, re.I), (
+        "milestone G10 no longer removes \"dropout\" from UNSUPPORTED"
+    )
+    assert '("float32", "cuda", "amp")' in closure, (
+        "milestone G10 does not state the resulting UNSUPPORTED tuple"
+    )
+    assert re.search(r"\blast\b|\bafter\b|\bonly after\b", closure, re.I), (
+        "milestone G10 does not order the removal after the closure matrix"
+    )
+    # The closure requirements own the gate.
+    requirements = _top_level_section("Phase-closure requirements",
+                                      PHASE_G_DESIGN)
+    assert re.search(r"UNSUPPORTED", requirements), (
+        "the closure requirements no longer mention the capability boundary"
+    )
+
+    # And every status surface tells the same story: the boundary moves
+    # at G10, and nothing binds it to G4.
+    at_g4 = (
+        re.compile(r"(leaves?|left|removed?|moves?|gone from)[^.]{0,60}"
+                   r"unsupported[^.]{0,60}\bG4\b", re.I),
+        re.compile(r"unsupported[^.]{0,60}(until|at)\s+(milestone\s+)?"
+                   r"G4\b", re.I),
+        re.compile(r"capability name moves[^.]{0,20}G4", re.I),
+        re.compile(r"\bG4\b[^.]{0,80}(leaves?|removes?|moves?)[^.]{0,40}"
+                   r"unsupported", re.I),
+    )
+    at_g10 = re.compile(
+        r"(leaves?|removed?|remove|gone from)[^.]{0,80}\bG10\b"
+        r"|\bG10\b[^.]{0,80}(leaves?|removes?|removed)"
+        r"|(until|only at|at)\s+(milestone\s+)?G10\b", re.I,
+    )
+    for surface in ("README.md", "docs/roadmap.md",
+                    "docs/native_support_matrix.md",
+                    "docs/backend_experiments.md", "CLAUDE.md"):
+        surface_text = _status_text(surface)
+        assert re.search(r"G10", surface_text), (
+            f"{surface} does not name the G10 closure milestone"
+        )
+        for pattern in at_g4:
+            assert not pattern.search(surface_text), (
+                f"{surface} still moves the capability boundary at G4: "
+                f"{pattern.search(surface_text).group(0)!r}"
+            )
+        assert at_g10.search(surface_text), (
+            f"{surface} does not bind the capability-boundary move to G10"
+        )
+
+
+def _phase_g_generator_contract():
+    """The Phase-G ``NativeGenerator`` section with markdown emphasis
+    stripped, so a rule is matched by meaning rather than by whether it
+    happened to be bolded."""
+    section = _top_level_section("NativeGenerator", PHASE_G_DESIGN)
+    return re.sub(r"[*`]", "", section)
+
+
+def test_phase_g_locks_a_lock_protected_token_validated_reservation():
+    """Guardrail 2. The call counter is the one piece of Phase-G state a
+    race could corrupt invisibly, so the design must lock a real
+    synchronization contract: one lock over every state transition, the
+    native work outside it, and opaque single-use tokens so a stale,
+    foreign, or duplicated commit cannot be mistaken for a live one."""
+    generator = _phase_g_generator_contract()
+    lowered = generator.lower()
+
+    assert "threading.Lock" in generator, (
+        "the design no longer gives NativeGenerator an internal "
+        "synchronization primitive"
+    )
+    # Every operation the prompt requires the lock to cover is named as
+    # covered, not merely mentioned somewhere in the section.
+    for operation in ("_reserve_call", "_abandon_call", "_commit_call",
+                      "state()", "load_state", "reseed", "reset"):
+        assert operation in generator, (
+            f"the reservation contract does not cover {operation!r}"
+        )
+    assert re.search(r"(counter|calls)[^.]{0,60}read", lowered) or (
+        re.search(r"read[^.]{0,60}(counter|calls)", lowered)
+    ), "the lock contract does not cover counter reads"
+    assert re.search(r"under the lock|holding the lock", lowered), (
+        "the design no longer says which operations hold the lock"
+    )
+    assert re.search(r"outside the lock", lowered), (
+        "the design no longer keeps native computation outside the lock"
+    )
+
+    # The token, and what makes it unforgeable in practice.
+    assert re.search(r"opaque token", lowered), (
+        "the reservation no longer returns an opaque token"
+    )
+    assert re.search(r"serial", lowered), (
+        "the token no longer carries a non-reused reservation serial"
+    )
+    for rejected in ("stale", "foreign", "already committed",
+                     "already abandoned"):
+        assert rejected in lowered, (
+            f"the token contract does not reject a {rejected!r} token"
+        )
+    assert re.search(r"advances? (the counter )?exactly once"
+                     r"|advances exactly once", lowered), (
+        "the design no longer states that commit advances exactly once"
+    )
+    assert re.search(r"cancel[^.]{0,80}never advanc"
+                     r"|never advanc[^.]{0,80}cancel"
+                     r"|abandon[^.]{0,80}never advanc", lowered), (
+        "the design no longer states that cancellation never advances"
+    )
+    assert re.search(r"at most one", lowered), (
+        "the design no longer limits the generator to one live reservation"
+    )
+    # Rejected tokens are inert: nothing moves.
+    assert re.search(r"(without|no)[^.]{0,40}(chang|state)"
+                     r"|leaves? .{0,60}exactly as they were"
+                     r"|nothing changes", lowered), (
+        "the design no longer says a rejected token changes nothing"
+    )
+
+    # State replacement cannot slip underneath a live reservation, and a
+    # checkpoint load is held to the same rule.
+    assert re.search(r"refus\w+[^.]{0,120}reservation is active"
+                     r"|reservation is active[^.]{0,120}(refus|rais)",
+                     lowered), (
+        "the design no longer refuses state replacement during a reservation"
+    )
+    checkpoint = _top_level_section("Checkpoint format version 2",
+                                    PHASE_G_DESIGN)
+    assert re.search(r"active reservation", checkpoint, re.I), (
+        "the checkpoint contract does not handle a live reservation"
+    )
+
+
+def test_phase_g_forbids_duplicate_call_indices_under_concurrency():
+    """Guardrail 3. Two callers must never receive the same call index —
+    that would produce two identical masks that a resume could not
+    distinguish — and the fix must be honest about what it is: a
+    correctness serialization, not a parallelism feature."""
+    # Scoped to the generator's own contract: a promise made only in a
+    # summary elsewhere would leave the contract free to contradict it.
+    lowered = _phase_g_generator_contract().lower()
+
+    assert re.search(r"no two threads[^.]{0,80}same[^.]{0,40}call index"
+                     r"|same call index[^.]{0,80}(never|cannot|no two)",
+                     lowered), (
+        "the design no longer forbids two callers sharing a call index"
+    )
+    # The second caller fails *before* an index exists, so it cannot
+    # consume, duplicate, or skip one.
+    assert re.search(r"before an index is minted"
+                     r"|no index is minted"
+                     r"|without (receiving|being given)[^.]{0,40}index",
+                     lowered), (
+        "the design no longer refuses the second reservation before an "
+        "index is handed out"
+    )
+    for case in ("concurrent", "reentrant"):
+        assert case in lowered, f"the concurrency contract omits {case!r}"
+    # Exhaustion is a counter read too, so it is inside the lock.
+    assert re.search(r"exhaust\w*[^.]{0,120}lock"
+                     r"|lock[^.]{0,120}exhaust", lowered), (
+        "counter exhaustion is no longer checked under the lock"
+    )
+    # And the honest limit: this buys correctness, not throughput.
+    assert re.search(r"(not|never)\s+claim\w*[^.]{0,80}parallel"
+                     r"|parallel[^.]{0,80}(not|never)\s+claim", lowered), (
+        "the generator contract no longer disclaims parallel stochastic "
+        "execution"
+    )
+    assert re.search(r"serializ\w+ for correctness", lowered), (
+        "the design no longer names the lock as correctness serialization"
+    )
+    # No surface may claim the opposite, either — a lock that is sold as
+    # a parallelism feature is a lock people will lean on.
+    whole = _status_text(PHASE_G_DESIGN).lower()
+    for surface_text in (whole,) + tuple(
+        _status_text(name).lower() for name in
+        ("README.md", "docs/roadmap.md", "docs/project_summary.md",
+         "docs/backend_experiments.md", "CLAUDE.md")
+    ):
+        assert not re.search(
+            r"(supports?|enables?|allows?|makes?)\s+(?:\w+\s+){0,3}?"
+            r"parallel stochastic"
+            r"|parallel stochastic execution (is|are)\s+"
+            r"(safe|supported|allowed|possible)", surface_text,
+        ), "a surface claims parallel stochastic execution is supported"
+    # The concurrency rows are testable work, not prose: the milestones
+    # that build and harden the generator own them.
+    owns = re.compile(r"concurren\w*|reentran\w*|reservation|token", re.I)
+    for index in (1, 3, 6):
+        block = _phase_g_milestone(index)
+        assert owns.search(block), (
+            f"milestone G{index} does not own the reservation tests"
+        )
+
+
+def _checkpoint_subsection(token):
+    """The body of one subsection of the Phase-G checkpoint section,
+    matched by heading text rather than by section number.
+
+    Section-wide searches are too forgiving here: the checkpoint contract
+    repeats "alias" and "prevalidation" often enough that deleting the
+    load-bearing statement still leaves the words present. Scoping to the
+    subsection that *owns* the rule makes the guard bite."""
+    text = (REPO_ROOT / PHASE_G_DESIGN).read_text(encoding="utf-8")
+    for chunk in re.split(r"\n## ", text):
+        if "Checkpoint format version 2" in chunk.split("\n", 1)[0]:
+            break
+    else:
+        raise AssertionError(f"{PHASE_G_DESIGN} has no checkpoint section")
+    for block in re.split(r"\n#{3,4} ", chunk):
+        if token in block.split("\n", 1)[0]:
+            return re.sub(r"\s+", " ", re.sub(r"[*`]", "", block))
+    raise AssertionError(
+        f"the checkpoint section has no subsection naming {token!r}"
+    )
+
+
+def test_phase_g_checkpoint_v2_records_the_generator_alias_topology():
+    """Guardrail 4. Generator *sharing* is semantic state: two layers on
+    one stream behave differently from two layers on two. An archive that
+    saved only canonical states could be restored into a model with a
+    different topology and silently diverge, so version 2 records every
+    registered path and its canonical target."""
+    checkpoint = _top_level_section("Checkpoint format version 2",
+                                    PHASE_G_DESIGN)
+    lowered = checkpoint.lower()
+
+    # The alias map is part of the *manifest shape*, not merely discussed.
+    manifest = _checkpoint_subsection("Manifest change")
+    assert "aliases" in manifest, (
+        "the version-2 manifest no longer carries an alias map"
+    )
+    assert re.search(r"aliases[^.]{0,120}canonical", manifest, re.I), (
+        "the manifest no longer defines aliases as path-to-canonical"
+    )
+    for field in ("keys", "entries", "aliases"):
+        assert field in manifest, (
+            f"the manifest shape no longer names the {field!r} field"
+        )
+    assert re.search(r"canonical", lowered), (
+        "the design no longer names canonical generator entries"
+    )
+    # The four things the representation must preserve.
+    assert re.search(r"every registered[^.]{0,60}path"
+                     r"|every[^.]{0,30}registered generator path", lowered), (
+        "the alias map no longer covers every registered generator path"
+    )
+    assert re.search(r"alias[^.]{0,60}canonical", lowered), (
+        "the design no longer defines the alias-to-canonical relationship"
+    )
+    assert re.search(r"shared[^.]{0,80}independent"
+                     r"|independent[^.]{0,80}shared", lowered), (
+        "the design no longer preserves shared-versus-independent identity"
+    )
+    # Determinism, both of the canonical choice and of the byte order.
+    assert re.search(r"canonical.name selection is deterministic"
+                     r"|deterministic[^.]{0,60}canonical", lowered), (
+        "canonical-name selection is no longer deterministic"
+    )
+    assert re.search(r"serializ\w+ order is deterministic"
+                     r"|deterministic[^.]{0,60}order", lowered), (
+        "the serialization order is no longer deterministic"
+    )
+    # Whether a canonical name also appears as an alias is answered, not
+    # left implicit.
+    assert re.search(r"canonical name also appears in"
+                     r"|mapped to itself|self.mapped", lowered), (
+        "the design no longer says whether canonical names appear in the "
+        "alias map"
+    )
+    # Cycles are addressed even though the shape is chosen to exclude them.
+    assert "cycle" in lowered, (
+        "the design no longer addresses alias cycles"
+    )
+    # Loading matches a real traversal and never swaps the objects out.
+    assert re.search(r"named_generators\(\)", checkpoint), (
+        "the load no longer compares against a real module traversal"
+    )
+    assert re.search(r"identity is preserved|never (constructs|replaces)"
+                     r"[^.]{0,60}generator|preserv\w+[^.]{0,40}identit",
+                     lowered), (
+        "the load no longer preserves live generator identity"
+    )
+
+
+def test_phase_g_alias_and_topology_mismatches_fail_before_live_mutation():
+    """Guardrail 5. Every topology check belongs in prevalidation. A
+    mismatch discovered mid-commit would already have changed live state,
+    which is the failure mode the whole transaction contract exists to
+    prevent."""
+    checkpoint = _top_level_section("Checkpoint format version 2",
+                                    PHASE_G_DESIGN)
+    lowered = checkpoint.lower()
+
+    # The validation subsection itself has to say when it runs — a rule
+    # stated only in the transaction section would leave the table free
+    # to drift into the commit phase.
+    validation = _checkpoint_subsection("Validation").lower()
+    assert "prevalidation" in validation, (
+        "the validation table no longer says it runs in prevalidation"
+    )
+    assert re.search(r"before any (staging|live)", validation), (
+        "the validation table no longer runs before any live change"
+    )
+    assert re.search(r"prevalidation", lowered), (
+        "the checkpoint contract no longer names a prevalidation phase"
+    )
+    assert re.search(r"before any (live|staging)", lowered), (
+        "the design no longer places the checks before any live change"
+    )
+    # The specific mismatch classes the contract must enumerate.
+    for mismatch in ("missing", "unexpected", "duplicate", "malformed"):
+        assert mismatch in lowered, (
+            f"the validation table omits the {mismatch!r} case"
+        )
+    assert re.search(r"alias[^|.]{0,80}(absent|missing)"
+                     r"|absent canonical entry"
+                     r"|targeting an absent", lowered), (
+        "an alias targeting an absent entry is no longer rejected"
+    )
+    assert re.search(r"saved.{0,10}shared[^|]{0,60}live.{0,10}independent"
+                     r"|shared generator, live independent"
+                     r"|archive shares two paths", lowered), (
+        "a saved-shared / live-independent mismatch is no longer rejected"
+    )
+    assert re.search(r"independent generators, live[^|]{0,40}shared"
+                     r"|archive has independent generators", lowered), (
+        "a saved-independent / live-shared mismatch is no longer rejected"
+    )
+    assert re.search(r"canonical name[^|.]{0,60}(differs|changed)", lowered), (
+        "a changed canonical name is no longer rejected"
+    )
+    assert re.search(r"strict in both directions", lowered), (
+        "the generator section is no longer strict in both directions"
+    )
+
+
+def test_phase_g_locks_whole_checkpoint_synchronous_commit_atomicity():
+    """Guardrail 6. A checkpoint load is one transaction over the whole
+    archive. Any ordinary synchronous failure during the commit must
+    restore *all four* state families together — a rollback that fixed
+    the model but left the optimizer or the generators advanced would
+    produce a resume that looks valid and is not."""
+    checkpoint = _top_level_section("Checkpoint format version 2",
+                                    PHASE_G_DESIGN)
+    lowered = checkpoint.lower()
+
+    # The four phases are distinguished, because they carry different
+    # guarantees.
+    for phase in ("prevalidation", "staging", "commit"):
+        assert phase in lowered, f"the transaction omits the {phase!r} phase"
+    assert re.search(r"stage[sd]? every|stag\w+[^.]{0,60}before", lowered), (
+        "the design no longer stages everything before committing"
+    )
+    assert re.search(r"(allocate|allocation)[^.]{0,80}(stag|before)"
+                     r"|everything that can (allocate|fail)", lowered), (
+        "the design no longer confines allocation and failure to staging"
+    )
+    assert re.search(r"rollback", lowered), (
+        "the design no longer keeps rollback state"
+    )
+    assert re.search(r"non-failing by construction"
+                     r"|cannot itself fail|unfailable", lowered), (
+        "the commit steps are no longer non-failing or rollback-covered"
+    )
+    # The commit phase itself carries the guarantee, so scope there: all
+    # four state families restored together, identities intact, nothing
+    # partial visible, and pre-existing graphs untouched.
+    commit = _checkpoint_subsection("Phase 3").lower()
+    for family in ("parameter", "buffer", "optimizer", "generator"):
+        assert family in commit, (
+            f"the commit rollback does not cover {family} state"
+        )
+    assert re.search(r"no partial\w*[^.]{0,80}observable"
+                     r"|nothing partial\w*[^.]{0,40}observable", commit), (
+        "the commit phase no longer forbids observing a partial load"
+    )
+    assert re.search(r"identit\w+[^.]{0,60}(unchanged|preserved)"
+                     r"|(unchanged|preserved)[^.]{0,60}identit", commit), (
+        "the commit phase no longer preserves object identity across a "
+        "failed load"
+    )
+    assert re.search(r"mask\w*[^.]{0,80}unchanged"
+                     r"|unchanged[^.]{0,60}mask", commit), (
+        "the commit phase no longer protects pre-existing graph-owned masks"
+    )
+    assert re.search(r"rollback", commit), (
+        "the commit phase no longer rolls anything back"
+    )
+    assert re.search(r"synchronous", commit), (
+        "the commit phase no longer distinguishes synchronous failures"
+    )
+    # The same four families still have to be named somewhere in the
+    # section as a whole, so the guarantee cannot be scoped away.
+    for family in ("parameter", "buffer", "optimizer", "generator"):
+        assert family in lowered, (
+            f"the checkpoint contract does not cover {family} state"
+        )
+    # And the milestone that must implement it owns the requirement.
+    g5 = _phase_g_milestone(5).lower()
+    assert "rollback" in g5 and "commit" in g5, (
+        "milestone G5 no longer owns the whole-checkpoint transaction"
+    )
+    g6 = _phase_g_milestone(6).lower()
+    assert "matrix" in g6 or "10.7" in g6, (
+        "milestone G6 no longer hardens the transaction contract"
+    )
+
+
+def test_phase_g_names_process_death_as_the_only_atomicity_exception():
+    """Guardrail 7. The honest limit is stated once and precisely: only
+    external process termination or interpreter death escapes the
+    whole-checkpoint guarantee. A deliverable ``KeyboardInterrupt`` is
+    explicitly *not* an exception — the earlier per-component wording let
+    one leave the model restored and the optimizer stale, and this guard
+    exists so that wording cannot come back."""
+    checkpoint = _top_level_section("Checkpoint format version 2",
+                                    PHASE_G_DESIGN)
+    lowered = checkpoint.lower()
+
+    assert re.search(r"only[^.]{0,80}(exception|uncovered)", lowered), (
+        "the design no longer names a single documented exception"
+    )
+    assert re.search(r"(process|interpreter)[^.]{0,60}"
+                     r"(termination|death|kill|crash)"
+                     r"|(termination|death) of the (process|interpreter)",
+                     lowered), (
+        "the documented exception is no longer external process or "
+        "interpreter death"
+    )
+    assert "keyboardinterrupt" in lowered, (
+        "the design no longer says where KeyboardInterrupt falls"
+    )
+    assert re.search(r"keyboardinterrupt[^.]{0,120}not[^.]{0,60}exception"
+                     r"|not[^.]{0,60}exception[^.]{0,160}keyboardinterrupt"
+                     r"|deliverable[^.]{0,120}not\W{0,4}\*{0,2}an? exception",
+                     lowered), (
+        "a deliverable KeyboardInterrupt is no longer covered by the "
+        "rollback guarantee"
+    )
+    # The stale "window between component commits" framing must be gone.
+    assert not re.search(r"honest window|window between", lowered), (
+        "the design still describes a multi-component commit window "
+        "instead of one transaction"
+    )
+    assert not re.search(r"components may disagree", lowered), (
+        "the design still permits components to disagree after a failure"
+    )

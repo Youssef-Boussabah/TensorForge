@@ -230,9 +230,39 @@ capability, no C++, no CTest, no ABI or ctypes surface, no example, no
 benchmark, and no production numerical file changed.**)
 **Phase F is complete**, and no normalization operation, kernel, C ABI
 symbol, or custom backward exists at all.
-Dropout/RNG, data loaders, native integer tensors, further
+**Phase G — Native RNG and Dropout — is the current phase and is *in
+progress*: only milestone G0 (the architecture contract in
+`docs/native_rng_dropout_design.md`) is complete; G1–G10 have not
+started.** G0 locked Python-managed generator state (an explicit
+64-bit seed plus call counter and an algorithm identifier), stateless
+native random kernels that receive the whole key for one call, inverted
+Dropout with a graph-owned multiplier mask whose backward never rereads
+the input, exactly one generator call consumed per **successful**
+stochastic forward (and none on any failure, in evaluation mode, at
+`p == 0`, or in backward), generator state registered as a fourth
+`NativeModule` category, and native checkpoint **version 2** with a
+locked version-1 compatibility rule. G0 is **design, documentation, and
+guardrails only** — no `NativeGenerator`, kernel, C ABI symbol, ctypes
+declaration, Core method, operation, module, export, or registry change
+exists, `UNSUPPORTED` still reads `("dropout", "float32", "cuda",
+"amp")`, and the checkpoint format is still version 1. G0 also locks a
+lock-protected, token-validated generator reservation protocol (no two
+callers can ever receive the same call index, and state replacement is
+refused while a reservation is live), a checkpoint-version-2 generator
+section that records the **alias topology** — every registered generator
+path and its canonical target, so shared-versus-independent identity is
+restored, not just the states — and **whole-checkpoint** transaction
+atomicity, where any ordinary synchronous commit failure rolls back
+parameters, buffers, optimizer state, and generator state together and
+external process/interpreter death is the only documented exception.
+G4 implements and exports `NativeDropout` but **does not** move the
+capability boundary: `"dropout"` stays in `UNSUPPORTED` through G9 and
+leaves it only at **G10**, after the full closure matrix passes, leaving
+`("float32", "cuda", "amp")`. The format version becomes 2 at G5 — none
+of this in G0.
+Data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
-future work beyond Phase F.
+future work beyond Phase G.
 Position the project as serious and systems-focused — never
 "educational", "toy", or "mini" — while staying honest: not
 production-ready, not a PyTorch replacement.
@@ -275,7 +305,9 @@ production-ready, not a PyTorch replacement.
   examples, roadmap, release history, and the native-line design
   contracts (`native_cnn_design.md` for Phase D,
   `native_classification_design.md` for Phase E,
-  `native_normalization_design.md` for Phase F — F0–F9 shipped, phase complete). When a milestone changes the
+  `native_normalization_design.md` for Phase F — F0–F9 shipped, phase
+  complete —, and `native_rng_dropout_design.md` for Phase G — G0 shipped
+  (the design lock), G1–G10 not started). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the
