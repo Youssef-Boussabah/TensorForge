@@ -67,8 +67,8 @@ Release and Debug native builds, Clang ASan/UBSan and LeakSanitizer
 validation, and documentation reconciliation — adding no numerical
 capability. **Phase E is complete.**
 
-**Phase F — Native Normalization and Stateful Buffers — is the current
-phase, and it is in progress.** Its architecture contract is locked in
+**Phase F — Native Normalization and Stateful Buffers — is the latest
+phase, and it is complete (F0-F9).** Its architecture contract is locked in
 ``docs/native_normalization_design.md`` (milestone **F0**, complete:
 design and repository reconciliation only, adding no numerical
 behavior). It specifies ``NativeLayerNorm``, ``NativeBatchNorm1d``, and
@@ -178,9 +178,24 @@ and frozen parameters; a non-contiguous NCHW input; strict stable/native
 separation; honest per-boundary failure atomicity; error-state recovery;
 the NumPy boundary; live-storage baselines; and reality-derived
 capability guardrails — **tests and documentation only, no capability and
-no production behavior changed**. **Phase F is not finished: milestone F9
-has not started**, so there is no phase closure. What the native line
-still does **not** have: further
+no production behavior changed**. **Milestone F9 is complete** — the
+phase closure: fresh Windows Release **and** Debug builds each passing
+the full existing 10-test CTest suite with zero project warnings and the
+active runtime proved to stay Release; a fresh Clang 18.1.3 ASan+UBSan
+build whose instrumentation is *proved* (22 ``__asan*`` and 13
+``__ubsan*`` dynamic symbols, and a library that will not load without
+the sanitizer runtime); 10/10 sanitized native CTests with leak
+detection enabled; 1,968 sanitized normalization-focused Python tests
+with zero ASan and zero UBSan diagnostics; the F6 example and the F7
+benchmark smoke path clean under the sanitized library; and a practical
+LeakSanitizer lifecycle returning native live storage **exactly** to
+baseline, with the remaining process-exit allocations identified
+honestly as CPython/NumPy shutdown retention containing no TensorForge
+frame and no suppression file — **validation and documentation only, no
+numerical capability, no C++, no CTest, no ABI or ctypes surface, and no
+production behavior changed**. **Phase F is complete.** Closing it
+closes that phase only: what the native line
+still does **not** have is further
 activations/math, dropout or a native RNG, float32/dtype expansion, CUDA,
 AMP, and data-pipeline abstractions.
 

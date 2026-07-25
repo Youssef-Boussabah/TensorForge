@@ -192,7 +192,7 @@ explicit layer at a time:
   `to_numpy()` boundary and builds no graph. Proven by
   `examples/native_classification_training.py`, whose
   checkpoint-interrupted run resumes exactly.
-- **Native normalization (Phase F) is in progress.** The
+- **Native normalization (Phase F) is complete (F0–F9).** The
   contract for `NativeLayerNorm`, `NativeBatchNorm1d`, and
   `NativeBatchNorm2d` is locked in
   [native_normalization_design.md](native_normalization_design.md)
@@ -292,8 +292,20 @@ explicit layer at a time:
   separation; and each failure boundary tested honestly — BatchNorm
   transactions are **per module**, and one whole training step is *not*
   presented as globally transactional. Tests and documentation only, no
-  capability. Milestone F9 — the phase closure — has not started, so
-  Phase F itself is still in progress.
+  capability. **Milestone F9 closed the phase**: fresh Windows Release
+  and Debug builds each passing the full existing 10-test CTest suite
+  with zero project warnings and the active runtime proved to stay
+  Release; a fresh Clang 18.1.3 ASan+UBSan build with instrumentation
+  proved by `nm -D` (22 `__asan*`, 13 `__ubsan*`) and by the library's
+  refusal to load without the sanitizer runtime; 10/10 sanitized native
+  CTests with leak detection enabled; 1,968 sanitized
+  normalization-focused Python tests with zero ASan and zero UBSan
+  diagnostics; the F6 example and the F7 benchmark smoke path clean
+  under the sanitized library; and a practical LeakSanitizer lifecycle
+  returning native live storage **exactly** to baseline with no
+  TensorForge-attributable leak frame and no suppression file —
+  validation and documentation only, adding no numerical capability. All
+  of Phase F (F0–F9) has therefore shipped.
 
 The execution path for a native training step is:
 

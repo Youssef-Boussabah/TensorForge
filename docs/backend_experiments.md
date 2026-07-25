@@ -72,8 +72,8 @@ mathematics end to end — float64/CPU only, with no implicit
 stable/native dispatch and no change to the stable framework or the
 version-1 checkpoint format.
 
-**The current phase is Phase F — Native Normalization and Stateful
-Buffers — and it is *in progress*.** Milestone **F0** is complete: it
+**The latest phase is Phase F — Native Normalization and Stateful
+Buffers — and it is *complete* (F0–F9).** Milestone **F0** is complete: it
 locks the architecture contract in
 [native_normalization_design.md](native_normalization_design.md) —
 `NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d`
@@ -199,10 +199,53 @@ honest per-boundary failure atomicity (BatchNorm transactions are per
 module — one whole training step is *not* globally transactional); and
 capability/export/artifact guardrails derived from real registries and
 files — **tests and documentation only, no capability and no production
-change**. But Phase F is not finished: milestone **F9 is planned and has
-not started** — the phase closure. There is no Release/Debug
-revalidation, no sanitizer pass, and no completion statement. Dropout, a
-native RNG, and RNG checkpoint state are future work **beyond** Phase F.
+change**. And **F9 is complete** — the phase closure: fresh Windows
+Release **and** Debug builds (Visual Studio 17 2022, MSVC 19.44.35228.0,
+CMake 4.4.0), each configured out-of-source outside the repository with
+`TF_BUILD_TESTS=ON` and each passing the **full existing 10-test CTest
+suite** (10/10 in 0.78 s and 0.97 s respectively) with **zero project
+compiler, linker, and CMake warnings**, the Debug library written
+elsewhere so the active runtime stayed the Release DLL (proved by its
+linked CRT). A fresh Clang **18.1.3** `-DTF_SANITIZE=address,undefined`
+build in WSL2 Ubuntu 24.04.4 with **instrumentation proved rather than
+assumed** — `nm -D` shows 22 `__asan*` and 13 `__ubsan*` dynamic symbols
+beside the 50 exported `tf_*` symbols, and the library refuses to load
+without the sanitizer runtime (`undefined symbol:
+__ubsan_vptr_type_cache`). Under
+`halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1:detect_leaks=1`
+and `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`: **10/10
+sanitized native CTests** pass with leak detection on, and every
+sanitized Python workload passes — 32 normalization and dependency
+suites (**1,968 tests**), the F6 training example reproducing its exact
+resume, and the F7 benchmark passing all nine correctness gates —
+with **zero ASan and zero UBSan diagnostics attributable to
+TensorForge**. Python-level runs preload the ASan runtime (`LD_PRELOAD`)
+because the interpreter itself is not instrumented.
+
+**LeakSanitizer, scope stated honestly.** The fully instrumented native
+CTest binaries report no leaks at all. A dedicated workload — the
+integrated classifier, six training steps, a reporting eval pass with
+`native_accuracy`, a version-1 checkpoint saved and loaded into a
+**fresh** model/optimizer pair, a resumed step matching the
+uninterrupted continuation exactly, a non-contiguous NCHW input through
+the whole stack, an eval graph carrying normalization snapshots retained
+across one backward and released by the next, and explicit closure of
+the optimizers, every unique parameter, and every unique buffer — ends
+with the live-native-storage counter back at its baseline (**0 → 0**)
+before exit. Running LSan over that *Python* process does report 925,710
+bytes in 830 allocations, but **not one leak frame names
+`_tensorforge_cpp`, `tf_core_`, `tf_storage_`, or `tf::`**: every site
+is CPython, libc, NumPy, `_ctypes`, or the ASan runtime itself —
+interpreter and module-initialization allocations a non-instrumented
+interpreter never frees at shutdown. **No suppression file was added**,
+and the project's leak contract remains the deterministic live-storage
+counters and explicit-cleanup tests, which assert an exact return to
+baseline. F9 is **validation and documentation only** — no numerical
+capability, no C++, no CTest, no ABI or ctypes surface, no example, no
+benchmark, and no production behavior changed.
+
+Dropout, a native RNG, and RNG checkpoint state are future work
+**beyond** Phase F.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 
@@ -809,8 +852,8 @@ documentation reconciliation, and durable capability guardrails replacing
 the milestone-era wording pins. **Phase D is complete**; the native line's
 next phase after it was **Phase E — Native Classification and Stable
 Math**, which has since completed (E0–E10), followed by **Phase F —
-Native Normalization and Stateful Buffers**, which is currently
-**in progress** (F0-F8 complete; F9 planned). Further activations and
+Native Normalization and Stateful Buffers**, which has since
+**completed** too (F0–F9). Further activations and
 math, dropout with a native RNG, and a CPU optimization pass sit beyond
 Phase F, followed by
 the CUDA
@@ -3178,8 +3221,8 @@ differentiable operation over it, `NativeCrossEntropyLoss` and the
 reporting-only `native_accuracy`, a deterministic classification
 training run with exact checkpoint resume, an honest characterization
 benchmark, and phase closure under Release/Debug builds and Clang
-ASan/UBSan/LeakSanitizer. **The current phase is Phase F — Native
-Normalization and Stateful Buffers — and it is in progress.** Its
+ASan/UBSan/LeakSanitizer. **The latest phase is Phase F — Native
+Normalization and Stateful Buffers — and it is complete (F0–F9).** Its
 contract is locked in
 [native_normalization_design.md](native_normalization_design.md)
 (milestone **F0**, complete: design and repository reconciliation only,
@@ -3242,8 +3285,19 @@ safely, the buffer/parameter mutation distinction, the versioning
 archetypes, shared and frozen parameters, a non-contiguous NCHW input,
 honest per-boundary failure atomicity, and reality-derived capability
 guardrails; **tests and documentation only, no capability**). Milestone
-**F9 is planned and has not started**, so there is no phase closure —
-and still no normalization operation, kernel, or C ABI export.
+**F9 is complete** as well — the phase closure: Release **and** Debug
+Windows builds each passing the full existing 10-test CTest suite with
+zero project warnings and the active runtime proved to stay Release; a
+fresh Clang 18.1.3 ASan+UBSan build whose instrumentation is proved by
+`nm -D` (22 `__asan*`, 13 `__ubsan*`) and by the library's refusal to
+load without the sanitizer runtime; 10/10 sanitized native CTests with
+leak detection enabled; 1,968 sanitized normalization-focused Python
+tests, the F6 example, and the F7 benchmark smoke path all clean; and a
+practical LeakSanitizer lifecycle returning native live storage
+**exactly** to baseline with no TensorForge-attributable leak frame and
+no suppression file — **validation and documentation only, adding no
+numerical capability**. **Phase F is therefore complete**, and there is
+still no normalization operation, kernel, or C ABI export.
 Dropout and a native RNG sit **beyond** Phase F. CUDA experiments
 remain a separate future branch (where `device` gains a second value),
 and an AMP / Tensor Core path is where `dtype` later gains

@@ -227,7 +227,7 @@ The four native examples are listed in the native quickstart above.
 - [docs/native_autograd_benchmarks.md](docs/native_autograd_benchmarks.md) — characterization benchmark for the native autograd stack (Phase B)
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
-- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **in progress**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), and F8 (the cross-cutting integration and semantic guardrails) are complete; F9 is planned)
+- [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
 
 ## Limitations
 
@@ -239,22 +239,23 @@ Honest expectations:
   experimental C++ **CPU** backend: float64/cpu only, no CUDA backend
   yet, no dtype promotion or casting, and no implicit dispatch into
   `tensorforge.Tensor`.
-- The native CNN stack (Phase D) and the native classification stack
-  (Phase E) are both complete — but "complete" means *these* capabilities
-  work and are validated, not that the native line is finished. What the
-  native line still does **not** have: a **Phase-F closure** —
-  **Phase F is in progress**: all three normalization modules
-  (`NativeLayerNorm`, `NativeBatchNorm1d`, `NativeBatchNorm2d`) have
-  shipped as modules composed from existing operations with no kernel, F5
+- The native CNN stack (Phase D), the native classification stack
+  (Phase E), and the native normalization stack (Phase F) are all
+  complete — but "complete" means *these* capabilities
+  work and are validated, not that the native line is finished. All three
+  normalization modules
+  (`NativeLayerNorm`, `NativeBatchNorm1d`, `NativeBatchNorm2d`) shipped
+  as modules composed from existing operations with no kernel, F5
   proved their state/checkpoint/ownership/graph-safety contracts by
   exhaustive test, F6 shipped a deterministic normalized training
   example with exact checkpoint resume
   (`examples/native_normalization_training.py`), F7 shipped the
   honest benchmark characterization
-  (`benchmarks/benchmark_native_normalization.py`), and F8 shipped the
+  (`benchmarks/benchmark_native_normalization.py`), F8 shipped the
   cross-cutting integration and semantic guardrails
-  (`tests/test_native_phase_f.py`), but the phase's closure milestone
-  has not — dropout
+  (`tests/test_native_phase_f.py`), and F9 closed the phase under
+  Release/Debug builds and Clang ASan/UBSan/LeakSanitizer. What the
+  native line still does **not** have: dropout
   or a native RNG, data loaders, native integer
   tensors, further dtypes or devices, CUDA, AMP, and any implicit
   dispatch into `tensorforge.Tensor`. Native checkpoints capture no
@@ -368,7 +369,8 @@ suite, and documentation reconciliation across every status surface.
 Phase E expanded nothing beyond float64/CPU and added no implicit
 stable/native dispatch.
 
-**Phase F — Native Normalization and Stateful Buffers — is in progress.**
+**Phase F — Native Normalization and Stateful Buffers — is complete
+(F0–F9).**
 Its architecture
 contract is locked in
 [docs/native_normalization_design.md](docs/native_normalization_design.md)
@@ -473,11 +475,28 @@ non-contiguous NCHW input through the whole stack; strict stable/native
 separation; and each failure boundary tested **honestly** — BatchNorm
 transactions are per module, so one whole training step is *not*
 presented as globally transactional. Tests and documentation only,
-adding no capability. But Phase F is not finished.
-Milestone **F9** — the phase closure — is **planned and has not
-started**: there is no Release/Debug revalidation, no sanitizer pass, and
-no completion statement, and no
-normalization *operation*, kernel, or C ABI symbol exists at all. More activations/math, dropout and a native RNG, data
+adding no capability.
+Milestone **F9 is complete** — the phase closure: fresh Windows Release
+**and** Debug builds each passing the full existing 10-test CTest suite
+with zero project compiler, linker, or CMake warnings, and the active
+runtime proved to stay the Release DLL; a fresh Clang 18.1.3
+ASan+UBSan build in WSL2 Ubuntu 24.04 whose instrumentation is *proved*
+rather than assumed (22 `__asan*` and 13 `__ubsan*` dynamic symbols, and
+a library that refuses to load without the sanitizer runtime); 10/10
+sanitized native CTests with leak detection enabled; **1,968** sanitized
+normalization-focused Python tests with zero ASan and zero UBSan
+diagnostics; the F6 example reproducing its exact resume and the F7
+benchmark passing all nine correctness gates under the sanitized
+library; and a practical LeakSanitizer lifecycle whose native
+live-storage counter returned **exactly** to baseline, its remaining
+process-exit allocations identified honestly as CPython/NumPy shutdown
+retention with no TensorForge frame and no suppression file —
+**validation and documentation only, adding no numerical capability**.
+So **Phase F is complete**, and no
+normalization *operation*, kernel, or C ABI symbol exists at all.
+Closing Phase F closes that phase, not the project: the native line is
+still experimental, still float64/CPU only, and still not
+production-ready. More activations/math, dropout and a native RNG, data
 loaders, and CPU optimization sit beyond Phase F, and CUDA/GPU
 experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and

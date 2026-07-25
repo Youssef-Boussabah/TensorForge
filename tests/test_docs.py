@@ -1604,33 +1604,117 @@ def test_phase_f_design_locks_the_atomic_running_stat_transaction():
     assert "F1" in section and "load_state_dict" in section
 
 
-def test_phase_f_is_described_as_in_progress_not_complete():
-    """Requirement 5, in its F2 form. Phase F is now *in progress* — F2
-    shipped a real module — but it is not finished. The design document
-    states this about itself, every status document names Phase F, and
-    none may claim the *phase* is complete (an honest per-milestone claim
-    like "F2 is complete" must keep being possible)."""
+def test_phase_f_is_positively_marked_complete_everywhere():
+    """The F9 closure form of the old in-progress guard. Phase F is now
+    finished, so the requirement inverts: the design document must state
+    its completed status, and **every** status surface must positively
+    say Phase F is complete rather than merely avoid denying it. The
+    premise — that all three normalization modules really shipped — is
+    checked against the live registry first, so this can never assert a
+    doc claim the code does not back."""
+    from tensorforge.backends import cpp
+
+    for module in _NORMALIZATION_MODULES:
+        assert module in cpp.NATIVE_MODULES, module
+
     design = _status_text(PHASE_F_DESIGN)
-    assert re.search(r"Phase-F status: in progress", design), (
-        "the design document no longer states its in-progress status"
+    assert re.search(r"Phase-F status: complete", design), (
+        "the design document no longer states its completed status"
     )
     # F0/F1's no-numerical-behavior honesty is still recorded.
     assert re.search(r"no numerical behavior", design, re.I)
-    for surface in PHASE_STATUS_DOCS:
+    for surface in PHASE_STATUS_DOCS + (PHASE_F_DESIGN, "CLAUDE.md",
+                                        "docs/release_history.md"):
         text = _status_text(surface)
         assert "Phase F" in text, f"{surface} does not name Phase F at all"
-        # It must not claim the *phase* is finished. The `[^.F]` window is
-        # deliberate: it forbids an intervening milestone label (F0 … F9),
-        # so "Phase F — in progress: F2 is complete" reads as the milestone
-        # claim it is, while "Phase F is now complete" is still caught.
-        claim = re.search(
-            r"Phase F\b[^.F]{0,40}?\b(is|was|are|now)\s+"
-            r"(complete|completed|shipped|implemented)\b",
-            text, re.I,
+        assert re.search(r"Phase F\b[^.]{0,120}?\bcomplete\b", text, re.I), (
+            f"{surface} does not positively state that Phase F is complete"
         )
-        assert claim is None, (
-            f"{surface} claims Phase F is complete: "
-            f"{claim.group(0)!r}" if claim else ""
+
+
+def test_no_surface_still_calls_phase_f_or_f9_pending():
+    """The inverse of the check above, and the one that would catch a
+    surface left behind at F8. No authoritative surface may still present
+    Phase F, or milestone F9, as in progress, planned, unfinished, or not
+    started. Sentences that scope the claim to a past milestone ("at F5,
+    F6-F9 had not started") are the honest historical form and are
+    excluded by the past-tense filter."""
+    pending = (r"(in progress|not finished|is planned|has not started"
+               r"|have not started|not started|is next|is upcoming)")
+    subjects = (r"Phase.F", r"\bF9\b")
+    # A record explicitly scoped to an earlier moment is history, not a
+    # stale status claim.
+    historical = re.compile(
+        r"\b(had not|was the next|were|since shipped|at F\d|then\b)", re.I
+    )
+    # "Beyond Phase F (not started)" is a statement about *later* work, and
+    # is exactly the honest scoping the closure must keep. Checked in a
+    # tight window immediately before the subject so it cannot excuse an
+    # unrelated stale claim further along the sentence.
+    scoped_later = re.compile(r"\b(beyond|outside|after)\s*$", re.I)
+    for surface in PHASE_STATUS_DOCS + (PHASE_F_DESIGN, "CLAUDE.md",
+                                        "docs/release_history.md"):
+        text = _status_text(surface)
+        for subject in subjects:
+            pattern = re.compile(subject + r"[^.]{0,80}?" + pending, re.I)
+            offenders = [
+                match.group(0) for match in pattern.finditer(text)
+                if not historical.search(
+                    text[max(0, match.start() - 60):match.end() + 60]
+                )
+                and not scoped_later.search(
+                    text[max(0, match.start() - 12):match.start()]
+                )
+            ]
+            assert offenders == [], (
+                f"{surface} still presents {subject} as pending: "
+                f"{offenders[:3]}"
+            )
+
+
+def test_f9_is_documented_as_validation_and_documentation_only():
+    """F9 closed the phase and must never be described as having added
+    numerical capability. The design records what it actually did —
+    Release/Debug builds, sanitizers, LeakSanitizer, and the
+    reconciliation — and explicitly denies adding capability."""
+    design = _status_text(PHASE_F_DESIGN)
+    f9 = _design_section("F9 —", relative_path=PHASE_F_DESIGN)
+    assert re.search(r"F9\b[^.]{0,80}\bcomplete\b", design, re.I)
+    # It says what it was: validation and documentation.
+    assert re.search(r"no (new )?numerical capability", f9, re.I), (
+        "the F9 section no longer denies adding numerical capability"
+    )
+    # And it records the evidence the closure rests on.
+    for token in ("Release", "Debug", "CTest", "ASan", "UBSan",
+                  "LeakSanitizer", "baseline"):
+        assert token.lower() in f9.lower(), f"F9 records no {token} evidence"
+
+
+def test_phase_f_closure_records_the_build_and_sanitizer_evidence():
+    """The closure's evidence must be present on the durable surfaces,
+    not only in a chat transcript: Release **and** Debug builds, the
+    sanitizer pass, and the honest LeakSanitizer attribution."""
+    for surface in (PHASE_F_DESIGN, "docs/native_support_matrix.md",
+                    "docs/release_history.md", "docs/backend_experiments.md"):
+        text = _status_text(surface)
+        assert re.search(r"Release", text) and re.search(r"Debug", text), surface
+        assert re.search(r"CTest", text, re.I), surface
+        assert re.search(r"ASan", text, re.I), surface
+        assert re.search(r"UBSan", text, re.I), surface
+    # The leak claim must stay the honest one: an exact return to
+    # baseline plus no TensorForge-attributable frame — never a bare
+    # "LeakSanitizer found zero leaks".
+    for surface in (PHASE_F_DESIGN, "docs/release_history.md",
+                    "docs/backend_experiments.md"):
+        text = _status_text(surface)
+        assert re.search(r"baseline", text, re.I), surface
+        overclaim = re.search(
+            r"(LeakSanitizer|LSan)[^.]{0,40}(found|reports?)[^.]{0,20}"
+            r"(zero|no) leaks?\b", text, re.I,
+        )
+        assert overclaim is None, (
+            f"{surface} over-claims a process-wide zero-leak result: "
+            f"{overclaim.group(0)!r}" if overclaim else ""
         )
 
 
@@ -1993,12 +2077,13 @@ def test_f3_scopes_the_snapshot_rule_to_buffer_only_mutation():
 
 
 def test_no_document_claims_unshipped_normalization_is_done():
-    """After F8 the module surface, its hardening, one deterministic
-    normalized training/resume proof, the benchmark characterization, and
-    the cross-cutting integration really are shipped, so a document may
-    say so. What no status surface may claim is the part that has
-    **not**: F9, the phase itself, or a normalization family Phase F
-    never scoped. The registry/file premise for each is checked first."""
+    """After the F9 closure the whole phase really is shipped, so a
+    document may say so. What no status surface may claim is a
+    normalization family Phase F **never scoped** — BatchNorm3d,
+    InstanceNorm, GroupNorm, RMSNorm, synchronized/distributed BatchNorm,
+    a fused normalization kernel, or a `NativeTensor.batch_norm`
+    operation. Closing the phase must not quietly widen it. The
+    registry/file premise is checked first."""
     from tensorforge.backends import cpp
     import tensorforge.experimental as experimental
 
@@ -2023,20 +2108,7 @@ def test_no_document_claims_unshipped_normalization_is_done():
     claims = (
         # "GroupNorm is implemented", either word order.
         re.compile(subject + r"[^.]{0,60}?" + shipped, re.I),
-        # "F9 shipped closure", "F9 added the sanitizer pass", ...
-        # (F6 shipped its example, F7 its benchmark, and F8 its
-        # integration suite, so all three are excluded here.)
-        re.compile(r"\bF9\b[^.]{0,60}?(ship|implement|add)\w*", re.I),
-        # F9 described as done.
-        re.compile(r"\bF9\b[^.]{0,40}?\b(is|was)\s+"
-                   r"(complete|completed|shipped|implemented)\b", re.I),
-        # The phase closure or its sanitizer/build revalidation claimed as
-        # shipped (F9's work: it has not started).
-        re.compile(r"(phase.f closure|sanitizer|ASan|UBSan|LeakSanitizer"
-                   r"|Debug build)[^.]{0,60}?" + shipped, re.I),
-        # The phase itself described as finished.
-        re.compile(r"Phase F\b[^.F]{0,40}?\b(is|was|are|now)\s+"
-                   r"(complete|completed|shipped|implemented)\b", re.I),
+        re.compile(shipped + r"[^.]{0,60}?" + subject, re.I),
     )
     # A matched span that carries its own negation ("normalization is
     # **not** implemented", "F2 is not complete") is the honest form, not
@@ -2308,36 +2380,35 @@ def test_both_batchnorm_shapes_share_one_private_implementation():
     assert "def _backward" not in source
 
 
-def test_phase_f_is_still_in_progress_after_f8():
-    """F8 shipped the cross-cutting integration and semantic guardrails —
-    one test suite, tests and documentation only — not the phase. F9 has
-    not shipped, so no surface may describe the phase, its closure, or
-    its build/sanitizer revalidation as finished."""
+def test_phase_f_closed_without_changing_the_capability_boundary():
+    """The closure form of the old "still in progress after F8" guard.
+    Every Phase-F deliverable file exists, the ladder marks F9 complete —
+    and, crucially, the phase closed with the capability boundary exactly
+    where F4 left it: F7 measured only, F8 tested only, and F9 validated
+    and documented only, so none of the three moved an inventory."""
     from tensorforge.backends import cpp
 
-    # Premise, from the live tree: F6's, F7's, and F8's own deliverables
-    # all exist.
+    # Premise, from the live tree: F5's, F6's, F7's, and F8's own
+    # deliverables all exist and survived the closure.
     for relative in ("examples/native_normalization_training.py",
                      "tests/test_native_normalization_training.py",
                      "benchmarks/benchmark_native_normalization.py",
                      "tests/test_native_normalization_benchmark.py",
+                     "tests/test_native_normalization_state.py",
                      "tests/test_native_phase_f.py"):
         assert (REPO_ROOT / relative).is_file(), relative
-    # The design still says in-progress, and names F9 as next.
+    # The design says complete, and the ladder marks F9 complete.
     design = _status_text(PHASE_F_DESIGN)
-    assert "Phase-F status: in progress" in design
-    assert re.search(r"F9[^.]{0,80}(next|planned|not started)", design, re.I), (
-        "the design does not name F9 as the next milestone"
-    )
-    # ...and the ladder still lists F9 as planned.
+    assert "Phase-F status: complete" in design
     ladder = _design_section("Milestone ladder", relative_path=PHASE_F_DESIGN)
     row = re.search(r"\|\s*F9\s*\|[^|]*\|([^|]*)\|", ladder)
     assert row is not None
-    assert "planned" in row.group(1).lower()
-    assert "complete" not in row.group(1).lower()
-    # The registry is unchanged where F7-F9 would touch it — F7 measured
-    # only, F8 tested only, and F9 adds nothing either.
+    assert "complete" in row.group(1).lower()
+    assert "planned" not in row.group(1).lower()
+    # The registry is unchanged where F7-F9 would have touched it.
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
 
 def test_f6_shipped_the_normalized_training_and_resume_proof():
@@ -2542,9 +2613,9 @@ def test_docs_present_the_shipped_phase_f_integration_suite():
     assert re.search(r"not\W{0,10}globally transactional", lowered), (
         "the F8 section no longer denies whole-step global transactionality"
     )
-    # F9 is named as the next milestone, and is not claimed complete.
+    # F9 closed the phase, and the design records that.
     design = _status_text(PHASE_F_DESIGN)
-    assert re.search(r"F9[^.]{0,80}(next|planned|not started)", design, re.I)
+    assert re.search(r"F9[^.]{0,80}\bcomplete\b", design, re.I)
 
     # Nothing changed in the registry, exports, or checkpoint format.
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
@@ -2555,33 +2626,52 @@ def test_docs_present_the_shipped_phase_f_integration_suite():
     )
     assert native_checkpoint._FORMAT_VERSION == 1
 
-    # Every authoritative status surface agrees that F8 shipped and F9
-    # has not.
+    # Every authoritative status surface agrees that F8 **and** F9
+    # shipped — the closure form of the old "F9 has not" check.
     for surface in ("README.md", "docs/native_support_matrix.md",
                     "docs/roadmap.md", "docs/project_summary.md",
                     "docs/architecture.md", "docs/backend_experiments.md",
                     "CLAUDE.md"):
         text = _status_text(surface)
         assert re.search(r"F8[^.]{0,60}(complete|shipped)", text, re.I), surface
-        assert re.search(r"F9[^.]{0,80}(next|planned|not started|not finished)",
+        assert re.search(r"(F9[^.]{0,120}(complete|shipped|clos)"
+                         r"|F0.F9[^.]{0,60}(shipped|complete))",
                          text, re.I), surface
 
 
-def test_the_phase_f_integration_suite_claims_no_closure_work():
-    """F9 owns the build, sanitizer, and completion work. No surface may
-    present any of it as done while the phase is still in progress."""
+def test_the_phase_f_closure_claims_no_later_phase():
+    """The closure form of the old guard. F9 owned the build, sanitizer,
+    and completion work, and that work is now legitimately described as
+    done — but closing Phase F must not become a claim about anything
+    after it. No surface may present a *later* phase, or a capability
+    Phase F never scoped, as started, in progress, or complete."""
     premise = _status_text(PHASE_F_DESIGN)
-    assert "Phase-F status: in progress" in premise
-    claim = re.compile(
-        r"Phase.F[^.]{0,80}(ASan|UBSan|LeakSanitizer|sanitizer|Debug build)"
-        r"[^.]{0,60}(is|are|was|were|now)\s+"
-        r"(complete|completed|passed|validated|clean)",
-        re.I,
+    assert "Phase-F status: complete" in premise
+
+    started = (r"(is|are|was|were|now|has|have)\s+"
+               r"(begun|started|under way|underway|in progress|complete"
+               r"|completed|shipped|implemented|supported)")
+    later = (r"(Phase G|Phase H|dropout phase|native RNG|CUDA (phase|runtime|"
+             r"backend)|AMP (phase|path)|Tensor Core|CPU optimization phase"
+             r"|distributed (phase|training)|float16|bfloat16)")
+    # Negated or explicitly-future forms are the honest ones.
+    excluded = re.compile(
+        r"\b(not|never|no|future|beyond|planned|unplanned|outside|remains?"
+        r"|remain|still|deliberately|excluded|unsupported)\b", re.I,
     )
-    for surface in PHASE_STATUS_DOCS + (PHASE_F_DESIGN,):
+    pattern = re.compile(later + r"[^.]{0,60}?" + started, re.I)
+    for surface in PHASE_STATUS_DOCS + (PHASE_F_DESIGN, "CLAUDE.md",
+                                        "docs/release_history.md"):
         text = _status_text(surface)
-        match = claim.search(text)
-        assert match is None, (surface, match.group(0) if match else "")
+        offenders = [
+            match.group(0) for match in pattern.finditer(text)
+            if not excluded.search(
+                text[max(0, match.start() - 70):match.end() + 30]
+            )
+        ]
+        assert offenders == [], (
+            f"{surface} claims a later phase has started: {offenders[:3]}"
+        )
 
 
 def test_the_normalization_benchmark_is_registered_nowhere():
@@ -2603,13 +2693,13 @@ def test_the_normalization_benchmark_is_registered_nowhere():
         assert not hasattr(experimental, banned), banned
 
 
-def test_phase_f_ladder_marks_shipped_milestones_complete():
-    """The ladder's honesty check, derived from the live registry rather
-    than from a hard-coded milestone number: every module milestone whose
-    module is actually in ``NATIVE_MODULES`` must read complete, and every
-    milestone after the last shipped one must read planned. F0's section
-    still denies adding numerical behavior, and the phase statement reads
-    in-progress, not complete."""
+def test_phase_f_ladder_marks_every_milestone_complete():
+    """The ladder's closure check, still derived from the live registry
+    and the real tree rather than from hard-coded prose: every milestone
+    whose deliverable actually exists must read complete, F0-F9 must form
+    **one contiguous complete prefix** with no milestone left planned or
+    in progress, F0's section still denies adding numerical behavior, and
+    the phase statement reads complete."""
     from tensorforge.backends import cpp
 
     text = _normalized_doc(PHASE_F_DESIGN)
@@ -2622,44 +2712,43 @@ def test_phase_f_ladder_marks_shipped_milestones_complete():
                               (4, "NativeBatchNorm2d")):
         if module in cpp.NATIVE_MODULES:
             shipped.append(milestone)
-    # F5 (hardening) and F6 (the training/resume proof) add no module or
-    # inventory entry, so each is detected from its own deliverable file
-    # rather than from the registry.
-    if (REPO_ROOT / "tests" / "test_native_normalization_state.py").exists():
-        shipped.append(5)
-    if (REPO_ROOT / "examples" / "native_normalization_training.py").exists():
-        shipped.append(6)
-    # F7 (the benchmark characterization) and F8 (the cross-cutting
-    # integration) are likewise detected from their own deliverables: each
-    # adds no capability, so the registry cannot show them.
-    if (REPO_ROOT / "benchmarks"
-            / "benchmark_native_normalization.py").exists():
-        shipped.append(7)
-    if (REPO_ROOT / "tests" / "test_native_phase_f.py").exists():
-        shipped.append(8)
-    # The shipped set must be a contiguous prefix — no milestone may be
-    # skipped.
+    # F5-F8 add no module or inventory entry, so each is detected from its
+    # own deliverable file rather than from the registry.
+    for milestone, relative in (
+        (5, "tests/test_native_normalization_state.py"),
+        (6, "examples/native_normalization_training.py"),
+        (7, "benchmarks/benchmark_native_normalization.py"),
+        (8, "tests/test_native_phase_f.py"),
+    ):
+        if (REPO_ROOT / relative).exists():
+            shipped.append(milestone)
+    # F9 is the closure itself: it ships no artifact of its own, so it is
+    # detected from the design's own completed status statement.
+    if re.search(r"Phase-F status: complete", _status_text(PHASE_F_DESIGN)):
+        shipped.append(9)
+    # The shipped set must be a contiguous prefix — no milestone skipped —
+    # and at closure it must cover the whole ladder, F0 through F9.
     assert shipped == list(range(len(shipped))), shipped
+    assert shipped == list(range(10)), (
+        f"Phase F is closed, so F0-F9 must all be shipped; got {shipped}"
+    )
     for done in shipped:
         row = re.search(rf"\|\s*F{done}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert row is not None, f"the ladder has no status row for F{done}"
-        assert "complete" in row.group(1).lower(), f"F{done} is not complete"
-    # Everything after the last shipped milestone has not started.
-    for planned in range(len(shipped), 10):
-        row = re.search(rf"\|\s*F{planned}\s*\|[^|]*\|([^|]*)\|", ladder)
-        assert row is not None, f"the ladder has no status row for F{planned}"
         status = row.group(1).lower()
-        assert "planned" in status, f"F{planned} is not marked planned"
-        assert "complete" not in status, f"F{planned} is marked complete"
-        assert "in progress" not in status, f"F{planned} is marked in progress"
+        assert "complete" in status, f"F{done} is not complete"
+        assert "planned" not in status, f"F{done} is still marked planned"
+        assert "in progress" not in status, f"F{done} is marked in progress"
+        assert "not started" not in status, f"F{done} is marked not started"
     # F0's own contract section denies adding numerical behavior.
     f0 = _design_section("F0 —", relative_path=PHASE_F_DESIGN)
     assert re.search(r"no.{0,60}numerical", f0, re.I), (
         "the F0 section no longer denies adding numerical behavior"
     )
-    # And the phase statement reads in-progress, not complete.
+    # And the phase statement reads complete.
     plain = re.sub(r"[*`]", "", text)
-    assert "Phase F is in progress" in plain
+    assert "Phase F is complete" in plain
+    assert "Phase F is in progress" not in plain
     assert "Phase F is designed, not implemented" not in plain
 
 

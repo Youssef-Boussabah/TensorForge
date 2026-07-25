@@ -1459,7 +1459,8 @@ persistent-buffer correction), F2 (`NativeLayerNorm`), F3
 and graph-safety hardening), F6 (deterministic normalized training and
 exact resume), F7 (benchmark characterization with no speed assertion),
 F8 (cross-cutting integration and semantic guardrails), and F9 (phase
-closure). **F2–F9 have not started.**
+closure). **At F0, F2–F9 had not started**; all of them have since
+shipped, and Phase F is complete.
 
 F0 also reconciled the documentation: the support matrix, roadmap,
 project summary, architecture doc, backend-experiments page, README, and
@@ -1752,13 +1753,13 @@ reads exactly `("dropout", "float32", "cuda", "amp")`. The native
 checkpoint format is unchanged at **version 1**.
 
 That completes the numerical normalization **module** surface —
-`NativeLayerNorm`, `NativeBatchNorm1d`, `NativeBatchNorm2d` — but **not
-Phase F**: milestones F5–F9 (state/checkpoint and graph-safety
+`NativeLayerNorm`, `NativeBatchNorm1d`, `NativeBatchNorm2d` — but, at
+F4, **not Phase F**: milestones F5–F9 (state/checkpoint and graph-safety
 hardening, a deterministic normalized training run with exact resume, a
-benchmark characterization, cross-cutting integration, and closure) have
-not started, so there is no normalized training example, no
-normalization benchmark, and no phase closure. **F5 is the next
-milestone.**
+benchmark characterization, cross-cutting integration, and closure) had
+not started then, so there was as yet no normalized training example, no
+normalization benchmark, and no phase closure. **F5 was the next
+milestone**; F5–F9 have all since shipped.
 
 ### Phase F — native normalization and stateful buffers (F5)
 
@@ -1820,12 +1821,13 @@ field, or export.** The exports, `NATIVE_MODULES`, `STATE_SUPPORT`,
 `UNSUPPORTED`, and every operation inventory are exactly what F4 left, and
 the checkpoint format stays at **version 1**. Every F5 proof passed
 against the F0–F4 implementation as shipped; no locked-contract bug was
-found, so no production file changed. **F5 completes the hardening, not
-the phase.** F6–F9 (a deterministic normalized training run with exact
-resume, a benchmark characterization, cross-cutting integration, and
-closure) have not started, so there is still no normalized end-to-end
-training example, no normalization benchmark, and no Phase-F integration
-file. **F6 is the next milestone.**
+found, so no production file changed. **F5 completed the hardening, not
+the phase.** At F5, F6–F9 (a deterministic normalized training run with
+exact resume, a benchmark characterization, cross-cutting integration,
+and closure) had not started, so there was as yet no normalized
+end-to-end training example, no normalization benchmark, and no Phase-F
+integration file. **F6 was the next milestone**; F6–F9 have all since
+shipped.
 
 ### Phase F — native normalization and stateful buffers (F6)
 
@@ -2037,7 +2039,125 @@ schema field, example, benchmark, or export** — one integration suite and
 its guardrails, with every inventory exactly what F7 left and the
 checkpoint format at **version 1**. No production file changed: the suite
 composes shipped public APIs only, and no locked-contract bug was found.
-**F9 (the phase closure) is the next milestone.**
+
+### Phase F — native normalization and stateful buffers (F9, phase closed)
+
+**F9 is complete, and with it Phase F: the closure milestone —
+validation, documentation reconciliation, and the completion statement.
+Documentation and documentation-guardrail tests only: no numerical
+behavior and no new capability of any kind.** No C++ source, header,
+CTest, C ABI export, ctypes declaration, `NativeTensorCore` method,
+kernel, module, operation, loss, metric, optimizer, example, benchmark,
+checkpoint schema field, or export changed, and **no numerical
+production file changed at all**. Every number below was observed during
+this closure — none is carried over from Phase D or Phase E.
+
+**Windows environment.** Windows 11 Home 10.0.26200 (build 26200.8894),
+PowerShell 5.1.26100.8894, x64 (Intel Core Ultra 9 185H), Python
+3.13.14, uv 0.11.26, CMake 4.4.0, generator **Visual Studio 17 2022**,
+MSVC **19.44.35228.0** (toolset 14.44.35207), Windows SDK 10.0.26100.0.
+
+**Release and Debug builds.** Both configured fresh and out-of-source
+**outside the repository** with `-DTF_BUILD_TESTS=ON`, so no source-tree
+build directory was created. Release wrote its library to
+`src/tensorforge/backends/` and passed **10/10 CTests** (0.78 s); Debug
+wrote its library to a separate external directory and passed **10/10
+CTests** (0.97 s). Both builds produced **zero compiler, zero linker,
+and zero CMake warnings** — the only warnings in either log are 13
+identical MSBuild `MSB8029` notices about the build tree living under
+the temporary directory, an artifact of where this validation put its
+build directories rather than a project diagnostic. Debug assertions are
+genuinely enabled (`_DEBUG` defined, `NDEBUG` absent, `/Od /RTC1`), and
+the Debug library never reached the package: the active
+`_tensorforge_cpp.dll` stayed the 56,320-byte Release build linking
+`MSVCP140.dll`/`VCRUNTIME140.dll`, while the Debug library is a separate
+172,032-byte file linking `MSVCP140D.dll`/`ucrtbased.dll`.
+
+**Windows Python regression.** `uv run pytest -q` with the Release
+backend active: **3,628 passed, 5 skipped** before the closure edits and
+again after the build validation. All five skips are the pre-existing
+"backend is built; the unavailable path cannot be forced" cases — no
+test skipped because the backend was missing.
+
+**Sanitizer validation** (WSL2 2.6.1.0, Ubuntu 24.04.4 LTS, kernel
+6.6.87.2-microsoft-standard-WSL2, CMake 3.28.3, Clang **18.1.3**,
+`llvm-symbolizer-18`, GNU nm 2.42, Python 3.12.3 with NumPy 2.5.1 and
+pytest 9.1.1 in an environment **outside** the repository): a fresh
+`/tmp` build configured `-DCMAKE_BUILD_TYPE=Debug
+-DCMAKE_CXX_COMPILER=clang++ -DTF_SANITIZE=address,undefined
+-DTF_BUILD_TESTS=ON`, built with **zero project warnings**.
+**Instrumentation was proved, not assumed**: `nm -D` shows **22
+`__asan*`** and **13 `__ubsan*`** dynamic symbols beside the **50**
+exported `tf_*` C ABI symbols; `file`/`readelf` confirm an ELF64 x86-64
+object produced by "Ubuntu clang version 18.1.3"; and the library
+*refuses to load* without the sanitizer runtime (`undefined symbol:
+__ubsan_vptr_type_cache`) while loading cleanly with it preloaded. With
+`ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1:detect_leaks=1`
+and `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`: **10/10 native
+CTests pass** with leak detection on. Python-level runs preload the ASan
+runtime (`LD_PRELOAD`) because the interpreter is not instrumented;
+across 32 normalization and dependency suites — LayerNorm, both
+BatchNorm shapes, the state/checkpoint hardening, the training proof,
+the benchmark, the Phase-F integration suite, and the ownership,
+autograd, buffer, state, parameter-versioning, storage, view, module,
+optimizer, checkpoint, backend-introspection, and Phase-E dependencies
+they exercise — **1,968 tests pass with zero ASan and zero UBSan
+diagnostics** and no backend-unavailable skip. The F6 example reproduced
+its exact resume and the F7 benchmark passed **all nine correctness
+gates** (writing no result file) under the same sanitized library.
+
+**LeakSanitizer, scope stated honestly.** The instrumented native CTest
+binaries report no leaks at all. A dedicated, never-committed workload
+drove one complete normalized lifecycle — the integrated `Conv2d →
+BatchNorm2d → ReLU → MaxPool2d → Flatten → Linear → BatchNorm1d → ReLU →
+LayerNorm → Linear` classifier with `NativeCrossEntropyLoss` and
+`NativeAdam`, six training steps, a reporting eval pass with
+`native_accuracy`, a version-1 checkpoint, a **fresh** model/optimizer
+pair loading it, a resumed step matching the uninterrupted continuation
+exactly, a non-contiguous NCHW input through the whole stack, an eval
+graph carrying normalization snapshots retained across one backward and
+released by the next, and explicit closure of the optimizers, every
+unique parameter, every unique buffer, the views, and the base tensors —
+and ended with the live-native-storage counter back at its baseline
+(**0 → 0**) before exit. Running LSan over that *Python* process does
+report 925,710 bytes in 830 allocations, but **not one leak frame names
+`_tensorforge_cpp`, `tf_core_`, `tf_storage_`, or `tf::`**, and none
+names a TensorForge C++ source path: every site is CPython (6,548
+frames), the ASan runtime itself (293), libc (68), NumPy (24), or
+`_ctypes` (8) — interpreter and module-initialization allocations a
+non-instrumented interpreter never frees at shutdown. **No suppression
+file was added** and `LSAN_OPTIONS` was left unset, so nothing was
+hidden. The project's leak contract remains the deterministic
+live-storage counters and explicit-cleanup tests, which assert an
+*exact* return to baseline.
+
+**Documentation reconciliation.** Every authoritative surface now agrees
+that Phase F is complete and that F0–F9 all shipped, and the
+milestone-era guardrails that asserted *absence* ("Phase F is in
+progress", "F9 has not started", "no closure work is done") were
+**converted into durable positive closure checks** rather than deleted:
+F0–F9 must form one contiguous complete prefix with every milestone
+marked complete, every status surface must describe Phase F as
+complete and F9 as validation/documentation only, the closure artifacts
+must exist and be documented, the sanitizer and Release/Debug evidence
+must be present, no committed benchmark timing or performance claim may
+appear, and no later phase may be marked started.
+
+**Cleanup.** The Linux `.so` was removed from
+`src/tensorforge/backends/` by a shell trap that fires however the
+validation exits; the Windows Release DLL remains in place and active.
+No `.so`, `.json`, `.csv`, `.npz`, sanitizer log, core dump, or build
+directory was left in the repository.
+
+**F9 changed only documentation and documentation guardrails**: the
+Phase-F design document, the support matrix, the roadmap, this file,
+`backend_experiments.md`, the project summary, `architecture.md`,
+`README.md`, `CLAUDE.md`, the experimental package docstring, and
+`tests/test_docs.py`. No locked-contract defect was found. **Phase F is
+complete (F0–F9)** — which closes that phase, not the project: the
+native line remains experimental, float64/CPU only, explicitly scoped,
+and not production-ready, with `"dropout"`, `"float32"`, `"cuda"`, and
+`"amp"` still unsupported and the kernels still deliberately naive.
 
 ### A hardening milestone before Phase D
 

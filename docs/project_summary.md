@@ -105,18 +105,21 @@ and reproduces the uninterrupted run exactly), characterized by
 `benchmarks/benchmark_native_classification.py` (seven
 correctness-gated cases, no speed assertion anywhere), and validated
 under Release and Debug builds with Clang ASan/UBSan and LeakSanitizer.
-**Phase F (native normalization and stateful buffers) is in
-progress**: the normalization module surface is complete —
+**Phase F (native normalization and stateful buffers) is complete
+(F0–F9)**: the normalization module surface is complete —
 `NativeLayerNorm` (F2), `NativeBatchNorm1d` (F3, the first stateful
 native numerical module), and `NativeBatchNorm2d` (F4, NCHW) have all
-shipped, **F5 has proved their state/checkpoint/ownership/graph-safety
-contracts by exhaustive test**, **F6 has shipped a deterministic
+shipped, **F5 proved their state/checkpoint/ownership/graph-safety
+contracts by exhaustive test**, **F6 shipped a deterministic
 normalized training example with exact checkpoint resume** (tests and
-documentation only, no new capability), and **F7 has shipped the honest
+documentation only, no new capability), **F7 shipped the honest
 benchmark characterization**
 (`benchmarks/benchmark_native_normalization.py` — nine correctness-gated
-cases, no speed assertion anywhere) — while the phase's integration and
-closure milestones have not — see below. The two
+cases, no speed assertion anywhere), **F8 shipped the cross-cutting
+integration and semantic guardrails** (`tests/test_native_phase_f.py`),
+and **F9 closed the phase** under Release and Debug builds with Clang
+ASan/UBSan and LeakSanitizer — validation and documentation only, adding
+no numerical capability. The two
 engines never mix: explicit entry via
 `NativeTensor.from_array`, explicit exit via `to_numpy()`, no implicit
 dispatch. The exact per-operation status lives in the
@@ -145,10 +148,7 @@ Not production-ready and not a PyTorch replacement. The stable
 framework is NumPy on CPU; `Conv2d` and `MaxPool2d` use deliberately
 naive loops, and so do their native counterparts (direct nested loops —
 no im2col, BLAS, threading, or SIMD). The native line is float64/cpu
-only — no CUDA backend, no dtype promotion or casting, no native
-normalized training example or normalization benchmark (Phase F is
-**in progress**: all three normalization modules have shipped, its
-remaining hardening/proof/benchmark milestones have not),
+only — no CUDA backend, no dtype promotion or casting,
 no dropout or native RNG, no data loaders or native
 integer tensors, no scheduler or
 random-state capture in native checkpoints, and
@@ -180,8 +180,8 @@ deterministic classification training run with exact checkpoint resume,
 an honest characterization benchmark, and full closure validation — all
 still float64/CPU, with the checkpoint format unchanged at version 1.
 
-**Phase F — Native Normalization and Stateful Buffers — is the current
-phase, and it is in progress.** Milestone
+**Phase F — Native Normalization and Stateful Buffers — is the latest
+phase, and it is complete (F0–F9).** Milestone
 **F0** is complete: it locks the architecture contract in
 [native_normalization_design.md](native_normalization_design.md) —
 `NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d`
@@ -258,7 +258,7 @@ public `BatchNorm2d` to time against, though those keep a rigorous NumPy
 NCHW and transformed-oracle correctness gate. Medians with min, max, and
 spread after warm-up; `--smoke`/`--json`; **no result file, no speed
 assertion, no committed timing number, and no CI timing threshold** —
-measurement only, adding no capability. But Phase F is not finished.
+measurement only, adding no capability.
 **F8 is complete**: `tests/test_native_phase_f.py` proves the
 cross-cutting interactions — one integrated convolution / BatchNorm2d /
 pooling / linear / BatchNorm1d / LayerNorm classifier over raw logits and
@@ -269,8 +269,23 @@ coexisting safely in one eval graph; buffer versus parameter mutation
 attributed to the right cause; the versioning archetypes; shared and
 frozen parameters; a non-contiguous NCHW input; honest per-boundary
 failure atomicity; and reality-derived capability guardrails — tests and
-documentation only, adding no capability. But Phase F is not finished.
-Milestone **F9 is planned and has not started**: no phase closure.
+documentation only, adding no capability.
+Milestone **F9 is complete**: the phase closure — fresh Windows Release
+**and** Debug builds each passing the full existing 10-test CTest suite
+with zero project warnings and the active runtime proved to stay
+Release; a fresh Clang 18.1.3 ASan+UBSan build whose instrumentation is
+*proved* (22 `__asan*` and 13 `__ubsan*` dynamic symbols; the library
+will not load without the sanitizer runtime); 10/10 sanitized native
+CTests with leak detection enabled; 1,968 sanitized
+normalization-focused Python tests with zero ASan and zero UBSan
+diagnostics; the F6 example and the F7 benchmark smoke path clean under
+the sanitized library; and a practical LeakSanitizer lifecycle returning
+native live storage **exactly** to baseline, its remaining process-exit
+allocations identified honestly as CPython/NumPy shutdown retention with
+no TensorForge frame and no suppression file — **validation and
+documentation only, adding no numerical capability**. Closing Phase F
+closes that phase only; the native line remains experimental,
+float64/CPU, and explicitly scoped.
 Beyond Phase F
 (**not started**): dropout and a native RNG, more activations/math, data
 loaders, a CPU optimization phase, then the CUDA

@@ -916,8 +916,8 @@ The Python line is done; what remains is expansion on its own terms:
     a CPU optimization phase for the deliberately naive kernels, and
     build/packaging evolution. Native normalization then became its own
     phase, below.
-  - **Phase F — Native Normalization and Stateful Buffers — in progress
-    (F0, F1, F2, F3, F4, F5, F6, F7, and F8 complete; F9 planned).** The **F0
+  - **Phase F — Native Normalization and Stateful Buffers — complete
+    (F0–F9 all shipped).** The **F0
     architecture contract is written** —
     [native_normalization_design.md](native_normalization_design.md)
     locks the phase's objective (a fully native, differentiable,
@@ -1013,7 +1013,7 @@ The Python line is done; what remains is expansion on its own terms:
     and with both shapes live **`batchnorm` has left `UNSUPPORTED`**,
     which now reads exactly `("dropout", "float32", "cuda", "amp")`.
     **The numerical normalization module surface is complete, and F5 has
-    hardened it; Phase F is still not finished.** **F5 is complete**: the
+    hardened it.** **F5 is complete**: the
     exhaustive state/checkpoint, ownership, and graph-safety hardening — a
     focused `tests/test_native_normalization_state.py` plus narrow
     additions to the generic buffer and checkpoint suites — proves §7–§10
@@ -1069,8 +1069,26 @@ The Python line is done; what remains is expansion on its own terms:
     *not* globally transactional); error-state recovery; the NumPy
     boundary; live-storage baselines; and reality-derived capability
     guardrails — tests and documentation only, adding no capability.
-    **F9 has not started** — no phase closure — and no normalization
-    operation or kernel exists at all. **F9 is next.**
+    **F9 is complete**: the phase closure — fresh Windows Release **and**
+    Debug builds (Visual Studio 17 2022, MSVC 19.44.35228.0) each passing
+    the full existing 10-test CTest suite with zero project warnings, and
+    the active runtime proved to remain the Release DLL; a fresh Clang
+    18.1.3 `address,undefined` build in WSL2 Ubuntu 24.04 whose
+    instrumentation is *proved* (22 `__asan*` and 13 `__ubsan*` dynamic
+    symbols; the library will not even load without the sanitizer
+    runtime); 10/10 sanitized native CTests with leak detection enabled;
+    1,968 sanitized normalization-focused Python tests with **zero ASan
+    and zero UBSan diagnostics**; the F6 example reproducing its exact
+    resume and the F7 benchmark passing all nine correctness gates under
+    the sanitized library; and a practical LeakSanitizer lifecycle whose
+    native live-storage counter returned **exactly** to baseline, with the
+    remaining process-exit allocations identified honestly as
+    CPython/NumPy shutdown retention containing no TensorForge frame and
+    no suppression file. It is **validation and documentation only** — no
+    numerical capability, no C++, no CTest, no ABI or ctypes surface, no
+    example, no benchmark, and no production behavior changed — so
+    **Phase F is complete (F0–F9)** and no normalization
+    operation or kernel exists at all.
     Deliberately outside Phase F: dropout, a native RNG with its
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,

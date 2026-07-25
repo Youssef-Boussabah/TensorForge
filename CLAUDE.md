@@ -38,7 +38,7 @@ closure: `tests/test_native_phase_e.py` cross-cutting integration,
 Release and Debug builds with 10/10 CTests each, Clang ASan/UBSan and
 LeakSanitizer validation, and documentation reconciliation — no new
 numerical capability) all shipped. **Phase F — Native Normalization and
-Stateful Buffers — is the current phase and is *in progress*:**
+Stateful Buffers — is the latest phase and is *complete* (F0–F9):**
 milestone F0 is complete (the architecture contract in
 `docs/native_normalization_design.md` plus repository reconciliation —
 **no numerical behavior**), F1 is complete (the private atomic
@@ -203,10 +203,31 @@ semantic capability/export/artifact guardrails derived from real
 registries and files. **Tests and documentation only — no capability,
 operation, kernel, C ABI symbol, ctypes declaration, schema field,
 example, benchmark, or export, and no production behavior changed.**)
-Milestone F9 (the phase closure) has **not started** — so there is
-no Release/Debug revalidation, no sanitizer pass, and no phase
-closure, and no normalization operation, kernel, C ABI symbol, or custom
-backward exists at all. F9 is next.
+**F9 is complete** (the phase closure: fresh Windows Release **and**
+Debug builds — Visual Studio 17 2022, MSVC 19.44.35228.0, CMake 4.4.0,
+both out-of-source outside the repository — each passing the full
+existing 10-test CTest suite (10/10 in 0.78 s and 0.97 s) with **zero
+project compiler, linker, and CMake warnings**, the Debug library
+written elsewhere so the active runtime stayed the Release DLL; a fresh
+Clang 18.1.3 `-DTF_SANITIZE=address,undefined` build in WSL2 Ubuntu
+24.04.4 with **instrumentation proved** — `nm -D` shows 22 `__asan*` and
+13 `__ubsan*` dynamic symbols beside the 50 exported `tf_*` symbols, and
+the library refuses to load without the sanitizer runtime; **10/10
+sanitized native CTests** with `detect_leaks=1`; **1,968 sanitized
+Python tests** across 32 normalization and dependency suites with zero
+ASan and zero UBSan diagnostics; the F6 example reproducing its exact
+resume and the F7 benchmark passing all nine correctness gates under the
+sanitized library; and a practical LeakSanitizer lifecycle returning
+native live storage **exactly** to baseline (0 → 0), whose remaining
+process-exit allocations (925,710 bytes in 830 allocations) contain **no
+TensorForge frame** — only CPython, libc, NumPy, `_ctypes`, and the ASan
+runtime — with **no suppression file added**; plus documentation
+reconciliation and durable semantic closure guardrails.
+**Documentation and documentation-guardrail tests only — no numerical
+capability, no C++, no CTest, no ABI or ctypes surface, no example, no
+benchmark, and no production numerical file changed.**)
+**Phase F is complete**, and no normalization operation, kernel, C ABI
+symbol, or custom backward exists at all.
 Dropout/RNG, data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase F.
@@ -252,7 +273,7 @@ production-ready, not a PyTorch replacement.
   examples, roadmap, release history, and the native-line design
   contracts (`native_cnn_design.md` for Phase D,
   `native_classification_design.md` for Phase E,
-  `native_normalization_design.md` for Phase F — F0–F8 shipped). When a milestone changes the
+  `native_normalization_design.md` for Phase F — F0–F9 shipped, phase complete). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the
