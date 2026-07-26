@@ -1094,8 +1094,8 @@ The Python line is done; what remains is expansion on its own terms:
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,
     AMP, fused normalization kernels, and CPU optimization.
-  - **Phase G — Native RNG and Dropout — in progress; G0, G1, G2, and G3
-    have landed.** The **G0 architecture contract is written** —
+  - **Phase G — Native RNG and Dropout — in progress; G0, G1, G2, G3, and
+    G4 have landed.** The **G0 architecture contract is written** —
     [native_rng_dropout_design.md](native_rng_dropout_design.md) locks
     the phase's central split (random state is Python-managed; native
     random kernels are stateless and receive the complete key for one
@@ -1218,11 +1218,36 @@ The Python line is done; what remains is expansion on its own terms:
     generator, and the node therefore records **no** expected parameter
     version, so mutating the input or reseeding, resetting, or reloading
     the generator afterwards cannot change an existing graph's gradient
-    and must not raise. Milestones
-    **G4–G10 have not started**: there is no
-    `NativeDropout` module and therefore no module-level train/eval
-    behavior for it; the checkpoint format is
-    still version 1 and does not persist generator state, and `dropout`
+    and must not raise.
+    **G4 is complete** — `NativeDropout(p=0.5, seed=None,
+    generator=None)`, the public module over that operation, plus its
+    experimental export and one name (`"NativeDropout"`) appended to
+    `NATIVE_MODULES`. Nothing else moved: no C++, no C ABI symbol, no
+    ctypes declaration, no Core method, no autograd operation, and no
+    checkpoint-format change. `p` goes through the *same* shared
+    validator the Core and the operation use; `seed` and `generator` are
+    **mutually exclusive**, so supplying both raises rather than quietly
+    ignoring one; and the module either creates and owns a generator or
+    registers the **exact** object supplied, never a copy — which is how
+    two layers share one interleaved stream while the default gives every
+    layer an independent one. The generator is first-class registered
+    state (in `generators()`, `named_generators()`, and
+    `generator_state_dict()`, and deliberately absent from
+    `state_dict()`, which stays tensor-valued), a state load replaces it
+    in place so identity and sharing survive, and the module owns **no**
+    native storage. Training delegates to the differentiable operation,
+    so a successful forward consumes exactly one call and a failed one
+    none; evaluation returns the **input object itself**, consuming and
+    allocating nothing, so an arbitrary number of eval forwards leaves no
+    gap in the stream and the next training forward takes the next index;
+    and `p == 0` is identity in both modes. Milestones
+    **G5–G10 have not started**, and the gap that matters is
+    persistence: the checkpoint format is
+    still version 1 and does not persist generator state, so saving a
+    model containing a native Dropout layer preserves its parameters and
+    buffers and **silently omits the random stream** — exact stochastic
+    resume does not exist yet, and a load fabricates nothing. That, with
+    the unrun closure matrix, is why `dropout`
     is still listed unsupported beside
     `float32`, `cuda`, and `amp`. **`dropout` stays listed unsupported
     for the whole of G0–G9** — G4 implements and exports `NativeDropout`

@@ -3049,12 +3049,17 @@ def test_the_generator_layer_ships_no_dropout_or_random_operation():
     above the generator, never on it. Both are the Core/operation split
     conv2d, maxpool2d, and cross_entropy already follow, and both are
     covered elsewhere (tests/test_native_dropout_core.py and
-    tests/test_native_dropout_autograd.py). What stays absent *here* is
-    any numerical surface on the **generator itself**."""
+    tests/test_native_dropout_autograd.py). ``NativeDropout`` left at
+    **G4**, which shipped the module over that operation — it is a
+    *consumer* of registered generator state, covered by
+    tests/test_native_dropout_module.py. What stays absent *here* is any
+    numerical surface on the **generator itself**."""
     import tensorforge.experimental as experimental
 
-    assert not hasattr(experimental, "NativeDropout")
-    assert "NativeDropout" not in experimental.__all__
+    # The G4 module registers a generator; it does not extend one.
+    assert hasattr(experimental, "NativeDropout")
+    assert "NativeDropout" in experimental.__all__
+    assert not hasattr(NativeGenerator, "NativeDropout")
     for name in ("rand", "randn", "bernoulli", "uniform",
                  "random", "dropout_backward"):
         assert not hasattr(NativeTensor, name), name

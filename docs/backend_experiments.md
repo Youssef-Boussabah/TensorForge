@@ -245,7 +245,7 @@ capability, no C++, no CTest, no ABI or ctypes surface, no example, no
 benchmark, and no production behavior changed.
 
 **The current phase is Phase G — Native RNG and Dropout — and it is in
-progress; milestones G0, G1, G2, and G3 have landed.** G0 is the architecture
+progress; milestones G0, G1, G2, G3, and G4 have landed.** G0 is the architecture
 contract, [native_rng_dropout_design.md](native_rng_dropout_design.md),
 and it adds **no numerical behavior**. It locks: random state is
 **Python-managed** while native random kernels stay **stateless** and
@@ -501,12 +501,65 @@ reseeding, resetting, or reloading the generator afterwards cannot change
 an existing graph's gradient and must not raise — and it consumes no
 call, ever.
 
-**Above the operation, nothing exists.** There is no `NativeDropout`
-module and no module-level train/eval Dropout behavior.
-Milestones **G4–G10 have not
+**Milestone G4 is complete — the `NativeDropout` module and its public
+export.** The whole footprint is
+`src/tensorforge/experimental/native_dropout.py`, the export, and one
+name (`"NativeDropout"`) appended to `NATIVE_MODULES`. **No C++, no C ABI
+symbol, no ctypes declaration, no Core method, no autograd operation, and
+no checkpoint-format change.**
+
+```python
+NativeDropout(p=0.5, seed=None, generator=None)
+```
+
+- `p` goes through the **same** `_normalize_dropout_probability` the G2
+  Core and the G3 operation use — a third rule would be a third place for
+  the matrix to drift.
+- `seed` and `generator` are **mutually exclusive**: supplying both is a
+  `TypeError`, because a quietly ignored seed is the "looks reproducible,
+  is not" failure explicit random state exists to prevent.
+- Without an explicit generator the module **creates and owns**
+  `NativeGenerator(seed)`; with one it registers **that exact object**,
+  never a copy — so two layers deliberately share one interleaved stream
+  while the default gives every layer an independent one.
+- Everything is validated before a generator is created or registered, so
+  a rejected construction draws no entropy, registers nothing, allocates
+  nothing, and leaves a supplied generator bit-identical.
+
+The generator is registered under the canonical name `"generator"` as
+Phase G's **fourth** state category: it appears in `generators()`,
+`named_generators()`, and `generator_state_dict()`, and is deliberately
+**absent** from `state_dict()`, which stays contractually
+`{name: NativeTensor}`. `load_generator_state_dict()` replaces the state
+in place, so identity — and any sharing — survives a load. The module
+owns **no native storage**: constructing, registering, running, and
+discarding one moves the live-storage count only by the outputs its
+forwards return, and dropping the module never closes, resets, or mutates
+the generator.
+
+Forward is three cases. Input validation runs **first**, so evaluation is
+not a way to hand back a closed or non-`NativeTensor` input. **Training**
+delegates to `NativeTensor.dropout`, which owns the entire call
+transaction — one call per success, none per failure — so the module can
+add no failure hole to a transaction it does not implement.
+**Evaluation** returns the **input object itself**, consuming no call and
+allocating nothing, so an arbitrary number of eval forwards leaves **no
+gap in the stream**: a training forward at index *n*, any number of eval
+forwards, then a training forward at index *n + 1*. **`p == 0`** is
+identity too, and is deliberately *not* short-circuited in the module —
+§6.2 assigns that rule to the operation, and a second copy could only
+ever disagree with the first.
+
+**Above the module, nothing exists, and the gap is persistence.**
+Milestones **G5–G10 have not
 started**: the checkpoint format is still version 1 and does **not**
-serialize generator state (that is G5), and no capability-registry value
-moved beyond that single `AUTOGRAD_OPS` entry — `dropout` is still listed
+serialize generator state (that is G5), so saving a model containing a
+`NativeDropout` preserves its parameters and buffers and **silently omits
+the random stream**, and a load leaves the live generator exactly as it
+found it — fabricating nothing, which is the important half. **Exact
+stochastic resume therefore does not exist yet.** No capability-registry
+value moved beyond that single `NATIVE_MODULES` entry — `dropout` is
+still listed
 unsupported
 beside `float32`, `cuda`, and `amp`. `dropout` stays listed unsupported
 for the whole of **G0–G9** — G4 implements and exports `NativeDropout`

@@ -344,6 +344,7 @@ from .native_maxpool2d import NativeMaxPool2d
 from .native_sequential import NativeSequential
 from .native_layernorm import NativeLayerNorm
 from .native_batchnorm import NativeBatchNorm1d, NativeBatchNorm2d
+from .native_dropout import NativeDropout
 from .native_mse_loss import NativeMSELoss
 from .native_cross_entropy_loss import NativeCrossEntropyLoss
 from .native_metrics import native_accuracy
@@ -366,6 +367,7 @@ __all__ = [
     "NativeLayerNorm",
     "NativeBatchNorm1d",
     "NativeBatchNorm2d",
+    "NativeDropout",
     "NativeMSELoss",
     "NativeCrossEntropyLoss",
     "native_accuracy",

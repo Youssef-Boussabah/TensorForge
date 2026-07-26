@@ -1045,6 +1045,7 @@ def test_f7_changes_no_capability_inventory():
         "NativeCrossEntropyLoss", "native_accuracy",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
         "NativeGenerator",   # Phase G, milestone G1 — not F7
+        "NativeDropout",     # Phase G, milestone G4 — not F7
     }
     assert cpp.RAW_KERNELS == (
         "elementwise_add", "elementwise_subtract", "elementwise_multiply",
@@ -1057,6 +1058,9 @@ def test_f7_changes_no_capability_inventory():
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        # Phase G milestone G4 appended the Dropout module. It is
+        # unrelated to this milestone, which added no module of its own.
+        "NativeDropout",
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)

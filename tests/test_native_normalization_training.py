@@ -1102,6 +1102,9 @@ def test_f6_adds_no_capability_or_inventory_entry():
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        # Phase G milestone G4 appended the Dropout module. It is
+        # unrelated to this milestone, which added no module of its own.
+        "NativeDropout",
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)

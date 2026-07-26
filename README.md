@@ -229,7 +229,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
-- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, and milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, are complete; G4–G10 have not started, so no `NativeDropout` module exists yet, the checkpoint format is still version 1, and `dropout` stays unsupported until the G10 closure)
+- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, and milestone G4, the `NativeDropout` module and its public export, are complete; G5–G10 have not started, so generator state is **not** checkpointed and exact stochastic resume does not exist yet, the checkpoint format is still version 1, and `dropout` stays unsupported until the G10 closure)
 
 ## Limitations
 
@@ -504,7 +504,7 @@ still experimental, still float64/CPU only, and still not
 production-ready.
 
 **Phase G — Native RNG and Dropout — is the current phase, and it is in
-progress.** Four milestones have landed. **G0** locked the architecture
+progress.** Five milestones have landed. **G0** locked the architecture
 contract in
 [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) —
 Python-managed generator state (an explicit 64-bit seed and call counter
@@ -577,14 +577,39 @@ was. There is no Dropout backward kernel: the gradient is the existing
 native `multiply`. The whole registry footprint is one name, `dropout`,
 in `AUTOGRAD_OPS`.
 
-Milestones **G4–G10 have not started**: there is no `NativeDropout`
-module and no module-level train/eval Dropout behavior; `state_dict()` is
-still tensor-only and unchanged, the checkpoint format is still version 1
-and does not persist generator state, and `dropout` (with `float32`,
-`cuda`, and `amp`) is still listed as unsupported — G4 will implement and
-export `NativeDropout` without moving that boundary, and `dropout` leaves
-the unsupported list only at **G10**, after the full closure matrix
-passes. More
+**G4** then shipped the public module over that operation:
+
+```python
+from tensorforge.experimental import NativeDropout, NativeGenerator
+
+layer = NativeDropout(0.5, seed=1234)   # owns its generator
+shared = NativeGenerator(7)             # ...or two layers share one stream
+a, b = NativeDropout(0.5, generator=shared), NativeDropout(0.5, generator=shared)
+
+layer.train();  y = layer(x)            # stochastic; calls 0 -> 1
+layer.eval();   assert layer(x) is x    # identity; consumes nothing
+```
+
+`NativeDropout(p=0.5, seed=None, generator=None)` — `seed` and
+`generator` are **mutually exclusive**; without an explicit generator the
+module creates and owns one, and with one it registers **that exact
+object**, never a copy. The generator is first-class registered state:
+it appears in `named_generators()` and `generator_state_dict()` and is
+deliberately absent from `state_dict()`, which stays tensor-only. Training
+delegates to the G3 operation, so a successful forward consumes exactly
+one call and a failed one none; evaluation returns the input object
+itself, so any number of eval forwards leaves **no gap in the stream**;
+and `p == 0` is identity in both modes. The module owns no native storage.
+
+Milestones **G5–G10 have not started**, and the gap that matters is
+persistence: the checkpoint format is still version 1 and does **not**
+save generator state, so a saved model containing a `NativeDropout`
+preserves its parameters and buffers and silently omits the random stream
+— **exact stochastic resume does not exist yet** (G5). That, plus the
+unrun closure matrix, is exactly why `dropout` (with `float32`, `cuda`,
+and `amp`) is **still listed as unsupported**: the registry reports what
+is closed and validated, while the inventories report what exists.
+`dropout` leaves the unsupported list only at **G10**. More
 activations/math, data loaders, and CPU optimization sit beyond Phase G,
 and CUDA/GPU experiments remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and

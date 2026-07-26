@@ -2102,14 +2102,22 @@ def test_a_failing_cancellation_does_not_replace_the_original_failure(
 # 11. The capability boundary G3 does not move
 # ==========================================================================
 
-def test_the_operation_exists_without_a_module_or_a_new_kernel():
+def test_the_operation_exists_without_a_functional_helper_or_new_kernel():
+    """The operation's own boundary. ``NativeDropout`` left the absence
+    list at G4, which shipped the module *over* this operation — a
+    different layer, tested in tests/test_native_dropout_module.py. What
+    stays absent here is a **functional helper** and any global stream:
+    Phase G locks one surface per layer, so there is no
+    ``experimental.dropout(...)`` beside the method and the module."""
     import tensorforge.experimental as experimental
 
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert hasattr(NativeTensor, "dropout")
-    # No module, no functional helper, no global stream.
-    assert not hasattr(experimental, "NativeDropout")
-    assert "NativeDropout" not in cpp.NATIVE_MODULES
+    # The G4 module is a separate capability at a separate layer.
+    assert hasattr(experimental, "NativeDropout")
+    assert "NativeDropout" in cpp.NATIVE_MODULES
+    assert "NativeDropout" not in cpp.AUTOGRAD_OPS
+    # No functional helper, no global stream.
     assert not hasattr(experimental, "dropout")
     for name in ("default_generator", "manual_seed", "seed_all",
                  "global_generator"):

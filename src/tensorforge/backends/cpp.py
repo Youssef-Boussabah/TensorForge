@@ -258,6 +258,29 @@ NATIVE_MODULES = (
     # again nothing joined the op inventories. With both shapes now live,
     # "batchnorm" has finally left UNSUPPORTED.
     "NativeBatchNorm2d",
+    # "NativeDropout" (Phase G, milestone G4) is the public module over
+    # the G3 differentiable operation: stochastic inverted Dropout in
+    # training, the input object itself in evaluation, identity at
+    # p == 0, over one registered NativeGenerator it either owns (the
+    # default — independent streams) or shares (an explicit generator,
+    # stored as the exact object, never a copy). It adds no kernel, C ABI
+    # symbol, ctypes declaration, NativeTensorCore method, or NativeTensor
+    # operation — the forward is exactly `input.dropout(self.p,
+    # generator=self.generator)` — so nothing joined AUTOGRAD_OPS,
+    # TENSOR_CORE_OPS, or RAW_KERNELS with it; and the generator is
+    # *registered generator state*, not a parameter or buffer, so
+    # state_dict() is unchanged too.
+    #
+    # **"dropout" deliberately did NOT leave UNSUPPORTED here**, and that
+    # is the one place Phase G departs from Phase F's precedent (which
+    # moved "layernorm" at F2 and "batchnorm" at F4). Dropout's whole
+    # value is exact, reproducible randomness: the module exists, but the
+    # checkpoint format is still version 1 and does not persist generator
+    # state, so exact stochastic resume does not exist yet and the
+    # committed known-answer vectors have not been reproduced under the
+    # closure matrix's fresh Release, Debug, and sanitized builds. The
+    # name is removed at G10 and not before (design §19).
+    "NativeDropout",
 )
 # Native loss *modules*. Losses are tracked here and deliberately not in
 # NATIVE_MODULES, which lists the model-building layers — the split that

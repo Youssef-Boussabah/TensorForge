@@ -121,7 +121,7 @@ integration and semantic guardrails** (`tests/test_native_phase_f.py`),
 and **F9 closed the phase** under Release and Debug builds with Clang
 ASan/UBSan and LeakSanitizer — validation and documentation only, adding
 no numerical capability. **Phase G (native RNG and Dropout) is the
-current phase and is in progress: milestones G0, G1, G2, and G3 have
+current phase and is in progress: milestones G0, G1, G2, G3, and G4 have
 landed.** G0, the architecture
 contract in [native_rng_dropout_design.md](native_rng_dropout_design.md),
 locks Python-managed generator state, stateless native
@@ -134,9 +134,12 @@ stateless `dropout_forward` **Core** kernel and its C ABI, and G3 the
 differentiable `NativeTensor.dropout(p, *, generator)` over that Core —
 an explicit keyword-only generator, the graph-owned multiplier mask whose
 `multiply` is the whole backward, and the reserve/commit/abandon call
-transaction. Above the operation nothing exists: no `NativeDropout`
-module and no module-level train/eval Dropout behavior, the checkpoint
-format is still version 1 and does not persist generator state, and
+transaction, and G4 the `NativeDropout` module over it — stochastic in
+training, the input object itself in evaluation, identity at `p == 0`,
+over one registered generator it owns or shares. Above the module nothing
+exists: the checkpoint
+format is still version 1 and does not persist generator state, so
+**exact stochastic resume does not exist yet**, and
 `dropout` is still listed unsupported beside `float32`,
 `cuda`, and `amp`. The two
 engines never mix: explicit entry via
@@ -401,10 +404,32 @@ generator, records no expected parameter version, and consumes no call,
 which is why mutating the input or reseeding the generator afterwards
 leaves an existing graph's gradient exactly as it was.
 
-**G4–G10 have not started**: there is no `NativeDropout`
-module and no module-level train/eval Dropout behavior; the checkpoint
+Milestone **G4 is complete**: `NativeDropout`, the public module over
+that operation, and its export — one file, one export, and one name
+(`"NativeDropout"`) appended to `NATIVE_MODULES`.
+`NativeDropout(p=0.5, seed=None, generator=None)` validates `p` through
+the *same* shared normalizer the Core and the operation use, treats
+`seed` and `generator` as **mutually exclusive** (supplying both raises
+rather than silently ignoring one), and either creates and owns a
+generator or registers the **exact** object supplied, so two layers can
+share one interleaved stream. That generator is first-class registered
+state — in `generators()`, `named_generators()`, and
+`generator_state_dict()`, and deliberately absent from `state_dict()`,
+which stays contractually tensor-valued — and a state load replaces it in
+place, preserving identity and any sharing. Training delegates to the G3
+operation, so a successful forward consumes exactly one call and a failed
+one none; evaluation returns the **input object itself**, consuming
+nothing and allocating nothing, so any number of eval forwards leaves no
+gap in the stream; and `p == 0` is identity in both modes. The module
+owns no native storage.
+
+**G5–G10 have not started**, and the gap is persistence: the checkpoint
 format is
-still version 1 and does not persist generator state, and `dropout` stays
+still version 1 and does not persist generator state, so saving a model
+containing a `NativeDropout` preserves its parameters and buffers and
+**silently omits the random stream** — exact stochastic resume does not
+exist yet, and a load fabricates nothing. That, with the unrun closure
+matrix, is why `dropout` stays
 listed unsupported through G9, leaving that list only at G10 after the
 closure matrix.
 Beyond Phase G

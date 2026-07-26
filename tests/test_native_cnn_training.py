@@ -774,6 +774,7 @@ def test_d11_adds_no_capability_entries():
         "NativeLayerNorm",     # Phase F, milestone F2 (unrelated to D11)
         "NativeBatchNorm1d",   # Phase F, milestone F3 (unrelated to D11)
         "NativeBatchNorm2d",   # Phase F, milestone F4 (unrelated to D11)
+        "NativeDropout",       # Phase G, milestone G4 (unrelated to D11)
     )
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert "conv2d" in cpp.AUTOGRAD_OPS and "maxpool2d" in cpp.AUTOGRAD_OPS

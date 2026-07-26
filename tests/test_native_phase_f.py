@@ -1604,12 +1604,20 @@ def test_the_remaining_capability_boundary_is_unchanged():
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    for never in ("NativeDropout", "NativeBatchNorm3d", "NativeInstanceNorm",
+    for never in ("NativeBatchNorm3d", "NativeInstanceNorm",
                   "NativeGroupNorm", "NativeRMSNorm", "NativeRNG",
                   "NativeDataLoader"):
         assert not hasattr(experimental, never), never
         assert never not in experimental.__all__, never
         assert never not in cpp.NATIVE_MODULES, never
+    # "NativeDropout" left that list at Phase G milestone G4, which
+    # shipped and exported it. It is a Phase-G module, it carries no
+    # Phase-F capability, and the *capability* it is named after is still
+    # in UNSUPPORTED above — so the boundary this test guards is
+    # unchanged.
+    assert hasattr(experimental, "NativeDropout")
+    assert "NativeDropout" in experimental.__all__
+    assert "NativeDropout" in cpp.NATIVE_MODULES
     # NativeGenerator left that list at Phase G milestone G1, which ships
     # random *state* and generates no random values. It is exported, but
     # it is not a module and carries no numerical capability — the

@@ -1555,11 +1555,16 @@ def test_g2_ships_the_core_layer_and_nothing_above_it():
     assert "dropout_forward" not in cpp.AUTOGRAD_OPS
     assert not hasattr(NativeTensor, "dropout_forward")
 
-    # Not shipped: the module, a backward kernel, a generic RNG.
-    assert "dropout_backward" not in cpp.TENSOR_CORE_OPS
-    assert not hasattr(experimental, "NativeDropout")
+    # The G4 module exists two layers up and did not reach down into the
+    # Core either: it is a module name and nothing else.
+    assert hasattr(experimental, "NativeDropout")
+    assert "NativeDropout" in cpp.NATIVE_MODULES
     assert not hasattr(tensorforge, "NativeDropout")
-    assert "NativeDropout" not in cpp.NATIVE_MODULES
+    assert "NativeDropout" not in cpp.TENSOR_CORE_OPS
+    assert not hasattr(cpp.NativeTensorCore, "NativeDropout")
+
+    # Not shipped: a backward kernel, a generic RNG.
+    assert "dropout_backward" not in cpp.TENSOR_CORE_OPS
     assert not hasattr(cpp.NativeTensorCore, "dropout_backward")
     for absent in ("random", "rand", "randn", "bernoulli", "uniform"):
         assert absent not in cpp.TENSOR_CORE_OPS, absent

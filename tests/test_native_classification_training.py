@@ -1100,6 +1100,7 @@ def test_e8_adds_no_capability_inventory_entry():
         "NativeLayerNorm",     # Phase F, milestone F2 (unrelated to E8)
         "NativeBatchNorm1d",   # Phase F, milestone F3 (unrelated to E8)
         "NativeBatchNorm2d",   # Phase F, milestone F4 (unrelated to E8)
+        "NativeDropout",       # Phase G, milestone G4 (unrelated to E8)
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)

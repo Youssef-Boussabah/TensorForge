@@ -234,9 +234,10 @@ symbol, or custom backward exists at all.
 progress*: milestones G0 (the architecture contract in
 `docs/native_rng_dropout_design.md`), G1 (`NativeGenerator` and module
 generator-state ownership), G2 (the deterministic stateless
-Dropout-forward **Core**), and G3 (the differentiable
+Dropout-forward **Core**), G3 (the differentiable
 `NativeTensor.dropout(p, *, generator)`, with an **explicit** required
-keyword-only `NativeGenerator`) are complete; G4–G10 have not
+keyword-only `NativeGenerator`), and G4 (the `NativeDropout` module and
+its public export) are complete; G5–G10 have not
 started.** G0 locked Python-managed generator state (an explicit
 64-bit seed plus call counter and an algorithm identifier), stateless
 native random kernels that receive the whole key for one call, inverted
@@ -469,13 +470,64 @@ existing graph's gradient or raise it a stale-graph error (a *full*
 checkpoint load still stales such a graph through some **other** node's
 parameter rule — a parameter contract, never a Dropout effect).
 Higher-order autograd is not supported, matching the rest of the native
-line. **G3 ships the operation and nothing above it**: no
-`NativeDropout` and therefore no module train/eval behavior;
-`UNSUPPORTED` still reads `("dropout", "float32", "cuda", "amp")` — the
+line.
+**G4 is complete**: `NativeDropout` in
+`src/tensorforge/experimental/native_dropout.py`, its export from
+`tensorforge.experimental`, and exactly one registry name —
+`"NativeDropout"` appended to `NATIVE_MODULES`. **G4 changed no C++, no C
+ABI symbol, no ctypes declaration, no `NativeTensorCore` method, no
+autograd operation, and no checkpoint format.**
+`NativeDropout(p=0.5, seed=None, generator=None)`: `p` goes through the
+*same* `_normalize_dropout_probability` the Core and the operation use
+(never a third rule) and is stored as a plain `float`; `seed` and
+`generator` are **mutually exclusive**, so supplying both raises
+`TypeError` rather than quietly ignoring one; without an explicit
+generator the module **creates and owns** `NativeGenerator(seed)` (one OS
+draw at `seed=None`), and with one it registers **that exact object**,
+never a copy — the default gives every layer an independent stream and an
+explicit generator gives several layers one interleaved stream. All
+validation precedes generator creation and registration, so a rejected
+construction draws no entropy, registers nothing, allocates nothing, and
+leaves a supplied generator bit-identical. **Which construction path ran
+is deliberately not recorded**: the public surface is exactly `p`,
+`generator`, `training`, and the ordinary `NativeModule` methods, with
+**no `owns_generator` attribute** (public or private) — "this module
+created its generator" is true of one moment in the constructor and stops
+being true as soon as that generator is shared with a second module, so
+ownership is read from generator **identity** and the **registered
+topology** (`a.generator is b.generator`, `named_generators()`) rather
+than from a Boolean a caller could also overwrite. The generator is registered
+under the canonical name `"generator"` (readable as `module.generator`)
+as the **fourth** state category: in `generators()`,
+`named_generators()`, and `generator_state_dict()`, deliberately absent
+from `state_dict()` (still `{name: NativeTensor}`), identity-preserved
+across `load_generator_state_dict()`, and never a parameter, buffer, or
+child module. The module owns **no native storage**, and dropping it
+never closes, resets, or mutates its generator. Forward validates the
+input **first** (`TypeError` for a non-`NativeTensor`, `RuntimeError` for
+a closed one — so evaluation is not a way to hand back an invalid
+tensor), then dispatches: **training** is exactly
+`input.dropout(self.p, generator=self.generator)`, so the operation owns
+the whole call transaction and the module can add no failure hole to it;
+**evaluation** returns the **input object itself**, consuming no call and
+allocating nothing, so any number of eval forwards leaves **no gap in the
+stream** and the next training forward takes the next index; and
+**`p == 0`** is identity in both modes, deliberately delegated to the
+operation (design §6.2) rather than duplicated as a second rule.
+`train()`/`eval()` propagate normally, including through
+`NativeSequential`, and never reseed or reset the generator. **G4 ships
+the module and nothing above it**, and the gap is persistence: the
+checkpoint format is still version 1 and has no generator section, so
+saving a model containing a `NativeDropout` preserves its parameters and
+buffers and **silently omits the random stream**, while a load leaves the
+live generator exactly as it found it and **fabricates nothing** — so
+**exact stochastic resume does not exist yet** (that is G5, which also
+adds the rejection rule making such a load an error rather than a quiet
+omission). That gap, plus the unrun closure matrix, is why `UNSUPPORTED`
+still reads `("dropout", "float32", "cuda", "amp")` — `"dropout"` is the
 one name deliberately in both an implemented inventory and that tuple,
-because the registry reports what is *closed and validated* and Dropout's
-reproducibility is not demonstrated until G10 — and the checkpoint format
-is still version 1 and does not serialize generator state.
+because the registry reports what is *closed and validated* while the
+inventories report what *exists*.
 Data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase G.

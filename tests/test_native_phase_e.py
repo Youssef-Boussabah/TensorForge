@@ -289,10 +289,13 @@ def test_unsupported_stays_honest_after_closure():
     # (Both BatchNorm shapes are deliberately absent from this list:
     # Phase F milestones F3 and F4 shipped them, which is unrelated to
     # Phase E's scope.)
+    # ("NativeDropout" is deliberately absent from this list: Phase G
+    # milestone G4 shipped it, which is as unrelated to Phase E's scope as
+    # the two BatchNorm shapes above.)
     for never in ("NativeNLLLoss", "NativeBCELoss", "NativeSoftmax",
                   "NativeLogSoftmax", "native_top_k_accuracy",
                   "native_confusion_matrix", "NativeDataLoader",
-                  "NativeBatchNorm3d", "NativeDropout"):
+                  "NativeBatchNorm3d"):
         assert not hasattr(experimental, never), never
     for never in ("argmax", "nll_loss", "one_hot", "randn", "rand"):
         assert not hasattr(NativeTensor, never), never

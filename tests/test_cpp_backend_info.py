@@ -268,6 +268,9 @@ def test_e8_added_no_capability_inventory_entry():
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        # Phase G milestone G4 appended the Dropout module. It is
+        # unrelated to this milestone, which added no module of its own.
+        "NativeDropout",
     )
     assert info["native_losses"] == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert info["native_metrics"] == ("native_accuracy",)
@@ -431,6 +434,9 @@ def test_f9_closed_phase_f_without_registering_anything():
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        # Phase G milestone G4 appended the Dropout module. It is
+        # unrelated to this milestone, which added no module of its own.
+        "NativeDropout",
     )
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)

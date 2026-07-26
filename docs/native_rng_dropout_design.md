@@ -10,8 +10,8 @@ declaration, no `NativeTensorCore` method, no `NativeTensor` operation,
 no module, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-G status: in progress. G0, G1, G2, and G3 are complete; G4–G10
-have not started.** Milestone **G1** shipped `NativeGenerator` and
+**Phase-G status: in progress. G0, G1, G2, G3, and G4 are complete;
+G5–G10 have not started.** Milestone **G1** shipped `NativeGenerator` and
 generator registration on `NativeModule` — random **state** and its
 ownership; it generates no random values by itself. Milestone **G2**
 shipped the stateless Dropout-forward **Core**: §4's derivation, §7's
@@ -23,14 +23,21 @@ differentiable `NativeTensor.dropout(p, *, generator)` — one autograd
 node over that Core, the graph-owned multiplier mask, the backward that
 is one `multiply` against it, and §5's reserve → commit / abandon call
 transaction — adding exactly one name, `"dropout"`, to `AUTOGRAD_OPS`.
+Milestone **G4** shipped `NativeDropout`, the public module over that
+operation: stochastic in training, the input object itself in evaluation,
+identity at `p == 0`, over one registered `NativeGenerator` it either owns
+(the default) or shares (an explicit one, stored as the exact object) —
+adding exactly one name, `"NativeDropout"`, to `NATIVE_MODULES` and the
+experimental exports.
 
-That is the operation layer and nothing above it. `NativeDropout` does
-**not** exist (G4); there is no module, no train/eval Dropout behavior,
-and no implicit, global, or default generator anywhere — the generator is
-**required and keyword-only**; the Core still consumes **no** generator
-call and touches no `NativeGenerator` at all; `"dropout"` is still in
-`UNSUPPORTED`; and the checkpoint format is still version 1 and does not
-serialize generator state.
+That is the module layer and nothing above it. There is no implicit,
+global, or default generator anywhere — the operation's generator is
+**required and keyword-only**, and the module's is explicit registered
+state; the Core still consumes **no** generator call and touches no
+`NativeGenerator` at all; **generator state is still not checkpointed**,
+so exact stochastic resume does not exist (G5); the checkpoint format is
+still version 1; and `"dropout"` is still in `UNSUPPORTED`, deliberately,
+until the G10 closure.
 
 The capability boundary is therefore exactly what Phase F closed with,
 and this document does not move it:
@@ -1950,8 +1957,13 @@ without consuming a call; and no two successful forwards on one generator
 ever sharing a call index.
 
 **G4 — module.** `p` validation; train vs eval; eval consumes no call and
-returns the input object; `p == 0` likewise; owning versus supplied
-generator; `seed` and `generator` mutually exclusive; two modules sharing
+returns the input object; `p == 0` likewise; a created generator versus a
+supplied one — distinguished by **identity and registration** (a supplied
+generator is the exact object given; a created one is a normally
+registered fresh object), with an explicit assertion that **no public
+`owns_generator` attribute exists** and that sharing a created generator
+with a second module leaves no stale ownership claim behind;
+`seed` and `generator` mutually exclusive; two modules sharing
 one generator interleaving by call order; one module used twice; empty
 tensor `state_dict()`; the generator registered under a stable canonical
 name; repr; composition inside `NativeSequential`; capability registry
@@ -2169,7 +2181,7 @@ not move and the phase is not closed.
 | G1 | `NativeGenerator` and module generator-state ownership | **Complete** |
 | G2 | Deterministic native Dropout-forward Core | **Complete** |
 | G3 | Differentiable `NativeTensor` Dropout | **Complete** |
-| G4 | `NativeDropout` module and public export | Not started |
+| G4 | `NativeDropout` module and public export | **Complete** |
 | G5 | Checkpoint version 2 and exact RNG restoration | Not started |
 | G6 | RNG, graph, ownership, and checkpoint hardening | Not started |
 | G7 | Deterministic stochastic training and exact resume | Not started |
@@ -2464,6 +2476,8 @@ exception rather than an "already committed" cleanup error.
 
 ### G4 — `NativeDropout` module and public export
 
+**Complete.**
+
 - **Objective.** The public layer — implemented and exported, but **not**
   yet advertised as a supported capability.
 - **Scope.** §6 and the module contract; export reconciliation.
@@ -2474,7 +2488,10 @@ exception rather than an "already committed" cleanup error.
   training stochastic, evaluation identity, `p == 0` identity, neither
   consuming a call; the generator registered as module state.
 - **Ownership.** The module owns its generator when it created one and
-  merely references a supplied one; it owns no native storage.
+  merely references a supplied one; it owns no native storage. Ownership
+  is expressed by **identity and registration**, never by a stored flag:
+  the public surface is `p`, `generator`, `training`, and the ordinary
+  `NativeModule` methods, and **no `owns_generator` attribute exists**.
 - **Failure.** Constructor validation before any state; forward
   delegating every runtime failure to G3.
 - **Tests.** The G4 block of §15, **including an explicit assertion that
@@ -2484,10 +2501,88 @@ exception rather than an "already committed" cleanup error.
   and **still listed unsupported** until G10.
 - **Forbidden.** **Any change to `UNSUPPORTED`.** No checkpoint-format
   change; no `Dropout2d`; no functional helper; no stable-framework
-  change.
+  change; no public ownership flag or equivalent property.
 - **Done when.** The module works in both modes, `"NativeDropout"` is in
   `NATIVE_MODULES` and the exports, and `"dropout"` is **still** in
   `UNSUPPORTED`.
+
+**What shipped, exactly.** `src/tensorforge/experimental/native_dropout.py`,
+the export in `__init__.py`, and one name — `"NativeDropout"` — appended
+to `NATIVE_MODULES`. Nothing else moved: no C++, no C ABI symbol, no
+ctypes declaration, no `NativeTensorCore` method, no `NativeTensor`
+operation, no `AUTOGRAD_OPS` entry, no `STATE_SUPPORT` entry, no
+checkpoint-format change, and no other registry value.
+
+`NativeDropout(p=0.5, seed=None, generator=None)`. `p` goes through the
+**same** `_normalize_dropout_probability` the Core and the operation use —
+a third rule would be a third place for the matrix to drift — and is
+stored as a plain `float`. `seed` and `generator` are **mutually
+exclusive**: supplying both raises `TypeError` rather than silently
+preferring one, because a quietly ignored seed is exactly the
+"looks reproducible, is not" failure explicit state exists to prevent.
+Without an explicit generator the module builds and owns
+`NativeGenerator(seed)` (fresh OS entropy at `seed=None`); with one it
+registers **that exact object**, never a copy, which is how two layers
+share one interleaved stream (§3.7). Every argument is validated before a
+generator is created or registered, so a rejected construction draws no
+entropy, registers nothing, allocates nothing, and leaves a supplied
+generator bit-identical.
+
+**Which construction path ran is deliberately not recorded.** The public
+surface is exactly `p`, `generator`, `training`, and the ordinary
+`NativeModule` methods — there is **no ownership flag**, public or
+private. "This module created its generator" is true of one moment in the
+constructor, not durably: the same generator can be handed to a second
+module a line later, at which point a stored Boolean would assert an
+exclusivity the object graph contradicts, and a public mutable one would
+additionally let a caller change the claim without changing any
+registration, lifetime, or behavior. Ownership and sharing are read where
+they are actually recorded — generator **identity** and the **registered
+topology** (`a.generator is b.generator`, and `named_generators()` over
+the model, which is also exactly what the §10.3 checkpoint alias topology
+persists). The distinction still matters behaviorally, and it is the
+observable one: the default gives every layer an independent stream, an
+explicit generator gives several layers one interleaved stream.
+
+The generator is registered under the canonical name `"generator"` and is
+readable as `module.generator`. It is the **fourth** registration
+category, so it appears in `generators()`, `named_generators()`, and
+`generator_state_dict()` and is deliberately absent from `state_dict()`,
+which stays contractually `{name: NativeTensor}`. A module with a Dropout
+in it therefore has an unchanged tensor state dict. `load_generator_state_dict()`
+replaces state in place, so identity — and any sharing — survives a load.
+The module owns **no native storage**: constructing, registering,
+running, and discarding one moves the live-storage count only by the
+outputs its forwards return, and dropping the module never closes,
+resets, or mutates the generator.
+
+Forward is three cases and the layering is deliberate. Input validation
+runs **first** (a `TypeError` for a non-`NativeTensor`, a `RuntimeError`
+for a closed one), so evaluation mode is not a way to hand back an
+invalid tensor. Training delegates to `NativeTensor.dropout`, which owns
+the whole call transaction — so a successful training forward consumes
+exactly one call and a failed one consumes none, and the module can add
+no failure hole to a transaction it does not implement. Evaluation
+returns the **input object itself**, consuming no call and allocating
+nothing, so an arbitrary number of eval forwards leaves **no gap in the
+stream**: a training forward at index *n* followed by any number of eval
+forwards is followed by a training forward at index *n + 1*. `p == 0` is
+identity too and is deliberately **not** short-circuited in the module:
+§6.2 assigns that rule to the operation, which already returns the
+caller's own tensor before reserving, allocating, or drawing anything, and
+a second copy of the rule could only ever disagree with the first.
+
+**The version-1 checkpoint limitation is recorded rather than glossed.**
+The format is still version 1 and has no generator section, so saving a
+model containing a `NativeDropout` preserves its parameters and buffers
+and **silently omits the random stream**; loading one leaves the live
+generator exactly as it found it and — the important half — **fabricates
+nothing**. Exact stochastic resume therefore does not exist yet. G5 moves
+the format to version 2 and adds the §10.6 rejection rule that makes a v1
+archive loaded into a generator-bearing model an error instead of a quiet
+omission; until then the omission is the honest behavior and is pinned by
+test. That gap, together with the unrun closure matrix, is precisely why
+`"dropout"` stays in `UNSUPPORTED`.
 
 *Why `"dropout"` does **not** move here:* Phase F moved its capability
 names at the module milestones (`"layernorm"` at F2, `"batchnorm"` at
