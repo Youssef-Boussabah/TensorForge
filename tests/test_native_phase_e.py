@@ -226,12 +226,16 @@ def test_capability_inventories_are_internally_consistent():
         for attribute in _STATE_CAPABILITY_API.get(name, (name,)):
             assert (hasattr(experimental, attribute)
                     or hasattr(NativeModule, attribute)), (name, attribute)
-    # Implemented and unsupported names stay disjoint everywhere.
+    # Implemented and unsupported names stay disjoint everywhere, with
+    # the one deliberate exception Phase G locks (design §19): milestone
+    # G3 shipped the differentiable "dropout" operation while the
+    # *capability* stays unsupported until the G10 closure. No Phase-E
+    # name is involved, which is exactly what this asserts.
     implemented = (set(cpp.TENSOR_CORE_OPS) | set(cpp.AUTOGRAD_OPS)
                    | set(cpp.RAW_KERNELS) | set(cpp.NATIVE_MODULES)
                    | set(cpp.NATIVE_LOSSES) | set(cpp.NATIVE_METRICS)
                    | set(cpp.NATIVE_OPTIMIZERS))
-    assert implemented.isdisjoint(set(cpp.UNSUPPORTED))
+    assert implemented & set(cpp.UNSUPPORTED) == {"dropout"}
 
 
 def test_the_phase_e_capability_set_is_exactly_what_shipped():
@@ -267,11 +271,17 @@ def test_unsupported_stays_honest_after_closure():
     # ("layernorm" left UNSUPPORTED in Phase F milestone F2 and
     # "batchnorm" in F4, once both BatchNorm shapes shipped as composed
     # modules. Neither was ever a Phase-E boundary.)
-    for absent in ("float32", "cuda", "amp", "dropout"):
+    for absent in ("float32", "cuda", "amp"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.NATIVE_MODULES
+    # "dropout" is still an unsupported *capability* — a boundary Phase E
+    # kept and Phase G has not yet moved — even though Phase G milestones
+    # G2 and G3 shipped a Core wrapper and a differentiable operation
+    # underneath it. It leaves UNSUPPORTED only at the G10 closure.
+    assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" not in cpp.NATIVE_MODULES
     import tensorforge.experimental as experimental
 
     # Classification extensions that were explicitly out of scope never

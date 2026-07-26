@@ -1676,6 +1676,13 @@ def test_native_cross_entropy_registry_placement():
     implemented = (set(info["tensor_core_ops"]) | set(info["autograd_ops"])
                    | set(info["raw_kernels"]))
     for name in info["unsupported"]:
+        # "dropout" is the single deliberate overlap Phase G locks
+        # (design §19): milestone G3 shipped the differentiable operation
+        # while the *capability* stays unsupported until the G10 closure.
+        # It is not a cross-entropy concern; the rule still binds every
+        # other unsupported name.
+        if name == "dropout":
+            continue
         assert name not in implemented, name
 
 

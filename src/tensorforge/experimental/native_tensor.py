@@ -59,6 +59,17 @@ wrong value. Value-independent backwards (``add``/``subtract``/
 reductions/views) record nothing and stay valid across parameter
 mutation, with mathematically correct gradients.
 
+As of Phase G milestone G3, ``dropout(p, *, generator)`` joins the
+saved-state family: it takes an **explicit** ``NativeGenerator`` (there is
+no default, global, or implicit native random stream), reserves exactly
+one call, runs the stateless G2 Core with that reservation's seed and
+index, and adopts the private multiplier mask as graph-owned state whose
+backward is one ``multiply`` — so backward never rereads the input, never
+redraws, and never touches the generator. The reservation is committed as
+the last action before returning, and every failure before that abandons
+it, so a failed forward consumes nothing. ``p == 0`` returns the input
+object itself and consumes nothing either.
+
 NativeTensor is still **not** tensorforge.Tensor: the two autograd
 engines never mix, no conversion is implicit, and the framework frontend
 never imports this. Conversion crosses the native boundary only by
@@ -72,6 +83,7 @@ freed layout.
 import numpy as np
 
 from ..backends import cpp
+from .native_generator import NativeGenerator
 
 
 class NativeTensor:
@@ -1276,6 +1288,169 @@ class NativeTensor:
             out_core.close()
             raise
 
+    def dropout(self, p, *, generator):
+        """Inverted Dropout over this tensor, natively and differentiably
+        (Phase G, milestone G3 — one autograd node over the G2 stateless
+        Core, plus the generator call transaction of design §5).
+
+        ``p`` is the drop probability in ``[0, 1)``, validated by the one
+        shared normalizer the Core and (later) the module use, so the
+        accepted/rejected matrix is identical at every layer: a ``bool`` is
+        a ``TypeError``, a non-real is a ``TypeError``, and ``p == 1``,
+        ``p > 1``, ``p < 0``, NaN, and ±inf are all ``ValueError``.
+        ``generator`` is a **required keyword-only** ``NativeGenerator``:
+        there is no default, no process-global stream, no module-global
+        stream, no implicit per-call generator, and no NumPy or Python
+        ``random`` fallback anywhere. Omitting it is a ``TypeError``.
+
+        For ``0 < p < 1`` this returns a fresh **owning** contiguous tensor
+        of this tensor's shape, where each logical element is kept and
+        scaled by ``1 / (1 - p)`` or dropped to ``0.0``. The decision for
+        logical (row-major) element ``i`` is a deterministic function of
+        ``(seed, call_index, i, p)`` — never of the values, the address,
+        the physical strides, or how the view was built, so a transposed,
+        narrowed, or nonzero-offset input receives the same mask as a
+        contiguous tensor of the same logical shape (Policy B, design §7.3).
+
+        **``p == 0`` is identity** (design §6.2): this returns ``self`` —
+        the caller's own object, un-copied — after validating the receiver,
+        the generator, and the probability. It allocates nothing, calls no
+        kernel, builds no graph node, and **consumes no generator call**.
+
+        **The call transaction** (design §5). Everything that can be
+        validated without the generator is validated first; then exactly
+        one call is reserved, the Core runs **outside** the generator's
+        lock with the reserved key, the graph node is built, and the
+        reservation is committed as the **final** state-changing action
+        before returning. So a successful stochastic forward consumes
+        exactly one call — whether or not anything requires grad — and
+        **every** ordinary failure before that commit abandons the
+        reservation, leaving ``calls`` untouched and the same index free
+        for the next forward. Backward consumes none, ever.
+
+        The exact random key comes from the reservation, not from a later
+        read: the index is the token's, and the seed is read while that
+        reservation is live, which ``reseed``/``reset``/``load_state`` and
+        every generator state transaction are refused during (design §3.6).
+        So the key cannot describe a stream that no longer exists.
+
+        **Graph behavior** (design §8.2). The result requires grad exactly
+        when this tensor does; the only parent is this tensor; and the
+        backward is ``grad_input = upstream * mask`` over the **private
+        multiplier mask this forward saved**, through the existing native
+        ``multiply`` — there is no Dropout backward kernel and no
+        ``dropout_backward`` Core op (design §7.5). Backward therefore
+        never rereads the input, never redraws, and never touches the
+        generator, so this operation records **no expected parameter
+        version**: mutating a directly versioned input afterwards leaves
+        the gradient correct for the forward that ran and must not raise a
+        stale-graph error (the ``maxpool2d``/``cross_entropy`` archetype,
+        the deliberate contrast with ``log``). Reseeding, resetting, or
+        replacing the generator's state afterwards cannot change an
+        existing graph's gradient either. Higher-order autograd is not
+        supported here, exactly as everywhere else in the native line: the
+        backward computes at the graph-unaware Core level and produces
+        graph-free gradients.
+
+        The mask is **private graph-owned state** (D9's ``graph_resources``
+        contract, reused unchanged — the third member of the family that
+        already holds MaxPool2d's winners and cross-entropy's saved
+        probabilities): never a public tensor, never a parameter or buffer,
+        never in a ``state_dict()`` or a checkpoint. It is released exactly
+        once, at the same deterministic points the graph history is — a
+        one-shot ``backward()``'s cleanup or ``close()`` — so
+        ``retain_graph=True`` keeps it for another pass, a failed retryable
+        backward leaves it alive, an abandoned graph still frees it, and a
+        **no-grad forward closes it immediately** (while still committing
+        the call, because a draw happened). If graph construction itself
+        raises, both the output and the mask are closed here.
+
+        Zero-element inputs are contractually legal and would consume a
+        call, but the native tensor representation rejects zero-size
+        dimensions, so no empty tensor can be constructed to hand in
+        today — the G2 reachability note, unchanged."""
+        # -- validation first: nothing below reserves, allocates, or calls
+        # a kernel, so a rejected call is inert on every axis (design §14).
+        core = self._require_open()
+        if not isinstance(generator, NativeGenerator):
+            raise TypeError(
+                f"dropout requires an explicit NativeGenerator, got "
+                f"{type(generator).__name__}. The native line has no "
+                f"default, global, or implicit random stream: construct a "
+                f"NativeGenerator and pass generator=..."
+            )
+        # The one shared validator (design §6.1) — not a second rule.
+        probability = cpp._normalize_dropout_probability(p, "dropout")
+        if probability == 0.0:
+            # Identity (design §6.2): the caller's own tensor, un-copied.
+            # No reservation, no allocation, no kernel, no graph node, no
+            # change to requires_grad, and no call consumed. This is the
+            # one case where a Dropout result is not a fresh owning
+            # tensor, matching the stable Dropout and the empty
+            # NativeSequential forward; §13 records the aliasing.
+            return self
+
+        # -- reserve exactly one call. This is where a concurrent or
+        # reentrant caller fails, and where exhaustion is refused — in both
+        # cases before an index is minted. The generator's lock is released
+        # before anything below runs, so it is never held across an
+        # allocation or a kernel.
+        token = generator._reserve_call()
+        # Bound immediately, and the cleanup boundary entered as the very
+        # next action: the only window this cannot cover is an asynchronous
+        # exception between the two, which is a couple of bytecodes with no
+        # Python code in it (design §3.6's residual window).
+        result = None
+        try:
+            # The key belongs to the reservation: the token's index, and
+            # the seed read while that reservation makes every state
+            # replacement raise. `generator.calls` is deliberately NOT read
+            # here — it is the committed *count*, and the reserved index is
+            # the token's.
+            seed = generator.seed
+            call_index = token._index
+            # One call into the G2 Core contract does all the numerical
+            # work and its own validation, allocates output then mask, and
+            # closes everything it allocated if any part fails.
+            out_core, mask = core._dropout_forward_with_mask(
+                probability, seed=seed, call_index=call_index
+            )
+            try:
+                backward = _dropout_backward(self, mask)
+                # _from_op adopts the mask as this node's graph-owned
+                # resource when a graph is built, and closes it immediately
+                # when no parent requires grad. Same contract as the
+                # maxpool2d winner buffer; no second lifetime system.
+                result = self._from_op(
+                    out_core, (self,), backward, "dropout",
+                    graph_resources=(mask,),
+                )
+            except BaseException:
+                # Nothing adopted either object: release the saved state
+                # and the output, in the same order maxpool2d uses.
+                mask.close()
+                out_core.close()
+                raise
+            # The last addressable failure point before the transaction
+            # boundary (see _deliver_dropout_result).
+            _deliver_dropout_result(result)
+            # The transaction boundary. Everything after it is
+            # irreversible: this index is spent whatever happens next.
+            generator._commit_call(token)
+            # Inside the `try` deliberately, so the commit-to-return
+            # window is covered by the cleanup below rather than left
+            # open. Nothing else may go here — no allocation, no
+            # callback, no graph mutation, no formatting.
+            return result
+        except BaseException as error:
+            # Nothing reached the caller either way, so the result is
+            # released either way. What differs is the *reservation*, and
+            # the difference is decided by the token's recorded outcome
+            # rather than by a local flag — a commit can succeed and the
+            # statement after it never run.
+            _settle_failed_dropout(generator, token, result, error)
+            raise
+
     # -- autograd (opt-in; Python-managed graph over native ops) ----------
 
     def _accumulate_grad(self, grad):
@@ -1599,6 +1774,137 @@ class NativeTensor:
 # owning contiguous tensor, so a retained grad can never be a borrowing
 # view over a transient whose owner is about to be dropped and closed.
 # ---------------------------------------------------------------------------
+
+
+def _dropout_backward(input_tensor, mask):
+    """Build the Dropout backward closure over one saved multiplier mask
+    (G3).
+
+    A factory rather than an inline ``def`` for one reason: it makes
+    "closure construction failed" an **addressable** failure position.
+    Everything between reserving a generator call and committing it has to
+    be provably failure-atomic, and a bare ``def`` inside the operation is
+    the one step in that sequence a test cannot reach. This is the same
+    reason ``native_generator._deliver_reservation`` exists — private, and
+    doing nothing a caller could depend on beyond returning the closure.
+
+    The closure consumes exactly two things: the upstream gradient and the
+    graph-owned mask its own forward saved. It never rereads the input's
+    values, never redraws, never touches a ``NativeGenerator``, and never
+    mutates the mask — inverted Dropout's gradient is ``upstream * mask``,
+    computed by the existing native ``multiply`` at the graph-unaware Core
+    level, so there is no Dropout backward kernel (design §7.5) and the
+    resulting gradient carries no graph of its own."""
+
+    def backward(upstream):
+        # Identical shapes (the output is the input's shape and the mask
+        # is the output's), so no unbroadcast reduction is possible or
+        # needed.
+        grad_core = upstream._require_open().multiply(mask)
+        contribution = NativeTensor._from_core(grad_core)
+        try:
+            input_tensor._accumulate_grad(contribution)
+        except BaseException:
+            # _accumulate_grad adopts a contribution only on the
+            # assignment that ends it, so an unadopted gradient is
+            # released here rather than left to the __del__ safety net.
+            contribution.close()
+            raise
+
+    return backward
+
+
+def _chain_cleanup_failure(error, cleanup_error):
+    """Attach a failed cleanup step to the failure that caused it, keeping
+    the **operation's** exception primary.
+
+    The cleanup steps below are non-failing by contract — closing a
+    result is idempotent, and abandoning a live matching reservation is
+    two integer writes — so reaching here means something is already
+    wrong. Substituting the cleanup error for the original would then
+    report the *second* problem and hide the first, which is exactly
+    backwards: the caller needs to know why the forward failed. So the
+    original propagates and the cleanup failure is chained onto the end
+    of its context chain, where the default traceback machinery still
+    prints it. Nothing is swallowed, and an existing chain is appended to
+    rather than overwritten."""
+    tail = error
+    seen = {id(error)}
+    while tail.__context__ is not None and id(tail.__context__) not in seen:
+        tail = tail.__context__
+        seen.add(id(tail))
+    if tail is not cleanup_error:
+        tail.__context__ = cleanup_error
+
+
+def _settle_failed_dropout(generator, token, result, error):
+    """Clean up after a Dropout forward that raised, **outcome-aware**
+    (G3; design §5 and §14).
+
+    The two cases are genuinely different, and only the token knows which
+    one this is:
+
+    * **Before a successful commit** — the overwhelmingly common case, and
+      every injectable one. No call has been consumed, so the reservation
+      is abandoned: ``calls`` stays exactly where the forward found it,
+      the slot is cleared, and the very next forward reuses the same
+      unconsumed index and reproduces the mask this one would have.
+    * **After a successful commit, before the caller receives the result**
+      — an asynchronous exception in the commit-to-return window. That
+      index is **irreversibly spent**: ``calls`` has already advanced
+      exactly once and the reservation slot is already clear. Abandoning
+      the committed token would raise "already committed" and mask the
+      real failure, so it is not attempted; the generator simply carries
+      on from its next index.
+
+    In both cases the unreturned result is closed, which releases the
+    graph-owned multiplier mask with it, so no caller can observe a
+    partial result and native live storage returns to its baseline.
+
+    The outcome is read from the token, never from a flag set after
+    ``_commit_call``: a commit can succeed and the next statement never
+    execute, and a cleanup that guessed wrong there would either strand a
+    reservation or report the wrong error. Every step is attempted even
+    if an earlier one fails — the discipline ``_native_state``'s
+    post-commit release loop already uses — and a cleanup failure is
+    chained onto ``error`` rather than substituted for it. This function
+    never raises."""
+    # Default to "not committed" if the query itself somehow fails:
+    # attempting the cancellation is the safe guess, because
+    # ``_abandon_call`` is exact-match and refuses a committed token
+    # without changing anything, whereas skipping it could strand a live
+    # reservation for the rest of the process.
+    committed = False
+    try:
+        committed = generator._call_committed(token)
+    except BaseException as cleanup_error:   # pragma: no cover - defensive
+        _chain_cleanup_failure(error, cleanup_error)
+    try:
+        if result is not None:
+            result.close()
+    except BaseException as cleanup_error:   # pragma: no cover - defensive
+        _chain_cleanup_failure(error, cleanup_error)
+    if not committed:
+        try:
+            generator._abandon_call(token)
+        except BaseException as cleanup_error:
+            _chain_cleanup_failure(error, cleanup_error)
+
+
+def _deliver_dropout_result(result):
+    """The result → commit seam of the Dropout call transaction (G3).
+
+    A deliberate no-op, and the exact analogue of
+    ``native_generator._deliver_reservation``. It exists so the last
+    window before the generator commit — the point at which the output
+    exists, the graph owns the mask, and the call has *not* yet been
+    consumed — is addressable by a test rather than only by argument. A
+    failure here must cancel the reservation and release the whole result,
+    so that the very next forward reuses the same unconsumed call index.
+
+    Private and module-level: never exported, never referenced from a
+    public API, and it does nothing a caller could depend on."""
+    return result
 
 
 def _versioned_value_reads(op_name, tensors):

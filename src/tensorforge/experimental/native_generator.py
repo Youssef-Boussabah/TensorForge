@@ -750,6 +750,36 @@ class NativeGenerator:
                 f"reservation is outstanding and is left untouched"
             )
 
+    def _call_committed(self, token):
+        """Whether ``token``'s reserved call was **committed on this
+        generator** — a read-only outcome query, and nothing more.
+
+        It exists for exactly one caller and one question. The
+        differentiable Dropout operation (§5, §8) commits as the last
+        action before returning its result, and an exception can still
+        arrive in the window between a *successful* commit and that
+        return. Its cleanup must then behave differently: the call is
+        irreversibly consumed, the reservation slot is already clear, and
+        abandoning the token would raise "already committed" and mask the
+        failure the caller actually needs to see. A local boolean set
+        after ``_commit_call`` cannot answer this, because the commit can
+        succeed and the assignment never run; the token's own recorded
+        outcome can.
+
+        Changes nothing: no reservation is created, cleared, or matched,
+        ``calls`` does not move, no serial is consumed, and no claim is
+        touched. A foreign generator's token answers ``False`` here rather
+        than raising, because the question is "did *this* generator commit
+        it", and a non-token is a caller bug and raises ``TypeError``
+        exactly as commit and abandon do. Private, like the rest of the
+        reservation protocol — a token's outcome is never public."""
+        _require_token(token, "inspect")
+        # Read under the lock, like every other state read: the commit
+        # that writes this outcome holds the same lock while doing so.
+        with self._lock:
+            return (token._generator is self
+                    and token._outcome == "committed")
+
     def _has_active_reservation(self):
         """Whether a reservation is **in flight** — published, or claimed
         and still under construction. Private, read-only, and used by

@@ -1616,19 +1616,32 @@ def test_the_remaining_capability_boundary_is_unchanged():
     # boundary this test guards is unchanged.
     assert hasattr(experimental, "NativeGenerator")
     assert "NativeGenerator" not in cpp.NATIVE_MODULES
-    for never in ("dropout", "rand", "randn", "manual_seed", "to", "cuda",
+    for never in ("rand", "randn", "manual_seed", "to", "cuda",
                   "half", "float"):
         assert not hasattr(NativeTensor, never), never
+    # "dropout" left that list at Phase G milestone G3, which shipped the
+    # differentiable NativeTensor.dropout. It is an *operation*, it takes
+    # an explicit NativeGenerator (there is still no global stream or
+    # manual_seed), and the *capability* it is named after is still in
+    # UNSUPPORTED above — so the boundary this test guards is unchanged.
+    assert hasattr(NativeTensor, "dropout")
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" not in cpp.NATIVE_MODULES
     with pytest.raises((ValueError, TypeError)):
         NativeTensor.zeros((2, 2), dtype="float32")
     with pytest.raises((ValueError, TypeError)):
         NativeTensor.zeros((2, 2), device="cuda")
-    # Implemented and unsupported names stay disjoint.
+    # Implemented and unsupported names stay disjoint, with the one
+    # deliberate exception Phase G locks (design §19): milestone G3
+    # shipped the differentiable "dropout" operation while the
+    # *capability* stays unsupported until the G10 closure. No Phase-F
+    # name is involved, which is exactly what this asserts.
     implemented = (set(cpp.TENSOR_CORE_OPS) | set(cpp.AUTOGRAD_OPS)
                    | set(cpp.RAW_KERNELS) | set(cpp.NATIVE_MODULES)
                    | set(cpp.NATIVE_LOSSES) | set(cpp.NATIVE_METRICS)
                    | set(cpp.NATIVE_OPTIMIZERS))
-    assert implemented.isdisjoint(set(cpp.UNSUPPORTED))
+    assert implemented & set(cpp.UNSUPPORTED) == {"dropout"}
 
 
 def test_the_phase_f_artifacts_are_present_and_no_cpp_file_was_added():

@@ -121,7 +121,7 @@ integration and semantic guardrails** (`tests/test_native_phase_f.py`),
 and **F9 closed the phase** under Release and Debug builds with Clang
 ASan/UBSan and LeakSanitizer — validation and documentation only, adding
 no numerical capability. **Phase G (native RNG and Dropout) is the
-current phase and is in progress: milestones G0, G1, and G2 have
+current phase and is in progress: milestones G0, G1, G2, and G3 have
 landed.** G0, the architecture
 contract in [native_rng_dropout_design.md](native_rng_dropout_design.md),
 locks Python-managed generator state, stateless native
@@ -129,11 +129,15 @@ random kernels, inverted Dropout with a graph-owned multiplier mask, one
 generator call consumed per successful stochastic forward, generator
 registration on `NativeModule`, and native checkpoint version 2 — as
 **design, documentation, and guardrails only**. G1 shipped
-`NativeGenerator` and module generator-state ownership, and G2 the
-stateless `dropout_forward` **Core** kernel and its C ABI. Above the
-Core nothing exists: no differentiable `NativeTensor.dropout` operation
-and no `NativeDropout` module, the checkpoint format is still
-version 1, and `dropout` is still listed unsupported beside `float32`,
+`NativeGenerator` and module generator-state ownership, G2 the
+stateless `dropout_forward` **Core** kernel and its C ABI, and G3 the
+differentiable `NativeTensor.dropout(p, *, generator)` over that Core —
+an explicit keyword-only generator, the graph-owned multiplier mask whose
+`multiply` is the whole backward, and the reserve/commit/abandon call
+transaction. Above the operation nothing exists: no `NativeDropout`
+module and no module-level train/eval Dropout behavior, the checkpoint
+format is still version 1 and does not persist generator state, and
+`dropout` is still listed unsupported beside `float32`,
 `cuda`, and `amp`. The two
 engines never mix: explicit entry via
 `NativeTensor.from_array`, explicit exit via `to_numpy()`, no implicit
@@ -367,10 +371,39 @@ and no C++ unit holds random state — and randomness is keyed by the
 **logical** row-major element index, so a transposed, narrowed, or
 nonzero-offset view gets the same mask as a contiguous tensor of the same
 shape. Committed known-answer vectors are asserted identically in the
-native CTest and the Python suite. **G3–G10 have not started**: there is
-no differentiable `NativeTensor.dropout` operation, no autograd node, no
-graph-owned saved mask, no Dropout backward, and no `NativeDropout`
-module; the checkpoint format is
+native CTest and the Python suite.
+
+Milestone **G3 is complete**: the differentiable
+`NativeTensor.dropout(p, *, generator)`, which is where the G1 state
+transaction and the G2 stateless Core finally meet. Its whole registry
+footprint is one name, `"dropout"`, appended to `AUTOGRAD_OPS` — no C++,
+no C ABI symbol, no ctypes declaration, no Core method, no module, no
+export, and no checkpoint-format change. The generator is **required and
+keyword-only**: there is no default, process-global, or module-global
+stream, no implicit per-call generator, and no NumPy or Python `random`
+fallback, and `p` goes through the *same* validator the Core uses rather
+than a second rule. The operation owns the call transaction — validate,
+reserve one call, run the Core **outside** the generator's lock with the
+reservation's own seed and index, build the graph, and commit as the
+**last** state-changing action — so one successful stochastic forward
+consumes exactly one call with or without gradients, `p == 0` returns the
+caller's own tensor object having reserved and allocated nothing, and
+every ordinary failure before the commit releases the result, cancels the
+reservation, and leaves the same unconsumed index for the next forward.
+The private multiplier mask becomes **graph-owned** state through the
+unchanged `graph_resources` contract — the third member of the family
+beside MaxPool2d's winners and cross-entropy's saved probabilities —
+released exactly once with the graph history, retained under
+`retain_graph=True`, and closed immediately by a no-grad forward. The
+backward is `upstream * mask` through the existing native `multiply`, so
+**no Dropout backward kernel exists**; it reads neither the input nor the
+generator, records no expected parameter version, and consumes no call,
+which is why mutating the input or reseeding the generator afterwards
+leaves an existing graph's gradient exactly as it was.
+
+**G4–G10 have not started**: there is no `NativeDropout`
+module and no module-level train/eval Dropout behavior; the checkpoint
+format is
 still version 1 and does not persist generator state, and `dropout` stays
 listed unsupported through G9, leaving that list only at G10 after the
 closure matrix.

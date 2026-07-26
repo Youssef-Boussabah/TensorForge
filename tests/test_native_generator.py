@@ -3039,26 +3039,38 @@ def test_the_generator_layer_ships_no_dropout_or_random_operation():
     exposes a random operation, and nothing above the Core has shipped
     since.
 
-    ``"dropout_forward"`` is deliberately **not** in the list below any
-    more: milestone G2 shipped it as a layer-qualified **Core** wrapper
-    (a stateless kernel entry that takes an explicit seed and call index
-    and touches no generator). That is a different capability at a
-    different layer from the differentiable ``dropout`` operation, which
-    is G3 and does not exist — the same Core/operation split conv2d,
-    maxpool2d, and cross_entropy already follow. ``dropout_forward`` is
-    covered by tests/test_native_dropout_core.py; what stays absent here
-    is everything *above* it."""
+    Two names have left the absence list as their milestones landed, each
+    into a different layer. ``"dropout_forward"`` left at **G2**, which
+    shipped it as a layer-qualified **Core** wrapper — a stateless kernel
+    entry that takes an explicit seed and call index and touches no
+    generator. ``"dropout"`` left at **G3**, which shipped the
+    differentiable ``NativeTensor.dropout`` operation over that Core; it
+    is the one caller of the reservation protocol, and it lives one layer
+    above the generator, never on it. Both are the Core/operation split
+    conv2d, maxpool2d, and cross_entropy already follow, and both are
+    covered elsewhere (tests/test_native_dropout_core.py and
+    tests/test_native_dropout_autograd.py). What stays absent *here* is
+    any numerical surface on the **generator itself**."""
     import tensorforge.experimental as experimental
 
     assert not hasattr(experimental, "NativeDropout")
     assert "NativeDropout" not in experimental.__all__
-    for name in ("dropout", "rand", "randn", "bernoulli", "uniform",
+    for name in ("rand", "randn", "bernoulli", "uniform",
                  "random", "dropout_backward"):
         assert not hasattr(NativeTensor, name), name
         assert not hasattr(cpp.NativeTensorCore, name), name
         assert name not in cpp.TENSOR_CORE_OPS, name
         assert name not in cpp.AUTOGRAD_OPS, name
         assert name not in cpp.RAW_KERNELS, name
+    # The G3 operation exists on NativeTensor, and only there: not on the
+    # Core, not on the generator, not as a kernel.
+    assert hasattr(NativeTensor, "dropout")
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    assert "dropout" not in cpp.TENSOR_CORE_OPS
+    assert "dropout" not in cpp.RAW_KERNELS
+    assert not hasattr(cpp.NativeTensorCore, "dropout")
+    assert not hasattr(NativeGenerator, "dropout")
+    assert not hasattr(NativeGenerator(1), "dropout")
     # The G2 Core forward exists, is layer-qualified, and stops there.
     assert "dropout_forward" in cpp.TENSOR_CORE_OPS
     assert hasattr(cpp.NativeTensorCore, "dropout_forward")

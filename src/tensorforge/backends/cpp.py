@@ -181,6 +181,30 @@ TENSOR_CORE_OPS = (
 # history (the maxpool2d winner-buffer contract, reused unchanged). Its
 # layer-qualified Core wrappers stay in TENSOR_CORE_OPS; this entry is the
 # differentiable operation.
+#
+# Phase G adds "dropout" (G3): one graph node over the G2 stateless Core,
+# whose backward multiplies the upstream by the **private multiplier mask
+# its own forward saved** — the third member of the graph-owned saved-state
+# family beside maxpool2d's winners and cross-entropy's probabilities. Like
+# them it records no expected parameter version, and like softmax it needed
+# no backward kernel: the gradient is the existing `multiply` (design §7.5),
+# so nothing joined TENSOR_CORE_OPS, RAW_KERNELS, or _CHECKED_KERNELS with
+# it. The operation takes an explicit `NativeGenerator` and owns the
+# reserve/commit/abandon call transaction; the Core below it stays
+# generator-free.
+#
+# **"dropout" is deliberately in this tuple AND still in UNSUPPORTED**, and
+# that is the one place in the whole registry where a name appears in both.
+# It is not an inconsistency: the two tuples answer different questions.
+# This one says "a differentiable native operation by that name exists";
+# UNSUPPORTED says "the user-level Dropout capability is not closed". Phase
+# G locks that split explicitly (design §19): "dropout" names a capability
+# whose entire value is exact cross-platform reproducibility, so it stays
+# unsupported through G9 — past the G4 module and the G5 checkpoint format
+# — and is removed only at G10, after the closure matrix has actually
+# reproduced the committed vectors under fresh Release, Debug, and
+# sanitized builds. Advertising it earlier would mean the registry claims
+# reproducibility that has not been demonstrated.
 AUTOGRAD_OPS = (
     "add", "subtract", "multiply", "relu",
     "sum", "mean", "matmul",
@@ -190,6 +214,7 @@ AUTOGRAD_OPS = (
     "maxpool2d",
     "exp", "log", "softmax", "log_softmax",
     "cross_entropy",
+    "dropout",                 # G3
 )
 
 # The native training stack composed on the autograd layer (Phase C) and
@@ -362,6 +387,21 @@ STATE_SUPPORT = (
 # surface, and Phase F has since closed (F0-F9): F5-F9 were hardening, an
 # end-to-end proof, a benchmark, integration, and closure — none of them
 # a capability — so this tuple is exactly what F4 left.
+#
+# Phase G is in progress and has deliberately NOT moved this tuple.
+# "dropout" is the one name that appears here *and* in an implemented
+# inventory: G3 shipped the differentiable "dropout" operation into
+# AUTOGRAD_OPS, and G4 will add "NativeDropout" to NATIVE_MODULES, while
+# this entry stays put through G9 and is removed only at the G10 closure
+# (design §19). The reason is specific to this capability: Dropout's whole
+# value is exact, reproducible randomness, and reproducibility is not a
+# claim that can be made from source — it has to be demonstrated against
+# committed known-answer vectors under fresh Release, Debug, and
+# ASan/UBSan builds, and the stream has to survive a checkpoint (the
+# format is still version 1). So this tuple reports what is *closed and
+# validated*, and the operation inventories report what *exists*. See the
+# AUTOGRAD_OPS comment above; the split is asserted by guardrail tests
+# rather than left to prose.
 #
 # What remains below is genuinely absent from the native line.
 UNSUPPORTED = (

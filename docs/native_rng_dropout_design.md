@@ -10,20 +10,25 @@ declaration, no `NativeTensorCore` method, no `NativeTensor` operation,
 no module, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-G status: in progress. G0, G1, and G2 are complete; G3–G10 have
-not started.** Milestone **G1** shipped `NativeGenerator` and generator
-registration on `NativeModule` — random **state** and its ownership; it
-generates no random values by itself. Milestone **G2** shipped the
-stateless Dropout-forward **Core**: §4's derivation, §7's kernel, the
-guarded `tf_core_dropout_forward` export, and the layer-qualified
-`NativeTensorCore.dropout_forward` / `_dropout_forward_with_mask` pair,
-with committed known-answer vectors asserted from both C++ and Python.
+**Phase-G status: in progress. G0, G1, G2, and G3 are complete; G4–G10
+have not started.** Milestone **G1** shipped `NativeGenerator` and
+generator registration on `NativeModule` — random **state** and its
+ownership; it generates no random values by itself. Milestone **G2**
+shipped the stateless Dropout-forward **Core**: §4's derivation, §7's
+kernel, the guarded `tf_core_dropout_forward` export, and the
+layer-qualified `NativeTensorCore.dropout_forward` /
+`_dropout_forward_with_mask` pair, with committed known-answer vectors
+asserted from both C++ and Python. Milestone **G3** shipped §8's
+differentiable `NativeTensor.dropout(p, *, generator)` — one autograd
+node over that Core, the graph-owned multiplier mask, the backward that
+is one `multiply` against it, and §5's reserve → commit / abandon call
+transaction — adding exactly one name, `"dropout"`, to `AUTOGRAD_OPS`.
 
-That is the Core layer and nothing above it. §8's differentiable
-`NativeTensor.dropout` operation does **not** exist (G3); `NativeDropout`
-does **not** exist (G4); there is no autograd node, no graph-owned mask,
-and no Dropout backward anywhere; the Core consumes **no** generator call
-and touches no `NativeGenerator` at all; `"dropout"` is still in
+That is the operation layer and nothing above it. `NativeDropout` does
+**not** exist (G4); there is no module, no train/eval Dropout behavior,
+and no implicit, global, or default generator anywhere — the generator is
+**required and keyword-only**; the Core still consumes **no** generator
+call and touches no `NativeGenerator` at all; `"dropout"` is still in
 `UNSUPPORTED`; and the checkpoint format is still version 1 and does not
 serialize generator state.
 
@@ -340,6 +345,7 @@ straight-line integer work:
 | reservation **publication** (phase 3) | yes — claim match, active-slot write, single serial advance, claim clear |
 | reservation cancellation (`_abandon_call`) | yes |
 | reservation commit (`_commit_call`) | yes — token match and the single `calls += 1` |
+| committed-outcome query (`_call_committed`) | yes — a read, and only a read (added at G3; see §5's outcome 3) |
 | call-counter read (`.calls`) | yes |
 | state inspection (`state()`, `.seed`, `.algorithm`, `.algorithm_version`) | yes |
 | state replacement (`load_state()`) | yes |
@@ -500,6 +506,18 @@ So: **commit advances exactly once, and only for the currently active
 matching reservation. Cancel clears only the currently active matching
 reservation and never advances.** Every rejected token leaves `seed`,
 `calls`, and the active slot exactly as they were.
+
+One further private method, `_call_committed(token)`, answers a
+**read-only** question about that outcome: did *this* generator commit
+*this exact* token? It creates, clears, and matches no reservation, moves
+no counter, consumes no serial, and touches no claim. It exists because
+§5's outcome 3 — an exception after a successful commit and before the
+result is returned — needs cleanup that behaves differently from every
+pre-commit failure, and a boolean set after `_commit_call` cannot tell
+the two apart when the commit succeeds and that assignment never runs. A
+foreign generator's token answers `False` rather than raising, since the
+question is "did *I* commit it", and a non-token raises `TypeError` like
+commit and abandon do. A token's outcome is **never** public.
 
 #### What the lock buys, and what it does not
 
@@ -762,7 +780,8 @@ operation's result has been fully constructed and is about to be returned
 to the caller.
 
 The reservation is owned by exactly one layer — `NativeTensor.dropout`
-(§8). Neither `NativeTensorCore` nor any C++ code ever touches a
+(§8), shipped at G3 and still the only caller of the reservation
+protocol. Neither `NativeTensorCore` nor any C++ code ever touches a
 generator, so no lower layer can commit a call that a higher layer then
 fails to complete.
 
@@ -782,11 +801,65 @@ Ordered contract for `NativeTensor.dropout(p, generator=g)`:
    and advances `calls` exactly once.
 7. Return the result.
 
-Any exception at steps 3–5 runs `generator._abandon_call(token)` and
-propagates; `calls` is unchanged. The seed used in step 4 is read under
-the lock in step 3 and carried forward, so a `reseed()` racing this
-forward cannot change the stream the reserved index describes — it is
-refused outright while the reservation is live (§3.6).
+The seed used in step 4 is read under the lock in step 3 and carried
+forward, so a `reseed()` racing this forward cannot change the stream the
+reserved index describes — it is refused outright while the reservation
+is live (§3.6).
+
+#### The three outcomes, and why cleanup must know which one it is
+
+Step 6 is the boundary, and the cleanup on either side of it is **not**
+the same. There are exactly three outcomes:
+
+| # | Outcome | Calls consumed | Reservation | Result | Exception |
+|---|---|---|---|---|---|
+| 1 | a failure at steps 3–5, or at step 6 **before** the commit takes effect | **none** — `calls` is exactly where the forward found it | abandoned; the slot is cleared and the **same index stays retryable** | closed, releasing the graph-owned mask with it | the original propagates |
+| 2 | commit succeeds and the result is returned | **exactly one** | committed; the slot is clear | delivered to the caller | none |
+| 3 | commit **succeeds** and an exception arrives before the caller receives the result | **exactly one — irreversibly** | already committed; the slot is already clear | closed, releasing the graph-owned mask with it | the original propagates |
+
+Outcome 3 is the asynchronous commit-to-return window. The window itself
+may be unavoidable, but its *cleanup* is not, and it must be correct:
+
+- **The call is spent.** Once `_commit_call` returns, `calls` has
+  advanced and that index describes a draw that really happened. Nothing
+  may claim otherwise, and the generator carries on from its **next**
+  index — the spent one is never handed out again.
+- **The committed token is not abandoned.** `_abandon_call` on it would
+  raise "already committed" (§3.6's token table, unchanged), and that
+  cleanup error would then stand in for the failure the caller actually
+  needs to see. So the cancellation is simply not attempted.
+- **The unreturned result is still released.** No caller received it, so
+  it is closed exactly as in outcome 1, which releases the graph-owned
+  mask with it and returns native live storage to its baseline. Nothing
+  partial is observable and no graph escapes.
+- **The original exception propagates unchanged.** It is never replaced
+  by a stale-token or already-committed cleanup error.
+
+**The outcome is read from the token, not from a flag.** A local boolean
+set after `_commit_call` cannot distinguish outcomes 1 and 3: the commit
+can succeed and the assignment never execute — which is precisely the
+injected case a test must be able to produce. The operation therefore
+asks the generator, through the private read-only `_call_committed(token)`
+query (§3.6), whether *that exact token* committed on *that* generator.
+The query creates, clears, and matches no reservation, moves no counter,
+consumes no serial, and touches no claim; a token's outcome is never
+public.
+
+Both sides are proved by deterministic injection rather than by real
+signal timing: a `_commit_call` wrapper that raises *instead of*
+committing exercises outcome 1, and one that calls the **real** commit
+and then raises exercises outcome 3, over `KeyboardInterrupt`,
+`MemoryError`, and a custom `BaseException` that is deliberately not an
+`Exception`. A tripwire asserts `_abandon_call` is never invoked after a
+confirmed commit.
+
+Cleanup itself never raises. Every step is attempted even if an earlier
+one fails — the discipline `_native_state`'s post-commit release loop
+already uses — and because the cleanup steps are non-failing by contract,
+a failure among them means something is already wrong: the **operation's**
+exception stays primary and the cleanup failure is chained onto its
+context chain rather than substituted for it, so nothing is swallowed and
+nothing is hidden.
 
 | Event | Consumes a call? |
 |---|---|
@@ -809,6 +882,8 @@ refused outright while the reservation is live (§3.6).
 | counter exhausted | no (the reservation is refused) |
 | a second reservation while one is active | no (refused before an index is minted) |
 | commit or abandon with a stale, foreign, or already-finished token | no |
+| commit itself failing **before** it takes effect | no — outcome 1: the reservation is abandoned and the index stays retryable |
+| an exception **after** a successful commit, before the result is returned | **yes, exactly one — irreversibly.** Outcome 3: the index is spent, the committed token is not abandoned, the unreturned result is released, and the original exception propagates |
 
 Two consequences worth stating explicitly, because they are what makes
 resume exact:
@@ -1017,8 +1092,8 @@ no module-level convenience wrapper in Phase G: one surface, one
 contract. Omitting the generator is a `TypeError`, not an implicit global
 stream.
 
-Milestone **G3**. Returns a fresh **owning** tensor of the input's shape,
-except for the `p == 0` identity passthrough of §6.2.
+Milestone **G3**, shipped. Returns a fresh **owning** tensor of the
+input's shape, except for the `p == 0` identity passthrough of §6.2.
 
 ### 8.2 Graph behavior
 
@@ -1701,6 +1776,9 @@ than an accident.
 | Python wrapper (`NativeTensor`) creation failure | original exception | no | no | no — the Core results are closed | no |
 | graph-node construction failure | original exception | no | no | no — mask **and** output closed | no |
 | saved-state attachment failure | original exception | no | no | no — mask closed | no |
+| the commit itself failing **before** it takes effect | original exception | no — the reservation is abandoned and the index stays retryable | no | no — result and mask closed | no |
+| an exception **after** a successful commit, before the result is returned (§5, outcome 3) | original exception, **not** a cleanup error | **yes, exactly once — irreversibly**; the committed token is *not* abandoned | no | no — the unreturned result and its graph-owned mask are closed | no — no result escaped |
+| a cleanup step itself failing during either of the above | the **operation's** original exception, with the cleanup failure chained onto it | as above for that outcome | no | every remaining step is still attempted | no |
 | backward on a freed graph | `RuntimeError` | no | no | unchanged | no gradient committed |
 | stale-parameter backward elsewhere in the graph | `RuntimeError` | no | no | unchanged; the mask stays alive for a retry | no gradient committed |
 | checkpoint save: invalid path/model/optimizer/metadata | `TypeError` / `ValueError` | no | no | no | no file created |
@@ -2090,7 +2168,7 @@ not move and the phase is not closed.
 | G0 | Architecture contract and design lock | **Complete** |
 | G1 | `NativeGenerator` and module generator-state ownership | **Complete** |
 | G2 | Deterministic native Dropout-forward Core | **Complete** |
-| G3 | Differentiable `NativeTensor` Dropout | Not started |
+| G3 | Differentiable `NativeTensor` Dropout | **Complete** |
 | G4 | `NativeDropout` module and public export | Not started |
 | G5 | Checkpoint version 2 and exact RNG restoration | Not started |
 | G6 | RNG, graph, ownership, and checkpoint hardening | Not started |
@@ -2257,6 +2335,8 @@ ABI.
 
 ### G3 — Differentiable `NativeTensor` Dropout
 
+**Complete.**
+
 - **Objective.** One autograd node over the G2 contract, with the
   call-consumption transaction.
 - **Scope.** §5 and §8: `NativeTensor.dropout(p, *, generator)`, the
@@ -2276,6 +2356,111 @@ ABI.
   no global state; `"dropout"` stays in `UNSUPPORTED`.
 - **Done when.** Gradients, lifetime, and the counter transaction are all
   proved, including at every failure boundary.
+
+**What shipped, exactly.** `NativeTensor.dropout(p, *, generator)` in
+`native_tensor.py`, and one name — `"dropout"` — appended to
+`AUTOGRAD_OPS`. Nothing else moved: no C++, no C ABI symbol, no ctypes
+declaration, no `NativeTensorCore` method, no module, no export, no
+checkpoint-format change, and no other registry value. In particular the
+backward is the existing `multiply` over the saved mask, so no
+`dropout_backward` kernel or Core op was written (§7.5).
+
+The operation is ordered exactly as §5 requires. Validation that needs no
+generator runs first — the receiver is open, `generator` is a
+`NativeGenerator`, and `p` goes through the **same**
+`_normalize_dropout_probability` the Core and the future module use, so
+the accepted/rejected matrix is identical by construction rather than by
+duplication. `p == 0` then returns `self` — the caller's own object — with
+no reservation, no allocation, no kernel call, and no graph node (§6.2).
+Otherwise one call is reserved; the token is bound and the cleanup
+boundary entered as the very next action; the key is the **reservation's**
+(`token._index` for the index, and the seed read while that live
+reservation makes every state replacement raise, so `generator.calls` is
+never mistaken for the reserved index); the G2 Core runs outside the
+generator's lock; `_from_op` adopts the mask through the unchanged
+`graph_resources` contract; and `_commit_call` is the last state-changing
+action before the result is returned.
+
+Two private module-level seams make the transaction's failure positions
+addressable rather than merely argued, in the same spirit as G1's
+`_deliver_reservation`: `_dropout_backward(input_tensor, mask)` builds the
+backward closure, and `_deliver_dropout_result(result)` is the deliberate
+no-op between a fully constructed result and the commit. Neither is
+exported or referenced from a public API. Every failure before the commit
+takes effect — an invalid probability or generator, a closed receiver, an
+exhausted
+counter, a reservation conflict, a Core validation or allocation failure,
+a Python wrapper failure, a backward-closure or graph-node or
+graph-resource-attachment failure, a no-grad mask-cleanup failure, a
+delivery failure, or a commit that raises *instead of* committing —
+releases the result and the saved mask, abandons the
+reservation, and re-raises, so `calls` is untouched and the very next
+forward reuses the same unconsumed index and reproduces the committed
+vector it would have produced.
+
+A failure *after* a successful commit is **outcome 3** of §5 and is
+handled differently on purpose: that index is irreversibly spent and is
+never handed out again, the committed token is **not** abandoned (which
+would raise "already committed" and mask the real failure), the
+unreturned result and its graph-owned mask are still released, and the
+original exception propagates unchanged. `_settle_failed_dropout`
+implements both sides and decides between them from the token's recorded
+outcome — through the private read-only `NativeGenerator._call_committed`
+query — rather than from a local flag, because a commit can succeed and
+the statement after it never run. It attempts every cleanup step even if
+an earlier one fails, and chains any cleanup failure onto the operation's
+exception instead of substituting for it.
+
+Backward reads exactly two things, the upstream gradient and the
+graph-owned mask, so it never rereads the input, never redraws, and never
+reserves, commits, cancels, inspects, or mutates a generator. The node
+therefore records **no** expected parameter version: mutating a directly
+versioned input afterwards leaves the gradient correct for the forward
+that ran and raises nothing, while a *full* checkpoint load still stales
+such a graph through some **other** node's parameter rule — the
+`maxpool2d`/`cross_entropy` archetype, unchanged. Reseeding, resetting,
+loading a state, or running the multi-generator transaction after the
+forward likewise cannot reach an existing graph.
+
+The mask rides the existing lifetime mechanism with no second system: it
+is released exactly once at the same deterministic points the graph
+history is, `retain_graph=True` keeps it for another pass, a failed
+retryable backward leaves it alive, an abandoned graph frees it through
+`close()` (with `__del__` as the fallback), and a **no-grad** forward
+closes it immediately while still committing the call, because a draw
+happened.
+
+One thing G3 did **not** get is a no-grad *context*: the native line has
+none to add support for. Its graph is opt-in — a result is differentiable
+only when a parent requires grad — so `detach()` is the equivalent, and it
+takes the ordinary no-grad path and still consumes exactly one call.
+Higher-order autograd is not supported, matching every other native
+operation: the backward computes at the graph-unaware Core level and
+produces a graph-free gradient.
+
+The residual asynchronous window §3.6 documents is narrowed but not
+closed, and is recorded rather than papered over. The operation binds the
+token and enters its `try` as its next action, does no avoidable
+callback-capable work before that boundary, commits last, and places no
+allocation, callback, graph mutation, logging, or formatting after the
+commit. What no pure-Python code can cover is an asynchronous exception
+delivered *between* `_reserve_call` returning and the caller's `try`
+being entered. It is a couple of bytecodes with no Python statement in
+them, it is not a test-injectable or ordinary synchronous window, and
+every window that *is* one has a test.
+
+The **commit-to-return** window is different, and G3's revision draws the
+distinction properly: the window still exists, but the `return` sits
+*inside* the `try`, so an exception arriving there is caught and cleaned
+up rather than escaping with an unreturned result and a spent index
+unaccounted for. That cleanup is **outcome-aware** — §5's three outcomes
+— and the outcome is read from the token through the private
+`_call_committed` query, never from a flag set after `_commit_call`,
+because the commit can succeed and that assignment never run. So an
+interruption there consumes exactly one call (honestly reported, never
+rolled back), releases the unreturned result and its graph-owned mask,
+does **not** abandon the committed token, and propagates the original
+exception rather than an "already committed" cleanup error.
 
 ### G4 — `NativeDropout` module and public export
 

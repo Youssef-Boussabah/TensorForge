@@ -233,8 +233,10 @@ symbol, or custom backward exists at all.
 **Phase G — Native RNG and Dropout — is the current phase and is *in
 progress*: milestones G0 (the architecture contract in
 `docs/native_rng_dropout_design.md`), G1 (`NativeGenerator` and module
-generator-state ownership), and G2 (the deterministic stateless
-Dropout-forward **Core**) are complete; G3–G10 have not
+generator-state ownership), G2 (the deterministic stateless
+Dropout-forward **Core**), and G3 (the differentiable
+`NativeTensor.dropout(p, *, generator)`, with an **explicit** required
+keyword-only `NativeGenerator`) are complete; G4–G10 have not
 started.** G0 locked Python-managed generator state (an explicit
 64-bit seed plus call counter and an algorithm identifier), stateless
 native random kernels that receive the whole key for one call, inverted
@@ -404,7 +406,7 @@ generator can issue (`2**64 - 2`), and two probabilities) are asserted
 `tests/test_native_dropout_core.py`; a test-only Python reference of the
 derivation lives in the suite (never in production) and is pinned to
 those vectors before generating any expectation. **G2 ships the Core and
-nothing above it**: no `NativeTensor.dropout`, no autograd node, no
+nothing above it**: no autograd node, no
 graph-owned saved mask, no Dropout backward kernel (that gradient is the
 existing `multiply` over the saved mask), and no `NativeDropout`;
 `UNSUPPORTED` still reads `("dropout", "float32", "cuda", "amp")` and the
@@ -415,6 +417,65 @@ native tensor representation rejects zero-size dimensions outright, so no
 empty core can be constructed from Python — G2 proves the case at the two
 layers where it is reachable and pins the representation's limit with a
 test.
+**G3 is complete**: the differentiable
+`NativeTensor.dropout(p, *, generator)` in
+`src/tensorforge/experimental/native_tensor.py`, plus exactly one
+registry name — `"dropout"` appended to `AUTOGRAD_OPS`. **G3 changed no
+C++, no C ABI symbol, no ctypes declaration, no `NativeTensorCore`
+method, no module, no export, and no checkpoint-format change**, and
+added no backward kernel: inverted Dropout's gradient is the existing
+native `multiply` over the saved mask. The `generator` is **required and
+keyword-only** — no default, process-global, or module-global stream, no
+implicit per-call generator, and no NumPy or Python `random` fallback —
+and `p` goes through the *same* `_normalize_dropout_probability` the Core
+uses rather than a second rule. The operation owns the design's §5 call
+transaction in this exact order: validate the receiver, the generator,
+and `p`; return `self` (the caller's own object, un-copied) at `p == 0`
+with no reservation, allocation, kernel call, or graph node; otherwise
+reserve **one** call, binding the token and entering the cleanup boundary
+as the very next action; read the key from the **reservation** — the
+token's index, and the seed read while that live reservation makes every
+state replacement raise, so `generator.calls` is never mistaken for the
+reserved index; run the G2 Core **outside** the generator's lock; build
+the graph node, with `_from_op` adopting the mask through the unchanged
+`graph_resources` contract; and `_commit_call` **last**. So one
+successful stochastic forward consumes exactly one call *with or without
+gradients* (`detach()` is the native line's no-grad equivalent — it has
+no no-grad context, because its graph is opt-in), and **every** ordinary
+failure before the commit — invalid `p` or generator, a closed receiver,
+an exhausted counter, a reservation conflict, a Core validation or
+allocation failure, a Python wrapper failure, a backward-closure,
+graph-node, or resource-attachment failure, a no-grad mask-cleanup
+failure, or a delivery failure — releases the result and the mask,
+cancels the reservation, and re-raises, leaving the same unconsumed index
+so the next forward reproduces the committed vector the failed one would
+have. Two private module-level seams make the last positions addressable
+by test rather than only by argument, exactly as G1's
+`_deliver_reservation` does: `_dropout_backward(input_tensor, mask)`
+builds the backward closure, and `_deliver_dropout_result(result)` is the
+deliberate no-op between a fully constructed result and the commit;
+neither is exported or reachable from a public API. The mask is
+**graph-owned** private state — the third member of the family beside
+MaxPool2d's winners and cross-entropy's saved probabilities — released
+exactly once with the graph history, retained under `retain_graph=True`,
+kept alive across a failed retryable backward, freed by an abandoned
+graph's `close()` (`__del__` the fallback), and closed immediately by a
+no-grad forward. Backward reads **only** the upstream gradient and that
+mask: it never rereads the input, never redraws, and never reserves,
+commits, cancels, inspects, or mutates a generator, so the node records
+**no** expected parameter version and a later input mutation, `reseed`,
+`reset`, `load_state`, or `load_generator_state_dict` cannot change an
+existing graph's gradient or raise it a stale-graph error (a *full*
+checkpoint load still stales such a graph through some **other** node's
+parameter rule — a parameter contract, never a Dropout effect).
+Higher-order autograd is not supported, matching the rest of the native
+line. **G3 ships the operation and nothing above it**: no
+`NativeDropout` and therefore no module train/eval behavior;
+`UNSUPPORTED` still reads `("dropout", "float32", "cuda", "amp")` — the
+one name deliberately in both an implemented inventory and that tuple,
+because the registry reports what is *closed and validated* and Dropout's
+reproducibility is not demonstrated until G10 — and the checkpoint format
+is still version 1 and does not serialize generator state.
 Data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase G.

@@ -1104,7 +1104,11 @@ def test_e8_adds_no_capability_inventory_entry():
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
-    assert cpp.AUTOGRAD_OPS[-1] == "cross_entropy"
+    # "cross_entropy" was the last autograd op when E8 landed and E8 added
+    # nothing after it. The one entry that follows is Phase G milestone
+    # G3's differentiable "dropout", which is unrelated to this proof.
+    assert cpp.AUTOGRAD_OPS[-2] == "cross_entropy"
+    assert cpp.AUTOGRAD_OPS[-1] == "dropout"
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # The proof is an integration result, never a named capability.

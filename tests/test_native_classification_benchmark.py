@@ -552,7 +552,11 @@ def test_e9_adds_no_capability_inventory_entry():
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
     )
-    assert cpp.AUTOGRAD_OPS[-1] == "cross_entropy"
+    # "cross_entropy" was the last autograd op when E9 landed and E9 added
+    # nothing after it. The one entry that follows is Phase G milestone
+    # G3's differentiable "dropout", which is unrelated to this benchmark.
+    assert cpp.AUTOGRAD_OPS[-2] == "cross_entropy"
+    assert cpp.AUTOGRAD_OPS[-1] == "dropout"
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,

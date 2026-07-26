@@ -112,6 +112,26 @@ def test_backend_info_reports_accurate_integration_flags():
     assert info["stable_framework_integration"] is False
 
 
+# The one name that is deliberately in UNSUPPORTED *and* in an
+# implemented inventory, with the milestone that put it there and the one
+# that will take it out.
+#
+# Phase G locks this split (docs/native_rng_dropout_design.md §19): the
+# operation inventories report what *exists*, UNSUPPORTED reports what is
+# *closed and validated*. G3 shipped the differentiable "dropout"
+# operation into AUTOGRAD_OPS and G4 will add "NativeDropout" to
+# NATIVE_MODULES, while "dropout" stays unsupported through G9 and leaves
+# only at the G10 closure — because Dropout's whole value is exact
+# cross-platform reproducibility, which has to be *demonstrated* under
+# fresh Release, Debug, and sanitized builds and survive a checkpoint (the
+# format is still version 1) before the registry may claim it.
+#
+# Written as a single-name allowance rather than a relaxed rule: any
+# *other* unsupported name leaking into an implemented inventory still
+# fails, and this one is required to keep meeting the conditions below.
+_UNSUPPORTED_BUT_IMPLEMENTED = {"dropout"}
+
+
 def test_unsupported_list_names_only_absent_capabilities():
     info = cpp.backend_info()
     # None of the Phase-D-and-beyond names may leak into the implemented
@@ -122,7 +142,38 @@ def test_unsupported_list_names_only_absent_capabilities():
         | set(info["raw_kernels"])
     )
     for name in info["unsupported"]:
+        if name in _UNSUPPORTED_BUT_IMPLEMENTED:
+            continue
         assert name not in implemented
+
+
+def test_the_one_deliberate_unsupported_implemented_overlap_is_dropout():
+    """The exception above is pinned rather than assumed, in both
+    directions: exactly ``"dropout"`` overlaps, it overlaps in exactly
+    ``AUTOGRAD_OPS`` (never in a kernel or Core inventory), and the
+    conditions that justify it — the checkpoint format has not moved and
+    the capability has not been closed — are still true."""
+    from tensorforge.experimental import NativeTensor, native_checkpoint
+
+    info = cpp.backend_info()
+    implemented = (
+        set(info["tensor_core_ops"])
+        | set(info["autograd_ops"])
+        | set(info["raw_kernels"])
+    )
+    overlap = set(info["unsupported"]) & implemented
+    assert overlap == _UNSUPPORTED_BUT_IMPLEMENTED, overlap
+
+    # It is the differentiable operation, and only that.
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    assert hasattr(NativeTensor, "dropout")
+    assert "dropout" not in cpp.TENSOR_CORE_OPS
+    assert "dropout" not in cpp.RAW_KERNELS
+    assert "dropout" not in cpp.TENSOR_CORE_KERNELS
+    # G10 has not run: the closure conditions the allowance rests on are
+    # still open.
+    assert "dropout" in cpp.UNSUPPORTED
+    assert native_checkpoint._FORMAT_VERSION == 1
 
 
 # --- guardrails: the advertised capabilities must match reality ------------
@@ -221,7 +272,12 @@ def test_e8_added_no_capability_inventory_entry():
     assert info["native_losses"] == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert info["native_metrics"] == ("native_accuracy",)
     assert info["native_optimizers"] == ("NativeSGD", "NativeAdam")
-    assert info["autograd_ops"][-1] == "cross_entropy"
+    # "cross_entropy" was the last autograd op when E8 landed; "dropout"
+    # was appended after it by Phase G milestone G3, which is again
+    # unrelated to E8. The E-phase claim is that classification added
+    # nothing beyond cross_entropy, so that is what is asserted.
+    assert info["autograd_ops"][-1] == "dropout"
+    assert info["autograd_ops"][-2] == "cross_entropy"
     # E8 added no state capability. "persistent_buffers" joined this
     # tuple in Phase F milestone F1 as *reconciliation* of a capability
     # that already existed (register_buffer / buffers / named_buffers,

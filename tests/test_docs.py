@@ -416,9 +416,17 @@ def test_phase_d_status_is_consistent_across_docs_and_registry():
     # ("layernorm" left UNSUPPORTED at Phase F milestone F2 and
     # "batchnorm" at F4, once both BatchNorm shapes shipped as composed
     # modules; neither is a Phase-D boundary.)
-    for absent in ("float32", "cuda", "amp", "dropout"):
+    for absent in ("float32", "cuda", "amp"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS and absent not in cpp.NATIVE_MODULES
+    # "dropout" is the one unsupported name that now also names a shipped
+    # operation: Phase G milestone G3 added the differentiable
+    # NativeTensor.dropout, while the *capability* stays unsupported until
+    # the G10 closure (design §19). Neither half is a Phase-D claim, so
+    # both are asserted rather than one being dropped.
+    assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    assert "dropout" not in cpp.NATIVE_MODULES
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
@@ -1249,10 +1257,17 @@ def test_no_future_phase_is_claimed_by_phase_e_closure():
 
     # ("layernorm" is no longer future work — F2 shipped NativeLayerNorm —
     # and neither is "batchnorm", which F3 and F4 completed.)
-    for future in ("cuda", "amp", "float32", "dropout"):
+    for future in ("cuda", "amp", "float32"):
         assert future in cpp.UNSUPPORTED, future
         assert future not in cpp.AUTOGRAD_OPS and future not in cpp.TENSOR_CORE_OPS
         assert future not in cpp.NATIVE_MODULES
+    # RNG/Dropout is Phase G's, not Phase E's. G2 shipped the Core wrapper
+    # and G3 the differentiable operation, so the honest statement is that
+    # the *capability* is still unsupported while those two layers exist.
+    assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" in cpp.AUTOGRAD_OPS          # G3
+    assert "dropout_forward" in cpp.TENSOR_CORE_OPS   # G2
+    assert "dropout" not in cpp.NATIVE_MODULES
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.backend_info()["stable_framework_integration"] is False
@@ -2275,9 +2290,16 @@ def test_dropout_float32_cuda_and_amp_stay_unsupported_through_phase_f():
 
     for future in ("dropout", "float32", "cuda", "amp"):
         assert future in cpp.UNSUPPORTED, future
+        assert future not in cpp.NATIVE_MODULES
+    for future in ("float32", "cuda", "amp"):
         assert future not in cpp.AUTOGRAD_OPS
         assert future not in cpp.TENSOR_CORE_OPS
-        assert future not in cpp.NATIVE_MODULES
+    # Phase F really did leave all four unsupported, and all four still
+    # are. What has changed since is *below* the capability line and
+    # belongs to Phase G: the G2 Core wrapper and the G3 differentiable
+    # operation exist, and "dropout" is unsupported anyway until G10.
+    assert "dropout_forward" in cpp.TENSOR_CORE_OPS
+    assert "dropout" in cpp.AUTOGRAD_OPS
     design = _status_text(PHASE_F_DESIGN)
     for excluded in ("dropout", "CUDA", "AMP", "float32"):
         assert excluded in design, (
@@ -3183,12 +3205,16 @@ _PHASE_G_PUBLIC_NAMES = ("NativeDropout",)             # not implemented
 # The one Core operation G2 added, and the one C ABI symbol behind it.
 _PHASE_G_SHIPPED_CORE_OPS = ("dropout_forward",)       # Phase G, G2
 _PHASE_G_SHIPPED_ABI_SYMBOLS = ("tf_core_dropout_forward",)
-# Everything numerical that still does not exist at any layer: the
-# differentiable operation (G3), a backward kernel (there is none by
-# design — §7.5), and the generic sampling API Phase G explicitly
-# excludes.
+# The one differentiable operation G3 added, on top of that Core. It is
+# an AUTOGRAD_OPS entry and a NativeTensor method, and nothing else: no
+# Core method, no kernel, no C ABI symbol, and no module answer to it.
+_PHASE_G_SHIPPED_AUTOGRAD_OPS = ("dropout",)           # Phase G, G3
+# Everything numerical that still does not exist at any layer: a backward
+# kernel (there is none by design — §7.5, the gradient is the existing
+# `multiply` over the saved mask) and the generic sampling API Phase G
+# explicitly excludes. "dropout" left this tuple at G3.
 _PHASE_G_OP_NAMES = (
-    "dropout", "dropout_backward",
+    "dropout_backward",
     "random", "rand", "randn", "bernoulli", "uniform",
 )
 _PHASE_G_ABI_SYMBOLS = (
@@ -3412,19 +3438,24 @@ def test_phase_g_design_states_the_stable_native_separation_and_non_goals():
 def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
     """Guardrails 4, 5, 6, 12, and 13, all derived from reality.
 
-    Phase G has shipped exactly two things: milestone G1's
+    Phase G has shipped exactly three things: milestone G1's
     ``NativeGenerator`` and its ``NativeModule`` registration — random
-    *state* — and milestone G2's stateless Dropout-forward **Core**, which
-    is one internal derivation, one kernel, one guarded C ABI symbol, and
-    the layer-qualified ``NativeTensorCore.dropout_forward``. So the
-    capability boundary, the dtype/device boundary, the checkpoint format,
-    and every module/loss/metric/optimizer inventory are still exactly
-    what Phase F closed with; the generator export appears in **no**
-    inventory at all; and the Core op appears in ``TENSOR_CORE_OPS`` and
+    *state* — milestone G2's stateless Dropout-forward **Core**, which is
+    one internal derivation, one kernel, one guarded C ABI symbol, and the
+    layer-qualified ``NativeTensorCore.dropout_forward``, and milestone
+    G3's differentiable ``NativeTensor.dropout``, which is one
+    ``AUTOGRAD_OPS`` entry and one method over that Core. So the
+    dtype/device boundary, the checkpoint format, and every
+    module/loss/metric/optimizer inventory are still exactly what Phase F
+    closed with; ``"dropout"`` is still in ``UNSUPPORTED``, deliberately,
+    until the G10 closure; the generator export appears in **no**
+    inventory at all; the Core op appears in ``TENSOR_CORE_OPS`` and
+    nowhere else; and the autograd op appears in ``AUTOGRAD_OPS`` and
     nowhere else. (Before G1 this guard asserted ``NativeGenerator`` did
-    not exist; before G2 it asserted the same of every random symbol. Each
-    absence check is replaced, as its milestone lands, by the stronger
-    positive statement of what the thing is *allowed* to be.)"""
+    not exist; before G2 it asserted the same of every random symbol;
+    before G3, of the differentiable operation. Each absence check is
+    replaced, as its milestone lands, by the stronger positive statement
+    of what the thing is *allowed* to be.)"""
     from tensorforge.backends import cpp
     from tensorforge.experimental import NativeTensor, native_checkpoint
     import tensorforge
@@ -3473,6 +3504,26 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
     for symbol in _PHASE_G_SHIPPED_ABI_SYMBOLS:
         assert symbol in cpp._CHECKED_KERNELS, symbol
 
+    # G3 shipped: exactly one differentiable operation, in exactly one
+    # operation inventory, reachable as a NativeTensor method — and
+    # nowhere else. It added no Core method, no kernel, and no C ABI
+    # symbol of its own, because inverted Dropout's gradient is the
+    # existing `multiply` over the saved mask (design §7.5).
+    for name in _PHASE_G_SHIPPED_AUTOGRAD_OPS:
+        assert name in cpp.AUTOGRAD_OPS, name
+        assert hasattr(NativeTensor, name), name
+        for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS,
+                          cpp.TENSOR_CORE_OPS, cpp.NATIVE_MODULES,
+                          cpp.NATIVE_LOSSES, cpp.NATIVE_METRICS,
+                          cpp.NATIVE_OPTIMIZERS, cpp.STATE_SUPPORT):
+            assert name not in inventory, (name, inventory)
+        assert not hasattr(cpp.NativeTensorCore, name), name
+        assert not hasattr(experimental, name), name
+        assert f"tf_core_{name}" not in cpp._CHECKED_KERNELS, name
+        # ...and the *capability* by the same name is still unsupported:
+        # G3 shipped an operation, not a closed capability (design §19).
+        assert name in cpp.UNSUPPORTED, name
+
     # Not shipped: no Phase-G public name beyond G1's exists anywhere.
     for name in _PHASE_G_PUBLIC_NAMES:
         assert name not in experimental.__all__, name
@@ -3495,8 +3546,15 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
         assert not hasattr(cpp.NativeTensorCore, name), name
         assert not hasattr(NativeTensor, name), name
         assert not hasattr(experimental, name), name
-    # "dropout" is a capability name only, and only in UNSUPPORTED.
+    # "dropout" is in exactly two places and no others: AUTOGRAD_OPS (the
+    # G3 operation) and UNSUPPORTED (the capability, until G10).
     assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS,
+                      cpp.TENSOR_CORE_OPS, cpp.NATIVE_MODULES,
+                      cpp.NATIVE_LOSSES, cpp.NATIVE_METRICS,
+                      cpp.NATIVE_OPTIMIZERS, cpp.STATE_SUPPORT):
+        assert "dropout" not in inventory, inventory
 
     # No later Phase-G C ABI symbol is declared, guarded, or defined.
     for symbol in _PHASE_G_ABI_SYMBOLS:
@@ -3564,28 +3622,33 @@ def test_no_surface_claims_a_phase_g_capability_exists():
     shipped, or available. The premise comes from the live registry, so
     this guard tracks reality rather than a frozen expectation.
 
-    Two subjects have been deliberately **un**-banned as their milestones
-    landed. ``NativeGenerator`` left the list at G1, and the bare "native
-    RNG"/"native random"/"native dropout" phrasings left it at G2, because
-    the stateless Dropout-forward Core really does exist and describing it
-    is honest. What stays banned is every claim about the surfaces that do
-    **not** exist: the module ``NativeDropout``, the differentiable
-    ``NativeTensor.dropout`` operation, a Dropout backward, and the
-    unqualified user-level capability. The separate
-    ``test_g2_core_claims_are_layer_qualified`` guard then requires that a
-    surface describing the Core says so."""
+    Subjects have been deliberately **un**-banned as their milestones
+    landed, each time leaving a smaller and sharper list.
+    ``NativeGenerator`` left at G1; the bare "native RNG"/"native
+    random"/"native dropout" phrasings left at G2, because the stateless
+    Dropout-forward Core really does exist; and ``NativeTensor.dropout``,
+    "differentiable dropout", "dropout autograd", and "dropout backward"
+    left at **G3**, which shipped exactly those — one autograd node whose
+    backward multiplies by the saved mask.
+
+    What stays banned is the surface that still does **not** exist: the
+    ``NativeDropout`` *module* (G4). The separate
+    ``test_g3_operation_claims_are_layer_qualified`` guard then requires
+    that a surface describing the operation also says the module is
+    absent and the capability is still unsupported — which is what keeps
+    "native Dropout works now" from being a fair reading of any status
+    page."""
     from tensorforge.backends import cpp
     import tensorforge.experimental as experimental
 
-    # Premise: none of the numerical surface exists.
+    # Premise, from the live registry: the operation exists, the module
+    # does not, and the capability is not closed.
     assert "dropout" in cpp.UNSUPPORTED
-    assert "dropout" not in cpp.AUTOGRAD_OPS
+    assert "dropout" in cpp.AUTOGRAD_OPS
     for name in _PHASE_G_PUBLIC_NAMES:
         assert not hasattr(experimental, name), name
 
-    subject = (r"(NativeDropout|NativeTensor\.dropout"
-               r"|differentiable dropout|dropout module"
-               r"|dropout backward|dropout autograd)")
+    subject = r"(NativeDropout|dropout module|Dropout module)"
     claim = (r"(is|are|now|has been|have been)\s+"
              r"(supported|implemented|shipped|available|complete|completed"
              r"|live)")
@@ -3736,24 +3799,31 @@ def test_phase_g_ladder_status_matches_the_shipped_tree():
 
 
 # The claims Phase G must never let a status surface make at its current
-# milestone. G1 shipped random *state* and G2 the stateless Core; the
-# graph, the module, the persistence, and every later milestone are still
-# unbuilt, and prose is the easiest place for that distinction to erode.
+# milestone. G1 shipped random *state*, G2 the stateless Core, and G3 the
+# differentiable operation over it; the module, the persistence, and every
+# later milestone are still unbuilt, and prose is the easiest place for
+# that distinction to erode.
 #
-# Two entries were retired when G2 landed and are recorded here rather
-# than silently dropped:
-#   * "random values are generated" — G2's kernel really does generate
-#     them, so the claim became honest. What must still not be claimed is
-#     that a *differentiable* or *module-level* Dropout exists, which
+# Three entries have been retired as their milestones landed, recorded
+# here rather than silently dropped:
+#   * "random values are generated" (retired at G2) — G2's kernel really
+#     does generate them. What must still not be claimed is that a
+#     *module-level* Dropout exists, which
 #     ``test_no_surface_claims_a_phase_g_capability_exists`` owns.
-#   * the unqualified "a mask exists" — G2's Core really does produce the
-#     private multiplier mask. The claim below is therefore narrowed to
-#     the **graph-owned/saved** mask, which is G3's.
+#   * the unqualified "a mask exists" (retired at G2) — G2's Core really
+#     does produce the private multiplier mask.
+#   * "a graph-owned saved mask exists" (retired at **G3**) — G3 really
+#     does adopt that mask into ``graph_resources`` and differentiate
+#     through it. The claim that replaces it is narrower and is the one
+#     G3 must not let erode: that the mask is *persisted*, which it is
+#     not and will not be (design §8.3 — it is never a public tensor,
+#     never a parameter or buffer, never in a state_dict or checkpoint).
 _PHASE_G_OVERCLAIMS = (
-    ("a graph-owned saved mask exists",
-     r"(graph-owned|saved|graph_resources)\s+(?:\w+\s+){0,3}?mask\w*"
-     r"\s+(?:\w+\s+){0,3}?(exists?|is|are)\s+"
-     r"(built|created|saved|adopted|retained|available|implemented)"),
+    ("the saved mask is persisted",
+     r"mask\w*[^.]{0,60}\b(is|are)\s+"
+     r"(saved to|persisted|serialized|checkpointed|written to)"
+     r"|(state_dict|checkpoint)[^.]{0,60}\b(includes?|contains?|holds?"
+     r"|stores?)\b[^.]{0,30}mask"),
     ("checkpoint version 2 exists",
      r"(format|checkpoint)[^.]{0,40}\bversion\s*2\b[^.]{0,30}"
      r"\b(now|exists?|shipped|current|live|implemented)\b"
@@ -3765,32 +3835,35 @@ _PHASE_G_OVERCLAIMS = (
      r"|checkpoints?[^.]{0,60}(save|persist|serialize|record)s?"
      r"[^.]{0,30}generator\s+state"),
     ("a later milestone has begun",
-     r"\bG(?:[3-9]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
+     r"\bG(?:[4-9]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
      r"(complete|completed|started|begun|shipped|landed|done)\b"),
 )
 
 
 def test_no_surface_overclaims_what_phase_g_has_shipped():
     """G1 shipped random **state** — a generator object, its module
-    registration, and its own state report — and G2 the stateless
-    Dropout-forward **Core**. Neither builds a graph-owned mask, persists
-    anything to a checkpoint, or starts a later milestone.
+    registration, and its own state report — G2 the stateless
+    Dropout-forward **Core**, and G3 the differentiable operation that
+    adopts the Core's mask as graph-owned state. None of the three
+    persists a mask, writes generator state to a checkpoint, or starts a
+    later milestone.
 
     Every premise below comes from the live tree, so this guard tracks
     reality; the prose scan then holds documentation to it. Spans that
-    carry their own negation ("does not generate", "no graph node",
-    "G3-G10 have not started") are the honest form and pass."""
+    carry their own negation ("does not generate", "no module",
+    "G4-G10 have not started") are the honest form and pass."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import (
         NativeGenerator, NativeTensor, native_checkpoint,
     )
     import tensorforge.experimental as experimental
 
-    # Premises, all from reality.
-    assert not hasattr(NativeTensor, "dropout")
+    # Premises, all from reality: the operation exists, the module does
+    # not, the capability is not closed, and nothing is persisted.
+    assert hasattr(NativeTensor, "dropout")
+    assert "dropout" in cpp.AUTOGRAD_OPS
     assert not hasattr(experimental, "NativeDropout")
     assert "dropout" in cpp.UNSUPPORTED
-    assert "dropout" not in cpp.AUTOGRAD_OPS
     assert native_checkpoint._FORMAT_VERSION == 1
     # The generator really does not produce a value of any kind: G2's
     # derivation lives in C++ behind the Core, never on this object.
@@ -3968,7 +4041,12 @@ def test_g2_core_inventory_is_exactly_one_operation_and_one_abi_symbol():
     assert cpp.TENSOR_CORE_KERNELS == (
         "relu", "add", "subtract", "multiply", "matmul",
     )
-    assert cpp.AUTOGRAD_OPS[-1] == "cross_entropy"
+    # G2 itself added nothing to AUTOGRAD_OPS: "cross_entropy" was still
+    # the last entry when it landed. The one entry after it is G3's
+    # differentiable "dropout", which is a *later* milestone's footprint
+    # and is asserted by the G3 guard below.
+    assert cpp.AUTOGRAD_OPS[-2] == "cross_entropy"
+    assert cpp.AUTOGRAD_OPS[-1] == "dropout"
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
@@ -4103,21 +4181,34 @@ def test_g2_equality_threshold_vector_is_committed_on_both_sides():
             assert literal in text, (source_name, literal)
 
 
-def test_g2_did_not_begin_g3_or_any_later_milestone():
-    """The milestone boundary from the tree: no autograd node, no module,
-    no checkpoint v2, no benchmark, no example, no integration suite."""
+def test_g3_did_not_begin_g4_or_any_later_milestone():
+    """The milestone boundary from the tree: G3 shipped one autograd node
+    and stopped there — no module, no checkpoint v2, no persisted
+    generator state, no benchmark, no example, no integration suite.
+
+    (This guard was ``test_g2_did_not_begin_g3_or_any_later_milestone``
+    until G3 landed. The Core-layer half of it — that the Core method
+    builds no graph — is kept verbatim, because G3 building a graph *above*
+    the Core must not have leaked any graph vocabulary *into* it.)"""
     from pathlib import Path
 
     from tensorforge.backends import cpp
     from tensorforge.experimental import NativeTensor, native_checkpoint
     import tensorforge.experimental as experimental
 
-    assert not hasattr(NativeTensor, "dropout")
-    assert "dropout" not in cpp.AUTOGRAD_OPS
+    # G3 shipped the operation...
+    assert hasattr(NativeTensor, "dropout")
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    # ...and nothing above it.
     assert not hasattr(experimental, "NativeDropout")
     assert "NativeDropout" not in cpp.NATIVE_MODULES
     assert native_checkpoint._FORMAT_VERSION == 1
-    # The Core method builds no graph: no autograd vocabulary reaches it.
+    # No module-level train/eval Dropout behavior exists anywhere.
+    from tensorforge.experimental import NativeModule
+    for attribute in ("dropout", "register_dropout"):
+        assert not hasattr(NativeModule, attribute), attribute
+    # The Core method still builds no graph: no autograd vocabulary
+    # reaches it, even though a graph is now built one layer above.
     import inspect
 
     source = inspect.getsource(
@@ -4126,6 +4217,12 @@ def test_g2_did_not_begin_g3_or_any_later_milestone():
     for graph_token in ("_from_op", "graph_resources", "requires_grad",
                         "_backward", "NativeTensor("):
         assert graph_token not in source, graph_token
+    # ...and the Core still takes no generator, so G3's transaction stayed
+    # entirely in the Python operation layer.
+    core_signature = inspect.signature(
+        cpp.NativeTensorCore._dropout_forward_with_mask
+    )
+    assert "generator" not in core_signature.parameters
     # And none of the later milestones' artifacts exists.
     for absent in ("src/tensorforge/experimental/native_dropout.py",
                    "benchmarks/benchmark_native_dropout.py",
@@ -4164,35 +4261,288 @@ def test_g2_status_is_stated_positively_on_every_phase_surface():
         )
 
 
-def test_g2_core_claims_are_layer_qualified():
-    """A surface that describes the shipped Dropout Core must also say
-    what does **not** exist above it, in the same document: the
-    differentiable operation and the module. This is what keeps "native
-    Dropout works now" from being a fair reading of any status page."""
+def test_g3_operation_claims_are_layer_qualified():
+    """A surface that describes the shipped differentiable Dropout must
+    also say what does **not** exist above it, in the same document: the
+    ``NativeDropout`` module, and the *capability*, which is still
+    unsupported. This is what keeps "native Dropout works now" from being
+    a fair reading of any status page.
+
+    (Until G3 this guard also required the differentiable operation to be
+    named as absent. That requirement was retired by the milestone that
+    shipped it; what replaced it is the stronger positive requirement that
+    the operation is described with its explicit-generator contract, so a
+    reader cannot mistake it for an implicit global stream.)"""
     from tensorforge.backends import cpp
 
     # Premise, from the live registry.
     assert "dropout_forward" in cpp.TENSOR_CORE_OPS
-    assert "dropout" not in cpp.AUTOGRAD_OPS
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    assert "dropout" in cpp.UNSUPPORTED
 
     for surface in PHASE_G_STATUS_SURFACES:
         text = _status_text(surface)
         assert re.search(r"\bCore\b", text), surface
-        # The two absent surfaces are named as absent somewhere in the
-        # document, with a negation attached.
+        # The module is named as absent somewhere in the document, with a
+        # negation attached.
         assert re.search(
             r"(no|not|never|without)[^.]{0,120}NativeDropout"
             r"|NativeDropout[^.]{0,120}(does not exist|not implemented"
             r"|not started|G4)", text, re.I,
         ), f"{surface} does not say NativeDropout is absent"
+        # The operation is described with its explicit generator.
         assert re.search(
-            r"(no|not|never|without)[^.]{0,140}(differentiable|autograd|"
-            r"NativeTensor\.dropout)"
-            r"|NativeTensor\.dropout[^.]{0,140}(G3|not started|does not"
-            r" exist)", text, re.I,
-        ), f"{surface} does not say the differentiable operation is absent"
+            r"NativeTensor\.dropout|dropout\(p", text,
+        ), f"{surface} does not name the G3 operation"
+        assert re.search(
+            r"explicit[^.]{0,80}NativeGenerator"
+            r"|NativeGenerator[^.]{0,80}(explicit|required|keyword)"
+            r"|generator=", text, re.I,
+        ), f"{surface} does not say the generator is explicit"
         # "dropout" is still advertised as unsupported.
         assert re.search(r"unsupported|UNSUPPORTED", text), surface
+
+
+def test_g3_inventory_is_exactly_one_autograd_operation():
+    """The milestone's whole registry footprint: ``AUTOGRAD_OPS`` gains
+    ``"dropout"``, appended last. Nothing else moved — not
+    ``TENSOR_CORE_OPS``, not ``_CHECKED_KERNELS``, not ``NATIVE_MODULES``,
+    not ``STATE_SUPPORT``, not ``UNSUPPORTED``, not the dtype/device
+    tuples, and not the checkpoint version."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.AUTOGRAD_OPS[-1] == "dropout"
+    assert cpp.AUTOGRAD_OPS.count("dropout") == 1
+    # G3 added no Core op, no kernel, and no C ABI symbol: the Dropout
+    # gradient is the existing `multiply` over the saved mask (§7.5).
+    dropout_core_ops = [name for name in cpp.TENSOR_CORE_OPS
+                        if "dropout" in name or "random" in name]
+    assert dropout_core_ops == ["dropout_forward"], dropout_core_ops
+    dropout_symbols = [name for name in cpp._CHECKED_KERNELS
+                       if "dropout" in name or "random" in name]
+    assert dropout_symbols == ["tf_core_dropout_forward"], dropout_symbols
+    assert "multiply" in cpp.TENSOR_CORE_OPS
+
+    # Everything else exactly as G2 left it.
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert cpp.RAW_KERNELS == (
+        "elementwise_add", "elementwise_subtract", "elementwise_multiply",
+        "elementwise_divide", "relu", "matmul", "matmul_tiled",
+    )
+    assert cpp.TENSOR_CORE_KERNELS == (
+        "relu", "add", "subtract", "multiply", "matmul",
+    )
+    assert cpp.NATIVE_MODULES == (
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+    )
+    assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    assert cpp.STATE_SUPPORT == (
+        "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",
+        "save_native_checkpoint", "load_native_checkpoint",
+    )
+    assert native_checkpoint._FORMAT_VERSION == 1
+    assert tuple(cpp.backend_info()["autograd_ops"]) == cpp.AUTOGRAD_OPS
+
+
+def test_g3_operation_semantics_are_what_the_contract_locks():
+    """The behavioral guardrails, taken from the live runtime rather than
+    from prose: the explicit keyword-only generator, ``p == 0`` identity
+    that reserves nothing, one call per successful stochastic forward,
+    none per failure or backward, a graph-owned mask, and a backward that
+    reads only the mask."""
+    import inspect
+
+    import numpy as np
+    import pytest
+
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeGenerator, NativeTensor
+    from tensorforge.experimental import native_tensor as native_tensor_module
+
+    if not cpp.is_available():
+        pytest.skip("experimental C++ backend not built")
+
+    # The exact signature: `p` positional, `generator` keyword-only with
+    # no default, so there is no implicit stream to fall back to.
+    parameters = inspect.signature(NativeTensor.dropout).parameters
+    assert list(parameters) == ["self", "p", "generator"]
+    assert (parameters["generator"].kind
+            is inspect.Parameter.KEYWORD_ONLY)
+    assert parameters["generator"].default is inspect.Parameter.empty
+
+    values = np.arange(1.0, 13.0)
+    generator = NativeGenerator(2024)
+    x = NativeTensor.from_array(values, requires_grad=True)
+
+    # p == 0 is the input object, and consumes nothing.
+    assert x.dropout(0.0, generator=generator) is x
+    assert generator.calls == 0
+
+    # A failure consumes nothing either.
+    with pytest.raises(ValueError):
+        x.dropout(1.0, generator=generator)
+    assert generator.calls == 0
+
+    # One successful stochastic forward consumes exactly one call, and the
+    # mask is graph-owned private state — a Core object, never a tensor.
+    y = x.dropout(0.5, generator=generator)
+    assert generator.calls == 1
+    assert len(y._graph_resources) == 1
+    mask = y._graph_resources[0]
+    assert isinstance(mask, cpp.NativeTensorCore)
+    assert not isinstance(mask, NativeTensor)
+    # No parameter version is recorded: backward does not reread the input.
+    assert y._expected_versions == ()
+
+    # Backward uses the mask and consumes no call.
+    saved = mask.to_numpy().copy()
+    g = NativeTensor.from_array(np.ones(12))
+    y.backward(gradient=g)
+    assert np.array_equal(x.grad.to_numpy(), saved)
+    assert generator.calls == 1
+    # ...and the mask was released exactly once with the graph.
+    assert mask._closed is True
+    assert y._graph_resources == ()
+    for tensor in (y, g, x):
+        tensor.close()
+
+    # The operation's *code* never reaches for a global stream, a NumPy
+    # RNG, or a second probability rule. The docstring is stripped first
+    # — it legitimately says "no process-global stream", and a scan that
+    # cannot tell a prohibition from an implementation is worthless. The
+    # split is on the docstring delimiters rather than on ``__doc__``,
+    # which ``inspect.getsource`` does not reproduce byte-for-byte when
+    # the file's non-ASCII characters meet a non-UTF-8 locale.
+    source = inspect.getsource(NativeTensor.dropout)
+    opening, _docstring, body = source.split('"""', 2)
+    assert "def dropout" in opening
+    for forbidden in ("np.random", "numpy.random", "import random",
+                      "secrets.", "default_generator", "global ",
+                      "NativeGenerator("):
+        assert forbidden not in body, forbidden
+    assert "_normalize_dropout_probability" in source, (
+        "the operation must reuse the shared probability validator"
+    )
+    assert "_reserve_call" in source and "_commit_call" in source
+    assert "graph_resources" in source
+    # Cancellation lives in the outcome-aware cleanup helper, which is
+    # where the pre-commit / post-commit distinction is made (design §5).
+    settle = inspect.getsource(native_tensor_module._settle_failed_dropout)
+    assert "_abandon_call" in settle
+    assert "_call_committed" in settle
+
+
+def test_g3_commit_boundary_cleanup_is_outcome_aware():
+    """The commit boundary has three outcomes (design §5), and the two
+    failing ones are **not** interchangeable: before the commit takes
+    effect no call is consumed and the reservation is abandoned; after it
+    the index is irreversibly spent and the committed token must not be
+    abandoned.
+
+    Both premises are taken from the **live runtime** by injecting a
+    `_commit_call` that raises on each side of the real commit, so this
+    guard tracks behavior rather than prose; the document is then held to
+    what it observes. The decisive property — that the outcome is read
+    from the token rather than from a flag set after `_commit_call` — is
+    checked structurally, because a flag-based implementation passes the
+    behavioral half only by luck of statement ordering."""
+    import inspect
+
+    import numpy as np
+    import pytest
+
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeGenerator, NativeTensor
+    from tensorforge.experimental import native_tensor as native_tensor_module
+
+    if not cpp.is_available():
+        pytest.skip("experimental C++ backend not built")
+
+    values = np.arange(1.0, 13.0)
+    real_commit = NativeGenerator._commit_call
+    real_abandon = NativeGenerator._abandon_call
+
+    # -- outcome 1: the commit raises *instead of* committing.
+    generator = NativeGenerator(3001)
+    x = NativeTensor.from_array(values, requires_grad=True)
+    try:
+        NativeGenerator._commit_call = lambda self, token: (
+            (_ for _ in ()).throw(KeyboardInterrupt("pre-commit"))
+        )
+        with pytest.raises(KeyboardInterrupt):
+            x.dropout(0.5, generator=generator)
+    finally:
+        NativeGenerator._commit_call = real_commit
+    assert generator.calls == 0, "a failed commit consumed a call"
+    assert generator._has_active_reservation() is False
+
+    # -- outcome 3: the commit succeeds, then an exception arrives.
+    abandoned = []
+    try:
+        def commit_then_raise(self, token):
+            real_commit(self, token)
+            raise KeyboardInterrupt("post-commit")
+
+        def recording_abandon(self, token):
+            abandoned.append(token)
+            return real_abandon(self, token)
+
+        NativeGenerator._commit_call = commit_then_raise
+        NativeGenerator._abandon_call = recording_abandon
+        with pytest.raises(KeyboardInterrupt) as info:
+            x.dropout(0.5, generator=generator)
+    finally:
+        NativeGenerator._commit_call = real_commit
+        NativeGenerator._abandon_call = real_abandon
+
+    # The call is spent, honestly, and the original error propagates.
+    assert generator.calls == 1
+    assert "post-commit" in str(info.value)
+    assert generator._has_active_reservation() is False
+    assert abandoned == [], "a committed reservation was abandoned"
+    # ...and the spent index is never reissued.
+    y = x.dropout(0.5, generator=generator)
+    assert generator.calls == 2
+    y.close()
+    x.close()
+
+    # The outcome really is read from the token, not from a local flag.
+    settle = inspect.getsource(
+        native_tensor_module._settle_failed_dropout
+    )
+    assert "_call_committed" in settle, (
+        "the cleanup must ask the token whether it committed"
+    )
+    query = inspect.getsource(NativeGenerator._call_committed)
+    # Assignment, not comparison: `token._outcome == "committed"` is the
+    # read this method exists for, so the pattern must exclude `==`.
+    for slot in ("_calls", "_active_serial", "_active_index",
+                 "_claim_serial", "_claim_index", "_next_serial",
+                 "_seed", "_outcome"):
+        assert re.search(rf"{slot}\s*(=(?!=)|\+=|-=)", query) is None, (
+            f"the committed-outcome query must be read-only, but it "
+            f"assigns {slot!r}"
+        )
+    # It is private, and no public spelling of it exists.
+    assert not hasattr(NativeGenerator, "call_committed")
+
+    # The design says all three outcomes, and does not claim the
+    # commit-to-return window consumes nothing.
+    design = _status_text(PHASE_G_DESIGN)
+    assert re.search(
+        r"commit[- ]to[- ]return|after a successful commit", design, re.I,
+    ), "the design does not describe the commit-to-return window"
+    assert re.search(
+        r"irreversibl", design, re.I,
+    ), "the design does not say the committed index is irreversible"
 
 
 def _phase_g_milestone(index):

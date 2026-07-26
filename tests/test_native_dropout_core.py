@@ -1528,9 +1528,17 @@ def test_failed_core_calls_leave_a_generator_untouched():
 
 
 def test_g2_ships_the_core_layer_and_nothing_above_it():
-    """The milestone boundary, from the live tree: a Core forward exists,
-    the differentiable operation and the module do not, the checkpoint
-    format has not moved, and ``"dropout"`` is still unsupported."""
+    """The Core-layer boundary, from the live tree: the Core forward is
+    layer-qualified and stateless, the module does not exist, the
+    checkpoint format has not moved, and ``"dropout"`` is still
+    unsupported.
+
+    Milestone **G3** since shipped the differentiable ``dropout``
+    operation *above* this Core, which is a different capability at a
+    different layer — the same Core/operation split conv2d, maxpool2d,
+    and cross_entropy already follow. It is covered by
+    tests/test_native_dropout_autograd.py; what this file guards is that
+    the Core itself gained nothing when that happened."""
     import tensorforge
     import tensorforge.experimental as experimental
     from tensorforge.experimental import NativeTensor, native_checkpoint
@@ -1540,11 +1548,15 @@ def test_g2_ships_the_core_layer_and_nothing_above_it():
     assert hasattr(cpp.NativeTensorCore, "dropout_forward")
     assert "tf_core_dropout_forward" in cpp._CHECKED_KERNELS
     assert cpp.backend_info()["tensor_core_ops"] == cpp.TENSOR_CORE_OPS
+    # The Core did not acquire the operation's name, and the operation
+    # did not acquire a Core entry: they stay layer-qualified apart.
+    assert "dropout" not in cpp.TENSOR_CORE_OPS
+    assert not hasattr(cpp.NativeTensorCore, "dropout")
+    assert "dropout_forward" not in cpp.AUTOGRAD_OPS
+    assert not hasattr(NativeTensor, "dropout_forward")
 
-    # Not shipped: the operation, the module, a backward, a generic RNG.
-    assert "dropout" not in cpp.AUTOGRAD_OPS
+    # Not shipped: the module, a backward kernel, a generic RNG.
     assert "dropout_backward" not in cpp.TENSOR_CORE_OPS
-    assert not hasattr(NativeTensor, "dropout")
     assert not hasattr(experimental, "NativeDropout")
     assert not hasattr(tensorforge, "NativeDropout")
     assert "NativeDropout" not in cpp.NATIVE_MODULES
