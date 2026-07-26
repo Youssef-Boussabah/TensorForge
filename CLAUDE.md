@@ -231,8 +231,9 @@ benchmark, and no production numerical file changed.**)
 **Phase F is complete**, and no normalization operation, kernel, C ABI
 symbol, or custom backward exists at all.
 **Phase G — Native RNG and Dropout — is the current phase and is *in
-progress*: only milestone G0 (the architecture contract in
-`docs/native_rng_dropout_design.md`) is complete; G1–G10 have not
+progress*: milestones G0 (the architecture contract in
+`docs/native_rng_dropout_design.md`) and G1 (`NativeGenerator` and module
+generator-state ownership) are complete; G2–G10 have not
 started.** G0 locked Python-managed generator state (an explicit
 64-bit seed plus call counter and an algorithm identifier), stateless
 native random kernels that receive the whole key for one call, inverted
@@ -260,6 +261,99 @@ capability boundary: `"dropout"` stays in `UNSUPPORTED` through G9 and
 leaves it only at **G10**, after the full closure matrix passes, leaving
 `("float32", "cuda", "amp")`. The format version becomes 2 at G5 — none
 of this in G0.
+**G1 is complete**: `src/tensorforge/experimental/native_generator.py`
+ships `NativeGenerator` — a **pure-Python value holder** owning no native
+storage and having **no `close()`**, carrying exactly four fields
+(`algorithm` `"tensorforge.splitmix64"`, `algorithm_version` 1, an
+unsigned-64-bit `seed`, and `calls`, the count of *committed* stochastic
+calls) as read-only properties, with `state()` returning an independent
+plain dict and `load_state()`/`reseed()`/`reset()` validating everything
+before assigning anything; exact-`int` discipline (`bool`, NumPy scalars,
+and `int` subclasses rejected); `seed=None` drawing once through
+`secrets.randbits(64)` and nothing else consulting the clock, the process
+id, an address, NumPy's global RNG, or Python's `random`; identity (never
+value) semantics with `copy`, `deepcopy`, and pickle all refused; and the
+private lock-protected token-validated transaction (`_reserve_call` →
+`_commit_call`/`_abandon_call`) where one private `threading.RLock`
+covers reservation, commit, cancellation, and every state read and write,
+at most one reservation is live, a concurrent or reentrant second caller
+fails *before* an index is minted, commit advances exactly once, cancel
+never advances, stale/foreign/duplicate/finished tokens are inert,
+`load_state`/`reseed`/`reset` are refused mid-reservation, and the
+counter is checked under the lock at `2**64 - 1` and never wraps.
+Reservation creation is a **two-phase claim / construct / publish /
+deliver** transaction and the token is built with **no generator lock
+held**: phase 1 rejects an active reservation, an existing claim, and an
+exhausted counter, then publishes *only* an internal construction claim
+(no active reservation, no counter movement, no serial movement); phase 2
+constructs the token owning nothing, and on any failure — including
+`MemoryError` and `KeyboardInterrupt` — a `finally` reacquires the lock,
+verifies the matching claim, clears it, publishes nothing, and re-raises;
+phase 3 reacquires the lock, verifies the claim, publishes the
+reservation, advances the never-reused serial exactly once, and clears
+the claim; phase 4 delivers the token. The four failure positions get
+**different** cleanup, because clearing the claim does *nothing* once a
+reservation is published: a failure between publication and delivery
+would otherwise leave an active reservation whose only token is being
+dropped — uncommittable, uncancellable, and blocking every later
+reservation — so `_release_undelivered` cancels it, matching the token's
+generator, serial, **and** index exactly, leaving `calls` untouched, and
+leaving a newer, foreign, committed, or already-abandoned reservation
+strictly alone. A failed delivery consumes an opaque serial, never a call
+index. It takes only its own generator's lock and does no
+callback-capable work under it, so it cannot touch the global
+multi-generator order. `_deliver_reservation` is the private no-op seam
+that makes that window addressable by tests instead of by real signal
+timing.
+Token construction is the one allocation in the path and allocation can
+run finalization, so it happens outside the lock: **no user code,
+callback, or generator-owned allocation runs while a generator lock is
+held**, which is what makes finalizer or callback reentry unable to
+invert the multi-generator lock order. While the claim stands, another
+reservation, `load_state`, `reseed`, `reset`, and
+`replace_generator_states` all raise `RuntimeError` and mutate nothing
+(inspection still works). The lock stays an `RLock` for two reasons —
+structurally, the multi-generator transaction re-enters through the same
+`_snapshot_state`/`_assign_state` write seam it holds the locks around,
+which a plain `Lock` self-deadlocks on; and residually, CPython can start
+a collection at any container allocation, so a finalizer reaching the
+remaining small allocations under the lock gets a deterministic refusal
+instead of a hang. `load_generator_state_dict` runs the shared
+`replace_generator_states` transaction in `native_generator.py`:
+validate → acquire **every** unique target's lock in one global
+identity-ordered sequence (so two loads over overlapping generators
+arriving through different modules cannot deadlock) → recheck every
+target for a published reservation *or a construction claim* while
+holding them all → snapshot → non-failing integer writes, with the
+rollback completing before any lock is released. No reservation can begin
+on a target between the recheck and the end of the commit, and because
+token construction holds no lock, a transaction reached from a finalizer
+begins owning nothing and takes the same global order.
+`NativeModule` gained `_generators` as a **fourth** registration category
+(reserved name, assignment registration, `register_generator`,
+one-category-per-name eviction in both directions, `__getattr__` /
+`__delattr__` participation, deterministic identity-deduplicated
+cycle-safe `generators()`/`named_generators()`, and the separate
+`generator_state_dict()`/`load_generator_state_dict()` surface), and
+`NativeGenerator` is exported from `tensorforge.experimental` only.
+**G1 generates no random values** — no derivation, kernel, C ABI symbol,
+ctypes declaration, Core method, `NativeTensor` operation, or
+`NativeDropout`; `state_dict()` is unchanged and still tensor-only; the
+checkpoint format is still version 1 and does not serialize generator
+state; and no *numerical* capability-registry value moved (`UNSUPPORTED`
+still reads `("dropout", "float32", "cuda", "amp")`, dtypes/devices
+unchanged). The one registry change G1 does make is reporting-only:
+`STATE_SUPPORT` gained `"generator_state"` between `load_state_dict` and
+`save_native_checkpoint`, a capability name (like `"persistent_buffers"`)
+covering the generator registration and in-memory state surface — it
+does **not** mean generator state is checkpointed, which is G5.
+Reservation creation is failure-atomic at every position (a failed
+construction publishes nothing and skips no serial; a failed *delivery*
+cancels the exactly-matching published reservation), and `calls` is a
+*count*, so
+`2**64 - 1` is a reachable value, not a sentinel: reserving at
+`2**64 - 2` succeeds and commits to `2**64 - 1`, reserving at
+`2**64 - 1` is refused, and the counter never wraps.
 Data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase G.
@@ -306,8 +400,9 @@ production-ready, not a PyTorch replacement.
   contracts (`native_cnn_design.md` for Phase D,
   `native_classification_design.md` for Phase E,
   `native_normalization_design.md` for Phase F — F0–F9 shipped, phase
-  complete —, and `native_rng_dropout_design.md` for Phase G — G0 shipped
-  (the design lock), G1–G10 not started). When a milestone changes the
+  complete —, and `native_rng_dropout_design.md` for Phase G — G0 (the
+  design lock) and G1 (`NativeGenerator` and module generator-state
+  ownership) shipped, G2–G10 not started). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the

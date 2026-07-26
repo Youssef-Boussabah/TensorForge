@@ -1139,10 +1139,31 @@ The Python line is done; what remains is expansion on its own terms:
     external process or interpreter death as the only documented
     exception), the ownership and failure matrices, and the **G0–G10**
     milestone sequence. **G0 added no numerical behavior**: it is design,
-    documentation, and semantic guardrails only, so no generator, kernel,
+    documentation, and semantic guardrails only.
+    **G1 is complete** — the generator state foundation:
+    `NativeGenerator` (pure Python, no native storage, no `close()`; the
+    four locked fields as read-only properties; atomic `state()` /
+    `load_state()` / `reseed()` / `reset()`; exact-`int` seeds with one
+    `secrets` entropy draw for `seed=None`; identity semantics with
+    copying and pickling refused; and the lock-protected,
+    token-validated reservation transaction — a two-phase claim /
+    construct / publish / deliver sequence whose token is allocated with
+    **no generator lock held**, so no callback-capable operation ever runs
+    while a lock is held and a finalizer cannot invert the global
+    multi-generator lock order, with the construction claim refusing every
+    conflicting mutation in the meantime and an exact-match cleanup for a
+    reservation that was published but never delivered, so a dropped token
+    can never strand the generator) plus generators as a
+    **fourth** `NativeModule` registration category with deterministic
+    identity-deduplicated cycle-safe traversal and their own
+    `generator_state_dict()` / `load_generator_state_dict()` surface,
+    leaving `state_dict()` tensor-only and unchanged. **G1 generates no
+    random values.** Milestones **G2–G10 have not started**: no
+    derivation, kernel,
     C ABI symbol, ctypes declaration, Core method, tensor operation,
-    module, export, or registry entry exists, the checkpoint format is
-    still version 1, and `dropout` is still listed unsupported beside
+    `NativeDropout` module, or registry entry exists, the checkpoint format is
+    still version 1 and does not persist generator state, and `dropout`
+    is still listed unsupported beside
     `float32`, `cuda`, and `amp`. **`dropout` stays listed unsupported
     for the whole of G0–G9** — G4 implements and exports `NativeDropout`
     but deliberately does not move the boundary, because a capability

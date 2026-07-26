@@ -230,6 +230,7 @@ def test_e8_added_no_capability_inventory_entry():
     assert info["state_support"] == (
         "persistent_buffers",
         "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
     )
     for inventory in ("raw_kernels", "tensor_core_ops", "autograd_ops",
@@ -383,6 +384,7 @@ def test_f9_closed_phase_f_without_registering_anything():
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
     )
     # No normalization *operation* exists at any numerical layer, and no

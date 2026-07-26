@@ -257,6 +257,7 @@ def test_experimental_exports_stay_intentional():
         "NativeLayerNorm",                              # Phase F, F2
         "NativeBatchNorm1d",                            # Phase F, F3
         "NativeBatchNorm2d",                            # Phase F, F4
+        "NativeGenerator",                              # Phase G, G1
     }
     for name in experimental.__all__:
         assert hasattr(experimental, name)
@@ -1409,6 +1410,26 @@ _NORMALIZATION_OP_NAMES = (
     "layer_norm_forward", "batch_norm_forward",
 )
 
+# The public experimental export surface exactly as Phase F closed it,
+# and what has legitimately been added since. A Phase-F guard asserts
+# ``PHASE_F_EXPORT_SURFACE | POST_PHASE_F_EXPORTS`` — still an exact
+# equality, so nothing can slip in unnoticed, but it names *which* phase
+# each addition belongs to instead of pretending the surface froze at F4.
+# The full surface is also pinned once, on its own, by
+# ``test_experimental_exports_stay_intentional``.
+PHASE_F_EXPORT_SURFACE = frozenset({
+    "NativeTensor", "NativeParameter", "NativeParameterRegistry",
+    "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+    "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+    "NativeMSELoss", "NativeSGD", "NativeAdam",
+    "save_native_checkpoint", "load_native_checkpoint",
+    "NativeCrossEntropyLoss", "native_accuracy",
+    "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+})
+POST_PHASE_F_EXPORTS = frozenset({
+    "NativeGenerator",   # Phase G, milestone G1 — random *state* only
+})
+
 
 def _top_level_section(token, relative_path=PHASE_F_DESIGN):
     """The whitespace-normalized body of the first ``##``-level section
@@ -1792,25 +1813,41 @@ def test_normalization_is_module_only_with_no_new_native_operation():
 
 
 def test_phase_f_export_surface_adds_only_the_shipped_normalization_modules():
-    """The public experimental surface is exactly what Phase E left plus
-    Phase F's three normalization modules — ``NativeLayerNorm`` (F2),
+    """Phase F added exactly three exports — ``NativeLayerNorm`` (F2),
     ``NativeBatchNorm1d`` (F3), and ``NativeBatchNorm2d`` (F4) — in both
     directions: nothing else added, nothing lost. F5-F9 added no export at
-    all, so the closed phase's surface is exactly F4's."""
+    all, so the closed phase's surface is exactly F4's.
+
+    The claim is expressed as a set *difference* against the Phase-E
+    baseline, so it keeps testing Phase F precisely while a later phase
+    legitimately adds its own exports (Phase G milestone G1 adds
+    ``NativeGenerator``); the full surface is pinned exactly by
+    ``test_experimental_exports_stay_intentional``."""
     import tensorforge
     import tensorforge.experimental as experimental
 
-    assert set(experimental.__all__) == {
+    phase_e_surface = {
         "NativeTensor", "NativeParameter", "NativeParameterRegistry",
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeMSELoss", "NativeSGD", "NativeAdam",
         "save_native_checkpoint", "load_native_checkpoint",
         "NativeCrossEntropyLoss", "native_accuracy",
+    }
+    phase_f_surface = {
         "NativeLayerNorm",       # Phase F, milestone F2
         "NativeBatchNorm1d",     # Phase F, milestone F3
         "NativeBatchNorm2d",     # Phase F, milestone F4
     }
+    exports = set(experimental.__all__)
+    # Nothing Phase E shipped was lost...
+    assert phase_e_surface <= exports
+    # ...Phase F's three are all present...
+    assert phase_f_surface <= exports
+    # ...and Phase F added nothing else: everything beyond the Phase-E
+    # baseline that is not a later phase's export is exactly those three.
+    later_phase_exports = {"NativeGenerator"}   # Phase G, milestone G1
+    assert exports - phase_e_surface - later_phase_exports == phase_f_surface
     for absent in ("NativeBatchNorm3d", "NativeDropout"):
         assert absent not in experimental.__all__, absent
     # No duplicates, and nothing leaks into the stable namespace.
@@ -1855,28 +1892,50 @@ def test_phase_f_changes_only_the_normalization_module_inventory():
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
 
-def test_state_support_reports_persistent_buffers():
-    """F1's capability reconciliation, pinned in both directions: the
-    tuple is exact, the new name really does map to a live API, and the
-    correction did not smuggle in a normalization claim."""
+def test_state_support_reports_the_real_in_memory_state_surface():
+    """The state inventory, pinned in both directions: the tuple is
+    exact, every name maps to a live API, and neither capability name
+    smuggled in a claim it does not own.
+
+    Two entries are *capability* names rather than single callables —
+    ``persistent_buffers`` (Phase F, F1) and ``generator_state`` (Phase
+    G, G1). Both describe **in-memory** state surfaces. ``STATE_SUPPORT``
+    is deliberately not an operation inventory, and ``generator_state``
+    in particular does not mean generator state is checkpointed: that is
+    milestone G5, and the format is still version 1."""
     from tensorforge.backends import cpp
-    from tensorforge.experimental import NativeModule
+    from tensorforge.experimental import NativeModule, native_checkpoint
 
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers",
         "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
     )
     assert cpp.backend_info()["state_support"] == cpp.STATE_SUPPORT
-    # The advertised capability is real: this is the API behind the name.
+    # Every advertised capability is real: these are the APIs behind them.
     for attribute in ("register_buffer", "buffers", "named_buffers",
-                      "state_dict", "load_state_dict"):
+                      "state_dict", "load_state_dict",
+                      "register_generator", "generators", "named_generators",
+                      "generator_state_dict", "load_generator_state_dict"):
         assert callable(getattr(NativeModule, attribute)), attribute
     # A state capability is not an operation, a module, or a metric.
     for inventory in (cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS, cpp.RAW_KERNELS,
                       cpp.NATIVE_MODULES, cpp.NATIVE_LOSSES,
                       cpp.NATIVE_METRICS, cpp.UNSUPPORTED):
         assert "persistent_buffers" not in inventory
+        assert "generator_state" not in inventory
+    # ...and "generator_state" claims in-memory state only: the
+    # checkpoint format has not moved and does not carry generators.
+    assert native_checkpoint._FORMAT_VERSION == 1
+    checkpoint_source = (
+        REPO_ROOT / "src" / "tensorforge" / "experimental"
+        / "native_checkpoint.py"
+    ).read_text(encoding="utf-8")
+    assert "generator" not in checkpoint_source, (
+        "STATE_SUPPORT advertises generator_state and the checkpoint now "
+        "mentions generators; persistence is milestone G5, not G1"
+    )
 
 
 def test_f1_added_no_normalization_capability():
@@ -2473,16 +2532,12 @@ def test_f6_shipped_the_normalized_training_and_resume_proof():
     )
     assert "version 1" in lowered
 
-    # Exports and every capability registry are exactly what F4/F5 left.
-    assert set(experimental.__all__) == {
-        "NativeTensor", "NativeParameter", "NativeParameterRegistry",
-        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
-        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
-        "NativeMSELoss", "NativeSGD", "NativeAdam",
-        "save_native_checkpoint", "load_native_checkpoint",
-        "NativeCrossEntropyLoss", "native_accuracy",
-        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
-    }
+    # Exports and every capability registry are exactly what F4/F5 left,
+    # plus whatever a *later* phase has since shipped (named explicitly,
+    # so this stays an exact equality rather than a loosened one).
+    assert set(experimental.__all__) == (
+        PHASE_F_EXPORT_SURFACE | POST_PHASE_F_EXPORTS
+    )
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
@@ -2490,6 +2545,7 @@ def test_f6_shipped_the_normalized_training_and_resume_proof():
     )
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
@@ -3067,15 +3123,9 @@ def test_the_status_reconciliation_moved_no_capability_surface():
     from tensorforge.experimental import NativeTensor, native_checkpoint
     import tensorforge.experimental as experimental
 
-    assert set(experimental.__all__) == {
-        "NativeTensor", "NativeParameter", "NativeParameterRegistry",
-        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
-        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
-        "NativeMSELoss", "NativeSGD", "NativeAdam",
-        "save_native_checkpoint", "load_native_checkpoint",
-        "NativeCrossEntropyLoss", "native_accuracy",
-        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
-    }
+    assert set(experimental.__all__) == (
+        PHASE_F_EXPORT_SURFACE | POST_PHASE_F_EXPORTS
+    )
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
@@ -3086,6 +3136,7 @@ def test_the_status_reconciliation_moved_no_capability_surface():
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
     )
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
@@ -3118,9 +3169,12 @@ def test_the_status_reconciliation_moved_no_capability_surface():
 
 PHASE_G_DESIGN = "docs/native_rng_dropout_design.md"
 
-# The names Phase G contracts but has NOT implemented, in each of the
-# forms a document, a registry, an export, or a C ABI might use them.
-_PHASE_G_PUBLIC_NAMES = ("NativeGenerator", "NativeDropout")
+# What Phase G has actually shipped, and what it has not. Milestone G1
+# shipped ``NativeGenerator`` — random *state* and its module ownership,
+# generating no random values — so it moved from the second tuple to the
+# first. Everything numerical is still unshipped.
+_PHASE_G_SHIPPED_NAMES = ("NativeGenerator",)          # Phase G, G1
+_PHASE_G_PUBLIC_NAMES = ("NativeDropout",)             # not implemented
 _PHASE_G_OP_NAMES = (
     "dropout", "dropout_forward", "dropout_backward",
     "random", "rand", "randn", "bernoulli", "uniform",
@@ -3343,12 +3397,19 @@ def test_phase_g_design_states_the_stable_native_separation_and_non_goals():
         )
 
 
-def test_g0_changed_no_capability_registry_or_runtime_surface():
-    """Guardrails 4, 5, 6, 12, and 13, all derived from reality: G0 is
-    documentation and guardrails only, so every registry, the export set,
+def test_phase_g_runtime_surface_is_generator_state_only():
+    """Guardrails 4, 5, 6, 12, and 13, all derived from reality.
+
+    Phase G has shipped exactly one thing: milestone G1's
+    ``NativeGenerator`` and its ``NativeModule`` registration — random
+    *state*, generating no random values. So every capability registry,
     the dtype/device boundary, the checkpoint format, the C ABI, the
-    ctypes declarations, the Core surface, and the C++ sources are exactly
-    what Phase F closed with."""
+    ctypes declarations, the Core surface, and the C++ sources are still
+    exactly what Phase F closed with, and the one new export appears in
+    **no** operation, kernel, module, or capability inventory. (Before
+    G1 this guard asserted ``NativeGenerator`` did not exist at all; that
+    absence check has been replaced by the stronger positive statement of
+    what it is *allowed* to be.)"""
     from tensorforge.backends import cpp
     from tensorforge.experimental import NativeTensor, native_checkpoint
     import tensorforge
@@ -3365,7 +3426,23 @@ def test_g0_changed_no_capability_registry_or_runtime_surface():
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
     assert native_checkpoint._FORMAT_VERSION == 1
 
-    # No Phase-G public name exists anywhere.
+    # G1 shipped: exported from the experimental namespace only, and in
+    # no capability inventory — a generator is state, not an operation,
+    # a module, a loss, a metric, an optimizer, or a kernel.
+    for name in _PHASE_G_SHIPPED_NAMES:
+        assert name in experimental.__all__, name
+        assert hasattr(experimental, name), name
+        assert not hasattr(tensorforge, name), (
+            f"{name} leaked into the stable top-level namespace"
+        )
+        for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS,
+                          cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,
+                          cpp.NATIVE_MODULES, cpp.NATIVE_LOSSES,
+                          cpp.NATIVE_METRICS, cpp.NATIVE_OPTIMIZERS,
+                          cpp.UNSUPPORTED):
+            assert name not in inventory, (name, inventory)
+
+    # Not shipped: no Phase-G public name beyond G1's exists anywhere.
     for name in _PHASE_G_PUBLIC_NAMES:
         assert name not in experimental.__all__, name
         assert not hasattr(experimental, name), name
@@ -3401,19 +3478,41 @@ def test_g0_changed_no_capability_registry_or_runtime_surface():
         text = source.read_text(encoding="utf-8")
         for symbol in ("tf_core_dropout", "tf_core_random"):
             assert symbol not in text, f"{source.name} defines {symbol!r}"
-    # And no RNG/Dropout source unit or header was created.
+    # No RNG/Dropout *numerical* source unit or header exists. G1's
+    # generator is pure Python, so its module is present and the C++
+    # tree is untouched.
     for absent in ("cpp/src/random.cpp", "cpp/src/dropout.cpp",
                    "cpp/include/tf_random_internal.h",
-                   "src/tensorforge/experimental/native_generator.py",
                    "src/tensorforge/experimental/native_dropout.py"):
         assert not (REPO_ROOT / absent).exists(), (
-            f"{absent} exists, but G0 is documentation only"
+            f"{absent} exists, but no Phase-G milestone has shipped it"
+        )
+    generator_module = (REPO_ROOT / "src" / "tensorforge" / "experimental"
+                        / "native_generator.py")
+    assert generator_module.is_file(), "milestone G1 shipped NativeGenerator"
+    # ...and it really is pure Python state: no numerical derivation, no
+    # NumPy, and no global or process-wide entropy source anywhere in it.
+    generator_source = generator_module.read_text(encoding="utf-8")
+    for forbidden in ("import numpy", "numpy.random", "np.random",
+                      "import random", "random.getrandbits", "time.time",
+                      "os.getpid",
+                      # the SplitMix64 derivation itself (G2's work): the
+                      # golden ratio and the two finalizer multipliers,
+                      # and any call to a mixing function
+                      "0x9E3779B97F4A7C15", "0xBF58476D1CE4E5B9",
+                      "0x94D049BB133111EB", "mix64("):
+        assert forbidden not in generator_source, (
+            f"native_generator.py references {forbidden!r}; G1 holds state "
+            f"and generates no random values"
         )
 
-    # Generator registration is a G1 capability: NativeModule has none yet.
+    # Generator registration is the G1 capability, and only that: the
+    # module gained the four generator APIs and no Dropout surface.
     from tensorforge.experimental import NativeModule
     for attribute in ("register_generator", "generators", "named_generators",
                       "generator_state_dict", "load_generator_state_dict"):
+        assert hasattr(NativeModule, attribute), attribute
+    for attribute in ("dropout", "register_dropout"):
         assert not hasattr(NativeModule, attribute), attribute
 
 
@@ -3422,16 +3521,22 @@ def test_no_surface_claims_a_phase_g_capability_exists():
     Phase-F closure guard used to run: naming Phase G is now correct, but
     no surface may claim a Phase-G *capability* is supported, implemented,
     shipped, or available. The premise comes from the live registry, so
-    this guard tracks reality rather than a frozen expectation."""
+    this guard tracks reality rather than a frozen expectation.
+
+    ``NativeGenerator`` is deliberately **not** a banned subject any more:
+    milestone G1 really did ship it, so saying so is honest. What stays
+    banned is every claim about the *numerical* capability — Dropout, the
+    operation, and any native RNG — none of which exists, because G1
+    generates no random values."""
     from tensorforge.backends import cpp
     import tensorforge.experimental as experimental
 
-    # Premise: none of it exists.
+    # Premise: none of the numerical surface exists.
     assert "dropout" in cpp.UNSUPPORTED
     for name in _PHASE_G_PUBLIC_NAMES:
         assert not hasattr(experimental, name), name
 
-    subject = (r"(NativeDropout|NativeGenerator|NativeTensor\.dropout"
+    subject = (r"(NativeDropout|NativeTensor\.dropout"
                r"|native RNG|native dropout|native random)")
     claim = (r"(is|are|now|has been|have been)\s+"
              r"(supported|implemented|shipped|available|complete|completed"
@@ -3463,17 +3568,25 @@ def test_no_surface_claims_a_phase_g_capability_exists():
 
 
 def test_phase_g_is_presented_as_in_progress_not_complete():
-    """The mirror of the Phase-F completion guard. G0 has landed and
-    G1-G10 have not, so no surface may present Phase G — or the phase's
-    later milestones — as finished. The design states its own status
-    positively, so "in progress" is a claim rather than an omission."""
+    """The mirror of the Phase-F completion guard: no surface may present
+    Phase G — or a milestone that has not shipped — as finished.
+
+    The milestone boundary is derived from the ladder table rather than
+    from a pinned sentence, so this guard survives each milestone landing
+    while still catching a phase declared complete early or a milestone
+    marked done before it exists. The *reality* check that the ladder
+    matches the tree lives in
+    ``test_phase_g_ladder_status_matches_the_shipped_tree``."""
     design = _status_text(PHASE_G_DESIGN)
     assert re.search(r"Phase-G status: in progress", design), (
         "the design document no longer states its in-progress status"
     )
-    assert re.search(r"G0 is complete", design)
-    assert re.search(r"G1.{0,4}G10 have not started", design), (
-        "the design no longer states that G1-G10 have not started"
+    # Whatever has shipped, the tail of the ladder must still be open —
+    # G10 is the closure milestone, so it can never be complete while the
+    # phase says "in progress".
+    assert re.search(r"not started", design, re.I), (
+        "the design no longer marks any milestone as unstarted, but the "
+        "phase still claims to be in progress"
     )
     finished = re.compile(
         r"Phase.G\b[^.]{0,70}?\b(is|are|was|has been)\s+"
@@ -3499,6 +3612,242 @@ def test_phase_g_is_presented_as_in_progress_not_complete():
         )
         # ...and each one says what G0 actually was.
         assert re.search(r"G0", text), f"{surface} does not name milestone G0"
+
+
+def test_phase_g_ladder_status_matches_the_shipped_tree():
+    """The ladder's per-milestone status is checked against **reality**,
+    not against prose: a milestone is marked Complete only if the thing
+    it ships actually exists, and Not started only if it does not.
+
+    This is what keeps the ladder from drifting in either direction — a
+    milestone quietly marked done, or a shipped milestone still listed as
+    pending. Each entry names the observable that decides it."""
+    import tensorforge.experimental as experimental
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeModule, native_checkpoint
+
+    ladder = _top_level_section("Milestone ladder", PHASE_G_DESIGN)
+
+    def status(index):
+        row = re.search(rf"\|\s*G{index}\s*\|[^|]*\|([^|]*)\|", ladder)
+        assert row is not None, f"the ladder has no status row for G{index}"
+        return re.sub(r"[*`]", "", row.group(1)).strip().lower()
+
+    # G0 is documentation; it has shipped by definition once the design
+    # exists, which test_phase_g_design_exists_and_is_linked proves.
+    assert status(0) == "complete"
+
+    # G1 ships NativeGenerator and module generator registration.
+    g1_shipped = (
+        hasattr(experimental, "NativeGenerator")
+        and "NativeGenerator" in experimental.__all__
+        and all(hasattr(NativeModule, name) for name in
+                ("register_generator", "generators", "named_generators",
+                 "generator_state_dict", "load_generator_state_dict"))
+    )
+    assert (status(1) == "complete") is g1_shipped, (
+        f"the ladder says G1 is {status(1)!r} but the tree "
+        f"{'has' if g1_shipped else 'does not have'} NativeGenerator"
+    )
+
+    # G2/G3 ship the derivation and the differentiable operation.
+    numerical_shipped = (
+        "dropout_forward" in cpp.TENSOR_CORE_OPS
+        or "dropout" in cpp.AUTOGRAD_OPS
+        or hasattr(experimental.NativeTensor, "dropout")
+    )
+    for index in (2, 3):
+        if not numerical_shipped:
+            assert status(index) == "not started", (
+                f"the ladder marks G{index} as {status(index)!r}, but no "
+                f"native random operation exists"
+            )
+
+    # G4 ships the module; G5 moves the checkpoint format.
+    if not hasattr(experimental, "NativeDropout"):
+        assert status(4) == "not started"
+    if native_checkpoint._FORMAT_VERSION == 1:
+        assert status(5) == "not started", (
+            "the ladder marks G5 complete, but the checkpoint format is "
+            "still version 1"
+        )
+    # The closure milestone is open while "dropout" is still unsupported.
+    if "dropout" in cpp.UNSUPPORTED:
+        assert status(10) == "not started"
+
+
+# The claims G1 must never let a status surface make. G1 shipped random
+# *state*; everything numerical, persisted, or later is still unbuilt,
+# and prose is the easiest place for that distinction to erode.
+_G1_OVERCLAIMS = (
+    ("random values are generated",
+     r"(generat\w+|produc\w+|draw\w+|sampl\w+)\s+(?:\w+\s+){0,3}?"
+     r"random\s+(values?|numbers?|bits?)"
+     r"|random\s+(values?|numbers?|bits?)\s+(?:\w+\s+){0,3}?"
+     r"(are|is)\s+(generated|produced|drawn|sampled|available)"),
+    ("a mask exists",
+     r"(multiplier|dropout)\s+mask\w*\s+(?:\w+\s+){0,3}?"
+     r"(exists?|is|are)\s+(built|created|saved|available|implemented)"),
+    ("checkpoint version 2 exists",
+     r"(format|checkpoint)[^.]{0,40}\bversion\s*2\b[^.]{0,30}"
+     r"\b(now|exists?|shipped|current|live|implemented)\b"
+     r"|\bversion\s*2\b[^.]{0,30}\b(is|are|has been)\s+"
+     r"(shipped|implemented|current|live)\b"),
+    ("generator state is checkpointed",
+     r"generator\s+state[^.]{0,60}\b(is|are)\s+"
+     r"(saved|persisted|serialized|checkpointed|written)"
+     r"|checkpoints?[^.]{0,60}(save|persist|serialize|record)s?"
+     r"[^.]{0,30}generator\s+state"),
+    ("a later milestone has begun",
+     r"\bG(?:[2-9]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
+     r"(complete|completed|started|begun|shipped|landed|done)\b"),
+)
+
+
+def test_no_surface_overclaims_what_milestone_g1_shipped():
+    """G1 shipped random **state** — a generator object, its module
+    registration, and its own state report. It generates no random
+    values, builds no mask, persists nothing to a checkpoint, and starts
+    no later milestone.
+
+    Every premise below comes from the live tree, so this guard tracks
+    reality; the prose scan then holds documentation to it. Spans that
+    carry their own negation ("does not generate", "no random value",
+    "G2-G10 have not started") are the honest form and pass."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import (
+        NativeGenerator, NativeTensor, native_checkpoint,
+    )
+    import tensorforge.experimental as experimental
+
+    # Premises, all from reality.
+    assert not hasattr(NativeTensor, "dropout")
+    assert not hasattr(experimental, "NativeDropout")
+    assert "dropout" in cpp.UNSUPPORTED
+    assert native_checkpoint._FORMAT_VERSION == 1
+    # The generator really does not produce a value of any kind.
+    generator = NativeGenerator(1)
+    for numerical in ("random", "rand", "randn", "bits", "next", "uniform",
+                      "bernoulli", "mask"):
+        assert not hasattr(generator, numerical), numerical
+
+    negations = re.compile(
+        r"\b(not|never|neither|nor|nothing|none|no|without|planned|future"
+        r"|beyond|until|once|when|will|would|before|yet)\b", re.I,
+    )
+    for surface in ("README.md", "docs/roadmap.md",
+                    "docs/project_summary.md",
+                    "docs/native_support_matrix.md",
+                    "docs/backend_experiments.md", "CLAUDE.md",
+                    "src/tensorforge/experimental/__init__.py",
+                    PHASE_G_DESIGN):
+        text = _status_text(surface)
+        for label, pattern in _G1_OVERCLAIMS:
+            offenders = [
+                match.group(0)
+                for match in re.finditer(pattern, text, re.I)
+                if not negations.search(
+                    text[max(0, match.start() - 60):match.end() + 25]
+                )
+            ]
+            assert offenders == [], (
+                f"{surface} claims {label}: {offenders[:3]}"
+            )
+
+
+def test_generator_state_capability_does_not_imply_persistence():
+    """``STATE_SUPPORT`` gained ``"generator_state"`` at G1. That name
+    reports an **in-memory** surface and must never be read — or
+    written about — as checkpoint persistence.
+
+    All four premises come from the live tree: the capability is
+    advertised, its APIs exist, the checkpoint format has not moved, and
+    the checkpoint module does not mention generators."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeModule, native_checkpoint
+
+    assert "generator_state" in cpp.STATE_SUPPORT
+    assert cpp.STATE_SUPPORT.index("generator_state") == (
+        cpp.STATE_SUPPORT.index("load_state_dict") + 1
+    ), "generator_state should sit with the other in-memory state names"
+    for api in ("register_generator", "generators", "named_generators",
+                "generator_state_dict", "load_generator_state_dict"):
+        assert callable(getattr(NativeModule, api)), api
+    assert native_checkpoint._FORMAT_VERSION == 1
+
+    # The registry module itself must say what the name does *not* mean.
+    registry_source = (REPO_ROOT / "src" / "tensorforge" / "backends"
+                       / "cpp.py").read_text(encoding="utf-8")
+    marker = registry_source.index("STATE_SUPPORT = (")
+    commentary = registry_source[max(0, marker - 2000):marker].lower()
+    assert "generator_state" in commentary, (
+        "the registry no longer explains the generator_state entry"
+    )
+    for required in ("in-memory", "g5"):
+        assert required in commentary, (
+            f"the registry commentary no longer says {required!r} about "
+            f"generator_state"
+        )
+
+    # And no status surface may present it as persistence.
+    persistence = re.compile(
+        r"generator[_ ]state[^.]{0,80}\b(is|are)\s+"
+        r"(saved|persisted|serialized|checkpointed|written to)"
+        r"|STATE_SUPPORT[^.]{0,80}(checkpoint|persist)s?\s+generator",
+        re.I,
+    )
+    negations = re.compile(
+        r"\b(not|never|no|without|until|does not|is not|are not)\b", re.I
+    )
+    for surface in ("README.md", "docs/roadmap.md",
+                    "docs/project_summary.md",
+                    "docs/native_support_matrix.md",
+                    "docs/backend_experiments.md", "CLAUDE.md",
+                    PHASE_G_DESIGN):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in persistence.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 60):match.end() + 25]
+            )
+        ]
+        assert offenders == [], (
+            f"{surface} presents generator_state as checkpoint "
+            f"persistence: {offenders[:3]}"
+        )
+
+
+def test_g1_status_is_stated_positively_on_every_phase_surface():
+    """The mirror of the guard above: G1 really did ship, so a surface
+    that tracks Phase G must say so rather than still describing the
+    phase as design-only. Paired with the overclaim scan, this pins the
+    status from both sides."""
+    for surface in ("README.md", "docs/roadmap.md",
+                    "docs/project_summary.md",
+                    "docs/native_support_matrix.md",
+                    "docs/backend_experiments.md", "CLAUDE.md",
+                    PHASE_G_DESIGN):
+        text = _status_text(surface)
+        assert re.search(r"\bG1\b", text), (
+            f"{surface} does not name milestone G1"
+        )
+        assert "NativeGenerator" in text, (
+            f"{surface} does not mention what G1 shipped"
+        )
+        # ...and none of them still says G1 is pending. The scan is
+        # anchored so that an unstarted-range claim that *begins* after
+        # G1 ("G2-G10 have not started") reads as the honest statement it
+        # is: the second alternative refuses to cross another milestone
+        # token, and the first catches a range that includes G1.
+        still_pending = re.compile(
+            r"\bG1\s*[-–—]\s*G\d+\b[^.]{0,30}?\bnot\s+(?:yet\s+)?started"
+            r"|\bG1\b(?:(?!\bG\d)[^.]){0,40}?\bnot\s+(?:yet\s+)?started",
+            re.I,
+        )
+        match = still_pending.search(text)
+        assert match is None, (
+            f"{surface} still describes G1 as unstarted: {match.group(0)!r}"
+        )
 
 
 def _phase_g_milestone(index):
@@ -3648,9 +3997,165 @@ def test_phase_g_locks_a_lock_protected_token_validated_reservation():
     generator = _phase_g_generator_contract()
     lowered = generator.lower()
 
-    assert "threading.Lock" in generator, (
-        "the design no longer gives NativeGenerator an internal "
-        "synchronization primitive"
+    # The governing invariant: nothing that can run a callback executes
+    # while a generator lock is held. Token construction is the one
+    # allocation in the reservation path — allocation can run
+    # finalization, and a finalizer could start a multi-generator
+    # transaction — so it must happen with no lock held, and the design
+    # must not go back to calling the opposite an invariant.
+    assert re.search(r"outside\s+(\*\*)?the\s+lock|no\s+generator\s+lock\s+"
+                     r"is\s+held|holding\s+no\s+generator\s+lock", lowered), (
+        "the design no longer builds the reservation token outside the lock"
+    )
+    # Narrow to *construction*: matching or committing a token under the
+    # lock is correct and must stay sayable.
+    build = r"(construct|mint|allocat|built|building)\w*"
+    inside = r"(under|inside|while holding)\s+(the|it|this)?\s*" \
+             r"(critical\s+section|lock)"
+    assert not re.search(
+        rf"{build}[^.]{{0,60}}token[^.]{{0,120}}{inside}"
+        rf"|token[^.]{{0,40}}{build}[^.]{{0,120}}{inside}"
+        rf"|{inside}[^.]{{0,80}}{build}[^.]{{0,40}}token"
+        rf"|allocation[^.]{{0,60}}under\s+it[^.]{{0,40}}token",
+        lowered), (
+        "the design again holds a generator lock across token construction, "
+        "which lets a finalizer invert the multi-generator lock order"
+    )
+    assert re.search(r"no\s+(user\s+code|callback)[^.]{0,160}"
+                     r"(lock\s+is\s+held|holding\s+a\s+lock)"
+                     r"|no[^.]{0,80}callback[^.]{0,120}lock\s+is\s+held",
+                     lowered), (
+        "the design no longer states that no callback-capable operation "
+        "runs while a generator lock is held"
+    )
+
+    # The two-phase claim / construct / publish transaction itself.
+    assert re.search(r"claim", lowered), (
+        "the design no longer has a reservation-construction claim"
+    )
+    for phase in ("claim", "construct", "publish", "deliver"):
+        assert re.search(rf"phase\s+\d\s+—\s+{phase}", lowered), (
+            f"the design no longer names the {phase!r} phase of reservation "
+            f"construction"
+        )
+    # ...and what it blocks, named. A design that only refused a second
+    # *reservation* would satisfy a looser check while leaving state
+    # replacement free to move the seed under a claimed index.
+    windows = [lowered[match.end():match.end() + 900]
+               for match in re.finditer(r"construction claim", lowered)]
+    assert windows, (
+        "the design no longer names a reservation-construction claim"
+    )
+    required = {
+        "says the blocked operations fail": r"(fail|raise|refus|reject)",
+        "blocks another reservation": r"another reservation",
+        "blocks load_state": r"load_state",
+        "blocks reseed": r"reseed",
+        "blocks reset": r"reset",
+        "blocks replace_generator_states": r"replace_generator_states",
+        "says a blocked operation mutates nothing":
+            r"mutates? nothing|changes? nothing|no mutation",
+        "still allows state inspection": r"inspection",
+    }
+    best, missing = 0, list(required)
+    for window in windows:
+        absent = [name for name, pattern in required.items()
+                  if not re.search(pattern, window)]
+        if len(required) - len(absent) > best:
+            best, missing = len(required) - len(absent), absent
+    assert not missing, (
+        "the construction claim contract no longer "
+        + "; no longer ".join(missing)
+    )
+    # The four failure positions, scoped to the subsection that owns
+    # them. Matching anywhere in §3.6 is not enough: "foreign",
+    # "committed", and "abandoned" all appear in the *token* contract
+    # below, so an unscoped check passes even with the whole
+    # failed-delivery rule deleted.
+    # The helper collapses newlines, so the subsection is bounded by the
+    # next "####" heading marker rather than by a line break.
+    positions = re.search(r"####\s+the four failure positions.*?(?=####|\Z)",
+                          lowered, re.S)
+    assert positions, (
+        "the design no longer distinguishes the four reservation failure "
+        "positions"
+    )
+    positions = positions.group(0)
+    for position in ("construction", "publication", "deliver"):
+        assert position in positions, (
+            f"the failure-position contract no longer covers {position!r}"
+        )
+    assert re.search(
+        r"(after|before)[^.|]{0,60}(publication|published)[^.|]{0,140}deliver"
+        r"|deliver\w*[^.|]{0,140}(after|before)[^.|]{0,60}publi", positions), (
+        "the design no longer names the publication-to-delivery failure "
+        "position separately from construction failure"
+    )
+    assert re.search(r"strand", positions), (
+        "the design no longer says an undelivered reservation would "
+        "permanently strand the generator"
+    )
+    # The specific wrong claim — that clearing the claim covers the
+    # publication-to-return window — must be stated as false, and must
+    # not come back in any form.
+    assert re.search(r"clearing the claim does nothing"
+                     r"|the claim is gone", positions), (
+        "the design no longer states that clearing the construction claim "
+        "does nothing for the publication-to-return window"
+    )
+    assert not re.search(
+        r"claim[^.]{0,120}covers?\s+(every|all|the whole|both)"
+        r"|(finally|cleanup)[^.]{0,80}covers?[^.]{0,60}"
+        r"(publication|between the publish|publish-to-return)", lowered), (
+        "the design again claims that clearing the construction claim "
+        "covers the publication-to-return window"
+    )
+    # The cleanup is exact-match, and names what it must never cancel.
+    for protected in ("newer", "foreign", "committed", "abandoned"):
+        assert protected in positions, (
+            f"the failed-delivery cleanup no longer protects a {protected!r} "
+            f"reservation"
+        )
+    assert re.search(r"serial[^.]{0,60}(and|,)[^.]{0,30}index", positions), (
+        "the failed-delivery cleanup no longer matches serial and index"
+    )
+    assert re.search(r"never advanc\w*\s+calls|without advancing\s+calls"
+                     r"|calls\s+untouched|never consumes a call index",
+                     positions), (
+        "the design no longer says a failed delivery leaves calls alone"
+    )
+    # And it must not be able to break the multi-generator lock order.
+    assert re.search(r"only its own generator.?s lock|only[^.]{0,40}own lock",
+                     positions), (
+        "the failed-delivery cleanup no longer takes only its own lock"
+    )
+
+    # Reentry through a finalizer cannot invert the global lock order.
+    assert re.search(r"finaliz", lowered), (
+        "the design no longer explains what runs during construction"
+    )
+    assert re.search(r"invert[^.]{0,80}order|order[^.]{0,80}invert", lowered), (
+        "the design no longer states that finalizer or callback reentry "
+        "cannot invert the multi-generator lock order"
+    )
+    assert re.search(r"(deadlock|hang)", lowered), (
+        "the design no longer states that reentry must not deadlock"
+    )
+    assert re.search(r"finally", lowered), (
+        "the design no longer releases the claim on the failure path"
+    )
+    # An RLock is still required — the transaction re-enters through the
+    # shared write seam — but it must be justified, not merely asserted.
+    assert "threading.RLock" in generator, (
+        "the design no longer gives NativeGenerator a reentrant lock"
+    )
+    assert not re.search(r"plain\s+.?Lock.?,?\s+not\s+an\s+.?RLock",
+                         generator, re.I), (
+        "the design has reverted to a plain Lock, which self-deadlocks in "
+        "the multi-generator transaction"
+    )
+    assert re.search(r"why it stays an rlock|structural", lowered), (
+        "the design no longer justifies keeping a reentrant lock"
     )
     # Every operation the prompt requires the lock to cover is named as
     # covered, not merely mentioned somewhere in the section.
@@ -3711,6 +4216,82 @@ def test_phase_g_locks_a_lock_protected_token_validated_reservation():
                                     PHASE_G_DESIGN)
     assert re.search(r"active reservation", checkpoint, re.I), (
         "the checkpoint contract does not handle a live reservation"
+    )
+
+
+def test_phase_g_locks_the_multi_generator_state_transaction():
+    """The load transaction is where a per-generator check-then-write
+    would silently break the reservation rule: another caller can reserve
+    in the gap, and the write then moves the seed out from under a live
+    token. The contract must therefore lock **every** target across the
+    recheck and the commit, in an order that cannot deadlock."""
+    registration = _top_level_section("NativeModule", PHASE_G_DESIGN)
+    section = re.sub(r"[*`]", "", registration)
+    lowered = section.lower()
+
+    # Every unique target is locked, together, not one at a time.
+    assert re.search(r"every unique target", lowered), (
+        "the transaction no longer locks every target"
+    )
+    assert re.search(r"held together|all of them, held|holding them all"
+                     r"|while every lock is held", lowered), (
+        "the transaction no longer holds the target locks simultaneously"
+    )
+    # The order is global and caller-independent, which is what makes
+    # two overlapping loads deadlock-free.
+    assert re.search(r"independent of the caller|global order", lowered), (
+        "the acquisition order is no longer caller-independent"
+    )
+    assert re.search(r"identity|id\(\)", lowered), (
+        "the design no longer says what the global order is keyed on"
+    )
+    assert re.search(r"deadlock", lowered), (
+        "the design no longer explains the deadlock the order prevents"
+    )
+    assert re.search(r"reverse", lowered), (
+        "the design no longer releases the locks in reverse order"
+    )
+    # The recheck happens under those locks, and covers construction too.
+    assert re.search(r"recheck", lowered), (
+        "the design no longer rechecks for reservations under the locks"
+    )
+    assert re.search(r"under construction|being constructed"
+                     r"|construction claim", lowered), (
+        "the recheck no longer covers a reservation under construction"
+    )
+    assert re.search(
+        r"no reservation may begin[^.]{0,120}(recheck|check)"
+        r"|between the recheck and the end of the commit", lowered
+    ), "the design no longer forbids a reservation starting mid-commit"
+    # The order survives reentry, which is only true because token
+    # construction holds no lock (§3.6).
+    assert re.search(r"finaliz", lowered), (
+        "the transaction no longer says what happens when it is reached "
+        "from a finalizer"
+    )
+    assert re.search(r"invert", lowered), (
+        "the design no longer states that finalizer or callback reentry "
+        "cannot invert the global lock order"
+    )
+    assert re.search(r"no generator lock is held|owning nothing"
+                     r"|constructed with no", lowered), (
+        "the design no longer connects the order guarantee to token "
+        "construction holding no lock"
+    )
+    # The commit cannot fail, and the rollback finishes before unlocking.
+    assert re.search(r"cannot fail", lowered), (
+        "the commit is no longer non-failing by construction"
+    )
+    assert re.search(r"before any lock is released", lowered), (
+        "the rollback may now complete after the locks are released"
+    )
+    # The two honest outcomes for a racing reservation are stated.
+    assert re.search(r"never overlap the commit|can never overlap", lowered), (
+        "the design no longer rules out a reservation overlapping the commit"
+    )
+    # Aliases fold by identity rather than half-applying.
+    assert re.search(r"conflict", lowered), (
+        "the design no longer rejects conflicting aliased states"
     )
 
 

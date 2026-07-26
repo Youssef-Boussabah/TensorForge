@@ -197,7 +197,10 @@ def test_native_module_manual_registration_invalid_names_fail():
 @needs_native
 def test_native_module_reserved_names_are_rejected():
     module = NativeModule()
-    for name in ("_parameters", "_modules", "training"):
+    # ``_buffers`` (v3.15) and ``_generators`` (Phase G, G1) joined the
+    # reserved set as their registries were added; the rule is the same.
+    for name in ("_parameters", "_modules", "_buffers", "_generators",
+                 "training"):
         with pytest.raises(ValueError):
             setattr(module, name, NativeParameter(VALUES))
         with pytest.raises(ValueError):
@@ -206,6 +209,26 @@ def test_native_module_reserved_names_are_rejected():
     assert module.training is True
     assert module.parameters() == []
     assert module.modules() == [module]
+    assert module.buffers() == []
+    assert module.generators() == []
+
+
+def test_native_module_registries_are_independent_categories():
+    """Adding a fourth registration category (Phase G's generators) must
+    not disturb the three that were already there: a module with no
+    generators behaves exactly as before, and the registries never leak
+    into one another."""
+    module = NativeModule()
+    assert module.parameters() == []
+    assert module.buffers() == []
+    assert module.generators() == []
+    assert module.modules() == [module]
+    assert module.state_dict() == {}
+    assert module.generator_state_dict() == {}
+    child = NativeModule()
+    module.block = child
+    assert module.modules() == [module, child]
+    assert module.generators() == []
 
 
 @needs_native

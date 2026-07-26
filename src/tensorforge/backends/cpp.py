@@ -248,10 +248,28 @@ NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
 # callable: the API behind it is the register_buffer/buffers/
 # named_buffers trio (see tests/test_cpp_backend_info.py, which proves
 # every advertised name maps to something real).
+#
+# "generator_state" (added in Phase G, milestone G1) is the same kind of
+# entry: a *capability* name covering NativeModule's fourth registered
+# state category — `register_generator`, `generators()` /
+# `named_generators()`, and the `generator_state_dict()` /
+# `load_generator_state_dict()` inspection-and-replacement pair. It sits
+# beside `state_dict`/`load_state_dict` because that is exactly what it
+# is: a second, non-tensor in-memory state surface, deliberately separate
+# because `state_dict()` is contractually `{name: NativeTensor}`.
+#
+# It reports **in-memory state only**, and claims nothing beyond that:
+#   - no generator state is written to or read from a native checkpoint
+#     (that is milestone G5, which also moves the format to version 2 —
+#     the format is still version 1);
+#   - no random value is generated anywhere. G1 shipped the generator
+#     *state*; the derivation, the kernel, `NativeTensor.dropout`, and
+#     `NativeDropout` do not exist, and "dropout" is still in UNSUPPORTED.
 STATE_SUPPORT = (
     "persistent_buffers",
     "state_dict",
     "load_state_dict",
+    "generator_state",
     "save_native_checkpoint",
     "load_native_checkpoint",
 )

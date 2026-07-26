@@ -2169,6 +2169,7 @@ def test_f5_adds_no_capability_or_public_surface():
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
     )
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")

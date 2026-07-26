@@ -1584,6 +1584,7 @@ def test_every_state_capability_maps_to_a_real_api():
 
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
     )
     assert callable(NativeModule.state_dict)
@@ -1605,10 +1606,16 @@ def test_the_remaining_capability_boundary_is_unchanged():
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     for never in ("NativeDropout", "NativeBatchNorm3d", "NativeInstanceNorm",
                   "NativeGroupNorm", "NativeRMSNorm", "NativeRNG",
-                  "NativeGenerator", "NativeDataLoader"):
+                  "NativeDataLoader"):
         assert not hasattr(experimental, never), never
         assert never not in experimental.__all__, never
         assert never not in cpp.NATIVE_MODULES, never
+    # NativeGenerator left that list at Phase G milestone G1, which ships
+    # random *state* and generates no random values. It is exported, but
+    # it is not a module and carries no numerical capability — the
+    # boundary this test guards is unchanged.
+    assert hasattr(experimental, "NativeGenerator")
+    assert "NativeGenerator" not in cpp.NATIVE_MODULES
     for never in ("dropout", "rand", "randn", "manual_seed", "to", "cuda",
                   "half", "float"):
         assert not hasattr(NativeTensor, never), never

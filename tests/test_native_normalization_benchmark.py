@@ -1028,6 +1028,12 @@ def test_ci_asserts_no_benchmark_duration():
 # --------------------------------------------------------------------------
 
 def test_f7_changes_no_capability_inventory():
+    """F7 was measurement only: it added no export, kernel, operation,
+    module, loss, metric, or optimizer.
+
+    The export check names later phases' additions explicitly (Phase G
+    milestone G1 shipped ``NativeGenerator``, random *state* only), so it
+    stays an exact equality while still proving F7 itself added nothing."""
     import tensorforge.experimental as experimental
 
     assert set(experimental.__all__) == {
@@ -1038,6 +1044,7 @@ def test_f7_changes_no_capability_inventory():
         "save_native_checkpoint", "load_native_checkpoint",
         "NativeCrossEntropyLoss", "native_accuracy",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        "NativeGenerator",   # Phase G, milestone G1 — not F7
     }
     assert cpp.RAW_KERNELS == (
         "elementwise_add", "elementwise_subtract", "elementwise_multiply",
@@ -1056,6 +1063,7 @@ def test_f7_changes_no_capability_inventory():
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
     )
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")

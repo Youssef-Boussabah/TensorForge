@@ -10,7 +10,13 @@ declaration, no `NativeTensorCore` method, no `NativeTensor` operation,
 no module, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-G status: in progress. G0 is complete; G1–G10 have not started.**
+**Phase-G status: in progress. G0 and G1 are complete; G2–G10 have not
+started.** Milestone **G1** shipped `NativeGenerator` and generator
+registration on `NativeModule` — random **state** and its ownership.
+**It generates no random values**: §4's derivation, §7's kernel, and §8's
+operation do not exist, `NativeDropout` does not exist, `"dropout"` is
+still in `UNSUPPORTED`, and the checkpoint format is still version 1 and
+does not serialize generator state.
 
 The capability boundary is therefore exactly what Phase F closed with,
 and this document does not move it:
@@ -297,19 +303,32 @@ _abandon_call(token) -> None    # failure: calls unchanged
 
 #### The lock
 
-`NativeGenerator` holds one private `threading.Lock` created in
-`__init__` and never exposed, replaced, or reentered. It is a **plain
-`Lock`, not an `RLock`**: reentrant acquisition must deadlock-free
-*fail*, not silently succeed, and every critical section below is
-straight-line Python that calls nothing reentrant.
+`NativeGenerator` holds one private `threading.RLock` created in
+`__init__` and never exposed or replaced.
 
-The lock protects exactly these operations, and every one of them is a
-short, allocation-free, non-raising-under-normal-conditions critical
-section:
+The governing invariant is:
+
+> **No user code, no callback, and no generator-owned allocation runs
+> while a generator lock is held.**
+
+Reservation-token construction — the one operation in the reservation
+path that allocates, and therefore the one that can run interpreter
+finalization — is deliberately performed **outside** the lock (see the
+next subsection). That is what makes the invariant true, and it is what
+makes the global multi-generator lock order (§9.6) unbreakable: a
+finalizer cannot start a transaction while this thread owns one
+generator's lock, so **finalizer or callback reentry cannot invert the
+multi-generator lock order** — it can never own one lock and reach
+backwards for another.
+
+The lock protects exactly these operations, every one of which is now
+straight-line integer work:
 
 | Operation | Under the lock |
 |---|---|
-| reservation creation (`_reserve_call`) | yes — exhaustion check, index read, token mint, active-slot write |
+| reservation **claim** (phase 1 of `_reserve_call`) | yes — active check, **claim check**, exhaustion check, candidate index and serial read, claim write |
+| reservation **token construction** (phase 2) | **no — no generator lock is held** |
+| reservation **publication** (phase 3) | yes — claim match, active-slot write, single serial advance, claim clear |
 | reservation cancellation (`_abandon_call`) | yes |
 | reservation commit (`_commit_call`) | yes — token match and the single `calls += 1` |
 | call-counter read (`.calls`) | yes |
@@ -317,13 +336,131 @@ section:
 | state replacement (`load_state()`) | yes |
 | reseeding (`reseed()`) | yes |
 | resetting (`reset()`) | yes |
+| the multi-generator state transaction (§9.6) | yes — **every** target's lock, held together |
+
+**Why it stays an `RLock`.** Two independent reasons, neither of which is
+"to permit reentrant execution while holding the lock":
+
+1. *Structural.* The multi-generator transaction (§9.6) holds every
+   target's lock and then reaches its targets through the same private
+   primitives every other caller uses — `_snapshot_state()` and
+   `_assign_state()`, which take the lock themselves. Re-entering one
+   lock the current thread already owns is how those primitives stay a
+   single write seam instead of forking into locked and unlocked
+   variants. On a plain `Lock` that is an immediate self-deadlock.
+2. *Residual allocation.* CPython may begin a collection at any container
+   allocation, and the remaining critical sections still allocate small
+   objects — the dict `state()` returns, the tuple `_snapshot_state()`
+   returns, and the message and traceback of every exception raised under
+   the lock. An `RLock` turns a finalizer that re-enters through one of
+   those into a deterministic refusal (for a mutation) or a correct read
+   (for an inspection) instead of a permanent hang.
+
+An `RLock` weakens nothing: across threads it behaves exactly like a
+`Lock`, and re-acquiring a lock the current thread already owns never
+blocks, so it can never reorder acquisitions.
+
+#### Reservation construction: claim, construct, publish, deliver
+
+`_reserve_call` is a **two-phase transaction** — a claim taken and
+released under the lock, a construction performed holding nothing, a
+publication under the lock, and finally delivery of the token to its
+caller:
+
+**Phase 1 — claim.** Under the lock: reject an active reservation →
+reject a claim already in progress → reject an exhausted counter →
+capture the candidate call index and reservation serial → publish **only**
+the internal construction claim. No active reservation is published,
+`calls` does not advance, and the next reservation serial does not
+advance. Release the lock.
+
+**Phase 2 — construct, outside the lock.** Build the token while holding
+no generator lock. If construction raises — `MemoryError`,
+`KeyboardInterrupt`, or any explicit failure — a `finally` reacquires the
+lock, verifies the matching claim still stands, clears it, publishes no
+active reservation, leaves `calls` and the next serial unchanged, and
+re-raises the original exception. The generator is immediately reusable.
+
+**Phase 3 — publish.** Reacquire the lock, verify the claim still matches
+the candidate serial and index, publish the active reservation, advance
+the never-reused serial exactly once, clear the claim, release.
+
+**Phase 4 — deliver.** Hand the token back to its caller.
+
+The **construction claim** is what makes the window between phase 1 and
+phase 3 safe. While it stands, each of the following fails with
+`RuntimeError` and mutates nothing, whether it arrives from another
+thread or reentrantly:
+
+- another reservation,
+- `load_state()`, `reseed()`, `reset()`,
+- `replace_generator_states()` (§9.6) and any checkpoint-style
+  replacement built on it.
+
+State *inspection* is unaffected and keeps working, exactly as the lock
+table says. No other state-changing operation can occur between the claim
+and the publication, because the claim blocks all of them. Neither the
+claim nor the token is public.
+
+#### The four failure positions, and why they need different cleanup
+
+Failures at the four positions are **not** interchangeable, and clearing
+the claim covers only the first two:
+
+| Where it fails | Claim | Active reservation | Cleanup | `calls` | Serial |
+|---|---|---|---|---|---|
+| **construction** (phase 2) | still standing | never published | clear the matching claim | unchanged | unchanged — none is skipped |
+| **publication** (phase 3) | still standing | never published | clear the matching claim | unchanged | unchanged |
+| **after publication, before delivery** | **already cleared** | **published, and its only token is being dropped** | cancel the exactly-matching reservation | unchanged | **consumed** |
+| **delivered** (phase 4 returns) | already cleared | published, caller holds the token | none — both cleanups match nothing | unchanged until commit | consumed |
+
+The third row is the one worth stating explicitly, because it is easy to
+get wrong: **once a reservation is published the claim is gone, so
+clearing the claim does nothing for the publication-to-return window.**
+An asynchronous exception arriving there — a `KeyboardInterrupt`, a
+`MemoryError` — would otherwise leave an active reservation that *no
+caller has a token for*: it could never be committed or abandoned, and
+every later reservation on that generator would be refused for the rest
+of the process. The generator would be permanently stranded.
+
+So a failed delivery runs its own cleanup, which under the generator's
+own lock:
+
+- verifies the live reservation matches **this token's generator, serial,
+  *and* index**, and that the token is still unfinished;
+- clears that reservation **without advancing `calls`**;
+- leaves the consumed reservation serial consumed — serials are opaque
+  and never reused, so burning one costs nothing, while restoring one
+  could hand a later reservation a serial an existing token already
+  carries;
+- marks the token finished, so a caller that somehow still holds it
+  cannot resurrect the reservation;
+- and, if the match fails for any reason, **changes nothing at all**.
+
+That last point is the safety property: the cleanup can never cancel a
+**newer** reservation, a **foreign** generator's reservation, or one that
+was already **committed** or **abandoned**. A failed delivery may consume
+an internal reservation serial; it never consumes a call index and never
+advances `calls`.
+
+The cleanup takes **only its own generator's lock** and does no
+callback-capable work while holding it, so it never participates in the
+global multi-generator acquisition order (§9.6) and cannot violate it.
+
+One residual window is **not** covered, and is stated rather than papered
+over: an asynchronous exception delivered after `_reserve_call`'s cleanup
+has run and while the frame is returning, before the caller binds the
+token. No Python code can run there. It is bounded to a couple of
+bytecodes, and the intended caller (§8) binds the token and enters its
+`try`/`finally` as its next action, so the operation-level cleanup covers
+what the generator-level cleanup structurally cannot.
 
 **Native numerical computation happens outside the lock.** The lock is
 released before the Core forward allocates anything or the kernel runs,
-and reacquired only to commit or abandon. No native call, no allocation,
-no C ABI entry, and no `NativeTensor` construction ever occurs while the
-lock is held, so the lock can never be held across a native failure, a
-`MemoryError`, or an arbitrarily long kernel.
+and reacquired only to commit or abandon. No native call, no C ABI entry,
+and no `NativeTensor` construction ever occurs while the lock is held, so
+the lock can never be held across a native failure or an arbitrarily long
+kernel.
 
 #### The token
 
@@ -484,15 +621,40 @@ the mask holds exactly two distinct values.
 
 ### 4.6 Counter exhaustion
 
-The counter never wraps. `_reserve_call()` refuses to start a stochastic
-call when `calls >= 2**64 - 1` and raises `RuntimeError`, consuming
-nothing and minting no token. The check happens **under the lock**
-(§3.6), so two callers cannot both observe the last usable value. The
-largest usable call index is therefore `2**64 - 2` and
-`calls` stays inside `[0, 2**64 - 1]`. Loading a state whose `calls` is at
-the boundary is legal (§10.5) — the refusal happens at the next attempted
-forward, not at load time, because a checkpoint must round-trip exactly
-what was saved.
+The counter never wraps. Write `UINT64_MAX = 2**64 - 1`.
+
+`calls` is a **count of committed calls**, not an index space, so
+`UINT64_MAX` is a **reachable, valid** value — it is what the counter
+holds after the last representable successful call. It is not a sentinel
+and is not reserved.
+
+A reservation uses the **current** `calls` value as its call index.
+`_reserve_call()` refuses when `calls >= UINT64_MAX` and raises
+`RuntimeError`, consuming nothing and minting no token. The check happens
+**under the lock** (§3.6), so two callers cannot both observe the last
+usable value. Exactly:
+
+| State | Reserve | Reserved index | After commit |
+|---|---|---|---|
+| `calls < UINT64_MAX - 1` | succeeds | `calls` | `calls + 1` |
+| `calls == UINT64_MAX - 1` | **succeeds** | `UINT64_MAX - 1` | **`UINT64_MAX`** |
+| `calls == UINT64_MAX` | **refused** (`RuntimeError`) | — | `UINT64_MAX`, unchanged |
+
+So the largest usable call *index* is `UINT64_MAX - 1`, the largest
+reachable *count* is `UINT64_MAX`, and `calls` stays inside
+`[0, UINT64_MAX]` inclusive at every point.
+
+Abandoning does not consume the index: cancelling a reservation made at
+`calls == UINT64_MAX - 1` leaves `calls == UINT64_MAX - 1`, and the next
+reservation legitimately takes that same unconsumed index again. No
+failed, stale, malformed, foreign, duplicate, or concurrent operation
+moves the boundary state — every one of them leaves `calls` exactly where
+it was (§14).
+
+Loading a state whose `calls` is at the boundary is legal (§10.5) — the
+refusal happens at the next attempted forward, not at load time, because
+a checkpoint must round-trip exactly what was saved. Recovery is
+`reset()` or `reseed()`, which return the counter to `0`.
 
 ### 4.7 Known-answer requirements
 
@@ -914,21 +1076,63 @@ validate → stage → commit shape and returns the same
 1. validate `strict` and the mapping type;
 2. compute canonical keys, missing, and unexpected; under `strict=True`
    any of either raises `ValueError` reporting both lists;
-3. validate every matching value completely (exact four-key mapping,
-   algorithm and algorithm-version equality against the **live**
-   generator, seed and counter type and range), **and reject the whole
-   load if any target generator has an active reservation** (§3.6) —
-   this is checked during validation, before anything is staged, so a
-   live draw is never interrupted mid-flight;
-4. stage the validated plain-Python states, and capture each target
-   generator's previous state as its rollback snapshot;
-5. commit by calling each live generator's `load_state`, preserving every
-   generator's object identity, under a rollback guard that restores each
-   already-committed generator's previous state if anything interrupts.
+3. hand every matching `(canonical_name, generator, state)` to the
+   shared generator transaction below.
 
-Rollback here is exact and cannot itself fail: a generator's state is four
-immutable values, and restoring it is four assignments. This is
-deliberately **not** routed through
+#### The multi-generator transaction
+
+The replacement itself lives beside the lock it has to reason about, as
+`replace_generator_states(entries)` — the generator analogue of
+`_native_state.replace_native_state`. Its ordering is **validate → lock
+→ recheck → snapshot → commit**:
+
+1. **Validate.** Every entry's state is checked against its generator
+   (exact four-key mapping, algorithm and algorithm-version equality
+   against the **live** generator, seed and counter type and range), with
+   the canonical name naming it in errors. Targets are deduplicated by
+   **identity**; one generator supplied twice with *different* states is
+   a conflict and is rejected outright, so an aliased key can never
+   half-apply.
+2. **Lock.** Every unique target's lock is acquired — all of them, held
+   together — in one **global order that is independent of the caller**:
+   sorted by object identity. A user-visible order (canonical names,
+   mapping order, registration order) differs between two modules that
+   share generators, which is precisely the case that deadlocks; identity
+   does not. Locks release in reverse order.
+3. **Recheck.** *While every lock is held*, each target is rechecked for
+   a reservation — published **or holding a construction claim** (§3.6).
+   This is the check that matters, and it cannot be raced: no target can
+   begin a reservation without the lock this transaction is holding.
+4. **Snapshot.** Each target's previous `(seed, calls)` is captured.
+5. **Commit.** The writes run. They are integer assignments and **cannot
+   fail**, so the only way out of the loop early is an asynchronous
+   exception, and the rollback restores from the snapshots using the same
+   non-failing primitive — **before any lock is released**. No other
+   thread can ever observe a partially committed transaction.
+
+**No reservation may begin on any target between the recheck and the end
+of the commit.** A concurrent reservation therefore has exactly two
+outcomes: it wins the lock first, and the load then rejects without
+mutating anything; or it waits, and observes the finished state. It can
+never overlap the commit, and it can never have its seed replaced
+underneath a live token's index.
+
+The global order also holds for **every** entry into this transaction,
+including one reached from a finalizer. That follows from §3.6: because
+reservation tokens are constructed with no generator lock held, no thread
+can be inside a finalizer while owning a generator lock. A transaction
+started from a finalizer therefore begins owning nothing and takes the
+global order like any other caller — it cannot start from the middle of
+the order and reach backwards, so finalizer or callback reentry cannot
+invert the multi-generator lock order.
+
+Any failure — validation, conflict, or reservation — leaves every
+generator's state, identity, and reservation exactly as they were, with
+no new reservation and no partially loaded target. Because generators own
+no native storage, no failure can move the native live-storage count
+either.
+
+This is deliberately **not** routed through
 `_native_state.replace_native_state` — that primitive replaces
 `NativeTensorCore`s and owns native storage lifetimes, and a generator
 owns none. Reusing it would require inventing a fake core. The two
@@ -1394,6 +1598,15 @@ than an accident.
 | `generator` omitted | `TypeError` | no | no | no | no |
 | `generator` is not a `NativeGenerator` | `TypeError` | no | no | no | no |
 | reservation already outstanding (reentrant or concurrent use) | `RuntimeError` | no — **no index is minted** | no | no | no |
+| reservation already **claimed** (another thread, or reentrant from a finalizer) | `RuntimeError` | no — no index is minted | no | no | no |
+| reservation-token construction itself fails (incl. `MemoryError`, `KeyboardInterrupt`) | the original exception | no | no — the `finally` clears the matching claim, publishes nothing, and leaves the serial unchanged | no | no |
+| publication fails (the claim no longer matches) | `RuntimeError` | no | no — no reservation is published; the claim is cleared | no | no |
+| **published, then delivery fails** (async exception before the caller receives the token) | the original exception | no | no — the exactly-matching reservation is cancelled, `calls` untouched; the serial is consumed | no | no |
+| failed-delivery cleanup meets a newer, foreign, committed, or abandoned reservation | — (silent no-op) | no | no — that reservation is left strictly alone | no | no |
+| `load_state` / `reseed` / `reset` / the multi-generator load, while a claim stands | `RuntimeError` | no | no | no | no |
+| a multi-generator load reached **from inside** token construction, naming the claimed generator | `RuntimeError` | no | no — not even its co-targets are written | no | no |
+| multi-generator load: a target reserves before the locks are taken | `RuntimeError` | no | no — no target is written | no | no |
+| multi-generator load: conflicting states for one object through aliases | `ValueError` | no | no | no | no |
 | commit with a token from another generator | `RuntimeError` | no — on **either** generator | no | no | no |
 | commit with an already-committed token | `RuntimeError` | no — never twice | no | no | no |
 | commit with an already-abandoned or stale-serial token | `RuntimeError` | no; the active reservation is untouched | no | no | no |
@@ -1468,6 +1681,58 @@ reservation; a non-token argument raising `TypeError`; `load_state`,
 changing nothing; and the lock proved **released** across the gap between
 reserve and commit, so it is never held while a caller runs arbitrary
 work between the two.
+**Construction outside the lock (§3.6):** the token constructor
+monkeypatched to observe, from inside itself, that **no generator lock is
+held** — both by ownership and by an independent thread acquiring the
+lock outright; that phase 1 published *only* the claim, with no active
+reservation, no counter movement, and no serial movement; and then to
+re-enter `_reserve_call`, `reseed`, `reset`, `load_state`, the module
+load, and `replace_generator_states` directly — every one naming the
+claimed generator raising rather than hanging and mutating nothing (not
+even its co-targets), a transaction over *unrelated* generators
+completing normally, and reversing the caller's mapping order changing
+neither outcome — while state *inspection* keeps working.
+**Construction failure:** `MemoryError`, `KeyboardInterrupt`, and a plain
+`RuntimeError` each releasing the claim, publishing no reservation,
+leaving `calls` unchanged, skipping no serial, leaving state replacement
+and a later reserve/commit immediately usable, and moving no native
+storage.
+**Delivery failure (the publication-to-return window):** injected through
+the private delivery seam rather than by real signal timing —
+`KeyboardInterrupt`, `MemoryError`, and a custom `BaseException` each
+propagating unchanged and leaving **no** claim, **no** active
+reservation, `calls` unchanged, no lock held, state replacement working,
+and a later reserve/commit succeeding; the call *index* unconsumed while
+the opaque serial is consumed; repeated failures never stranding the
+generator and moving no native storage; the same at
+`calls == UINT64_MAX - 1`, where the last representable index stays
+retryable and a later commit still reaches `UINT64_MAX`. **Exact-match
+safety**, driven through the real seam wherever possible: the cleanup
+cannot cancel a **newer** reservation taken inside the window, cannot
+undo a **commit** made inside it, is inert on an **already abandoned**
+token, ignores a **foreign** generator's token, ignores a **stale
+serial**, ignores a **mismatched index**, and does nothing when no
+reservation is live; and a discarded token is refused by both
+`_commit_call` and `_abandon_call` afterwards.
+**Cross-generator deadlock regression:** one thread reserving on the
+generator that sorts **second** globally while its constructor starts a
+replacement naming both in reverse caller order, and a second thread
+gated so that it provably owns the first generator's lock before that
+constructor runs — the exact inversion that hangs if the token is built
+under the lock. Both threads must finish within bounded joins, neither
+generator may be partially written, and the reservation must still commit
+exactly one index. (Deterministic, event-gated, no sleeps, daemon threads
+so a regression fails rather than hangs.)
+**The multi-generator transaction:** a reservation taken between
+validation and lock acquisition rejecting the whole load with nothing
+written and the reservation still committable; a reservation racing the
+commit never observing partial state; two modules holding the same
+generators in **opposite** order loaded concurrently — with the threads
+forced to interleave, so a caller-derived acquisition order provably
+deadlocks and the global one provably does not; mapping order not
+affecting the lock order; a shared generator locked and written exactly
+once; conflicting alias states rejected; and a failed multi-target load
+leaving every generator unchanged.
 Registration: assignment and explicit registration,
 `None`/`del` unregistration, one-category-per-name against all three
 existing categories, reserved-name rejection, replacement position,
@@ -1725,7 +1990,7 @@ not move and the phase is not closed.
 | Milestone | Scope | Status |
 |---|---|---|
 | G0 | Architecture contract and design lock | **Complete** |
-| G1 | `NativeGenerator` and module generator-state ownership | Not started |
+| G1 | `NativeGenerator` and module generator-state ownership | **Complete** |
 | G2 | Deterministic native Dropout-forward Core | Not started |
 | G3 | Differentiable `NativeTensor` Dropout | Not started |
 | G4 | `NativeDropout` module and public export | Not started |
@@ -1762,6 +2027,8 @@ not move and the phase is not closed.
 
 ### G1 — `NativeGenerator` and module generator-state ownership
 
+**Complete.**
+
 - **Objective.** Explicit, inspectable, serializable random state, and a
   first-class place for it in the module hierarchy.
 - **Scope.** `NativeGenerator` (§3); the `_generators` registry and its
@@ -1770,17 +2037,46 @@ not move and the phase is not closed.
   and hands out call indices; nothing draws from it yet.
 - **Files.** New `src/tensorforge/experimental/native_generator.py`;
   `native_module.py`; `src/tensorforge/experimental/__init__.py` (export
-  `NativeGenerator`); `src/tensorforge/backends/cpp.py` (`STATE_SUPPORT`
-  gains a `"generator_state"` capability name — reporting only).
+  `NativeGenerator`); new `tests/test_native_generator.py`;
+  `src/tensorforge/backends/cpp.py` (`STATE_SUPPORT` gains
+  `"generator_state"` — **reporting only**, placed between
+  `load_state_dict` and `save_native_checkpoint` so it sits with the
+  other in-memory state surfaces).
+
+  `"generator_state"` is a *capability* name, like `"persistent_buffers"`
+  beside it, covering `register_generator`, `generators()` /
+  `named_generators()`, and the `generator_state_dict()` /
+  `load_generator_state_dict()` pair. It reports **in-memory state
+  only** and claims nothing more: no generator state is written to or
+  read from a checkpoint (G5), and no random value is generated
+  anywhere. No other registry moved — `UNSUPPORTED` still reads
+  `("dropout", "float32", "cuda", "amp")`, dtype and device are
+  unchanged, and the checkpoint format is still version 1.
 - **Public contract.** §3.2–§3.5, §9.2–§9.6.
 - **Ownership.** The generator owns nothing native; it owns one private
-  `threading.Lock` (§3.6) and at most one active reservation; registries
-  hold references only; identity is preserved across every state load.
-- **Failure.** Constructor and `load_state` validate before mutating;
-  `load_generator_state_dict` is validate → stage → commit with rollback;
-  concurrent and reentrant reservations, stale/foreign/duplicate tokens,
-  state replacement during a live reservation, and exhaustion all raise
-  without changing `seed`, `calls`, or the active slot.
+  `threading.RLock` and at most one reservation — a construction claim
+  (§3.6) or a published one. Registries hold references only; identity is
+  preserved across every state load.
+- **Failure.** Constructor and `load_state` validate before mutating.
+  Reservation creation is the §3.6 two-phase claim / construct / publish /
+  deliver transaction: the token is allocated with **no generator lock
+  held**, so no callback-capable operation ever runs while a lock is held;
+  a failed construction releases the claim in `finally`, publishes
+  nothing, and skips no serial; and a failure *after* publication but
+  before the caller receives its token cancels the exactly-matching
+  reservation instead, since the claim is already gone by then. Neither
+  advances `calls`, and a caller never loses the only token for a live
+  reservation. `load_generator_state_dict` runs the §9.6
+  multi-generator transaction — validate → lock every unique target in
+  the global identity order → recheck for reservations *and construction
+  claims* under those locks → snapshot → non-failing commit, with the
+  rollback completing before any lock is released. Concurrent and
+  reentrant reservations, stale/foreign/duplicate tokens, state
+  replacement during a live *or claimed* reservation, and exhaustion all
+  raise without changing `seed`, `calls`, the serial, or the active slot.
+  Nothing deadlocks: conflicting operations are rejected by the claim,
+  overlapping loads share one acquisition order, and — because
+  construction holds no lock — a finalizer cannot invert that order.
 - **Tests.** The G1 block of §15.
 - **Docs.** This file's status; the support matrix's state section.
 - **Forbidden.** No kernel, no ABI symbol, no ctypes declaration, no Core

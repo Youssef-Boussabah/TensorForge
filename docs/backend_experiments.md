@@ -296,10 +296,108 @@ included — restores parameters, persistent buffers, optimizer state, and
 generator state *together*, with every object identity preserved, no
 partially loaded component observable, and pre-existing graph-owned masks
 untouched, leaving external process or interpreter death as the only
-documented exception. Milestones **G1–G10 have not started**: no
-generator, kernel, C ABI symbol, ctypes declaration, Core method, tensor
-operation, module, export, or registry entry exists yet, the checkpoint
-format is still version 1, and `dropout` is still listed unsupported
+documented exception.
+
+**Milestone G1 is complete** — the generator state foundation, and
+nothing numerical. `src/tensorforge/experimental/native_generator.py`
+ships `NativeGenerator`: a **pure-Python value holder** owning no native
+storage, allocating nothing native, and having **no `close()`**, so
+constructing, registering, sharing, and dropping generators leaves the
+native live-storage count exactly where it was. It carries the four
+locked fields — the algorithm identifier and version, an unsigned 64-bit
+seed, and `calls`, the count of **committed** stochastic calls — as
+read-only properties, with `state()` returning an independent plain dict
+and `load_state()`/`reseed()`/`reset()` validating everything before
+assigning anything, so a rejected call leaves the generator
+bit-identical. Seeds are exact Python `int`s (`bool`, NumPy integer
+scalars, and `int` subclasses are all rejected, and an out-of-range value
+raises rather than truncating); `seed=None` draws once through
+`secrets.randbits(64)`, and nothing anywhere consults the clock, the
+process id, an address, NumPy's global RNG, or Python's `random`.
+Identity is object identity — no value equality, and `copy`, `deepcopy`,
+and pickle are all refused, because a copied generator would silently
+produce the same values in two places. The private call transaction
+(`_reserve_call` → `_commit_call`/`_abandon_call`) is implemented exactly
+as locked: one plain `threading.Lock` per generator covering reservation,
+commit, cancellation, and every state read and write, with the caller's
+work done outside it; at most one live reservation, so a concurrent or
+reentrant second caller raises **before** an index is minted; opaque
+single-use tokens carrying the owning generator, the reserved index, and
+a never-reused serial, so stale, foreign, duplicated, already-committed,
+and already-cancelled tokens are all inert; commit advancing exactly once
+and cancellation never advancing; `load_state`/`reseed`/`reset` refused
+while a reservation is live; and exhaustion checked under the lock at
+`2**64 - 1`, so the counter never wraps.
+
+`NativeModule` gained `_generators` as a **fourth** registration category
+beside parameters, buffers, and child modules: assignment registers (a
+`NativeGenerator` is an unambiguous native type), `register_generator` is
+the strict explicit form, one name stays one category in both directions,
+`__getattr__`/`__delattr__` participate, and
+`generators()`/`named_generators()` ride the same deterministic
+pre-order, identity-deduplicated, cycle-safe walk parameters and buffers
+use — so one shared generator appears once under its first-discovered
+canonical name while two generators with identical state stay two
+streams. Generator state has its **own** surface,
+`generator_state_dict()` / `load_generator_state_dict()`, because
+`state_dict()` is contractually `{name: NativeTensor}` and a generator is
+not a tensor; `state_dict()` is byte-for-byte unchanged for every model.
+Loading runs one shared multi-generator transaction: validate every
+value, acquire **every** unique target's lock in a global
+identity-ordered sequence, recheck each target for a published
+reservation *or a construction claim* while holding them all, snapshot,
+then write — the writes being integer assignments that cannot fail, with
+the rollback completing before any lock is released. That ordering is
+what makes the guarantees real rather than probable: no reservation can
+begin on a target between the recheck and the end of the commit, no other
+thread can observe a partial commit, and two concurrent loads over
+overlapping generators — arriving through different modules whose
+canonical orders disagree — acquire in the same sequence and cannot
+deadlock.
+
+Reservation creation is itself a **two-phase claim / construct / publish**
+transaction, and the token is allocated with **no generator lock held**.
+Phase 1 publishes only an internal construction claim; phase 2 builds the
+token owning nothing, releasing the claim in `finally` on any failure
+(`MemoryError` and `KeyboardInterrupt` included) without publishing a
+reservation or skipping a serial; phase 3 publishes the reservation and
+advances the never-reused serial exactly once; phase 4 delivers the
+token. Those last two fail differently, and clearing the claim covers
+only the first two: once a reservation is published the claim is gone, so
+an asynchronous exception before the caller receives its token would
+leave an active reservation nobody can commit or abandon — permanently
+stranding the generator. A failed delivery therefore runs its own
+**exact-match** cleanup, cancelling only a live reservation carrying that
+token's generator, serial, **and** index, leaving `calls` untouched, and
+leaving a newer, foreign, committed, or already-abandoned reservation
+strictly alone; it consumes an opaque serial, never a call index, and
+takes only its own generator's lock. Token construction is the
+one allocation in the path and allocation can run interpreter
+finalization, so keeping it outside the lock establishes the governing
+invariant — **no user code, callback, or generator-owned allocation runs
+while a generator lock is held** — and that is what makes the global
+acquisition order unbreakable: a transaction reached from a finalizer
+begins owning nothing and takes the same order as any other caller, so
+finalizer or callback reentry cannot invert it. The lock stays a
+`threading.RLock` for two auditable reasons: structurally, the
+multi-generator transaction reaches its targets through the same
+`_snapshot_state`/`_assign_state` write seam it holds the locks around,
+which a plain `Lock` self-deadlocks on; and residually, CPython may begin
+a collection at any container allocation, so a finalizer meeting the
+small allocations that remain under the lock gets a deterministic refusal
+rather than a permanent hang.
+
+The one registry change is reporting-only: `STATE_SUPPORT`
+gained `"generator_state"` beside `"persistent_buffers"`, naming the
+**in-memory** generator surface. It does not mean generator state is
+checkpointed — that is G5 — and no numerical registry moved.
+
+**G1 generates no random values.** No derivation, no mask, no kernel, no
+C ABI symbol, no ctypes declaration, no Core method, no `NativeTensor`
+operation, and no `NativeDropout`. Milestones **G2–G10 have not
+started**: the checkpoint format is still version 1 and does **not**
+serialize generator state (that is G5), and no capability-registry value
+moved — `dropout` is still listed unsupported
 beside `float32`, `cuda`, and `amp`. `dropout` stays listed unsupported
 for the whole of **G0–G9** — G4 implements and exports `NativeDropout`
 without moving the boundary, because a capability whose value is exact

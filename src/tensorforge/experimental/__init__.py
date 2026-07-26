@@ -193,11 +193,49 @@ baseline, with the remaining process-exit allocations identified
 honestly as CPython/NumPy shutdown retention containing no TensorForge
 frame and no suppression file — **validation and documentation only, no
 numerical capability, no C++, no CTest, no ABI or ctypes surface, and no
-production behavior changed**. **Phase F is complete.** Closing it
-closes that phase only: what the native line
-still does **not** have is further
-activations/math, dropout or a native RNG, float32/dtype expansion, CUDA,
-AMP, and data-pipeline abstractions.
+production behavior changed**. **Phase F is complete.**
+
+**Phase G — Native RNG and Dropout — is the current phase and is in
+progress.** Its contract is locked in
+``docs/native_rng_dropout_design.md`` (milestone **G0**). **Milestone G1
+is complete**: it ships ``NativeGenerator`` below — explicit,
+inspectable, serializable random *state* — and makes generators a fourth
+``NativeModule`` registration category beside parameters, buffers, and
+child modules (``register_generator``, ``generators()``,
+``named_generators()``, ``generator_state_dict()``,
+``load_generator_state_dict()``). **G1 generates no random values.**
+There is no finalizer, no bit derivation, no mask, no random kernel, no
+C ABI symbol, no ctypes declaration, no ``NativeTensorCore`` method, and
+no ``NativeTensor`` operation; ``NativeDropout`` does not exist,
+``"dropout"`` is still in ``UNSUPPORTED`` (it leaves only at G10, after
+the closure matrix), the native checkpoint format is still **version 1**
+and does not serialize generator state, and **milestones G2-G10 have not
+started**. What the native line still does **not** have is further
+activations/math, dropout or any numerical RNG, float32/dtype expansion,
+CUDA, AMP, and data-pipeline abstractions.
+
+``NativeGenerator`` (Phase G, milestone G1) is the Python half of the
+phase's central split — random state is Python-managed, and the native
+random kernels a later milestone adds are stateless and receive the whole
+key for one call. It is a **pure-Python value holder**: an algorithm
+identifier (``"tensorforge.splitmix64"``) and version, an unsigned 64-bit
+seed, and a counter of **committed** stochastic calls, all exposed as
+read-only properties with ``state()`` / ``load_state()`` / ``reseed()`` /
+``reset()`` for atomic, identity-preserving state changes. It owns no
+native storage, allocates nothing native, and has **no ``close()``** —
+constructing, registering, and dropping generators leaves the native
+live-storage count untouched. Identity is object identity (no value
+equality), sharing is done by sharing the object, and copying — ``copy``,
+``deepcopy``, and pickle alike — is refused, because a copied generator
+would silently produce the same values in two places. ``seed=None`` draws
+one 64-bit seed from OS entropy through ``secrets``; nothing in the phase
+consults the clock, the process id, an address, NumPy's global RNG, or
+Python's ``random``. Its private call transaction (``_reserve_call`` →
+``_commit_call``/``_abandon_call``) is lock-protected and
+token-validated so that the counter advances exactly once per published
+call and no two callers can ever receive the same call index — which is
+serialization for correctness, not parallel stochastic execution, which
+Phase G does not claim.
 
 ``NativeParameter`` and ``NativeParameterRegistry`` (Advanced C++ v3.1,
 the first Phase C step) add the native training stack's trainable-leaf
@@ -295,6 +333,7 @@ this package is always safe (the library loads lazily on first use).
 """
 
 from .native_tensor import NativeTensor
+from .native_generator import NativeGenerator
 from .native_parameter import NativeParameter, NativeParameterRegistry
 from .native_module import NativeModule
 from .native_linear import NativeLinear
@@ -314,6 +353,7 @@ from .native_checkpoint import load_native_checkpoint, save_native_checkpoint
 
 __all__ = [
     "NativeTensor",
+    "NativeGenerator",
     "NativeParameter",
     "NativeParameterRegistry",
     "NativeModule",

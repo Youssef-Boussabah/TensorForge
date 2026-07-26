@@ -327,8 +327,26 @@ whole-checkpoint transaction atomicity under any ordinary synchronous
 failure (external process death being the only documented exception),
 and the G0–G10 ladder — **design,
 documentation, and guardrails only, adding no numerical behavior**.
-**G1–G10 have not started**, and `dropout` stays listed unsupported
-through G9, leaving that list only at G10 after the closure matrix.
+
+Milestone **G1 is complete**: `NativeGenerator` now exists as
+pure-Python random *state* — the four locked fields (algorithm
+identifier, algorithm version, unsigned 64-bit seed, and a counter of
+committed stochastic calls) as read-only properties, atomic
+`state()`/`load_state()`/`reseed()`/`reset()`, exact-`int` validation,
+one OS-entropy draw through `secrets` for `seed=None`, identity rather
+than value semantics with copying and pickling refused, no native
+storage and no `close()`, and the lock-protected token-validated call
+transaction that makes a committed call index provably unique. Generators
+became a **fourth** `NativeModule` registration category beside
+parameters, buffers, and children, with the same deterministic,
+identity-deduplicated, cycle-safe traversal and their own
+`generator_state_dict()` / `load_generator_state_dict()` surface, leaving
+`state_dict()` tensor-only and unchanged. **G1 generates no random
+values**: there is no derivation, kernel, C ABI symbol, operation, or
+`NativeDropout`. **G2–G10 have not started**, the checkpoint format is
+still version 1 and does not persist generator state, and `dropout` stays
+listed unsupported through G9, leaving that list only at G10 after the
+closure matrix.
 Beyond Phase G
 (**not started**): more activations/math, data
 loaders, a CPU optimization phase, then the CUDA

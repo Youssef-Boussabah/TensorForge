@@ -105,6 +105,21 @@ their object identity preserved across an in-place restore; non-persistent
 buffers are traversed but never serialized. This milestone adds the buffer
 *infrastructure* only — no BatchNorm, Dropout, or RNG algorithm.
 
+Generators (Phase G, milestone G1): a module may hold explicit random
+state through ``register_generator(name, generator)`` — or plain
+assignment, since a ``NativeGenerator`` is an unambiguous native type —
+making generators a **fourth** registration category beside parameters,
+buffers, and children. They are discovered by ``generators()`` /
+``named_generators()`` on the same identity-deduplicated, cycle-safe
+traversal, and reported by ``generator_state_dict()`` /
+``load_generator_state_dict()``. They are deliberately **not** in
+``state_dict()``, which stays contractually ``{name: NativeTensor}``: a
+generator is not a tensor. A generator owns no native storage and has no
+``close()``, so registering, sharing, replacing, or dropping one never
+allocates or releases anything native. This milestone adds the generator
+*state and ownership* infrastructure only — no random values are
+generated anywhere, and no Dropout exists.
+
 Lifetime: registries store Python references only. Removing, replacing,
 or deleting a registration never invalidates the object — external
 references stay usable, and native storage is released only by the
@@ -114,6 +129,11 @@ owner's explicit ``close()`` (there is no ``NativeModule.close()``).
 from collections import namedtuple
 from collections.abc import Mapping
 
+from .native_generator import (
+    GeneratorStateEntry,
+    NativeGenerator,
+    replace_generator_states,
+)
 from .native_parameter import (
     NativeParameter,
     NativeParameterRegistry,
@@ -138,9 +158,12 @@ LoadStateDictResult = namedtuple(
 _BufferEntry = namedtuple("_BufferEntry", ("tensor", "persistent"))
 
 # Implementation slots of NativeModule itself. They can never be
-# parameter, buffer, or child-module names — a parameter registered as
-# "training" would otherwise shadow the mode flag train() writes.
-_RESERVED_NAMES = frozenset({"_parameters", "_modules", "_buffers", "training"})
+# parameter, buffer, generator, or child-module names — a parameter
+# registered as "training" would otherwise shadow the mode flag train()
+# writes. ``_generators`` joined the set in Phase G milestone G1.
+_RESERVED_NAMES = frozenset(
+    {"_parameters", "_modules", "_buffers", "_generators", "training"}
+)
 
 
 class NativeModule:
@@ -160,6 +183,8 @@ class NativeModule:
         object.__setattr__(self, "_parameters", NativeParameterRegistry())
         object.__setattr__(self, "_modules", {})  # name -> NativeModule, insertion-ordered
         object.__setattr__(self, "_buffers", {})  # name -> _BufferEntry, insertion-ordered
+        # name -> NativeGenerator, insertion-ordered (Phase G, G1).
+        object.__setattr__(self, "_generators", {})
         object.__setattr__(self, "training", True)
 
     # -- registration -------------------------------------------------
@@ -192,6 +217,7 @@ class NativeModule:
         parameters.register(name, parameter)  # validates name and type
         modules.pop(name, None)
         self._buffers.pop(name, None)
+        self._generators.pop(name, None)
         self.__dict__.pop(name, None)
 
     def _register_module_slot(self, name, module):
@@ -208,7 +234,31 @@ class NativeModule:
         if name in parameters:
             parameters.register(name, None)
         self._buffers.pop(name, None)
+        self._generators.pop(name, None)
         modules[name] = module  # replacement keeps the slot's position
+        self.__dict__.pop(name, None)
+
+    def _register_generator_slot(self, name, generator):
+        """Make ``name`` a generator slot holding ``generator`` — the
+        mirror of _register_parameter_slot for Phase G's fourth
+        registration category (the caller has already guaranteed
+        ``generator`` is a NativeGenerator). Validate first, then evict
+        the name from the other three categories and __dict__. The
+        evicted object is dropped, never closed or mutated — a generator
+        owns no native storage and has no close()."""
+        parameters, modules = self._registries()
+        if name in _RESERVED_NAMES:
+            raise ValueError(
+                f"{name!r} is reserved for NativeModule internals and "
+                f"cannot be a generator name"
+            )
+        _validate_registration_name(name, "a generator name")
+        if name in parameters:
+            parameters.register(name, None)
+        modules.pop(name, None)
+        self._buffers.pop(name, None)
+        # Replacement keeps the slot's position, exactly as for children.
+        self._generators[name] = generator
         self.__dict__.pop(name, None)
 
     def __setattr__(self, name, value):
@@ -216,6 +266,13 @@ class NativeModule:
             self._register_parameter_slot(name, value)
         elif isinstance(value, NativeModule):
             self._register_module_slot(name, value)
+        elif isinstance(value, NativeGenerator):
+            # Assignment registers, mirroring NativeParameter and
+            # NativeModule: a NativeGenerator is an unambiguous native
+            # type, so (unlike a plain NativeTensor, which might or might
+            # not be intended as a buffer) it needs no explicit-call
+            # discipline.
+            self._register_generator_slot(name, value)
         else:
             # An ordinary attribute (None included): the name leaves
             # whichever registry held it — latest assignment wins, one
@@ -235,11 +292,15 @@ class NativeModule:
             buffers = d.get("_buffers")
             if buffers is not None:
                 buffers.pop(name, None)
+            generators = d.get("_generators")
+            if generators is not None:
+                generators.pop(name, None)
             object.__setattr__(self, name, value)
 
     def __getattr__(self, name):
         # Reached only when normal lookup fails: registered parameters,
-        # buffers, and children live in the registries, not in __dict__.
+        # buffers, generators, and children live in the registries, not
+        # in __dict__.
         d = self.__dict__
         parameters = d.get("_parameters")
         if parameters is not None and name in parameters:
@@ -247,6 +308,9 @@ class NativeModule:
         buffers = d.get("_buffers")
         if buffers is not None and name in buffers:
             return buffers[name].tensor
+        generators = d.get("_generators")
+        if generators is not None and name in generators:
+            return generators[name]
         modules = d.get("_modules")
         if modules is not None and name in modules:
             return modules[name]
@@ -265,6 +329,10 @@ class NativeModule:
         buffers = self.__dict__.get("_buffers")
         if buffers is not None and name in buffers:
             del buffers[name]
+            return
+        generators = self.__dict__.get("_generators")
+        if generators is not None and name in generators:
+            del generators[name]
             return
         modules = self.__dict__.get("_modules")
         if modules is not None and name in modules:
@@ -392,8 +460,51 @@ class NativeModule:
         if name in parameters:
             parameters.register(name, None)
         modules.pop(name, None)
+        self._generators.pop(name, None)
         self.__dict__.pop(name, None)
         self._buffers[name] = _BufferEntry(tensor, persistent)
+
+    def register_generator(self, name, generator):
+        """Register ``generator`` as this module's **random state** under
+        ``name`` — Phase G's fourth registration category, beside
+        parameters, buffers, and child modules.
+
+        A ``NativeGenerator`` is pure-Python state: it owns no native
+        storage, has no ``close()``, and never appears in
+        ``state_dict()`` (which is contractually tensor-valued). It is
+        discovered by ``generators()`` / ``named_generators()`` on the
+        same identity-deduplicated, cycle-safe traversal parameters and
+        buffers use, and reported by ``generator_state_dict()``.
+
+        This is the explicit form of ``module.name = generator``, with
+        the same validation and replacement semantics — and the same
+        explicit strictness as ``register_parameter``/``add_module``: a
+        value that is not a ``NativeGenerator`` raises ``TypeError``
+        (assignment would store an ordinary attribute), and ``None``
+        unregisters — ``KeyError`` when nothing is registered under
+        ``name`` — leaving the attribute readable as ``None``.
+
+        The exact object is stored, never a copy, so registering the same
+        generator on several modules shares **one** stream; unregistering
+        one alias removes only that reference and never resets, copies,
+        or invalidates the generator itself."""
+        if generator is None:
+            self._registries()  # uninitialized-module error, as elsewhere
+            _validate_registration_name(name, "a generator name")
+            if name not in self._generators:
+                raise KeyError(
+                    f"cannot unregister {name!r}: no generator is "
+                    f"registered under that name"
+                )
+            del self._generators[name]
+            object.__setattr__(self, name, None)
+            return
+        if not isinstance(generator, NativeGenerator):
+            raise TypeError(
+                f"only a NativeGenerator (or None to unregister) can be "
+                f"registered as a generator, got {type(generator).__name__}"
+            )
+        self._register_generator_slot(name, generator)
 
     # -- traversal ------------------------------------------------------
     #
@@ -499,6 +610,163 @@ class NativeModule:
             for name, tensor, persistent in self._named_buffer_entries()
             if persistent
         ]
+
+    # -- generators (Phase G, milestone G1) -----------------------------
+    #
+    # Generators ride the *same* named_modules() walk as parameters and
+    # buffers: deterministic pre-order depth-first, a module's own
+    # generators before its descendants', deduplicated by object identity
+    # with the first-discovered dotted name winning, cycle-safe. Sharing
+    # one generator across two layers is therefore exactly the
+    # shared-parameter rule — one object, one canonical name, one stream.
+
+    def named_generators(self, prefix="", recurse=True):
+        """Yield ``(dotted_name, generator)`` for each unique registered
+        ``NativeGenerator`` once, under its first-discovered canonical
+        name — a module's direct generators before its descendants',
+        aliases and shared generators deduplicated by **identity** (never
+        by state equality: two generators with the same seed and counter
+        are two generators). ``recurse=False`` restricts to this module's
+        direct generators."""
+        if recurse:
+            module_items = self.named_modules(prefix)
+        else:
+            module_items = ((prefix, self),)
+        seen = set()
+        for module_prefix, module in module_items:
+            for name, generator in module._generators.items():
+                if id(generator) in seen:
+                    continue
+                seen.add(id(generator))
+                full_name = f"{module_prefix}.{name}" if module_prefix else name
+                yield full_name, generator
+
+    def generators(self, recurse=True):
+        """Each unique registered generator exactly once, in the
+        ``named_generators()`` order. Returns a list. Generators never
+        appear in ``parameters()`` or ``buffers()``."""
+        return [generator for _, generator in self.named_generators(recurse=recurse)]
+
+    def generator_state_dict(self):
+        """An insertion-ordered ``{canonical_name: state}`` report of
+        every unique registered generator's current state.
+
+        Keys are exactly the canonical ``named_generators()`` names;
+        values are the independent plain dicts each generator's
+        ``state()`` returns (``algorithm``, ``algorithm_version``,
+        ``seed``, ``calls``), sharing nothing with the generator, so
+        mutating the report affects no live state.
+
+        This is deliberately **separate** from ``state_dict()``, which is
+        contractually ``{canonical_name: NativeTensor}``: a generator is
+        not a tensor, and encoding two ``uint64``s as float64 elements
+        could not represent them exactly. ``state_dict()`` is unchanged
+        for every model, and a model with no generators reports ``{}``.
+
+        Reporting is read-only: it creates no reservation, advances no
+        counter, moves no parameter version, and replaces no identity."""
+        return {
+            name: generator.state()
+            for name, generator in self.named_generators()
+        }
+
+    def load_generator_state_dict(self, state_dict, strict=True):
+        """Load generator states from ``state_dict`` **in place** and
+        return a ``LoadStateDictResult(missing_keys, unexpected_keys)``.
+
+        Keys are the canonical ``named_generators()`` names; values are
+        the four-field mappings ``generator_state_dict()`` produces.
+        States are loaded *into* the existing ``NativeGenerator`` objects
+        — never assigned over them — so registrations, canonical names,
+        and shared-generator aliasing all survive (one canonical key
+        updates the single shared object once; a supplied alias key is
+        *unexpected*).
+
+        Validation happens entirely **before** any mutation: ``strict``
+        must be a real bool; ``state_dict`` must be a mapping with str
+        keys; missing/unexpected keys are computed and, under
+        ``strict=True``, any of either raises ``ValueError`` reporting
+        both lists; every matching value is fully validated against the
+        **live** generator (exact four-key mapping, algorithm and
+        algorithm-version equality, seed and counter type and range); and
+        the whole load is refused if any target generator has an
+        outstanding call reservation, so a live draw is never interrupted
+        mid-flight — and refusing **leaves that reservation intact**,
+        because the check only reads.
+
+        The replacement runs through the shared generator transaction
+        (``native_generator.replace_generator_states``), which is where
+        the locking rules live: it validates every value, folds aliases
+        together by identity, then acquires **every** unique target's
+        lock in one global deterministic order, rechecks each target for
+        an in-flight reservation *while holding them all*, snapshots, and
+        writes. So no reservation can begin on a target between the check
+        and the end of the commit, and two concurrent loads over
+        overlapping generators acquire in the same order and cannot
+        deadlock. The writes are integer assignments that **cannot
+        fail**, and the rollback that guards them runs before any lock is
+        released — so ending with one generator loaded and another not is
+        unreachable, and no other thread can observe a partial commit.
+
+        Each unique generator is loaded **exactly once**: keys come from
+        ``named_generators()``, which deduplicates by identity, so a
+        generator shared by several modules has one canonical key, is
+        staged once, and is assigned once. A second, aliased key naming
+        the same object is *unexpected* — rejected under ``strict=True``
+        and reported in ``unexpected_keys`` otherwise — so two conflicting
+        states can never both be applied.
+
+        This is deliberately **not** routed through
+        ``_native_state.replace_native_state``: that primitive replaces
+        ``NativeTensorCore``s and owns native storage lifetimes, and a
+        generator owns none — reusing it would require inventing a fake
+        core. Loading generator state touches no tensor, moves no
+        parameter version, and makes no graph stale."""
+        if not isinstance(strict, bool):
+            raise TypeError(
+                f"strict must be a bool, got {type(strict).__name__}"
+            )
+        if not isinstance(state_dict, Mapping):
+            raise TypeError(
+                f"state_dict must be a mapping, got {type(state_dict).__name__}"
+            )
+        expected = list(self.named_generators())
+        provided_keys = list(state_dict.keys())
+        for key in provided_keys:
+            if not isinstance(key, str):
+                raise TypeError(
+                    f"state_dict keys must be str, got {type(key).__name__}"
+                )
+        provided = {key: state_dict[key] for key in provided_keys}
+        expected_names = {name for name, _ in expected}
+        missing = tuple(name for name, _ in expected if name not in provided)
+        unexpected = tuple(
+            key for key in provided_keys if key not in expected_names
+        )
+        if strict and (missing or unexpected):
+            raise ValueError(
+                f"generator state_dict keys do not match the module: "
+                f"missing {list(missing)}, unexpected {list(unexpected)}"
+            )
+
+        matching = [
+            (name, generator, provided[name])
+            for name, generator in expected
+            if name in provided
+        ]
+        # Hand the whole replacement to the one generator transaction
+        # (native_generator.replace_generator_states), which owns the
+        # locking: it validates every value, folds aliases together by
+        # identity, acquires **every** unique target's lock in a global
+        # deterministic order, rechecks for reservations while holding
+        # them all, and only then writes — so no reservation can begin on
+        # a target between the check and the end of the commit, and two
+        # concurrent loads over overlapping generators cannot deadlock.
+        replace_generator_states(
+            GeneratorStateEntry(label=name, generator=generator, state=value)
+            for name, generator, value in matching
+        )
+        return LoadStateDictResult(missing, unexpected)
 
     def _state_named_tensors(self):
         """Ordered ``(canonical_name, live_tensor)`` for everything

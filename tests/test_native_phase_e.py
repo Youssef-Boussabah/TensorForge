@@ -207,13 +207,20 @@ def test_capability_inventories_are_internally_consistent():
         assert callable(getattr(cpp, name)), name
     assert hasattr(NativeModule, "state_dict")
     assert hasattr(NativeModule, "load_state_dict")
-    # Every advertised state capability maps to something real. Four of
-    # the five name a callable directly; "persistent_buffers" (added by
-    # Phase F milestone F1 to reconcile a capability that already
-    # existed) names the register_buffer / buffers / named_buffers API,
-    # so it is resolved explicitly rather than by relaxing the check.
+    # Every advertised state capability maps to something real. Most
+    # name a callable directly; the two *capability* names are resolved
+    # explicitly rather than by relaxing the check —
+    # "persistent_buffers" (Phase F milestone F1, reconciling a
+    # capability that already existed) names the register_buffer /
+    # buffers / named_buffers API, and "generator_state" (Phase G
+    # milestone G1) names the generator registration and in-memory
+    # state pair. Neither implies checkpoint persistence.
     _STATE_CAPABILITY_API = {
         "persistent_buffers": ("register_buffer", "buffers", "named_buffers"),
+        "generator_state": (
+            "register_generator", "generators", "named_generators",
+            "generator_state_dict", "load_generator_state_dict",
+        ),
     }
     for name in cpp.STATE_SUPPORT:
         for attribute in _STATE_CAPABILITY_API.get(name, (name,)):

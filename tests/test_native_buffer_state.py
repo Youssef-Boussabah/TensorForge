@@ -843,6 +843,7 @@ def test_state_support_reports_persistent_buffers_exactly():
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers",
         "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
     )
     assert cpp.backend_info()["state_support"] == cpp.STATE_SUPPORT

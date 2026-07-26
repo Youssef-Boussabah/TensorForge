@@ -549,6 +549,7 @@ def test_e9_adds_no_capability_inventory_entry():
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers",
         "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
     )
     assert cpp.AUTOGRAD_OPS[-1] == "cross_entropy"
