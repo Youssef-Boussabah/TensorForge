@@ -229,7 +229,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
-- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, and milestone G1, `NativeGenerator` and module generator-state ownership, are complete; G2–G10 have not started, and no random value, kernel, operation, or Dropout module exists yet)
+- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, and milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, are complete; G3–G10 have not started, so no differentiable `NativeTensor.dropout` operation and no `NativeDropout` module exists yet, and `dropout` stays unsupported)
 
 ## Limitations
 
@@ -504,7 +504,7 @@ still experimental, still float64/CPU only, and still not
 production-ready.
 
 **Phase G — Native RNG and Dropout — is the current phase, and it is in
-progress.** Two milestones have landed. **G0** locked the architecture
+progress.** Three milestones have landed. **G0** locked the architecture
 contract in
 [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) —
 Python-managed generator state (an explicit 64-bit seed and call counter
@@ -530,9 +530,30 @@ token-validated call transaction — plus generators as a **fourth**
 `NativeModule` registration category beside parameters, buffers, and
 child modules (`register_generator`, `generators()`,
 `named_generators()`, `generator_state_dict()`,
-`load_generator_state_dict()`). **G1 generates no random values.**
-Milestones **G2–G10 have not started**: no random derivation, kernel,
-C ABI symbol, operation, or `NativeDropout` exists, `state_dict()` is
+`load_generator_state_dict()`). **G1 generates no random values by
+itself.**
+
+**G2** then shipped the stateless Dropout-forward **Core**: the exact
+`tensorforge.splitmix64` derivation in unsigned 64-bit arithmetic
+(`mix64(seed + GOLDEN*(call+1))`, then `mix64(stream + GOLDEN*(i+1))`,
+then `(bits >> 11) * 2**-53` compared against `p`), an inverted-Dropout
+float64 CPU kernel in `cpp/src/random.cpp`, the guarded
+`tf_core_dropout_forward` export, and
+`NativeTensorCore.dropout_forward(p, *, seed, call_index)` with the
+private `_dropout_forward_with_mask` that also returns the multiplier
+mask. It is **stateless**: the whole random key arrives as two explicit
+integers, and the Core touches no `NativeGenerator` — no reservation, no
+commit, no counter movement — while no C++ translation unit holds random
+state of any kind. The keep/drop pattern is keyed by the **logical**
+row-major element index, so a transposed, narrowed, or nonzero-offset
+view gets the same mask as a contiguous tensor of the same shape.
+Committed known-answer vectors are asserted identically from C++ and
+Python.
+
+Milestones **G3–G10 have not started**: there is no differentiable
+`NativeTensor.dropout` operation, no autograd node, no graph-owned saved
+mask, no Dropout backward, and no `NativeDropout` module; `state_dict()`
+is
 still tensor-only and unchanged, the checkpoint format is still version 1
 and does not persist generator state, and `dropout` (with `float32`,
 `cuda`, and `amp`) is still listed as unsupported — G4 will implement and

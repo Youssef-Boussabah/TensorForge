@@ -330,4 +330,29 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME cross_entropy COMMAND test_cross_entropy)
+
+  # Stateless random derivation + Dropout forward (Phase G, G2): links the
+  # new random source unit plus error.cpp (the guarded export references
+  # the thread-local error slot). Like the pooling and classification
+  # targets it drives *both* layers — the internal tf::splitmix64_mix /
+  # tf::dropout_stream_key / tf::dropout_element_bits / tf::dropout_uniform
+  # derivation and the tf::dropout_forward_contiguous kernel against
+  # committed known-answer vectors, and the exported
+  # tf_core_dropout_forward wrapper for the validation matrix (including
+  # the probability boundary and the destination-aliasing rule).
+  add_executable(test_dropout_forward
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dropout_forward.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/random.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dropout_forward PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dropout_forward PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dropout_forward PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dropout_forward PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dropout_forward COMMAND test_dropout_forward)
 endif()

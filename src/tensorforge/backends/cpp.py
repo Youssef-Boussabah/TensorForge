@@ -24,6 +24,8 @@ the error contract (docs/native_abi_error_contract.md).
 """
 
 import ctypes
+import math
+import numbers
 import platform
 from pathlib import Path
 
@@ -127,6 +129,25 @@ TENSOR_CORE_OPS = (
     # for conv2d and maxpool2d.
     "cross_entropy_forward",   # E5
     "cross_entropy_backward",  # E5
+    # Phase G stateless Dropout at the Core layer (G2) — the
+    # layer-qualified, **graph-unaware** forward wrapper over the exported
+    # tf_core_dropout_forward kernel, named exactly as the G0 contract
+    # locks (design §7.1) and as the conv2d/maxpool2d/cross_entropy
+    # precedent requires. It takes the complete random key as explicit
+    # `seed`/`call_index` integers and touches **no** NativeGenerator: the
+    # generator, its counter, and the reservation transaction live in
+    # Python one layer above (design §5, §7.6). The private
+    # `_dropout_forward_with_mask` helper keeps the multiplier mask the
+    # future backward needs; this public entry closes it, exactly the
+    # maxpool2d_forward / winner-buffer split.
+    #
+    # There is deliberately **no** bare "dropout" entry here and no
+    # "dropout_backward": the differentiable operation is milestone G3 and
+    # does not exist, and inverted Dropout's gradient is the existing
+    # `multiply` over the saved mask, so no backward kernel was written
+    # (design §7.5). "dropout" as a *capability* name is still in
+    # UNSUPPORTED and stays there through G9 (design §19).
+    "dropout_forward",         # G2
 )
 
 # Operations the NativeTensor autograd layer (Phase B) differentiates.
@@ -648,6 +669,25 @@ def _load_library():
         ctypes.c_void_p,                   # grad_logits handle
     ] + [ctypes.c_int64] * 3
     library.tf_core_cross_entropy_backward.restype = None
+    # Stateless Dropout forward (Phase G, G2): the exported wrapper over
+    # the internal "tensorforge.splitmix64" derivation and the inverted
+    # Dropout kernel in random.cpp. **Contiguous storage only** (Policy-B
+    # copy-then-compute happens at the Core layer), with only the input
+    # carrying an offset — the output and the private multiplier mask are
+    # both caller-allocated at offset 0. The random key is the explicit
+    # (seed, call_index) pair: two ``c_uint64`` arguments, so every value
+    # in [0, 2**64 - 1] crosses exactly, and the kernel holds no state
+    # between calls. ``p`` crosses as the ordinary ``c_double``.
+    library.tf_core_dropout_forward.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # input handle, offset
+        ctypes.c_void_p,                   # output handle
+        ctypes.c_void_p,                   # multiplier-mask handle
+        ctypes.c_int64,                    # element count
+        ctypes.c_uint64,                   # seed
+        ctypes.c_uint64,                   # call index
+        ctypes.c_double,                   # p
+    ]
+    library.tf_core_dropout_forward.restype = None
 
     _configure_error_contract(library)
     return library
@@ -722,6 +762,16 @@ _CHECKED_KERNELS = (
     # they reject. IEEE NaN/inf results stay values, not errors.
     "tf_core_cross_entropy_forward",
     "tf_core_cross_entropy_backward",
+    # Phase G, G2: the stateless Dropout forward. Self-validating like the
+    # Phase-E exports — null handles, a negative offset or count, a span
+    # exceeding its storage, a non-finite or out-of-range probability, and
+    # any aliasing between the input and either destination are all
+    # rejected with ValueError through this hook, and a rejected call
+    # leaves both destinations byte-for-byte unchanged. It touches no
+    # generator: the whole random key arrives as two explicit uint64
+    # arguments. There is deliberately no backward export — that gradient
+    # is the existing `multiply` over the saved mask.
+    "tf_core_dropout_forward",
 )
 
 
@@ -2526,6 +2576,158 @@ class NativeTensorCore:
             for temp in temporaries:
                 temp.close()
 
+    # -- stateless Dropout (Phase G, G2: forward-only Core wrapper +
+    #    private multiplier mask) ---------------------------------------
+
+    def dropout_forward(self, p, *, seed, call_index):
+        """Inverted Dropout forward over this tensor, natively (G2).
+
+        ``self`` is the input of any rank (a 0-d scalar included) and any
+        layout; ``p`` is the drop probability in ``[0, 1)``; ``seed`` and
+        ``call_index`` are the two halves of the **complete random key**,
+        each an exact Python ``int`` in ``[0, 2**64 - 1]``. Returns a fresh
+        **owning** row-major contiguous NativeTensorCore of the input's
+        shape, where
+
+            output[i] = input[i] * (0.0 if dropped else 1 / (1 - p))
+
+        and the keep/drop decision for logical element ``i`` is a
+        deterministic function of ``(seed, call_index, i, p)`` and nothing
+        else — never of the input values, the storage address, the
+        physical strides, the traversal order, or any earlier call.
+
+        **Stateless.** This method takes no ``NativeGenerator`` and no
+        generator is reachable from it: it never reserves, commits,
+        cancels, inspects, or mutates one, and no C++ translation unit
+        holds random state of any kind (design §7.6). The reservation
+        transaction that turns a seed and a counter into a ``call_index``
+        is milestone G3's, one layer above.
+
+        This is the **forward-only, autograd-unaware** Core wrapper. The
+        kernel also produces the private multiplier mask a backward would
+        need; this public method releases it, so the dropped values are all
+        that survive. The internal ``_dropout_forward_with_mask`` helper is
+        what keeps it — exactly the ``maxpool2d_forward`` / winner-buffer
+        split (design §7.1).
+
+        There is no ``dropout_backward`` Core method and no backward
+        kernel: the gradient of inverted Dropout is ``upstream * mask``,
+        which ``multiply`` already computes (design §7.5). The
+        differentiable ``NativeTensor.dropout`` operation (G3) and the
+        ``NativeDropout`` module (G4) do not exist yet, and ``"dropout"``
+        as a capability name is still in ``UNSUPPORTED``."""
+        out, mask = self._dropout_forward_with_mask(
+            p, seed=seed, call_index=call_index
+        )
+        # The public Core forward exposes only the dropped values; the
+        # multiplier mask is internal state, released deterministically
+        # here rather than left to garbage collection.
+        mask.close()
+        return out
+
+    def _dropout_forward_with_mask(self, p, *, seed, call_index):
+        """The Dropout forward plus its private multiplier mask.
+
+        Returns ``(output, mask)``: two fresh **owning** row-major
+        contiguous cores of the input's shape. ``mask`` holds exactly two
+        distinct float64 values — ``0.0`` for a dropped element and the
+        single ``1 / (1 - p)`` computed once for the whole call — so it is
+        a *multiplier* mask, not a boolean one, and a backward is one
+        elementwise multiply against it (design §4.4, §7.5).
+
+        The mask is **internal**: it is never exposed as a public
+        NativeTensor, never given a dtype tag of its own, never traversed
+        as a parameter or buffer, and never serialized. It exists so a
+        later backward can multiply without redrawing; the caller of this
+        private helper owns it and must ``close()`` it.
+
+        **Logical-layout independence** is a locked property, not an
+        accident. Per **Policy B** (docs/native_cnn_design.md §5) a
+        non-contiguous input is materialized into a private owning
+        contiguous copy that is closed as soon as the native call returns,
+        so the kernel's flat traversal index *is* the logical row-major
+        index. A transposed view, a narrowed view, a nonzero-offset view,
+        and a plain contiguous tensor of the same logical shape therefore
+        all receive the **same** mask for the same ``(seed, call_index,
+        p)``; only the values they multiply differ.
+
+        Validation runs entirely before any allocation. Allocation order
+        is deterministic — **output first, then mask** — and on any
+        failure every object this method allocated is closed, any
+        Policy-B temporary is closed, the caller's input is left open and
+        unchanged, and no partial result is returned. Neither result
+        aliases the input or the other.
+
+        **Graph-unaware**, like every Core op: no autograd node is built,
+        nothing claims graph ownership, no version is recorded, and no
+        generator is touched.
+
+        Zero-element inputs: the kernel and the C ABI both accept a count
+        of ``0`` (no draw, no write), but the native tensor representation
+        rejects zero-size dimensions outright (``shape`` dimensions must
+        be positive ints), so no empty core can be constructed to hand in
+        today. The empty case is proved at the kernel and ABI layers,
+        where it is reachable."""
+        self._require_open()
+        if self.dtype != "float64" or self.device != "cpu":
+            raise ValueError(
+                f"dropout_forward requires a float64/cpu input, got "
+                f"{self.dtype}/{self.device}"
+            )
+        # Both key halves and the probability are validated by the shared
+        # helpers, so this surface accepts exactly what the operation and
+        # the module will accept (design §6.1).
+        probability = _normalize_dropout_probability(p, "dropout_forward")
+        seed = _validate_random_key_field(seed, "dropout_forward seed")
+        call_index = _validate_random_key_field(
+            call_index, "dropout_forward call_index"
+        )
+        count = self.numel
+        # Python ints, so this check cannot itself overflow; the C ABI
+        # re-proves every span in int64 anyway.
+        if count > _INT64_MAX:
+            raise ValueError(
+                f"dropout_forward element count {count} exceeds the int64 "
+                f"range the native runtime addresses"
+            )
+
+        temporaries = []
+        out = None
+        mask = None
+        try:
+            input_core = (
+                self if self.contiguous else self._contiguous_temp(temporaries)
+            )
+            # Deterministic allocation order: output first, then the mask.
+            # If the second allocation fails the first is closed below, so
+            # a failed forward leaves nothing half-built.
+            out = NativeTensorCore.zeros(
+                self.shape, dtype=self.dtype, device=self.device
+            )
+            mask = NativeTensorCore.zeros(
+                self.shape, dtype=self.dtype, device=self.device
+            )
+            self._storage._lib.tf_core_dropout_forward(
+                input_core._storage._require_open(), input_core.offset,
+                out._storage._require_open(),
+                mask._storage._require_open(),
+                count, seed, call_index, probability,
+            )
+            return out, mask
+        except BaseException:
+            # Close whichever result objects were successfully allocated —
+            # never rely on garbage collection for native memory, and
+            # never let a half-built pair escape.
+            for allocated in (mask, out):
+                if allocated is not None:
+                    allocated.close()
+            raise
+        finally:
+            # Close the private contiguous copy (if any) exactly once,
+            # whether the call succeeded or raised.
+            for temp in temporaries:
+                temp.close()
+
     # -- view operations (metadata only: no data is copied) --------------
 
     def _view_core(self, shape, strides, offset):
@@ -2930,6 +3132,107 @@ class _CrossEntropyForwardResult:
             f"probabilities={self.probabilities.shape}, "
             f"targets={self.targets.size})"
         )
+
+
+# ---------------------------------------------------------------------------
+# Phase-G Dropout argument validation (milestone G2)
+#
+# The random key and the probability are the two things the stateless
+# Dropout Core accepts beyond a tensor, and both are validated here, in
+# one place, so the accepted/rejected matrix is identical wherever they
+# are taken (docs/native_rng_dropout_design.md §6.1 — the pattern Phase E
+# used for cross-entropy targets and reductions). Pure Python: neither
+# helper touches the compiled library, so a rejected call allocates
+# nothing at all.
+#
+# These validate *values*, never generator state: nothing here reads,
+# reserves, commits, or advances a NativeGenerator, and this module does
+# not import the experimental package.
+# ---------------------------------------------------------------------------
+
+# The unsigned 64-bit range the random key lives in. Mirrors
+# NativeGenerator's own bound (design §3.3); repeated rather than imported
+# because backends/ stays decoupled from experimental/.
+_UINT64_MAX = 2 ** 64 - 1
+
+
+def _validate_random_key_field(value, what):
+    """Validate one half of the random key as an exact ``uint64``.
+
+    Exact-type discipline, matching ``NativeGenerator``'s seed validator:
+    ``bool`` is not a seed (``True`` is not ``1`` here), a NumPy integer
+    scalar is not a Python ``int``, and an ``int`` subclass is not an
+    ``int``. Python ints are arbitrary precision, so an out-of-range value
+    is a ValueError rather than a silent truncation at the ABI.
+
+    The accepted range is the full ``[0, 2**64 - 1]`` the ctypes
+    ``c_uint64`` argument carries. A ``NativeGenerator`` never *issues* a
+    call index above ``2**64 - 2`` (design §4.6), but that is the
+    generator's counter rule, not a property of this stateless key
+    space."""
+    if type(value) is not int:
+        raise TypeError(
+            f"{what} must be an int, got {type(value).__name__}"
+        )
+    if not 0 <= value <= _UINT64_MAX:
+        raise ValueError(
+            f"{what} must be in [0, {_UINT64_MAX}], got {value}"
+        )
+    return value
+
+
+def _normalize_dropout_probability(p, op_name):
+    """Validate a Dropout probability and normalize it to a plain float.
+
+    The locked matrix (docs/native_rng_dropout_design.md §6.1):
+
+    ============================ ==========================================
+    ``bool``                     TypeError — a bool is not a probability
+    non-real                     TypeError
+    ``0`` / ``0.0``              accepted, normalized to ``0.0``
+    real in ``[0.0, 1.0)``       accepted, normalized with ``float(p)``
+    ``1`` / ``1.0``              ValueError — rejected (§6.3)
+    ``p > 1`` / ``p < 0``        ValueError
+    NaN                          ValueError naming NaN explicitly
+    ``+inf`` / ``-inf``          ValueError
+    ============================ ==========================================
+
+    ``numbers.Real`` is the accepted abstract type, so a NumPy float or
+    integer scalar is accepted and normalized — the same latitude the
+    stable ``tensorforge.nn.Dropout`` gives — while ``bool`` and
+    ``numpy.bool_`` are rejected before that test, since ``True`` would
+    otherwise sail through as ``1.0``.
+
+    ``p == 1`` is a genuine rejection rather than a special case: the
+    inverted multiplier ``1 / (1 - p)`` would divide by zero, and every
+    alternative (an ``inf`` multiplier, a silent all-zero output) changes
+    the layer's contract instead of reporting the problem."""
+    if isinstance(p, (bool, np.bool_)):
+        raise TypeError(
+            f"{op_name} probability must be a real number, not a bool "
+            f"({p!r}); True is not a probability"
+        )
+    if not isinstance(p, numbers.Real):
+        raise TypeError(
+            f"{op_name} probability must be a real number, got "
+            f"{type(p).__name__}"
+        )
+    value = float(p)
+    if math.isnan(value):
+        raise ValueError(
+            f"{op_name} probability must not be NaN"
+        )
+    if math.isinf(value):
+        raise ValueError(
+            f"{op_name} probability must be finite, got {p!r}"
+        )
+    if not 0.0 <= value < 1.0:
+        raise ValueError(
+            f"{op_name} probability must satisfy 0 <= p < 1, got {p!r} "
+            f"(p == 1 is rejected: the inverted multiplier 1/(1 - p) "
+            f"would divide by zero)"
+        )
+    return value
 
 
 # ---------------------------------------------------------------------------

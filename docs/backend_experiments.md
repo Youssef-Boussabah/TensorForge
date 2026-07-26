@@ -245,7 +245,7 @@ capability, no C++, no CTest, no ABI or ctypes surface, no example, no
 benchmark, and no production behavior changed.
 
 **The current phase is Phase G — Native RNG and Dropout — and it is in
-progress; only milestone G0 has landed.** G0 is the architecture
+progress; milestones G0, G1, and G2 have landed.** G0 is the architecture
 contract, [native_rng_dropout_design.md](native_rng_dropout_design.md),
 and it adds **no numerical behavior**. It locks: random state is
 **Python-managed** while native random kernels stay **stateless** and
@@ -392,9 +392,62 @@ gained `"generator_state"` beside `"persistent_buffers"`, naming the
 **in-memory** generator surface. It does not mean generator state is
 checkpointed — that is G5 — and no numerical registry moved.
 
-**G1 generates no random values.** No derivation, no mask, no kernel, no
-C ABI symbol, no ctypes declaration, no Core method, no `NativeTensor`
-operation, and no `NativeDropout`. Milestones **G2–G10 have not
+**G1 generates no random values by itself.** It shipped the state; the
+derivation, the mask, and the kernel arrived at G2.
+
+**Milestone G2 is complete — the deterministic stateless Dropout-forward
+Core.** It ships, bottom to top:
+
+- `cpp/include/tf_random_internal.h` and `cpp/src/random.cpp` — the exact
+  locked `tensorforge.splitmix64` derivation as hidden `namespace tf`
+  functions: the `mix64` finalizer
+  (`^= >>30`, `* 0xBF58476D1CE4E5B9`, `^= >>27`, `* 0x94D049BB133111EB`,
+  `^= >>31`), the per-call stream key
+  `mix64(seed + GOLDEN * (call_index + 1))`, the per-element bits
+  `mix64(stream + GOLDEN * (element + 1))`, and the uniform
+  `(bits >> 11) * 2**-53` compared with a strict `<` against `p`. All
+  `std::uint64_t`, wrapping arithmetic only, no `<random>`, no
+  `random_device`, no `mt19937`, no clock, no process id, no address, no
+  static or thread-local state.
+- `tf::dropout_forward_contiguous` — inverted Dropout over one contiguous
+  float64 span, writing the output **and** the private multiplier mask in
+  one pass, with `1/(1 - p)` computed once per call so the mask holds
+  exactly two values.
+- `tf_core_dropout_forward` — the self-validating guarded export. Null
+  handles, a negative offset or count, a span exceeding its storage, a
+  non-finite or out-of-range `p`, and any aliasing between the input and
+  either destination are rejected with `TF_ERROR_INVALID`, and a rejected
+  call leaves both destinations byte-for-byte unchanged.
+- one ctypes declaration carrying the whole random key as two `c_uint64`
+  arguments, `"tf_core_dropout_forward"` in the checked-kernel inventory,
+  and `"dropout_forward"` in `TENSOR_CORE_OPS`.
+- `NativeTensorCore.dropout_forward(p, *, seed, call_index)` and the
+  private `_dropout_forward_with_mask` that keeps the mask — the same
+  public/private split `maxpool2d_forward` uses for its winner buffer.
+- `cpp/tests/test_dropout_forward.cpp`, a dependency-free CTest over both
+  layers, and `tests/test_native_dropout_core.py`. Both assert the **same
+  committed known-answer vectors** for `mix64`, the stream key, the
+  element bits, the uniform conversion, and seven full keep/drop
+  patterns, so neither side can redefine the stream alone.
+
+The Core is **stateless**: the complete random key arrives as two
+explicit integers, and it reserves, commits, cancels, inspects, and
+mutates **no** `NativeGenerator` — a direct Core call leaves a live
+generator's seed, `calls`, and reservation slot bit-identical. Randomness
+is keyed by the **logical** row-major element index, so a transposed,
+narrowed, or nonzero-offset view receives the same mask as a contiguous
+tensor of the same logical shape (Policy B materializes the view first,
+which is what makes the kernel's flat index the logical index). Both
+results are fresh owning contiguous cores that alias neither the input
+nor each other; the input is never mutated; and the two-result boundary
+is failure-atomic in C++ *and* in the Python wrapper, with native live
+storage returning exactly to baseline after every injected failure.
+
+**Above the Core, nothing exists.** There is no differentiable
+`NativeTensor.dropout` operation, no autograd node, no graph-owned saved
+mask, no Dropout backward kernel (by design: that gradient is the
+existing `multiply` over the saved mask), and no `NativeDropout` module.
+Milestones **G3–G10 have not
 started**: the checkpoint format is still version 1 and does **not**
 serialize generator state (that is G5), and no capability-registry value
 moved — `dropout` is still listed unsupported

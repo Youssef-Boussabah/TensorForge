@@ -3034,18 +3034,37 @@ def test_native_generator_is_experimental_only():
         assert not hasattr(tensorforge, name), name
 
 
-def test_g1_ships_no_dropout_and_no_random_operation():
+def test_the_generator_layer_ships_no_dropout_or_random_operation():
+    """The generator is *state*: nothing in G1 differentiates, draws, or
+    exposes a random operation, and nothing above the Core has shipped
+    since.
+
+    ``"dropout_forward"`` is deliberately **not** in the list below any
+    more: milestone G2 shipped it as a layer-qualified **Core** wrapper
+    (a stateless kernel entry that takes an explicit seed and call index
+    and touches no generator). That is a different capability at a
+    different layer from the differentiable ``dropout`` operation, which
+    is G3 and does not exist — the same Core/operation split conv2d,
+    maxpool2d, and cross_entropy already follow. ``dropout_forward`` is
+    covered by tests/test_native_dropout_core.py; what stays absent here
+    is everything *above* it."""
     import tensorforge.experimental as experimental
 
     assert not hasattr(experimental, "NativeDropout")
     assert "NativeDropout" not in experimental.__all__
     for name in ("dropout", "rand", "randn", "bernoulli", "uniform",
-                 "random", "dropout_forward", "dropout_backward"):
+                 "random", "dropout_backward"):
         assert not hasattr(NativeTensor, name), name
         assert not hasattr(cpp.NativeTensorCore, name), name
         assert name not in cpp.TENSOR_CORE_OPS, name
         assert name not in cpp.AUTOGRAD_OPS, name
         assert name not in cpp.RAW_KERNELS, name
+    # The G2 Core forward exists, is layer-qualified, and stops there.
+    assert "dropout_forward" in cpp.TENSOR_CORE_OPS
+    assert hasattr(cpp.NativeTensorCore, "dropout_forward")
+    assert not hasattr(NativeTensor, "dropout_forward")
+    assert "dropout_forward" not in cpp.AUTOGRAD_OPS
+    assert "dropout_forward" not in cpp.RAW_KERNELS
 
 
 def test_g1_moved_no_capability_registry_value():
@@ -3077,12 +3096,20 @@ def test_g1_left_the_checkpoint_format_at_version_1():
         )
 
 
-def test_no_native_rng_c_abi_symbol_exists():
-    for symbol in ("tf_core_dropout", "tf_core_dropout_forward",
+def test_the_generator_owns_no_c_abi_symbol():
+    """``NativeGenerator`` is pure Python: it has no kernel of its own,
+    and the only Phase-G C ABI symbol that exists is G2's stateless
+    Dropout forward — which is registered as a checked kernel and is
+    reachable only through ``NativeTensorCore``, never as a module-level
+    attribute of the backend wrapper."""
+    for symbol in ("tf_core_dropout", "tf_core_dropout_backward",
                    "tf_core_random", "tf_core_random_mask",
-                   "tf_core_bernoulli", "tf_core_splitmix64"):
+                   "tf_core_bernoulli", "tf_core_splitmix64",
+                   "tf_core_generator", "tf_core_seed"):
         assert symbol not in cpp._CHECKED_KERNELS, symbol
         assert not hasattr(cpp, symbol), symbol
+    assert "tf_core_dropout_forward" in cpp._CHECKED_KERNELS
+    assert not hasattr(cpp, "tf_core_dropout_forward")
 
 
 def test_the_stable_framework_is_untouched_by_the_native_generator():

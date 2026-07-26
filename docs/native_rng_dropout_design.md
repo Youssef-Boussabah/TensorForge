@@ -10,13 +10,22 @@ declaration, no `NativeTensorCore` method, no `NativeTensor` operation,
 no module, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-G status: in progress. G0 and G1 are complete; G2–G10 have not
-started.** Milestone **G1** shipped `NativeGenerator` and generator
-registration on `NativeModule` — random **state** and its ownership.
-**It generates no random values**: §4's derivation, §7's kernel, and §8's
-operation do not exist, `NativeDropout` does not exist, `"dropout"` is
-still in `UNSUPPORTED`, and the checkpoint format is still version 1 and
-does not serialize generator state.
+**Phase-G status: in progress. G0, G1, and G2 are complete; G3–G10 have
+not started.** Milestone **G1** shipped `NativeGenerator` and generator
+registration on `NativeModule` — random **state** and its ownership; it
+generates no random values by itself. Milestone **G2** shipped the
+stateless Dropout-forward **Core**: §4's derivation, §7's kernel, the
+guarded `tf_core_dropout_forward` export, and the layer-qualified
+`NativeTensorCore.dropout_forward` / `_dropout_forward_with_mask` pair,
+with committed known-answer vectors asserted from both C++ and Python.
+
+That is the Core layer and nothing above it. §8's differentiable
+`NativeTensor.dropout` operation does **not** exist (G3); `NativeDropout`
+does **not** exist (G4); there is no autograd node, no graph-owned mask,
+and no Dropout backward anywhere; the Core consumes **no** generator call
+and touches no `NativeGenerator` at all; `"dropout"` is still in
+`UNSUPPORTED`; and the checkpoint format is still version 1 and does not
+serialize generator state.
 
 The capability boundary is therefore exactly what Phase F closed with,
 and this document does not move it:
@@ -668,6 +677,65 @@ as the specification:
   fixed `(seed, call_index, p)`
 - the same mask reproduced from a transposed (non-contiguous) view of the
   same logical tensor
+- **the equality-threshold vector** (below), which pins the comparison
+  itself
+
+#### The equality-threshold vector
+
+The vectors above pin the *bit path*. They do **not**, on their own, pin
+the *comparison direction*, and that is a real gap rather than a
+theoretical one: the committed mask vectors use `p = 0.25` and
+`p = 0.75`, no committed word converts to either value, so replacing the
+locked `u < p` with `u <= p` reproduces every one of those patterns
+unchanged and escapes the suite. The bits-to-uniform vectors do not close
+it either — they prove what `u` *is*, not how it is compared.
+
+One further vector closes it, and it is chosen so that nothing new enters
+the stream: the seed, call index, logical element index, and raw word are
+**already committed** as `mixed_seed_call0`'s third element. Only the
+probability is new, and it is chosen to land exactly on that element's
+uniform value.
+
+| Field | Value |
+|---|---|
+| `seed` | `0x0123456789ABCDEF` |
+| `call_index` | `0` |
+| logical element index | `2` |
+| raw word `bits` | `0xA2A1796FEB7EF314` |
+| `u` | `0x1.4542f2dfd6fdep-1` (`0.635276403259464`) |
+
+`u` is strictly inside `(0, 1)` and is exactly the locked 53-bit
+conversion of that word, so both `p == u` and the next representable
+double above it are legal probabilities.
+
+Run over the first **four** elements of that stream, the vector pins:
+
+| `p` | keep pattern | what it proves |
+|---|---|---|
+| `u` | `0010` | **equality means keep** — the strict `<` rule keeps the element whose uniform value equals `p` |
+| `u` (under the rejected `<=`) | `0000` | the two rules genuinely disagree here: this is the negative control |
+| `nextafter(u, 1.0)` | `0000` | **the adjacent larger probability means drop** |
+
+So the vector pins **all three** properties together: the comparison is
+**strict**, equality is a **keep**, and one ULP more is a **drop**. The
+kept element additionally carries exactly `1 / (1 - p)` and its output is
+exactly `input * mask`, so the multiplier and the output rule are pinned
+at the boundary too.
+
+`std::nextafter(u, 1.0)` (C++) and `math.nextafter(u, 1.0)` (Python) are
+used **only** to form the adjacent probability. The authoritative seed,
+call index, logical index, raw word, expected `u`, and expected keep
+patterns are hardcoded constants on both sides.
+
+Both suites drive the **production** path — the internal kernel, the
+exported C ABI wrapper, and (in Python) the public and private Core
+methods — never a duplicated test-only comparison helper. Each also
+carries a **negative control** proving the vector discriminates: it
+computes what a `<=` kernel would have produced from the same derivation,
+with only the operator changed, and asserts it disagrees with what the
+production kernel produced. Without that control the equality assertion
+could be satisfied vacuously; with it, a production change from `<` to
+`<=` fails both the native and the Python boundary tests.
 
 These vectors are asserted identically on Windows (MSVC) and Linux
 (Clang/GCC). A test-only Python reference implementation of §4.2–§4.4
@@ -811,6 +879,17 @@ operation **still consumes one call** — the call index belongs to the
 operation, not to the number of draws. This keeps the counter a function
 of the sequence of forwards rather than of the data, which is what a
 resume needs when a final batch is ragged.
+
+**Reachability note (recorded at G2).** The kernel and the C ABI
+implement this rule exactly — a `count` of `0` draws nothing, writes
+nothing, and succeeds — but the native tensor representation, which
+predates Phase G, rejects zero-size dimensions outright, so no empty
+`NativeTensorCore` can currently be constructed to exercise it from
+Python. G2 proves the case at the two layers where it is reachable and
+pins the representation's limit with an explicit test. The contract above
+is unchanged and becomes reachable, with no kernel change, whenever
+zero-size shapes become expressible; that is a tensor-representation
+change with its own stride conventions and is not part of Phase G.
 
 ---
 
@@ -1743,18 +1822,37 @@ cycles, `recurse=False`, `generator_state_dict()` / strict and non-strict
 version moves.
 
 **G2 — Core forward.** Known-answer vectors (§4.7) for `mix64`, the
-stream, the bits, `u`, and full masks; Windows/Linux equality asserted
+stream, the bits, `u`, and full masks, **plus the equality-threshold
+vector that pins the comparison direction** — `p == u` keeps, and
+`nextafter(u, 1.0)` drops — with a negative control proving a `<=` kernel
+would fail both the native and the Python boundary tests;
+Windows/Linux equality asserted
 against committed vectors; same `(seed, call_index)` reproduces the mask
 bit-for-bit; a different `call_index` produces a different mask (and a
-statistically sane keep rate); scalars; empty tensors; ranks 0–4;
+statistically sane keep rate); scalars; ranks 0–5;
 contiguous, transposed, narrowed, and nonzero-offset inputs producing the
 **same** logical mask; input non-mutation; no aliasing between input,
 output, and mask; output and mask both owning and contiguous; the mask
 holding exactly two values; the ABI's own validation rejecting bad
 handles, spans, counts, and `p` without writing to destinations;
-allocation-failure injection at each of the two allocations; live-storage
+allocation-failure injection at each of the two allocations; a
+Python-side wrapper failure between the two results proving the first is
+still closed; live-storage
 baseline restored after success and after each injected failure; a
-dependency-free CTest binary over the internal kernel.
+dependency-free CTest binary over the internal kernel and the guarded
+export. The **empty** case is asserted at the kernel and the ABI
+(`count == 0` draws and writes nothing), plus an explicit test pinning
+the tensor representation's rejection of zero-size dimensions, because no
+empty core can be constructed today (see the G2 milestone block). Two
+tests assert the separation directly: repeated Core calls leave a live
+`NativeGenerator`'s `seed`, `calls`, and reservation slot bit-identical,
+and passing a generator where an integer belongs is a plain `TypeError`.
+Two further notes the vectors made necessary: a *thresholded* mask is one
+bit per element, so two genuinely different streams can agree over a
+short tensor by chance (at `p = 0.5`, seed 11 with call indices 4 and 5
+agree over eight elements) — the committed **bit** vectors are the strong
+statement, and the mask-difference checks use a wide enough sample that
+an accidental agreement is not a realistic outcome.
 
 **G3 — differentiable operation.** Forward equals `input * mask` for a
 known mask; `p == 0` returns the input object; missing/invalid generator
@@ -1991,7 +2089,7 @@ not move and the phase is not closed.
 |---|---|---|
 | G0 | Architecture contract and design lock | **Complete** |
 | G1 | `NativeGenerator` and module generator-state ownership | **Complete** |
-| G2 | Deterministic native Dropout-forward Core | Not started |
+| G2 | Deterministic native Dropout-forward Core | **Complete** |
 | G3 | Differentiable `NativeTensor` Dropout | Not started |
 | G4 | `NativeDropout` module and public export | Not started |
 | G5 | Checkpoint version 2 and exact RNG restoration | Not started |
@@ -2087,6 +2185,8 @@ not move and the phase is not closed.
 
 ### G2 — Deterministic native Dropout-forward Core
 
+**Complete.**
+
 - **Objective.** The stateless native mask/output kernel and its Core
   boundary.
 - **Scope.** §4 and §7: the internal kernel, the guarded export, the
@@ -2094,8 +2194,11 @@ not move and the phase is not closed.
 - **Files.** New `cpp/src/random.cpp` and `cpp/include/tf_random_internal.h`;
   new `cpp/tests/test_dropout_forward.cpp` and its `CMakeLists.txt`
   target; `src/tensorforge/backends/cpp.py` (declaration,
-  `_CHECKED_KERNELS`, `TENSOR_CORE_OPS` gains `dropout_forward`).
-- **Public contract.** §7.2–§7.4.
+  `_CHECKED_KERNELS`, `TENSOR_CORE_OPS` gains `dropout_forward`); new
+  `tests/test_native_dropout_core.py`.
+- **Public contract.** §7.2–§7.4, shipped as
+  `NativeTensorCore.dropout_forward(p, *, seed, call_index)` and the
+  private `_dropout_forward_with_mask` that keeps the mask.
 - **Ownership.** Two fresh owning contiguous cores; the private helper's
   caller owns the mask; Policy-B temporaries closed in `finally`.
 - **Failure.** §14 rows for allocation, kernel, and validation; nothing
@@ -2107,6 +2210,50 @@ not move and the phase is not closed.
   `UNSUPPORTED`.
 - **Done when.** The committed known-answer vectors reproduce on Windows
   and Linux and every layout produces the same logical mask.
+
+**What shipped, exactly.** The `"tensorforge.splitmix64"` derivation of
+§4.2–§4.4 as four internal `namespace tf` functions
+(`splitmix64_mix`, `dropout_stream_key`, `dropout_element_bits`,
+`dropout_uniform`), the `dropout_forward_contiguous` kernel, one guarded
+export `tf_core_dropout_forward`, one ctypes declaration whose `seed` and
+`call_index` cross as `c_uint64`, one entry in `TENSOR_CORE_OPS`
+(`"dropout_forward"`) and one in `_CHECKED_KERNELS`, and the two Core
+methods. The keep/drop decision is a deterministic function of
+`(seed, call_index, logical_element_index, p)` and nothing else — not the
+input values, not the address, not the strides, not the traversal order.
+Committed known-answer vectors for `mix64`, the stream key, the element
+bits, the bits-to-uniform conversion, seven full keep/drop patterns, and
+the **equality-threshold vector** that pins the strict `<` comparison
+(§4.7 — `p == u` keeps, `nextafter(u, 1.0)` drops, with a negative
+control proving the vector discriminates `<` from `<=`)
+are asserted **identically** in `cpp/tests/test_dropout_forward.cpp` and
+`tests/test_native_dropout_core.py`, so neither side can redefine the
+stream or the comparison alone; a test-only Python reference of §4.2–§4.4 exists in the
+suite (never in production) and is pinned to those vectors before it is
+allowed to generate any expectation.
+
+**The empty-tensor row is not reachable from the Core, and that is
+recorded rather than papered over.** §6.4 and §7.3 say a zero-element
+tensor is a legal input, and the kernel and the C ABI implement exactly
+that (`count == 0` draws nothing, writes nothing, and returns `TF_OK`).
+But the native tensor representation predates this phase and **rejects
+zero-size dimensions outright** — `shape` dimensions must be positive
+ints, and `NativeStorage` requires a positive size — so no empty
+`NativeTensorCore` can be constructed to hand in. G2 therefore proves the
+empty case at the kernel and ABI layers, where it *is* reachable, and
+pins the representation's limit with an explicit test. Nothing about the
+contract changed: when zero-size shapes become expressible, the kernel
+path is already correct. Making them expressible is a tensor-representation
+change with its own stride conventions, and is deliberately not smuggled
+into an RNG milestone.
+
+**The `p == 0` split is preserved.** §6.2's identity bypass — returning
+the caller's own tensor, allocating nothing, calling no kernel, consuming
+no call — belongs to the operation layer (G3). At the Core, `p == 0` is a
+legal probability that the kernel actually computes: the strict `<`
+comparison drops nothing, so the mask is all `1.0` and the output equals
+the input. `p == 1` is rejected at every layer, in Python and again at the
+ABI.
 
 ### G3 — Differentiable `NativeTensor` Dropout
 

@@ -232,8 +232,9 @@ benchmark, and no production numerical file changed.**)
 symbol, or custom backward exists at all.
 **Phase G — Native RNG and Dropout — is the current phase and is *in
 progress*: milestones G0 (the architecture contract in
-`docs/native_rng_dropout_design.md`) and G1 (`NativeGenerator` and module
-generator-state ownership) are complete; G2–G10 have not
+`docs/native_rng_dropout_design.md`), G1 (`NativeGenerator` and module
+generator-state ownership), and G2 (the deterministic stateless
+Dropout-forward **Core**) are complete; G3–G10 have not
 started.** G0 locked Python-managed generator state (an explicit
 64-bit seed plus call counter and an algorithm identifier), stateless
 native random kernels that receive the whole key for one call, inverted
@@ -336,9 +337,9 @@ one-category-per-name eviction in both directions, `__getattr__` /
 cycle-safe `generators()`/`named_generators()`, and the separate
 `generator_state_dict()`/`load_generator_state_dict()` surface), and
 `NativeGenerator` is exported from `tensorforge.experimental` only.
-**G1 generates no random values** — no derivation, kernel, C ABI symbol,
-ctypes declaration, Core method, `NativeTensor` operation, or
-`NativeDropout`; `state_dict()` is unchanged and still tensor-only; the
+**G1 generates no random values by itself** — it shipped the state, and
+the derivation, the kernel, and the Core method arrived at G2;
+`state_dict()` is unchanged and still tensor-only; the
 checkpoint format is still version 1 and does not serialize generator
 state; and no *numerical* capability-registry value moved (`UNSUPPORTED`
 still reads `("dropout", "float32", "cuda", "amp")`, dtypes/devices
@@ -354,6 +355,66 @@ cancels the exactly-matching published reservation), and `calls` is a
 `2**64 - 1` is a reachable value, not a sentinel: reserving at
 `2**64 - 2` succeeds and commits to `2**64 - 1`, reserving at
 `2**64 - 1` is refused, and the counter never wraps.
+**G2 is complete**: the deterministic **stateless Dropout-forward
+Core**. New `cpp/include/tf_random_internal.h` and `cpp/src/random.cpp`
+hold the exact locked `tensorforge.splitmix64` derivation as hidden
+`namespace tf` functions — `splitmix64_mix` (`^= >>30`,
+`* 0xBF58476D1CE4E5B9`, `^= >>27`, `* 0x94D049BB133111EB`, `^= >>31`),
+`dropout_stream_key(seed, call) = mix64(seed + GOLDEN*(call + 1))`,
+`dropout_element_bits(stream, i) = mix64(stream + GOLDEN*(i + 1))`, and
+`dropout_uniform(bits) = (bits >> 11) * 2**-53` with a strict `u < p`
+drop test — plus `dropout_forward_contiguous`, which writes the output
+**and** the private multiplier mask in one pass with `1/(1 - p)` computed
+once per call, so the mask holds exactly `0.0` or that scale. All
+`std::uint64_t` wrapping arithmetic; **no** `<random>`,
+`std::random_device`, `mt19937`, clock, process id, address, allocation
+history, or static/thread-local state anywhere. The self-validating
+guarded export `tf_core_dropout_forward(input, offset, output, mask,
+count, seed, call_index, p)` rejects null handles, a negative offset or
+count, a span exceeding its storage, a non-finite or out-of-range `p`,
+and any aliasing between the input and either destination, writing
+**nothing** to either destination when it rejects. Python gains one
+ctypes declaration (the key as two `c_uint64` arguments),
+`"tf_core_dropout_forward"` in `_CHECKED_KERNELS`, `"dropout_forward"` in
+`TENSOR_CORE_OPS`, and the `NativeTensorCore.dropout_forward(p, *, seed,
+call_index)` / private `_dropout_forward_with_mask` pair — the
+`maxpool2d_forward` / winner-buffer split. Shared validators normalize
+`p` (bool and `numpy.bool_` rejected, `numbers.Real` accepted, `p == 1`,
+`p > 1`, `p < 0`, NaN, and ±inf rejected, `p == 0` accepted) and each key
+half (exact `int` in `[0, 2**64 - 1]`; bool, NumPy scalars, and `int`
+subclasses rejected). **The Core is stateless**: it takes no
+`NativeGenerator` and never reserves, commits, cancels, inspects, or
+mutates one, so a direct Core call leaves a live generator's seed,
+`calls`, and reservation slot bit-identical. Randomness is keyed by the
+**logical** row-major element index — Policy B materializes a
+non-contiguous input first, so a transposed, narrowed, or nonzero-offset
+view receives the same mask as a contiguous tensor of the same logical
+shape. Output and mask are fresh **owning contiguous** cores aliasing
+neither the input nor each other; the input and its metadata are never
+mutated; allocation order is output-then-mask, and any failure — a failed
+allocation, a failed native call, or a failed Python wrapper
+construction — closes everything allocated so live storage returns
+exactly to baseline and no caller can observe one lone result. Committed
+known-answer vectors (`mix64` over six inputs, nine stream keys, the
+element bits, the uniform conversion, and seven full twelve-element
+keep/drop patterns covering seed `0`, a mixed seed, a high-bit seed, the
+all-ones seed, call index `0`, a nonzero call index, the highest index a
+generator can issue (`2**64 - 2`), and two probabilities) are asserted
+**identically** in `cpp/tests/test_dropout_forward.cpp` and
+`tests/test_native_dropout_core.py`; a test-only Python reference of the
+derivation lives in the suite (never in production) and is pinned to
+those vectors before generating any expectation. **G2 ships the Core and
+nothing above it**: no `NativeTensor.dropout`, no autograd node, no
+graph-owned saved mask, no Dropout backward kernel (that gradient is the
+existing `multiply` over the saved mask), and no `NativeDropout`;
+`UNSUPPORTED` still reads `("dropout", "float32", "cuda", "amp")` and the
+checkpoint format is still version 1. One contract detail is recorded
+rather than glossed: the design's **empty-tensor** row is implemented in
+the kernel and the C ABI (`count == 0` draws and writes nothing), but the
+native tensor representation rejects zero-size dimensions outright, so no
+empty core can be constructed from Python — G2 proves the case at the two
+layers where it is reachable and pins the representation's limit with a
+test.
 Data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase G.
@@ -401,8 +462,9 @@ production-ready, not a PyTorch replacement.
   `native_classification_design.md` for Phase E,
   `native_normalization_design.md` for Phase F — F0–F9 shipped, phase
   complete —, and `native_rng_dropout_design.md` for Phase G — G0 (the
-  design lock) and G1 (`NativeGenerator` and module generator-state
-  ownership) shipped, G2–G10 not started). When a milestone changes the
+  design lock), G1 (`NativeGenerator` and module generator-state
+  ownership), and G2 (the stateless `dropout_forward` **Core** kernel and
+  its C ABI) shipped, G3–G10 not started). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the
@@ -410,7 +472,9 @@ production-ready, not a PyTorch replacement.
   pytest.
 - `cpp/` + `src/tensorforge/backends/` — the experimental C++ backend
   (post-v3.0 line; `cpp/src/classification.cpp` holds the Phase-E
-  classification kernels). Plain C-ABI kernels loaded via ctypes; built with
+  classification kernels and `cpp/src/random.cpp` the Phase-G stateless
+  SplitMix64 derivation and Dropout-forward kernel). Plain C-ABI kernels
+  loaded via ctypes; built with
   `uv run python cpp/build.py` (`uv sync --group cpp` first if no
   compiler). Never imported by the main framework; importing the
   wrapper is always safe (lazy load) — check `cpp.is_available()` /

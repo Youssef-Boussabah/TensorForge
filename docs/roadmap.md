@@ -1094,8 +1094,8 @@ The Python line is done; what remains is expansion on its own terms:
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,
     AMP, fused normalization kernels, and CPU optimization.
-  - **Phase G — Native RNG and Dropout — in progress; only G0 has
-    landed.** The **G0 architecture contract is written** —
+  - **Phase G — Native RNG and Dropout — in progress; G0, G1, and G2
+    have landed.** The **G0 architecture contract is written** —
     [native_rng_dropout_design.md](native_rng_dropout_design.md) locks
     the phase's central split (random state is Python-managed; native
     random kernels are stateless and receive the complete key for one
@@ -1158,10 +1158,37 @@ The Python line is done; what remains is expansion on its own terms:
     identity-deduplicated cycle-safe traversal and their own
     `generator_state_dict()` / `load_generator_state_dict()` surface,
     leaving `state_dict()` tensor-only and unchanged. **G1 generates no
-    random values.** Milestones **G2–G10 have not started**: no
-    derivation, kernel,
-    C ABI symbol, ctypes declaration, Core method, tensor operation,
-    `NativeDropout` module, or registry entry exists, the checkpoint format is
+    random values by itself.**
+    **G2 is complete** — the deterministic stateless
+    native Dropout-forward **Core**: the exact locked `tensorforge.splitmix64` derivation in
+    unsigned 64-bit arithmetic (`mix64` finalizer, per-call stream key
+    `mix64(seed + GOLDEN*(call_index + 1))`, per-element bits
+    `mix64(stream + GOLDEN*(element + 1))`, uniform
+    `(bits >> 11) * 2**-53`, dropped when `u < p`) as internal hidden
+    `namespace tf` functions in the new `cpp/src/random.cpp` /
+    `cpp/include/tf_random_internal.h`; the inverted-dropout float64 CPU
+    kernel writing the output **and** the private multiplier mask in one
+    pass; the self-validating guarded export `tf_core_dropout_forward`;
+    its ctypes declaration carrying the whole key as two `c_uint64`
+    arguments; `"dropout_forward"` in `TENSOR_CORE_OPS` and
+    `"tf_core_dropout_forward"` in the checked-kernel inventory; the
+    public `NativeTensorCore.dropout_forward(p, *, seed, call_index)` and
+    the private `_dropout_forward_with_mask` that keeps the mask; a
+    dependency-free CTest over both layers; and committed known-answer
+    vectors asserted **identically** from C++ and Python. It is
+    **stateless**: the complete random key arrives as two explicit
+    integers, the Core reserves, commits, cancels, inspects, and mutates
+    **no** `NativeGenerator`, and no C++ translation unit holds random
+    state of any kind. Randomness is keyed by the **logical** row-major
+    element index, so a transposed, narrowed, or nonzero-offset view
+    receives the same mask as a contiguous tensor of the same logical
+    shape. Both results are fresh owning contiguous cores that alias
+    neither the input nor each other, and the two-result boundary is
+    failure-atomic in C++ *and* in the Python wrapper. Milestones
+    **G3–G10 have not started**: there is no differentiable
+    `NativeTensor.dropout` operation, no autograd node, no graph-owned
+    saved mask, no dropout backward kernel, and no
+    `NativeDropout` module; the checkpoint format is
     still version 1 and does not persist generator state, and `dropout`
     is still listed unsupported beside
     `float32`, `cuda`, and `amp`. **`dropout` stays listed unsupported

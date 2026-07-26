@@ -3169,18 +3169,30 @@ def test_the_status_reconciliation_moved_no_capability_surface():
 
 PHASE_G_DESIGN = "docs/native_rng_dropout_design.md"
 
-# What Phase G has actually shipped, and what it has not. Milestone G1
-# shipped ``NativeGenerator`` — random *state* and its module ownership,
-# generating no random values — so it moved from the second tuple to the
-# first. Everything numerical is still unshipped.
+# What Phase G has actually shipped, and what it has not.
+#
+# Milestone G1 shipped ``NativeGenerator`` — random *state* and its module
+# ownership, generating no random values. Milestone G2 shipped the
+# stateless Dropout-forward **Core**: one internal derivation, one kernel,
+# one guarded C ABI symbol, and the layer-qualified
+# ``NativeTensorCore.dropout_forward``. Both are layer-qualified
+# capabilities, and neither is the user-level Dropout, which does not
+# exist.
 _PHASE_G_SHIPPED_NAMES = ("NativeGenerator",)          # Phase G, G1
 _PHASE_G_PUBLIC_NAMES = ("NativeDropout",)             # not implemented
+# The one Core operation G2 added, and the one C ABI symbol behind it.
+_PHASE_G_SHIPPED_CORE_OPS = ("dropout_forward",)       # Phase G, G2
+_PHASE_G_SHIPPED_ABI_SYMBOLS = ("tf_core_dropout_forward",)
+# Everything numerical that still does not exist at any layer: the
+# differentiable operation (G3), a backward kernel (there is none by
+# design — §7.5), and the generic sampling API Phase G explicitly
+# excludes.
 _PHASE_G_OP_NAMES = (
-    "dropout", "dropout_forward", "dropout_backward",
+    "dropout", "dropout_backward",
     "random", "rand", "randn", "bernoulli", "uniform",
 )
 _PHASE_G_ABI_SYMBOLS = (
-    "tf_core_dropout", "tf_core_dropout_forward", "tf_core_dropout_backward",
+    "tf_core_dropout", "tf_core_dropout_backward",
     "tf_core_random", "tf_core_random_mask", "tf_core_bernoulli",
     "tf_core_uniform", "tf_core_philox", "tf_core_splitmix64",
 )
@@ -3397,19 +3409,22 @@ def test_phase_g_design_states_the_stable_native_separation_and_non_goals():
         )
 
 
-def test_phase_g_runtime_surface_is_generator_state_only():
+def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
     """Guardrails 4, 5, 6, 12, and 13, all derived from reality.
 
-    Phase G has shipped exactly one thing: milestone G1's
+    Phase G has shipped exactly two things: milestone G1's
     ``NativeGenerator`` and its ``NativeModule`` registration — random
-    *state*, generating no random values. So every capability registry,
-    the dtype/device boundary, the checkpoint format, the C ABI, the
-    ctypes declarations, the Core surface, and the C++ sources are still
-    exactly what Phase F closed with, and the one new export appears in
-    **no** operation, kernel, module, or capability inventory. (Before
-    G1 this guard asserted ``NativeGenerator`` did not exist at all; that
-    absence check has been replaced by the stronger positive statement of
-    what it is *allowed* to be.)"""
+    *state* — and milestone G2's stateless Dropout-forward **Core**, which
+    is one internal derivation, one kernel, one guarded C ABI symbol, and
+    the layer-qualified ``NativeTensorCore.dropout_forward``. So the
+    capability boundary, the dtype/device boundary, the checkpoint format,
+    and every module/loss/metric/optimizer inventory are still exactly
+    what Phase F closed with; the generator export appears in **no**
+    inventory at all; and the Core op appears in ``TENSOR_CORE_OPS`` and
+    nowhere else. (Before G1 this guard asserted ``NativeGenerator`` did
+    not exist; before G2 it asserted the same of every random symbol. Each
+    absence check is replaced, as its milestone lands, by the stronger
+    positive statement of what the thing is *allowed* to be.)"""
     from tensorforge.backends import cpp
     from tensorforge.experimental import NativeTensor, native_checkpoint
     import tensorforge
@@ -3442,6 +3457,22 @@ def test_phase_g_runtime_surface_is_generator_state_only():
                           cpp.UNSUPPORTED):
             assert name not in inventory, (name, inventory)
 
+    # G2 shipped: exactly one Core operation, in exactly one inventory,
+    # reachable as a NativeTensorCore method and nowhere above it.
+    for name in _PHASE_G_SHIPPED_CORE_OPS:
+        assert name in cpp.TENSOR_CORE_OPS, name
+        assert hasattr(cpp.NativeTensorCore, name), name
+        for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS,
+                          cpp.AUTOGRAD_OPS, cpp.NATIVE_MODULES,
+                          cpp.NATIVE_LOSSES, cpp.NATIVE_METRICS,
+                          cpp.NATIVE_OPTIMIZERS, cpp.STATE_SUPPORT,
+                          cpp.UNSUPPORTED):
+            assert name not in inventory, (name, inventory)
+        assert not hasattr(NativeTensor, name), name
+        assert not hasattr(experimental, name), name
+    for symbol in _PHASE_G_SHIPPED_ABI_SYMBOLS:
+        assert symbol in cpp._CHECKED_KERNELS, symbol
+
     # Not shipped: no Phase-G public name beyond G1's exists anywhere.
     for name in _PHASE_G_PUBLIC_NAMES:
         assert name not in experimental.__all__, name
@@ -3454,8 +3485,8 @@ def test_phase_g_runtime_surface_is_generator_state_only():
                           cpp.STATE_SUPPORT):
             assert name not in inventory, (name, inventory)
 
-    # No Phase-G operation exists at any numerical layer, and no Core or
-    # NativeTensor method answers to one.
+    # No *later* Phase-G operation exists at any numerical layer, and no
+    # Core or NativeTensor method answers to one.
     for name in _PHASE_G_OP_NAMES:
         assert name not in cpp.TENSOR_CORE_OPS, name
         assert name not in cpp.AUTOGRAD_OPS, name
@@ -3467,23 +3498,33 @@ def test_phase_g_runtime_surface_is_generator_state_only():
     # "dropout" is a capability name only, and only in UNSUPPORTED.
     assert "dropout" in cpp.UNSUPPORTED
 
-    # No Phase-G C ABI symbol is declared, guarded, or defined.
+    # No later Phase-G C ABI symbol is declared, guarded, or defined.
     for symbol in _PHASE_G_ABI_SYMBOLS:
         assert symbol not in cpp._CHECKED_KERNELS, symbol
     cpp_source = (REPO_ROOT / "src" / "tensorforge" / "backends"
                   / "cpp.py").read_text(encoding="utf-8")
     for symbol in _PHASE_G_ABI_SYMBOLS:
         assert f"{symbol}.argtypes" not in cpp_source, symbol
+    # G2's random unit is the ONLY C++ source that may define a Phase-G
+    # symbol, and it defines exactly the one.
     for source in (REPO_ROOT / "cpp" / "src").glob("*.cpp"):
         text = source.read_text(encoding="utf-8")
+        if source.name == "random.cpp":
+            assert text.count("TF_EXPORT") == 1, source.name
+            continue
         for symbol in ("tf_core_dropout", "tf_core_random"):
             assert symbol not in text, f"{source.name} defines {symbol!r}"
-    # No RNG/Dropout *numerical* source unit or header exists. G1's
-    # generator is pure Python, so its module is present and the C++
-    # tree is untouched.
-    for absent in ("cpp/src/random.cpp", "cpp/src/dropout.cpp",
-                   "cpp/include/tf_random_internal.h",
-                   "src/tensorforge/experimental/native_dropout.py"):
+    # G2's source unit and header exist; nothing above the Core does.
+    for present in ("cpp/src/random.cpp", "cpp/include/tf_random_internal.h",
+                    "cpp/tests/test_dropout_forward.cpp"):
+        assert (REPO_ROOT / present).is_file(), (
+            f"{present} is missing, but milestone G2 shipped it"
+        )
+    for absent in ("cpp/src/dropout.cpp",
+                   "src/tensorforge/experimental/native_dropout.py",
+                   "benchmarks/benchmark_native_dropout.py",
+                   "examples/native_dropout_training.py",
+                   "tests/test_native_phase_g.py"):
         assert not (REPO_ROOT / absent).exists(), (
             f"{absent} exists, but no Phase-G milestone has shipped it"
         )
@@ -3523,21 +3564,28 @@ def test_no_surface_claims_a_phase_g_capability_exists():
     shipped, or available. The premise comes from the live registry, so
     this guard tracks reality rather than a frozen expectation.
 
-    ``NativeGenerator`` is deliberately **not** a banned subject any more:
-    milestone G1 really did ship it, so saying so is honest. What stays
-    banned is every claim about the *numerical* capability — Dropout, the
-    operation, and any native RNG — none of which exists, because G1
-    generates no random values."""
+    Two subjects have been deliberately **un**-banned as their milestones
+    landed. ``NativeGenerator`` left the list at G1, and the bare "native
+    RNG"/"native random"/"native dropout" phrasings left it at G2, because
+    the stateless Dropout-forward Core really does exist and describing it
+    is honest. What stays banned is every claim about the surfaces that do
+    **not** exist: the module ``NativeDropout``, the differentiable
+    ``NativeTensor.dropout`` operation, a Dropout backward, and the
+    unqualified user-level capability. The separate
+    ``test_g2_core_claims_are_layer_qualified`` guard then requires that a
+    surface describing the Core says so."""
     from tensorforge.backends import cpp
     import tensorforge.experimental as experimental
 
     # Premise: none of the numerical surface exists.
     assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" not in cpp.AUTOGRAD_OPS
     for name in _PHASE_G_PUBLIC_NAMES:
         assert not hasattr(experimental, name), name
 
     subject = (r"(NativeDropout|NativeTensor\.dropout"
-               r"|native RNG|native dropout|native random)")
+               r"|differentiable dropout|dropout module"
+               r"|dropout backward|dropout autograd)")
     claim = (r"(is|are|now|has been|have been)\s+"
              r"(supported|implemented|shipped|available|complete|completed"
              r"|live)")
@@ -3650,18 +3698,29 @@ def test_phase_g_ladder_status_matches_the_shipped_tree():
         f"{'has' if g1_shipped else 'does not have'} NativeGenerator"
     )
 
-    # G2/G3 ship the derivation and the differentiable operation.
-    numerical_shipped = (
+    # G2 ships the stateless Core: the derivation, the kernel, the guarded
+    # C ABI symbol, and the layer-qualified Core method.
+    g2_shipped = (
         "dropout_forward" in cpp.TENSOR_CORE_OPS
-        or "dropout" in cpp.AUTOGRAD_OPS
+        and hasattr(cpp.NativeTensorCore, "dropout_forward")
+        and "tf_core_dropout_forward" in cpp._CHECKED_KERNELS
+        and (REPO_ROOT / "cpp" / "src" / "random.cpp").is_file()
+    )
+    assert (status(2) == "complete") is g2_shipped, (
+        f"the ladder says G2 is {status(2)!r} but the tree "
+        f"{'has' if g2_shipped else 'does not have'} the Dropout Core"
+    )
+
+    # G3 ships the differentiable operation on top of it.
+    g3_shipped = (
+        "dropout" in cpp.AUTOGRAD_OPS
         or hasattr(experimental.NativeTensor, "dropout")
     )
-    for index in (2, 3):
-        if not numerical_shipped:
-            assert status(index) == "not started", (
-                f"the ladder marks G{index} as {status(index)!r}, but no "
-                f"native random operation exists"
-            )
+    if not g3_shipped:
+        assert status(3) == "not started", (
+            f"the ladder marks G3 as {status(3)!r}, but no differentiable "
+            f"dropout operation exists"
+        )
 
     # G4 ships the module; G5 moves the checkpoint format.
     if not hasattr(experimental, "NativeDropout"):
@@ -3676,18 +3735,25 @@ def test_phase_g_ladder_status_matches_the_shipped_tree():
         assert status(10) == "not started"
 
 
-# The claims G1 must never let a status surface make. G1 shipped random
-# *state*; everything numerical, persisted, or later is still unbuilt,
-# and prose is the easiest place for that distinction to erode.
-_G1_OVERCLAIMS = (
-    ("random values are generated",
-     r"(generat\w+|produc\w+|draw\w+|sampl\w+)\s+(?:\w+\s+){0,3}?"
-     r"random\s+(values?|numbers?|bits?)"
-     r"|random\s+(values?|numbers?|bits?)\s+(?:\w+\s+){0,3}?"
-     r"(are|is)\s+(generated|produced|drawn|sampled|available)"),
-    ("a mask exists",
-     r"(multiplier|dropout)\s+mask\w*\s+(?:\w+\s+){0,3}?"
-     r"(exists?|is|are)\s+(built|created|saved|available|implemented)"),
+# The claims Phase G must never let a status surface make at its current
+# milestone. G1 shipped random *state* and G2 the stateless Core; the
+# graph, the module, the persistence, and every later milestone are still
+# unbuilt, and prose is the easiest place for that distinction to erode.
+#
+# Two entries were retired when G2 landed and are recorded here rather
+# than silently dropped:
+#   * "random values are generated" — G2's kernel really does generate
+#     them, so the claim became honest. What must still not be claimed is
+#     that a *differentiable* or *module-level* Dropout exists, which
+#     ``test_no_surface_claims_a_phase_g_capability_exists`` owns.
+#   * the unqualified "a mask exists" — G2's Core really does produce the
+#     private multiplier mask. The claim below is therefore narrowed to
+#     the **graph-owned/saved** mask, which is G3's.
+_PHASE_G_OVERCLAIMS = (
+    ("a graph-owned saved mask exists",
+     r"(graph-owned|saved|graph_resources)\s+(?:\w+\s+){0,3}?mask\w*"
+     r"\s+(?:\w+\s+){0,3}?(exists?|is|are)\s+"
+     r"(built|created|saved|adopted|retained|available|implemented)"),
     ("checkpoint version 2 exists",
      r"(format|checkpoint)[^.]{0,40}\bversion\s*2\b[^.]{0,30}"
      r"\b(now|exists?|shipped|current|live|implemented)\b"
@@ -3699,21 +3765,21 @@ _G1_OVERCLAIMS = (
      r"|checkpoints?[^.]{0,60}(save|persist|serialize|record)s?"
      r"[^.]{0,30}generator\s+state"),
     ("a later milestone has begun",
-     r"\bG(?:[2-9]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
+     r"\bG(?:[3-9]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
      r"(complete|completed|started|begun|shipped|landed|done)\b"),
 )
 
 
-def test_no_surface_overclaims_what_milestone_g1_shipped():
+def test_no_surface_overclaims_what_phase_g_has_shipped():
     """G1 shipped random **state** — a generator object, its module
-    registration, and its own state report. It generates no random
-    values, builds no mask, persists nothing to a checkpoint, and starts
-    no later milestone.
+    registration, and its own state report — and G2 the stateless
+    Dropout-forward **Core**. Neither builds a graph-owned mask, persists
+    anything to a checkpoint, or starts a later milestone.
 
     Every premise below comes from the live tree, so this guard tracks
     reality; the prose scan then holds documentation to it. Spans that
-    carry their own negation ("does not generate", "no random value",
-    "G2-G10 have not started") are the honest form and pass."""
+    carry their own negation ("does not generate", "no graph node",
+    "G3-G10 have not started") are the honest form and pass."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import (
         NativeGenerator, NativeTensor, native_checkpoint,
@@ -3724,11 +3790,13 @@ def test_no_surface_overclaims_what_milestone_g1_shipped():
     assert not hasattr(NativeTensor, "dropout")
     assert not hasattr(experimental, "NativeDropout")
     assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" not in cpp.AUTOGRAD_OPS
     assert native_checkpoint._FORMAT_VERSION == 1
-    # The generator really does not produce a value of any kind.
+    # The generator really does not produce a value of any kind: G2's
+    # derivation lives in C++ behind the Core, never on this object.
     generator = NativeGenerator(1)
     for numerical in ("random", "rand", "randn", "bits", "next", "uniform",
-                      "bernoulli", "mask"):
+                      "bernoulli", "mask", "dropout"):
         assert not hasattr(generator, numerical), numerical
 
     negations = re.compile(
@@ -3742,7 +3810,7 @@ def test_no_surface_overclaims_what_milestone_g1_shipped():
                     "src/tensorforge/experimental/__init__.py",
                     PHASE_G_DESIGN):
         text = _status_text(surface)
-        for label, pattern in _G1_OVERCLAIMS:
+        for label, pattern in _PHASE_G_OVERCLAIMS:
             offenders = [
                 match.group(0)
                 for match in re.finditer(pattern, text, re.I)
@@ -3848,6 +3916,283 @@ def test_g1_status_is_stated_positively_on_every_phase_surface():
         assert match is None, (
             f"{surface} still describes G1 as unstarted: {match.group(0)!r}"
         )
+
+
+# --- Phase G milestone G2 — the stateless Dropout-forward Core ----------
+#
+# G2 guardrails, all derived from the live registry, the real C++/Python
+# sources, and the file tree. They pin what the milestone shipped **and**
+# the boundaries it deliberately did not cross.
+
+# The surfaces that track Phase-G status milestone by milestone.
+PHASE_G_STATUS_SURFACES = (
+    "README.md",
+    "docs/roadmap.md",
+    "docs/project_summary.md",
+    "docs/native_support_matrix.md",
+    "docs/backend_experiments.md",
+    "CLAUDE.md",
+    PHASE_G_DESIGN,
+)
+
+
+def test_g2_core_inventory_is_exactly_one_operation_and_one_abi_symbol():
+    """The milestone's whole registry footprint: ``TENSOR_CORE_OPS`` gains
+    ``"dropout_forward"`` and ``_CHECKED_KERNELS`` gains
+    ``"tf_core_dropout_forward"``. Nothing else moved — not
+    ``AUTOGRAD_OPS``, not ``NATIVE_MODULES``, not ``STATE_SUPPORT``, not
+    ``UNSUPPORTED``, not the dtype/device tuples, not the checkpoint
+    version."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    # Exactly one new Core op, appended last, and no sibling smuggled in.
+    dropout_ops = [name for name in cpp.TENSOR_CORE_OPS if "dropout" in name]
+    assert dropout_ops == ["dropout_forward"], dropout_ops
+    assert cpp.TENSOR_CORE_OPS[-1] == "dropout_forward"
+
+    # Exactly one new C ABI symbol, and it is checked (so native failures
+    # become Python exceptions rather than silent wrong results).
+    dropout_symbols = [name for name in cpp._CHECKED_KERNELS
+                       if "dropout" in name or "random" in name]
+    assert dropout_symbols == ["tf_core_dropout_forward"], dropout_symbols
+
+    # Everything else Phase F closed with, unchanged.
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert cpp.RAW_KERNELS == (
+        "elementwise_add", "elementwise_subtract", "elementwise_multiply",
+        "elementwise_divide", "relu", "matmul", "matmul_tiled",
+    )
+    assert cpp.TENSOR_CORE_KERNELS == (
+        "relu", "add", "subtract", "multiply", "matmul",
+    )
+    assert cpp.AUTOGRAD_OPS[-1] == "cross_entropy"
+    assert cpp.NATIVE_MODULES == (
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+    )
+    assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    assert cpp.STATE_SUPPORT == (
+        "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",
+        "save_native_checkpoint", "load_native_checkpoint",
+    )
+    assert native_checkpoint._FORMAT_VERSION == 1
+    # backend_info() mirrors the live registry, so the report cannot drift.
+    info = cpp.backend_info()
+    assert tuple(info["tensor_core_ops"]) == cpp.TENSOR_CORE_OPS
+    assert tuple(info["unsupported"]) == cpp.UNSUPPORTED
+
+
+def test_g2_core_boundary_is_stateless_and_takes_the_whole_key():
+    """The phase's central architectural split, checked in the code rather
+    than in the prose: the Core takes an explicit ``(seed, call_index)``
+    pair, the ctypes declaration carries both as ``c_uint64``, and neither
+    the backend module nor the C++ unit can reach a generator."""
+    import inspect
+
+    from tensorforge.backends import cpp
+
+    for name in ("dropout_forward", "_dropout_forward_with_mask"):
+        signature = inspect.signature(getattr(cpp.NativeTensorCore, name))
+        parameters = signature.parameters
+        assert list(parameters) == ["self", "p", "seed", "call_index"], name
+        for keyword_only in ("seed", "call_index"):
+            assert (parameters[keyword_only].kind
+                    is inspect.Parameter.KEYWORD_ONLY), (name, keyword_only)
+            assert parameters[keyword_only].default is inspect.Parameter.empty
+        # No generator parameter of any spelling.
+        assert "generator" not in parameters, name
+
+    backend_source = (REPO_ROOT / "src" / "tensorforge" / "backends"
+                      / "cpp.py").read_text(encoding="utf-8")
+    # The declaration carries the full unsigned 64-bit key.
+    assert "tf_core_dropout_forward.argtypes" in backend_source
+    assert backend_source.count("ctypes.c_uint64") == 2
+    # backends/ never imports experimental/, so a generator is not even
+    # reachable from the Core layer. (Checked structurally: the module's
+    # imports and its live namespace, not its prose — the Core's docstring
+    # legitimately explains *why* it holds no generator.)
+    assert "import tensorforge.experimental" not in backend_source
+    assert "from tensorforge.experimental" not in backend_source
+    assert not hasattr(cpp, "NativeGenerator")
+    leaked = [name for name in vars(cpp)
+              if "generator" in name.lower() and name != "STATE_SUPPORT"]
+    assert leaked == [], leaked
+
+    # And the C++ side holds no random state at all.
+    for relative in ("cpp/src/random.cpp", "cpp/include/tf_random_internal.h"):
+        code = "\n".join(
+            line.split("//")[0]
+            for line in (REPO_ROOT / relative).read_text(
+                encoding="utf-8"
+            ).splitlines()
+        )
+        for forbidden in ("<random>", "random_device", "mt19937",
+                          "thread_local", "static ", "srand", "std::time"):
+            assert forbidden not in code, (relative, forbidden)
+
+
+def test_g2_equality_threshold_vector_is_committed_on_both_sides():
+    """The comparison direction is pinned by exactly one vector, and it
+    must not quietly disappear from either suite.
+
+    The premise is taken from the **live kernel**, not from prose: the
+    Core is run at ``p == u`` and at ``nextafter(u, 1.0)`` for the
+    committed word, and the keep/drop flip is observed. Then both test
+    files are checked to still commit the same constants, so a future edit
+    cannot delete the proof from one side and leave the other looking
+    complete. (Inspecting the vectors directly is the point — no prose is
+    matched.)"""
+    import math
+
+    import numpy as np
+    import pytest
+
+    from tensorforge.backends import cpp
+
+    if not cpp.is_available():
+        pytest.skip("experimental C++ backend not built")
+
+    seed = 0x0123456789ABCDEF
+    call_index = 0
+    index = 2
+    word = 0xA2A1796FEB7EF314
+    uniform = float.fromhex("0x1.4542f2dfd6fdep-1")
+    assert (word >> 11) * 2.0 ** -53 == uniform
+    assert 0.0 < uniform < 1.0
+
+    values = np.array([1.5, -2.25, 3.75, -4.5])
+    masks = {}
+    for label, probability in (("equal", uniform),
+                               ("next", math.nextafter(uniform, 1.0))):
+        source = cpp.NativeTensorCore.from_array(values)
+        try:
+            out, mask = source._dropout_forward_with_mask(
+                probability, seed=seed, call_index=call_index
+            )
+            try:
+                masks[label] = mask.to_numpy().copy()
+                assert np.array_equal(out.to_numpy(),
+                                      values * masks[label])
+            finally:
+                out.close()
+                mask.close()
+        finally:
+            source.close()
+
+    # The live behaviour: equality keeps, one ULP more drops.
+    assert masks["equal"][index] == 1.0 / (1.0 - uniform)
+    assert masks["next"][index] == 0.0
+    assert not np.array_equal(masks["equal"], masks["next"])
+
+    # ...and both suites still commit the vector that proves it.
+    native = (REPO_ROOT / "cpp" / "tests"
+              / "test_dropout_forward.cpp").read_text(encoding="utf-8")
+    python = (REPO_ROOT / "tests"
+              / "test_native_dropout_core.py").read_text(encoding="utf-8")
+    for source_name, text in (("test_dropout_forward.cpp", native),
+                              ("test_native_dropout_core.py", python)):
+        for literal in ("0xA2A1796FEB7EF314", "0x1.4542f2dfd6fdep-1",
+                        "nextafter", '"0010"', '"0000"'):
+            assert literal in text, (source_name, literal)
+
+
+def test_g2_did_not_begin_g3_or_any_later_milestone():
+    """The milestone boundary from the tree: no autograd node, no module,
+    no checkpoint v2, no benchmark, no example, no integration suite."""
+    from pathlib import Path
+
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import NativeTensor, native_checkpoint
+    import tensorforge.experimental as experimental
+
+    assert not hasattr(NativeTensor, "dropout")
+    assert "dropout" not in cpp.AUTOGRAD_OPS
+    assert not hasattr(experimental, "NativeDropout")
+    assert "NativeDropout" not in cpp.NATIVE_MODULES
+    assert native_checkpoint._FORMAT_VERSION == 1
+    # The Core method builds no graph: no autograd vocabulary reaches it.
+    import inspect
+
+    source = inspect.getsource(
+        cpp.NativeTensorCore._dropout_forward_with_mask
+    )
+    for graph_token in ("_from_op", "graph_resources", "requires_grad",
+                        "_backward", "NativeTensor("):
+        assert graph_token not in source, graph_token
+    # And none of the later milestones' artifacts exists.
+    for absent in ("src/tensorforge/experimental/native_dropout.py",
+                   "benchmarks/benchmark_native_dropout.py",
+                   "examples/native_dropout_training.py",
+                   "tests/test_native_phase_g.py",
+                   "tests/test_native_dropout_training.py"):
+        assert not (Path(REPO_ROOT) / absent).exists(), absent
+
+
+def test_g2_status_is_stated_positively_on_every_phase_surface():
+    """The mirror of the overclaim scan: G2 really did ship, so a surface
+    that tracks Phase G must name the milestone and say what it delivered
+    — using the layer-qualified name, so a reader cannot mistake a Core
+    wrapper for a user-level Dropout."""
+    for surface in PHASE_G_STATUS_SURFACES:
+        text = _status_text(surface)
+        assert re.search(r"\bG2\b", text), (
+            f"{surface} does not name milestone G2"
+        )
+        assert "dropout_forward" in text, (
+            f"{surface} does not name the layer-qualified Core operation "
+            f"milestone G2 shipped"
+        )
+        # ...and none of them still describes G2 as pending. Anchored so
+        # that "G3-G10 have not started" reads as the honest statement it
+        # is (the second alternative refuses to cross another milestone
+        # token, and the first catches a range that includes G2).
+        still_pending = re.compile(
+            r"\bG[0-2]\s*[-–—]\s*G\d+\b[^.]{0,30}?\bnot\s+(?:yet\s+)?started"
+            r"|\bG2\b(?:(?!\bG\d)[^.]){0,40}?\bnot\s+(?:yet\s+)?started",
+            re.I,
+        )
+        match = still_pending.search(text)
+        assert match is None, (
+            f"{surface} still describes G2 as unstarted: {match.group(0)!r}"
+        )
+
+
+def test_g2_core_claims_are_layer_qualified():
+    """A surface that describes the shipped Dropout Core must also say
+    what does **not** exist above it, in the same document: the
+    differentiable operation and the module. This is what keeps "native
+    Dropout works now" from being a fair reading of any status page."""
+    from tensorforge.backends import cpp
+
+    # Premise, from the live registry.
+    assert "dropout_forward" in cpp.TENSOR_CORE_OPS
+    assert "dropout" not in cpp.AUTOGRAD_OPS
+
+    for surface in PHASE_G_STATUS_SURFACES:
+        text = _status_text(surface)
+        assert re.search(r"\bCore\b", text), surface
+        # The two absent surfaces are named as absent somewhere in the
+        # document, with a negation attached.
+        assert re.search(
+            r"(no|not|never|without)[^.]{0,120}NativeDropout"
+            r"|NativeDropout[^.]{0,120}(does not exist|not implemented"
+            r"|not started|G4)", text, re.I,
+        ), f"{surface} does not say NativeDropout is absent"
+        assert re.search(
+            r"(no|not|never|without)[^.]{0,140}(differentiable|autograd|"
+            r"NativeTensor\.dropout)"
+            r"|NativeTensor\.dropout[^.]{0,140}(G3|not started|does not"
+            r" exist)", text, re.I,
+        ), f"{surface} does not say the differentiable operation is absent"
+        # "dropout" is still advertised as unsupported.
+        assert re.search(r"unsupported|UNSUPPORTED", text), surface
 
 
 def _phase_g_milestone(index):

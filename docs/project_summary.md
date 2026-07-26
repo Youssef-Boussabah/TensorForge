@@ -121,14 +121,18 @@ integration and semantic guardrails** (`tests/test_native_phase_f.py`),
 and **F9 closed the phase** under Release and Debug builds with Clang
 ASan/UBSan and LeakSanitizer — validation and documentation only, adding
 no numerical capability. **Phase G (native RNG and Dropout) is the
-current phase and is in progress: only milestone G0, the architecture
+current phase and is in progress: milestones G0, G1, and G2 have
+landed.** G0, the architecture
 contract in [native_rng_dropout_design.md](native_rng_dropout_design.md),
-has landed.** It locks Python-managed generator state, stateless native
+locks Python-managed generator state, stateless native
 random kernels, inverted Dropout with a graph-owned multiplier mask, one
 generator call consumed per successful stochastic forward, generator
 registration on `NativeModule`, and native checkpoint version 2 — as
-**design, documentation, and guardrails only**, so no generator, kernel,
-operation, module, or export exists yet, the checkpoint format is still
+**design, documentation, and guardrails only**. G1 shipped
+`NativeGenerator` and module generator-state ownership, and G2 the
+stateless `dropout_forward` **Core** kernel and its C ABI. Above the
+Core nothing exists: no differentiable `NativeTensor.dropout` operation
+and no `NativeDropout` module, the checkpoint format is still
 version 1, and `dropout` is still listed unsupported beside `float32`,
 `cuda`, and `amp`. The two
 engines never mix: explicit entry via
@@ -342,8 +346,31 @@ parameters, buffers, and children, with the same deterministic,
 identity-deduplicated, cycle-safe traversal and their own
 `generator_state_dict()` / `load_generator_state_dict()` surface, leaving
 `state_dict()` tensor-only and unchanged. **G1 generates no random
-values**: there is no derivation, kernel, C ABI symbol, operation, or
-`NativeDropout`. **G2–G10 have not started**, the checkpoint format is
+values by itself.**
+
+Milestone **G2 is complete**: the deterministic **stateless
+Dropout-forward Core**. The exact locked `tensorforge.splitmix64`
+derivation — the `mix64` finalizer, the per-call stream key
+`mix64(seed + GOLDEN * (call_index + 1))`, the per-element bits
+`mix64(stream + GOLDEN * (element + 1))`, the uniform
+`(bits >> 11) * 2**-53`, and the strict `u < p` drop test — now lives as
+hidden `namespace tf` functions in `cpp/src/random.cpp`, beside an
+inverted-Dropout float64 CPU kernel that writes the output **and** the
+private multiplier mask in one pass, and the self-validating guarded
+export `tf_core_dropout_forward`. On the Python side that is one ctypes
+declaration (the whole key as two `c_uint64` arguments), one entry in
+`TENSOR_CORE_OPS` (`"dropout_forward"`), one checked kernel, and the
+`NativeTensorCore.dropout_forward(p, *, seed, call_index)` /
+`_dropout_forward_with_mask` pair. The Core is **stateless** — it
+reserves, commits, cancels, inspects, and mutates no `NativeGenerator`,
+and no C++ unit holds random state — and randomness is keyed by the
+**logical** row-major element index, so a transposed, narrowed, or
+nonzero-offset view gets the same mask as a contiguous tensor of the same
+shape. Committed known-answer vectors are asserted identically in the
+native CTest and the Python suite. **G3–G10 have not started**: there is
+no differentiable `NativeTensor.dropout` operation, no autograd node, no
+graph-owned saved mask, no Dropout backward, and no `NativeDropout`
+module; the checkpoint format is
 still version 1 and does not persist generator state, and `dropout` stays
 listed unsupported through G9, leaving that list only at G10 after the
 closure matrix.
