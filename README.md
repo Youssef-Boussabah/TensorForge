@@ -186,6 +186,8 @@ uv run python benchmarks/benchmark_native_classification.py --smoke        # cla
 uv run python benchmarks/benchmark_native_classification.py --smoke --json # machine-readable JSON
 uv run python benchmarks/benchmark_native_normalization.py --smoke         # normalization characterization
 uv run python benchmarks/benchmark_native_normalization.py --smoke --json  # machine-readable JSON
+uv run python benchmarks/benchmark_native_dropout.py --smoke               # Dropout characterization
+uv run python benchmarks/benchmark_native_dropout.py --smoke --json        # machine-readable JSON
 ```
 
 The native API mirrors the stable one, explicitly:
@@ -246,7 +248,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
-- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, and milestone G7, the deterministic stochastic training example and its exact checkpoint resume (no capability), are complete; G8–G10 have not started, so end-to-end **exact stochastic training resume is demonstrated** while `dropout` stays unsupported until the G10 closure)
+- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, and milestone G7, the deterministic stochastic training example and its exact checkpoint resume (no capability), and milestone G8, the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` (also no capability — correctness gated before timing, no speed asserted), are complete; G9–G10 have not started, so end-to-end **exact stochastic training resume is demonstrated** while `dropout` stays unsupported until the G10 closure)
 
 ## Limitations
 
@@ -704,18 +706,38 @@ example, one test module, and documentation: **no** C++, C ABI symbol,
 ctypes declaration, Core method, autograd operation, module, export,
 schema field, checkpoint version, benchmark, or registry value changed.
 
-Milestones **G8–G10 have not started.** G5 proves exact generator
-restoration — the state, the identity, the topology, and the next Dropout
-mask at the restored call index — but **not** the end-to-end §11 story:
-an interrupted stochastic training run reproduced into a fresh
-model/optimizer/generator set is **G7**, and no such example, benchmark,
-or Phase-G integration suite exists yet. Reproducibility is exact for the state
-actually captured; Python's `random`, NumPy's global RNG, data-loader
-position, and scheduler state are **not** captured and full-program
-determinism is not claimed. That remaining gap, plus the unrun closure
-matrix, is exactly why `dropout` (with `float32`, `cuda`, and `amp`) is
-**still listed as unsupported**: the registry reports what is closed and
-validated, while the inventories report what exists.
+Milestone **G8 is complete** — the honest benchmark characterization,
+and **no new capability**. `benchmarks/benchmark_native_dropout.py`
+measures thirty-five cases in eight families: the stateless Core against
+an **exact, bit-for-bit** vectorized NumPy implementation of the same
+locked derivation, size scaling from a rank-0 scalar to a
+six-figure-element tensor, four physical layouts over one logical shape
+(contiguous, transposed, narrowed non-contiguous, and offset-contiguous),
+a five-value probability sweep at three layers, the no-grad /
+differentiable / backward-only / forward-plus-backward operation layers,
+the module's training and identity paths, and one complete Dropout
+training step. Correctness is gated **before** timing everywhere — the
+committed known-answer vectors first pin the harness's reference and then
+the native kernel — and the `NativeTensor` and `NativeDropout` cases are
+labelled `native_only`, publishing no ratio, because no NumPy expression
+has their generator transaction, ownership, or graph. `--smoke`
+(`--quick`), `--json`, and `--json-out` are supported; **no result file
+is written unless a destination is named**, and there is no speed
+assertion, no committed timing number, and no CI timing threshold
+anywhere. Results are a machine-specific snapshot, not a performance
+contract, and **nothing was optimized to improve a number** — G8 changed
+no runtime file.
+
+Milestones **G9–G10 have not started.** What is left is the cross-cutting
+Phase-G integration suite and the closure matrix: fresh Release and Debug
+builds, the sanitizers, and the documentation reconciliation that gates
+the capability boundary. Reproducibility is exact for the state actually
+captured; Python's `random`, NumPy's global RNG, data-loader position,
+and scheduler state are **not** captured and full-program determinism is
+not claimed. That remaining work is exactly why `dropout` (with
+`float32`, `cuda`, and `amp`) is **still listed as unsupported**: the
+registry reports what is closed and validated, while the inventories
+report what exists.
 `dropout` leaves the unsupported list only at **G10**. More
 activations/math, data loaders, and CPU optimization sit beyond Phase G,
 and CUDA/GPU experiments remain future work. See

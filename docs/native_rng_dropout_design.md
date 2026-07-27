@@ -2315,8 +2315,9 @@ listed in §11 by exact equality; the example importable with a
 `train(...)` returning stats and a guarded `main()`.
 
 **G8 — benchmark.** Every correctness gate runs before any timing; a
-failed gate publishes nothing and exits nonzero; `--smoke` and `--json`;
-no result file; no asserted duration.
+failed gate publishes nothing and exits nonzero; `--case`, `--family`,
+`--smoke` (`--quick`), `--json`, and `--json-out`; no result file unless
+`--json-out` names one; no asserted duration.
 
 **G9 — integration.** §17.
 
@@ -2326,49 +2327,123 @@ no result file; no asserted duration.
 
 ## 16. Benchmark contract
 
-Milestone **G8**: `benchmarks/benchmark_native_dropout.py`,
-`BENCHMARK_NAME = "tensorforge.native_dropout"`, version `"1.0"`.
+Milestone **G8**, shipped: `benchmarks/benchmark_native_dropout.py`,
+`BENCHMARK_NAME = "tensorforge.native_dropout"`, version `"1.0"`, result
+payload `schema_version` `"1.0"` — a number local to the harness, and
+deliberately **not** the native checkpoint format version, which stays 2.
 
-Six cases, in this order:
+This section originally locked **six** cases. The shipped harness
+measures those six under exactly those names and adds the
+characterization the six alone cannot give — size scaling, layout,
+probability, and the separate no-grad / differentiable / backward /
+identity layers — for **35** cases in eight families, in this order:
 
-1. `core_dropout_forward` — `NativeTensorCore.dropout_forward`
-2. `tensor_dropout_forward` — the differentiable `NativeTensor.dropout`
-3. `tensor_dropout_backward` — backward only, graph built outside the timer
-4. `module_training_forward` — `NativeDropout` in training mode
-5. `module_eval_forward` — `NativeDropout` in evaluation mode
-6. `dropout_training_step` — one complete forward/loss/backward/`NativeAdam.step()`
+| Family | Cases |
+|---|---|
+| `baseline` | `python_call_floor` |
+| `core_reference` | `core_dropout_forward`, `core_dropout_forward_with_mask` |
+| `size_scaling` | `scaling_core_scalar`, `scaling_core_tiny_vector`, `scaling_core_small`, `scaling_core_medium`, `scaling_core_large` |
+| `layout` | `layout_contiguous`, `layout_transposed`, `layout_narrowed_noncontiguous`, `layout_offset_contiguous` |
+| `probability` | `probability_core_p000`, `probability_core_p010`, `probability_core_p050`, `probability_core_p090`, `probability_core_pmax`, `probability_tensor_p010`, `probability_tensor_p050`, `probability_tensor_p090`, `probability_tensor_pmax`, `probability_module_p010`, `probability_module_p050`, `probability_module_p090`, `probability_module_pmax` |
+| `tensor_operation` | `tensor_dropout_nograd_forward`, `tensor_dropout_forward`, `tensor_dropout_backward`, `tensor_dropout_forward_backward`, `tensor_dropout_p0_identity` |
+| `module` | `module_training_forward`, `module_eval_forward`, `module_training_p0_identity`, `module_eval_p0_identity` |
+| `training_step` | `dropout_training_step` |
 
-Methodology, matching the Phase-E and Phase-F harnesses exactly:
+The probability sweep is `0`, `0.1`, `0.5`, `0.9`, and
+`nextafter(1.0, 0.0)` — never `p == 1`, which §6.3 rejects. At the
+operation and module layers `p == 0` is a *different code path*
+(identity), so those two layers' zero rows are the identity cases in the
+`tensor_operation` and `module` families rather than repeated rows in the
+sweep; the **Core** has no `p == 0` short-circuit and its zero row still
+allocates, draws, and writes.
 
-- **Correctness is gated before the timing helper is ever reached.** A
-  failed gate publishes no timing and exits nonzero with clean stdout.
-- Gates include: a **known-answer mask** for a fixed `(seed, call_index,
-  p)` verified element by element; output equal to `input * mask`;
-  gradient equal to `upstream * mask`; the generator's `calls` advanced
-  by exactly the number of successful stochastic forwards and by zero for
-  the eval case; the graph released and the mask closed; and the native
-  live-storage counter returning to its baseline after each case.
-- `time.perf_counter_ns`, warm-up, one call per sample, every sample
-  retained, setup and cleanup outside the timer, a fresh module per
-  training-mode repetition where state advances, median reported with
-  min, max, and spread.
-- `--case`, `--warmup`, `--repetitions`, `--smoke`, `--json`; a fully
-  JSON-native payload; **no result file of any kind is written**.
+Methodology, following the Phase-E and Phase-F harnesses:
+
+- **Correctness is gated before timing, always.** A global prologue pins
+  the harness's reference to the committed G2 vectors and then pins the
+  **native kernel** to the same vectors; each case's own gate then runs
+  before the timing helper is ever reached. A failed gate publishes no
+  timing and exits nonzero with clean stdout.
+- Gates include: the **known-answer masks** for all seven committed
+  `(seed, call_index, p)` vectors, verified element by element, plus the
+  equality-threshold vector that pins the strict `u < p` comparison;
+  output equal to `input * mask`; gradient equal to `upstream * mask`
+  against the graph-owned mask; the generator's `calls` advanced by
+  exactly the number of successful stochastic forwards and by **zero**
+  for every evaluation and `p == 0` case; identity cases returning the
+  caller's own object; the four layouts receiving one identical logical
+  mask; the graph released and the mask closed; and the native
+  live-storage counter returning exactly to its baseline.
+- `time.perf_counter_ns`, warm-up, **one call per sample**, every sample
+  retained, setup and cleanup outside the timer, a fresh model and
+  optimizer per training-step repetition, median reported with min, max,
+  spread, p25/p75, and the median absolute deviation. The one exception
+  to one-call-per-sample is the **identity-dispatch** rows (evaluation
+  mode and `p == 0`), which allocate nothing and sit far below the useful
+  resolution of a single reading: they run a short **calibrated** inner
+  loop whose iteration count is reported, and `python_call_floor`
+  measures the same loop around a trivial Python call so that floor is
+  visible rather than assumed. Those rows measure **dispatch**, not mask
+  generation, and the report says so.
+- Every stochastic case owns **one** generator for its whole run, so call
+  indices advance monotonically; the consumed range is recorded and
+  verified **exactly** against the number of cycles the harness
+  performed. No generator is reset inside a timed region, no reservation
+  is reused, and no case approaches counter exhaustion.
+- An **untimed lifecycle verification** runs after the cases: repeated
+  create/use/release cycles over every family, returning native live
+  storage exactly to baseline with no reservation outstanding and every
+  graph, mask, and gradient released. Its instrumentation is
+  benchmark-local — G8 adds no runtime API.
+- `--case`, `--family`, `--warmup`, `--repetitions`, `--smoke`
+  (`--quick` is an alias), `--json`, and `--json-out PATH`; a fully
+  JSON-native payload with no NaN or Infinity. **No result file of any
+  kind is written unless `--json-out` explicitly names a destination**:
+  there is no default path, no results directory, and no committed
+  artifact.
 - **No speed assertion, no committed timing number, and no CI timing
-  threshold anywhere.**
+  threshold anywhere.** Published ratios name their numerator and
+  denominator; the word "speedup" appears nowhere.
 
-**Every case is labelled `native_only` for timing.** A stable-framework
-comparison is deliberately omitted: `tensorforge.nn.Dropout` draws from a
-different RNG algorithm, so no mask-for-mask comparison exists, and timing
-two different mask distributions against each other would be a
-comparison of RNG implementations dressed up as a Dropout benchmark. The
-correctness oracle is the committed known-answer mask and an explicit
-reference multiply, which is stronger than a cross-framework timing
-would have been. This is stated in the harness output, not just here.
+**Reference labels.** A stable-framework comparison is deliberately
+omitted: `tensorforge.nn.Dropout` draws from a different RNG algorithm,
+so no mask-for-mask comparison exists, and timing two different mask
+distributions against each other would be a comparison of RNG
+implementations dressed up as a Dropout benchmark. What the harness times
+instead is:
+
+- `numpy` — an **exact vectorized NumPy implementation of the same
+  locked derivation**, doing the same work: the stream key, one 64-bit
+  word per logical element, the top-53-bit uniform, the strict `u < p`
+  test, the `1/(1 - p)` multiplier mask, and the output multiply, with
+  both arrays allocated (and, for a non-contiguous input, the same
+  Policy-B materialization). Agreement is asserted **bit for bit**, never
+  to a tolerance. Only the stateless Core carries this label, because
+  only the Core has a semantically equivalent NumPy expression. The
+  reference is **benchmark-local**, never production code: a second
+  production implementation would be a second source of truth and a
+  silent NumPy fallback path.
+- `native_only` — every `NativeTensor` and `NativeDropout` case. Those
+  layers own a generator call transaction, native ownership, and (where
+  applicable) an autograd graph that no NumPy expression has, so **no
+  timing ratio is published** for them. Their gates are still exact,
+  against the same reference at the reserved call index.
+- `harness_baseline` — the `python_call_floor` row only.
+
+Layer costs are reported as **approximate layered differences** between
+adjacent measured cases (operation minus Core, differentiable minus
+no-grad, module minus operation, forward-plus-backward minus forward),
+explicitly labelled as descriptive gaps rather than a causal
+decomposition — each side is an independent measurement with its own
+noise, and the two sides do slightly different ownership work. A negative
+value is reported as measured rather than hidden.
 
 No benchmark-driven numerical shortcut is permitted: the harness composes
 shipped public APIs only and may not add a fast path, a cached mask, or a
-reused graph that the ordinary code path does not have.
+reused graph that the ordinary code path does not have. G8 is
+**measurement only**: no runtime file changed, nothing was optimized to
+improve a number, and the results are a machine-specific snapshot rather
+than a performance contract.
 
 ---
 
@@ -2480,7 +2555,7 @@ not move and the phase is not closed.
 | G5 | Checkpoint version 2 and exact RNG restoration | **Complete** |
 | G6 | RNG, graph, ownership, and checkpoint hardening | **Complete** (tests, one narrow fix, and documentation — no capability) |
 | G7 | Deterministic stochastic training and exact resume | **Complete** (one example and its tests — no capability) |
-| G8 | Honest native Dropout benchmark | Not started |
+| G8 | Honest native Dropout benchmark | **Complete** (one harness and its tests — measurement only, no capability) |
 | G9 | Cross-cutting Phase-G integration | Not started |
 | G10 | Phase-G closure, and `"dropout"` leaving `UNSUPPORTED` | Not started |
 
@@ -3112,13 +3187,38 @@ defines no public training API — none of its helpers is exported.
 
 ### G8 — Honest native Dropout benchmark
 
+**Complete.** Measurement and characterization only.
+
 - **Objective.** Measurement only, per §16.
-- **Files.** New `benchmarks/benchmark_native_dropout.py` and its test.
-- **Forbidden.** Any speed assertion, committed timing number, CI timing
-  threshold, result file, or capability change. **`"dropout"` stays in
-  `UNSUPPORTED`.**
+- **Files.** New `benchmarks/benchmark_native_dropout.py` and
+  `tests/test_native_dropout_benchmark.py`, plus status documentation and
+  its guardrails. **No runtime file changed.**
+- **What shipped.** The 35-case, eight-family harness of §16: the
+  stateless Core against an exact bit-for-bit vectorized NumPy reference,
+  scalar-through-131,072-element size scaling, four physical layouts over
+  one logical shape, the five-value probability sweep at three layers,
+  the no-grad / differentiable / backward-only / forward-plus-backward
+  operation layers, the module's training and identity paths, and one
+  complete Dropout training step — each correctness-gated first, each
+  labelled with the reference it used, each reporting median with min,
+  max, spread, p25/p75, and MAD, and each recording its exact generator
+  consumption. Plus the untimed lifecycle verification that returns
+  native live storage exactly to baseline.
+- **What it found, and did not fix.** The characterization is reported as
+  measured, including the results that are unflattering and the one that
+  is surprising (the Core's cost varies strongly with `p` on the machine
+  measured, which is a property of the data-dependent keep/drop branch,
+  not a defect). **Nothing was optimized to improve a number**, and no
+  runtime fast path, cache, relaxed validation, or altered ownership was
+  added.
+- **Forbidden, and observed.** No speed assertion, committed timing
+  number, CI timing threshold, automatic result file, or capability
+  change: **`"dropout"` stays in `UNSUPPORTED`**, which still reads
+  `("dropout", "float32", "cuda", "amp")`.
 - **Done when.** Every gate runs before timing and a failed gate
-  publishes nothing.
+  publishes nothing. Observed: a corrupted forward and a non-finite
+  forward both abort with `measure` never reached, stdout clean, and the
+  exit status nonzero.
 
 ### G9 — Cross-cutting Phase-G integration
 

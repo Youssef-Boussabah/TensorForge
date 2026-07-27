@@ -3129,13 +3129,12 @@ def test_g6_added_no_operation_module_export_or_checkpoint_field():
     assert not hasattr(NativeGenerator, "close")
 
 
-def test_g7_shipped_no_benchmark_or_integration_suite():
-    """G8's benchmark and G9's integration suite must not exist yet, and
-    no result artifact of any kind was written. (G7's example and its
-    tests do exist — a later milestone shipped them; this suite is not
-    where their absence is asserted.)"""
-    for absent in ("benchmarks/benchmark_native_dropout.py",
-                   "tests/test_native_phase_g.py",
+def test_g9_integration_suite_has_not_begun():
+    """G9's integration suite must not exist yet, and no result artifact
+    of any kind was written. (G7's example and G8's benchmark do exist —
+    later milestones shipped them; this suite is not where their absence
+    is asserted, and G8's harness writes no file unless asked.)"""
+    for absent in ("tests/test_native_phase_g.py",
                    "benchmark_results"):
         assert not (REPO_ROOT / absent).exists(), absent
 

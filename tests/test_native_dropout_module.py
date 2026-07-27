@@ -1396,11 +1396,9 @@ def test_g4_added_no_operation_kernel_or_generic_rng_surface():
         assert forbidden not in source, forbidden
 
 
-def test_g8_and_later_milestones_have_not_begun():
+def test_g9_and_later_milestones_have_not_begun():
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parent.parent
-    for absent in ("benchmarks/benchmark_native_dropout.py",
-                   "tests/test_native_phase_g.py",
-                   "tests/test_native_phase_g.py"):
+    for absent in ("tests/test_native_phase_g.py",):
         assert not (repo_root / absent).exists(), absent

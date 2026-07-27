@@ -241,7 +241,7 @@ its public export), and G5 (native checkpoint **format version 2** with
 persisted generator state and its alias topology), and G6 (RNG, graph,
 ownership, and checkpoint hardening — **no new capability**), and G7 (the
 deterministic stochastic training example and its exact checkpoint resume
-— also **no new capability**) are complete; G8–G10 have not started.** G0 locked Python-managed generator state (an explicit
+— also **no new capability**) are complete, and G8 (the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` — measurement only, no capability) is complete; G9–G10 have not started.** G0 locked Python-managed generator state (an explicit
 64-bit seed plus call counter and an algorithm identifier), stateless
 native random kernels that receive the whole key for one call, inverted
 Dropout with a graph-owned multiplier mask whose backward never rereads
@@ -812,7 +812,10 @@ production-ready, not a PyTorch replacement.
   RNG/graph/ownership/checkpoint hardening, which added no capability),
   and G7 (`examples/native_dropout_training.py` and its tests — the
   deterministic stochastic training and exact-resume proof, which also
-  added no capability) shipped, G8–G10 not started). When a milestone changes the
+  added no capability), and G8 (`benchmarks/benchmark_native_dropout.py`
+  and its tests — the honest characterization, correctness gated
+  before timing, no speed asserted, no capability) shipped, G9–G10
+  not started). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the

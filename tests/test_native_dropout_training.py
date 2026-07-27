@@ -1318,9 +1318,8 @@ def test_g7_adds_no_capability_or_inventory_entry():
     }
 
 
-def test_g8_and_later_milestones_have_not_begun():
-    for absent in ("benchmarks/benchmark_native_dropout.py",
-                   "tests/test_native_phase_g.py",
+def test_g9_and_later_milestones_have_not_begun():
+    for absent in ("tests/test_native_phase_g.py",
                    "benchmark_results"):
         assert not (REPO_ROOT / absent).exists(), absent
 

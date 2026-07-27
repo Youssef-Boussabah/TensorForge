@@ -713,15 +713,47 @@ example, one test module, and documentation: **no** C++, C ABI symbol,
 ctypes declaration, Core method, autograd operation, module, export,
 schema field, checkpoint version, benchmark, or registry value changed.
 
-**Above that, nothing exists.** Milestones **G8–G10 have not started**:
-G5 proves exact generator restoration — including that the next Dropout
-mask matches the G2 Core at the restored `(seed, call_index)` — but
-**not** the end-to-end story: an interrupted stochastic training run
-reproduced into a fresh model/optimizer/generator set is the **G7**
-resume, which is not yet demonstrated and has no example or test. Reproducibility is exact **for the state
-actually captured**: Python's `random`, NumPy's global RNG, data-loader
-position, and scheduler state are not captured, and full-program
-determinism is not claimed. `dropout` is still listed
+Milestone **G8 is complete** — the honest benchmark characterization,
+`benchmarks/benchmark_native_dropout.py`, which adds **no capability**.
+Thirty-five cases in eight families: `core_reference` (the public
+output-only Core and the private output-plus-mask helper) against an
+**exact bit-for-bit** vectorized NumPy implementation of the same locked
+`tensorforge.splitmix64` derivation; `size_scaling` from a rank-0 scalar
+to a four-dimensional tensor; `layout` over one logical shape in four
+physical layouts (contiguous, transposed, narrowed non-contiguous, and
+offset-contiguous), whose masks are proved identical; `probability`
+across `0`, `0.1`, `0.5`, `0.9`, and `nextafter(1.0, 0.0)` at the Core,
+operation, and module layers; `tensor_operation` separating the no-grad
+forward, the differentiable forward, backward alone, forward plus
+backward, and the `p == 0` identity; `module` separating training,
+evaluation, and both `p == 0` identities; and one `dropout_training_step`.
+Correctness is gated **before** timing everywhere: a prologue pins the
+harness's reference to the committed G2 known-answer vectors and then
+pins the native kernel to the same vectors, and each case's own gate runs
+before the timing helper is reached, so a failed gate publishes nothing
+and exits nonzero. Each stochastic case owns one generator whose consumed
+call range is verified **exactly**, evaluation and `p == 0` cases are
+proved to consume none, and an untimed lifecycle pass returns native live
+storage exactly to its baseline with no reservation outstanding. Only the
+Core carries a `numpy` timing label; the `NativeTensor` and
+`NativeDropout` cases are `native_only` and publish **no ratio**, because
+no NumPy expression has their generator transaction, native ownership, or
+autograd graph. `--case`, `--family`, `--warmup`, `--repetitions`,
+`--smoke` (`--quick`), `--json`, and `--json-out` are supported, and **no
+result file of any kind is written unless `--json-out` names a
+destination**. There is **no speed assertion, no committed timing number,
+and no CI timing threshold** anywhere; the results are a machine-specific
+snapshot rather than a performance contract, and **nothing was optimized
+to improve a number** — G8 changed no runtime file, no C++, no ABI, and
+no registry value.
+
+**Above that, nothing exists.** Milestones **G9–G10 have not started**:
+the cross-cutting Phase-G integration suite and the closure matrix — the
+fresh Release and Debug builds, the sanitizers, and the documentation
+reconciliation that gates the boundary — are still ahead. Reproducibility
+is exact **for the state actually captured**: Python's `random`, NumPy's
+global RNG, data-loader position, and scheduler state are not captured,
+and full-program determinism is not claimed. `dropout` is still listed
 unsupported
 beside `float32`, `cuda`, and `amp`. It stays listed unsupported
 for the whole of **G0–G9** — G4 implements and exports `NativeDropout`

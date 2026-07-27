@@ -3634,14 +3634,16 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
             / "native_dropout.py").is_file(), (
         "milestone G4 shipped the NativeDropout module"
     )
-    # G7's example and its tests exist; nothing above them does.
+    # G7's example and G8's benchmark exist, with their tests; nothing
+    # above them does.
     for present in ("examples/native_dropout_training.py",
-                    "tests/test_native_dropout_training.py"):
+                    "tests/test_native_dropout_training.py",
+                    "benchmarks/benchmark_native_dropout.py",
+                    "tests/test_native_dropout_benchmark.py"):
         assert (REPO_ROOT / present).is_file(), (
-            f"{present} is missing, but milestone G7 shipped it"
+            f"{present} is missing, but milestone G7 or G8 shipped it"
         )
     for absent in ("cpp/src/dropout.cpp",
-                   "benchmarks/benchmark_native_dropout.py",
                    "tests/test_native_phase_g.py"):
         assert not (REPO_ROOT / absent).exists(), (
             f"{absent} exists, but no Phase-G milestone has shipped it"
@@ -3885,6 +3887,22 @@ def test_phase_g_ladder_status_matches_the_shipped_tree():
         f"the ladder says G7 is {status(7)!r} but the tree "
         f"{'has' if g7_shipped else 'does not have'} the resume example"
     )
+    # G8 ships one benchmark harness and its test module.
+    g8_shipped = (
+        (REPO_ROOT / "benchmarks" / "benchmark_native_dropout.py").is_file()
+        and (REPO_ROOT / "tests"
+             / "test_native_dropout_benchmark.py").is_file()
+    )
+    assert status(8).startswith("complete") is g8_shipped, (
+        f"the ladder says G8 is {status(8)!r} but the tree "
+        f"{'has' if g8_shipped else 'does not have'} the benchmark"
+    )
+    # G9 ships the cross-cutting integration suite.
+    if not (REPO_ROOT / "tests" / "test_native_phase_g.py").is_file():
+        assert status(9) == "not started", (
+            f"the ladder marks G9 as {status(9)!r}, but no Phase-G "
+            f"integration suite exists"
+        )
     # The closure milestone is open while "dropout" is still unsupported.
     if "dropout" in cpp.UNSUPPORTED:
         assert status(10) == "not started"
@@ -3934,11 +3952,12 @@ _PHASE_G_OVERCLAIMS = (
      r"\b(data.?loader|shuffle\w*|epoch counter|scheduler state"
      r"|global rng|global random)\b[^.]{0,40}"
      r"\b(captured?|stored?|saved?|persisted?|restored?|included?)\b"),
-    # Retired one milestone at a time: G6 (hardening) and then G7 (the
-    # end-to-end resume) really have landed, so claiming them is
-    # accurate. G8 is now the boundary a status surface must not cross.
+    # Retired one milestone at a time: G6 (hardening), G7 (the
+    # end-to-end resume), and now G8 (the honest benchmark
+    # characterization) really have landed, so claiming them is accurate.
+    # G9 is now the boundary a status surface must not cross.
     ("a later milestone has begun",
-     r"\bG(?:[89]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
+     r"\bG(?:9|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
      r"(complete|completed|started|begun|shipped|landed|done)\b"),
 )
 
@@ -4561,10 +4580,9 @@ def test_g7_did_not_begin_g8_or_any_later_milestone():
         )
     # ...and none of the later milestones' artifacts exists. The G9
     # integration suite in particular is a *different* file from G6's
-    # hardening suite, which is why both names are checked.
-    for absent in ("benchmarks/benchmark_native_dropout.py",
-                   "tests/test_native_phase_g.py",
-                   "benchmark_results"):
+    # hardening suite. (G8's benchmark now exists; what must not is a
+    # committed *result* artifact from it.)
+    for absent in ("tests/test_native_phase_g.py", "benchmark_results"):
         assert not (Path(REPO_ROOT) / absent).exists(), absent
     # G6 is hardening only: it added no export, no inventory entry, and no
     # schema field, so the whole public surface is still exactly G5's.
@@ -4714,10 +4732,9 @@ def test_g7_added_no_capability_and_no_public_training_api():
         assert not hasattr(experimental, absent), absent
         assert not hasattr(tensorforge, absent), absent
         assert absent not in cpp.NATIVE_MODULES, absent
-    # No benchmark, no integration suite, no result artifact.
-    for absent in ("benchmarks/benchmark_native_dropout.py",
-                   "tests/test_native_phase_g.py",
-                   "benchmark_results"):
+    # No integration suite and no result artifact. (G7 shipped no
+    # benchmark; G8's exists and writes nothing unless asked.)
+    for absent in ("tests/test_native_phase_g.py", "benchmark_results"):
         assert not (REPO_ROOT / absent).exists(), absent
 
 
@@ -4756,9 +4773,9 @@ def test_g6_claims_no_new_capability_anywhere():
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 2
     assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
-    # G6 shipped no benchmark, no example, and no integration suite.
-    for absent in ("benchmarks/benchmark_native_dropout.py",
-                   "tests/test_native_phase_g.py"):
+    # G6 shipped no example and no integration suite. (The benchmark
+    # arrived at G8, two milestones later, and is guarded there.)
+    for absent in ("tests/test_native_phase_g.py",):
         assert not (REPO_ROOT / absent).exists(), absent
 
     overclaim = re.compile(
@@ -6009,3 +6026,124 @@ def test_phase_g_names_process_death_as_the_only_atomicity_exception():
     assert not re.search(r"components may disagree", lowered), (
         "the design still permits components to disagree after a failure"
     )
+
+
+def test_docs_present_the_shipped_dropout_benchmark():
+    """G8's harness must stay documented as what it is: an honest local
+    characterization with correctness gated before timing, honest
+    reference labels, and **no** speed guarantee — never a performance
+    contract, a committed number, or a CI gate. Every premise is checked
+    against the live tree and the live harness first, so this guard
+    tracks reality rather than prose."""
+    benchmark = REPO_ROOT / "benchmarks" / "benchmark_native_dropout.py"
+    assert benchmark.is_file()
+    assert (REPO_ROOT / "tests"
+            / "test_native_dropout_benchmark.py").is_file()
+
+    from benchmarks import benchmark_native_dropout as harness
+
+    # The contract section names every case and family the harness
+    # actually declares — the design cannot drift from the code.
+    section = _top_level_section("16. Benchmark contract",
+                                 relative_path=PHASE_G_DESIGN)
+    assert len(harness.CASES) == 35
+    for case in harness.CASES:
+        assert case in section, case
+    for family in harness.FAMILIES:
+        assert family in section, family
+    # The six cases the contract originally named are still named.
+    for case in ("core_dropout_forward", "tensor_dropout_forward",
+                 "tensor_dropout_backward", "module_training_forward",
+                 "module_eval_forward", "dropout_training_step"):
+        assert case in harness.CASES and case in section, case
+
+    lowered = section.lower()
+    assert re.search(r"correctness.{0,40}before.{0,20}timing", lowered), (
+        "the design no longer states that correctness runs before timing"
+    )
+    assert "median" in lowered and "spread" in lowered
+    assert "warm-up" in lowered or "warmup" in lowered
+    for label in (harness.NUMPY, harness.NATIVE_ONLY, harness.HARNESS):
+        assert label in section, label
+    for flag in ("--case", "--family", "--smoke", "--quick", "--json",
+                 "--json-out"):
+        assert flag in section, flag
+    # The reference is exact, and the native_only decision is justified
+    # rather than asserted.
+    assert re.search(r"bit for bit|bit-for-bit", lowered)
+    assert re.search(r"native_only[^|]{0,600}no\W{0,4}\*{0,2}(timing )?ratio",
+                     section, re.I | re.S), (
+        "the design no longer says why the operation and module cases "
+        "publish no ratio"
+    )
+    # The honesty boundary.
+    assert re.search(r"no.{0,40}speed", lowered), (
+        "the design no longer states that no speed is asserted"
+    )
+    assert re.search(r"no ci timing threshold|no timing threshold", lowered)
+    assert re.search(r"no result file", lowered)
+    assert re.search(r"json-out[^.]{0,120}(destination|names)", lowered), (
+        "the design no longer scopes the result file to an explicit "
+        "destination"
+    )
+    assert "measurement only" in lowered
+
+    # The milestone block records it as shipped, and as measurement only.
+    milestone = _design_section("G8 —", relative_path=PHASE_G_DESIGN)
+    milestone_lowered = milestone.lower()
+    assert "complete" in milestone_lowered
+    assert "measurement" in milestone_lowered
+    assert re.search(r"no runtime file", milestone_lowered), (
+        "the G8 block no longer says it changed no runtime file"
+    )
+    assert re.search(r"(stays|still|remains)\s+(?:\w+\s+){0,3}?in\s+"
+                     r"UNSUPPORTED", re.sub(r"[*`]", "", milestone), re.I)
+
+    # The README documents how to run it.
+    readme = _status_text("README.md")
+    for command in ("uv run python benchmarks/benchmark_native_dropout"
+                    ".py --smoke",
+                    "uv run python benchmarks/benchmark_native_dropout"
+                    ".py --smoke --json"):
+        assert command in readme, command
+
+    # Every status surface that names it carries the honesty boundary...
+    surfaces = ("README.md", "docs/native_support_matrix.md",
+                "docs/roadmap.md", "docs/project_summary.md",
+                "docs/backend_experiments.md")
+    for surface in surfaces:
+        text = _status_text(surface)
+        # A raw character window, not a sentence one: the file name itself
+        # contains a period, which would truncate a "[^.]" span.
+        windows = [text[max(0, match.start() - 400):match.end() + 800]
+                   for match in re.finditer("benchmark_native_dropout", text)]
+        assert windows, surface
+        assert any(re.search(
+            r"(no speed|not a (performance )?(contract|guarantee)"
+            r"|no timing threshold|no committed timing|characteriz)",
+            chunk, re.I) for chunk in windows), surface
+
+    # ...and none of them — nor CLAUDE.md, nor the design — commits a
+    # timing number, a ratio, or a speed verdict as a project promise.
+    for surface in surfaces + ("CLAUDE.md", PHASE_G_DESIGN):
+        text = (REPO_ROOT / surface).read_text(encoding="utf-8")
+        chunks = [text[max(0, match.start() - 400):match.end() + 800]
+                  for match in re.finditer("benchmark_native_dropout", text)]
+        for chunk in chunks:
+            assert not re.search(
+                r"\d+(\.\d+)?\s*(us|ms|µs|ns|microseconds|milliseconds|"
+                r"seconds)\b", chunk, re.I
+            ), (surface, chunk[:160])
+            assert not re.search(r"\bx faster|\bspeedup\b|\d+(\.\d+)?x\b",
+                                 chunk, re.I), (surface, chunk[:160])
+
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"\|\s*G8\s*\|[^|]*\|[^|]*Complete", matrix), (
+        "the support matrix does not mark G8 complete"
+    )
+    # G8 is a benchmark, not a capability: the boundary is where G7 left it.
+    from tensorforge.backends import cpp
+
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert not (REPO_ROOT / "benchmark_results").exists()
+    assert not list((REPO_ROOT / "benchmarks").glob("*.json"))

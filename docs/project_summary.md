@@ -513,17 +513,33 @@ example, one test module, and documentation: **no** C++, C ABI symbol,
 ctypes declaration, Core method, autograd operation, module, export,
 schema field, checkpoint version, benchmark, or registry value changed.
 
-**G8–G10 have not started.** G5 proves exact generator restoration —
-state, identity, topology, and the next Dropout mask at the restored call
-index — but **not** the end-to-end story: an interrupted stochastic
-training run reproduced into a fresh model/optimizer/generator set is
-**G7**, so exact stochastic *training* resume is not yet demonstrated,
-and reproducibility is exact only for the state actually captured (no
-Python `random`, NumPy global RNG, data-loader position, or scheduler
-state — full-program determinism is not claimed). That, with the unrun
-closure matrix, is why `dropout` stays
-listed unsupported through G9, leaving that list only at G10 after the
-closure matrix.
+Milestone **G8 is complete** — the honest benchmark characterization,
+and **no new capability**. `benchmarks/benchmark_native_dropout.py`
+measures thirty-five cases in eight families — the stateless Core against
+an **exact bit-for-bit** vectorized NumPy implementation of the same
+locked derivation, scalar-to-large size scaling, four physical layouts
+over one logical shape, a five-value probability sweep at three layers,
+the no-grad / differentiable / backward-only / forward-plus-backward
+operation layers, the module's training and identity paths, and one
+complete Dropout training step. Every case is correctness-gated **before**
+timing, the committed known-answer vectors pin the harness's reference
+and then the native kernel, each stochastic case's generator consumption
+is verified exactly, and an untimed lifecycle pass returns native live
+storage to its baseline. The `NativeTensor` and `NativeDropout` cases are
+`native_only` and publish no ratio: no NumPy expression owns a generator
+transaction, native ownership, and an autograd graph. There is **no speed
+assertion, no committed timing number, and no CI timing threshold**, no
+result file unless `--json-out` names one, and **nothing was optimized to
+improve a number** — no runtime file changed.
+
+**G9–G10 have not started.** What remains is the cross-cutting Phase-G
+integration suite and the closure matrix (fresh Release and Debug builds,
+the sanitizers, and documentation reconciliation). Reproducibility is
+exact only for the state actually captured — no Python `random`, NumPy
+global RNG, data-loader position, or scheduler state, and full-program
+determinism is not claimed. That, with the unrun closure matrix, is why
+`dropout` stays listed unsupported through G9, leaving that list only at
+G10 after the closure matrix.
 Beyond Phase G
 (**not started**): more activations/math, data
 loaders, a CPU optimization phase, then the CUDA

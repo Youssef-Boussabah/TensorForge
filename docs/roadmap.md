@@ -1351,15 +1351,29 @@ The Python line is done; what remains is expansion on its own terms:
     example, one test module, and documentation: **no** C++, C ABI symbol,
     ctypes declaration, Core method, autograd operation, module, export,
     schema field, checkpoint version, benchmark, or registry value changed.
-    Milestones **G8–G10 have not started**, and the gap that matters now
-    is the end-to-end proof: G5 restores generator state exactly —
-    including the next multiplier mask at the restored call index — but an
-    interrupted stochastic **training** run reproduced into a fresh
-    model/optimizer/generator set is the **G7** resume, so exact
-    stochastic training resume is not yet demonstrated, and reproducibility is exact only for
+    Milestone **G8 is complete** — `benchmarks/benchmark_native_dropout.py`,
+    the honest characterization, adding **no capability**. Thirty-five
+    cases in eight families: the stateless Core against an **exact
+    bit-for-bit** vectorized NumPy implementation of the same locked
+    derivation, scalar-to-large size scaling, four physical layouts over
+    one logical shape, a five-value probability sweep at three layers,
+    the no-grad / differentiable / backward-only / forward-plus-backward
+    operation layers, the module's training and identity paths, and one
+    complete native Dropout training step — each gated for correctness **before**
+    timing against the committed known-answer vectors, each recording its
+    exact generator consumption, and all of them followed by an untimed
+    lifecycle pass that returns native live storage to baseline. The
+    operation and module cases are `native_only` and publish no ratio.
+    **No speed assertion, no committed timing number, no CI timing
+    threshold**, and no result file unless `--json-out` names one; the
+    numbers are a machine-specific snapshot and nothing was optimized to
+    improve one. Milestones **G9–G10 have not started**, and the gap that
+    matters now is the cross-cutting Phase-G integration suite and the
+    closure matrix — fresh Release and Debug builds, the sanitizers, and
+    documentation reconciliation. Reproducibility stays exact only for
     the state actually captured (no Python `random`, no NumPy global
-    random state, no data-loader position, and no scheduler state). That, with
-    the unrun closure matrix, is why `dropout`
+    random state, no data-loader position, and no scheduler state). That,
+    with the unrun closure matrix, is why `dropout`
     is still listed unsupported beside
     `float32`, `cuda`, and `amp`. **`dropout` stays listed unsupported
     for the whole of G0–G9** — G4 implements and exports `NativeDropout`
