@@ -1243,15 +1243,15 @@ def test_the_benchmark_composes_only_shipped_public_apis():
     assert "_has_active_reservation" in source
 
 
-def test_g8_started_no_later_milestone():
-    """G9's integration suite and G10's boundary move must not exist."""
-    assert not (REPO_ROOT / "tests" / "test_native_phase_g.py").exists()
+def test_g10_has_not_begun():
+    """G10's boundary move must not have happened. (G9's integration
+    suite exists — it is a later milestone, guarded in its own file.)"""
     assert "dropout" in cpp.UNSUPPORTED
     design = (REPO_ROOT / "docs"
               / "native_rng_dropout_design.md").read_text(encoding="utf-8")
     ladder = design[design.index("| Milestone | Scope | Status |"):]
     ladder = ladder[:ladder.index("### G0")]
-    for row, expected in (("G8", "complete"), ("G9", "not started"),
+    for row, expected in (("G8", "complete"), ("G9", "complete"),
                           ("G10", "not started")):
         match = re.search(rf"\|\s*{row}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert match is not None, row

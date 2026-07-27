@@ -151,7 +151,7 @@ dispatch. The exact per-operation status lives in the
 
 ## Testing and reliability (both lines)
 
-Over 3,600 pytest tests cover every feature of both lines: known-value
+Over 3,650 pytest tests cover every feature of both lines: known-value
 checks against hand-computed math, finite-difference gradient
 verification (stable and native), exact resume-equivalence tests for
 checkpointing, NumPy-tripwire tests proving the native paths never
@@ -532,14 +532,33 @@ assertion, no committed timing number, and no CI timing threshold**, no
 result file unless `--json-out` names one, and **nothing was optimized to
 improve a number** — no runtime file changed.
 
-**G9–G10 have not started.** What remains is the cross-cutting Phase-G
-integration suite and the closure matrix (fresh Release and Debug builds,
-the sanitizers, and documentation reconciliation). Reproducibility is
-exact only for the state actually captured — no Python `random`, NumPy
-global RNG, data-loader position, or scheduler state, and full-program
-determinism is not claimed. That, with the unrun closure matrix, is why
-`dropout` stays listed unsupported through G9, leaving that list only at
-G10 after the closure matrix.
+Milestone **G9 is complete** — the cross-cutting Phase-G integration
+suite, and **no new capability**. `tests/test_native_phase_g.py` trains
+one test-only model carrying every registered state family at once
+(`NativeConv2d` -> `NativeBatchNorm2d` -> `NativeReLU` ->
+`NativeMaxPool2d` -> `NativeDropout` -> `NativeFlatten` ->
+`NativeLinear` -> `NativeBatchNorm1d` -> `NativeReLU` ->
+`NativeLayerNorm` -> `NativeDropout` -> `NativeLinear`, raw logits into
+`NativeCrossEntropyLoss`, two Dropout layers over **one** shared
+generator) and proves the interactions: four saved-resource families in
+one graph released exactly once, exact version-2 resume into a fresh
+model/optimizer/generator set, the generator-topology matrix with every
+mismatch rejected before any state changes, evaluation consuming no call,
+`p == 0`, non-contiguous NCHW and strided views, whole-state rollback at
+every commit position, four deterministic concurrency cases, a Phase A–F
+regression matrix, and live storage returning exactly to baseline across
+success and failure cycles. No runtime file changed and no defect was
+found.
+
+**G10 has not started.** What remains is the closure matrix — fresh
+Windows Release and Debug builds and their CTests, Clang
+ASan/UBSan/LeakSanitizer in WSL2, the sanitized Python suites, and the
+final documentation reconciliation — after which, and only after which,
+`dropout` leaves `UNSUPPORTED`. Reproducibility is exact only for the
+state actually captured (no Python `random`, NumPy global RNG,
+data-loader position, or scheduler state), and ordinary concurrent
+training is not claimed thread-safe: the serializability guarantee covers
+the participating state transactions only.
 Beyond Phase G
 (**not started**): more activations/math, data
 loaders, a CPU optimization phase, then the CUDA

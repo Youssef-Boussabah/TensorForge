@@ -1367,13 +1367,31 @@ The Python line is done; what remains is expansion on its own terms:
     **No speed assertion, no committed timing number, no CI timing
     threshold**, and no result file unless `--json-out` names one; the
     numbers are a machine-specific snapshot and nothing was optimized to
-    improve one. Milestones **G9–G10 have not started**, and the gap that
-    matters now is the cross-cutting Phase-G integration suite and the
-    closure matrix — fresh Release and Debug builds, the sanitizers, and
+    improve one. Milestone **G9 is complete** — the cross-cutting Phase-G
+    integration suite, `tests/test_native_phase_g.py`, adding **no
+    capability** and changing no runtime file. One test-only model
+    carries every registered state family at once (convolution, NCHW
+    normalization buffers, pooling, two native Dropout layers over one
+    shared generator, flatten, linear layers, 1-D normalization,
+    native LayerNorm, and the fused loss over raw logits), and the suite
+    proves
+    the interactions: four saved-resource families in one graph released
+    exactly once, exact version-2 resume into a fresh
+    model/optimizer/generator set with a negative control that diverges,
+    the generator-topology matrix with every mismatch rejected before any
+    state changes, evaluation consuming no call anywhere, p == 0,
+    non-contiguous NCHW and strided views, whole-state rollback at every
+    commit position, four deterministic concurrency cases, a Phase A–F
+    regression matrix, and live storage returning exactly to baseline
+    across success and failure cycles. Milestone **G10 has not started**,
+    and what is left is the closure matrix — fresh Windows Release and
+    Debug builds and their CTests, the Clang ASan/UBSan/LeakSanitizer
+    validation in WSL2, the sanitized Python suites, and the final
     documentation reconciliation. Reproducibility stays exact only for
     the state actually captured (no Python `random`, no NumPy global
-    random state, no data-loader position, and no scheduler state). That,
-    with the unrun closure matrix, is why `dropout`
+    random state, no data-loader position, and no scheduler state), and
+    ordinary concurrent training is not claimed thread-safe. That, with
+    the unrun closure matrix, is why `dropout`
     is still listed unsupported beside
     `float32`, `cuda`, and `amp`. **`dropout` stays listed unsupported
     for the whole of G0–G9** — G4 implements and exports `NativeDropout`

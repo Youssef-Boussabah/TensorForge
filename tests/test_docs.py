@@ -3643,8 +3643,7 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
         assert (REPO_ROOT / present).is_file(), (
             f"{present} is missing, but milestone G7 or G8 shipped it"
         )
-    for absent in ("cpp/src/dropout.cpp",
-                   "tests/test_native_phase_g.py"):
+    for absent in ("cpp/src/dropout.cpp",):
         assert not (REPO_ROOT / absent).exists(), (
             f"{absent} exists, but no Phase-G milestone has shipped it"
         )
@@ -3898,11 +3897,11 @@ def test_phase_g_ladder_status_matches_the_shipped_tree():
         f"{'has' if g8_shipped else 'does not have'} the benchmark"
     )
     # G9 ships the cross-cutting integration suite.
-    if not (REPO_ROOT / "tests" / "test_native_phase_g.py").is_file():
-        assert status(9) == "not started", (
-            f"the ladder marks G9 as {status(9)!r}, but no Phase-G "
-            f"integration suite exists"
-        )
+    g9_shipped = (REPO_ROOT / "tests" / "test_native_phase_g.py").is_file()
+    assert status(9).startswith("complete") is g9_shipped, (
+        f"the ladder says G9 is {status(9)!r} but the tree "
+        f"{'has' if g9_shipped else 'does not have'} the integration suite"
+    )
     # The closure milestone is open while "dropout" is still unsupported.
     if "dropout" in cpp.UNSUPPORTED:
         assert status(10) == "not started"
@@ -3953,11 +3952,13 @@ _PHASE_G_OVERCLAIMS = (
      r"|global rng|global random)\b[^.]{0,40}"
      r"\b(captured?|stored?|saved?|persisted?|restored?|included?)\b"),
     # Retired one milestone at a time: G6 (hardening), G7 (the
-    # end-to-end resume), and now G8 (the honest benchmark
-    # characterization) really have landed, so claiming them is accurate.
-    # G9 is now the boundary a status surface must not cross.
+    # end-to-end resume), G8 (the honest benchmark characterization), and
+    # now G9 (the cross-cutting integration suite) really have landed, so
+    # claiming them is accurate. **G10 is now the boundary** a status
+    # surface must not cross — and it is the one that moves the capability
+    # boundary, so it is the most important of the four.
     ("a later milestone has begun",
-     r"\bG(?:9|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
+     r"\bG10\b[^.]{0,60}\b(is|are|has|have)\s+"
      r"(complete|completed|started|begun|shipped|landed|done)\b"),
 )
 
@@ -4578,11 +4579,11 @@ def test_g7_did_not_begin_g8_or_any_later_milestone():
         assert (Path(REPO_ROOT) / present).is_file(), (
             f"{present} is missing, but an earlier milestone shipped it"
         )
-    # ...and none of the later milestones' artifacts exists. The G9
-    # integration suite in particular is a *different* file from G6's
-    # hardening suite. (G8's benchmark now exists; what must not is a
-    # committed *result* artifact from it.)
-    for absent in ("tests/test_native_phase_g.py", "benchmark_results"):
+    # ...and no committed *result* artifact exists. (G8's benchmark and
+    # G9's integration suite are both real now; the G9 suite is a
+    # *different* file from G6's hardening suite, and both are checked
+    # above.)
+    for absent in ("benchmark_results",):
         assert not (Path(REPO_ROOT) / absent).exists(), absent
     # G6 is hardening only: it added no export, no inventory entry, and no
     # schema field, so the whole public surface is still exactly G5's.
@@ -4732,9 +4733,9 @@ def test_g7_added_no_capability_and_no_public_training_api():
         assert not hasattr(experimental, absent), absent
         assert not hasattr(tensorforge, absent), absent
         assert absent not in cpp.NATIVE_MODULES, absent
-    # No integration suite and no result artifact. (G7 shipped no
-    # benchmark; G8's exists and writes nothing unless asked.)
-    for absent in ("tests/test_native_phase_g.py", "benchmark_results"):
+    # No result artifact. (G7 shipped no benchmark and no integration
+    # suite; G8's harness and G9's suite exist and are guarded there.)
+    for absent in ("benchmark_results",):
         assert not (REPO_ROOT / absent).exists(), absent
 
 
@@ -4773,9 +4774,10 @@ def test_g6_claims_no_new_capability_anywhere():
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 2
     assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
-    # G6 shipped no example and no integration suite. (The benchmark
-    # arrived at G8, two milestones later, and is guarded there.)
-    for absent in ("tests/test_native_phase_g.py",):
+    # G6 shipped no example, no benchmark, and no integration suite —
+    # those arrived at G7, G8, and G9 and are guarded there. What G6 must
+    # still not have produced is a result artifact.
+    for absent in ("benchmark_results",):
         assert not (REPO_ROOT / absent).exists(), absent
 
     overclaim = re.compile(
@@ -6147,3 +6149,148 @@ def test_docs_present_the_shipped_dropout_benchmark():
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
     assert not (REPO_ROOT / "benchmark_results").exists()
     assert not list((REPO_ROOT / "benchmarks").glob("*.json"))
+
+
+def test_docs_present_the_shipped_phase_g_integration_suite():
+    """G9's suite must stay documented as what it is: cross-cutting
+    integration **evidence**, not a capability — with the boundary, the
+    checkpoint version, and the closure matrix all still where G8 left
+    them. Every premise is read from the live tree and the live suite, so
+    the guard tracks reality rather than prose."""
+    suite = REPO_ROOT / "tests" / "test_native_phase_g.py"
+    assert suite.is_file()
+    source = suite.read_text(encoding="utf-8")
+
+    # The suite really does integrate the whole stack, in one model.
+    for required in ("NativeConv2d", "NativeBatchNorm2d", "NativeMaxPool2d",
+                     "NativeFlatten", "NativeLinear", "NativeBatchNorm1d",
+                     "NativeLayerNorm", "NativeDropout", "NativeGenerator",
+                     "NativeCrossEntropyLoss", "NativeAdam", "NativeSGD",
+                     "save_native_checkpoint", "load_native_checkpoint"):
+        assert required in source, required
+    # ...and it really exercises each cross-cutting concern.
+    for concern in ("named_generators", "_named_generator_paths", "aliases",
+                    "retain_graph", "_capture_rollback", "_commit_generators",
+                    "threading", "contiguous", "state_transaction",
+                    "live_storages"):
+        assert concern in source, concern
+    # It is an integration suite, not a benchmark or an example: it takes
+    # no clock reading, publishes nothing, and defines no entry point.
+    for banned in ("perf" + "_counter", "BENCHMARK" + "_NAME", "def " + "main(",
+                   "time" + ".time(", "speedup"):
+        assert banned not in source, banned
+    assert "no timing" in source or "faster than another" in source, (
+        "the integration suite no longer disclaims timing"
+    )
+
+    # The design records it as shipped, and as integration only.
+    section = _top_level_section("17. Phase-G integration target",
+                                 relative_path=PHASE_G_DESIGN)
+    lowered = section.lower()
+    assert "tests/test_native_phase_g.py" in section
+    assert "shipped" in lowered or "complete" in lowered
+    for claim in ("four", "exact resume", "topology", "prevalidation",
+                  "concurren", "live-storage"):
+        assert claim in lowered, claim
+    assert re.search(r"(stays|still|remains)\s+(?:\w+\s+){0,3}?in\s+"
+                     r"UNSUPPORTED", re.sub(r"[*`]", "", section), re.I), (
+        "the integration target no longer says the name stays put"
+    )
+    # Ordinary concurrent training is explicitly *not* claimed safe.
+    assert re.search(r"not\W{0,4}\*{0,2}claimed|deliberately\W{0,4}\*{0,2}not",
+                     lowered), (
+        "the design no longer scopes the serializability claim"
+    )
+
+    milestone = _design_section("G9 —", relative_path=PHASE_G_DESIGN)
+    milestone_lowered = milestone.lower()
+    assert "complete" in milestone_lowered
+    assert re.search(r"no runtime file", milestone_lowered)
+    assert re.search(r"(stays|still|remains)\s+(?:\w+\s+){0,3}?in\s+"
+                     r"UNSUPPORTED", re.sub(r"[*`]", "", milestone), re.I)
+
+    # Every status surface names it, and none of them claims closure.
+    surfaces = ("README.md", "docs/native_support_matrix.md",
+                "docs/roadmap.md", "docs/project_summary.md",
+                "docs/backend_experiments.md", "CLAUDE.md")
+    for surface in surfaces:
+        text = _status_text(surface)
+        assert "test_native_phase_g.py" in text, surface
+        windows = [text[max(0, match.start() - 300):match.end() + 900]
+                   for match in re.finditer("test_native_phase_g.py", text)]
+        assert any(re.search(r"(no (new )?capability|integration evidence"
+                             r"|no runtime file)", chunk, re.I)
+                   for chunk in windows), surface
+    matrix = _status_text("docs/native_support_matrix.md")
+    assert re.search(r"\|\s*G9\s*\|[^|]*\|[^|]*Complete", matrix), (
+        "the support matrix does not mark G9 complete"
+    )
+
+    # G9 moved no boundary: the registries are exactly what G8 left.
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert cpp.NATIVE_MODULES.count("NativeDropout") == 1
+    for inventory in (cpp.NATIVE_MODULES, cpp.AUTOGRAD_OPS,
+                      cpp.TENSOR_CORE_OPS, cpp.STATE_SUPPORT):
+        for name in inventory:
+            assert "phase_g" not in name.lower(), name
+            assert "integration" not in name.lower(), name
+
+
+def test_no_surface_claims_the_phase_g_closure_matrix_has_run():
+    """G10 alone records the builds, the sanitizers, the boundary move,
+    and the final reconciliation. Until then no status surface may claim
+    the phase is closed, and the design must still describe the closure
+    matrix as a **gate** rather than as history."""
+    from tensorforge.backends import cpp
+
+    assert "dropout" in cpp.UNSUPPORTED
+
+    closure = re.compile(
+        r"phase.{0,4}g[^.]{0,120}\b(closed|closure (is|was) (complete|done))"
+        r"|\bG10\b[^.]{0,80}\b(complete|completed|shipped|landed|done)\b",
+        re.I,
+    )
+    negations = re.compile(
+        r"\b(not|never|no|yet|until|before|only|after|once|when|will"
+        r"|would|remains?|pending|ahead)\b", re.I,
+    )
+    for surface in ("README.md", "docs/roadmap.md",
+                    "docs/project_summary.md",
+                    "docs/native_support_matrix.md",
+                    "docs/backend_experiments.md", "CLAUDE.md",
+                    PHASE_G_DESIGN):
+        text = _status_text(surface)
+        # Spans carrying their own negation ("not yet closed", "closes
+        # only at G10") are the honest form and pass — the same rule the
+        # Phase-G overclaim scan uses.
+        offenders = [
+            match.group(0) for match in closure.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 80):match.end() + 40]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+    # The design still states the matrix as a gate on the boundary, with
+    # the removal as its last act — not as something already recorded.
+    closure_section = _top_level_section("18. Phase-closure requirements",
+                                         relative_path=PHASE_G_DESIGN)
+    lowered = closure_section.lower()
+    assert "only when" in lowered or "closes the phase only" in lowered
+    assert "gate on the capability boundary" in lowered
+    assert re.search(r"as the \*{0,2}last\*{0,2}|the \*{0,2}last\*{0,2}"
+                     r"\s+(act|step)", closure_section, re.I), (
+        "the design no longer binds the boundary move to the end of G10"
+    )
+    # ...and the ladder still marks it open.
+    ladder = _top_level_section("Milestone ladder", PHASE_G_DESIGN)
+    row = re.search(r"\|\s*G10\s*\|[^|]*\|([^|]*)\|", ladder)
+    assert row is not None
+    assert "not started" in re.sub(r"[*`]", "", row.group(1)).strip().lower()

@@ -747,13 +747,58 @@ snapshot rather than a performance contract, and **nothing was optimized
 to improve a number** — G8 changed no runtime file, no C++, no ABI, and
 no registry value.
 
-**Above that, nothing exists.** Milestones **G9–G10 have not started**:
-the cross-cutting Phase-G integration suite and the closure matrix — the
-fresh Release and Debug builds, the sanitizers, and the documentation
-reconciliation that gates the boundary — are still ahead. Reproducibility
-is exact **for the state actually captured**: Python's `random`, NumPy's
-global RNG, data-loader position, and scheduler state are not captured,
-and full-program determinism is not claimed. `dropout` is still listed
+Milestone **G9 is complete** — the cross-cutting Phase-G integration
+suite, `tests/test_native_phase_g.py`, which adds **no capability** and
+changed no runtime file. One test-only model carries every registered
+state family at once — convolution parameters, NCHW batch-normalization
+buffers, pooling, **two** `NativeDropout` layers over one shared
+`NativeGenerator`, flatten, linear layers, 1-D batch normalization,
+LayerNorm, and the fused cross-entropy loss over raw logits — and the
+suite proves the interactions no single-module file can:
+
+- all four saved-resource families in **one** graph (Dropout multiplier
+  masks, MaxPool2d winners, BatchNorm eval snapshots, and cross-entropy
+  probabilities), released exactly once, with no registered buffer object
+  or storage reachable from the graph. A uniform mode cannot produce all
+  four — training BatchNorm saves no snapshot and evaluating Dropout
+  saves no mask — so the suite uses the honest **mixed** per-module mode
+  and says so;
+- deterministic training and **exact** version-2 resume into a completely
+  fresh model, optimizer, and generator set: the loss suffix, every
+  parameter, all four running-statistic buffers, the NativeAdam moments
+  and step counts, the generator's algorithm/version/seed/counter, the
+  alias topology, the final training logits, and the final evaluation
+  output, with a negative control (restarting the batch schedule) that
+  diverges;
+- the generator-topology matrix — shared, independent,
+  equal-valued-but-distinct, renamed path, missing module, extra module —
+  with every mismatch rejected in **prevalidation**, leaving all four
+  state families bit-identical;
+- the shared stream consuming call indices in execution order, matched
+  against the G2 Core; evaluation consuming none anywhere in the model;
+  and the next training forward resuming at the exact next index;
+- `p == 0` through the whole model, non-contiguous NCHW inputs, and
+  transposed and narrowed views through a Dropout module;
+- the whole-checkpoint transaction rolled back at **every** commit
+  position over the integrated state, with identities, versions, and a
+  pre-load graph all intact;
+- four deterministic concurrency cases (two concurrent loads, a save
+  racing a state replacement, a load racing a generator replacement, and
+  a reservation meeting a load) proving the participating transactions
+  serialize — while ordinary concurrent *training* stays explicitly
+  unclaimed;
+- a compact Phase A–F regression matrix, the export and capability
+  boundary, and native live storage returning exactly to baseline across
+  success **and** failure cycles.
+
+**Above that, nothing exists.** Milestone **G10 has not started**: the
+closure matrix — fresh Windows Release and Debug builds with their CTest
+runs, the Clang ASan/UBSan/LeakSanitizer validation in WSL2, the
+sanitized Python suites, and the final documentation reconciliation — is
+still ahead. Reproducibility is exact **for the state actually
+captured**: Python's `random`, NumPy's global RNG, data-loader position,
+and scheduler state are not captured, and full-program determinism is not
+claimed. `dropout` is still listed
 unsupported
 beside `float32`, `cuda`, and `amp`. It stays listed unsupported
 for the whole of **G0–G9** — G4 implements and exports `NativeDropout`

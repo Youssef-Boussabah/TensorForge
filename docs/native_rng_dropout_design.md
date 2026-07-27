@@ -2449,58 +2449,94 @@ than a performance contract.
 
 ## 17. Phase-G integration target
 
-Milestone **G9**: `tests/test_native_phase_g.py`, one test-only model:
+Milestone **G9**, shipped: `tests/test_native_phase_g.py`, one test-only
+model:
 
 ```
 NativeConv2d(1, 4, 3) -> NativeBatchNorm2d(4) -> NativeReLU
-  -> NativeMaxPool2d(2) -> NativeDropout(p, seed=...)
+  -> NativeMaxPool2d(2) -> NativeDropout(p, generator=shared)
   -> NativeFlatten
   -> NativeLinear(16, 8) -> NativeBatchNorm1d(8) -> NativeReLU
-  -> NativeLayerNorm(8) -> NativeDropout(p, seed=...)
+  -> NativeLayerNorm(8) -> NativeDropout(p, generator=shared)
   -> NativeLinear(8, 3)            # raw logits
   -> NativeCrossEntropyLoss
 ```
 
 trained with `NativeAdam` on the existing fixed twelve-image three-class
-dataset, interrupted, checkpointed at format **version 2**, and resumed
-into a fresh model/optimizer pair.
+dataset in two fixed batches on a schedule that is a pure function of the
+step, interrupted, checkpointed at format **version 2**, and resumed into
+a fresh model/optimizer/generator set. The two Dropout layers take a
+`shared=` switch, so the *same* model is used for both generator
+topologies.
 
-It must prove, in one place, that the phase's new state coexists with
+It proves, in one place, that the phase's new state coexists with
 everything already there:
 
 - **four** saved-resource families alive in one graph — Dropout
   multiplier masks, BatchNorm eval snapshots, MaxPool2d winner indices,
   and cross-entropy saved probabilities — each released **exactly once**
   with the graph history, with no registered buffer object *or storage*
-  reachable from the graph;
+  reachable from the graph. A uniform mode cannot produce all four: in
+  training the BatchNorm modules use the batch's own statistics and save
+  no snapshot, and in evaluation Dropout is the identity and saves no
+  mask. Mode is per module, so the honest configuration is the mixed one
+  — normalization evaluating against its stored running statistics while
+  Dropout still draws — and the suite says so rather than implying a
+  single mode gives four;
 - exact resume of the loss suffix, every parameter, the NativeAdam state,
-  all four running-statistic buffers, **both generators' seeds and call
-  counters**, the subsequent masks, the final training logits, and the
-  final evaluation-mode logits, predictions, and accuracy;
-- buffer-only and generator-only mutation leaving an earlier eval graph's
-  gradients equal to a clean control, while a full checkpoint load or a
-  `copy_value_` on an affine parameter correctly stales it through the
-  unchanged parameter rule;
+  all four running-statistic buffers, the generator's seed and call
+  counter, the subsequent masks, the final training logits, and the final
+  evaluation-mode logits, predictions, and accuracy — with a negative
+  control (restarting the batch schedule) that diverges;
+- buffer-only and generator-only mutation leaving an earlier graph's
+  gradients equal to a clean control, while a full checkpoint load
+  correctly stales it through the unchanged parameter rule;
 - the Phase-E versioning archetypes (saved-output `exp`, live-reread
-  `log`, saved-probability cross-entropy) meeting Dropout masks;
+  `log`, saved-probability cross-entropy) meeting Dropout masks, with the
+  Dropout node recording **no** expected parameter version;
 - shared versus independent generators across the two Dropout layers,
   including the shared case deduplicating to one state **entry** while
   both registered paths appear in the archive's alias map, one restore
-  reaching both layers, and a resume into a model whose sharing topology
-  *differs* being **rejected in prevalidation** with nothing changed;
-- eval mode consuming no generator call anywhere in the model;
+  reaching both layers, identity rather than equal state deciding it, and
+  a resume into a model whose sharing topology *differs* being **rejected
+  in prevalidation** with nothing changed — alongside a renamed path, a
+  missing module, and an extra module;
+- the shared stream consuming call indices in **execution** order, matched
+  against the G2 Core at each index;
+- eval mode consuming no generator call anywhere in the model, and the
+  next training forward resuming at the exact next unconsumed index;
+- `p == 0` through the whole integrated model: identity at both layers,
+  no call consumed, no mask saved, the rest of the graph still
+  differentiable, and the generator still registered, saved, and
+  restored;
 - a **non-contiguous** NCHW input through the whole stack in both modes,
-  with the mask proved layout-independent;
+  plus transposed and narrowed views through a Dropout module with the
+  mask proved layout-independent and the gradient following the logical
+  layout;
 - shared and frozen parameters unaffected;
-- strict stable/native separation;
+- strict stable/native separation, and a representative Phase A–F
+  regression matrix;
 - honest per-boundary failure atomicity, including the counter staying
   put after each failure, and a **whole-checkpoint synchronous commit
-  failure over the fully integrated model** rolling back parameters,
-  all four normalization buffers, the optimizer state, and both
-  generators together, with external process death named as the only
-  uncovered case (§10.7 Phase 4);
+  failure over the fully integrated model** rolling back parameters, all
+  four normalization buffers, the optimizer state, and the generators
+  together at every commit position, with external process death named as
+  the only uncovered case (§10.7 Phase 4);
+- **serializability under real concurrency**: two version-2 archives
+  loaded into one live model concurrently leave one archive's state in
+  full and never a hybrid; a save snapshot racing a participating state
+  replacement describes one serial point; a generator-state replacement
+  cannot land inside a load's commit; and a live reservation refuses both
+  a save and a load rather than being stepped over. Ordinary training
+  mutation is deliberately **not** claimed serializable;
 - a NumPy/conversion tripwire over one complete integrated step;
 - native live-storage baselines across success **and** failure cycles.
+
+**Scope.** One test module and documentation. No capability, operation,
+kernel, C ABI symbol, ctypes declaration, Core method, module, export,
+schema field, checkpoint version, example, or benchmark changed, and no
+runtime file was touched. `"dropout"` stays in `UNSUPPORTED` — G9 is the
+last milestone at which that is still true.
 
 ---
 
@@ -2556,7 +2592,7 @@ not move and the phase is not closed.
 | G6 | RNG, graph, ownership, and checkpoint hardening | **Complete** (tests, one narrow fix, and documentation — no capability) |
 | G7 | Deterministic stochastic training and exact resume | **Complete** (one example and its tests — no capability) |
 | G8 | Honest native Dropout benchmark | **Complete** (one harness and its tests — measurement only, no capability) |
-| G9 | Cross-cutting Phase-G integration | Not started |
+| G9 | Cross-cutting Phase-G integration | **Complete** (one integration suite — no capability) |
 | G10 | Phase-G closure, and `"dropout"` leaving `UNSUPPORTED` | Not started |
 
 ### G0 — Architecture contract and design lock
@@ -3222,13 +3258,35 @@ defines no public training API — none of its helpers is exported.
 
 ### G9 — Cross-cutting Phase-G integration
 
+**Complete.** Integration evidence only.
+
 - **Objective.** §17.
-- **Files.** New `tests/test_native_phase_g.py`.
-- **Forbidden.** Any capability, operation, kernel, ABI, schema, example,
-  benchmark, or export change. **`"dropout"` stays in `UNSUPPORTED`** —
-  G9 is the last milestone at which that is still true.
+- **Files.** New `tests/test_native_phase_g.py`, plus status
+  documentation and its guardrails. **No runtime file changed.**
+- **What shipped.** The §17 suite: the integrated CNN carrying every
+  registered state family at once, its deterministic training and exact
+  version-2 resume into a fresh set, the four saved-resource families in
+  one graph, the generator-topology matrix (shared, independent,
+  equal-valued-but-distinct, renamed, missing, extra), evaluation and
+  `p == 0` integration, views and non-contiguous NCHW, the whole-state
+  transaction at every commit position, four deterministic concurrency
+  cases, a Phase A–F regression matrix, the export and capability
+  boundary, and native live-storage baselines across success and failure
+  cycles.
+- **What it found.** No runtime defect: every assertion passed against
+  the shipped G1–G8 implementation without a single production change.
+  Two contract details are recorded rather than glossed — the four
+  saved-resource families need the **mixed** per-module mode described in
+  §17, and a closed graph node releases its **own** saved state
+  immediately while an abandoned chain's intermediates go at the
+  wrapper-cycle boundary (the D9 contract, unchanged since Phase D).
+- **Forbidden, and observed.** No capability, operation, kernel, ABI,
+  schema, example, benchmark, or export change. **`"dropout"` stays in
+  `UNSUPPORTED`** — G9 is the last milestone at which that is still true.
 - **Done when.** Every claim in §17 is asserted from the live registry,
-  the real tree, or an executed workload.
+  the real tree, or an executed workload. Observed: 70 tests, all
+  passing, with the manual integration verification reproducing the same
+  resume, topology, concurrency, and storage-baseline results.
 
 ### G10 — Phase-G closure and the capability boundary
 

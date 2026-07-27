@@ -1396,9 +1396,11 @@ def test_g4_added_no_operation_kernel_or_generic_rng_surface():
         assert forbidden not in source, forbidden
 
 
-def test_g9_and_later_milestones_have_not_begun():
+def test_g10_has_not_begun():
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parent.parent
-    for absent in ("tests/test_native_phase_g.py",):
-        assert not (repo_root / absent).exists(), absent
+    assert not (repo_root / "benchmark_results").exists()
+    from tensorforge.backends import cpp
+
+    assert "dropout" in cpp.UNSUPPORTED
