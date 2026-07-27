@@ -10,8 +10,8 @@ declaration, no `NativeTensorCore` method, no `NativeTensor` operation,
 no module, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-G status: in progress. G0, G1, G2, G3, G4, G5, and G6 are
-complete; G7–G10 have not started.** Milestone **G1** shipped `NativeGenerator` and
+**Phase-G status: in progress. G0, G1, G2, G3, G4, G5, G6, and G7 are
+complete; G8–G10 have not started.** Milestone **G1** shipped `NativeGenerator` and
 generator registration on `NativeModule` — random **state** and its
 ownership; it generates no random values by itself. Milestone **G2**
 shipped the stateless Dropout-forward **Core**: §4's derivation, §7's
@@ -48,17 +48,25 @@ destination atomicity, and repeated lifecycle loops measured against a
 real native live-storage baseline. **G6 added no capability, operation,
 module, export, checkpoint field, or checkpoint version** and moved no
 registry value; it found and fixed exactly one runtime defect, recorded in
-§5.
+§5. Milestone **G7** delivered §11 end to end:
+`examples/native_dropout_training.py` trains a classifier carrying all
+four TensorForge-owned state families — parameters, persistent BatchNorm
+buffers, a registered `NativeGenerator`, and `NativeAdam` moments — and
+proves that an interrupted run resumed into a **completely fresh**
+model/optimizer/generator set reproduces the uninterrupted run by exact
+equality, with the external loop position carried as explicit, validated
+metadata rather than claimed as automatic checkpoint state. **G7 added no
+capability**: one example, one test module, and documentation.
 
-That is persisted generator state and nothing above it. There is no
-implicit, global, or default generator anywhere — the operation's
+That is a demonstrated exact stochastic resume and nothing above it. There
+is no implicit, global, or default generator anywhere — the operation's
 generator is **required and keyword-only**, and the module's is explicit
 registered state; the Core still consumes **no** generator call and
-touches no `NativeGenerator` at all; **exact stochastic resume across a
-complete training workflow is still a G7 deliverable** (G5 proves exact
-generator restoration and the next mask, not an end-to-end interrupted
-run); and `"dropout"` is still in `UNSUPPORTED`, deliberately, until the
-G10 closure.
+touches no `NativeGenerator` at all; reproducibility is exact **for the
+state actually captured**, and data-loader position, shuffle state,
+scheduler state, Python's `random`, and NumPy's global RNG are captured by
+nothing (§11.1); and `"dropout"` is still in `UNSUPPORTED`, deliberately,
+until the G10 closure.
 
 The capability boundary is therefore exactly what Phase F closed with,
 except for the format version G5 was always going to move:
@@ -2471,7 +2479,7 @@ not move and the phase is not closed.
 | G4 | `NativeDropout` module and public export | **Complete** |
 | G5 | Checkpoint version 2 and exact RNG restoration | **Complete** |
 | G6 | RNG, graph, ownership, and checkpoint hardening | **Complete** (tests, one narrow fix, and documentation — no capability) |
-| G7 | Deterministic stochastic training and exact resume | Not started |
+| G7 | Deterministic stochastic training and exact resume | **Complete** (one example and its tests — no capability) |
 | G8 | Honest native Dropout benchmark | Not started |
 | G9 | Cross-cutting Phase-G integration | Not started |
 | G10 | Phase-G closure, and `"dropout"` leaving `UNSUPPORTED` | Not started |
@@ -3032,6 +3040,8 @@ registry value.
 
 ### G7 — Deterministic stochastic training and exact resume
 
+**Status: complete.**
+
 - **Objective.** The end-to-end proof of §11.
 - **Scope.** One example plus its integration test.
 - **Files.** New `examples/native_dropout_training.py` and
@@ -3041,6 +3051,64 @@ registry value.
   **`"dropout"` stays in `UNSUPPORTED`.**
 - **Done when.** Two uninterrupted runs are bit-identical and the
   interrupted resume reproduces every item in §11 exactly.
+
+**The model.** `NativeDropoutClassifier` —
+`NativeLinear(4, 8, seed=0)` → `NativeBatchNorm1d(8)` → `NativeReLU` →
+`NativeDropout(p=0.5, seed=20240707)` → `NativeLayerNorm(8)` →
+`NativeLinear(8, 3, seed=1)` — over raw logits with
+`NativeCrossEntropyLoss` and `NativeAdam(lr=0.05)`. It is the smallest
+model that carries **all four** TensorForge-owned state families at once:
+trainable parameters, persistent BatchNorm running buffers, a registered
+`NativeGenerator`, and optimizer moments with per-parameter step counters.
+Miss any one on restore and the trajectory diverges immediately — which
+two deliberate negative controls prove rather than assume.
+
+**The data and the schedule.** Twelve four-feature samples over three
+classes, computed from an explicit arithmetic formula over the sample
+index; every value is a quarter or an eighth and therefore exact in
+float64. Three fixed batches of four, and step *s* always trains on batch
+`s % 3` — the schedule is a **pure function of the step**, which is the
+entire reason the external loop position collapses to one integer.
+Nothing is shuffled, generated randomly, augmented, loaded, or
+downloaded, and neither NumPy's global RNG nor Python's `random` is
+touched.
+
+**External loop state, carried honestly.** Checkpoint v2 captures
+TensorForge-owned state and nothing else, so the loop position travels as
+ordinary JSON metadata — `{"training_step": k, "next_batch_index": k % 3,
+"lr": ...}` — and is **validated, never defaulted**, by the example's
+`validated_progress`: a missing field, a `bool` where an `int` belongs, an
+out-of-range step, or a `next_batch_index` disagreeing with the schedule
+all raise. Silently restarting from step 0 is exactly the failure that
+check exists to prevent, because such a resume would still converge and
+still be a different run.
+
+**What was proved.** Two uninterrupted runs are bit-identical across the
+loss sequence, every parameter, the running statistics, the whole
+optimizer state, the generator state, the final training logits, and the
+final evaluation output. An interrupted run — checkpointed after
+`split_step` **completed** steps (7, deliberately not a multiple of 3, so
+the resume lands mid-cycle), with the interrupted model, optimizer, and
+generator **released before the resume begins** — reloads into a
+completely fresh set built with a *different* Dropout seed and reproduces
+every §11 item by exact equality. The two negative controls are what make
+that meaningful: a resume that restores all four families but restarts the
+batch schedule at 0 **diverges**, and one that restores everything but
+re-seeds the generator **diverges**. Evaluation is proved state-neutral —
+repeated eval passes leave `calls` bit-identical, produce identical
+outputs, restore the caller's mode, and leave the loss sequence of a probed
+run equal to an unprobed one. `run_next_mask_proof()` closes the loop back
+to the G2 Core: a **throwaway** reload (so the resumed run is untouched)
+pushes a fixed probe through the restored `NativeDropout` and matches
+`NativeTensorCore.dropout_forward` at the exact restored
+`(seed, call_index)`, advancing `calls` by exactly one. The module's
+private mask is never exposed; the Core supplies a reference *output*.
+
+**Scope.** One example, its test module, and documentation. **No
+capability, operation, kernel, C ABI symbol, ctypes declaration, Core
+method, module, export, schema field, checkpoint version, benchmark, or
+registry value changed**, and no runtime file was touched. The example
+defines no public training API — none of its helpers is exported.
 
 ### G8 — Honest native Dropout benchmark
 

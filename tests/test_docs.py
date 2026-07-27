@@ -3634,9 +3634,14 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
             / "native_dropout.py").is_file(), (
         "milestone G4 shipped the NativeDropout module"
     )
+    # G7's example and its tests exist; nothing above them does.
+    for present in ("examples/native_dropout_training.py",
+                    "tests/test_native_dropout_training.py"):
+        assert (REPO_ROOT / present).is_file(), (
+            f"{present} is missing, but milestone G7 shipped it"
+        )
     for absent in ("cpp/src/dropout.cpp",
                    "benchmarks/benchmark_native_dropout.py",
-                   "examples/native_dropout_training.py",
                    "tests/test_native_phase_g.py"):
         assert not (REPO_ROOT / absent).exists(), (
             f"{absent} exists, but no Phase-G milestone has shipped it"
@@ -3870,6 +3875,16 @@ def test_phase_g_ladder_status_matches_the_shipped_tree():
         f"the ladder says G6 is {status(6)!r} but the tree "
         f"{'has' if g6_shipped else 'does not have'} the hardening suite"
     )
+    # G7 ships one example and its test module.
+    g7_shipped = (
+        (REPO_ROOT / "examples" / "native_dropout_training.py").is_file()
+        and (REPO_ROOT / "tests"
+             / "test_native_dropout_training.py").is_file()
+    )
+    assert status(7).startswith("complete") is g7_shipped, (
+        f"the ladder says G7 is {status(7)!r} but the tree "
+        f"{'has' if g7_shipped else 'does not have'} the resume example"
+    )
     # The closure milestone is open while "dropout" is still unsupported.
     if "dropout" in cpp.UNSUPPORTED:
         assert status(10) == "not started"
@@ -3906,20 +3921,24 @@ _PHASE_G_OVERCLAIMS = (
     # What replaces them is the *next* boundary — the end-to-end resume.
     # Scoped to *stochastic* resume: Phase F's normalized training resume
     # (F6) is a different, shipped proof and must keep reading as one.
-    ("exact stochastic training resume already exists",
-     r"stochastic[^.]{0,40}resume[^.]{0,60}"
-     r"\b(is|are|has been)\s+"
-     r"(proved|proven|demonstrated|shipped|complete|available)"
-     r"|resume[^.]{0,40}stochastic[^.]{0,40}"
-     r"\b(is|are|has been)\s+"
-     r"(proved|proven|demonstrated|shipped|complete|available)"
-     r"|(interrupted|end-to-end)[^.]{0,60}stochastic[^.]{0,40}resume"
-     r"[^.]{0,40}\b(works?|exists?|shipped)\b"),
-    # The G6 half was retired at G6: the hardening milestone really has
-    # landed, so "G6 is complete" is accurate rather than an overclaim.
-    # G7 is now the boundary a status surface must not cross.
+    # ...and this one was retired at **G7**: the end-to-end exact
+    # stochastic *training* resume is now demonstrated by
+    # examples/native_dropout_training.py, so claiming it is accurate.
+    # What replaces it is narrower and is the claim G7 must not let
+    # erode: that the checkpoint captures the *external* loop state — a
+    # data loader, a shuffle order, an epoch counter, a scheduler, or a
+    # global RNG — which it does not and will not (design §11.1). The
+    # loop position is carried as explicit metadata instead.
+    ("the checkpoint captures external loop or global RNG state",
+     r"(checkpoint|archive|resume|save)\w*[^.]{0,70}"
+     r"\b(data.?loader|shuffle\w*|epoch counter|scheduler state"
+     r"|global rng|global random)\b[^.]{0,40}"
+     r"\b(captured?|stored?|saved?|persisted?|restored?|included?)\b"),
+    # Retired one milestone at a time: G6 (hardening) and then G7 (the
+    # end-to-end resume) really have landed, so claiming them is
+    # accurate. G8 is now the boundary a status surface must not cross.
     ("a later milestone has begun",
-     r"\bG(?:[7-9]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
+     r"\bG(?:[89]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
      r"(complete|completed|started|begun|shipped|landed|done)\b"),
 )
 
@@ -3940,7 +3959,7 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
     Every premise below comes from the live tree, so this guard tracks
     reality; the prose scan then holds documentation to it. Spans that
     carry their own negation ("does not generate", "not persisted",
-    "G7-G10 have not started") are the honest form and pass."""
+    "G8-G10 have not started") are the honest form and pass."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import (
         NativeGenerator, NativeTensor, native_checkpoint,
@@ -4468,16 +4487,16 @@ def test_g2_equality_threshold_vector_is_committed_on_both_sides():
             assert literal in text, (source_name, literal)
 
 
-def test_g6_did_not_begin_g7_or_any_later_milestone():
+def test_g7_did_not_begin_g8_or_any_later_milestone():
     """The milestone boundary from the tree: G3 shipped the operation, G4
     the module, G5 the version-2 checkpoint that persists generator state,
-    and G6 hardened all of it without adding a capability — and nothing
-    above that. No benchmark, no training example, no Phase-G integration
-    suite.
+    G6 hardened all of it without adding a capability, and G7 proved the
+    end-to-end exact stochastic resume with one example — and nothing
+    above that. No benchmark and no Phase-G integration suite.
 
     (This guard was ``test_g2_did_not_begin_g3_...``, then
-    ``test_g3_did_not_begin_g4_...``, then
-    ``test_g5_did_not_begin_g6_...``. The Core-layer half of it — that the
+    ``test_g3_did_not_begin_g4_...``, then ``test_g5_did_not_begin_g6_...``,
+    then ``test_g6_did_not_begin_g7_...``. The Core-layer half of it — that the
     Core method builds no graph and takes no generator — is kept verbatim
     at each step, because building a graph and then a module *above* the
     Core must not leak any of that vocabulary *into* it.)"""
@@ -4544,9 +4563,7 @@ def test_g6_did_not_begin_g7_or_any_later_milestone():
     # integration suite in particular is a *different* file from G6's
     # hardening suite, which is why both names are checked.
     for absent in ("benchmarks/benchmark_native_dropout.py",
-                   "examples/native_dropout_training.py",
                    "tests/test_native_phase_g.py",
-                   "tests/test_native_dropout_training.py",
                    "benchmark_results"):
         assert not (Path(REPO_ROOT) / absent).exists(), absent
     # G6 is hardening only: it added no export, no inventory entry, and no
@@ -4628,6 +4645,105 @@ def test_g6_is_stated_as_hardening_only_on_every_phase_surface():
         )
 
 
+def test_g7_resume_claims_are_paired_with_what_is_not_captured():
+    """G7 really did demonstrate exact stochastic training resume, so
+    every Phase-G surface must name it — **and**, in the same document,
+    say what a checkpoint does not capture.
+
+    That pairing is the whole point. "TensorForge resumes stochastic
+    training exactly" is true and useful; read without "...for the state
+    actually captured, which is not a data loader, a shuffle order, a
+    scheduler, or a global RNG", it is a promise the format does not
+    make."""
+    assert (REPO_ROOT / "examples" / "native_dropout_training.py").is_file()
+    assert (REPO_ROOT / "tests"
+            / "test_native_dropout_training.py").is_file()
+
+    for surface in PHASE_G_STATUS_SURFACES:
+        text = _status_text(surface)
+        assert re.search(r"\bG7\b", text), (
+            f"{surface} does not name milestone G7"
+        )
+        assert "native_dropout_training" in text, (
+            f"{surface} does not name the G7 example"
+        )
+        lowered = text.lower()
+        # The honest limit, stated somewhere in the same document.
+        assert any(term in lowered for term in
+                   ("data-loader", "data loader", "dataloader")), (
+            f"{surface} claims a stochastic resume without saying a data "
+            f"loader is not captured"
+        )
+        assert "shuffle" in lowered, surface
+        assert any(term in lowered for term in
+                   ("global rng", "global random", "numpy's global",
+                    "numpy global")), surface
+        # ...and none of them still describes G7 as pending.
+        still_pending = re.compile(
+            r"\bG[0-7]\s*[-–—]\s*G\d+\b[^.]{0,30}?"
+            r"\bnot\s+(?:yet\s+)?started"
+            r"|\bG7\b(?:(?!\bG\d)[^.]){0,40}?\bnot\s+(?:yet\s+)?started",
+            re.I,
+        )
+        match = still_pending.search(text)
+        assert match is None, (
+            f"{surface} still describes G7 as unstarted: {match.group(0)!r}"
+        )
+
+
+def test_g7_added_no_capability_and_no_public_training_api():
+    """One example and its tests. Nothing about the runtime moved, and the
+    example's helpers are not a new framework surface."""
+    import tensorforge
+    import tensorforge.experimental as experimental
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    # The example defines helpers; none of them is exported anywhere.
+    for absent in ("NativeDropoutClassifier", "run_training",
+                   "run_resume_proof", "run_next_mask_proof", "train_step",
+                   "build_model", "batch_index_for_step",
+                   "progress_metadata", "validated_progress"):
+        assert not hasattr(experimental, absent), absent
+        assert not hasattr(tensorforge, absent), absent
+        assert absent not in cpp.NATIVE_MODULES, absent
+    # No benchmark, no integration suite, no result artifact.
+    for absent in ("benchmarks/benchmark_native_dropout.py",
+                   "tests/test_native_phase_g.py",
+                   "benchmark_results"):
+        assert not (REPO_ROOT / absent).exists(), absent
+
+
+def test_the_g7_example_carries_all_four_state_families_and_no_timing():
+    """Derived from the example file itself: the model the resume proof
+    rests on really does contain Dropout, both normalization families,
+    cross-entropy, and NativeAdam — and the example asserts nothing about
+    speed."""
+    example = (REPO_ROOT / "examples"
+               / "native_dropout_training.py").read_text(encoding="utf-8")
+    for required in ("NativeDropout", "NativeBatchNorm1d", "NativeLayerNorm",
+                     "NativeCrossEntropyLoss", "NativeAdam", "NativeLinear",
+                     "NativeReLU", "save_native_checkpoint",
+                     "load_native_checkpoint"):
+        assert required in example, required
+    # Explicit loop progress, validated rather than defaulted.
+    for required in ("training_step", "next_batch_index",
+                     "validated_progress", "batch_index_for_step"):
+        assert required in example, required
+    # No timing, no benchmark vocabulary, no stable-framework import.
+    for banned in ("perf_counter", "time.time(", "import time",
+                   "BENCHMARK_NAME", "speedup", "tensorforge.nn",
+                   "tensorforge.optim", "np.random", "import random"):
+        assert banned not in example, banned
+
+
 def test_g6_claims_no_new_capability_anywhere():
     """The one thing G6 must never be described as: a capability. Every
     surface that names it has to keep the boundary where it is, and the live
@@ -4642,9 +4758,7 @@ def test_g6_claims_no_new_capability_anywhere():
     assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
     # G6 shipped no benchmark, no example, and no integration suite.
     for absent in ("benchmarks/benchmark_native_dropout.py",
-                   "examples/native_dropout_training.py",
-                   "tests/test_native_phase_g.py",
-                   "tests/test_native_dropout_training.py"):
+                   "tests/test_native_phase_g.py"):
         assert not (REPO_ROOT / absent).exists(), absent
 
     overclaim = re.compile(

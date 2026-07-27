@@ -473,7 +473,47 @@ Dropout operation's `__context__` chain **cyclic**, which hangs any
 ordinary chain-walking reader. Nothing else changed — no C++, ABI, ctypes,
 Core method, operation, module, export, schema field, or registry value.
 
-**G7–G10 have not started.** G5 proves exact generator restoration —
+Milestone **G7 is complete** — the end-to-end exact stochastic resume,
+and **no new capability**. `examples/native_dropout_training.py` trains
+`NativeLinear(4, 8)` -> `NativeBatchNorm1d(8)` -> `NativeReLU` ->
+`NativeDropout(p=0.5, seed=20240707)` -> `NativeLayerNorm(8)` ->
+`NativeLinear(8, 3)` over raw logits with `NativeCrossEntropyLoss` and
+`NativeAdam` on a fixed twelve-sample three-class task computed from an
+explicit formula, in three fixed batches on a schedule that is a **pure
+function of the training step**. It carries all four TensorForge-owned
+state families at once — parameters, persistent BatchNorm running
+buffers, a registered `NativeGenerator`, and NativeAdam moments with
+per-parameter step counters — so an incomplete restore diverges
+immediately. Two uninterrupted runs are bit-identical; an interrupted run
+checkpointed after 7 **completed** steps (deliberately mid-cycle in the
+batch schedule), whose model, optimizer, and generator are **released
+before the resume begins**, reloads into a completely fresh set built
+with a *different* Dropout seed and reproduces the uninterrupted run by
+**exact equality**: the whole loss sequence, every parameter, both
+running statistics, every optimizer moment and step counter, the
+generator's algorithm/version/seed/calls, the final training logits, and
+the final evaluation output. Two negative controls make that meaningful —
+restoring all four families but restarting the batch schedule at 0
+**diverges**, and restoring everything but re-seeding the generator
+**diverges**. Evaluation is proved state-neutral (repeated eval passes
+leave `calls` bit-identical, produce identical outputs, restore the
+caller's mode, and leave a probed run's loss sequence equal to an
+unprobed one's), and a separate throwaway reload matches the restored
+module's next Dropout output against `NativeTensorCore.dropout_forward`
+at the exact restored `(seed, call_index)`, advancing `calls` by exactly
+one. **External loop progress is carried explicitly**, as validated JSON
+metadata (`{"training_step": ..., "next_batch_index": ...}`), because
+checkpoint v2 captures TensorForge-owned state and **not** data-loader
+position, batch order, shuffle state, epoch counters, scheduler state,
+Python's `random`, or NumPy's global RNG — a missing or inconsistent
+field raises rather than silently restarting from step 0.
+Reproducibility is exact **for the state actually captured**;
+full-program determinism is not claimed. The whole milestone is one
+example, one test module, and documentation: **no** C++, C ABI symbol,
+ctypes declaration, Core method, autograd operation, module, export,
+schema field, checkpoint version, benchmark, or registry value changed.
+
+**G8–G10 have not started.** G5 proves exact generator restoration —
 state, identity, topology, and the next Dropout mask at the restored call
 index — but **not** the end-to-end story: an interrupted stochastic
 training run reproduced into a fresh model/optimizer/generator set is

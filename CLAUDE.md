@@ -239,8 +239,9 @@ Dropout-forward **Core**), G3 (the differentiable
 keyword-only `NativeGenerator`), and G4 (the `NativeDropout` module and
 its public export), and G5 (native checkpoint **format version 2** with
 persisted generator state and its alias topology), and G6 (RNG, graph,
-ownership, and checkpoint hardening — **no new capability**) are complete;
-G7–G10 have not started.** G0 locked Python-managed generator state (an explicit
+ownership, and checkpoint hardening — **no new capability**), and G7 (the
+deterministic stochastic training example and its exact checkpoint resume
+— also **no new capability**) are complete; G8–G10 have not started.** G0 locked Python-managed generator state (an explicit
 64-bit seed plus call counter and an algorithm identifier), stateless
 native random kernels that receive the whole key for one call, inverted
 Dropout with a graph-owned multiplier mask whose backward never rereads
@@ -706,6 +707,55 @@ the cleanup failure stays reachable, and a dedicated regression guard
 fails without the fix. No C++, C ABI symbol, ctypes declaration, Core
 method, autograd operation, module, export, schema field, benchmark, or
 example changed.
+**G7 is complete**: the end-to-end exact stochastic resume, and again **no
+new capability**. `examples/native_dropout_training.py` trains
+`NativeDropoutClassifier` — `NativeLinear(4, 8, seed=0)` →
+`NativeBatchNorm1d(8)` → `NativeReLU` → `NativeDropout(p=0.5,
+seed=20240707)` → `NativeLayerNorm(8)` → `NativeLinear(8, 3, seed=1)` —
+over **raw logits** with `NativeCrossEntropyLoss` and
+`NativeAdam(lr=0.05)`. It is the smallest model carrying **all four**
+TensorForge-owned state families at once (parameters, persistent BatchNorm
+running buffers, a registered `NativeGenerator`, and NativeAdam moments
+with per-parameter step counters), so an incomplete restore diverges
+immediately. The data is twelve four-feature samples over three classes
+computed from an **explicit arithmetic formula** — every value a quarter
+or an eighth, exact in float64 — in three fixed batches of four, on a
+schedule that is a **pure function of the training step** (`step % 3`);
+nothing is shuffled, generated randomly, augmented, loaded, or downloaded,
+and neither NumPy's global RNG nor Python's `random` is touched. **Two
+uninterrupted runs are bit-identical**, and an interrupted run
+checkpointed after 7 *completed* steps (deliberately mid-cycle in the
+schedule), whose model, optimizer, and generator are **released before the
+resume begins** so the archive is the only continuation boundary, reloads
+into a completely fresh set built with a *different* Dropout seed and
+reproduces the uninterrupted run by **exact equality**: the whole loss
+sequence, every parameter, both running statistics, every optimizer moment
+and step counter, the generator's algorithm/version/seed/calls, the final
+training logits, and the final evaluation output. Two **negative controls**
+make that load-bearing: restoring all four families but restarting the
+batch schedule at 0 **diverges**, and restoring everything but re-seeding
+the generator **diverges**. Evaluation is proved **state-neutral** —
+repeated eval passes leave `calls` bit-identical, produce identical
+outputs, restore the caller's mode, and leave a probed run's loss sequence
+exactly equal to an unprobed one's — and a separate **throwaway** reload
+(leaving the resumed run untouched) matches the restored `NativeDropout`'s
+next output against `NativeTensorCore.dropout_forward` at the exact
+restored `(seed, call_index)`, advancing `calls` by exactly one; the
+module's private mask is never exposed. **External loop progress is
+carried explicitly**, as validated JSON metadata (`{"training_step": k,
+"next_batch_index": k % 3, "lr": ...}`), because checkpoint v2 captures
+TensorForge-owned state and **not** data-loader position, batch order,
+shuffle state, epoch counters, scheduler state, Python's `random`, or
+NumPy's global RNG — and `validated_progress` **raises** on a missing
+field, a `bool` where an `int` belongs, an out-of-range step, or a
+`next_batch_index` disagreeing with the schedule, rather than silently
+restarting from step 0. Reproducibility is exact **for the state actually
+captured**; full-program determinism is not claimed. The milestone is one
+example, one test module, and documentation: **no** C++, C ABI symbol,
+ctypes declaration, Core method, autograd operation, module, export,
+schema field, checkpoint version, benchmark, or registry value changed,
+and the example defines **no public training API** — none of its helpers
+is exported.
 Data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase G.
@@ -759,7 +809,10 @@ production-ready, not a PyTorch replacement.
   `NativeDropout` module), and G5 (native checkpoint **format version 2**
   with persisted generator state and its alias topology), and G6 (the
   RNG/graph/ownership/checkpoint hardening, which added no capability)
-  shipped, G7–G10 not started). When a milestone changes the
+  RNG/graph/ownership/checkpoint hardening, which added no capability),
+  and G7 (`examples/native_dropout_training.py` and its tests — the
+  deterministic stochastic training and exact-resume proof, which also
+  added no capability) shipped, G8–G10 not started). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the
@@ -797,6 +850,7 @@ production-ready, not a PyTorch replacement.
   - `uv run python examples/train_binary_classification.py`
   - `uv run python examples/train_mlp_with_dropout.py`
   - `uv run python examples/train_tiny_cnn.py`
+  - `uv run python examples/native_dropout_training.py`
 
 ## Style rules
 

@@ -3129,20 +3129,21 @@ def test_g6_added_no_operation_module_export_or_checkpoint_field():
     assert not hasattr(NativeGenerator, "close")
 
 
-def test_g6_shipped_no_example_benchmark_or_integration_suite():
-    """G7's example, G8's benchmark, and G9's integration suite must not
-    exist yet, and no result artifact of any kind was written."""
+def test_g7_shipped_no_benchmark_or_integration_suite():
+    """G8's benchmark and G9's integration suite must not exist yet, and
+    no result artifact of any kind was written. (G7's example and its
+    tests do exist — a later milestone shipped them; this suite is not
+    where their absence is asserted.)"""
     for absent in ("benchmarks/benchmark_native_dropout.py",
-                   "examples/native_dropout_training.py",
                    "tests/test_native_phase_g.py",
-                   "tests/test_native_dropout_training.py",
                    "benchmark_results"):
         assert not (REPO_ROOT / absent).exists(), absent
 
 
-def test_this_suite_is_hardening_only_and_makes_no_g7_claim():
+def test_this_suite_is_hardening_only_and_makes_no_training_claim():
     """Derived from the file itself: a hardening suite must not quietly
-    become the resume example or a timing harness."""
+    become a training example or a timing harness. The G7 resume proof
+    lives in its own example and test module, not here."""
     source = Path(__file__).read_text(encoding="utf-8")
     # Assembled at runtime so the guard's own list is not a match for it.
     banned = ["BENCHMARK" + "_NAME", "perf" + "_counter", "def " + "train(",

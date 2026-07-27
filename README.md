@@ -116,6 +116,22 @@ by the stable framework — carries a complete native CPU training line:
   statistics**, the final training-step prediction, and the final
   **evaluation-mode** output exactly (format version 1, training flags
   runtime-only).
+- **A native stochastic-training proof**:
+  `examples/native_dropout_training.py` trains a
+  `Linear → BatchNorm1d → ReLU → Dropout → LayerNorm → Linear` classifier
+  over raw logits with `NativeCrossEntropyLoss` and native Adam — the
+  smallest model carrying **all four** TensorForge-owned state families at
+  once (parameters, persistent BatchNorm buffers, a registered
+  `NativeGenerator`, and Adam moments) — then checkpoints after 7 completed
+  steps, releases that model, and resumes into a completely fresh
+  model/optimizer/generator set built from a *different* Dropout seed,
+  reproducing the whole loss sequence, every parameter, both running
+  statistics, the full optimizer state, the generator's seed and call
+  counter, the final training logits, and the final evaluation output
+  **exactly** (checkpoint format version 2). External loop progress travels
+  as explicit, validated metadata — a checkpoint captures TensorForge-owned
+  state, not a data loader, a shuffle order, a scheduler, Python's `random`,
+  or NumPy's global RNG.
 
 The exact operation-by-operation status lives in the
 [native support matrix](docs/native_support_matrix.md).
@@ -163,6 +179,7 @@ uv run python examples/native_checkpoint_resume.py # save, restore, resume bit-f
 uv run python examples/native_cnn_training.py     # end-to-end native CNN training + resume
 uv run python examples/native_classification_training.py  # native classification + exact resume
 uv run python examples/native_normalization_training.py   # native BatchNorm+LayerNorm training + exact resume
+uv run python examples/native_dropout_training.py         # native Dropout training + exact STOCHASTIC resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke  # CNN characterization
 uv run python benchmarks/benchmark_native_classification.py --smoke        # classification characterization
@@ -229,7 +246,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
-- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, are complete; G7–G10 have not started, so end-to-end **exact stochastic training resume is still a G7 deliverable** and `dropout` stays unsupported until the G10 closure)
+- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, and milestone G7, the deterministic stochastic training example and its exact checkpoint resume (no capability), are complete; G8–G10 have not started, so end-to-end **exact stochastic training resume is demonstrated** while `dropout` stays unsupported until the G10 closure)
 
 ## Limitations
 
@@ -647,7 +664,47 @@ registry value, and added no benchmark and no example; it found and fixed
 exactly one runtime defect — a cleanup-failure `__context__` chain that
 could become cyclic — with a dedicated regression guard.
 
-Milestones **G7–G10 have not started.** G5 proves exact generator
+Milestone **G7 is complete** — the end-to-end exact stochastic resume,
+and **no new capability**. `examples/native_dropout_training.py` trains
+`NativeLinear(4, 8)` -> `NativeBatchNorm1d(8)` -> `NativeReLU` ->
+`NativeDropout(p=0.5, seed=20240707)` -> `NativeLayerNorm(8)` ->
+`NativeLinear(8, 3)` over raw logits with `NativeCrossEntropyLoss` and
+`NativeAdam` on a fixed twelve-sample three-class task computed from an
+explicit formula, in three fixed batches on a schedule that is a **pure
+function of the training step**. It carries all four TensorForge-owned
+state families at once — parameters, persistent BatchNorm running
+buffers, a registered `NativeGenerator`, and NativeAdam moments with
+per-parameter step counters — so an incomplete restore diverges
+immediately. Two uninterrupted runs are bit-identical; an interrupted run
+checkpointed after 7 **completed** steps (deliberately mid-cycle in the
+batch schedule), whose model, optimizer, and generator are **released
+before the resume begins**, reloads into a completely fresh set built
+with a *different* Dropout seed and reproduces the uninterrupted run by
+**exact equality**: the whole loss sequence, every parameter, both
+running statistics, every optimizer moment and step counter, the
+generator's algorithm/version/seed/calls, the final training logits, and
+the final evaluation output. Two negative controls make that meaningful —
+restoring all four families but restarting the batch schedule at 0
+**diverges**, and restoring everything but re-seeding the generator
+**diverges**. Evaluation is proved state-neutral (repeated eval passes
+leave `calls` bit-identical, produce identical outputs, restore the
+caller's mode, and leave a probed run's loss sequence equal to an
+unprobed one's), and a separate throwaway reload matches the restored
+module's next Dropout output against `NativeTensorCore.dropout_forward`
+at the exact restored `(seed, call_index)`, advancing `calls` by exactly
+one. **External loop progress is carried explicitly**, as validated JSON
+metadata (`{"training_step": ..., "next_batch_index": ...}`), because
+checkpoint v2 captures TensorForge-owned state and **not** data-loader
+position, batch order, shuffle state, epoch counters, scheduler state,
+Python's `random`, or NumPy's global RNG — a missing or inconsistent
+field raises rather than silently restarting from step 0.
+Reproducibility is exact **for the state actually captured**;
+full-program determinism is not claimed. The whole milestone is one
+example, one test module, and documentation: **no** C++, C ABI symbol,
+ctypes declaration, Core method, autograd operation, module, export,
+schema field, checkpoint version, benchmark, or registry value changed.
+
+Milestones **G8–G10 have not started.** G5 proves exact generator
 restoration — the state, the identity, the topology, and the next Dropout
 mask at the restored call index — but **not** the end-to-end §11 story:
 an interrupted stochastic training run reproduced into a fresh
