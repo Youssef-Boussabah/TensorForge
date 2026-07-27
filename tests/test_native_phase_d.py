@@ -527,7 +527,7 @@ def test_checkpoint_holds_no_transient_cnn_state(tmp_path):
     for banned in ("winner", "grad", "graph", "relu", "pool", "flatten",
                    "output", "prediction"):
         assert banned not in blob, banned
-    assert '"format_version": 1' in blob
+    assert '"format_version": 2' in blob
     _close_all(x, y, model)
     optimizer.close()
 

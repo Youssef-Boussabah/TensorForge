@@ -26,9 +26,11 @@ no numerical capability**. **Phase G (native RNG and Dropout) is the
 current phase and is in progress: milestone G0, the architecture
 contract in [native_rng_dropout_design.md](native_rng_dropout_design.md),
 milestone G1, `NativeGenerator` and module generator-state
-ownership, milestone G2, the stateless Dropout-forward **Core**, and
+ownership, milestone G2, the stateless Dropout-forward **Core**,
 milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)`,
-have landed.** G1 added random **state**:
+milestone G4, the `NativeDropout` module, and milestone G5, native
+checkpoint **format version 2** with persisted generator state and its
+alias topology, have landed.** G1 added random **state**:
 `NativeGenerator` exists and is exported, `NativeModule` registers
 generators as a fourth state category, and `generator_state_dict()`
 reports their state. G2 then added the randomness itself, at exactly one
@@ -48,12 +50,31 @@ evaluation, identity at `p == 0`, over one registered generator it either
 owns (the default — independent streams) or shares (an explicit one,
 stored as the exact object).
 
-Above that module nothing exists, and the gap that matters is
-persistence: the checkpoint format is still version 1 and does **not**
-persist generator state, so saving a model containing a `NativeDropout`
-preserves its parameters and buffers and **silently omits the random
-stream** — **exact stochastic resume does not exist yet** (that is G5),
-and a load fabricates nothing. `dropout` is
+G5 then closed the persistence gap, and one reporting-only registry name
+(`"checkpoint_generator_state"` in `STATE_SUPPORT`): the native
+checkpoint format is now **version 2** — the format *name* never moves —
+and its `generators` manifest section persists every canonical
+generator's `algorithm`, `algorithm_version`, `seed`, and `calls` (the
+last two as canonical decimal strings, since a `uint64` above `2**53`
+cannot survive a JSON double) **plus the complete alias topology**: every
+registered path mapped to its canonical generator, so shared-versus-
+independent streams are restored, not just the numbers. Generator state
+adds no array to the archive. A load restores each generator **in
+place**, preserving identity and sharing, and validates the topology
+strictly in both directions against a real `named_generators()` traversal
+before anything changes; a version-1 archive still loads into a
+generator-free model and is **rejected** for a generator-bearing one,
+naming the generators it cannot supply, fabricating nothing. The whole
+load is one transaction: model, buffers, optimizer, and generators commit
+under a single rollback guard.
+
+Above that, nothing exists. **Exact stochastic resume across a complete
+training run is still a G7 deliverable** — G5 proves exact generator
+restoration (state, identity, topology, and the next Dropout mask at the
+restored call index), not an end-to-end interrupted run — and
+reproducibility is exact **only for the state actually captured** (no
+Python `random`, NumPy global RNG, data-loader position, or scheduler
+state). `dropout` is
 therefore still listed in the
 unsupported section below, and every capability table in this
 document other than the Core-operation, autograd-operation, and
@@ -461,16 +482,22 @@ in the stable Python framework — that does not make them native.
   above), milestone **G3 shipped the differentiable
   `NativeTensor.dropout(p, *, generator)`** (see the autograd-operation
   table above), and milestone **G4 shipped the `NativeDropout` module**
-  and its export (see the training-stack table above). What still does
-  not exist is **persisted generator state**: the checkpoint format is
-  version 1, a save omits the stream, and **exact stochastic resume is
-  not available** — that is G5.
+  and its export (see the training-stack table above), and milestone
+  **G5 shipped native checkpoint format version 2** — persisted generator
+  state with its shared-generator alias topology, strict topology
+  validation, the version-1 compatibility rules, and the
+  whole-checkpoint load transaction. What still does not exist is the
+  **end-to-end proof**: an interrupted stochastic training run resumed
+  into a fresh model/optimizer/generator set is **G7**, so *exact
+  stochastic training resume is not yet demonstrated*, and
+  reproducibility is exact only for the state actually captured (no
+  Python `random`, NumPy global RNG, data-loader position, or scheduler
+  state).
   `"dropout"` stays in `UNSUPPORTED` (beside `float32`, `cuda`, and
   `amp`) for the whole of **G0–G9**: G4 implements and exports
-  `NativeDropout` but deliberately does not move the boundary, and the
-  name is removed only at **G10**, after the full Phase-G closure matrix
-  passes. The checkpoint format stays at version 1 until **G5**, and does
-  not persist generator state before then. See
+  `NativeDropout` and G5 persists its stream, neither moving the
+  boundary, and the name is removed only at **G10**, after the full
+  Phase-G closure matrix passes. See
   [native_rng_dropout_design.md](native_rng_dropout_design.md)
 - a generic `rand`/`randn`/Bernoulli/sampling or distribution API, any
   global or process-wide random state, NumPy global-RNG integration,
@@ -701,8 +728,8 @@ datasets or generalization claims.
 The architecture contract is locked in
 [native_rng_dropout_design.md](native_rng_dropout_design.md); the
 registry above (and `tensorforge.backends.cpp`) stays the authority on
-what is live. **Five of eleven milestones (G0, G1, G2, G3, G4) have
-landed; G5–G10 have not started.**
+what is live. **Six of eleven milestones (G0, G1, G2, G3, G4, G5) have
+landed; G6–G10 have not started.**
 
 | Milestone | What it shipped | Status |
 |---|---|---|
@@ -711,16 +738,17 @@ landed; G5–G10 have not started.**
 | G2 | The deterministic **stateless Dropout-forward Core**: the exact locked `tensorforge.splitmix64` derivation as hidden `namespace tf` functions in the new `cpp/src/random.cpp` / `cpp/include/tf_random_internal.h` (`mix64` finalizer; per-call stream key `mix64(seed + GOLDEN·(call_index + 1))`; per-element bits `mix64(stream + GOLDEN·(element + 1))`; uniform `(bits >> 11)·2⁻⁵³`; dropped when `u < p`), all `std::uint64_t` wrapping arithmetic with **no** `<random>`, `random_device`, `mt19937`, clock, process id, address, or static/thread-local state; the `tf::dropout_forward_contiguous` inverted-Dropout kernel writing the output **and** the private multiplier mask in one pass with `1/(1 − p)` computed once per call; the self-validating guarded export `tf_core_dropout_forward` (rejecting null handles, negative offset/count, spans exceeding storage, non-finite or out-of-range `p`, and any aliasing between the input and either destination, writing **nothing** to either destination when it rejects); its ctypes declaration carrying the whole key as two `c_uint64` arguments; `"dropout_forward"` in `TENSOR_CORE_OPS` and `"tf_core_dropout_forward"` in the checked-kernel inventory; the public `NativeTensorCore.dropout_forward(p, *, seed, call_index)` and the private `_dropout_forward_with_mask` that keeps the mask (the `maxpool2d_forward` / winner-buffer split); a dependency-free CTest over both layers; and **committed known-answer vectors asserted identically from C++ and Python**. The Core is **stateless** — it reserves, commits, cancels, inspects, and mutates no `NativeGenerator`, and a direct Core call leaves a live generator bit-identical. Randomness is keyed by the **logical** row-major element index, so a transposed, narrowed, or nonzero-offset view gets the same mask as a contiguous tensor of the same logical shape. Both results are fresh **owning contiguous** cores aliasing neither the input nor each other, the input is never mutated, and the two-result boundary is failure-atomic in C++ *and* in the Python wrapper. There is deliberately **no** backward kernel: that gradient is the existing `multiply` over the saved mask. Adds **no** autograd node, module, export, checkpoint change, or capability-registry move | **Complete** (the Core layer only) |
 | G3 | Differentiable **`NativeTensor.dropout(p, *, generator)`** over the G2 contract. One method and one registry name (`"dropout"` in `AUTOGRAD_OPS`) — no C++, no C ABI symbol, no ctypes declaration, no `NativeTensorCore` method, no module, no export, and no checkpoint-format change; the backward is the existing native `multiply` over the saved mask, so **no Dropout backward kernel exists**. The `generator` is **required and keyword-only**: no default, process-global, or module-global stream, no implicit per-call generator, and no NumPy or Python `random` fallback, with `p` validated by the *same* shared normalizer the Core uses. It owns the call transaction — validate, reserve one call, run the Core **outside** the generator's lock with the **reservation's own** seed and index (never a reread `calls`), build the graph, then commit as the **last** state-changing action — so a successful stochastic forward consumes exactly one call *with or without gradients*; `p == 0` returns the caller's own tensor object (`result is input`) having reserved, allocated, and drawn nothing; and every ordinary failure before the commit releases the result and the mask, cancels the reservation, and leaves the same unconsumed index, so the next forward reproduces the committed vector the failed one would have. Backward consumes none, ever. The private multiplier mask becomes **graph-owned** state through the unchanged `graph_resources` contract — the third member of the family beside MaxPool2d's winners and cross-entropy's saved probabilities — released **exactly once** with the graph history, retained under `retain_graph=True`, kept alive across a failed retryable backward, freed by an abandoned graph's `close()` (with `__del__` as the fallback), and closed immediately by a no-grad forward. Backward reads **only** the upstream gradient and that mask: it never rereads the input, never redraws, and never reserves, commits, inspects, or mutates a generator, so the node records **no** expected parameter version and a later input mutation, `reseed`, `reset`, `load_state`, or `load_generator_state_dict` cannot change an existing graph's gradient or raise (a *full* checkpoint load still stales such a graph through some **other** node's parameter rule — a parameter contract, never a Dropout effect). Concurrent or reentrant use of one generator raises deterministically without minting an index. Adds **no** module, train/eval behavior, export, kernel, ABI symbol, checkpoint change, or capability-registry move | **Complete** (the operation layer only) |
 | G4 | The **`NativeDropout` module** and its public export: `NativeDropout(p=0.5, seed=None, generator=None)`, one file, one export, and one name (`"NativeDropout"`) appended to `NATIVE_MODULES` — no C++, no C ABI symbol, no ctypes declaration, no `NativeTensorCore` method, no autograd operation, and no checkpoint-format change. `p` goes through the **same** shared normalizer the G2 Core and the G3 operation use, never a third rule. `seed` and `generator` are **mutually exclusive**: supplying both raises `TypeError` rather than silently ignoring one. Without an explicit generator the module **creates and owns** `NativeGenerator(seed)` (fresh OS entropy at `seed=None`), so the default gives every layer an independent stream; with one it registers **that exact object**, never a copy, which is how two layers deliberately share one interleaved stream. Everything is validated before a generator is created or registered, so a rejected construction draws no entropy, registers nothing, allocates nothing, and leaves a supplied generator bit-identical. The generator is registered under the canonical name `"generator"` as the **fourth** state category — in `generators()`, `named_generators()`, and `generator_state_dict()`, and deliberately **absent** from `state_dict()`, which stays contractually `{name: NativeTensor}` — and `load_generator_state_dict()` replaces it in place, so identity and any sharing survive. The module owns **no native storage**, and dropping it never closes, resets, or mutates its generator. Forward validates its input **first** (so evaluation is not a way to hand back a closed tensor), then: **training** delegates to `NativeTensor.dropout`, which owns the whole call transaction, so a successful forward consumes exactly one call and a failed one none; **evaluation** returns the **input object itself** (`result is input`), consuming no call and allocating nothing, so an arbitrary number of eval forwards leaves **no gap in the stream** and the next training forward takes the next index; and **`p == 0`** is identity in both modes, deliberately *not* short-circuited in the module because §6.2 assigns that rule to the operation. Mode follows the ordinary `train()`/`eval()` propagation, including through `NativeSequential`, and switching modes never reseeds or resets the generator. **`"dropout"` deliberately stays in `UNSUPPORTED`** | **Complete** (the module layer only — generator state is still **not** checkpointed, so exact stochastic resume does not exist yet) |
-| G5 | Checkpoint format **version 2** and exact generator restoration, including the alias topology | Not started |
+| G5 | Native checkpoint **format version 2** and exact generator restoration. The format **name** never moves; `_FORMAT_VERSION` is now **2** and every new save writes 2, whether or not the model has generators. The manifest gained exactly one field, `"generators"` — `null` when the model registers none (absence stated, not inferred) or three subfields: `keys` (the ordered canonical names from the identity-deduplicated `named_generators()` walk), `entries` (one `{algorithm, algorithm_version, seed, calls}` object per canonical name, mapping exactly `keys` in order, with `seed` and `calls` as **canonical decimal strings** — `^(0\|[1-9][0-9]*)$`, ≤ 20 digits, in `[0, 2**64 − 1]` — because a `uint64` above `2**53` is not representable in the IEEE double most JSON readers use), and `aliases` (the complete **registered path → canonical name** map in full traversal order, every canonical name included and mapped to itself). Generator state adds **no array** to the NPZ payload. A shared generator's state is written **once** while its *topology* is written in full, so two paths draw from one stream in the archive exactly when their aliases name the same canonical entry — sharing is **identity**, never state equality, so two generators with the same seed and counter stay two entries. Canonical names and both orders are functions of the model alone, so saving the same model twice is byte-identical, and no caller-supplied mapping order can alter the archive. **Loading** compares the archive against a real `named_generators()` traversal of the live model, strictly in both directions: missing or unexpected canonical keys, missing or unexpected registered paths, an alias targeting an absent entry, a canonical name absent from `aliases` or not self-mapped, a multi-step alias relation, a repeated JSON object key, saved-shared versus live-independent (and the reverse), a canonical name changed by a reordered registration, an algorithm or version mismatch, and a malformed or out-of-range seed/counter string all raise — **in prevalidation, with the model, buffers, optimizer, and generators completely untouched**. Generators are restored **in place** through `load_state`, so identity and every sharing relationship survive and the archive never constructs a `NativeGenerator`; loading generator state moves no parameter version and stales no graph. A save **or** a load is refused, changing nothing and leaving an existing destination byte-intact, while any target generator has a call reservation in flight — published *or* holding a construction claim — and every generator's state is read in **one** locked snapshot, so the states an archive carries were true together. **Version-1 compatibility** is exactly as locked: a v1 archive still loads into a model with **no** registered generators, and one loaded into a model that **has** them fails naming them, fabricating no seed and no counter — not zero, not fresh entropy, not the current value; a v2 archive with a non-null generator section loaded into a generator-free model fails as an unexpected-generator error; any other version fails. A load is **one transaction over the whole archive**: prevalidation touches nothing, staging materializes every staged value *and* an independent rollback snapshot of every live target, and the commit runs model → optimizer → generators through the components' own loaders inside **one** rollback guard — so any exception in it, a deliverable `KeyboardInterrupt` included, restores all four state families, preserves every object identity, moves no parameter version, leaves graph-owned Dropout masks from earlier graphs untouched, and returns native live storage to baseline. Only external process or interpreter death is outside that guarantee. It is **serializable** as well as atomic: every participating in-memory state replacement — the checkpoint load commit, `NativeModule.load_state_dict`, `load_generator_state_dict`, `NativeSGD.load_state_dict`, and `NativeAdam.load_state_dict` — plus the checkpoint **save snapshot** runs under **one** private process-wide `RLock`, in the universal state-replacement lock order (that guard first, then every unique target generator lock in the global `id()` order, never the reverse), so two concurrent loads leave one archive's state followed by the other's rather than model state from one beside optimizer or generator state from the other, and a save describes one coherent serial point. Generator **reservations** deliberately stay outside the guard, taking only their own generator's lock, so a racing reservation precedes or follows a transaction and no state is ever replaced underneath a live token. Ordinary training mutation (`step()`, `copy_value_`, a backward) does **not** take the guard, so thread-safe concurrent training snapshots are not claimed. The whole registry footprint is one reporting-only name, `"checkpoint_generator_state"` in `STATE_SUPPORT` — kept separate from G1's in-memory `"generator_state"` — with **no** C++, C ABI symbol, ctypes declaration, Core method, autograd operation, module, export, or new public entry point. **`"dropout"` deliberately stays in `UNSUPPORTED`** | **Complete** (the persistence layer only — end-to-end exact stochastic *training* resume is G7) |
 | G6 | RNG, graph, ownership, and checkpoint hardening | Not started |
 | G7 | Deterministic stochastic training and exact resume | Not started |
 | G8 | An honest native Dropout benchmark (no speed assertion) | Not started |
 | G9 | Cross-cutting Phase-G integration | Not started |
 | G10 | Phase-G closure, and `"dropout"` finally leaving `UNSUPPORTED` | Not started |
 
-So today the native line has a **Dropout-forward Core kernel** and no
-Dropout **capability**: `NativeTensor.dropout` does not exist,
-`NativeDropout` does not exist, and `UNSUPPORTED` still reads
+So today the native line has the Core kernel, the differentiable
+`NativeTensor.dropout` operation, the `NativeDropout` module, and a
+checkpoint that persists its random stream — and still no Dropout
+**capability**: `UNSUPPORTED` reads
 `("dropout", "float32", "cuda", "amp")`. That gap is deliberate — the
 registry reports a *closed, validated* capability, and a capability whose
 value is exact reproducibility is not finished until reproducibility has

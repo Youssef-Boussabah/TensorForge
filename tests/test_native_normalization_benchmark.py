@@ -1069,6 +1069,7 @@ def test_f7_changes_no_capability_inventory():
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
@@ -1093,7 +1094,7 @@ def test_f7_adds_no_kernel_abi_declaration_or_checkpoint_change():
     from tensorforge.experimental import native_checkpoint
 
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     for absent in ("tf_core_layer_norm", "tf_core_batch_norm",
                    "tf_core_normalize", "tf_core_running_update"):
         assert absent not in cpp._CHECKED_KERNELS, absent

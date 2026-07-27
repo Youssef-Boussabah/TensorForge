@@ -208,18 +208,23 @@ def test_capability_inventories_are_internally_consistent():
     assert hasattr(NativeModule, "state_dict")
     assert hasattr(NativeModule, "load_state_dict")
     # Every advertised state capability maps to something real. Most
-    # name a callable directly; the two *capability* names are resolved
+    # name a callable directly; the three *capability* names are resolved
     # explicitly rather than by relaxing the check —
     # "persistent_buffers" (Phase F milestone F1, reconciling a
     # capability that already existed) names the register_buffer /
-    # buffers / named_buffers API, and "generator_state" (Phase G
-    # milestone G1) names the generator registration and in-memory
-    # state pair. Neither implies checkpoint persistence.
+    # buffers / named_buffers API, "generator_state" (Phase G milestone
+    # G1) names the generator registration and in-memory state pair, and
+    # "checkpoint_generator_state" (Phase G milestone G5) names the file
+    # half — the existing save/load pair, which really does persist and
+    # restore generator state through the version-2 manifest.
     _STATE_CAPABILITY_API = {
         "persistent_buffers": ("register_buffer", "buffers", "named_buffers"),
         "generator_state": (
             "register_generator", "generators", "named_generators",
             "generator_state_dict", "load_generator_state_dict",
+        ),
+        "checkpoint_generator_state": (
+            "save_native_checkpoint", "load_native_checkpoint",
         ),
     }
     for name in cpp.STATE_SUPPORT:
@@ -728,7 +733,7 @@ def test_a_classification_checkpoint_round_trip_is_exact_for_both_optimizers(
 def test_the_checkpoint_format_is_version_1_and_holds_no_classification_state(
     tmp_path
 ):
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     model = _classifier()
     optimizer = NativeAdam(model.parameters(), lr=0.05)
     loss_fn = NativeCrossEntropyLoss()
@@ -748,7 +753,7 @@ def test_the_checkpoint_format_is_version_1_and_holds_no_classification_state(
                    "cross_entropy", "softmax", "logit"):
         assert banned not in blob, banned
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 1' in manifest
+    assert '"format_version": 2' in manifest
     _close_all(x, model, optimizer)
 
 

@@ -1785,7 +1785,7 @@ def test_native_cross_entropy_checkpoint_schema_is_untouched():
     that never reach a state dict."""
     from tensorforge.experimental import (NativeLinear, native_checkpoint)
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     model = NativeLinear(3, 2, seed=0)
     state = model.state_dict()
     for key in state:

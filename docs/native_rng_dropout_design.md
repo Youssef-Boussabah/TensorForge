@@ -10,8 +10,8 @@ declaration, no `NativeTensorCore` method, no `NativeTensor` operation,
 no module, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-G status: in progress. G0, G1, G2, G3, and G4 are complete;
-G5–G10 have not started.** Milestone **G1** shipped `NativeGenerator` and
+**Phase-G status: in progress. G0, G1, G2, G3, G4, and G5 are complete;
+G6–G10 have not started.** Milestone **G1** shipped `NativeGenerator` and
 generator registration on `NativeModule` — random **state** and its
 ownership; it generates no random values by itself. Milestone **G2**
 shipped the stateless Dropout-forward **Core**: §4's derivation, §7's
@@ -28,24 +28,35 @@ operation: stochastic in training, the input object itself in evaluation,
 identity at `p == 0`, over one registered `NativeGenerator` it either owns
 (the default) or shares (an explicit one, stored as the exact object) —
 adding exactly one name, `"NativeDropout"`, to `NATIVE_MODULES` and the
-experimental exports.
+experimental exports. Milestone **G5** shipped §10 in full — native
+checkpoint **format version 2**: the `"generators"` manifest section
+(`keys`/`entries`/`aliases`) that persists every canonical generator's
+state *and* the model's sharing topology, canonical decimal `uint64`
+strings, the strict both-directions validation against a real
+`named_generators()` traversal, the §10.6 version-1 compatibility rules,
+and the §10.7 four-phase **whole-checkpoint** load transaction whose one
+rollback guard spans the model, optimizer, and generator commits. It
+added the reporting-only name `"checkpoint_generator_state"` to
+`STATE_SUPPORT` and nothing else.
 
-That is the module layer and nothing above it. There is no implicit,
-global, or default generator anywhere — the operation's generator is
-**required and keyword-only**, and the module's is explicit registered
-state; the Core still consumes **no** generator call and touches no
-`NativeGenerator` at all; **generator state is still not checkpointed**,
-so exact stochastic resume does not exist (G5); the checkpoint format is
-still version 1; and `"dropout"` is still in `UNSUPPORTED`, deliberately,
-until the G10 closure.
+That is persisted generator state and nothing above it. There is no
+implicit, global, or default generator anywhere — the operation's
+generator is **required and keyword-only**, and the module's is explicit
+registered state; the Core still consumes **no** generator call and
+touches no `NativeGenerator` at all; **exact stochastic resume across a
+complete training workflow is still a G7 deliverable** (G5 proves exact
+generator restoration and the next mask, not an end-to-end interrupted
+run); and `"dropout"` is still in `UNSUPPORTED`, deliberately, until the
+G10 closure.
 
 The capability boundary is therefore exactly what Phase F closed with,
-and this document does not move it:
+except for the format version G5 was always going to move:
 
 - `UNSUPPORTED == ("dropout", "float32", "cuda", "amp")`
 - `SUPPORTED_DTYPES == ("float64",)`, `SUPPORTED_DEVICES == ("cpu",)`
-- native checkpoint format `"tensorforge.native_checkpoint"`, **format
-  version 1**
+- native checkpoint format `"tensorforge.native_checkpoint"` — the
+  **name** never moves — at **format version 2** since G5, with version 1
+  still loadable exactly where §10.6 says
 
 `"dropout"` stays in `UNSUPPORTED` for the **whole** of G0–G9 and leaves
 it **only at G10**, and only after the complete Phase-G closure matrix of
@@ -56,9 +67,10 @@ it does **not** move the capability boundary: the registry reports a
 - through G9: `UNSUPPORTED == ("dropout", "float32", "cuda", "amp")`
 - after a successful G10 closure: `UNSUPPORTED == ("float32", "cuda", "amp")`
 
-The checkpoint format version becomes **2** at milestone **G5**, and not
-before. Everything below describes what those milestones *will* do; the
-present tense is used for locked contracts, never for shipped behavior.
+The checkpoint format version became **2** at milestone **G5**, and not
+before. Everything below describes what the remaining milestones *will*
+do; the present tense is used for locked contracts, never for unshipped
+behavior.
 
 Related contracts this phase inherits and must not weaken:
 [native_autograd_design.md](native_autograd_design.md) (graph lifetime,
@@ -1306,8 +1318,10 @@ tensor, and makes no graph stale.
 
 ## 10. Checkpoint format version 2
 
-Milestone **G5**. The format **name** stays `"tensorforge.native_checkpoint"`
-forever; only the version moves, and only at G5.
+Milestone **G5** — **shipped**. The format **name** stays
+`"tensorforge.native_checkpoint"` forever; only the version moves, and it
+moved once, at G5. Everything in this section is implemented exactly as
+written, with two recorded strengthenings noted in §10.5 and §10.7.
 
 ### 10.1 Manifest change
 
@@ -1490,6 +1504,27 @@ registered path the model has, and may not carry one the model does not.
 The comparison is against a real `named_generators()` traversal of the
 live model, not against a name list the caller supplies.
 
+**Two strengthenings recorded at G5**, neither weakening anything above:
+
+1. **The manifest rejects a repeated JSON object key anywhere**, not only
+   in `aliases`. Python's `json` silently keeps the *last* occurrence,
+   which for the alias map would turn "this archive names one path twice,
+   with two different canonical targets" into "this archive is fine" — a
+   topology corruption that reads as valid. The loader parses with an
+   `object_pairs_hook` that raises instead, and applies it to the whole
+   manifest because no section benefits from a silently dropped key.
+2. **A save is refused while any registered generator has a reservation
+   in flight** — published *or* holding a construction claim — with the
+   same `RuntimeError` a load raises, before the temporary file exists
+   and therefore before the destination can be touched. §10.5 already
+   refused such a *load*; a save has the same problem for the same
+   reason, because a generator whose next index has been decided but not
+   committed has no single honest state to record. Every registered
+   generator's state is read in **one** locked snapshot
+   (`snapshot_generator_states`, the read half of §9.6's transaction,
+   taking the same global `id()` lock order), so the states an archive
+   carries were true *together* rather than a microsecond apart.
+
 ### 10.6 Version-1 compatibility
 
 Locked:
@@ -1625,6 +1660,188 @@ The four cases are therefore distinct and must be tested distinctly:
 | staging failure | Phase 2 | nothing committed; staged natives closed; live storage back to baseline |
 | synchronous commit failure | Phase 3 | full rollback of model, buffers, optimizer, and generators; identities preserved; nothing partial observable |
 | asynchronous process/interpreter death | outside Python | **the only** uncovered case; explicitly not claimed |
+
+#### How G5 implements it
+
+The commit still goes through each component's **own** loader —
+`NativeModule.load_state_dict`, `optimizer.load_state_dict`,
+`replace_generator_states` — so no component grew a second loading path.
+What G5 added is the guard around all three, in the private
+`_native_checkpoint_transaction` module, plus the **rollback snapshots**
+Phase 2 already required: an independent owning copy of every parameter
+and persistent buffer (with its current version), the optimizer's
+complete `state_dict()`, and every generator's `(seed, calls)`. Because
+every allocation the rollback could need happens in staging, the rollback
+itself is plain attribute assignment and cannot raise:
+
+- generators are written back through `_assign_state`, the same
+  non-failing integer seam the multi-generator transaction uses;
+- the optimizer's scalars and step counts are reassigned and each live
+  moment tensor **swaps cores** with its snapshot;
+- every parameter and buffer swaps cores with its snapshot and has its
+  version written straight back, so a rolled-back load moves no version
+  and stales no graph.
+
+Swapping (rather than handing over) keeps ownership trivially correct on
+every path: the live object always owns exactly one core, the loader's
+snapshot wrapper always owns exactly one core, and the loader's existing
+`finally` closes every staged tensor and every snapshot exactly once
+whether the transaction committed or rolled back — which is why native
+live storage returns to baseline either way.
+
+One consequence is stated rather than glossed: `NativeAdam.load_state_dict`
+**releases** the moment buffers it replaces, so a rolled-back load
+restores the optimizer's moments **by value into its current buffer
+objects** rather than restoring the original buffer objects. Those
+buffers are private optimizer internals with no public identity contract
+(a *successful* load replaces them outright), while every publicly
+identified object — each `NativeParameter`, each persistent buffer, each
+`NativeGenerator`, and the optimizer itself — is the same object
+afterwards on both paths.
+
+**Lock order.** See §10.8: the commit runs under one shared
+state-transaction guard, with generator locks taken **under** it in the
+existing global `id()`-sorted order.
+
+---
+
+## 10.8 Serializability — the shared state-transaction guard
+
+Milestone **G5** — shipped alongside §10.7, and the other half of the same
+guarantee.
+
+§10.7 makes a checkpoint load atomic with respect to **failure**. That is
+not the same as atomic with respect to **other threads**. Every native
+state-replacement path was already individually all-or-nothing —
+`replace_native_state` for parameters and persistent buffers,
+`replace_generator_states` for generators, each optimizer's
+`load_state_dict`, and the whole-checkpoint transaction over all of them
+— and two of them running concurrently could still *each* succeed and
+leave the model from one archive beside the optimizer or the generators
+from the other. Deadlock freedom does not prevent that: a **hybrid final
+state assembled from two checkpoints** is a corruption no per-component
+guarantee can see, and it is exactly the "looks exact, is not" failure
+this phase refuses everywhere else.
+
+So G5 adds one requirement to every participating replacement: the
+execution must have a **valid serial order**. After two concurrent
+operations finish, the complete live state equals one of them followed by
+the other — never a mixture.
+
+### 10.8.1 The guard
+
+One private, process-wide `threading.RLock` in `_native_state_lock.py`,
+reached only through `state_transaction()`. It is not exported, not
+reachable from `tensorforge.experimental.__all__`, and never handed to a
+caller.
+
+An `RLock`, and a single global one, for three reasons:
+
+- **Reentrancy is required, not incidental.** The checkpoint transaction
+  holds the guard and then calls the components' *own* public loaders,
+  each of which takes it again. A plain `Lock` self-deadlocks on the
+  first nested call, and the alternative — a second, lock-free internal
+  entry point per component — is a duplicate commit path, precisely the
+  kind of divergence this design avoids elsewhere.
+- **One universal outer order.** A per-model or per-object lock needs a
+  registry, a lifetime, and an ordering rule between unrelated models —
+  and two transactions whose target sets *partially* overlap are the case
+  that deadlocks. One process-wide lock has one order by construction.
+- **Correctness over unrelated-model parallelism.** The critical sections
+  are state replacement and checkpoint snapshotting, not training.
+
+### 10.8.2 The universal state-replacement lock order
+
+1. the shared state-transaction guard, **always first**;
+2. then, when generators are involved, every unique target's lock in the
+   existing global `id()`-sorted order (§9.6);
+3. nothing acquires them in the opposite order, ever.
+
+Both are taken together by `native_generator.locked_generators`, which is
+also where the reservation recheck happens — so every path that touches
+generator state gets item 1 before item 2 *by construction* rather than by
+each caller remembering to. Even deciding the order (`_ordered_targets`)
+happens inside the guard, which makes the property checkable at that seam
+rather than only arguable from the source.
+
+**Generator reservations deliberately do not participate.**
+`_reserve_call` takes only its own generator's lock and never the guard.
+That asymmetry is what keeps the two systems from inverting, and it gives
+a racing reservation exactly two outcomes: it wins its generator's lock
+first and completes before a transaction can take it, or it waits and
+begins after the transaction has released it. No state replacement ever
+happens underneath a live token.
+
+### 10.8.3 Who participates
+
+The commit portion of all of these, and they nest freely through the
+`RLock`:
+
+| Path | What it takes |
+|---|---|
+| `load_native_checkpoint` (the §10.7 commit) | guard, then every target generator lock |
+| `replace_native_state` / `NativeModule.load_state_dict` | guard only |
+| `replace_generator_states` / `load_generator_state_dict` | guard, then target generator locks |
+| `NativeSGD.load_state_dict` | guard only |
+| `NativeAdam.load_state_dict` | guard only |
+| `save_native_checkpoint`'s snapshot | guard, then target generator locks |
+
+There is exactly **one** guard object, shared by every module above; a
+second lock anywhere would reintroduce the ordering problem it exists to
+remove.
+
+### 10.8.4 The load transaction under the guard
+
+Ordinary work stays outside it. Archive parsing, the complete §10.5
+validation, array decoding, and the staged `NativeTensor` values are all
+produced before the guard is acquired — none of it touches live state.
+Then, in order: acquire the guard; acquire every unique target generator
+lock in `id()` order; recheck reservations and construction claims while
+they are held; **capture the rollback snapshots**; commit model →
+optimizer → generators; roll back — still holding both locks — if anything
+raises; release the generator locks in reverse; release the guard.
+
+The rollback snapshots moved *inside* the guard at this milestone, and
+that is load-bearing rather than tidy: a snapshot taken before the guard
+could describe a model another transaction has since replaced, and rolling
+back to it would undo work this load never touched. They must reflect the
+state at the real commit boundary, so they are captured at it.
+
+Because the whole commit happens under the guard, a failed load's
+**partial state is never observable** through any participating
+operation: a second load waiting on the guard begins only after the first
+has rolled back and released it.
+
+### 10.8.5 The save snapshot
+
+A save has the same problem in mirror image: a concurrent replacement
+landing between the model snapshot and the optimizer or generator
+snapshot would produce an archive describing a model that never existed.
+So the whole snapshot — model state, persistent buffers, optimizer state,
+and the generator topology and states — is captured under the same guard,
+with generator locks taken under it as usual. The guard is released once
+the complete immutable payload and its manifest exist; NPZ encoding and
+the disk write happen outside it, because they touch no live state.
+
+### 10.8.6 What this does not claim
+
+The guard serializes **state replacement and checkpoint snapshotting**,
+and nothing else. Ordinary training mutation — an optimizer `step()`, a
+`copy_value_`, a backward accumulating gradients — deliberately does
+**not** take it. So "thread-safe concurrent training snapshots" is *not*
+claimed and must not appear on any surface: a save that overlaps a
+concurrent `step()` can still capture a torn training state, because the
+step never participates. What is claimed, exactly, is that participating
+operations serialize with respect to each other.
+
+One nuance is worth stating rather than leaving to be discovered: a
+`NativeBatchNorm1d`/`2d` training forward commits its running statistics
+through `replace_native_state`, so that particular training-time mutation
+*does* participate and therefore cannot tear a concurrent save. That is a
+consequence of routing every registered-state replacement through one
+primitive, not a widening of the claim — `step()`, `copy_value_`, and
+gradient accumulation still do not participate, so a concurrent training
+loop can still produce a torn snapshot through them.
 
 ---
 
@@ -2000,7 +2217,24 @@ state families with every object identity preserved and nothing partial
 observable; a deliverable `KeyboardInterrupt` injected mid-commit rolling
 back identically; masks in a pre-existing graph unchanged after every
 failed load; live-storage baselines restored after each; no benchmark or
-result artifact written.
+result artifact written. **Serializability (§10.8)** is tested by forced
+interleaving with barriers and events and bounded joins, never by sleeps:
+a commit trace recorded at the real mutation seams *inside* the guard must
+hold one contiguous run per thread, and the final state must equal exactly
+one operation's result — two concurrent checkpoint loads of two different
+archives (both caller orders, a seam forced at each commit position, and a
+generator-free model so the property is not quietly resting on generator
+locks); a checkpoint load against `load_state_dict`, against each
+optimizer's `load_state_dict`, and against `load_generator_state_dict`; a
+save snapshot against each of those replacements, with the resulting
+archive proved to be one coherent serial point; the guard proved to be one
+private reentrant `RLock` shared by every participant and held at every
+commit seam; every ordered generator-lock acquisition proved to happen
+with the guard already held and in sorted `id()` order; a reservation
+racing a transaction proved to precede or follow it with no seed moving
+under a live token; a failed load proved to roll back completely *before*
+the next load observes anything; and the honest boundary — an optimizer
+`step()` and a `copy_value_` proved **not** to take the guard.
 
 **G6 — hardening.** The complete §14 matrix executed, each row asserting
 counter, model state, native allocation, and observability; the §3.6
@@ -2182,7 +2416,7 @@ not move and the phase is not closed.
 | G2 | Deterministic native Dropout-forward Core | **Complete** |
 | G3 | Differentiable `NativeTensor` Dropout | **Complete** |
 | G4 | `NativeDropout` module and public export | **Complete** |
-| G5 | Checkpoint version 2 and exact RNG restoration | Not started |
+| G5 | Checkpoint version 2 and exact RNG restoration | **Complete** |
 | G6 | RNG, graph, ownership, and checkpoint hardening | Not started |
 | G7 | Deterministic stochastic training and exact resume | Not started |
 | G8 | Honest native Dropout benchmark | Not started |
@@ -2235,11 +2469,12 @@ not move and the phase is not closed.
   beside it, covering `register_generator`, `generators()` /
   `named_generators()`, and the `generator_state_dict()` /
   `load_generator_state_dict()` pair. It reports **in-memory state
-  only** and claims nothing more: no generator state is written to or
-  read from a checkpoint (G5), and no random value is generated
-  anywhere. No other registry moved — `UNSUPPORTED` still reads
+  only** and claims nothing more — and it still does: the file half is
+  G5's separate `"checkpoint_generator_state"`. At G1 no generator state
+  was written to or read from a checkpoint and no random value was
+  generated anywhere. No other registry moved — `UNSUPPORTED` still reads
   `("dropout", "float32", "cuda", "amp")`, dtype and device are
-  unchanged, and the checkpoint format is still version 1.
+  unchanged, and G1 left the checkpoint format at version 1.
 - **Public contract.** §3.2–§3.5, §9.2–§9.6.
 - **Ownership.** The generator owns nothing native; it owns one private
   `threading.RLock` and at most one reservation — a construction claim
@@ -2572,17 +2807,21 @@ identity too and is deliberately **not** short-circuited in the module:
 caller's own tensor before reserving, allocating, or drawing anything, and
 a second copy of the rule could only ever disagree with the first.
 
-**The version-1 checkpoint limitation is recorded rather than glossed.**
-The format is still version 1 and has no generator section, so saving a
-model containing a `NativeDropout` preserves its parameters and buffers
-and **silently omits the random stream**; loading one leaves the live
-generator exactly as it found it and — the important half — **fabricates
-nothing**. Exact stochastic resume therefore does not exist yet. G5 moves
-the format to version 2 and adds the §10.6 rejection rule that makes a v1
-archive loaded into a generator-bearing model an error instead of a quiet
-omission; until then the omission is the honest behavior and is pinned by
-test. That gap, together with the unrun closure matrix, is precisely why
-`"dropout"` stays in `UNSUPPORTED`.
+**The version-1 checkpoint limitation was recorded rather than glossed,
+and G5 closed it.** At G4 the format was still version 1 with no
+generator section, so saving a model containing a `NativeDropout`
+preserved its parameters and buffers and **silently omitted the random
+stream**; loading one left the live generator exactly as it found it and
+— the important half — **fabricated nothing**. That omission was the
+honest behavior of the format as it then stood, and it was pinned by
+test. **G5** moved the format to version 2, added the `"generators"`
+section, and added the §10.6 rejection rule that makes a v1 archive
+loaded into a generator-bearing model an error instead of a quiet
+omission. What is still missing after G5 is the *end-to-end* proof — an
+interrupted stochastic training run resumed into a fresh
+model/optimizer/generator set (§11) — which is G7. That, together with
+the unrun closure matrix, is precisely why `"dropout"` stays in
+`UNSUPPORTED`.
 
 *Why `"dropout"` does **not** move here:* Phase F moved its capability
 names at the module milestones (`"layernorm"` at F2, `"batchnorm"` at
@@ -2606,15 +2845,26 @@ is finished.
 
 ### G5 — Checkpoint version 2 and exact RNG restoration
 
+**Complete.**
+
 - **Objective.** Persist and restore generator state exactly.
 - **Scope.** §10 in full.
-- **Files.** `native_checkpoint.py`; `cpp.py` (`STATE_SUPPORT` reporting).
+- **Files.** `native_checkpoint.py`; `cpp.py` (`STATE_SUPPORT` reporting);
+  the private `_native_state_lock.py` guard and the participating
+  loaders (`_native_state.py`, `native_generator.py`, `native_sgd.py`,
+  `native_adam.py`).
 - **Public contract.** Format name unchanged; `_FORMAT_VERSION` becomes
   **2**; the `"generators"` manifest section with its
   `keys`/`entries`/`aliases` topology (§10.1, §10.3); v1 compatibility
   per §10.6.
 - **Ownership.** No new native allocation for generator state; generator
   commits are pure Python; rollback snapshots per §10.7 Phase 2.
+- **Concurrency.** §10.8: one private shared state-transaction `RLock`,
+  outermost, with generator locks under it in the global `id()` order;
+  every participating replacement (checkpoint load, model state load,
+  both optimizer state loads, generator state load) and the save
+  snapshot run under it, so concurrent operations **serialize** rather
+  than merely avoiding deadlock.
 - **Failure.** §14's checkpoint rows; **all four §10.7 phases
   implemented and distinguished** — every validation and topology check
   in prevalidation, everything that can allocate or raise in staging, and
@@ -2629,9 +2879,45 @@ is finished.
   added to the NPZ payload. **`"dropout"` stays in `UNSUPPORTED`.**
 - **Done when.** v2 round-trips exactly including the alias topology, v1
   stays loadable exactly where §10.6 says, every mismatch fails before
-  anything changes, and an injected commit failure in each component
-  leaves the model, buffers, optimizer, and generators bit-identical to
-  their pre-load state.
+  anything changes, an injected commit failure in each component leaves
+  the model, buffers, optimizer, and generators bit-identical to their
+  pre-load state, and two concurrent loads leave the complete state equal
+  to one archive or the other — never a mixture.
+
+**What shipped, exactly.** `native_checkpoint.py` (format version 2, the
+`"generators"` section, its validators, and the four-phase load), the new
+private `_native_checkpoint_transaction.py` (the one rollback guard
+spanning the model, optimizer, and generator commits), the private
+`_native_state_lock.py` shared state-transaction guard together with the
+participating loaders that now take it (`_native_state.py`,
+`native_generator.py`, `native_sgd.py`, `native_adam.py`), the private
+`locked_generators` / `snapshot_generator_states` helpers in
+`native_generator.py`,
+one private traversal helper `NativeModule._named_generator_paths` (the
+undeduplicated path walk the alias map is built from and compared
+against), and one reporting-only registry name —
+`"checkpoint_generator_state"` appended to `STATE_SUPPORT`. Nothing else
+moved: **no C++, no C ABI symbol, no ctypes declaration, no
+`NativeTensorCore` method, no autograd operation, no module, no export,
+and no public entry point** — persistence rides the existing
+`save_native_checkpoint` / `load_native_checkpoint` pair.
+
+`"checkpoint_generator_state"` is a *separate* name from G1's
+`"generator_state"` precisely because that one was explicitly scoped to
+memory: through G4 a save preserved parameters and buffers and silently
+omitted the random stream. The two names now read as what they are — the
+in-memory surface and the file surface. Neither is a Dropout capability
+claim: `UNSUPPORTED` still reads `("dropout", "float32", "cuda", "amp")`,
+`SUPPORTED_DTYPES` is `("float64",)`, and `SUPPORTED_DEVICES` is
+`("cpu",)`.
+
+**What G5 deliberately did not do.** It proves *exact generator
+restoration* — the state, the identity, the topology, and the next
+Dropout mask against the G2 Core at the restored index — but **not** the
+end-to-end §11 resume: an interrupted stochastic training run reproduced
+into a fresh model/optimizer/generator set is milestone **G7**, with its
+example and integration test. No benchmark, no training example, no
+hardening suite, and no result artifact of any kind exists.
 
 ### G6 — RNG, graph, ownership, and checkpoint hardening
 

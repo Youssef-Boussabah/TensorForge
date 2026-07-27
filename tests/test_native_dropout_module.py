@@ -11,8 +11,9 @@ which the module deliberately has none — the three forward cases
 (training stochastic, evaluation identity, ``p == 0`` identity), the
 call-consumption contract across mode switches, shared versus independent
 streams, ``NativeSequential`` composition, construction and forward
-failure atomicity, the honest **version-1 checkpoint limitation** G5 will
-close, and the capability boundary G4 deliberately does *not* move.
+failure atomicity, the module generator's **checkpoint-v2 persistence**
+(the gap G4 left open and G5 closed), and the capability boundary G4
+deliberately does *not* move — ``"dropout"`` stays unsupported until G10.
 
 Backend-dependent, so the module skips cleanly when the compiled backend
 is not built. Cleanup is explicit via close().
@@ -1229,16 +1230,14 @@ def test_state_dict_stays_tensor_only_for_a_model_containing_dropout():
         parameter.close()
 
 
-def test_a_version_1_checkpoint_omits_the_generator_stream(tmp_path):
-    """The honest G4 limitation, pinned rather than glossed.
+def test_a_version_2_checkpoint_carries_the_module_generator(tmp_path):
+    """The gap G4 left open and G5 closed, from the module's side.
 
-    The checkpoint format is still version 1 and has **no** generator
-    section, so a save preserves parameters and buffers and silently
-    omits the random stream, and a load leaves the live generator exactly
-    as it found it — it fabricates nothing, which is the important half.
-    G5 moves the format to version 2 and closes this; until then exact
-    stochastic resume does not exist, which is one of the reasons
-    ``"dropout"`` is still unsupported."""
+    G4 shipped the module over a version-1 format that had no generator
+    section, so a save preserved parameters and buffers and silently
+    omitted the random stream. G5 moved the format to version 2: the
+    module's registered generator is now written under its canonical path
+    and restored exactly, in place, into the same object."""
     import json
 
     from tensorforge.experimental import (
@@ -1255,48 +1254,78 @@ def test_a_version_1_checkpoint_omits_the_generator_stream(tmp_path):
     path = tmp_path / "checkpoint.npz"
     save_native_checkpoint(path, model, optimizer)
 
-    # Version 1, and no generator section of any kind.
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     with np.load(path, allow_pickle=False) as archive:
         manifest = json.loads(archive["manifest"].tobytes().decode("utf-8"))
-    assert manifest["format_version"] == 1
-    assert sorted(manifest) == ["format", "format_version", "metadata",
-                                "model", "optimizer"]
-    assert "generators" not in manifest
-    assert not any("generator" in name for name in archive.files)
+        # Generator state rides the manifest only — never an NPZ array.
+        assert not any("generator" in name for name in archive.files)
+    assert manifest["format_version"] == 2
+    assert sorted(manifest) == ["format", "format_version", "generators",
+                                "metadata", "model", "optimizer"]
+    assert manifest["generators"] == {
+        "keys": ["drop.generator"],
+        "entries": {
+            "drop.generator": {
+                "algorithm": "tensorforge.splitmix64",
+                "algorithm_version": 1,
+                "seed": "257",
+                "calls": "1",
+            }
+        },
+        "aliases": {"drop.generator": "drop.generator"},
+    }
 
-    # A load fabricates no generator state: whatever the live generator
-    # holds is exactly what it holds afterwards.
-    model.drop.generator.reseed(999999)
-    model.drop.generator._reserve_call()          # even mid-reservation...
-    before = model.drop.generator.state()
+    # A load restores the exact stream, in place.
+    generator = model.drop.generator
+    generator.reseed(999999)
     load_native_checkpoint(path, model, optimizer)
-    assert model.drop.generator.state() == before, (
-        "a version-1 load invented or altered generator state"
-    )
-    # ...and identity is preserved, as for every other registered object.
-    assert model.drop.generator is model.generators()[0]
+    assert model.drop.generator is generator, "the load replaced the object"
+    assert generator.state() == {
+        "algorithm": "tensorforge.splitmix64", "algorithm_version": 1,
+        "seed": 257, "calls": 1,
+    }
+    # ...so the next forward is the mask the saved run would have drawn.
+    y = model.drop(x)
+    expected, _ = core_reference(x.to_numpy(), 0.5, 257, 1)
+    assert np.array_equal(y.to_numpy(), expected)
+    y.close()
 
     x.close()
     for _, parameter in model.named_parameters():
         parameter.close()
 
 
-def test_the_generator_is_absent_from_checkpoint_metadata_surfaces():
-    """G4 must not have begun G5: no generator persistence anywhere."""
-    from tensorforge.experimental import native_checkpoint
+def test_a_load_never_fabricates_generator_state(tmp_path):
+    """The half that matters most: no seed and no counter is ever
+    invented. A mid-reservation load is refused outright rather than
+    capturing or overwriting an ambiguous in-flight stream, and the live
+    generator is left exactly as it was found."""
+    from tensorforge.experimental import (
+        load_native_checkpoint, save_native_checkpoint,
+    )
 
-    assert native_checkpoint._FORMAT_VERSION == 1
-    assert "generators" not in native_checkpoint._MANIFEST_KEYS
-    source = native_checkpoint.__file__
-    with open(source, encoding="utf-8") as handle:
-        text = handle.read()
-    for absent in ("NativeGenerator", "generator_state_dict",
-                   "load_generator_state_dict", "replace_generator_states"):
-        assert absent not in text, (
-            f"native_checkpoint.py references {absent!r}; generator "
-            f"persistence is milestone G5"
-        )
+    model = _dropout_model()
+    path = tmp_path / "checkpoint.npz"
+    save_native_checkpoint(path, model)
+
+    generator = model.drop.generator
+    token = generator._reserve_call()
+    before = generator.state()
+    with pytest.raises(RuntimeError, match="reservation"):
+        load_native_checkpoint(path, model)
+    assert generator.state() == before
+    assert generator._has_active_reservation() is True
+    # ...and a save is refused for the same reason, changing nothing.
+    with pytest.raises(RuntimeError, match="reservation"):
+        save_native_checkpoint(tmp_path / "mid-draw.npz", model)
+    assert not (tmp_path / "mid-draw.npz").exists()
+    assert generator.state() == before
+
+    generator._abandon_call(token)
+    load_native_checkpoint(path, model)             # recovers immediately
+    assert model.drop.generator is generator
+    for _, parameter in model.named_parameters():
+        parameter.close()
 
 
 # ==========================================================================
@@ -1333,11 +1362,12 @@ def test_the_capability_boundary_did_not_move():
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",
     )
     # G3's operation and G2's Core are exactly where they were.
     assert "dropout" in cpp.AUTOGRAD_OPS

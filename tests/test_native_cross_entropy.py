@@ -1764,7 +1764,7 @@ def test_native_cross_entropy_checkpoint_schema_is_untouched():
     copy can reach a state dict."""
     from tensorforge.experimental import NativeLinear, native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     if not cpp.is_available():
         return
     model = NativeLinear(3, 2, seed=0)

@@ -683,6 +683,6 @@ def test_native_accuracy_scope_boundaries_hold():
 def test_native_accuracy_adds_no_persistent_state():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     assert not hasattr(native_accuracy, "state_dict")
     assert not hasattr(native_accuracy, "parameters")

@@ -327,13 +327,28 @@ NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
 # is: a second, non-tensor in-memory state surface, deliberately separate
 # because `state_dict()` is contractually `{name: NativeTensor}`.
 #
-# It reports **in-memory state only**, and claims nothing beyond that:
-#   - no generator state is written to or read from a native checkpoint
-#     (that is milestone G5, which also moves the format to version 2 —
-#     the format is still version 1);
-#   - no random value is generated anywhere. G1 shipped the generator
-#     *state*; the derivation, the kernel, `NativeTensor.dropout`, and
-#     `NativeDropout` do not exist, and "dropout" is still in UNSUPPORTED.
+# It reports the **in-memory** generator surface, and nothing more; the
+# file half is its own name, below.
+#
+# "checkpoint_generator_state" (added in Phase G, milestone G5) is the
+# file half, and it is a separate name precisely because G1's entry was
+# explicitly scoped to memory: through G4 a save preserved parameters and
+# buffers and silently omitted the random stream. G5's format version 2
+# closes that, so this name means exactly what it says — a native
+# checkpoint persists and restores every registered generator's
+# `(algorithm, algorithm_version, seed, calls)` **and** the
+# shared-versus-independent alias topology, in place and by identity,
+# with strict both-directions validation against the live model. The API
+# behind it is the existing `save_native_checkpoint` /
+# `load_native_checkpoint` pair plus the manifest's `"generators"`
+# section; there is no third entry point.
+#
+# What it still does not claim: Python's `random` state, NumPy's global
+# RNG, data-loader/shuffle position, or scheduler state — none of which
+# the native line has or captures (design §11.1). Reproducibility is
+# exact for the state actually captured, and full-program determinism is
+# not claimed. And it is not a Dropout *capability* claim: "dropout"
+# stays in UNSUPPORTED through G9 (see the note above).
 STATE_SUPPORT = (
     "persistent_buffers",
     "state_dict",
@@ -341,6 +356,7 @@ STATE_SUPPORT = (
     "generator_state",
     "save_native_checkpoint",
     "load_native_checkpoint",
+    "checkpoint_generator_state",
 )
 
 # Explicitly NOT implemented — listed so introspection is honest about the

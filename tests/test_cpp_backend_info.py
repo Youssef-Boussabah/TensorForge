@@ -173,7 +173,7 @@ def test_the_one_deliberate_unsupported_implemented_overlap_is_dropout():
     # G10 has not run: the closure conditions the allowance rests on are
     # still open.
     assert "dropout" in cpp.UNSUPPORTED
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
 
 
 # --- guardrails: the advertised capabilities must match reality ------------
@@ -291,6 +291,7 @@ def test_e8_added_no_capability_inventory_entry():
         "state_dict", "load_state_dict",
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     for inventory in ("raw_kernels", "tensor_core_ops", "autograd_ops",
                       "native_modules", "native_losses", "native_metrics",
@@ -448,6 +449,7 @@ def test_f9_closed_phase_f_without_registering_anything():
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     # No normalization *operation* exists at any numerical layer, and no
     # closure/validation artifact became a capability name.
@@ -473,4 +475,4 @@ def test_f9_closed_phase_f_without_registering_anything():
     # The checkpoint format did not move at closure.
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2

@@ -229,7 +229,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
-- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, and milestone G4, the `NativeDropout` module and its public export, are complete; G5–G10 have not started, so generator state is **not** checkpointed and exact stochastic resume does not exist yet, the checkpoint format is still version 1, and `dropout` stays unsupported until the G10 closure)
+- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, and milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — are complete; G6–G10 have not started, so end-to-end **exact stochastic training resume is still a G7 deliverable** and `dropout` stays unsupported until the G10 closure)
 
 ## Limitations
 
@@ -504,7 +504,7 @@ still experimental, still float64/CPU only, and still not
 production-ready.
 
 **Phase G — Native RNG and Dropout — is the current phase, and it is in
-progress.** Five milestones have landed. **G0** locked the architecture
+progress.** Six milestones have landed. **G0** locked the architecture
 contract in
 [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) —
 Python-managed generator state (an explicit 64-bit seed and call counter
@@ -601,14 +601,48 @@ one call and a failed one none; evaluation returns the input object
 itself, so any number of eval forwards leaves **no gap in the stream**;
 and `p == 0` is identity in both modes. The module owns no native storage.
 
-Milestones **G5–G10 have not started**, and the gap that matters is
-persistence: the checkpoint format is still version 1 and does **not**
-save generator state, so a saved model containing a `NativeDropout`
-preserves its parameters and buffers and silently omits the random stream
-— **exact stochastic resume does not exist yet** (G5). That, plus the
-unrun closure matrix, is exactly why `dropout` (with `float32`, `cuda`,
-and `amp`) is **still listed as unsupported**: the registry reports what
-is closed and validated, while the inventories report what exists.
+**G5** closed the persistence gap G4 left open: the native checkpoint
+format is now **version 2** (the format *name* is unchanged), and it
+carries a `generators` manifest section holding every registered
+generator's `algorithm`, `algorithm_version`, `seed`, and `calls` — seeds
+and counters as canonical decimal strings, because a `uint64` above
+`2**53` cannot survive a JSON double — plus the complete
+**alias topology**: every registered path mapped to its canonical
+generator, so *shared versus independent* streams are restored, not just
+the numbers. Generator state adds **no array** to the archive. A load
+restores each generator **in place**, preserving object identity and
+every sharing relationship, and validates the archive's topology strictly
+in both directions against a real `named_generators()` traversal — a
+missing path, an extra path, or a shared-versus-independent difference
+fails before anything changes. A version-1 archive still loads into a
+model with **no** generators and is **rejected** for one that has them,
+naming them: no seed and no counter is ever fabricated. A load is one
+transaction over the whole archive — model, buffers, optimizer, and
+generators commit under a single rollback guard, so any synchronous
+failure (a deliverable `KeyboardInterrupt` included) restores all four
+together rather than leaving a mixed checkpoint. It is also
+**serializable**, not merely deadlock-free: every participating state
+replacement — the checkpoint load, `load_state_dict`,
+`load_generator_state_dict`, both optimizers' state loads — and the
+checkpoint save snapshot run under one private shared `RLock`, with
+generator locks taken under it in the global `id()` order. Two concurrent
+loads therefore produce one archive's state followed by the other's,
+never model state from one beside optimizer or generator state from the
+other. Ordinary training mutation deliberately does not take that guard,
+so thread-safe concurrent training snapshots are not claimed.
+
+Milestones **G6–G10 have not started.** G5 proves exact generator
+restoration — the state, the identity, the topology, and the next Dropout
+mask at the restored call index — but **not** the end-to-end §11 story:
+an interrupted stochastic training run reproduced into a fresh
+model/optimizer/generator set is **G7**, and no such example, benchmark,
+or hardening suite exists yet. Reproducibility is exact for the state
+actually captured; Python's `random`, NumPy's global RNG, data-loader
+position, and scheduler state are **not** captured and full-program
+determinism is not claimed. That remaining gap, plus the unrun closure
+matrix, is exactly why `dropout` (with `float32`, `cuda`, and `amp`) is
+**still listed as unsupported**: the registry reports what is closed and
+validated, while the inventories report what exists.
 `dropout` leaves the unsupported list only at **G10**. More
 activations/math, data loaders, and CPU optimization sit beyond Phase G,
 and CUDA/GPU experiments remain future work. See

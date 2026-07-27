@@ -2132,16 +2132,21 @@ def test_the_operation_exists_without_a_functional_helper_or_new_kernel():
     assert dropout_symbols == ["tf_core_dropout_forward"]
 
 
-def test_dropout_stays_unsupported_and_the_checkpoint_stays_version_one():
+def test_dropout_stays_unsupported_at_checkpoint_version_two():
     from tensorforge.experimental import native_checkpoint
 
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
 
 
-def test_generator_state_is_not_in_state_dict_or_a_checkpoint(tmp_path):
+def test_generator_state_is_not_in_state_dict_but_is_in_a_checkpoint(
+    tmp_path,
+):
+    """``state_dict()`` stays contractually ``{name: NativeTensor}``, so
+    a generator reaches persistence through its **own** section — the
+    version-2 manifest's ``generators``, never a tensor-shaped lie."""
     from tensorforge.experimental import (
         NativeLinear, NativeModule, NativeSGD, save_native_checkpoint,
     )
@@ -2171,10 +2176,17 @@ def test_generator_state_is_not_in_state_dict_or_a_checkpoint(tmp_path):
     save_native_checkpoint(path, model, optimizer)
     with np.load(path, allow_pickle=False) as archive:
         manifest = json.loads(archive["manifest"].tobytes().decode("utf-8"))
-    assert manifest["format_version"] == 1
-    assert "generators" not in manifest, (
-        "generator state must not be checkpointed until G5"
-    )
+    assert manifest["format_version"] == 2
+    assert manifest["generators"] == {
+        "keys": ["g"],
+        "entries": {"g": {"algorithm": "tensorforge.splitmix64",
+                          "algorithm_version": 1,
+                          "seed": "5", "calls": "1"}},
+        "aliases": {"g": "g"},
+    }
+    # ...and it is manifest state, never an NPZ array.
+    with np.load(path, allow_pickle=False) as archive:
+        assert not any("generator" in name for name in archive.files)
     for t in (y, x):
         t.close()
     for _, parameter in model.named_parameters():

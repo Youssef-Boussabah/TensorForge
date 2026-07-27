@@ -580,7 +580,7 @@ def test_checkpoint_format_is_version_one_and_holds_only_persistent_state(
     save_native_checkpoint(path, model, optimizer=optimizer,
                            metadata={"steps_completed": 1})
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     with np.load(path, allow_pickle=False) as archive:
         names = list(archive.files)
         manifest = archive["manifest"].tobytes().decode("utf-8")
@@ -594,7 +594,7 @@ def test_checkpoint_format_is_version_one_and_holds_only_persistent_state(
     assert ('"keys": ["conv.weight", "conv.bias", "linear.weight", '
             '"linear.bias"]') in manifest
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 1' in manifest
+    assert '"format_version": 2' in manifest
     x.close()
     _close(model, optimizer)
 
@@ -1125,7 +1125,7 @@ def test_e8_adds_no_capability_inventory_entry():
 
 
 def test_e8_changes_no_checkpoint_schema_and_no_stable_framework():
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     assert cpp.backend_info()["stable_framework_integration"] is False
     # The example never touches the stable framework.
     text = EXAMPLE.read_text(encoding="utf-8")

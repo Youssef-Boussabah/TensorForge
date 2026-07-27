@@ -1240,23 +1240,81 @@ The Python line is done; what remains is expansion on its own terms:
     none; evaluation returns the **input object itself**, consuming and
     allocating nothing, so an arbitrary number of eval forwards leaves no
     gap in the stream and the next training forward takes the next index;
-    and `p == 0` is identity in both modes. Milestones
-    **G5–G10 have not started**, and the gap that matters is
-    persistence: the checkpoint format is
-    still version 1 and does not persist generator state, so saving a
-    model containing a native Dropout layer preserves its parameters and
-    buffers and **silently omits the random stream** — exact stochastic
-    resume does not exist yet, and a load fabricates nothing. That, with
+    and `p == 0` is identity in both modes.
+    **G5 is complete** — native checkpoint **format version 2** and exact
+    generator restoration. The format *name* never moves; the version is
+    now 2 and every new save writes 2, whether or not the model has
+    generators. The manifest gained exactly one field, `"generators"`:
+    `null` when the model registers none, so absence is stated rather
+    than inferred, or `keys`/`entries`/`aliases` — the ordered canonical
+    names, one `{algorithm, algorithm_version, seed, calls}` object each
+    (seed and counter as **canonical decimal strings**, because a
+    `uint64` above `2**53` is not representable in the IEEE double most
+    JSON readers use), and the complete **registered path → canonical
+    name** map. Generator state adds **no array** to the archive. A
+    shared generator's state is written once while its *topology* is
+    written in full, so two paths draw from one stream in the archive
+    exactly when their aliases name the same canonical entry — sharing is
+    **identity**, never state equality. Canonical names and both orders
+    are functions of the model alone, so saving the same model twice is
+    byte-identical. A load compares the archive against a real
+    `named_generators()` traversal, strictly in both directions, and
+    every mismatch — a missing or unexpected canonical key or registered
+    path, an alias targeting an absent entry, a canonical name not
+    self-mapped, a repeated JSON object key, saved-shared versus
+    live-independent (or the reverse), a canonical name changed by a
+    reordered registration, an algorithm or version mismatch, a malformed
+    or out-of-range seed or counter — fails **in prevalidation, with
+    nothing touched**. Generators are restored **in place**, so identity
+    and every sharing relationship survive and the archive never
+    constructs one. A save *or* a load is refused, leaving an existing
+    destination byte-intact, while any target generator has a call
+    reservation in flight. A **version-1** archive still loads into a
+    model with no registered generators and is **rejected**, naming them,
+    for one that has them — no seed and no counter is ever fabricated —
+    while a v2 archive with generator state loaded into a generator-free
+    model fails as an unexpected-generator error. And the load is **one
+    transaction over the whole archive**: model, buffers, optimizer, and
+    generators commit through their own loaders inside a single rollback
+    guard, so any synchronous failure — a deliverable `KeyboardInterrupt`
+    included — restores all four together, preserves every object
+    identity, moves no parameter version, leaves graph-owned multiplier
+    masks from earlier graphs untouched, and returns native live storage
+    to baseline; only external process or interpreter death is outside
+    that guarantee. It is **serializable** as well: every participating
+    state replacement — the checkpoint load commit, `load_state_dict`,
+    `load_generator_state_dict`, and both optimizers' state loads — plus
+    the save snapshot runs under **one** private process-wide `RLock`, in
+    the universal state-replacement lock order (that guard first, then
+    every unique target generator lock in the global `id()` order, never
+    the reverse), so two concurrent loads leave one archive's state
+    followed by the other's rather than a mixture, and a save describes
+    one coherent serial point. Generator reservations deliberately stay
+    outside the guard, so a racing reservation precedes or follows a
+    transaction and no state is replaced underneath a live token.
+    Ordinary training mutation does not take the guard, so thread-safe
+    concurrent training snapshots are not claimed. The whole registry
+    footprint is one reporting-only
+    name, `"checkpoint_generator_state"` in `STATE_SUPPORT`.
+    Milestones **G6–G10 have not started**, and the gap that matters now
+    is the end-to-end proof: G5 restores generator state exactly —
+    including the next multiplier mask at the restored call index — but an
+    interrupted stochastic **training** run reproduced into a fresh
+    model/optimizer/generator set is the **G7** resume, so exact
+    stochastic training resume is not yet demonstrated, and reproducibility is exact only for
+    the state actually captured (no Python `random`, no NumPy global
+    random state, no data-loader position, and no scheduler state). That, with
     the unrun closure matrix, is why `dropout`
     is still listed unsupported beside
     `float32`, `cuda`, and `amp`. **`dropout` stays listed unsupported
     for the whole of G0–G9** — G4 implements and exports `NativeDropout`
-    but deliberately does not move the boundary, because a capability
+    and G5 persists its stream, neither moving the boundary, because a
+    capability
     whose value is exact reproducibility is not finished until
     reproducibility has been demonstrated under fresh Release and Debug
     builds and the sanitizers — and the name is removed only at **G10**,
     after the closure matrix passes, leaving `float32`, `cuda`, and
-    `amp`. The format version moves at **G5**. Deliberately outside Phase G: a generic
+    `amp`. Deliberately outside Phase G: a generic
     sampling or distribution API, global random state, NumPy
     global-random-state integration, parameter-initialization changes,
     data-loader shuffling,

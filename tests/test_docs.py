@@ -1313,7 +1313,7 @@ def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():
     from tensorforge.experimental import native_checkpoint
     import tensorforge.experimental as experimental
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     for module in ("NativeFlatten", "NativeConv2d", "NativeMaxPool2d"):
         assert module in cpp.NATIVE_MODULES and module in experimental.__all__
     for op in ("conv2d", "maxpool2d"):
@@ -1920,12 +1920,13 @@ def test_state_support_reports_the_real_in_memory_state_surface():
     exact, every name maps to a live API, and neither capability name
     smuggled in a claim it does not own.
 
-    Two entries are *capability* names rather than single callables —
-    ``persistent_buffers`` (Phase F, F1) and ``generator_state`` (Phase
-    G, G1). Both describe **in-memory** state surfaces. ``STATE_SUPPORT``
-    is deliberately not an operation inventory, and ``generator_state``
-    in particular does not mean generator state is checkpointed: that is
-    milestone G5, and the format is still version 1."""
+    Three entries are *capability* names rather than single callables —
+    ``persistent_buffers`` (Phase F, F1), ``generator_state`` (Phase G,
+    G1, the **in-memory** generator surface), and
+    ``checkpoint_generator_state`` (Phase G, G5, the **file** half).
+    ``STATE_SUPPORT`` is deliberately not an operation inventory, and the
+    two generator names stay separate because G1's was explicitly scoped
+    to memory: persistence arrived only at G5, with format version 2."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import NativeModule, native_checkpoint
 
@@ -1934,6 +1935,7 @@ def test_state_support_reports_the_real_in_memory_state_surface():
         "state_dict", "load_state_dict",
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     assert cpp.backend_info()["state_support"] == cpp.STATE_SUPPORT
     # Every advertised capability is real: these are the APIs behind them.
@@ -1948,17 +1950,21 @@ def test_state_support_reports_the_real_in_memory_state_surface():
                       cpp.NATIVE_METRICS, cpp.UNSUPPORTED):
         assert "persistent_buffers" not in inventory
         assert "generator_state" not in inventory
-    # ...and "generator_state" claims in-memory state only: the
-    # checkpoint format has not moved and does not carry generators.
-    assert native_checkpoint._FORMAT_VERSION == 1
-    checkpoint_source = (
-        REPO_ROOT / "src" / "tensorforge" / "experimental"
-        / "native_checkpoint.py"
-    ).read_text(encoding="utf-8")
-    assert "generator" not in checkpoint_source, (
-        "STATE_SUPPORT advertises generator_state and the checkpoint now "
-        "mentions generators; persistence is milestone G5, not G1"
-    )
+    # ...and "checkpoint_generator_state" is backed by the real format:
+    # version 2, a "generators" manifest field, and both entry points.
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert "generators" in native_checkpoint._MANIFEST_KEYS
+    assert "generators" not in native_checkpoint._MANIFEST_KEYS_V1
+    assert callable(native_checkpoint.save_native_checkpoint)
+    assert callable(native_checkpoint.load_native_checkpoint)
+    # There is no third entry point: persistence rides the existing pair.
+    public = [name for name in dir(native_checkpoint)
+              if not name.startswith("_") and callable(
+                  getattr(native_checkpoint, name))]
+    assert "save_native_generator_state" not in public
+    assert "load_native_generator_state" not in public
+    # Neither generator name is a Dropout capability claim.
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
 
 
 def test_f1_added_no_normalization_capability():
@@ -2039,7 +2045,7 @@ def test_f3_shipped_the_first_stateful_native_module():
 
     # The checkpoint format did not move for the new persistent keys.
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
 
     # No numerical primitive appeared at any layer, and no C++ unit.
     for name in ("batch_norm", "batchnorm", "batch_norm_forward",
@@ -2434,7 +2440,7 @@ def test_f4_completed_the_normalization_module_surface_not_the_phase():
     for source in (REPO_ROOT / "cpp" / "src").glob("*.cpp"):
         text = source.read_text(encoding="utf-8")
         assert "batch_norm" not in text and "layer_norm" not in text, source.name
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # Out-of-scope normalization families never appeared.
@@ -2580,6 +2586,7 @@ def test_f6_shipped_the_normalized_training_and_resume_proof():
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
@@ -2591,7 +2598,7 @@ def test_f6_shipped_the_normalized_training_and_resume_proof():
         assert name not in cpp.AUTOGRAD_OPS
         assert name not in cpp.RAW_KERNELS
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
 
     # F5's own design section still records the hardening milestone.
     f5 = _design_section("F5 —", relative_path=PHASE_F_DESIGN)
@@ -2734,7 +2741,7 @@ def test_docs_present_the_shipped_phase_f_integration_suite():
         # unrelated to this milestone, which added no module of its own.
         "NativeDropout",
     )
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
 
     # Every authoritative status surface agrees that F8 **and** F9
     # shipped — the closure form of the old "F9 has not" check.
@@ -3128,7 +3135,7 @@ def test_capability_commentary_keeps_the_boundary_and_the_closed_phase():
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
     assert cpp.backend_info()["unsupported"] == cpp.UNSUPPORTED
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     for module in _NORMALIZATION_MODULES:
         assert module in cpp.NATIVE_MODULES, module
 
@@ -3177,12 +3184,13 @@ def test_the_status_reconciliation_moved_no_capability_surface():
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.backend_info()["stable_framework_integration"] is False
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     # Normalization stayed module composition: no operation, Core method,
     # NativeTensor method, or guarded C ABI symbol anywhere.
     for name in _NORMALIZATION_OP_NAMES:
@@ -3434,7 +3442,7 @@ def test_phase_g_design_locks_the_checkpoint_versioning_contract():
     for field in ("algorithm", "algorithm_version", "seed", "calls"):
         assert field in text, f"the design does not lock the {field!r} field"
     # And the version really has not moved yet.
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
 
 
 def test_phase_g_design_states_the_stable_native_separation_and_non_goals():
@@ -3494,7 +3502,7 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
 
     # The checkpoint format has not moved.
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
 
     # G1 shipped: exported from the experimental namespace only, and in
     # no capability inventory — a generator is state, not an operation,
@@ -3694,7 +3702,7 @@ def test_no_surface_claims_a_phase_g_capability_exists():
     assert "dropout" in cpp.UNSUPPORTED
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "NativeDropout" in cpp.NATIVE_MODULES
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     for name in _PHASE_G_PUBLIC_NAMES:
         assert not hasattr(experimental, name), name
 
@@ -3884,34 +3892,43 @@ _PHASE_G_OVERCLAIMS = (
      r"(saved to|persisted|serialized|checkpointed|written to)"
      r"|(state_dict|checkpoint)[^.]{0,60}\b(includes?|contains?|holds?"
      r"|stores?)\b[^.]{0,30}mask"),
-    ("checkpoint version 2 exists",
-     r"(format|checkpoint)[^.]{0,40}\bversion\s*2\b[^.]{0,30}"
-     r"\b(now|exists?|shipped|current|live|implemented)\b"
-     r"|\bversion\s*2\b[^.]{0,30}\b(is|are|has been)\s+"
-     r"(shipped|implemented|current|live)\b"),
-    ("generator state is checkpointed",
-     r"generator\s+state[^.]{0,60}\b(is|are)\s+"
-     r"(saved|persisted|serialized|checkpointed|written)"
-     r"|checkpoints?[^.]{0,60}(save|persist|serialize|record)s?"
-     r"[^.]{0,30}generator\s+state"),
+    # Retired at G5: checkpoint format version 2 and persisted generator
+    # state are now real, so claiming them is accurate, not an overclaim.
+    # What replaces them is the *next* boundary — the end-to-end resume.
+    # Scoped to *stochastic* resume: Phase F's normalized training resume
+    # (F6) is a different, shipped proof and must keep reading as one.
+    ("exact stochastic training resume already exists",
+     r"stochastic[^.]{0,40}resume[^.]{0,60}"
+     r"\b(is|are|has been)\s+"
+     r"(proved|proven|demonstrated|shipped|complete|available)"
+     r"|resume[^.]{0,40}stochastic[^.]{0,40}"
+     r"\b(is|are|has been)\s+"
+     r"(proved|proven|demonstrated|shipped|complete|available)"
+     r"|(interrupted|end-to-end)[^.]{0,60}stochastic[^.]{0,40}resume"
+     r"[^.]{0,40}\b(works?|exists?|shipped)\b"),
     ("a later milestone has begun",
-     r"\bG(?:[5-9]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
+     r"\bG(?:[6-9]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
      r"(complete|completed|started|begun|shipped|landed|done)\b"),
 )
 
 
 def test_no_surface_overclaims_what_phase_g_has_shipped():
-    """G1 shipped random **state** — a generator object, its module
-    registration, and its own state report — G2 the stateless
-    Dropout-forward **Core**, G3 the differentiable operation that adopts
-    the Core's mask as graph-owned state, and G4 the module over it. None
-    of the four persists a mask, writes generator state to a checkpoint,
-    or starts a later milestone.
+    """G1 shipped random **state**, G2 the stateless Dropout-forward
+    **Core**, G3 the differentiable operation that adopts the Core's mask
+    as graph-owned state, G4 the module over it, and G5 the version-2
+    checkpoint that persists generator state. None of the five persists a
+    *mask*, demonstrates end-to-end exact stochastic training resume, or
+    starts a later milestone.
+
+    (The "checkpoint version 2 exists" and "generator state is
+    checkpointed" patterns were retired at G5 — both are now accurate.
+    What replaces them is the next boundary: the §11 end-to-end resume,
+    which is G7.)
 
     Every premise below comes from the live tree, so this guard tracks
     reality; the prose scan then holds documentation to it. Spans that
     carry their own negation ("does not generate", "not persisted",
-    "G5-G10 have not started") are the honest form and pass."""
+    "G6-G10 have not started") are the honest form and pass."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import (
         NativeGenerator, NativeTensor, native_checkpoint,
@@ -3925,7 +3942,7 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
     assert hasattr(experimental, "NativeDropout")
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert "dropout" in cpp.UNSUPPORTED
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     # The generator really does not produce a value of any kind: G2's
     # derivation lives in C++ behind the Core, never on this object.
     generator = NativeGenerator(1)
@@ -3957,49 +3974,242 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
             )
 
 
-def test_generator_state_capability_does_not_imply_persistence():
-    """``STATE_SUPPORT`` gained ``"generator_state"`` at G1. That name
-    reports an **in-memory** surface and must never be read — or
-    written about — as checkpoint persistence.
+def test_one_shared_state_transaction_guard_exists_and_is_outermost():
+    """G5's serializability guarantee, taken from the live runtime rather
+    than from prose: **one** private reentrant guard, shared by every
+    participating state-replacement path, always acquired before any
+    generator lock.
 
-    All four premises come from the live tree: the capability is
-    advertised, its APIs exist, the checkpoint format has not moved, and
-    the checkpoint module does not mention generators."""
+    Atomic is not serializable — two concurrent loads could each be
+    all-or-nothing and still leave a state assembled from both — so the
+    existence, the identity, and the *order* of this guard are all part of
+    the contract (§10.8)."""
+    import threading
+
+    from tensorforge.experimental import (
+        _native_checkpoint_transaction, _native_state, _native_state_lock,
+        native_adam, native_checkpoint, native_generator, native_sgd,
+    )
+    import tensorforge
+    import tensorforge.experimental as experimental
+
+    guard = _native_state_lock.state_transaction()
+    # One object, and it really is a reentrant lock.
+    assert guard is _native_state_lock._STATE_TRANSACTION_LOCK
+    assert isinstance(guard, type(threading.RLock()))
+    with guard:
+        assert _native_state_lock.held_by_current_thread()
+        with guard:                      # reentrant, as the nesting needs
+            assert _native_state_lock.held_by_current_thread()
+    assert not _native_state_lock.held_by_current_thread()
+
+    # Every participant shares that one object — not a lock each.
+    for module in (_native_state, native_generator, native_adam, native_sgd,
+                   native_checkpoint, _native_checkpoint_transaction):
+        assert module.state_transaction() is guard, module.__name__
+
+    # Private: not exported, not reachable at top level.
+    assert "_native_state_lock" not in experimental.__all__
+    for absent in ("state_transaction", "held_by_current_thread",
+                   "STATE_TRANSACTION_LOCK"):
+        assert absent not in experimental.__all__, absent
+        assert not hasattr(tensorforge, absent), absent
+
+    # The order is item 1 then item 2, enforced where the generator locks
+    # are actually taken rather than in each caller.
+    source = (REPO_ROOT / "src" / "tensorforge" / "experimental"
+              / "native_generator.py").read_text(encoding="utf-8")
+    body = source[source.index("def locked_generators("):]
+    body = body[:body.index("\ndef ", 10)]
+    assert body.index("with state_transaction():") < body.index(
+        "_ordered_targets("
+    ), "generator lock ordering is decided outside the shared guard"
+    assert body.index("with state_transaction():") < body.index(
+        "enter_context(generator._lock)"
+    ), "a generator lock is entered before the shared guard"
+    # Reservations deliberately stay out of it — that asymmetry is what
+    # keeps the two systems from inverting.
+    reserve = source[source.index("    def _reserve_call(self):"):]
+    reserve = reserve[:reserve.index("\n    def ", 10)]
+    assert "state_transaction" not in reserve, (
+        "reservations must not take the shared guard"
+    )
+
+
+def test_status_surfaces_state_the_serializability_contract():
+    """Every Phase-G status surface must say the same three things about
+    concurrency: one shared guard, that concurrent loads **serialize**
+    rather than merely avoiding deadlock, and — the honest limit — that
+    ordinary training mutation does not participate, so thread-safe
+    concurrent training snapshots are not claimed."""
+    from tensorforge.experimental import _native_state_lock
+
+    # Premise, from the live runtime.
+    assert _native_state_lock.state_transaction() is (
+        _native_state_lock._STATE_TRANSACTION_LOCK
+    )
+
+    for surface in PHASE_G_STATUS_SURFACES:
+        text = _status_text(surface)
+        # Anchored on the distinctive tokens of *this* claim, so an
+        # unrelated sentence about the reservation RLock or about
+        # deterministic serialization order cannot satisfy it.
+        assert re.search(
+            r"(shared|state[- ]transaction|one private|process-wide)"
+            r".{0,120}?RLock"
+            r"|RLock.{0,120}?(shared|state[- ]transaction|guard)",
+            text, re.I,
+        ), f"{surface} does not describe the shared state-transaction guard"
+        assert re.search(
+            r"concurrent (checkpoint )?(loads?|operations|state)"
+            r".{0,260}?(serializ|followed by the other"
+            r"|rather than a mixture|never a mixture)", text, re.I,
+        ), f"{surface} does not say concurrent loads serialize"
+        assert re.search(
+            r"generator lock.{0,70}?id\(\)"
+            r"|generator.{0,90}?id\(\).{0,40}?order", text, re.I,
+        ), f"{surface} does not state the generator lock order"
+        # The limit is stated wherever the guarantee is.
+        assert re.search(
+            r"(training|step\(\)|copy_value_).{0,160}?"
+            r"(not |never |does not |deliberately )"
+            r"|(not |never |no ).{0,160}?thread-safe"
+            r"|thread-safe.{0,120}?(not |never )", text, re.I,
+        ), (
+            f"{surface} does not state that ordinary training mutation is "
+            f"outside the guard"
+        )
+
+
+def test_no_surface_claims_thread_safe_concurrent_training():
+    """The one overclaim this milestone makes newly tempting. A save that
+    overlaps a concurrent ``step()`` can still capture a torn training
+    state, because the step never takes the guard — so no surface may
+    describe the native line as safe for concurrent training."""
+    claim = re.compile(
+        r"thread[- ]safe[^.]{0,60}(training|concurrent training)"
+        r"|(concurrent|parallel)[^.]{0,40}training[^.]{0,60}"
+        r"\b(is|are)\s+(safe|supported|thread-safe)"
+        r"|safe[^.]{0,40}(to|for)\s+(train|checkpoint)[^.]{0,40}"
+        r"(concurrently|in parallel|from (another|several) threads?)",
+        re.I,
+    )
+    negations = re.compile(
+        r"\b(not|never|no|without|deliberately|does not|is not|are not"
+        r"|cannot)\b", re.I,
+    )
+    for surface in PHASE_G_STATUS_SURFACES + (
+        "src/tensorforge/experimental/__init__.py",
+    ):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claim.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 90):match.end() + 40]
+            )
+        ]
+        assert offenders == [], (
+            f"{surface} claims thread-safe concurrent training: "
+            f"{offenders[:3]}"
+        )
+
+
+def test_every_participating_loader_takes_the_shared_guard():
+    """Derived from the live sources, not from a list in prose: each
+    documented participant really acquires the guard, and none of them
+    invented a lock of its own."""
+    experimental_dir = (
+        REPO_ROOT / "src" / "tensorforge" / "experimental"
+    )
+    participants = {
+        "_native_state.py": "replace_native_state",
+        "native_generator.py": "replace_generator_states",
+        "native_sgd.py": "load_state_dict",
+        "native_adam.py": "load_state_dict",
+        "native_checkpoint.py": "save_native_checkpoint",
+        "_native_checkpoint_transaction.py": "commit_checkpoint",
+    }
+    for name, symbol in participants.items():
+        text = (experimental_dir / name).read_text(encoding="utf-8")
+        assert "from ._native_state_lock import state_transaction" in text, (
+            f"{name} does not import the shared guard"
+        )
+        assert "with state_transaction():" in text, (
+            f"{name} never enters the shared guard"
+        )
+        assert symbol in text, (name, symbol)
+    # Nobody built a second lock: the guard module is the only place in
+    # the experimental package that constructs one for state replacement.
+    owners = []
+    for module_path in experimental_dir.glob("*.py"):
+        text = module_path.read_text(encoding="utf-8")
+        if "threading.RLock()" in text or "threading.Lock()" in text:
+            owners.append(module_path.name)
+    assert sorted(owners) == ["_native_state_lock.py", "native_generator.py"], (
+        f"an unexpected module constructs its own lock: {owners} — the "
+        f"only two are the shared guard and each generator's own lock"
+    )
+
+
+def test_the_two_generator_capability_names_stay_distinct():
+    """``STATE_SUPPORT`` carries **two** generator names, and conflating
+    them is exactly the reporting error G1 was careful to avoid.
+
+    ``"generator_state"`` (G1) reports the **in-memory** surface —
+    registration, traversal, and the state-dict pair — and still means
+    only that. ``"checkpoint_generator_state"`` (G5) reports the **file**
+    surface: a native checkpoint really does persist and restore
+    generator state, through the existing save/load pair and the
+    version-2 manifest, with no third entry point. Keeping them separate
+    is what lets a reader tell a G1 model from a G5 one.
+
+    Every premise comes from the live tree."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import NativeModule, native_checkpoint
 
     assert "generator_state" in cpp.STATE_SUPPORT
+    assert "checkpoint_generator_state" in cpp.STATE_SUPPORT
     assert cpp.STATE_SUPPORT.index("generator_state") == (
         cpp.STATE_SUPPORT.index("load_state_dict") + 1
     ), "generator_state should sit with the other in-memory state names"
+    assert cpp.STATE_SUPPORT.index("checkpoint_generator_state") > (
+        cpp.STATE_SUPPORT.index("load_native_checkpoint")
+    ), "the file half should sit with the checkpoint names"
     for api in ("register_generator", "generators", "named_generators",
                 "generator_state_dict", "load_generator_state_dict"):
         assert callable(getattr(NativeModule, api)), api
-    assert native_checkpoint._FORMAT_VERSION == 1
+    # The file half is backed by the real format, not by a new API.
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert "generators" in native_checkpoint._MANIFEST_KEYS
+    assert "generators" not in native_checkpoint._MANIFEST_KEYS_V1
+    assert callable(native_checkpoint.save_native_checkpoint)
+    assert callable(native_checkpoint.load_native_checkpoint)
 
-    # The registry module itself must say what the name does *not* mean.
+    # The registry module itself must explain both names, and must still
+    # say the G1 one is in-memory only.
     registry_source = (REPO_ROOT / "src" / "tensorforge" / "backends"
                        / "cpp.py").read_text(encoding="utf-8")
     marker = registry_source.index("STATE_SUPPORT = (")
-    commentary = registry_source[max(0, marker - 2000):marker].lower()
-    assert "generator_state" in commentary, (
-        "the registry no longer explains the generator_state entry"
-    )
-    for required in ("in-memory", "g5"):
+    commentary = registry_source[max(0, marker - 4000):marker].lower()
+    for required in ("generator_state", "checkpoint_generator_state",
+                     "in-memory", "g5"):
         assert required in commentary, (
             f"the registry commentary no longer says {required!r} about "
-            f"generator_state"
+            f"the generator state names"
         )
 
-    # And no status surface may present it as persistence.
-    persistence = re.compile(
-        r"generator[_ ]state[^.]{0,80}\b(is|are)\s+"
-        r"(saved|persisted|serialized|checkpointed|written to)"
-        r"|STATE_SUPPORT[^.]{0,80}(checkpoint|persist)s?\s+generator",
+    # No status surface may claim persistence existed before G5, or that
+    # a version-1 archive carries generator state.
+    backdated = re.compile(
+        r"version 1[^.]{0,80}(persist|serializ|carr\w+|save\w*)"
+        r"[^.]{0,40}generator"
+        r"|generator[^.]{0,60}(persist\w*|serializ\w*|checkpointed)"
+        r"[^.]{0,40}(version 1|G[0-4]\b)",
         re.I,
     )
     negations = re.compile(
-        r"\b(not|never|no|without|until|does not|is not|are not)\b", re.I
+        r"\b(not|never|no|without|until|cannot|does not|is not|are not"
+        r"|omit\w*|absent|fabricat\w*)\b", re.I
     )
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/project_summary.md",
@@ -4008,14 +4218,14 @@ def test_generator_state_capability_does_not_imply_persistence():
                     PHASE_G_DESIGN):
         text = _status_text(surface)
         offenders = [
-            match.group(0) for match in persistence.finditer(text)
+            match.group(0) for match in backdated.finditer(text)
             if not negations.search(
-                text[max(0, match.start() - 60):match.end() + 25]
+                text[max(0, match.start() - 80):match.end() + 40]
             )
         ]
         assert offenders == [], (
-            f"{surface} presents generator_state as checkpoint "
-            f"persistence: {offenders[:3]}"
+            f"{surface} backdates generator persistence before G5: "
+            f"{offenders[:3]}"
         )
 
 
@@ -4123,8 +4333,9 @@ def test_g2_core_inventory_is_exactly_one_operation_and_one_abi_symbol():
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",
     )
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     # backend_info() mirrors the live registry, so the report cannot drift.
     info = cpp.backend_info()
     assert tuple(info["tensor_core_ops"]) == cpp.TENSOR_CORE_OPS
@@ -4245,10 +4456,11 @@ def test_g2_equality_threshold_vector_is_committed_on_both_sides():
             assert literal in text, (source_name, literal)
 
 
-def test_g4_did_not_begin_g5_or_any_later_milestone():
-    """The milestone boundary from the tree: G4 shipped one module and
-    stopped there — no checkpoint v2, no persisted generator state, no
-    benchmark, no example, no integration suite.
+def test_g5_did_not_begin_g6_or_any_later_milestone():
+    """The milestone boundary from the tree: G3 shipped the operation, G4
+    the module, G5 the version-2 checkpoint that persists generator state
+    — and nothing above that. No benchmark, no training example, no
+    hardening or integration suite.
 
     (This guard was ``test_g2_did_not_begin_g3_...`` and then
     ``test_g3_did_not_begin_g4_...``. The Core-layer half of it — that the
@@ -4268,9 +4480,11 @@ def test_g4_did_not_begin_g5_or_any_later_milestone():
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert hasattr(experimental, "NativeDropout")
     assert "NativeDropout" in cpp.NATIVE_MODULES
-    # ...and nothing above them. Generator state is still in-memory only.
-    assert native_checkpoint._FORMAT_VERSION == 1
-    assert "generators" not in native_checkpoint._MANIFEST_KEYS
+    # ...and G5 then persisted the stream: format version 2, with the
+    # generator section that version-1 archives will never have.
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert "generators" in native_checkpoint._MANIFEST_KEYS
+    assert "generators" not in native_checkpoint._MANIFEST_KEYS_V1
     # No Dropout variants, and the module is a *user* of the fourth
     # registration category, never an extension of it.
     for absent in ("NativeDropout2d", "NativeDropout3d", "NativeAlphaDropout"):
@@ -4347,19 +4561,20 @@ def test_g2_status_is_stated_positively_on_every_phase_surface():
         )
 
 
-def test_g4_module_claims_are_layer_qualified():
-    """A surface that describes the shipped ``NativeDropout`` must also
-    say, in the same document, what is still missing: **generator state
-    is not checkpointed**, so exact stochastic resume does not exist, and
-    the capability is still unsupported. That pairing is what keeps
-    "native Dropout works now" from being a fair reading of any status
-    page once every *surface* exists.
+def test_g5_persistence_claims_are_layer_qualified():
+    """A surface that describes the shipped ``NativeDropout`` and its
+    now-persisted stream must also say, in the same document, what is
+    *still* missing: end-to-end exact stochastic **training** resume is a
+    G7 deliverable, and the capability is still unsupported. That pairing
+    is what keeps "native Dropout resumes exactly now" from being a fair
+    reading of any status page.
 
     (Until G3 this guard required the differentiable operation to be named
-    as absent, and until G4 the module. Each requirement was retired by
-    the milestone that shipped the thing; what replaces it each time is a
-    stronger *positive* requirement — here, that the persistence gap is
-    stated wherever the module is.)"""
+    as absent, until G4 the module, and until G5 the persistence gap. Each
+    requirement was retired by the milestone that shipped the thing; what
+    replaces it each time is a stronger *positive* requirement — here,
+    that the version-2 format and its alias topology are described
+    wherever the module is, together with the remaining gap.)"""
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
@@ -4368,7 +4583,8 @@ def test_g4_module_claims_are_layer_qualified():
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert "dropout" in cpp.UNSUPPORTED
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert "checkpoint_generator_state" in cpp.STATE_SUPPORT
 
     for surface in PHASE_G_STATUS_SURFACES:
         text = _status_text(surface)
@@ -4387,17 +4603,25 @@ def test_g4_module_claims_are_layer_qualified():
             r"|NativeGenerator[^.]{0,80}(explicit|required|keyword)"
             r"|generator=", text, re.I,
         ), f"{surface} does not say the generator is explicit"
-        # The persistence gap is stated in the same document.
+        # The shipped format is named by version, not merely implied.
         assert re.search(
-            r"(not|never|no)[^.]{0,80}(checkpoint|persist|serializ)"
-            r"|(checkpoint|persist|serializ)\w*[^.]{0,80}"
-            r"(not|never|omit|absent)", text, re.I,
-        ), f"{surface} does not say generator state is not checkpointed"
+            r"(format )?version 2|version 2 |v2\b", text, re.I,
+        ), f"{surface} does not name checkpoint format version 2"
+        # ...and it says what version 2 actually carries, topology
+        # included — restoring states without the topology would resume a
+        # different model.
         assert re.search(
-            r"resume[^.]{0,60}(not|does not|no)"
-            r"|(not|no|never)[^.]{0,60}(exact )?(stochastic )?resume",
-            text, re.I,
-        ), f"{surface} does not say exact stochastic resume is missing"
+            r"(alias|topolog|shar\w+)[^.]{0,140}generator"
+            r"|generator[^.]{0,140}(alias|topolog)", text, re.I,
+        ), f"{surface} does not describe the generator alias topology"
+        # The remaining gap is stated in the same document: G5 restored
+        # the state, G7 owns the end-to-end training resume.
+        assert re.search(
+            r"\bG7\b[^.]{0,140}resume"
+            r"|resume[^.]{0,140}\bG7\b"
+            r"|resume[^.]{0,80}(not yet|is not|does not|still)"
+            r"|(not yet|still)[^.]{0,80}resume", text, re.I,
+        ), f"{surface} does not say end-to-end exact resume is still G7"
         # ...and "dropout" is still advertised as unsupported.
         assert re.search(r"unsupported|UNSUPPORTED", text), surface
 
@@ -4444,8 +4668,9 @@ def test_g4_inventory_is_exactly_one_module():
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",
     )
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     assert tuple(cpp.backend_info()["native_modules"]) == cpp.NATIVE_MODULES
 
 
@@ -4604,8 +4829,9 @@ def test_g3_inventory_is_exactly_one_autograd_operation():
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",
     )
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     assert tuple(cpp.backend_info()["autograd_ops"]) == cpp.AUTOGRAD_OPS
 
 

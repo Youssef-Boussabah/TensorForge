@@ -626,15 +626,17 @@ def test_the_integrated_stack_resumes_exactly_from_one_checkpoint(tmp_path):
     assert state_keys == list(PARAMETER_NAMES) + list(BUFFER_NAMES)
 
 
-def test_the_integrated_checkpoint_is_version_1_and_holds_only_model_state(
-    tmp_path
-):
-    """Four BatchNorm running buffers ride the **existing** version-1
-    manifest as ordinary canonical model-state entries: no schema bump,
+def test_the_integrated_checkpoint_holds_only_model_state(tmp_path):
+    """Four BatchNorm running buffers ride the manifest as ordinary
+    canonical model-state entries — no normalization section of their own,
     and no graph, gradient, winner, probability, or eval snapshot is
-    serialized."""
+    serialized.
+
+    The format version is the *format's*, not Phase F's: G5 moved it to 2
+    and added the generator section, which a Phase-F model leaves null.
+    Phase F itself still contributes no manifest field."""
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     model = NativePhaseFClassifier()
     optimizer = NativeAdam(model.parameters(), lr=LR)
     x, targets = _inputs()
@@ -646,7 +648,7 @@ def test_the_integrated_checkpoint_is_version_1_and_holds_only_model_state(
         names = list(archive.files)
         manifest = archive["manifest"].tobytes().decode("utf-8")
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 1' in manifest
+    assert '"format_version": 2' in manifest
     # The archived model section is exactly the canonical state keys —
     # every parameter and the four running buffers as ordinary entries,
     # with no normalization configuration (eps, momentum, num_features,
@@ -657,7 +659,10 @@ def test_the_integrated_checkpoint_is_version_1_and_holds_only_model_state(
     assert list(parsed["model"]["keys"]) == (list(PARAMETER_NAMES)
                                             + list(BUFFER_NAMES))
     assert set(parsed) == {"format", "format_version", "model", "optimizer",
-                           "metadata"}
+                           "generators", "metadata"}
+    # The Phase-F classifier registers no generator, so G5's section is an
+    # explicit null: the format version moved, Phase F's state did not.
+    assert parsed["generators"] is None
     blob = (" ".join(names) + " " + manifest).lower()
     for banned in ("winner", "probabilit", "snapshot", "graph", "grad",
                    "training", "logit", "target", "label", "rng", "seed",
@@ -1586,6 +1591,7 @@ def test_every_state_capability_maps_to_a_real_api():
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     assert callable(NativeModule.state_dict)
     assert callable(NativeModule.load_state_dict)
@@ -1595,7 +1601,7 @@ def test_every_state_capability_maps_to_a_real_api():
         assert callable(getattr(experimental, name)), name
         assert name in experimental.__all__, name
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
 
 
 def test_the_remaining_capability_boundary_is_unchanged():

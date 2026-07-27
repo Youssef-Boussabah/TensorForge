@@ -121,7 +121,7 @@ integration and semantic guardrails** (`tests/test_native_phase_f.py`),
 and **F9 closed the phase** under Release and Debug builds with Clang
 ASan/UBSan and LeakSanitizer — validation and documentation only, adding
 no numerical capability. **Phase G (native RNG and Dropout) is the
-current phase and is in progress: milestones G0, G1, G2, G3, and G4 have
+current phase and is in progress: milestones G0, G1, G2, G3, G4, and G5 have
 landed.** G0, the architecture
 contract in [native_rng_dropout_design.md](native_rng_dropout_design.md),
 locks Python-managed generator state, stateless native
@@ -136,10 +136,12 @@ an explicit keyword-only generator, the graph-owned multiplier mask whose
 `multiply` is the whole backward, and the reserve/commit/abandon call
 transaction, and G4 the `NativeDropout` module over it — stochastic in
 training, the input object itself in evaluation, identity at `p == 0`,
-over one registered generator it owns or shares. Above the module nothing
-exists: the checkpoint
-format is still version 1 and does not persist generator state, so
-**exact stochastic resume does not exist yet**, and
+over one registered generator it owns or shares, and G5 native checkpoint
+**format version 2** — persisted generator state with its shared-generator
+alias topology, strict topology validation, version-1 compatibility, and
+the whole-checkpoint load transaction. Above that nothing
+exists: **exact stochastic *training* resume is still a G7 deliverable**,
+reproducibility is exact only for the state actually captured, and
 `dropout` is still listed unsupported beside `float32`,
 `cuda`, and `amp`. The two
 engines never mix: explicit entry via
@@ -423,13 +425,47 @@ nothing and allocating nothing, so any number of eval forwards leaves no
 gap in the stream; and `p == 0` is identity in both modes. The module
 owns no native storage.
 
-**G5–G10 have not started**, and the gap is persistence: the checkpoint
-format is
-still version 1 and does not persist generator state, so saving a model
-containing a `NativeDropout` preserves its parameters and buffers and
-**silently omits the random stream** — exact stochastic resume does not
-exist yet, and a load fabricates nothing. That, with the unrun closure
-matrix, is why `dropout` stays
+Milestone **G5 is complete**: native checkpoint **format version 2** —
+the format *name* is unchanged — with one new manifest field,
+`"generators"`. It is `null` for a model that registers none, or a
+`keys`/`entries`/`aliases` object holding every canonical generator's
+`algorithm`, `algorithm_version`, `seed`, and `calls` (the last two as
+canonical decimal strings, since a `uint64` above `2**53` cannot survive
+a JSON double) **plus the complete alias topology** — every registered
+path mapped to its canonical generator, so *which layers share a stream*
+is restored, not just the numbers. Generator state adds no array to the
+archive; sharing is identity, never state equality. A load restores each
+generator **in place**, preserving object identity and every sharing
+relationship, and validates the topology strictly in both directions
+against a real `named_generators()` traversal — every mismatch fails in
+prevalidation, with nothing touched. A version-1 archive still loads into
+a generator-free model and is **rejected**, naming them, for a model that
+has generators: no seed and no counter is ever fabricated. A save or a
+load is refused while any target generator has a call reservation in
+flight. And the whole load is **one transaction** — model, buffers,
+optimizer, and generators commit under a single rollback guard, so any
+synchronous failure (a deliverable `KeyboardInterrupt` included) restores
+all four together, preserving every identity and moving no parameter
+version. It is **serializable** too: every participating state
+replacement — the checkpoint load, `load_state_dict`,
+`load_generator_state_dict`, and both optimizers' state loads — plus the
+save snapshot runs under one private shared `RLock`, with generator locks
+taken under it in the global `id()` order, so two concurrent loads leave
+one archive's state followed by the other's rather than a mixture.
+Ordinary training mutation does not take that guard, so thread-safe
+concurrent training snapshots are not claimed. The registry footprint is
+one reporting-only name, `"checkpoint_generator_state"` in
+`STATE_SUPPORT`.
+
+**G6–G10 have not started.** G5 proves exact generator restoration —
+state, identity, topology, and the next Dropout mask at the restored call
+index — but **not** the end-to-end story: an interrupted stochastic
+training run reproduced into a fresh model/optimizer/generator set is
+**G7**, so exact stochastic *training* resume is not yet demonstrated,
+and reproducibility is exact only for the state actually captured (no
+Python `random`, NumPy global RNG, data-loader position, or scheduler
+state — full-program determinism is not claimed). That, with the unrun
+closure matrix, is why `dropout` stays
 listed unsupported through G9, leaving that list only at G10 after the
 closure matrix.
 Beyond Phase G

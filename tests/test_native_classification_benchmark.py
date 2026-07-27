@@ -552,6 +552,7 @@ def test_e9_adds_no_capability_inventory_entry():
         "state_dict", "load_state_dict",
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     # "cross_entropy" was the last autograd op when E9 landed and E9 added
     # nothing after it. The one entry that follows is Phase G milestone
@@ -572,7 +573,7 @@ def test_e9_adds_no_capability_inventory_entry():
 def test_e9_adds_no_kernel_abi_operation_or_schema():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     for absent in ("tf_core_benchmark", "tf_core_train_step",
                    "tf_core_accuracy", "tf_core_argmax"):
         assert absent not in cpp._CHECKED_KERNELS, absent

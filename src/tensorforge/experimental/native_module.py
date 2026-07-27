@@ -647,6 +647,37 @@ class NativeModule:
         appear in ``parameters()`` or ``buffers()``."""
         return [generator for _, generator in self.named_generators(recurse=recurse)]
 
+    def _named_generator_paths(self, prefix="", recurse=True):
+        """Yield ``(dotted_name, generator)`` for **every registered
+        generator path**, in the same deterministic cycle-safe pre-order
+        walk ``named_generators()`` rides but **without** identity
+        deduplication — so a generator shared by three modules is yielded
+        three times, once per path.
+
+        ``named_generators()`` answers "which generator *objects* does
+        this model have"; this answers "which registered *paths* does it
+        have, and which object does each one reach". Phase G's checkpoint
+        needs both (design §10.3): the canonical names come from the
+        deduplicated walk, and the alias map is exactly this walk with
+        every path mapped to its generator's canonical name — which is
+        what makes the archive describe the model's sharing *topology*
+        rather than only its states.
+
+        Private, like ``_state_named_tensors()`` and for the same reason:
+        it is the single source of truth an archive's topology is compared
+        against, not a public traversal API. Paths are unique (module
+        paths are unique in the cycle-safe walk, and a name is one
+        category within its owning module), so the yielded names never
+        repeat."""
+        if recurse:
+            module_items = self.named_modules(prefix)
+        else:
+            module_items = ((prefix, self),)
+        for module_prefix, module in module_items:
+            for name, generator in module._generators.items():
+                full_name = f"{module_prefix}.{name}" if module_prefix else name
+                yield full_name, generator
+
     def generator_state_dict(self):
         """An insertion-ordered ``{canonical_name: state}`` report of
         every unique registered generator's current state.

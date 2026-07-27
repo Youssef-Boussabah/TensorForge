@@ -245,7 +245,7 @@ capability, no C++, no CTest, no ABI or ctypes surface, no example, no
 benchmark, and no production behavior changed.
 
 **The current phase is Phase G — Native RNG and Dropout — and it is in
-progress; milestones G0, G1, G2, G3, and G4 have landed.** G0 is the architecture
+progress; milestones G0, G1, G2, G3, G4, and G5 have landed.** G0 is the architecture
 contract, [native_rng_dropout_design.md](native_rng_dropout_design.md),
 and it adds **no numerical behavior**. It locks: random state is
 **Python-managed** while native random kernels stay **stateless** and
@@ -550,24 +550,121 @@ identity too, and is deliberately *not* short-circuited in the module —
 §6.2 assigns that rule to the operation, and a second copy could only
 ever disagree with the first.
 
-**Above the module, nothing exists, and the gap is persistence.**
-Milestones **G5–G10 have not
-started**: the checkpoint format is still version 1 and does **not**
-serialize generator state (that is G5), so saving a model containing a
-`NativeDropout` preserves its parameters and buffers and **silently omits
-the random stream**, and a load leaves the live generator exactly as it
-found it — fabricating nothing, which is the important half. **Exact
-stochastic resume therefore does not exist yet.** No capability-registry
-value moved beyond that single `NATIVE_MODULES` entry — `dropout` is
-still listed
+**Milestone G5 is complete — native checkpoint format version 2 and
+exact generator restoration.** The format **name** is unchanged
+(`"tensorforge.native_checkpoint"`); `_FORMAT_VERSION` is **2**, and
+every new save writes 2 whether or not the model has generators. The
+manifest gained exactly one field, `"generators"` — `null` when the model
+registers none, so absence is stated rather than inferred, or three
+subfields:
+
+- `keys` — the ordered canonical generator names, from the
+  identity-deduplicated `named_generators()` walk;
+- `entries` — one `{algorithm, algorithm_version, seed, calls}` object
+  per canonical name, mapping exactly `keys` in the same order, with
+  `seed` and `calls` as **canonical decimal strings**
+  (`^(0|[1-9][0-9]*)$`, ≤ 20 digits, in `[0, 2**64 - 1]`) because a
+  `uint64` above `2**53` is not representable in the IEEE double most
+  JSON readers use;
+- `aliases` — the complete **registered path → canonical name** map, in
+  full traversal order, including every canonical name mapped to itself.
+
+Generator state adds **no array** to the NPZ payload — four scalars per
+generator live in the manifest — so the array-name space and its
+duplicate/missing/extra checks are untouched. A shared generator's state
+is written **once**, but its *topology* is written in full: two paths
+draw from one stream in the archive exactly when their aliases name the
+same canonical entry, so a resume restores *which layers share a stream*,
+not merely the numbers. Sharing is identity, never state equality — two
+generators with the same seed and counter are two entries. Canonical
+names and both orders are functions of the model alone, so saving the
+same model twice is byte-identical.
+
+**Loading** compares the archive's topology, strictly and in both
+directions, against a real `named_generators()` traversal of the live
+model: a missing or extra canonical key, a missing or extra registered
+path, an alias pointing at the wrong generator, a saved-shared /
+live-independent difference (or the reverse), a changed canonical name
+from a reordered registration, an unknown algorithm or version, and a
+malformed or out-of-range seed/counter string all fail — **in
+prevalidation, with the model, buffers, optimizer, and generators
+completely untouched**. Generators are restored **in place** through
+`load_state`, so every registered object keeps its identity and every
+sharing relationship survives; the archive never constructs a
+`NativeGenerator`. A save or a load is refused, changing nothing, while
+any target generator has a call reservation in flight (published or under
+construction), because a generator whose next index has been decided but
+not committed has no single honest state to record.
+
+**Version-1 compatibility** is exactly as locked: a v1 archive still
+loads into a model with **no** registered generators, and loading one
+into a model that **has** them fails naming them — no seed and no counter
+is ever fabricated, not zero, not fresh entropy, not the generator's
+current value. A v2 archive with a non-null generator section loaded into
+a generator-free model fails as an unexpected-generator error, and any
+other `format_version` fails. The loader accepts `{1, 2}` and dispatches;
+there is no "latest wins", no upgrade in place, and no silent rewrite.
+
+**A load is one transaction over the whole archive.** Prevalidation
+touches nothing; staging materializes every staged value *and* an
+independent rollback snapshot of every live target the commit will
+overwrite; the commit runs model → optimizer → generators through the
+components' own loaders inside **one** rollback guard; and any exception
+anywhere in it — including a deliverable `KeyboardInterrupt`, which is
+explicitly *not* an exception to the guarantee — restores all four state
+families, preserves every object identity, moves no parameter version,
+leaves graph-owned Dropout masks from earlier graphs untouched, and
+returns native live storage to its baseline. Only external process or
+interpreter death remains outside the guarantee.
+
+**And it is serializable, not merely deadlock-free.** Atomic under
+failure is not the same as atomic with respect to other threads: two
+concurrent loads could each succeed and still leave the model from one
+archive beside the optimizer or generators from the other. So every
+participating in-memory state replacement — the checkpoint load commit,
+`NativeModule.load_state_dict`, `load_generator_state_dict`, and both
+optimizers' `load_state_dict` — plus the checkpoint **save snapshot**
+runs under **one** private process-wide `RLock`, in the universal
+state-replacement lock order: that guard first, then every unique target
+generator lock in the existing global `id()` order, never the reverse.
+Reentrancy is the point, not a convenience — the checkpoint transaction
+holds the guard and then calls the components' own loaders, which take it
+again. Generator **reservations** deliberately stay outside it, taking
+only their own generator's lock, which is what keeps the two systems from
+inverting: a racing reservation either finishes before a transaction takes
+that lock or begins after it releases it, so no state is replaced
+underneath a live token. Two concurrent loads therefore produce one
+archive's state followed by the other's, and a save snapshot describes one
+coherent serial point rather than model state from before a replacement
+beside optimizer state from after it. What is **not** claimed: ordinary
+training mutation (`step()`, `copy_value_`, a backward) does not take the
+guard, so thread-safe concurrent training snapshots are not offered.
+
+The one registry change is reporting-only: `STATE_SUPPORT` gained
+`"checkpoint_generator_state"`, a separate name from G1's
+`"generator_state"` precisely because that one was explicitly scoped to
+memory. **No C++, no C ABI symbol, no ctypes declaration, no Core method,
+no autograd operation, no module, no export, and no new public entry
+point** — persistence rides the existing `save_native_checkpoint` /
+`load_native_checkpoint` pair.
+
+**Above that, nothing exists.** Milestones **G6–G10 have not started**:
+G5 proves exact generator restoration — including that the next Dropout
+mask matches the G2 Core at the restored `(seed, call_index)` — but
+**not** the end-to-end story: an interrupted stochastic training run
+reproduced into a fresh model/optimizer/generator set is the **G7**
+resume, which is not yet demonstrated and has no example or test. Reproducibility is exact **for the state
+actually captured**: Python's `random`, NumPy's global RNG, data-loader
+position, and scheduler state are not captured, and full-program
+determinism is not claimed. `dropout` is still listed
 unsupported
-beside `float32`, `cuda`, and `amp`. `dropout` stays listed unsupported
+beside `float32`, `cuda`, and `amp`. It stays listed unsupported
 for the whole of **G0–G9** — G4 implements and exports `NativeDropout`
-without moving the boundary, because a capability whose value is exact
-reproducibility is not finished until reproducibility has been shown
-under fresh Release and Debug builds and the sanitizers — and the name is
-removed only at **G10**, after the closure matrix passes. The format
-version moves at **G5**.
+and G5 persists its stream, neither moving the boundary, because a
+capability whose value is exact reproducibility is not finished until
+reproducibility has been shown under fresh Release and Debug builds and
+the sanitizers — and the name is removed only at **G10**, after the
+closure matrix passes.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 

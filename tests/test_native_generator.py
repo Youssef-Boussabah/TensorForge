@@ -3097,19 +3097,28 @@ def test_g1_moved_no_capability_registry_value():
         assert "generator" not in inventory
 
 
-def test_g1_left_the_checkpoint_format_at_version_1():
+def test_the_checkpoint_format_name_never_moves_and_the_version_did():
+    """G1 shipped generator state without touching the checkpoint; G5
+    persisted it and moved the version to 2. The **name** is the part
+    that is locked forever — a new schema is a new version of one format,
+    never a second format."""
     from tensorforge.experimental import native_checkpoint
 
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
-    # ...and it does not serialize generator state (that is G5).
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    # G5 serializes generator state through the generator's own locked
+    # snapshot/replacement transactions — never by reaching into the
+    # generator's private lock, reservation slot, or token machinery.
     source = native_checkpoint.__file__
     with open(source, encoding="utf-8") as handle:
         text = handle.read()
-    for absent in ("generator", "NativeGenerator"):
+    for absent in ("_reserve_call", "_commit_call", "_abandon_call",
+                   "_ReservationToken", "_claim_serial", "_active_serial",
+                   "._lock", "_assign_state"):
         assert absent not in text, (
-            f"native_checkpoint.py mentions {absent!r}; generator "
-            f"serialization is milestone G5, not G1"
+            f"native_checkpoint.py reaches into {absent!r}; the generator "
+            f"transaction owns the locking, not the checkpoint"
         )
 
 

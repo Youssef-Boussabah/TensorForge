@@ -1121,10 +1121,14 @@ def test_checkpoint_manifest_gains_no_normalization_field(build, tmp_path):
     # running_stats, buffers, normalization, training, num_batches_tracked,
     # rng, graph, or version section.
     assert set(manifest) == {
-        "format", "format_version", "model", "optimizer", "metadata"
+        "format", "format_version", "model", "optimizer", "generators",
+        "metadata"
     }
     assert manifest["format"] == "tensorforge.native_checkpoint"
-    assert manifest["format_version"] == 1
+    assert manifest["format_version"] == 2
+    # Normalization models register no generator, so the G5 section is an
+    # explicit null — the format grew a field, normalization did not.
+    assert manifest["generators"] is None
     for forbidden in ("running_stats", "buffers", "normalization",
                       "training", "num_batches_tracked", "rng", "graph"):
         assert forbidden not in manifest
@@ -1529,7 +1533,7 @@ def _norm_corrupt_cases(source, tmp_path):
     cases.append(("wrong-root-type", bad_root))
 
     add("wrong-format", lambda m: {**m, "format": "tensorforge.checkpoint"})
-    add("wrong-version", lambda m: {**m, "format_version": 2})
+    add("unsupported-version", lambda m: {**m, "format_version": 3})
     add("wrong-version-type", lambda m: {**m, "format_version": "1"})
     add("missing-field",
         lambda m: {k: v for k, v in m.items() if k != "metadata"})
@@ -2174,6 +2178,7 @@ def test_f5_adds_no_capability_or_public_surface():
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
@@ -2185,7 +2190,7 @@ def test_f5_adds_no_capability_or_public_surface():
         assert name not in cpp.RAW_KERNELS
     # The checkpoint format did not move.
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     # No new public buffer-mutation API, and no NativeModule.close().
     assert not hasattr(NativeModule, "close")
     for banned in ("set_running_stats", "fill_", "copy_"):

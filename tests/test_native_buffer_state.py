@@ -845,6 +845,7 @@ def test_state_support_reports_persistent_buffers_exactly():
         "state_dict", "load_state_dict",
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     assert cpp.backend_info()["state_support"] == cpp.STATE_SUPPORT
     # The advertised capability maps to a real API.

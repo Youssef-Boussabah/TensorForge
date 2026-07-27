@@ -1941,7 +1941,7 @@ def test_checkpoint_round_trip_reproduces_all_four_tensors(tmp_path):
     from tensorforge.experimental import native_checkpoint
 
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
 
     source = NativeBatchNorm1d(3, eps=1e-3, momentum=0.4)
     _load(source, gamma=[1.1, 1.2, 1.3], beta=[-0.1, -0.2, -0.3])
@@ -2509,6 +2509,7 @@ def test_f3_adds_no_operation_core_method_kernel_or_abi_symbol():
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
 
 

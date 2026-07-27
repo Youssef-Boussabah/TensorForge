@@ -147,7 +147,9 @@ import secrets
 import threading
 from collections import namedtuple
 from collections.abc import Mapping
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
+
+from ._native_state_lock import state_transaction
 
 # The compatibility key for the stream. Nothing else identifies it: a
 # change to the (future) derivation must mint a new pair rather than
@@ -874,6 +876,114 @@ def _ordered_targets(generators):
     return sorted(generators, key=id)
 
 
+@contextmanager
+def locked_generators(entries, action, reservation_what):
+    """Hold the universal state-replacement lock order over ``entries``.
+
+    ``entries`` is an iterable of ``(label, generator)`` pairs. The body
+    runs with **the shared state-transaction guard** held and **every
+    unique target's lock** held, acquired in the global ``id()``-sorted
+    order and released in reverse — items 1 and 2 of the order documented
+    in ``_native_state_lock``. Yields the ordered unique targets.
+
+    The reservation recheck happens *inside*, while every lock is held,
+    because that is the only version of the check that cannot be raced: no
+    target can begin a reservation without a lock this context is holding.
+    A target with a reservation in flight — published *or* holding a
+    construction claim — raises ``RuntimeError`` naming it, with nothing
+    read and nothing written.
+
+    ``action`` and ``reservation_what`` only shape the error text
+    (``"cannot {action} for {label!r}: ..."``), so a refused snapshot and
+    a refused load each say what they were doing."""
+    entries = list(entries)
+    labels = {}
+    unique = {}
+    for label, generator in entries:
+        if not isinstance(generator, NativeGenerator):
+            raise TypeError(
+                f"generator state for {label!r}: expected a NativeGenerator, "
+                f"got {type(generator).__name__}"
+            )
+        unique.setdefault(id(generator), generator)
+        labels.setdefault(id(generator), label)
+
+    # The guard is outermost, always. Taking it here — rather than in
+    # every caller — is what makes "generator locks are never acquired
+    # before the state-transaction guard" true by construction for every
+    # path that touches generator state. Even *deciding* the order
+    # happens inside it, so the property is checkable at the ordering
+    # seam rather than only at the acquisition.
+    with state_transaction():
+        targets = _ordered_targets(list(unique.values()))
+        with ExitStack() as stack:
+            for generator in targets:
+                stack.enter_context(generator._lock)
+            for generator in targets:
+                try:
+                    generator._require_no_reservation(reservation_what)
+                except RuntimeError as error:
+                    raise RuntimeError(
+                        f"cannot {action} for {labels[id(generator)]!r}: "
+                        f"{error}"
+                    ) from None
+            yield targets
+
+
+def snapshot_generator_states(entries):
+    """Read several ``NativeGenerator`` states as one locked,
+    reservation-checked snapshot.
+
+    ``entries`` is an iterable of ``(label, generator)`` pairs. Returns a
+    list of ``(label, generator, state)`` in input order, where ``state``
+    is the same independent four-field plain dict ``state()`` returns.
+
+    This is the **read** half of the generator transaction and it takes
+    the *same* global lock order as :func:`replace_generator_states`:
+    unique targets sorted by ``id()``, all held together, released in
+    reverse. Reading one generator at a time through ``state()`` would be
+    enough for one generator and wrong for several — two generators read
+    a microsecond apart can straddle a concurrent stochastic forward, and
+    the resulting pair of states describes a model that never existed. A
+    checkpoint's whole value is that the states it writes were true
+    *together*.
+
+    **While every lock is held**, each target is rechecked for a
+    reservation — published *or* holding a construction claim — and any
+    in-flight target raises ``RuntimeError`` naming it, having read
+    nothing. That is the §3.6 rule applied to reading: a generator whose
+    next index has been decided but not committed has no single honest
+    state to record, so it is refused rather than captured ambiguously.
+
+    Changes nothing: no reservation is created, no counter moves, no
+    serial is consumed, and no state is written. Generators own no native
+    storage, so this allocates nothing native either."""
+    entries = list(entries)
+    if not entries:
+        return []
+
+    with locked_generators(
+        entries, "snapshot generator state", "snapshot"
+    ) as targets:
+        snapshots = {
+            id(generator): (generator._seed, generator._calls)
+            for generator in targets
+        }
+    return [
+        (
+            label,
+            generator,
+            {
+                "algorithm": ALGORITHM,
+                "algorithm_version": ALGORITHM_VERSION,
+                "seed": snapshots[id(generator)][0],
+                "calls": snapshots[id(generator)][1],
+            },
+        )
+        for label, generator in entries
+    ]
+
+
 def replace_generator_states(entries):
     """Replace several ``NativeGenerator`` states as one transaction.
 
@@ -935,32 +1045,19 @@ def replace_generator_states(entries):
     if not staged:
         return
 
-    # A list, not a generator expression: ``_ordered_targets`` is a
-    # documented seam, and handing it a one-shot iterator would make any
-    # wrapper that looks at its input silently produce an empty
-    # transaction instead of failing.
-    targets = _ordered_targets(
-        [generator for generator, _, _ in staged.values()]
-    )
-    labels = {id(generator): label for generator, _, label in staged.values()}
-
-    with ExitStack() as stack:
-        # -- lock every target, in the global order, before deciding
-        # anything. Released in reverse by the ExitStack.
-        for generator in targets:
-            stack.enter_context(generator._lock)
-
-        # -- recheck under the locks. Nothing can start a reservation on
-        # a target from here to the end of the commit.
-        for generator in targets:
-            try:
-                generator._require_no_reservation("load state into")
-            except RuntimeError as error:
-                raise RuntimeError(
-                    f"cannot load generator state for "
-                    f"{labels[id(generator)]!r}: {error}"
-                ) from None
-
+    # A list, not a generator expression: ``locked_generators`` hands
+    # ``_ordered_targets`` a real sequence, and a documented seam given a
+    # one-shot iterator would silently produce an empty transaction
+    # instead of failing.
+    #
+    # Lock and recheck through the shared helper, so this path takes the
+    # universal order — the state-transaction guard first, then every
+    # unique target's lock sorted by ``id()`` — exactly like the
+    # whole-checkpoint transaction that nests into it.
+    with locked_generators(
+        [(label, generator) for generator, _, label in staged.values()],
+        "load generator state", "load state into",
+    ) as targets:
         # -- snapshot, then write. The writes cannot fail; the rollback
         # runs while the locks are still held.
         previous_states = [
