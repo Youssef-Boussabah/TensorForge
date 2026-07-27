@@ -1827,14 +1827,42 @@ def _chain_cleanup_failure(error, cleanup_error):
     original propagates and the cleanup failure is chained onto the end
     of its context chain, where the default traceback machinery still
     prints it. Nothing is swallowed, and an existing chain is appended to
-    rather than overwritten."""
+    rather than overwritten.
+
+    The resulting chain is **acyclic**, which takes one deliberate step
+    (G6). A cleanup step raised while ``error`` was being handled gets an
+    implicit ``__context__`` pointing straight back at ``error`` — so
+    appending it without cutting that back-reference would close a loop,
+    and a cyclic context chain makes every ordinary "follow
+    ``__context__`` to the end" reader spin forever: this function on its
+    next call, and any logging or error-reporting code the caller runs.
+    The relationship is not lost; the link written below states it in the
+    one direction that terminates."""
+    if cleanup_error is error:
+        return
+    # Walk to the end of the existing chain, recording everything already
+    # in it. The ``seen`` guard keeps this finite regardless of what any
+    # other producer of ``__context__`` links left behind.
     tail = error
     seen = {id(error)}
     while tail.__context__ is not None and id(tail.__context__) not in seen:
         tail = tail.__context__
         seen.add(id(tail))
-    if tail is not cleanup_error:
-        tail.__context__ = cleanup_error
+    if id(cleanup_error) in seen:
+        # Already somewhere in the chain: appending it would be the loop.
+        return
+    # Cut the cleanup failure's own back-reference into that chain before
+    # attaching it. Anything else it carries — a genuine inner cause of
+    # its own — is left exactly as it is.
+    node = cleanup_error
+    inner = {id(cleanup_error)}
+    while node.__context__ is not None and id(node.__context__) not in inner:
+        if id(node.__context__) in seen:
+            node.__context__ = None
+            break
+        node = node.__context__
+        inner.add(id(node))
+    tail.__context__ = cleanup_error
 
 
 def _settle_failed_dropout(generator, token, result, error):

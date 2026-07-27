@@ -457,7 +457,23 @@ concurrent training snapshots are not claimed. The registry footprint is
 one reporting-only name, `"checkpoint_generator_state"` in
 `STATE_SUPPORT`.
 
-**G6–G10 have not started.** G5 proves exact generator restoration —
+Milestone **G6 is complete**: the hardening milestone, which added **no
+capability**. `tests/test_native_phase_g_hardening.py` executes the
+design's ownership and failure matrices as adversarial tests — the
+reservation transition matrix with five invariants per rejected
+transition, the exact `uint64` boundary, forced concurrent interleavings
+(no sleeps, bounded joins), the Core's structural key properties, every
+pre-commit and post-commit failure position of the call transaction across
+four exception classes, all four graph-owned saved-resource families in
+one graph, a 76-case checkpoint corruption matrix, whole-transaction
+rollback at every commit position, save-seam destination atomicity, and
+repeated lifecycle loops against a real native live-storage baseline. One
+runtime defect was found and fixed: a failed cleanup step could leave the
+Dropout operation's `__context__` chain **cyclic**, which hangs any
+ordinary chain-walking reader. Nothing else changed — no C++, ABI, ctypes,
+Core method, operation, module, export, schema field, or registry value.
+
+**G7–G10 have not started.** G5 proves exact generator restoration —
 state, identity, topology, and the next Dropout mask at the restored call
 index — but **not** the end-to-end story: an interrupted stochastic
 training run reproduced into a fresh model/optimizer/generator set is

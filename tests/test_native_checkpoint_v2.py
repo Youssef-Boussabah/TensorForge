@@ -1852,7 +1852,7 @@ def test_g5_added_no_kernel_abi_symbol_or_stable_change():
 
 
 @needs_native
-def test_g6_and_later_milestones_have_not_begun():
+def test_g7_and_later_milestones_have_not_begun():
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parent.parent

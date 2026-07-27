@@ -238,8 +238,9 @@ Dropout-forward **Core**), G3 (the differentiable
 `NativeTensor.dropout(p, *, generator)`, with an **explicit** required
 keyword-only `NativeGenerator`), and G4 (the `NativeDropout` module and
 its public export), and G5 (native checkpoint **format version 2** with
-persisted generator state and its alias topology) are complete; G6–G10
-have not started.** G0 locked Python-managed generator state (an explicit
+persisted generator state and its alias topology), and G6 (RNG, graph,
+ownership, and checkpoint hardening — **no new capability**) are complete;
+G7–G10 have not started.** G0 locked Python-managed generator state (an explicit
 64-bit seed plus call counter and an algorithm identifier), stateless
 native random kernels that receive the whole key for one call, inverted
 Dropout with a graph-owned multiplier mask whose backward never rereads
@@ -652,6 +653,59 @@ still reads `("dropout", "float32", "cuda", "amp")` — `"dropout"` is the
 one name deliberately in both an implemented inventory and that tuple,
 because the registry reports what is *closed and validated* while the
 inventories report what *exists*.
+**G6 is complete**: the hardening milestone, which added **no capability,
+operation, module, export, checkpoint field, or checkpoint version** and
+moved no registry value. `tests/test_native_phase_g_hardening.py` executes
+the design's §13 ownership and §14 failure matrices as adversarial tests:
+the reservation transition matrix, with each rejected transition asserting
+five invariants at once (no counter movement, no active-reservation change,
+no construction-claim change, no serial reuse, no native-storage movement)
+and the four reservation-creation failure positions distinguished by
+whether a serial was consumed; the exact `uint64` boundary as §4.6's table,
+row by row, with the final index retryable until committed and repeated
+exhaustion failures freezing every field; forced concurrent interleavings
+under barriers and events with **bounded joins and no sleeps** (no
+duplicate call index, unrelated generators independent, no torn state read,
+a reservation racing a state replacement provably preceding or following it
+in both orders, a construction claim refusing both a save and a load, a
+transaction started from inside token construction refused rather than
+deadlocked, and nested component loaders not self-deadlocking); the
+deterministic Core's **structural** key properties beside its committed
+vectors — the stream key injective in the call index for one seed, the
+element derivation injective within one call, and the cross-seed collision
+a 128-into-64-bit key makes unavoidable (`seed=2**63, call=2**63` equals
+`seed=0, call=0`) pinned as a **characterized consequence** rather than a
+defect, since sharing is identity and the contract never claimed the
+stronger property; the probability extremes and logical-layout
+independence through real transposed and narrowed views; every pre-commit
+position of §5's call transaction times `RuntimeError`, `MemoryError`,
+`KeyboardInterrupt`, and a non-`Exception` `BaseException`, each proving
+the retry reproduces the exact mask the failure would have produced, and
+every post-commit position proving the index spent exactly once with the
+original exception primary; all **four** graph-owned saved-resource
+families (a Dropout mask, MaxPool2d winners, BatchNorm eval snapshots, and
+cross-entropy probabilities) coexisting in one graph and releasing exactly
+once, across branched, chained, shared-generator, independent-generator,
+retained, failed-retryable, and abandoned graphs; a **76-case** checkpoint
+corruption matrix, every case failing before any live change with all four
+state families bit-identical; whole-transaction rollback injected at every
+commit position times the same four exception classes, with object
+identities, parameter versions, unrelated active reservations, and
+pre-load graph masks proved untouched; save-seam destination atomicity at
+all seven positions; and repeated success-and-failure lifecycle loops
+returning native live storage exactly to a measured baseline. **One
+runtime defect was found and fixed** with the narrowest possible change:
+`native_tensor._chain_cleanup_failure` closed a **cycle** in the
+`__context__` chain when a cleanup step failed — a cleanup exception
+raised while the operation's failure is being handled implicitly points
+back at it, so appending it without cutting that link made every ordinary
+"follow `__context__` to the end" reader spin forever (the helper itself
+included). The fix cuts that back-reference and is inert when the cleanup
+failure is already in the chain; the original exception stays primary and
+the cleanup failure stays reachable, and a dedicated regression guard
+fails without the fix. No C++, C ABI symbol, ctypes declaration, Core
+method, autograd operation, module, export, schema field, benchmark, or
+example changed.
 Data loaders, native integer tensors, further
 dtypes/devices, CPU optimization, and CUDA experiments are
 future work beyond Phase G.
@@ -703,8 +757,9 @@ production-ready, not a PyTorch replacement.
   ownership), G2 (the stateless `dropout_forward` **Core** kernel and
   its C ABI), G3 (the differentiable `NativeTensor.dropout`), G4 (the
   `NativeDropout` module), and G5 (native checkpoint **format version 2**
-  with persisted generator state and its alias topology) shipped, G6–G10
-  not started). When a milestone changes the
+  with persisted generator state and its alias topology), and G6 (the
+  RNG/graph/ownership/checkpoint hardening, which added no capability)
+  shipped, G7–G10 not started). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the

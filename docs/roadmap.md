@@ -1296,7 +1296,23 @@ The Python line is done; what remains is expansion on its own terms:
     concurrent training snapshots are not claimed. The whole registry
     footprint is one reporting-only
     name, `"checkpoint_generator_state"` in `STATE_SUPPORT`.
-    Milestones **G6–G10 have not started**, and the gap that matters now
+    **G6 is complete** — the hardening milestone. It executed §13 and §14
+    of the design as adversarial tests in a new
+    `tests/test_native_phase_g_hardening.py`: the reservation transition
+    matrix, the exact `uint64` boundary, forced concurrent interleavings
+    with bounded joins and no sleeps, the deterministic Core's structural
+    key properties beside its committed vectors, every pre-commit and
+    post-commit failure position of the call transaction over four
+    exception classes, all four graph-owned saved-resource families in one
+    graph, a 76-case checkpoint corruption matrix, whole-transaction
+    rollback at every commit position, save-seam destination atomicity,
+    and repeated success-and-failure lifecycle loops measured against a
+    real native live-storage baseline. **It added no capability,
+    operation, module, export, checkpoint field, or checkpoint version**
+    and moved no registry value; it found and fixed exactly one runtime
+    defect — a cleanup-failure `__context__` chain that could become
+    cyclic — with a dedicated regression guard.
+    Milestones **G7–G10 have not started**, and the gap that matters now
     is the end-to-end proof: G5 restores generator state exactly —
     including the next multiplier mask at the restored call index — but an
     interrupted stochastic **training** run reproduced into a fresh

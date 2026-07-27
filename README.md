@@ -229,7 +229,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
-- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, and milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — are complete; G6–G10 have not started, so end-to-end **exact stochastic training resume is still a G7 deliverable** and `dropout` stays unsupported until the G10 closure)
+- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, are complete; G7–G10 have not started, so end-to-end **exact stochastic training resume is still a G7 deliverable** and `dropout` stays unsupported until the G10 closure)
 
 ## Limitations
 
@@ -631,12 +631,28 @@ never model state from one beside optimizer or generator state from the
 other. Ordinary training mutation deliberately does not take that guard,
 so thread-safe concurrent training snapshots are not claimed.
 
-Milestones **G6–G10 have not started.** G5 proves exact generator
+Milestone **G6 is complete** — hardening, and no new capability.
+`tests/test_native_phase_g_hardening.py` attacks the finished G1–G5
+surface: the reservation transition matrix, the exact `uint64` boundary,
+forced concurrent interleavings (bounded joins, no sleeps), the
+deterministic Core's structural key properties beside its committed
+vectors, every pre-commit and post-commit failure position of the call
+transaction across four exception classes, all four graph-owned
+saved-resource families in one graph, a 76-case checkpoint corruption
+matrix, whole-transaction rollback at every commit position, save-seam
+destination atomicity, and repeated success-and-failure lifecycle loops
+measured against a real native live-storage baseline. It changed no C++,
+ABI, ctypes, Core method, operation, module, export, schema field, or
+registry value, and added no benchmark and no example; it found and fixed
+exactly one runtime defect — a cleanup-failure `__context__` chain that
+could become cyclic — with a dedicated regression guard.
+
+Milestones **G7–G10 have not started.** G5 proves exact generator
 restoration — the state, the identity, the topology, and the next Dropout
 mask at the restored call index — but **not** the end-to-end §11 story:
 an interrupted stochastic training run reproduced into a fresh
 model/optimizer/generator set is **G7**, and no such example, benchmark,
-or hardening suite exists yet. Reproducibility is exact for the state
+or Phase-G integration suite exists yet. Reproducibility is exact for the state
 actually captured; Python's `random`, NumPy's global RNG, data-loader
 position, and scheduler state are **not** captured and full-program
 determinism is not claimed. That remaining gap, plus the unrun closure

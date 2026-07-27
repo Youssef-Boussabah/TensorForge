@@ -3230,9 +3230,10 @@ _PHASE_G_SHIPPED_NAMES = ("NativeGenerator",)          # Phase G, G1
 # nowhere else, because a module is not an operation, a loss, a metric,
 # an optimizer, or a kernel.
 _PHASE_G_SHIPPED_MODULES = ("NativeDropout",)          # Phase G, G4
-# Nothing public is unimplemented any more at this point in the ladder;
-# what remains absent is checkpoint v2, generator persistence, and the
-# G6-G10 work, each guarded by its own check rather than by a name.
+# Nothing public is unimplemented any more at this point in the ladder:
+# G5 shipped checkpoint v2 and generator persistence, and G6 hardened all
+# of it without adding a name. What remains absent is the G7-G10 work,
+# each guarded by its own check rather than by a name.
 _PHASE_G_PUBLIC_NAMES = ()
 # The one Core operation G2 added, and the one C ABI symbol behind it.
 _PHASE_G_SHIPPED_CORE_OPS = ("dropout_forward",)       # Phase G, G2
@@ -3861,6 +3862,14 @@ def test_phase_g_ladder_status_matches_the_shipped_tree():
             "the ladder marks G5 complete, but the checkpoint format is "
             "still version 1"
         )
+    # G6 ships tests only, so its observable is the hardening suite itself.
+    g6_shipped = (
+        REPO_ROOT / "tests" / "test_native_phase_g_hardening.py"
+    ).is_file()
+    assert status(6).startswith("complete") is g6_shipped, (
+        f"the ladder says G6 is {status(6)!r} but the tree "
+        f"{'has' if g6_shipped else 'does not have'} the hardening suite"
+    )
     # The closure milestone is open while "dropout" is still unsupported.
     if "dropout" in cpp.UNSUPPORTED:
         assert status(10) == "not started"
@@ -3906,8 +3915,11 @@ _PHASE_G_OVERCLAIMS = (
      r"(proved|proven|demonstrated|shipped|complete|available)"
      r"|(interrupted|end-to-end)[^.]{0,60}stochastic[^.]{0,40}resume"
      r"[^.]{0,40}\b(works?|exists?|shipped)\b"),
+    # The G6 half was retired at G6: the hardening milestone really has
+    # landed, so "G6 is complete" is accurate rather than an overclaim.
+    # G7 is now the boundary a status surface must not cross.
     ("a later milestone has begun",
-     r"\bG(?:[6-9]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
+     r"\bG(?:[7-9]|10)\b[^.]{0,60}\b(is|are|has|have)\s+"
      r"(complete|completed|started|begun|shipped|landed|done)\b"),
 )
 
@@ -3928,7 +3940,7 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
     Every premise below comes from the live tree, so this guard tracks
     reality; the prose scan then holds documentation to it. Spans that
     carry their own negation ("does not generate", "not persisted",
-    "G6-G10 have not started") are the honest form and pass."""
+    "G7-G10 have not started") are the honest form and pass."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import (
         NativeGenerator, NativeTensor, native_checkpoint,
@@ -4456,14 +4468,16 @@ def test_g2_equality_threshold_vector_is_committed_on_both_sides():
             assert literal in text, (source_name, literal)
 
 
-def test_g5_did_not_begin_g6_or_any_later_milestone():
+def test_g6_did_not_begin_g7_or_any_later_milestone():
     """The milestone boundary from the tree: G3 shipped the operation, G4
-    the module, G5 the version-2 checkpoint that persists generator state
-    — and nothing above that. No benchmark, no training example, no
-    hardening or integration suite.
+    the module, G5 the version-2 checkpoint that persists generator state,
+    and G6 hardened all of it without adding a capability — and nothing
+    above that. No benchmark, no training example, no Phase-G integration
+    suite.
 
-    (This guard was ``test_g2_did_not_begin_g3_...`` and then
-    ``test_g3_did_not_begin_g4_...``. The Core-layer half of it — that the
+    (This guard was ``test_g2_did_not_begin_g3_...``, then
+    ``test_g3_did_not_begin_g4_...``, then
+    ``test_g5_did_not_begin_g6_...``. The Core-layer half of it — that the
     Core method builds no graph and takes no generator — is kept verbatim
     at each step, because building a graph and then a module *above* the
     Core must not leak any of that vocabulary *into* it.)"""
@@ -4518,18 +4532,30 @@ def test_g5_did_not_begin_g6_or_any_later_milestone():
         cpp.NativeTensorCore._dropout_forward_with_mask
     )
     assert "generator" not in core_signature.parameters
-    # G4's module unit exists and has its own focused suite...
+    # G4's module unit exists and has its own focused suite, and G6's
+    # hardening suite exists...
     for present in ("src/tensorforge/experimental/native_dropout.py",
-                    "tests/test_native_dropout_module.py"):
+                    "tests/test_native_dropout_module.py",
+                    "tests/test_native_phase_g_hardening.py"):
         assert (Path(REPO_ROOT) / present).is_file(), (
-            f"{present} is missing, but milestone G4 shipped it"
+            f"{present} is missing, but an earlier milestone shipped it"
         )
-    # ...and none of the later milestones' artifacts exists.
+    # ...and none of the later milestones' artifacts exists. The G9
+    # integration suite in particular is a *different* file from G6's
+    # hardening suite, which is why both names are checked.
     for absent in ("benchmarks/benchmark_native_dropout.py",
                    "examples/native_dropout_training.py",
                    "tests/test_native_phase_g.py",
-                   "tests/test_native_dropout_training.py"):
+                   "tests/test_native_dropout_training.py",
+                   "benchmark_results"):
         assert not (Path(REPO_ROOT) / absent).exists(), absent
+    # G6 is hardening only: it added no export, no inventory entry, and no
+    # schema field, so the whole public surface is still exactly G5's.
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._GENERATOR_SECTION_KEYS == {
+        "keys", "entries", "aliases"
+    }
 
 
 def test_g2_status_is_stated_positively_on_every_phase_surface():
@@ -4559,6 +4585,86 @@ def test_g2_status_is_stated_positively_on_every_phase_surface():
         assert match is None, (
             f"{surface} still describes G2 as unstarted: {match.group(0)!r}"
         )
+
+
+def test_g6_is_stated_as_hardening_only_on_every_phase_surface():
+    """G6 really did land, so every Phase-G surface must name it and say
+    what it was: **hardening**, adding no capability.
+
+    The positive requirement matters as much as the negative one. A
+    milestone that ships only tests is the easiest kind to either forget
+    (leaving the ladder stale) or overstate (reading as though Dropout were
+    now closed), so each surface has to name G6, describe it as hardening,
+    and still carry the unchanged capability boundary."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    # Premises from the live tree: the suite exists, and nothing moved.
+    assert (REPO_ROOT / "tests"
+            / "test_native_phase_g_hardening.py").is_file()
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert native_checkpoint._FORMAT_VERSION == 2
+
+    for surface in PHASE_G_STATUS_SURFACES:
+        text = _status_text(surface)
+        assert re.search(r"\bG6\b", text), (
+            f"{surface} does not name milestone G6"
+        )
+        assert re.search(r"harden", text, re.I), (
+            f"{surface} names G6 without saying it was a hardening milestone"
+        )
+        # ...and none of them still describes G6 as pending. Anchored the
+        # same way the G2 guard is, so "G7-G10 have not started" reads as
+        # the honest statement it is.
+        still_pending = re.compile(
+            r"\bG[0-6]\s*[-–—]\s*G\d+\b[^.]{0,30}?"
+            r"\bnot\s+(?:yet\s+)?started"
+            r"|\bG6\b(?:(?!\bG\d)[^.]){0,40}?\bnot\s+(?:yet\s+)?started",
+            re.I,
+        )
+        match = still_pending.search(text)
+        assert match is None, (
+            f"{surface} still describes G6 as unstarted: {match.group(0)!r}"
+        )
+
+
+def test_g6_claims_no_new_capability_anywhere():
+    """The one thing G6 must never be described as: a capability. Every
+    surface that names it has to keep the boundary where it is, and the live
+    registries have to agree."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    # G6 shipped no benchmark, no example, and no integration suite.
+    for absent in ("benchmarks/benchmark_native_dropout.py",
+                   "examples/native_dropout_training.py",
+                   "tests/test_native_phase_g.py",
+                   "tests/test_native_dropout_training.py"):
+        assert not (REPO_ROOT / absent).exists(), absent
+
+    overclaim = re.compile(
+        r"\bG6\b[^.]{0,80}\b(ships?|shipped|adds?|added|introduc\w+)\b"
+        r"[^.]{0,40}\b(capabilit\w+|operation|module|export|kernel"
+        r"|benchmark|example)\b",
+        re.I,
+    )
+    for surface in PHASE_G_STATUS_SURFACES:
+        text = _status_text(surface)
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            match = overclaim.search(sentence)
+            if match is None:
+                continue
+            # A sentence carrying its own negation is the honest form.
+            assert re.search(r"\b(no|not|never|without|nothing)\b",
+                             sentence, re.I), (
+                f"{surface} claims G6 shipped a capability: "
+                f"{match.group(0)!r}"
+            )
 
 
 def test_g5_persistence_claims_are_layer_qualified():

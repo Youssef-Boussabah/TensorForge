@@ -10,8 +10,8 @@ declaration, no `NativeTensorCore` method, no `NativeTensor` operation,
 no module, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-G status: in progress. G0, G1, G2, G3, G4, and G5 are complete;
-G6–G10 have not started.** Milestone **G1** shipped `NativeGenerator` and
+**Phase-G status: in progress. G0, G1, G2, G3, G4, G5, and G6 are
+complete; G7–G10 have not started.** Milestone **G1** shipped `NativeGenerator` and
 generator registration on `NativeModule` — random **state** and its
 ownership; it generates no random values by itself. Milestone **G2**
 shipped the stateless Dropout-forward **Core**: §4's derivation, §7's
@@ -37,7 +37,18 @@ strings, the strict both-directions validation against a real
 and the §10.7 four-phase **whole-checkpoint** load transaction whose one
 rollback guard spans the model, optimizer, and generator commits. It
 added the reporting-only name `"checkpoint_generator_state"` to
-`STATE_SUPPORT` and nothing else.
+`STATE_SUPPORT` and nothing else. Milestone **G6** hardened all of it:
+§13 and §14 executed as adversarial tests — the reservation transition
+matrix, the exact `uint64` boundary, forced concurrent interleavings, the
+deterministic Core's structural key properties, every pre-commit and
+post-commit failure position of §5's transaction, the four graph-owned
+saved-resource families in one graph, a 76-case checkpoint corruption
+matrix, whole-transaction rollback at every commit position, save-seam
+destination atomicity, and repeated lifecycle loops measured against a
+real native live-storage baseline. **G6 added no capability, operation,
+module, export, checkpoint field, or checkpoint version** and moved no
+registry value; it found and fixed exactly one runtime defect, recorded in
+§5.
 
 That is persisted generator state and nothing above it. There is no
 implicit, global, or default generator anywhere — the operation's
@@ -622,6 +633,31 @@ overlapping element sequences by a simple offset — the defect §2.2
 identifies in the reference design. `call_index + 1` and `element + 1`
 keep the zero case from degenerating to `mix64(seed)` twice.
 
+**What this guarantees, exactly** (characterized at G6, pinned by test).
+`GOLDEN` is odd, so multiplication by it is invertible modulo `2**64`, and
+`mix64` is a bijection. Therefore:
+
+- **Within one seed, `stream` is injective in `call_index`.** No two call
+  indices a generator ever issues can share a stream — which is the
+  property a generator actually promises, and the one exact resume rests
+  on. The same argument makes `bits` injective in `element` within one
+  call.
+- **Across different seeds, collisions exist and are unavoidable.**
+  `(seed, call_index)` is 128 bits folded into a 64-bit stream key, so by
+  counting some pairs must collide, and one is exactly computable:
+  `GOLDEN * 2**63 == 2**63` mod `2**64`, hence
+  `2**63 + GOLDEN * (2**63 + 1) == GOLDEN == 0 + GOLDEN * (0 + 1)` — so
+  `(seed=2**63, call=2**63)` produces the *same* mask as `(seed=0,
+  call=0)`, for every tensor and every `p`.
+
+The second point weakens nothing in the contract and is recorded so it is
+never mistaken for a defect and never "fixed" by changing a locked
+derivation. Sharing a stream is **identity** (§3.7) — two generators are
+two generators, and two generators with the same seed and counter stay two
+entries everywhere — so the contract never claims that distinct
+`(seed, call_index)` pairs index distinct streams. A test pins both halves
+against the real kernel.
+
 ### 4.4 Bits to the Dropout decision
 
 ```
@@ -879,6 +915,23 @@ a failure among them means something is already wrong: the **operation's**
 exception stays primary and the cleanup failure is chained onto its
 context chain rather than substituted for it, so nothing is swallowed and
 nothing is hidden.
+
+**The chain must also be acyclic** — the one runtime defect milestone G6
+found and fixed, recorded here rather than only in a commit message. A
+cleanup step that raises while the operation's failure is being handled
+gets an *implicit* `__context__` pointing straight back at that failure,
+so appending it to the end of the failure's own chain without cutting that
+back-reference closes a two-element **cycle**. CPython's own traceback
+formatter tolerates one, but every straightforward "follow `__context__`
+to the end" reader does not — including the chaining helper itself on a
+second cleanup failure, and any logging or error-reporting code the caller
+runs. The chaining therefore cuts the cleanup failure's back-reference
+into the chain it is joining (its own genuine inner cause, if it has one,
+is left alone) and does nothing at all when the cleanup failure is already
+in the chain. The relationship is not lost; it is stated in the one
+direction that terminates. Reachable through the ordinary
+`_abandon_call`-fails path, so it is a real defect rather than a
+theoretical one, and it has a dedicated regression guard.
 
 | Event | Consumes a call? |
 |---|---|
@@ -2417,7 +2470,7 @@ not move and the phase is not closed.
 | G3 | Differentiable `NativeTensor` Dropout | **Complete** |
 | G4 | `NativeDropout` module and public export | **Complete** |
 | G5 | Checkpoint version 2 and exact RNG restoration | **Complete** |
-| G6 | RNG, graph, ownership, and checkpoint hardening | Not started |
+| G6 | RNG, graph, ownership, and checkpoint hardening | **Complete** (tests, one narrow fix, and documentation — no capability) |
 | G7 | Deterministic stochastic training and exact resume | Not started |
 | G8 | Honest native Dropout benchmark | Not started |
 | G9 | Cross-cutting Phase-G integration | Not started |
@@ -2921,17 +2974,61 @@ hardening suite, and no result artifact of any kind exists.
 
 ### G6 — RNG, graph, ownership, and checkpoint hardening
 
+**Status: complete.**
+
 - **Objective.** Prove §13 and §14 by executable test.
-- **Scope.** Tests and documentation only.
-- **Files.** New focused test modules; narrow additions to the existing
-  buffer, state, checkpoint, and autograd suites.
+- **Scope.** Tests and documentation, plus the one narrow fix a hardening
+  test exposed.
+- **Files.** New `tests/test_native_phase_g_hardening.py` for the
+  cross-cutting G1–G5 invariants; the focused suites keep their own narrow
+  matrices.
 - **Public contract.** Unchanged.
-- **Forbidden.** Any production behavior change; any registry, export, or
-  schema movement. **`"dropout"` stays in `UNSUPPORTED`.** If a defect is
-  found, it is fixed with the narrowest possible change and recorded
-  explicitly.
+- **Forbidden.** Any registry, export, or schema movement. **`"dropout"`
+  stays in `UNSUPPORTED`.** If a defect is found, it is fixed with the
+  narrowest possible change and recorded explicitly.
 - **Done when.** Every §14 row and every §13 row has a test, including
   the §3.6 concurrency and token rows and the §10.7 four-phase rows.
+
+**What it proved.** The reservation transition matrix — every invalid
+token transition asserting *five* invariants at once (no counter movement,
+no active-reservation change, no construction-claim change, no serial
+reuse, no native-storage movement) — and the four §3.6 failure positions
+distinguished by whether a serial was consumed. The exact `uint64`
+boundary as §4.6's table, row by row, with the final index proved
+retryable until committed and repeated exhaustion failures freezing every
+field. Forced concurrent interleavings under barriers and events with
+bounded joins and no sleeps: no duplicate call index, unrelated generators
+independent, no torn state read, a reservation racing a state replacement
+provably preceding or following it in both orders, and a transaction
+started *from inside* token construction refused rather than deadlocked.
+The deterministic Core's **structural** key properties (§4.3's
+characterization) beside its committed vectors, plus the probability
+extremes and layout independence through real transposed and narrowed
+views. Every pre-commit position of §5's transaction × `RuntimeError`,
+`MemoryError`, `KeyboardInterrupt`, and a non-`Exception` `BaseException`,
+each proving the retry reproduces the mask the failure would have
+produced; and every post-commit position proving the index spent exactly
+once. All **four** graph-owned saved-resource families — a Dropout mask,
+MaxPool2d winners, BatchNorm eval snapshots, and cross-entropy
+probabilities — coexisting in one graph and releasing exactly once, with
+branched, chained, shared-generator, retained, failed-retryable, and
+abandoned graphs each measured. A 76-case checkpoint corruption matrix,
+every case failing before any live change with the model, buffers,
+optimizer, and generators bit-identical. Whole-transaction rollback
+injected at every commit position × the same four exception classes, with
+identities, versions, active reservations, and pre-load graph masks all
+proved untouched. Save-seam destination atomicity at all seven positions.
+And repeated lifecycle loops — success and failure — returning native live
+storage exactly to a measured baseline with no monotonic growth.
+
+**The one defect found and fixed.** `_chain_cleanup_failure` closed a
+**cycle** in the `__context__` chain when a cleanup step failed (§5). The
+fix cuts the cleanup failure's implicit back-reference before appending it
+and is inert when it is already in the chain; the original exception is
+still primary and the cleanup failure still reachable. Nothing else in the
+G1–G5 runtime changed — no C++, no C ABI symbol, no ctypes declaration, no
+Core method, no operation, no module, no export, no schema field, and no
+registry value.
 
 ### G7 — Deterministic stochastic training and exact resume
 

@@ -648,7 +648,32 @@ no autograd operation, no module, no export, and no new public entry
 point** — persistence rides the existing `save_native_checkpoint` /
 `load_native_checkpoint` pair.
 
-**Above that, nothing exists.** Milestones **G6–G10 have not started**:
+**Milestone G6 is complete — hardening, and no capability.**
+`tests/test_native_phase_g_hardening.py` attacks the finished G1–G5
+surface: the reservation transition matrix (each rejected transition
+asserting no counter movement, no active-reservation change, no
+construction-claim change, no serial reuse, and no native-storage
+movement), the exact `uint64` boundary as the design's table, forced
+concurrent interleavings under barriers and events with bounded joins and
+**no sleeps**, the deterministic Core's structural key properties beside
+its committed vectors, every pre-commit and post-commit failure position of
+the call transaction across `RuntimeError`, `MemoryError`,
+`KeyboardInterrupt`, and a non-`Exception` `BaseException`, all **four**
+graph-owned saved-resource families in one graph, a **76-case** checkpoint
+corruption matrix (every case failing before any live change),
+whole-transaction rollback injected at every commit position, save-seam
+destination atomicity at all seven positions, and repeated
+success-and-failure lifecycle loops returning native live storage exactly
+to a measured baseline. It changed **no** C++, C ABI symbol, ctypes
+declaration, Core method, autograd operation, module, export, schema field,
+or registry value, and it added no benchmark and no example. One runtime
+defect was found and fixed with the narrowest possible change: a failed
+cleanup step in the Dropout transaction could make the exception's
+`__context__` chain **cyclic**, which hangs any ordinary chain-walking
+reader; the fix cuts the back-reference and has a dedicated regression
+guard.
+
+**Above that, nothing exists.** Milestones **G7–G10 have not started**:
 G5 proves exact generator restoration — including that the next Dropout
 mask matches the G2 Core at the restored `(seed, call_index)` — but
 **not** the end-to-end story: an interrupted stochastic training run
