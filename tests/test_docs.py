@@ -28,9 +28,9 @@ DOCS = (
     "native_rng_dropout_design.md",
 )
 
-# The native line's phase ladder, oldest to newest. Phases A-F are
-# complete; Phase G (native RNG and Dropout) is the current one and is in
-# progress. Nothing after G exists.
+# The native line's phase ladder, oldest to newest. Phases A-G are all
+# complete; Phase G (native RNG and Dropout) is the latest completed
+# phase, closed at milestone G10. Nothing after G exists.
 NATIVE_PHASE_LADDER = "ABCDEFG"
 
 EXAMPLE_FILES = (
@@ -2921,7 +2921,7 @@ def test_native_cnn_design_is_linked_and_referenced():
 # exports, or the real tree, and matches meaning rather than wording, so
 # an honest rewrite survives and a regression does not.
 
-NATIVE_PHASES = "ABCDEF"
+NATIVE_PHASES = "ABCDEFG"
 
 # "Phase F is unfinished", in the forms that survive a rewrite. This is
 # deliberately a *different* vocabulary from the pending-phase guard
@@ -2954,9 +2954,11 @@ _PRESENT_TENSE_BRANCH = re.compile(
 # A headline naming an *earlier* phase as the native line's newest
 # completion — the exact drift the post-merge README carried ("the
 # advanced branch has completed Phase E of its native line") — while
-# leaving the range form ("has completed Phases A-F") alone.
+# leaving the range form ("has completed Phases A-G") alone. The letter
+# class ends one before the newest phase, so it moves forward with the
+# ladder: after G10 closed Phase G, stopping at F is the drift.
 _STALE_NEWEST_PHASE = re.compile(
-    r"(?:has|have|had)\s+completed\s+Phase\s+([A-E])\b", re.I
+    r"(?:has|have|had)\s+completed\s+Phase\s+([A-F])\b", re.I
 )
 
 _NUMBER_WORDS = {
@@ -2965,12 +2967,16 @@ _NUMBER_WORDS = {
 }
 
 
-def test_high_level_status_states_phases_a_through_f_complete():
+def test_high_level_status_states_phases_a_through_g_complete():
     """The README's own status must say the native line has completed
-    Phases A-F — as a range ("Phases A-F ... complete") or phase by phase —
+    Phases A-G — as a range ("Phases A-G ... complete") or phase by phase —
     and must never stop at an earlier phase again. The premise is the live
     registry: each phase's headline capability really is there, so this can
-    only ever demand a claim the code already backs."""
+    only ever demand a claim the code already backs.
+
+    (Through Phase F this demanded the A-F range. G10 closed Phase G and
+    moved ``dropout`` out of ``UNSUPPORTED``, so the demand moves with it —
+    strictly forward: a README still stopping at F now fails.)"""
     from tensorforge.backends import cpp
 
     assert "matmul" in cpp.TENSOR_CORE_OPS                        # Phase A
@@ -2980,9 +2986,11 @@ def test_high_level_status_states_phases_a_through_f_complete():
     assert "cross_entropy" in cpp.AUTOGRAD_OPS                    # Phase E
     for module in _NORMALIZATION_MODULES:                         # Phase F
         assert module in cpp.NATIVE_MODULES, module
+    assert "NativeDropout" in cpp.NATIVE_MODULES                  # Phase G
+    assert "dropout" not in cpp.UNSUPPORTED                       # G10 closure
 
     readme = _status_text("README.md")
-    span = r"Phases?\s+A\s*(?:-|–|—|through|to)\s*F\b"
+    span = r"Phases?\s+A\s*(?:-|–|—|through|to)\s*G\b"
     ranged = (
         re.search(span + r"[^.]{0,160}?\bcomplet", readme, re.I)
         or re.search(r"\bcomplet\w*[^.]{0,160}?" + span, readme, re.I)
@@ -2992,20 +3000,20 @@ def test_high_level_status_states_phases_a_through_f_complete():
         for letter in NATIVE_PHASES
     )
     assert ranged or per_phase, (
-        "README's status no longer states that Phases A-F are complete"
+        "README's status no longer states that Phases A-G are complete"
     )
     # And it must not stop early: no headline may present an earlier phase
     # as the newest one the native line has completed.
     for surface in ("README.md", "docs/project_summary.md",
                     "docs/architecture.md", "CLAUDE.md"):
         text = _status_text(surface)
-        assert "Phase F" in text, surface
-        # An enumeration that reaches Phase F right there ("has completed
-        # Phase A ... through Phase F") is the honest form and is excused;
+        assert "Phase F" in text and "Phase G" in text, surface
+        # An enumeration that reaches Phase G right there ("has completed
+        # Phase A ... through Phase G") is the honest form and is excused;
         # a claim that stops earlier is the drift.
         offenders = [
             match.group(0) for match in _STALE_NEWEST_PHASE.finditer(text)
-            if "Phase F" not in text[match.start():match.end() + 200]
+            if "Phase G" not in text[match.start():match.end() + 200]
         ]
         assert offenders == [], (
             f"{surface} presents an earlier phase as the newest completed "
@@ -4867,18 +4875,20 @@ def test_g6_claims_no_new_capability_anywhere():
 
 def test_g5_persistence_claims_are_layer_qualified():
     """A surface that describes the shipped ``NativeDropout`` and its
-    now-persisted stream must also say, in the same document, what is
-    *still* missing: end-to-end exact stochastic **training** resume is a
-    G7 deliverable, and the capability is still unsupported. That pairing
-    is what keeps "native Dropout resumes exactly now" from being a fair
-    reading of any status page.
+    persisted stream must name every layer it rests on: the G2 Core, the
+    G3 operation with its explicit generator, checkpoint format version 2,
+    and the alias topology that makes *sharing* recoverable rather than
+    merely the numbers.
 
     (Until G3 this guard required the differentiable operation to be named
     as absent, until G4 the module, and until G5 the persistence gap. Each
     requirement was retired by the milestone that shipped the thing; what
-    replaces it each time is a stronger *positive* requirement — here,
-    that the version-2 format and its alias topology are described
-    wherever the module is, together with the remaining gap.)"""
+    replaces it each time is a stronger *positive* requirement. The last
+    of those retirements is here: through G9 this demanded that each
+    surface still call the end-to-end training resume a **G7 deliverable**
+    and still advertise ``dropout`` as unsupported. G7 demonstrated the
+    resume and G10 moved the boundary, so the demand inverts — the resume
+    must now be attributed to G7 as something that *happened*.)"""
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
@@ -4918,15 +4928,14 @@ def test_g5_persistence_claims_are_layer_qualified():
             r"(alias|topolog|shar\w+)[^.]{0,140}generator"
             r"|generator[^.]{0,140}(alias|topolog)", text, re.I,
         ), f"{surface} does not describe the generator alias topology"
-        # The remaining gap is stated in the same document: G5 restored
-        # the state, G7 owns the end-to-end training resume.
+        # The layer above persistence is attributed in the same document:
+        # G5 restored the state, G7 demonstrated the end-to-end training
+        # resume. A surface may no longer leave that as future work.
         assert re.search(
-            r"\bG7\b[^.]{0,140}resume"
-            r"|resume[^.]{0,140}\bG7\b"
-            r"|resume[^.]{0,80}(not yet|is not|does not|still)"
-            r"|(not yet|still)[^.]{0,80}resume", text, re.I,
-        ), f"{surface} does not say end-to-end exact resume is still G7"
-        # ...and "dropout" is still advertised as unsupported.
+            r"\bG7\b[^.]{0,140}resume|resume[^.]{0,140}\bG7\b", text, re.I,
+        ), f"{surface} does not attribute the end-to-end exact resume to G7"
+        # ...and the boundary that G10 moved is still described, so a
+        # reader can see what remains unsupported (float32, CUDA, AMP).
         assert re.search(r"unsupported|UNSUPPORTED", text), surface
 
 
@@ -6374,3 +6383,243 @@ def test_the_phase_g_closure_matrix_is_recorded_with_observed_results():
         assert evidence in durable, (
             f"docs/backend_experiments.md records no {evidence!r} evidence"
         )
+
+
+# --- Post-Phase-G current-status reconciliation --------------------------
+#
+# The guards above pin what each *milestone* shipped. These pin something
+# narrower and easier to keep true: that no surface still describes the
+# repository's **present** state as it was before Phase G closed and
+# before the unavailable-backend skips were replaced.
+#
+# The stale claims they were written from all survived a full Phase-G
+# closure, because every existing guard was either milestone-scoped (and
+# so satisfied by a correct sentence elsewhere in the same file) or
+# written in the pre-closure negative. Each check below is therefore
+# deliberately:
+#
+#   * premised on a live registry value or a real file, never on prose;
+#   * scoped to *present-tense* claims, so an accurately time-scoped
+#     historical sentence ("dropout stayed in UNSUPPORTED through G9",
+#     "the checkpoint format stayed at version 1 for the whole of Phase
+#     F", "Phase F closed with five expected skips") still passes; and
+#   * a handful of assertions rather than dozens of wording rules.
+#
+# When Phase H opens, the only edits needed here are ``_LATEST_PHASE`` and
+# the milestone tokens in ``_CLOSED_MILESTONES``.
+
+# Where the repository states its *current* status in prose.
+CURRENT_STATUS_SURFACES = (
+    "README.md",
+    "CLAUDE.md",
+    "docs/project_summary.md",
+    "docs/roadmap.md",
+    "docs/native_support_matrix.md",
+    "docs/backend_experiments.md",
+    "docs/architecture.md",
+    "src/tensorforge/experimental/__init__.py",
+)
+
+_LATEST_PHASE = "G"
+_CLOSED_MILESTONES = ("G7", "G8", "G9", "G10")
+
+# Past-tense and milestone-scoping markers. A span carrying one of these
+# is describing a moment in the project's history, which stays accurate
+# and must not be banned.
+_TIME_SCOPED = re.compile(
+    r"\b(was|were|had|until|through|before|then|earlier|previously"
+    r"|historically|no longer|used to|at G\d|by G\d|at F\d|stayed|stays"
+    r"|remained|left|since|once|would|unchanged)\b", re.I,
+)
+
+
+def _time_scoped(text, match, before=110, after=60):
+    """True when the matched span sits inside history rather than a claim
+    about the repository as it is now."""
+    window = text[max(0, match.start() - before):match.end() + after]
+    return _TIME_SCOPED.search(window) is not None
+
+
+def test_only_the_newest_phase_is_called_the_latest_phase():
+    """The failure this section exists for: two documents claiming
+    different latest phases at once, and one document claiming both.
+
+    Directed patterns, not a proximity window, so the honest sentence
+    "Phase F is complete; the latest phase is Phase G" passes on both
+    halves while "Phase F is the latest phase" fails."""
+    from tensorforge.backends import cpp
+
+    # Premise, from the live registry: Phase G really did close.
+    assert "NativeDropout" in cpp.NATIVE_MODULES
+    assert "dropout" not in cpp.UNSUPPORTED
+
+    forms = (
+        re.compile(r"Phase ([A-G])\b[^.;]{0,60}?\bis the latest\b", re.I),
+        re.compile(r"latest (?:completed )?(?:native )?phase is Phase "
+                   r"([A-G])\b", re.I),
+        re.compile(r"latest (?:completed )?(?:native )?phase[^.;]{0,40}?"
+                   r"\bPhase ([A-G])\b", re.I),
+    )
+    for surface in CURRENT_STATUS_SURFACES:
+        text = _status_text(surface)
+        for pattern in forms:
+            named = {match.group(1).upper()
+                     for match in pattern.finditer(text)}
+            assert named <= {_LATEST_PHASE}, (
+                f"{surface} calls a phase other than {_LATEST_PHASE} the "
+                f"latest phase: {sorted(named)}"
+            )
+
+
+def test_no_current_status_surface_leaves_a_closed_milestone_pending():
+    """G7 through G10 all shipped, and each left a file behind. No surface
+    may still present one as future work.
+
+    Time-scoped sentences are excused, because "at G5 the end-to-end
+    resume remained ahead as the G7 resume" is an accurate record of that
+    milestone and must survive."""
+    deliverables = {
+        "G7": "examples/native_dropout_training.py",
+        "G8": "benchmarks/benchmark_native_dropout.py",
+        "G9": "tests/test_native_phase_g.py",
+        "G10": "tests/test_native_phase_g_closure.py",
+    }
+    for milestone, path in deliverables.items():   # premise: they exist
+        assert (REPO_ROOT / path).is_file(), (milestone, path)
+
+    pending = (r"(deliverable|future work|not yet (?:demonstrated|shipped"
+               r"|started|begun|complete|closed)|has not (?:yet )?"
+               r"(?:begun|started|shipped|closed)|\bnot started\b"
+               r"|is pending|still ahead)")
+    milestones = "|".join(_CLOSED_MILESTONES)
+    patterns = (
+        re.compile(r"\b(?:" + milestones + r")\b[^.]{0,80}?" + pending,
+                   re.I),
+        re.compile(pending + r"[^.]{0,80}?\b(?:" + milestones + r")\b",
+                   re.I),
+    )
+    for surface in CURRENT_STATUS_SURFACES:
+        text = _status_text(surface)
+        for pattern in patterns:
+            offenders = [match.group(0) for match in pattern.finditer(text)
+                         if not _time_scoped(text, match)]
+            assert offenders == [], (
+                f"{surface} still presents a closed Phase-G milestone as "
+                f"future work: {offenders[:3]}"
+            )
+
+
+def test_no_current_status_surface_calls_native_dropout_or_rng_absent():
+    """Native RNG and Dropout exist. The bare-absence forms ("no dropout
+    or native RNG", "the native line does not have ... a native RNG") are
+    what the pre-closure limitation lists carried, and neither word order
+    is caught by the milestone guards above."""
+    import tensorforge.experimental as experimental
+    from tensorforge.backends import cpp
+
+    # Premise, from the live registry and exports.
+    assert "dropout_forward" in cpp.TENSOR_CORE_OPS
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    assert "NativeDropout" in cpp.NATIVE_MODULES
+    for name in ("NativeGenerator", "NativeDropout"):
+        assert name in experimental.__all__, name
+
+    # "native RNG"/"native dropout" as a *capability*: the qualifier keeps
+    # "no Dropout backward kernel exists" (true, and a deliberate design
+    # decision) out of the scan.
+    subject = (r"(native RNG|native random(?:-number)? (?:state|API|support)"
+               r"|native dropout|NativeDropout|NativeGenerator"
+               r"|dropout (?:support|capability))")
+    absent = (r"(does not exist|do(?:es)? not have|is absent|are absent"
+              r"|has not shipped|is missing|is unsupported"
+              r"|remains? unsupported|is still unsupported"
+              r"|not implemented|unimplemented)")
+    patterns = (
+        re.compile(subject + r"[^.]{0,90}?" + absent, re.I),
+        re.compile(absent + r"[^.]{0,90}?" + subject, re.I),
+        # The bare list form the limitation sections carried.
+        re.compile(r"\bno\s+dropout\s+or\s+(?:a\s+)?native\s+RNG", re.I),
+        re.compile(r"\bno\s+(?:native\s+)?RNG\s+or\s+dropout", re.I),
+    )
+    for surface in CURRENT_STATUS_SURFACES:
+        text = _status_text(surface)
+        for pattern in patterns:
+            offenders = [match.group(0) for match in pattern.finditer(text)
+                         if not _time_scoped(text, match)]
+            assert offenders == [], (
+                f"{surface} presents native RNG or Dropout as absent: "
+                f"{offenders[:3]}"
+            )
+
+
+def test_no_current_status_surface_calls_checkpoint_version_one_current():
+    """Format version 2 is the current one, and version 1 stays loadable.
+
+    Sentence-scoped and doubly gated — a sentence must both assert
+    currency *and* carry no milestone marker — so the many accurate
+    milestone records ("the checkpoint format stays version 1", written of
+    F3, F4, E8, and G4) all survive."""
+    from tensorforge.experimental import native_checkpoint
+
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+
+    subject = re.compile(r"format[^.]{0,60}version 1\b"
+                         r"|version 1[^.]{0,60}format", re.I)
+    currency = re.compile(r"\b(current|currently|latest|today|now)\b", re.I)
+    scoped = re.compile(
+        r"\b([A-G]\d{1,2})\b|\bv3\.\d|\bunchanged\b|\bstay\w*\b|\bstill\b"
+        r"|\bcompatib\w*|\barchive\w*|\bload\w*|\bthrough\b|\bwas\b|\bat\b",
+        re.I,
+    )
+    for surface in CURRENT_STATUS_SURFACES:
+        text = _status_text(surface)
+        for sentence in re.split(r"(?<=[.!?])\s+", text):
+            if not subject.search(sentence):
+                continue
+            assert not (currency.search(sentence)
+                        and not scoped.search(sentence)), (
+                f"{surface} presents checkpoint format version 1 as the "
+                f"current format: {sentence[:160]!r}"
+            )
+
+
+def test_the_current_testing_story_claims_no_expected_skips():
+    """The post-Phase-G maintenance executed the five unavailable-backend
+    behaviors in child processes instead of skipping them, so the suite
+    now runs with **zero** skips.
+
+    The premise is the real test module and its real mechanism, and the
+    scan is limited to the summary's own current testing section — the
+    per-phase closure totals in release_history.md and the design
+    documents record what was true then and are deliberately untouched."""
+    unavailable = REPO_ROOT / "tests" / "test_native_backend_unavailable.py"
+    assert unavailable.is_file()
+    source = unavailable.read_text(encoding="utf-8")
+    assert "subprocess" in source, (
+        "the unavailable-backend contract no longer runs in a child process"
+    )
+
+    summary = _status_text("docs/project_summary.md")
+    assert "Testing and reliability" in summary
+    testing = summary.split("Testing and reliability", 1)[1]
+    testing = testing.split("Current limitations", 1)[0]
+    stale = re.compile(
+        r"\b(\d+|one|two|three|four|five)\s+(?:expected\s+)?skip(?:s|ped)\b",
+        re.I,
+    )
+    for match in stale.finditer(testing):
+        count = match.group(1).lower()
+        resolved = _NUMBER_WORDS.get(count)
+        if resolved is None and count.isdigit():
+            resolved = int(count)
+        assert resolved == 0, (
+            f"the project summary's current testing section still claims "
+            f"expected skips: {match.group(0)!r}"
+        )
+    # ...and it says positively how the missing-backend contract is now
+    # covered, so the zero is explained rather than merely asserted.
+    assert re.search(r"subprocess|child process", testing, re.I), (
+        "the project summary does not say the missing-backend contract is "
+        "executed in a child process"
+    )

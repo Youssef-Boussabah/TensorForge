@@ -248,7 +248,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
-- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, and milestone G7, the deterministic stochastic training example and its exact checkpoint resume (no capability), and milestone G8, the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` (also no capability — correctness gated before timing, no speed asserted), and milestone G9, the cross-cutting integration suite `tests/test_native_phase_g.py` (integration evidence only — no capability, and no runtime file changed), and milestone G10, the phase closure — the Release/Debug/sanitizer validation matrix, the documentation reconciliation, and the single registry line that finally removed `dropout` from `UNSUPPORTED` — are all complete, so end-to-end **exact stochastic training resume is demonstrated** and native Dropout is now supported on the experimental native float64 CPU line)
+- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **complete**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, and milestone G7, the deterministic stochastic training example and its exact checkpoint resume (no capability), and milestone G8, the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` (also no capability — correctness gated before timing, no speed asserted), and milestone G9, the cross-cutting integration suite `tests/test_native_phase_g.py` (integration evidence only — no capability, and no runtime file changed), and milestone G10, the phase closure — the Release/Debug/sanitizer validation matrix, the documentation reconciliation, and the single registry line that finally removed `dropout` from `UNSUPPORTED` — are all complete, so end-to-end **exact stochastic training resume is demonstrated** and native Dropout is now supported on the experimental native float64 CPU line)
 
 ## Limitations
 
@@ -261,7 +261,8 @@ Honest expectations:
   yet, no dtype promotion or casting, and no implicit dispatch into
   `tensorforge.Tensor`.
 - The native CNN stack (Phase D), the native classification stack
-  (Phase E), and the native normalization stack (Phase F) are all
+  (Phase E), the native normalization stack (Phase F), and native RNG and
+  Dropout (Phase G) are all
   complete — but "complete" means *these* capabilities
   work and are validated, not that the native line is finished. All three
   normalization modules
@@ -275,12 +276,18 @@ Honest expectations:
   (`benchmarks/benchmark_native_normalization.py`), F8 shipped the
   cross-cutting integration and semantic guardrails
   (`tests/test_native_phase_f.py`), and F9 closed the phase under
-  Release/Debug builds and Clang ASan/UBSan/LeakSanitizer. What the
-  native line still does **not** have: dropout
-  or a native RNG, data loaders, native integer
-  tensors, further dtypes or devices, CUDA, AMP, and any implicit
-  dispatch into `tensorforge.Tensor`. Native checkpoints capture no
-  scheduler or random state, and the classification loss supports
+  Release/Debug builds and Clang ASan/UBSan/LeakSanitizer. Phase G then
+  added native RNG and Dropout — `NativeGenerator`, the stateless Dropout
+  Core, the differentiable `NativeTensor.dropout`, and `NativeDropout` —
+  closing at G10 under the same validation matrix. What the
+  native line still does **not** have: data loaders, native integer
+  tensors, further dtypes or devices, CUDA, AMP, a generic random-number
+  API, `Dropout2d`/`Dropout3d`, and any implicit
+  dispatch into `tensorforge.Tensor`. Native checkpoints capture
+  parameters, persistent buffers, optimizer state, and generator state,
+  but **no** data-loader position, shuffle or epoch state, scheduler
+  state, Python `random`, or NumPy global RNG, and the classification
+  loss supports
   `"mean"`/`"sum"` only — no `reduction="none"`, class weights,
   `ignore_index`, label smoothing, or soft targets. See the
   [native support matrix](docs/native_support_matrix.md).
@@ -297,12 +304,13 @@ Honest expectations:
 **v3.0 — the stable Python framework line is complete**, covered by the
 test suite and documented. **The experimental native line — merged into
 `main`, and reached only through the explicit `tensorforge.backends` and
-`tensorforge.experimental` namespaces — has completed Phases A–F**:
+`tensorforge.experimental` namespaces — has completed Phases A–G**:
 Phase A (native CPU runtime),
 Phase B (native autograd), Phase C (the native training stack),
 Phase D (the native CNN stack), Phase E (native classification and
 stable math), and Phase F (native normalization and stateful buffers)
-are all complete. Phase C shipped
+are all complete, and so is Phase G (native RNG and Dropout), the latest
+completed native phase. Phase C shipped
 parameters, modules, state dictionaries,
 Linear/ReLU/Sequential, MSE loss, parameter versioning with stale-graph
 safety, `sqrt`/`reciprocal` optimizer primitives, SGD and adaptive Adam,

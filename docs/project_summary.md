@@ -139,11 +139,17 @@ training, the input object itself in evaluation, identity at `p == 0`,
 over one registered generator it owns or shares, and G5 native checkpoint
 **format version 2** — persisted generator state with its shared-generator
 alias topology, strict topology validation, version-1 compatibility, and
-the whole-checkpoint load transaction. Above that nothing
-exists: **exact stochastic *training* resume is still a G7 deliverable**,
-reproducibility is exact only for the state actually captured, and
-`dropout` is still listed unsupported beside `float32`,
-`cuda`, and `amp`. The two
+the whole-checkpoint load transaction. G6 hardened the RNG, graph,
+ownership, and checkpoint contracts, G7 **demonstrated** the end-to-end
+exact stochastic training resume
+(`examples/native_dropout_training.py`), G8 characterized it honestly
+(`benchmarks/benchmark_native_dropout.py`), G9 added the cross-cutting
+integration suite (`tests/test_native_phase_g.py`), and G10 closed the
+phase — the Windows Release/Debug and Clang ASan/UBSan/LeakSanitizer
+validation matrix — after which `dropout` **left** `UNSUPPORTED`. Native
+Dropout is therefore supported **on the experimental native float64 CPU
+line** and nowhere else; reproducibility stays exact only for the state
+actually captured, and float32, CUDA, and AMP remain unsupported. The two
 engines never mix: explicit entry via
 `NativeTensor.from_array`, explicit exit via `to_numpy()`, no implicit
 dispatch. The exact per-operation status lives in the
@@ -151,7 +157,7 @@ dispatch. The exact per-operation status lives in the
 
 ## Testing and reliability (both lines)
 
-Over 4,900 pytest tests cover every feature of both lines: known-value
+4,920 pytest tests cover every feature of both lines: known-value
 checks against hand-computed math, finite-difference gradient
 verification (stable and native), exact resume-equivalence tests for
 checkpointing, NumPy-tripwire tests proving the native paths never
@@ -165,17 +171,21 @@ atomic running-statistics transactions, generator reservation and
 call-consumption discipline, whole-checkpoint transaction rollback, and
 lifetime discipline), and guardrail tests keeping docs, examples, and
 the public API from drifting. The native C++ kernels additionally have
-dependency-free CTest binaries, validated under ASan/UBSan. Native tests
-skip cleanly when the backend is not built; CI builds it from source
-and runs everything.
+dependency-free CTest binaries, validated under ASan/UBSan. CI builds the
+backend from source and runs everything.
 
-The completed Phase-F workflow's final full Python run reported
-**3,632 passed and 5 skipped** with the Release backend active. All five
-skips are the standing "the backend *is* built, so the unavailable path
-cannot be forced" cases — never a missing-backend skip. Alongside it,
-Phase F's closure recorded 10/10 native CTests in both Release and Debug
-and 1,968 sanitized normalization-focused Python tests with zero ASan
-and zero UBSan diagnostics.
+With the Release backend active the full suite currently reports
+**4,920 passed, 0 skipped**. There are **no expected skips**: the
+missing-backend contract — that the five Phase-E operations raise
+`ImportError` with build instructions and never fall back to NumPy — used
+to be skipped on every machine that could actually run the native suite,
+and is now *executed* instead, simulated in fresh child processes that
+repoint their own module-private library path at a nonexistent file
+(`tests/test_native_backend_unavailable.py`). The real compiled library
+and the parent pytest process are never touched, and each case
+fingerprints the library on both sides of its subprocess to prove it.
+Historical per-phase closure totals stay in
+[release_history.md](release_history.md) rather than being restated here.
 
 ## Current limitations
 
@@ -183,11 +193,18 @@ Not production-ready and not a PyTorch replacement. The stable
 framework is NumPy on CPU; `Conv2d` and `MaxPool2d` use deliberately
 naive loops, and so do their native counterparts (direct nested loops —
 no im2col, BLAS, threading, or SIMD). The native line is float64/cpu
-only — no CUDA backend, no dtype promotion or casting,
-no dropout or native RNG, no data loaders or native
-integer tensors, no scheduler or
-random-state capture in native checkpoints, and
-no dispatch into `tensorforge.Tensor`. Benchmarks are hardware-specific
+only — no CUDA backend, no float32/float16 or dtype promotion and
+casting, no AMP, no data loaders or native integer tensors, and no
+dispatch into `tensorforge.Tensor`. Its Dropout is one deterministic
+stream behind an explicit `NativeGenerator`, not a generic random-number
+API, and there is no `Dropout2d`/`Dropout3d`. Native checkpoints persist
+parameters, persistent buffers, optimizer state, and generator state, and
+deliberately **not** data-loader position, shuffle state, epoch or
+scheduler state, Python's `random`, or NumPy's global RNG — so
+reproducibility is exact for the state actually captured, and
+full-program determinism is not claimed. Ordinary concurrent training is
+not claimed thread-safe either: the serializability guarantee covers the
+participating state transactions only. Benchmarks are hardware-specific
 characterizations, never universal speed claims. No real datasets, no
 external ML libraries.
 
@@ -215,112 +232,54 @@ deterministic classification training run with exact checkpoint resume,
 an honest characterization benchmark, and full closure validation — all
 still float64/CPU, with the checkpoint format unchanged at version 1.
 
-**Phase F — Native Normalization and Stateful Buffers — is the latest
-phase, and it is complete (F0–F9).** Milestone
-**F0** is complete: it locks the architecture contract in
-[native_normalization_design.md](native_normalization_design.md) —
-`NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d`
-composed from existing native operations with **no** new kernel, C ABI
-export, or Core method; persistent native running statistics; the rule
-that a live mutable running buffer is never captured as a rereadable
-graph operand; atomic two-buffer running-statistics updates; and
-state/checkpoint integration with format version 1 unchanged. **F0
-added design and documentation only — no numerical behavior.**
-**F1 is complete** too — a private atomic native-buffer state
-transaction, `load_state_dict` refactored onto it, and the
-`persistent_buffers` capability-reporting correction, all with **no
-normalization mathematics**.
-**F2 is complete**: `NativeLayerNorm` — the first native normalization
-module, stateless (no buffers, identical in train and eval),
-differentiable through the mean and the population variance, and
-**composed entirely from existing native operations** (`sqrt(var + eps)`,
-no Bessel correction) with no kernel, ABI symbol, Core method, custom
-backward, or `NativeTensor` normalization operation. `"NativeLayerNorm"`
-has joined `NATIVE_MODULES` and `"layernorm"` has left `UNSUPPORTED`.
-**F3 is complete**: `NativeBatchNorm1d` — the **first stateful native
-numerical module**, `(N, C)` batch normalization with differentiable
-training statistics (gradients through the batch mean *and* the
-population variance), persistent native `running_mean`/`running_var`
-buffers advanced graph-free by one **atomic two-buffer transaction**
-(identities preserved, no parameter version moved), and evaluation from
+**Phase F — Native Normalization and Stateful Buffers — is complete
+(F0–F9).** Its architecture contract is locked in
+[native_normalization_design.md](native_normalization_design.md)
+(milestone **F0** — design and repository reconciliation, no numerical
+behavior). **F1** shipped the private atomic native-buffer state
+transaction, refactored `load_state_dict` onto it, and corrected
+`STATE_SUPPORT` to report the `persistent_buffers` capability — state
+management and capability reporting only, no normalization mathematics.
+**F2** shipped `NativeLayerNorm`, the first native normalization module:
+stateless (no buffers, identical in train and eval), differentiable
+through the mean and the population variance, and **composed entirely
+from existing native operations** (`sqrt(var + eps)`, no Bessel
+correction) with no kernel, ABI symbol, Core method, custom backward, or
+`NativeTensor` normalization operation; `"layernorm"` left `UNSUPPORTED`.
+**F3** shipped `NativeBatchNorm1d`, the **first stateful native numerical
+module**: `(N, C)` batch normalization with differentiable training
+statistics (gradients through the batch mean *and* the population
+variance), persistent native `running_mean`/`running_var` buffers
+advanced graph-free by one **atomic two-buffer transaction** (both
+identities preserved, no parameter version moved), and evaluation from
 **graph-safe immutable snapshots** of those buffers, so a later training
 step, or a buffer-only state or checkpoint load, cannot change an earlier
-eval graph's gradient (a full checkpoint load also replaces
-`gamma`/`beta`, which correctly stales that graph through the unchanged
-parameter-version rule). It too is composed from existing operations — no
-kernel, ABI symbol, Core method, custom backward, or
-`NativeTensor.batch_norm` operation — and the checkpoint format stays at
-version 1. `"NativeBatchNorm1d"` has joined `NATIVE_MODULES`, while
-`"batchnorm"` **stays** in `UNSUPPORTED` because the unqualified name is
-only honest once the NCHW shape ships. **F4 is complete**:
-`NativeBatchNorm2d` — NCHW `(N, C, H, W)` batch normalization reducing
-over N, H, and W, over the **same** shared private implementation, which
-it extends with only its rank, reduction axes, `(1, C, 1, 1)` broadcast
-layout, and the channels-last permutation its rank-1 affine parameters
-need. `"NativeBatchNorm2d"` has joined `NATIVE_MODULES`, and with both
-shapes live `"batchnorm"` has **left** `UNSUPPORTED`, which now reads
-exactly `("dropout", "float32", "cuda", "amp")`. That completes the
-numerical normalization **module** surface. **F5 is complete**: the
-exhaustive state/checkpoint, ownership, and graph-safety hardening — a
-focused `tests/test_native_normalization_state.py` plus narrow additions
-to the generic buffer and checkpoint suites — proves §7–§10 by executable
-test (canonical dotted buffer keys, independent state snapshots,
-strict/non-strict loads, exact never-casting metadata validation, mixed
-parameter/buffer transaction atomicity, buffer identity across state and
-checkpoint loads, exact eval-output reproduction, the
-buffer-only-versus-full stale-graph distinction, the save/corrupt-load
-failure boundaries, eval-graph snapshot safety under `retain_graph` and a
-failed retryable backward, and the live-storage baselines). F5 is **tests
-and documentation only** — no numerical behavior, no new public
-capability, and the checkpoint format stays version 1. **F6 is complete**:
-`examples/native_normalization_training.py` trains a
-`Linear → BatchNorm1d → ReLU → LayerNorm → Linear` regressor for 24
-deterministic `NativeAdam` steps with `NativeMSELoss` (98.9% loss
-reduction), proves two uninterrupted runs bit-identical, and resumes an
-interrupted run into a fresh model/optimizer pair that reproduces the
-remaining losses, every parameter, the NativeAdam state, both BatchNorm
-`running_mean`/`running_var`, the final training-step prediction, and the
-final evaluation-mode output exactly (format version 1 unchanged, training
-flags runtime-only) — one example and its integration test, adding no
-capability. **F7 is complete**:
-`benchmarks/benchmark_native_normalization.py` characterizes the stack
-with nine cases (both LayerNorm directions, all three BatchNorm1d paths,
-all three BatchNorm2d paths, and one complete F6-style normalized
-training step), each **correctness-gated before any timing**, six against
-`stable_tensorforge` equivalents on identical state and three (the
-BatchNorm2d shapes) labelled `native_only` because the stable line has no
-public `BatchNorm2d` to time against, though those keep a rigorous NumPy
-NCHW and transformed-oracle correctness gate. Medians with min, max, and
-spread after warm-up; `--smoke`/`--json`; **no result file, no speed
-assertion, no committed timing number, and no CI timing threshold** —
-measurement only, adding no capability.
-**F8 is complete**: `tests/test_native_phase_f.py` proves the
-cross-cutting interactions — one integrated convolution / BatchNorm2d /
-pooling / linear / BatchNorm1d / LayerNorm classifier over raw logits and
-the fused loss, trained by `NativeAdam` and resumed **exactly** from one
-version-1 checkpoint (all four running-statistic buffers and the
-evaluation-mode output included); the three saved-resource families
-coexisting safely in one eval graph; buffer versus parameter mutation
-attributed to the right cause; the versioning archetypes; shared and
-frozen parameters; a non-contiguous NCHW input; honest per-boundary
-failure atomicity; and reality-derived capability guardrails — tests and
-documentation only, adding no capability.
-Milestone **F9 is complete**: the phase closure — fresh Windows Release
-**and** Debug builds each passing the full existing 10-test CTest suite
-with zero project warnings and the active runtime proved to stay
-Release; a fresh Clang 18.1.3 ASan+UBSan build whose instrumentation is
-*proved* (22 `__asan*` and 13 `__ubsan*` dynamic symbols; the library
-will not load without the sanitizer runtime); 10/10 sanitized native
-CTests with leak detection enabled; 1,968 sanitized
-normalization-focused Python tests with zero ASan and zero UBSan
-diagnostics; the F6 example and the F7 benchmark smoke path clean under
-the sanitized library; and a practical LeakSanitizer lifecycle returning
-native live storage **exactly** to baseline, its remaining process-exit
-allocations identified honestly as CPython/NumPy shutdown retention with
-no TensorForge frame and no suppression file — **validation and
-documentation only, adding no numerical capability**. Closing Phase F
-closes that phase only; the native line remains experimental,
-float64/CPU, and explicitly scoped.
+eval graph's gradient — while a full checkpoint load also replaces
+`gamma`/`beta` and therefore stales it through the unchanged
+parameter-version rule. **F4** added `NativeBatchNorm2d` — NCHW
+`(N, C, H, W)` normalization reducing over N, H, and W over the **same**
+shared private implementation, which it extends with only its rank,
+reduction axes, `(1, C, 1, 1)` broadcast layout, and the channels-last
+permutation its rank-1 affine parameters need — and with both shapes live
+`"batchnorm"` left `UNSUPPORTED` too. Neither module added a kernel, ABI
+symbol, Core method, custom backward, or `NativeTensor.batch_norm`
+operation, and the checkpoint format stayed at version 1 for the whole
+phase. **F5** then proved the state, checkpoint, ownership, and
+graph-safety contracts by exhaustive test
+(`tests/test_native_normalization_state.py`), **F6** shipped a
+deterministic normalized training example whose interrupted run resumes
+exactly (`examples/native_normalization_training.py`), **F7** the honest
+nine-case benchmark characterization
+(`benchmarks/benchmark_native_normalization.py` — correctness gated
+before any timing, no result file, no speed assertion, no committed
+timing number), **F8** the cross-cutting integration and semantic
+guardrails (`tests/test_native_phase_f.py`), and **F9** the phase closure
+under fresh Windows Release **and** Debug builds and a Clang
+ASan/UBSan/LeakSanitizer matrix that returned native live storage exactly
+to baseline with no suppression file — F5 through F9 adding **no**
+numerical capability between them. Closing Phase F closed that phase
+only; the native line remains experimental, float64/CPU, and explicitly
+scoped.
 
 **Phase G — Native RNG and Dropout — then opened, and it is now
 complete.** Milestone **G0 is complete**: the architecture contract in
