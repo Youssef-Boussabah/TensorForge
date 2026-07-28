@@ -67,8 +67,8 @@ Release and Debug native builds, Clang ASan/UBSan and LeakSanitizer
 validation, and documentation reconciliation — adding no numerical
 capability. **Phase E is complete.**
 
-**Phase F — Native Normalization and Stateful Buffers — is the latest
-phase, and it is complete (F0-F9).** Its architecture contract is locked in
+**Phase F — Native Normalization and Stateful Buffers — is complete
+(F0-F9).** Its architecture contract is locked in
 ``docs/native_normalization_design.md`` (milestone **F0**, complete:
 design and repository reconciliation only, adding no numerical
 behavior). It specifies ``NativeLayerNorm``, ``NativeBatchNorm1d``, and
@@ -129,7 +129,8 @@ owning ``(1, C, 1, 1)`` snapshots, the checkpoint format stays version
 ``NativeTensor.batch_norm`` operation exists.
 ``"NativeBatchNorm2d"`` has joined ``NATIVE_MODULES`` and the exports,
 and with both shapes live ``"batchnorm"`` has **left** ``UNSUPPORTED``,
-which now reads exactly ``("dropout", "float32", "cuda", "amp")``.
+which at that point read exactly ``("dropout", "float32", "cuda",
+"amp")``.
 **That completes the numerical normalization module surface. Milestone
 F5 is complete** — the exhaustive state, checkpoint, ownership, and
 graph-safety hardening (a focused ``tests/test_native_normalization_state.py``
@@ -195,28 +196,51 @@ frame and no suppression file — **validation and documentation only, no
 numerical capability, no C++, no CTest, no ABI or ctypes surface, and no
 production behavior changed**. **Phase F is complete.**
 
-**Phase G — Native RNG and Dropout — is the current phase and is in
-progress.** Its contract is locked in
-``docs/native_rng_dropout_design.md`` (milestone **G0**). **Milestone G1
-is complete**: it ships ``NativeGenerator`` below — explicit,
-inspectable, serializable random *state* — and makes generators a fourth
-``NativeModule`` registration category beside parameters, buffers, and
-child modules (``register_generator``, ``generators()``,
-``named_generators()``, ``generator_state_dict()``,
-``load_generator_state_dict()``). **G1 generates no random values.**
-There is no finalizer, no bit derivation, no mask, no random kernel, no
-C ABI symbol, no ctypes declaration, no ``NativeTensorCore`` method, and
-no ``NativeTensor`` operation; ``NativeDropout`` does not exist,
-``"dropout"`` is still in ``UNSUPPORTED`` (it leaves only at G10, after
-the closure matrix), the native checkpoint format is still **version 1**
-and does not serialize generator state, and **milestones G2-G10 have not
-started**. What the native line still does **not** have is further
-activations/math, dropout or any numerical RNG, float32/dtype expansion,
-CUDA, AMP, and data-pipeline abstractions.
+**Phase G — Native RNG and Dropout — is complete (G0-G10), and it is the
+latest completed native phase.** Its contract is locked in
+``docs/native_rng_dropout_design.md`` (milestone **G0**). **G1** ships
+``NativeGenerator`` below — explicit, inspectable, serializable random
+*state* — and makes generators a fourth ``NativeModule`` registration
+category beside parameters, buffers, and child modules
+(``register_generator``, ``generators()``, ``named_generators()``,
+``generator_state_dict()``, ``load_generator_state_dict()``); **G1
+generates no random values by itself**. **G2** ships the deterministic
+**stateless** ``dropout_forward`` Core — the locked
+``tensorforge.splitmix64`` derivation and an inverted-Dropout float64 CPU
+kernel behind the single guarded export ``tf_core_dropout_forward``,
+which touches no generator. **G3** ships the differentiable
+``NativeTensor.dropout(p, *, generator)`` over that Core: a **required,
+keyword-only** generator (no default, process-global, or module-global
+stream, and no NumPy or Python ``random`` fallback), a graph-owned
+multiplier mask whose existing ``multiply`` is the whole backward, and a
+reserve/commit/abandon call transaction that consumes exactly one
+generator call per **successful** stochastic forward and none on any
+failure, in evaluation, at ``p == 0``, or in backward. **G4** ships the
+``NativeDropout`` module exported below. **G5** moves the native
+checkpoint format to **version 2**, persisting every registered
+generator's state **and its alias topology** (which layers share a
+stream), with version-1 archives still loadable under the locked
+compatibility rule, the whole load running as one rollback-guarded
+transaction, and every participating state replacement serialized under
+one private shared lock. **G6** hardened the RNG, graph, ownership, and
+checkpoint contracts, **G7** demonstrated the end-to-end exact stochastic
+training resume (``examples/native_dropout_training.py``), **G8**
+characterized the stack honestly
+(``benchmarks/benchmark_native_dropout.py``), **G9** added the
+cross-cutting integration suite (``tests/test_native_phase_g.py``), and
+**G10** closed the phase under fresh Windows Release and Debug builds and
+a Clang ASan/UBSan/LeakSanitizer matrix — only then did ``"dropout"``
+leave ``UNSUPPORTED``, which now reads exactly ``("float32", "cuda",
+"amp")``. The claim stays narrow: Dropout is supported in this
+**experimental native float64 CPU** line, never in the stable framework,
+and reproducibility is exact only for the state actually captured. What
+the native line still does **not** have is further activations/math, a
+generic random-number API, ``Dropout2d``/``Dropout3d``, float32/dtype
+expansion, CUDA, AMP, and data-pipeline abstractions.
 
 ``NativeGenerator`` (Phase G, milestone G1) is the Python half of the
 phase's central split — random state is Python-managed, and the native
-random kernels a later milestone adds are stateless and receive the whole
+random kernels (milestone G2) are stateless and receive the whole
 key for one call. It is a **pure-Python value holder**: an algorithm
 identifier (``"tensorforge.splitmix64"``) and version, an unsigned 64-bit
 seed, and a counter of **committed** stochastic calls, all exposed as
@@ -297,14 +321,18 @@ snapshots and per-parameter step counts for NativeAdam, exact
 validation, staged atomic loading that never touches parameter
 values/versions/gradients, and proven deterministic in-memory training
 continuation. ``save_native_checkpoint``/``load_native_checkpoint``
-(Advanced C++ v3.14) persist a NativeModule plus optionally one native
-optimizer's state and JSON-compatible metadata to one explicit,
-pickle-free NPZ archive (format ``"tensorforge.native_checkpoint"``,
-version 1) — strict validation before any mutation, atomic
+(Advanced C++ v3.14, extended by Phase G milestone G5) persist a
+NativeModule plus optionally one native optimizer's state, every
+registered generator's state and alias topology, and JSON-compatible
+metadata to one explicit, pickle-free NPZ archive (format
+``"tensorforge.native_checkpoint"``, now **version 2**; version-1
+archives still load under the locked compatibility rule) — strict
+validation before any mutation, atomic
 temporary-file replacement, strict optimizer presence/type matching,
 deterministic file resume, and ``allow_pickle=False`` loading — fully
 separate from the stable ``tensorforge.serialization`` (no scheduler
-or random-state capture, no ``map_location``). Still fully separate
+state, data-loader position, Python ``random``, or NumPy global-RNG
+capture, and no ``map_location``). Still fully separate
 from ``tensorforge.nn`` and ``tensorforge.optim``.
 
 ``NativeCrossEntropyLoss`` (Phase E, milestone E7) is the native
@@ -318,7 +346,7 @@ probabilities, no logits reread, no expected version snapshot, and full
 failure atomicity. Its ``"mean"``/``"sum"`` reduction is validated in the
 constructor by the operation's own validator and is **constructor
 configuration, not model state**: it contributes no ``state_dict()``
-entries and no checkpoint keys (format version 1 is unchanged).
+entries and no checkpoint keys (E7 changed no checkpoint schema).
 ``native_accuracy(logits, targets) -> float`` (also E7) is a
 **reporting-only** helper, not native C++ compute and not an autograd
 operation: it validates rank-2 logits and targets under the same strict

@@ -10,7 +10,7 @@ tested, and readable. The Python framework line is complete as of
 v3.0. The experimental C++ native line is merged into `main` and lives
 in the explicit `tensorforge.backends` / `tensorforge.experimental`
 namespaces rather than on a separate advanced branch. It
-has completed Phases A–F: Phase A — CPU runtime, Phase B — native
+has completed Phases A–G: Phase A — CPU runtime, Phase B — native
 autograd, Phase C — the native training stack, and Phase D — the
 native CNN stack, through Advanced C++ v3.16; Phase E — native
 classification and stable math — is *complete* (E0–E10), its contract
@@ -40,7 +40,7 @@ closure: `tests/test_native_phase_e.py` cross-cutting integration,
 Release and Debug builds with 10/10 CTests each, Clang ASan/UBSan and
 LeakSanitizer validation, and documentation reconciliation — no new
 numerical capability) all shipped. **Phase F — Native Normalization and
-Stateful Buffers — is the latest phase and is *complete* (F0–F9):**
+Stateful Buffers — is *complete* (F0–F9):**
 milestone F0 is complete (the architecture contract in
 `docs/native_normalization_design.md` plus repository reconciliation —
 **no numerical behavior**), F1 is complete (the private atomic
@@ -640,20 +640,21 @@ is the same object afterwards on both paths. The transaction adds **no
 new lock order**: the model and optimizer commits take no locks, and the
 only locks a load ever holds are generator locks, taken inside
 `replace_generator_states` in its existing global order.
-**G5 proves exact generator restoration — state, identity, topology, and
+**G5 proved exact generator restoration — state, identity, topology, and
 the next Dropout mask against the G2 Core at the restored call index —
-but not the end-to-end §11 story**: the interrupted stochastic
-*training* run reproduced into a fresh model/optimizer/generator set is
-the **G7** resume, which is not yet demonstrated — no such example,
-benchmark, or hardening suite exists. Reproducibility is
+but not the end-to-end §11 story**: at G5 the interrupted stochastic
+*training* run reproduced into a fresh model/optimizer/generator set
+remained ahead as the **G7** resume, which G7 then demonstrated.
+Reproducibility is
 exact **for the state actually captured**; Python's `random`, NumPy's
 global RNG, data-loader position, and scheduler state are not captured
 and full-program determinism is not claimed. That remaining gap, plus the
-unrun closure matrix, is why `UNSUPPORTED`
-still reads `("dropout", "float32", "cuda", "amp")` — `"dropout"` is the
+then-unrun closure matrix, is why `UNSUPPORTED`
+read `("dropout", "float32", "cuda", "amp")` at G5 — `"dropout"` was the
 one name deliberately in both an implemented inventory and that tuple,
 because the registry reports what is *closed and validated* while the
-inventories report what *exists*.
+inventories report what *exists*. It left that tuple at the **G10**
+closure, and `UNSUPPORTED` now reads `("float32", "cuda", "amp")`.
 **G6 is complete**: the hardening milestone, which added **no capability,
 operation, module, export, checkpoint field, or checkpoint version** and
 moved no registry value. `tests/test_native_phase_g_hardening.py` executes

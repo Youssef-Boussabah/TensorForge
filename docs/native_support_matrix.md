@@ -73,17 +73,21 @@ naming the generators it cannot supply, fabricating nothing. The whole
 load is one transaction: model, buffers, optimizer, and generators commit
 under a single rollback guard.
 
-Above that, nothing exists. **Exact stochastic resume across a complete
-training run is still a G7 deliverable** — G5 proves exact generator
-restoration (state, identity, topology, and the next Dropout mask at the
-restored call index), not an end-to-end interrupted run — and
-reproducibility is exact **only for the state actually captured** (no
-Python `random`, NumPy global RNG, data-loader position, or scheduler
-state). `dropout` is
-therefore still listed in the
-unsupported section below, and every capability table in this
-document other than the Core-operation, autograd-operation, and
-module rows added below is exactly what Phase F left. The stable Python
+Above that, G6 hardened the RNG, graph, ownership, and checkpoint
+contracts by adversarial test, **G7 demonstrated the end-to-end exact
+stochastic training resume** (`examples/native_dropout_training.py`: an
+interrupted run reloaded into a completely fresh model, optimizer, and
+generator set that reproduces the uninterrupted run by exact equality),
+G8 characterized the stack honestly
+(`benchmarks/benchmark_native_dropout.py` — correctness gated before
+timing, no speed asserted), G9 added the cross-cutting integration suite
+(`tests/test_native_phase_g.py`), and **G10 closed the phase** under
+fresh Windows Release and Debug builds and a Clang
+ASan/UBSan/LeakSanitizer matrix — after which, and not one milestone
+earlier, `dropout` **left** the unsupported list. Reproducibility is
+exact **only for the state actually captured** (no Python `random`, no
+NumPy global RNG, no data-loader position, and no scheduler state), and
+ordinary concurrent training is not claimed thread-safe. The stable Python
 framework's features (see
 [architecture.md](architecture.md)) are **not** listed here — a feature
 appears as supported only if the native stack itself provides it.
@@ -153,8 +157,8 @@ ASan/UBSan validation of the whole classification stack with **zero
 diagnostics attributable to TensorForge**, a practical LeakSanitizer pass
 with **no native leak**, the full Python regression suite, and
 documentation reconciliation across every status surface.
-**Phase F — Native Normalization and Stateful Buffers — is the latest
-phase and is *complete* (F0–F9).** Its architecture contract is locked in
+**Phase F — Native Normalization and Stateful Buffers — is *complete*
+(F0–F9).** Its architecture contract is locked in
 [native_normalization_design.md](native_normalization_design.md)
 (milestone **F0**, complete — design and repository reconciliation, no
 numerical behavior), **F1** is complete (the private atomic
@@ -405,7 +409,7 @@ Milestone **E7** then added the public surface over that operation:
 |---|---|---|
 | `NativeParameter` | Supported | Graph-free trainable leaf; value versioning; controlled `copy_value_` mutation |
 | `NativeModule` | Supported | Registration by assignment, recursive identity-deduplicated cycle-safe traversal, train/eval, `zero_grad()` |
-| Buffers | Supported | v3.15: `register_buffer(name, tensor, persistent=True)`, `buffers()` / `named_buffers()`; NativeTensor-backed non-`Parameter` persistent state (the infrastructure `NativeBatchNorm1d`'s running statistics use as of Phase F milestone **F3**; RNG state remains future work); identity-deduplicated, cycle-safe traversal; persistent buffers join `state_dict`/`load_state_dict` and checkpoints, non-persistent buffers are never serialized. Reported as `persistent_buffers` in `STATE_SUPPORT` since Phase F milestone **F1** — reconciliation of an under-reported capability, not a new feature |
+| Buffers | Supported | v3.15: `register_buffer(name, tensor, persistent=True)`, `buffers()` / `named_buffers()`; NativeTensor-backed non-`Parameter` persistent state (the infrastructure `NativeBatchNorm1d`'s running statistics use as of Phase F milestone **F3**; generator state is deliberately **not** a buffer — Phase G milestone **G1** gave it its own fourth registration category, listed below); identity-deduplicated, cycle-safe traversal; persistent buffers join `state_dict`/`load_state_dict` and checkpoints, non-persistent buffers are never serialized. Reported as `persistent_buffers` in `STATE_SUPPORT` since Phase F milestone **F1** — reconciliation of an under-reported capability, not a new feature |
 | `NativeGenerator` | Supported (state only) | G1 (Phase G): explicit, inspectable, serializable random **state** — **it generates no random values**. A pure-Python value holder owning **no native storage**, allocating nothing native, and having **no `close()`**, so its whole lifecycle leaves the native live-storage count untouched. Exactly four read-only fields: `algorithm` (`"tensorforge.splitmix64"`), `algorithm_version` (`1`), an unsigned 64-bit `seed`, and `calls` — the count of **committed** stochastic calls. `state()` returns an independent plain dict; `load_state()` / `reseed()` / `reset()` validate everything before assigning anything, so a rejected call leaves the generator bit-identical. Seeds are exact Python `int`s (`bool`, NumPy integer scalars, and `int` subclasses rejected; out-of-range raises rather than truncating); `seed=None` draws once through `secrets.randbits(64)`, and nothing consults the clock, the process id, an address, NumPy's global RNG, or Python's `random`. Identity is object identity — no value equality — and `copy`, `deepcopy`, and pickle are refused, because a copy would silently produce the same values in two places. Its private call transaction (`_reserve_call` → `_commit_call`/`_abandon_call`) is lock-protected and token-validated: one private `threading.RLock` covers reservation, commit, cancellation, and every state read and write with the caller's work outside it; at most one live reservation, so a concurrent **or** reentrant second caller raises *before* an index is minted; opaque single-use tokens make stale, foreign, duplicated, committed, and cancelled tokens inert; commit advances exactly once and cancel never advances; `load_state`/`reseed`/`reset` are refused mid-reservation; and exhaustion is checked under the lock at `2**64 − 1`, so the counter never wraps. Reservation creation is a **two-phase claim / construct / publish** transaction with the token built **outside** the lock: phase 1 publishes only an internal construction claim (no reservation, no counter or serial movement), phase 2 constructs the token holding no generator lock, phase 3 publishes the reservation and advances the serial exactly once, and phase 4 delivers the token. The four failure positions get **different** cleanup, because clearing the claim does nothing once a reservation is published: a failure between publication and delivery would leave an active reservation whose only token is being dropped, so it is cancelled by an **exact-match** cleanup on generator, serial, **and** index that leaves `calls` untouched and leaves a newer, foreign, committed, or already-abandoned reservation strictly alone — a failed delivery consumes an opaque serial, never a call index. Token construction is the one allocation in the path and allocation can run finalization, so keeping it outside the lock means **no user code, callback, or generator-owned allocation runs while a generator lock is held** — which is what stops a finalizer inverting the multi-generator lock order. While the claim stands, another reservation, `load_state`, `reseed`, `reset`, and `replace_generator_states` all raise and mutate nothing (inspection still works); any construction failure, `MemoryError` and `KeyboardInterrupt` included, releases the claim in `finally`, publishes nothing, and skips no serial. The lock stays an `RLock` because the multi-generator transaction re-enters through the same write seam it holds the locks around, and because CPython may collect at any remaining allocation under the lock. **Serialization for correctness — parallel stochastic execution is not claimed.** No derivation, kernel, ABI symbol, ctypes declaration, `NativeTensorCore` method, or `NativeTensor` operation exists |
 | Module generator registration | Supported (state only) | G1 (Phase G): generators are a **fourth** registered state category beside parameters, buffers, and child modules. Assignment registers (a `NativeGenerator` is an unambiguous native type); `register_generator(name, generator)` is the strict explicit form (`None` unregisters, `KeyError` when absent, non-generator raises `TypeError`); `module.name = None` and `del module.name` unregister; one name stays exactly one category, evicting in **both** directions; `_generators` joined the reserved-name set. `generators()` / `named_generators(prefix="", recurse=True)` ride the same deterministic pre-order depth-first, identity-deduplicated, cycle-safe walk parameters and buffers use, so one shared generator appears **once** under its first-discovered canonical name while two generators with identical state stay two entries. Registration stores the exact object, never a copy, and unregistering one alias never resets or invalidates a generator still referenced elsewhere. `generator_state_dict()` reports `{canonical_name: state}` as independent plain dicts, and `load_generator_state_dict(state, strict=True)` restores them in place through the shared `replace_generator_states` transaction — validate → **lock every unique target in one global identity order** → recheck each for a published *or under-construction* reservation while holding them all → snapshot → non-failing integer writes, with the rollback completing before any lock is released. So no reservation can begin on a target between the recheck and the end of the commit, two concurrent loads over overlapping generators (arriving through different modules, in opposite canonical order) cannot deadlock, and no other thread can observe a partial commit. Identities are preserved, a shared generator is locked and assigned exactly once, a conflicting state supplied through an alias is rejected (strict) or reported as unexpected (non-strict) rather than applied, and a target with a live reservation blocks the whole load while leaving that reservation intact. Reported as `generator_state` in `STATE_SUPPORT` since **G1** — an **in-memory** state capability, exactly like `persistent_buffers`; it does *not* mean generator state is checkpointed. Generators are deliberately **absent** from `state_dict()`, which stays contractually `{name: NativeTensor}` and is byte-for-byte unchanged for every existing model — and **not** persisted by native checkpoints, which stay at version 1 until **G5** |
 | `state_dict` / `load_state_dict` | Supported | In-memory, parameters and persistent buffers, atomic validate-then-commit with rollback (buffer identity preserved on restore). Generators are **not** included (Phase G milestone G1 gave them their own `generator_state_dict()` surface): this mapping stays contractually tensor-valued. Since **F1** the replacement half runs through the private `_native_state.replace_native_state` transaction, shared with the future normalization running-statistics update; `load_state_dict`'s public signature, validation order, error messages, key reporting, version semantics, and atomicity are unchanged |
@@ -426,7 +430,7 @@ Milestone **E7** then added the public surface over that operation:
 | `NativeSGD` | Supported | Minimal `value ← value − lr·grad`; identity-deduplicated; two-phase mutation-atomic `step()`; `zero_grad()`; in-memory `state_dict`/`load_state_dict` (v3.13: lr + positional parameter metadata) |
 | `NativeAdam` | Supported | Adaptive optimizer (v3.12): validated `lr`/`betas`/`eps`; persistent optimizer-owned native m/v moments and per-parameter step counts; bias correction via `sqrt`/`reciprocal` (no division); graph-free staged updates committed through `copy_value_`; skipped frozen/`grad=None` parameters never age state; explicit state lifetime — `close()` releases the moments; in-memory `state_dict`/`load_state_dict` (v3.13) |
 | Optimizer state (in-memory) | Supported | v3.13: one versioned schema (format 1, exact optimizer type tag), ordered positional shape/dtype/device parameter metadata — no object ids, names, values, or gradients — caller-owned independent NativeTensor m/v snapshots and per-parameter step counts (NativeAdam), exact validation with no casting or device movement, staged atomic loading that never touches parameter values, versions, gradients, or retained graphs; deterministic in-memory training continuation with the module state contract |
-| Checkpoint files / resume | Supported | v3.14: `save_native_checkpoint` / `load_native_checkpoint` — one pickle-free NPZ archive (format `"tensorforge.native_checkpoint"`, version 1) holding the model state, optionally one native optimizer's v3.13 state, and JSON-compatible metadata; UTF-8/JSON uint8 manifest, indexed float64 array entries, strict full-archive validation before any live mutation, strict optimizer presence/type matching, atomic temporary-file replacement, `allow_pickle=False` loading, deterministic bit-identical file resume (`examples/native_checkpoint_resume.py`); no scheduler or random-state capture, no `map_location` |
+| Checkpoint files / resume | Supported | v3.14, extended by Phase G milestone **G5**: `save_native_checkpoint` / `load_native_checkpoint` — one pickle-free NPZ archive (format `"tensorforge.native_checkpoint"`, now **version 2**; version-1 archives still load under the locked compatibility rule) holding the model state, optionally one native optimizer's v3.13 state, every registered generator's state **and alias topology** (G5), and JSON-compatible metadata; UTF-8/JSON uint8 manifest, indexed float64 array entries, strict full-archive validation before any live mutation, strict optimizer presence/type matching, atomic temporary-file replacement, `allow_pickle=False` loading, deterministic bit-identical file resume (`examples/native_checkpoint_resume.py`) and exact **stochastic** resume (`examples/native_dropout_training.py`, G7); no scheduler state, data-loader/shuffle position, Python `random`, or NumPy global-RNG capture, and no `map_location` |
 | End-to-end MLP training | Proven | `examples/native_mlp_training.py`: 25 deterministic steps, monotonic 99.5% loss reduction |
 | End-to-end CNN training + checkpoint resume | Proven | D11: `examples/native_cnn_training.py` — convolution → activation → pooling → flatten → linear over eight fixed 6×6 images, learning a spatial edge-strength target with `NativeMSELoss` and `NativeAdam(lr=0.05)`; 40 deterministic steps, loss 0.771306 → 0.011085 (98.6% reduction); a run interrupted at step 15, checkpointed (model **and** optimizer state) and resumed into a fresh model/optimizer pair reproduces the uninterrupted run **exactly** — losses, predictions, parameter values, and optimizer state. Adds no kernel, operation, loss, optimizer, or checkpoint schema |
 | End-to-end classification training + checkpoint resume | Proven | E8: `examples/native_classification_training.py` — the same layer stack over **raw logits** into `NativeCrossEntropyLoss`, on twelve fixed 6×6 images in three classes with `NativeAdam(lr=0.05)`; 40 deterministic steps, loss 1.159638 → 0.000101 (99.99% reduction) and reporting accuracy 0.3333 → 1.0000 (`native_accuracy`, outside the training mathematics); a run interrupted at step 15, checkpointed (model **and** optimizer state, format version 1) and resumed into a fresh model/optimizer pair reproduces the uninterrupted run **exactly** — the whole remaining loss suffix, parameters, optimizer moments and step counters, logits, predictions, and accuracy. Adds no kernel, operation, module, loss, metric, optimizer, or checkpoint schema |
@@ -451,8 +455,10 @@ in the stable Python framework — that does not make them native.
 - `NativeSoftmax` or `NativeLogSoftmax` **modules** — the operations
   shipped, the modules are explicitly out of scope for Phase E
 - `NLLLoss` on the native line
-- scheduler state, random-state capture/restoration, or dataloader
-  state in native checkpoints; `map_location`, partial or name-remapped
+- scheduler state, data-loader/shuffle position, epoch counters, Python
+  `random`, or NumPy global-RNG capture in native checkpoints (registered
+  `NativeGenerator` state and its alias topology **are** captured, as of
+  Phase G milestone **G5**); `map_location`, partial or name-remapped
   loading, checkpoint merging, sharding, compression, or encryption
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
@@ -479,36 +485,18 @@ in the stable Python framework — that does not make them native.
   distributed BatchNorm, a fused normalization kernel, a functional
   `batch_norm`, and a `NativeTensor.batch_norm` operation — none is in
   Phase F's scope
-- dropout as a **user-level capability**, and RNG checkpoint
-  state — **contracted by Phase G's G0 design lock and not yet closed**.
-  Milestone **G1 shipped `NativeGenerator` and module generator
-  registration — random *state* only** — milestone **G2 shipped the
-  stateless `dropout_forward` Core** (see the Core-operation table
-  above), milestone **G3 shipped the differentiable
-  `NativeTensor.dropout(p, *, generator)`** (see the autograd-operation
-  table above), and milestone **G4 shipped the `NativeDropout` module**
-  and its export (see the training-stack table above), and milestone
-  **G5 shipped native checkpoint format version 2** — persisted generator
-  state with its shared-generator alias topology, strict topology
-  validation, the version-1 compatibility rules, and the
-  whole-checkpoint load transaction. What still does not exist is the
-  **end-to-end proof**: an interrupted stochastic training run resumed
-  into a fresh model/optimizer/generator set is **G7**, so *exact
-  stochastic training resume is not yet demonstrated*, and
-  reproducibility is exact only for the state actually captured (no
-  Python `random`, NumPy global RNG, data-loader position, or scheduler
-  state).
-  `"dropout"` stayed in `UNSUPPORTED` (beside `float32`, `cuda`, and
-  `amp`) for the whole of **G0–G9**: G4 implemented and exported
-  `NativeDropout` and G5 persisted its stream, neither moving the
-  boundary, and the name was removed at **G10**, after the full Phase-G
-  closure matrix passed. `UNSUPPORTED` now reads
-  `("float32", "cuda", "amp")`. See
-  [native_rng_dropout_design.md](native_rng_dropout_design.md)
 - a generic `rand`/`randn`/Bernoulli/sampling or distribution API, any
   global or process-wide random state, NumPy global-RNG integration,
   `Dropout2d`/`Dropout3d`, stochastic depth, and attention dropout —
-  none is in Phase G's scope
+  none is in Phase G's scope. *(Dropout itself **is** supported and is
+  therefore no longer listed here: the G2 Core, the G3
+  `NativeTensor.dropout(p, *, generator)` operation, and the G4
+  `NativeDropout` module all appear in the tables above. `"dropout"`
+  stayed in `UNSUPPORTED` for the whole of **G0–G9** — G4 implemented and
+  exported the module and G5 persisted its stream, neither moving the
+  boundary — and the name was removed at **G10**, after the full Phase-G
+  closure matrix passed. See
+  [native_rng_dropout_design.md](native_rng_dropout_design.md).)*
 - additional native activations/math beyond
   `relu`/`sqrt`/`reciprocal`/`exp`/`log`/`softmax`/`log_softmax`
 - CUDA / GPU execution
