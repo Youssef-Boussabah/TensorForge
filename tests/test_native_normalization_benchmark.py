@@ -1028,6 +1028,12 @@ def test_ci_asserts_no_benchmark_duration():
 # --------------------------------------------------------------------------
 
 def test_f7_changes_no_capability_inventory():
+    """F7 was measurement only: it added no export, kernel, operation,
+    module, loss, metric, or optimizer.
+
+    The export check names later phases' additions explicitly (Phase G
+    milestone G1 shipped ``NativeGenerator``, random *state* only), so it
+    stays an exact equality while still proving F7 itself added nothing."""
     import tensorforge.experimental as experimental
 
     assert set(experimental.__all__) == {
@@ -1038,6 +1044,8 @@ def test_f7_changes_no_capability_inventory():
         "save_native_checkpoint", "load_native_checkpoint",
         "NativeCrossEntropyLoss", "native_accuracy",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        "NativeGenerator",   # Phase G, milestone G1 — not F7
+        "NativeDropout",     # Phase G, milestone G4 — not F7
     }
     assert cpp.RAW_KERNELS == (
         "elementwise_add", "elementwise_subtract", "elementwise_multiply",
@@ -1050,15 +1058,20 @@ def test_f7_changes_no_capability_inventory():
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        # Phase G milestone G4 appended the Dropout module. It is
+        # unrelated to this milestone, which added no module of its own.
+        "NativeDropout",
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # No normalization operation, Core method, or kernel appeared.
@@ -1081,7 +1094,7 @@ def test_f7_adds_no_kernel_abi_declaration_or_checkpoint_change():
     from tensorforge.experimental import native_checkpoint
 
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     for absent in ("tf_core_layer_norm", "tf_core_batch_norm",
                    "tf_core_normalize", "tf_core_running_update"):
         assert absent not in cpp._CHECKED_KERNELS, absent

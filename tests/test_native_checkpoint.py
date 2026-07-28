@@ -444,10 +444,15 @@ def test_native_checkpoint_archive_schema_is_locked(tmp_path):
             assert array.dtype == np.float64
     manifest = json.loads(arrays["manifest"].tobytes().decode("utf-8"))
     assert set(manifest) == {
-        "format", "format_version", "model", "optimizer", "metadata",
+        "format", "format_version", "model", "optimizer", "generators",
+        "metadata",
     }
     assert manifest["format"] == "tensorforge.native_checkpoint"
-    assert manifest["format_version"] == 1
+    assert manifest["format_version"] == 2
+    # A model with no registered generators writes an explicit null, so
+    # absence is stated rather than inferred from a missing field (G5,
+    # design §10.6).
+    assert manifest["generators"] is None
     assert manifest["model"]["keys"] == ["weight", "bias"]
     assert set(manifest["model"]["entries"]) == {"weight", "bias"}
     weight_entry = manifest["model"]["entries"]["weight"]
@@ -619,7 +624,8 @@ def _corrupt_cases(source, tmp_path):
 
     add("wrong-format",
         lambda m: {**m, "format": "tensorforge.checkpoint"})
-    add("wrong-version", lambda m: {**m, "format_version": 2})
+    add("unsupported-version", lambda m: {**m, "format_version": 3})
+    add("version-zero", lambda m: {**m, "format_version": 0})
     add("missing-field",
         lambda m: {k: v for k, v in m.items() if k != "metadata"})
     add("unexpected-field", lambda m: {**m, "extra": 1})

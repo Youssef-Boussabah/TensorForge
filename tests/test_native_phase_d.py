@@ -527,7 +527,7 @@ def test_checkpoint_holds_no_transient_cnn_state(tmp_path):
     for banned in ("winner", "grad", "graph", "relu", "pool", "flatten",
                    "output", "prediction"):
         assert banned not in blob, banned
-    assert '"format_version": 1' in blob
+    assert '"format_version": 2' in blob
     _close_all(x, y, model)
     optimizer.close()
 
@@ -778,11 +778,21 @@ def test_no_out_of_scope_capability_is_advertised():
     # ("layernorm" left UNSUPPORTED in Phase F milestone F2 and
     # "batchnorm" in F4, once both BatchNorm shapes shipped as composed
     # modules; neither is out-of-scope work any more.)
-    for absent in ("float32", "cuda", "amp", "dropout"):
+    for absent in ("float32", "cuda", "amp"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.NATIVE_MODULES
+    # "dropout" was an unsupported *capability* at the boundary Phase D
+    # drew, and stayed one through G9 even after Phase G milestones G2
+    # and G3 shipped a Core wrapper and a differentiable operation. It
+    # left UNSUPPORTED at the **G10** closure, once the phase's
+    # reproducibility matrix had run — a Phase-G event, never a Phase-D
+    # one, which is why the attribution is asserted here rather than the
+    # membership.
+    assert "dropout" not in cpp.UNSUPPORTED
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    assert "dropout" not in cpp.NATIVE_MODULES
     # The differentiable cross-entropy operation shipped at E6 and is
     # reported as an autograd operation, not as a Core wrapper.
     assert "cross_entropy" in cpp.AUTOGRAD_OPS

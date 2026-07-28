@@ -626,15 +626,17 @@ def test_the_integrated_stack_resumes_exactly_from_one_checkpoint(tmp_path):
     assert state_keys == list(PARAMETER_NAMES) + list(BUFFER_NAMES)
 
 
-def test_the_integrated_checkpoint_is_version_1_and_holds_only_model_state(
-    tmp_path
-):
-    """Four BatchNorm running buffers ride the **existing** version-1
-    manifest as ordinary canonical model-state entries: no schema bump,
+def test_the_integrated_checkpoint_holds_only_model_state(tmp_path):
+    """Four BatchNorm running buffers ride the manifest as ordinary
+    canonical model-state entries — no normalization section of their own,
     and no graph, gradient, winner, probability, or eval snapshot is
-    serialized."""
+    serialized.
+
+    The format version is the *format's*, not Phase F's: G5 moved it to 2
+    and added the generator section, which a Phase-F model leaves null.
+    Phase F itself still contributes no manifest field."""
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     model = NativePhaseFClassifier()
     optimizer = NativeAdam(model.parameters(), lr=LR)
     x, targets = _inputs()
@@ -646,7 +648,7 @@ def test_the_integrated_checkpoint_is_version_1_and_holds_only_model_state(
         names = list(archive.files)
         manifest = archive["manifest"].tobytes().decode("utf-8")
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 1' in manifest
+    assert '"format_version": 2' in manifest
     # The archived model section is exactly the canonical state keys —
     # every parameter and the four running buffers as ordinary entries,
     # with no normalization configuration (eps, momentum, num_features,
@@ -657,7 +659,10 @@ def test_the_integrated_checkpoint_is_version_1_and_holds_only_model_state(
     assert list(parsed["model"]["keys"]) == (list(PARAMETER_NAMES)
                                             + list(BUFFER_NAMES))
     assert set(parsed) == {"format", "format_version", "model", "optimizer",
-                           "metadata"}
+                           "generators", "metadata"}
+    # The Phase-F classifier registers no generator, so G5's section is an
+    # explicit null: the format version moved, Phase F's state did not.
+    assert parsed["generators"] is None
     blob = (" ".join(names) + " " + manifest).lower()
     for banned in ("winner", "probabilit", "snapshot", "graph", "grad",
                    "training", "logit", "target", "label", "rng", "seed",
@@ -1584,7 +1589,9 @@ def test_every_state_capability_maps_to_a_real_api():
 
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     assert callable(NativeModule.state_dict)
     assert callable(NativeModule.load_state_dict)
@@ -1594,34 +1601,63 @@ def test_every_state_capability_maps_to_a_real_api():
         assert callable(getattr(experimental, name)), name
         assert name in experimental.__all__, name
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
 
 
 def test_the_remaining_capability_boundary_is_unchanged():
     import tensorforge.experimental as experimental
 
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    for never in ("NativeDropout", "NativeBatchNorm3d", "NativeInstanceNorm",
+    for never in ("NativeBatchNorm3d", "NativeInstanceNorm",
                   "NativeGroupNorm", "NativeRMSNorm", "NativeRNG",
-                  "NativeGenerator", "NativeDataLoader"):
+                  "NativeDataLoader"):
         assert not hasattr(experimental, never), never
         assert never not in experimental.__all__, never
         assert never not in cpp.NATIVE_MODULES, never
-    for never in ("dropout", "rand", "randn", "manual_seed", "to", "cuda",
+    # "NativeDropout" left that list at Phase G milestone G4, which
+    # shipped and exported it. It is a Phase-G module, it carries no
+    # Phase-F capability, and the *capability* it is named after is still
+    # in UNSUPPORTED above — so the boundary this test guards is
+    # unchanged.
+    assert hasattr(experimental, "NativeDropout")
+    assert "NativeDropout" in experimental.__all__
+    assert "NativeDropout" in cpp.NATIVE_MODULES
+    # NativeGenerator left that list at Phase G milestone G1, which ships
+    # random *state* and generates no random values. It is exported, but
+    # it is not a module and carries no numerical capability — the
+    # boundary this test guards is unchanged.
+    assert hasattr(experimental, "NativeGenerator")
+    assert "NativeGenerator" not in cpp.NATIVE_MODULES
+    for never in ("rand", "randn", "manual_seed", "to", "cuda",
                   "half", "float"):
         assert not hasattr(NativeTensor, never), never
+    # "dropout" left that list at Phase G milestone G3, which shipped the
+    # differentiable NativeTensor.dropout. It is an *operation*, and it
+    # takes an explicit NativeGenerator — there is still no global stream
+    # and no manual_seed, which is the boundary this test actually
+    # guards. The *capability* it is named after left UNSUPPORTED later
+    # still, at the G10 closure; both are Phase-G events and neither is a
+    # normalization change.
+    assert hasattr(NativeTensor, "dropout")
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    assert "dropout" not in cpp.UNSUPPORTED
+    assert "dropout" not in cpp.NATIVE_MODULES
     with pytest.raises((ValueError, TypeError)):
         NativeTensor.zeros((2, 2), dtype="float32")
     with pytest.raises((ValueError, TypeError)):
         NativeTensor.zeros((2, 2), device="cuda")
-    # Implemented and unsupported names stay disjoint.
+    # Implemented and unsupported names are disjoint. Phase G held one
+    # deliberate exception for G3-G9 (design §19) — "dropout" named both
+    # a shipped operation and an unclosed capability — and the G10
+    # closure ended it. No Phase-F name was ever involved, which is
+    # exactly what this asserts.
     implemented = (set(cpp.TENSOR_CORE_OPS) | set(cpp.AUTOGRAD_OPS)
                    | set(cpp.RAW_KERNELS) | set(cpp.NATIVE_MODULES)
                    | set(cpp.NATIVE_LOSSES) | set(cpp.NATIVE_METRICS)
                    | set(cpp.NATIVE_OPTIMIZERS))
-    assert implemented.isdisjoint(set(cpp.UNSUPPORTED))
+    assert implemented & set(cpp.UNSUPPORTED) == set()
 
 
 def test_the_phase_f_artifacts_are_present_and_no_cpp_file_was_added():

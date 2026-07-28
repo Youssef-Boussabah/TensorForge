@@ -612,12 +612,16 @@ def test_native_metrics_backend_info_reports_the_inventory():
     assert "native_accuracy" not in info["autograd_ops"]
     assert "native_accuracy" not in info["tensor_core_ops"]
     assert "native_accuracy" not in info["native_modules"]
-    # Implemented and unsupported inventories stay disjoint.
+    # Implemented and unsupported inventories are disjoint. Phase G held
+    # one deliberate exception for G3-G9 — "dropout" named both a shipped
+    # operation and an unclosed capability (design §19) — and the G10
+    # closure ended it. Nothing in this metric's inventory was ever
+    # involved either way.
     implemented = (set(info["raw_kernels"]) | set(info["tensor_core_ops"])
                    | set(info["autograd_ops"]) | set(info["native_modules"])
                    | set(info["native_losses"]) | set(info["native_metrics"])
                    | set(info["native_optimizers"]))
-    assert implemented.isdisjoint(set(info["unsupported"]))
+    assert implemented & set(info["unsupported"]) == set()
     # Existing keys are unchanged.
     for key in ("raw_kernels", "kernels", "tensor_core_ops", "autograd_ops",
                 "native_modules", "native_losses", "native_optimizers",
@@ -679,6 +683,6 @@ def test_native_accuracy_scope_boundaries_hold():
 def test_native_accuracy_adds_no_persistent_state():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     assert not hasattr(native_accuracy, "state_dict")
     assert not hasattr(native_accuracy, "parameters")

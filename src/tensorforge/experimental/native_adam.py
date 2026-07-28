@@ -123,6 +123,7 @@ import math
 import numbers
 
 from ..backends import cpp
+from ._native_state_lock import state_transaction
 from .native_optimizer_state import (
     FORMAT_VERSION,
     parameter_metadata,
@@ -739,8 +740,22 @@ class NativeAdam:
         not (each installed piece stays internally consistent, and the
         GC safety net eventually reclaims any not-yet-closed old
         buffer). No ordinary public failure reaches the commit.
+
+        All three phases run under the shared native state-transaction
+        guard (Phase G, milestone G5), so a checkpoint load that replaces
+        the model, this optimizer, and the generators cannot be
+        interleaved by another participating state load. The guard is
+        reentrant, so the checkpoint transaction holds it and this method
+        re-enters it; this path takes no generator lock, so it cannot
+        invert the universal order.
         Returns None."""
         where = "NativeAdam.load_state_dict()"
+        with state_transaction():
+            self._load_state_dict_locked(state, where)
+
+    def _load_state_dict_locked(self, state, where):
+        """The validate → stage → commit body, with the shared
+        state-transaction guard already held."""
         self._require_open()
         self._require_parameters_open(where)
         self._validate_state_buffers(where)

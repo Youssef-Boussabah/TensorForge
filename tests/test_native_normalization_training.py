@@ -679,11 +679,11 @@ def test_checkpoint_is_version_one_and_holds_the_expected_canonical_keys(
     save_native_checkpoint(path, model, optimizer=optimizer,
                            metadata={"steps_completed": 1})
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     with np.load(path, allow_pickle=False) as archive:
         manifest = archive["manifest"].tobytes().decode("utf-8")
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 1' in manifest
+    assert '"format_version": 2' in manifest
     # The exact canonical state keys, in order — parameters then the
     # BatchNorm running buffers.
     expected = ('"keys": ["hidden.weight", "hidden.bias", '
@@ -1102,15 +1102,20 @@ def test_f6_adds_no_capability_or_inventory_entry():
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        # Phase G milestone G4 appended the Dropout module. It is
+        # unrelated to this milestone, which added no module of its own.
+        "NativeDropout",
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # The proof is an integration result, never a named capability.
@@ -1124,5 +1129,5 @@ def test_f6_adds_no_capability_or_inventory_entry():
         assert name not in cpp.TENSOR_CORE_OPS
         assert name not in cpp.AUTOGRAD_OPS
         assert name not in cpp.RAW_KERNELS
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     assert cpp.backend_info()["stable_framework_integration"] is False

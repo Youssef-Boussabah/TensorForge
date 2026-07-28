@@ -85,6 +85,7 @@ import math
 import numbers
 
 from ..backends import cpp
+from ._native_state_lock import state_transaction
 from .native_optimizer_state import (
     FORMAT_VERSION,
     parameter_metadata,
@@ -344,20 +345,29 @@ class NativeSGD:
         touches parameters not at all (loading the same lr is still a
         successful load and changes no version). The supplied state is
         caller-owned and read-only: never mutated, retained, or
-        consumed. Returns None."""
+        consumed. Returns None.
+
+        Runs under the shared native state-transaction guard (Phase G,
+        milestone G5), so a checkpoint load that replaces the model, this
+        optimizer, and the generators cannot be interleaved by another
+        participating state load. The guard is reentrant, so the
+        checkpoint transaction holds it and this method re-enters it; this
+        path takes no generator lock, so it cannot invert the universal
+        order."""
         where = "NativeSGD.load_state_dict()"
-        for index, parameter in enumerate(self._parameters):
-            if parameter.closed:
-                raise RuntimeError(
-                    f"{where}: parameters[{index}] has been closed"
-                )
-        validate_state_schema(state, "NativeSGD", _STATE_KEYS, where)
-        lr = _validated_lr(state["lr"])
-        validate_parameter_metadata(
-            state["parameters"], self._parameters, where
-        )
-        # Commit: one attribute assignment, after all validation.
-        self._lr = lr
+        with state_transaction():
+            for index, parameter in enumerate(self._parameters):
+                if parameter.closed:
+                    raise RuntimeError(
+                        f"{where}: parameters[{index}] has been closed"
+                    )
+            validate_state_schema(state, "NativeSGD", _STATE_KEYS, where)
+            lr = _validated_lr(state["lr"])
+            validate_parameter_metadata(
+                state["parameters"], self._parameters, where
+            )
+            # Commit: one attribute assignment, after all validation.
+            self._lr = lr
 
     def __repr__(self):
         return (

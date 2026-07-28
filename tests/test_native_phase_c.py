@@ -707,6 +707,8 @@ def test_native_phase_c_public_surface_guardrails():
         "NativeLayerNorm",           # Phase F, milestone F2
         "NativeBatchNorm1d",         # Phase F, milestone F3
         "NativeBatchNorm2d",         # Phase F, milestone F4
+        "NativeGenerator",           # Phase G, milestone G1
+        "NativeDropout",             # Phase G, milestone G4
     }
     for name in experimental.__all__:
         assert not hasattr(tensorforge, name)
@@ -737,7 +739,10 @@ def test_native_phase_c_public_surface_guardrails():
     # NativeMaxPool2d in D10, NativeLayerNorm in Phase F milestone F2,
     # NativeBatchNorm1d in F3, and NativeBatchNorm2d in F4; all six are
     # asserted present in the surface set above.)
-    for absent in ("NativeDropout", "NativeBatchNorm3d", "NativeAvgPool2d"):
+    # ("NativeDropout" left this list at Phase G milestone G4, which
+    # shipped it; it is asserted present in the surface set above and is
+    # no more a Phase-C concern than the Phase-D and Phase-F modules.)
+    for absent in ("NativeBatchNorm3d", "NativeAvgPool2d"):
         assert not hasattr(experimental, absent)
     info = cpp.backend_info()
     assert info["device"] == "cpu" and info["dtype"] == "float64"

@@ -539,6 +539,7 @@ def test_e9_adds_no_capability_inventory_entry():
         "NativeLayerNorm",     # Phase F, milestone F2 (unrelated to E9)
         "NativeBatchNorm1d",   # Phase F, milestone F3 (unrelated to E9)
         "NativeBatchNorm2d",   # Phase F, milestone F4 (unrelated to E9)
+        "NativeDropout",       # Phase G, milestone G4 (unrelated to E9)
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
@@ -549,9 +550,15 @@ def test_e9_adds_no_capability_inventory_entry():
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers",
         "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
-    assert cpp.AUTOGRAD_OPS[-1] == "cross_entropy"
+    # "cross_entropy" was the last autograd op when E9 landed and E9 added
+    # nothing after it. The one entry that follows is Phase G milestone
+    # G3's differentiable "dropout", which is unrelated to this benchmark.
+    assert cpp.AUTOGRAD_OPS[-2] == "cross_entropy"
+    assert cpp.AUTOGRAD_OPS[-1] == "dropout"
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,
@@ -566,7 +573,7 @@ def test_e9_adds_no_capability_inventory_entry():
 def test_e9_adds_no_kernel_abi_operation_or_schema():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     for absent in ("tf_core_benchmark", "tf_core_train_step",
                    "tf_core_accuracy", "tf_core_argmax"):
         assert absent not in cpp._CHECKED_KERNELS, absent

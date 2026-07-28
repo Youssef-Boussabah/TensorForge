@@ -207,24 +207,40 @@ def test_capability_inventories_are_internally_consistent():
         assert callable(getattr(cpp, name)), name
     assert hasattr(NativeModule, "state_dict")
     assert hasattr(NativeModule, "load_state_dict")
-    # Every advertised state capability maps to something real. Four of
-    # the five name a callable directly; "persistent_buffers" (added by
-    # Phase F milestone F1 to reconcile a capability that already
-    # existed) names the register_buffer / buffers / named_buffers API,
-    # so it is resolved explicitly rather than by relaxing the check.
+    # Every advertised state capability maps to something real. Most
+    # name a callable directly; the three *capability* names are resolved
+    # explicitly rather than by relaxing the check —
+    # "persistent_buffers" (Phase F milestone F1, reconciling a
+    # capability that already existed) names the register_buffer /
+    # buffers / named_buffers API, "generator_state" (Phase G milestone
+    # G1) names the generator registration and in-memory state pair, and
+    # "checkpoint_generator_state" (Phase G milestone G5) names the file
+    # half — the existing save/load pair, which really does persist and
+    # restore generator state through the version-2 manifest.
     _STATE_CAPABILITY_API = {
         "persistent_buffers": ("register_buffer", "buffers", "named_buffers"),
+        "generator_state": (
+            "register_generator", "generators", "named_generators",
+            "generator_state_dict", "load_generator_state_dict",
+        ),
+        "checkpoint_generator_state": (
+            "save_native_checkpoint", "load_native_checkpoint",
+        ),
     }
     for name in cpp.STATE_SUPPORT:
         for attribute in _STATE_CAPABILITY_API.get(name, (name,)):
             assert (hasattr(experimental, attribute)
                     or hasattr(NativeModule, attribute)), (name, attribute)
-    # Implemented and unsupported names stay disjoint everywhere.
+    # Implemented and unsupported names are disjoint everywhere. Phase G
+    # held one deliberate exception for G3-G9 (design §19) — "dropout"
+    # named both a shipped operation and an unclosed capability — and the
+    # G10 closure ended it. No Phase-E name was ever involved, which is
+    # exactly what this asserts.
     implemented = (set(cpp.TENSOR_CORE_OPS) | set(cpp.AUTOGRAD_OPS)
                    | set(cpp.RAW_KERNELS) | set(cpp.NATIVE_MODULES)
                    | set(cpp.NATIVE_LOSSES) | set(cpp.NATIVE_METRICS)
                    | set(cpp.NATIVE_OPTIMIZERS))
-    assert implemented.isdisjoint(set(cpp.UNSUPPORTED))
+    assert implemented & set(cpp.UNSUPPORTED) == set()
 
 
 def test_the_phase_e_capability_set_is_exactly_what_shipped():
@@ -260,11 +276,18 @@ def test_unsupported_stays_honest_after_closure():
     # ("layernorm" left UNSUPPORTED in Phase F milestone F2 and
     # "batchnorm" in F4, once both BatchNorm shapes shipped as composed
     # modules. Neither was ever a Phase-E boundary.)
-    for absent in ("float32", "cuda", "amp", "dropout"):
+    for absent in ("float32", "cuda", "amp"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.NATIVE_MODULES
+    # "dropout" was an unsupported *capability* Phase E kept, and Phase G
+    # moved it — at the **G10** closure, not at G2 or G3, which shipped
+    # only a Core wrapper and a differentiable operation underneath it.
+    # Either way it is a Phase-G event, never a Phase-E one.
+    assert "dropout" not in cpp.UNSUPPORTED
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    assert "dropout" not in cpp.NATIVE_MODULES
     import tensorforge.experimental as experimental
 
     # Classification extensions that were explicitly out of scope never
@@ -272,10 +295,13 @@ def test_unsupported_stays_honest_after_closure():
     # (Both BatchNorm shapes are deliberately absent from this list:
     # Phase F milestones F3 and F4 shipped them, which is unrelated to
     # Phase E's scope.)
+    # ("NativeDropout" is deliberately absent from this list: Phase G
+    # milestone G4 shipped it, which is as unrelated to Phase E's scope as
+    # the two BatchNorm shapes above.)
     for never in ("NativeNLLLoss", "NativeBCELoss", "NativeSoftmax",
                   "NativeLogSoftmax", "native_top_k_accuracy",
                   "native_confusion_matrix", "NativeDataLoader",
-                  "NativeBatchNorm3d", "NativeDropout"):
+                  "NativeBatchNorm3d"):
         assert not hasattr(experimental, never), never
     for never in ("argmax", "nll_loss", "one_hot", "randn", "rand"):
         assert not hasattr(NativeTensor, never), never
@@ -708,7 +734,7 @@ def test_a_classification_checkpoint_round_trip_is_exact_for_both_optimizers(
 def test_the_checkpoint_format_is_version_1_and_holds_no_classification_state(
     tmp_path
 ):
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     model = _classifier()
     optimizer = NativeAdam(model.parameters(), lr=0.05)
     loss_fn = NativeCrossEntropyLoss()
@@ -728,7 +754,7 @@ def test_the_checkpoint_format_is_version_1_and_holds_no_classification_state(
                    "cross_entropy", "softmax", "logit"):
         assert banned not in blob, banned
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 1' in manifest
+    assert '"format_version": 2' in manifest
     _close_all(x, model, optimizer)
 
 

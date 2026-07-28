@@ -116,6 +116,22 @@ by the stable framework — carries a complete native CPU training line:
   statistics**, the final training-step prediction, and the final
   **evaluation-mode** output exactly (format version 1, training flags
   runtime-only).
+- **A native stochastic-training proof**:
+  `examples/native_dropout_training.py` trains a
+  `Linear → BatchNorm1d → ReLU → Dropout → LayerNorm → Linear` classifier
+  over raw logits with `NativeCrossEntropyLoss` and native Adam — the
+  smallest model carrying **all four** TensorForge-owned state families at
+  once (parameters, persistent BatchNorm buffers, a registered
+  `NativeGenerator`, and Adam moments) — then checkpoints after 7 completed
+  steps, releases that model, and resumes into a completely fresh
+  model/optimizer/generator set built from a *different* Dropout seed,
+  reproducing the whole loss sequence, every parameter, both running
+  statistics, the full optimizer state, the generator's seed and call
+  counter, the final training logits, and the final evaluation output
+  **exactly** (checkpoint format version 2). External loop progress travels
+  as explicit, validated metadata — a checkpoint captures TensorForge-owned
+  state, not a data loader, a shuffle order, a scheduler, Python's `random`,
+  or NumPy's global RNG.
 
 The exact operation-by-operation status lives in the
 [native support matrix](docs/native_support_matrix.md).
@@ -163,12 +179,15 @@ uv run python examples/native_checkpoint_resume.py # save, restore, resume bit-f
 uv run python examples/native_cnn_training.py     # end-to-end native CNN training + resume
 uv run python examples/native_classification_training.py  # native classification + exact resume
 uv run python examples/native_normalization_training.py   # native BatchNorm+LayerNorm training + exact resume
+uv run python examples/native_dropout_training.py         # native Dropout training + exact STOCHASTIC resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke  # CNN characterization
 uv run python benchmarks/benchmark_native_classification.py --smoke        # classification characterization
 uv run python benchmarks/benchmark_native_classification.py --smoke --json # machine-readable JSON
 uv run python benchmarks/benchmark_native_normalization.py --smoke         # normalization characterization
 uv run python benchmarks/benchmark_native_normalization.py --smoke --json  # machine-readable JSON
+uv run python benchmarks/benchmark_native_dropout.py --smoke               # Dropout characterization
+uv run python benchmarks/benchmark_native_dropout.py --smoke --json        # machine-readable JSON
 ```
 
 The native API mirrors the stable one, explicitly:
@@ -229,6 +248,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
+- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, and milestone G7, the deterministic stochastic training example and its exact checkpoint resume (no capability), and milestone G8, the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` (also no capability — correctness gated before timing, no speed asserted), and milestone G9, the cross-cutting integration suite `tests/test_native_phase_g.py` (integration evidence only — no capability, and no runtime file changed), and milestone G10, the phase closure — the Release/Debug/sanitizer validation matrix, the documentation reconciliation, and the single registry line that finally removed `dropout` from `UNSUPPORTED` — are all complete, so end-to-end **exact stochastic training resume is demonstrated** and native Dropout is now supported on the experimental native float64 CPU line)
 
 ## Limitations
 
@@ -500,9 +520,272 @@ So **Phase F is complete**, and no
 normalization *operation*, kernel, or C ABI symbol exists at all.
 Closing Phase F closes that phase, not the project: the native line is
 still experimental, still float64/CPU only, and still not
-production-ready. More activations/math, dropout and a native RNG, data
-loaders, and CPU optimization sit beyond Phase F, and CUDA/GPU
-experiments remain future work. See
+production-ready.
+
+**Phase G — Native RNG and Dropout — is the latest phase, and it is
+complete.** All eleven milestones, G0 through G10, have landed. **G0**
+locked the architecture
+contract in
+[docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) —
+Python-managed generator state (an explicit 64-bit seed and call counter
+with an algorithm identifier), stateless native random kernels, inverted
+Dropout with a graph-owned multiplier mask, one generator call consumed
+per *successful* stochastic forward and none on any failure — behind a
+lock-protected, token-validated reservation protocol so no two callers
+can ever receive the same call index — generator state registered on
+`NativeModule`, native checkpoint **version 2** that records the
+generator *alias topology* (which layers share a stream, not just the
+saved states) with a locked version-1 compatibility rule, and
+whole-checkpoint transaction atomicity in which any ordinary synchronous
+commit failure rolls back parameters, buffers, optimizer state, and
+generator state together. **G0 was design, documentation, and guardrails
+only.**
+
+**G1** then shipped the state itself: `NativeGenerator` — a pure-Python
+value holder carrying the algorithm identity, a 64-bit seed, and a
+counter of *committed* stochastic calls, with atomic
+`state()`/`load_state()`/`reseed()`/`reset()`, identity (never value)
+semantics, no copying and no `close()`, and a lock-protected
+token-validated call transaction — plus generators as a **fourth**
+`NativeModule` registration category beside parameters, buffers, and
+child modules (`register_generator`, `generators()`,
+`named_generators()`, `generator_state_dict()`,
+`load_generator_state_dict()`). **G1 generates no random values by
+itself.**
+
+**G2** then shipped the stateless Dropout-forward **Core**: the exact
+`tensorforge.splitmix64` derivation in unsigned 64-bit arithmetic
+(`mix64(seed + GOLDEN*(call+1))`, then `mix64(stream + GOLDEN*(i+1))`,
+then `(bits >> 11) * 2**-53` compared against `p`), an inverted-Dropout
+float64 CPU kernel in `cpp/src/random.cpp`, the guarded
+`tf_core_dropout_forward` export, and
+`NativeTensorCore.dropout_forward(p, *, seed, call_index)` with the
+private `_dropout_forward_with_mask` that also returns the multiplier
+mask. It is **stateless**: the whole random key arrives as two explicit
+integers, and the Core touches no `NativeGenerator` — no reservation, no
+commit, no counter movement — while no C++ translation unit holds random
+state of any kind. The keep/drop pattern is keyed by the **logical**
+row-major element index, so a transposed, narrowed, or nonzero-offset
+view gets the same mask as a contiguous tensor of the same shape.
+Committed known-answer vectors are asserted identically from C++ and
+Python.
+
+**G3** then shipped the differentiable operation over that Core:
+
+```python
+from tensorforge.experimental import NativeGenerator, NativeTensor
+
+g = NativeGenerator(1234)
+x = NativeTensor.from_array(values, requires_grad=True)
+y = x.dropout(0.25, generator=g)        # g.calls: 0 -> 1
+y.backward(gradient=upstream)           # grad = upstream * the saved mask
+```
+
+The generator is **required and keyword-only** — there is no default,
+process-global, or module-global stream, no implicit per-call generator,
+and no NumPy or Python `random` fallback. One successful stochastic
+forward consumes exactly one call; `p == 0` returns the input object
+itself and consumes none; every failure before the commit cancels the
+reservation, so the next forward reuses the same index; and backward
+consumes none, ever. Backward reads only the upstream gradient and the
+**graph-owned multiplier mask** the forward saved — the third member of
+the saved-state family beside MaxPool2d's winners and cross-entropy's
+probabilities — so it never rereads the input, never redraws, and never
+touches the generator, which is why mutating the input or reseeding the
+generator afterwards leaves an existing graph's gradient exactly as it
+was. There is no Dropout backward kernel: the gradient is the existing
+native `multiply`. The whole registry footprint is one name, `dropout`,
+in `AUTOGRAD_OPS`.
+
+**G4** then shipped the public module over that operation:
+
+```python
+from tensorforge.experimental import NativeDropout, NativeGenerator
+
+layer = NativeDropout(0.5, seed=1234)   # owns its generator
+shared = NativeGenerator(7)             # ...or two layers share one stream
+a, b = NativeDropout(0.5, generator=shared), NativeDropout(0.5, generator=shared)
+
+layer.train();  y = layer(x)            # stochastic; calls 0 -> 1
+layer.eval();   assert layer(x) is x    # identity; consumes nothing
+```
+
+`NativeDropout(p=0.5, seed=None, generator=None)` — `seed` and
+`generator` are **mutually exclusive**; without an explicit generator the
+module creates and owns one, and with one it registers **that exact
+object**, never a copy. The generator is first-class registered state:
+it appears in `named_generators()` and `generator_state_dict()` and is
+deliberately absent from `state_dict()`, which stays tensor-only. Training
+delegates to the G3 operation, so a successful forward consumes exactly
+one call and a failed one none; evaluation returns the input object
+itself, so any number of eval forwards leaves **no gap in the stream**;
+and `p == 0` is identity in both modes. The module owns no native storage.
+
+**G5** closed the persistence gap G4 left open: the native checkpoint
+format is now **version 2** (the format *name* is unchanged), and it
+carries a `generators` manifest section holding every registered
+generator's `algorithm`, `algorithm_version`, `seed`, and `calls` — seeds
+and counters as canonical decimal strings, because a `uint64` above
+`2**53` cannot survive a JSON double — plus the complete
+**alias topology**: every registered path mapped to its canonical
+generator, so *shared versus independent* streams are restored, not just
+the numbers. Generator state adds **no array** to the archive. A load
+restores each generator **in place**, preserving object identity and
+every sharing relationship, and validates the archive's topology strictly
+in both directions against a real `named_generators()` traversal — a
+missing path, an extra path, or a shared-versus-independent difference
+fails before anything changes. A version-1 archive still loads into a
+model with **no** generators and is **rejected** for one that has them,
+naming them: no seed and no counter is ever fabricated. A load is one
+transaction over the whole archive — model, buffers, optimizer, and
+generators commit under a single rollback guard, so any synchronous
+failure (a deliverable `KeyboardInterrupt` included) restores all four
+together rather than leaving a mixed checkpoint. It is also
+**serializable**, not merely deadlock-free: every participating state
+replacement — the checkpoint load, `load_state_dict`,
+`load_generator_state_dict`, both optimizers' state loads — and the
+checkpoint save snapshot run under one private shared `RLock`, with
+generator locks taken under it in the global `id()` order. Two concurrent
+loads therefore produce one archive's state followed by the other's,
+never model state from one beside optimizer or generator state from the
+other. Ordinary training mutation deliberately does not take that guard,
+so thread-safe concurrent training snapshots are not claimed.
+
+Milestone **G6 is complete** — hardening, and no new capability.
+`tests/test_native_phase_g_hardening.py` attacks the finished G1–G5
+surface: the reservation transition matrix, the exact `uint64` boundary,
+forced concurrent interleavings (bounded joins, no sleeps), the
+deterministic Core's structural key properties beside its committed
+vectors, every pre-commit and post-commit failure position of the call
+transaction across four exception classes, all four graph-owned
+saved-resource families in one graph, a 76-case checkpoint corruption
+matrix, whole-transaction rollback at every commit position, save-seam
+destination atomicity, and repeated success-and-failure lifecycle loops
+measured against a real native live-storage baseline. It changed no C++,
+ABI, ctypes, Core method, operation, module, export, schema field, or
+registry value, and added no benchmark and no example; it found and fixed
+exactly one runtime defect — a cleanup-failure `__context__` chain that
+could become cyclic — with a dedicated regression guard.
+
+Milestone **G7 is complete** — the end-to-end exact stochastic resume,
+and **no new capability**. `examples/native_dropout_training.py` trains
+`NativeLinear(4, 8)` -> `NativeBatchNorm1d(8)` -> `NativeReLU` ->
+`NativeDropout(p=0.5, seed=20240707)` -> `NativeLayerNorm(8)` ->
+`NativeLinear(8, 3)` over raw logits with `NativeCrossEntropyLoss` and
+`NativeAdam` on a fixed twelve-sample three-class task computed from an
+explicit formula, in three fixed batches on a schedule that is a **pure
+function of the training step**. It carries all four TensorForge-owned
+state families at once — parameters, persistent BatchNorm running
+buffers, a registered `NativeGenerator`, and NativeAdam moments with
+per-parameter step counters — so an incomplete restore diverges
+immediately. Two uninterrupted runs are bit-identical; an interrupted run
+checkpointed after 7 **completed** steps (deliberately mid-cycle in the
+batch schedule), whose model, optimizer, and generator are **released
+before the resume begins**, reloads into a completely fresh set built
+with a *different* Dropout seed and reproduces the uninterrupted run by
+**exact equality**: the whole loss sequence, every parameter, both
+running statistics, every optimizer moment and step counter, the
+generator's algorithm/version/seed/calls, the final training logits, and
+the final evaluation output. Two negative controls make that meaningful —
+restoring all four families but restarting the batch schedule at 0
+**diverges**, and restoring everything but re-seeding the generator
+**diverges**. Evaluation is proved state-neutral (repeated eval passes
+leave `calls` bit-identical, produce identical outputs, restore the
+caller's mode, and leave a probed run's loss sequence equal to an
+unprobed one's), and a separate throwaway reload matches the restored
+module's next Dropout output against `NativeTensorCore.dropout_forward`
+at the exact restored `(seed, call_index)`, advancing `calls` by exactly
+one. **External loop progress is carried explicitly**, as validated JSON
+metadata (`{"training_step": ..., "next_batch_index": ...}`), because
+checkpoint v2 captures TensorForge-owned state and **not** data-loader
+position, batch order, shuffle state, epoch counters, scheduler state,
+Python's `random`, or NumPy's global RNG — a missing or inconsistent
+field raises rather than silently restarting from step 0.
+Reproducibility is exact **for the state actually captured**;
+full-program determinism is not claimed. The whole milestone is one
+example, one test module, and documentation: **no** C++, C ABI symbol,
+ctypes declaration, Core method, autograd operation, module, export,
+schema field, checkpoint version, benchmark, or registry value changed.
+
+Milestone **G8 is complete** — the honest benchmark characterization,
+and **no new capability**. `benchmarks/benchmark_native_dropout.py`
+measures thirty-five cases in eight families: the stateless Core against
+an **exact, bit-for-bit** vectorized NumPy implementation of the same
+locked derivation, size scaling from a rank-0 scalar to a
+six-figure-element tensor, four physical layouts over one logical shape
+(contiguous, transposed, narrowed non-contiguous, and offset-contiguous),
+a five-value probability sweep at three layers, the no-grad /
+differentiable / backward-only / forward-plus-backward operation layers,
+the module's training and identity paths, and one complete Dropout
+training step. Correctness is gated **before** timing everywhere — the
+committed known-answer vectors first pin the harness's reference and then
+the native kernel — and the `NativeTensor` and `NativeDropout` cases are
+labelled `native_only`, publishing no ratio, because no NumPy expression
+has their generator transaction, ownership, or graph. `--smoke`
+(`--quick`), `--json`, and `--json-out` are supported; **no result file
+is written unless a destination is named**, and there is no speed
+assertion, no committed timing number, and no CI timing threshold
+anywhere. Results are a machine-specific snapshot, not a performance
+contract, and **nothing was optimized to improve a number** — G8 changed
+no runtime file.
+
+Milestone **G9 is complete** — the cross-cutting Phase-G integration
+suite, and **no new capability**. `tests/test_native_phase_g.py` builds one
+test-only model that carries every registered state family at once —
+`NativeConv2d` -> `NativeBatchNorm2d` -> `NativeReLU` -> `NativeMaxPool2d`
+-> `NativeDropout` -> `NativeFlatten` -> `NativeLinear` ->
+`NativeBatchNorm1d` -> `NativeReLU` -> `NativeLayerNorm` ->
+`NativeDropout` -> `NativeLinear` over raw logits with
+`NativeCrossEntropyLoss` — with the two Dropout layers sharing **one**
+registered generator, and proves the interactions no single-module suite
+can: all four saved-resource families (Dropout masks, MaxPool2d winners,
+BatchNorm eval snapshots, and cross-entropy probabilities) alive in one
+graph and released exactly once; deterministic training and **exact**
+version-2 resume into a completely fresh model, optimizer, and generator
+set, with a negative control that diverges; the generator-topology matrix
+(shared, independent, equal-valued-but-distinct, renamed, missing, extra)
+with every mismatch rejected **before** any state family changes;
+evaluation consuming no generator call anywhere and training resuming at
+the exact next index; `p == 0` through the whole model; non-contiguous
+NCHW and strided views; the whole-checkpoint transaction rolled back at
+every commit position; four deterministic concurrency cases proving the
+participating state transactions serialize; a Phase A–F regression
+matrix; and native live storage returning exactly to baseline across
+success and failure cycles. It changed **no** runtime file and found no
+defect.
+
+Milestone **G10 is complete, and it closed the phase.** The validation
+matrix ran with observed results: fresh Windows **Release** and **Debug**
+builds (Visual Studio 17 2022, MSVC 19.44.35228.0), each passing
+**11/11 native CTests** with zero project compiler, linker, and CMake
+warnings, and the active runtime proved to remain the Release DLL. A fresh
+Clang 18.1.3 `-DTF_SANITIZE=address,undefined` build in WSL2 Ubuntu
+24.04.4 with **instrumentation proved rather than assumed** — 22 `__asan*`
+and 14 `__ubsan*` dynamic symbols beside the 51 exported `tf_*` symbols,
+and a library that refuses to load without the sanitizer runtime — then
+**11/11 sanitized CTests** with leak detection on, **3,166 sanitized
+Python tests** across 43 suites, the G7 example reproducing its exact
+resume, and the G8 benchmark passing every correctness gate, all with
+**zero ASan and zero UBSan diagnostics**. A practical LeakSanitizer
+lifecycle returned native live storage **exactly to baseline (0 → 0)**,
+and not one of its remaining process-exit allocations names a TensorForge
+frame — **no suppression file was added**.
+
+Only after all of that did the single registry line move: at **G10**, and
+not one milestone earlier, `dropout` **left** the unsupported list, which
+now reads exactly `("float32", "cuda", "amp")`. The claim is deliberately narrow — **native Dropout is
+supported in TensorForge's experimental native float64 CPU backend**. That
+is not a stable-framework claim (`tensorforge.nn.Dropout` is its own
+separate NumPy implementation), not float32, CUDA, or AMP support, not a
+generic random-number API, and not a production-readiness or speed claim.
+Reproducibility is exact for the state actually captured; Python's
+`random`, NumPy's global RNG, data-loader position, and scheduler state
+are **not** captured and full-program determinism is not claimed. Ordinary
+concurrent *training* is not claimed thread-safe either: the
+serializability guarantee covers the participating state transactions, not
+an optimizer `step()` racing a forward. More activations/math, data
+loaders, and CPU optimization sit beyond Phase G, and CUDA/GPU experiments
+remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 

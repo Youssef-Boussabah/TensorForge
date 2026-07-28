@@ -307,6 +307,43 @@ explicit layer at a time:
   TensorForge-attributable leak frame and no suppression file —
   validation and documentation only, adding no numerical capability. All
   of Phase F (F0–F9) has therefore shipped.
+- **Native RNG and Dropout (Phase G) is complete (G0–G10).** Random state
+  is **Python-managed** and native random kernels stay **stateless**,
+  receiving the complete key (an unsigned 64-bit seed plus a call index)
+  for one operation. `NativeGenerator` holds exactly that state, owns no
+  native storage, and never consults a global or process-wide random
+  source. `cpp/src/random.cpp` carries the locked `tensorforge.splitmix64`
+  derivation and the inverted-Dropout forward kernel behind one guarded C
+  ABI export, `tf_core_dropout_forward`, with known-answer vectors
+  asserted identically from C++ and Python. Above it sit the
+  differentiable `NativeTensor.dropout(p, *, generator)` — a
+  **required, keyword-only** generator, no default or global stream —
+  whose backward is the existing `multiply` over a **graph-owned**
+  multiplier mask (the fourth member of the saved-resource family beside
+  MaxPool2d winners, BatchNorm eval snapshots, and cross-entropy
+  probabilities), and the `NativeDropout` module, which registers its
+  generator as a **fourth** state category alongside parameters, buffers,
+  and child modules. Exactly one generator call is consumed per
+  *successful* stochastic forward, and none on any failure, in evaluation,
+  at `p == 0`, or in backward. Native checkpoint **format version 2**
+  persists every registered generator's state **and** its alias topology,
+  restoring in place so identity and sharing survive, with version 1 still
+  loadable under its locked rules and the whole load one synchronous-atomic
+  transaction. **Milestone G10 closed the phase**: fresh Windows Release
+  and Debug builds each passing the full 11-test CTest suite with zero
+  project warnings and the active runtime proved to stay Release; a fresh
+  Clang 18.1.3 ASan+UBSan build with instrumentation proved by `nm -D`
+  (22 `__asan*`, 14 `__ubsan*`, beside 51 exported `tf_*` symbols) and by
+  the library's refusal to load without the sanitizer runtime; 11/11
+  sanitized native CTests with leak detection enabled; 3,166 sanitized
+  Python tests with zero ASan and zero UBSan diagnostics; the G7 example
+  and the G8 benchmark clean under the sanitized library; and a practical
+  LeakSanitizer lifecycle returning native live storage **exactly** to
+  baseline with no TensorForge-attributable leak frame and no suppression
+  file. Only then did `dropout` leave `UNSUPPORTED`, which now reads
+  `("float32", "cuda", "amp")` — a claim scoped to the **experimental
+  native float64 CPU** line, never to the stable framework, which keeps
+  its own separate `Dropout`.
 
 The execution path for a native training step is:
 

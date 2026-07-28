@@ -843,7 +843,9 @@ def test_state_support_reports_persistent_buffers_exactly():
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers",
         "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     assert cpp.backend_info()["state_support"] == cpp.STATE_SUPPORT
     # The advertised capability maps to a real API.
@@ -862,12 +864,17 @@ def test_f1_changed_no_other_capability_inventory():
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        # Phase G milestone G4 appended the Dropout module. It is
+        # unrelated to this milestone, which added no module of its own.
+        "NativeDropout",
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    # ("dropout" was in this tuple when F1 landed and left at the Phase-G
+    # closure, G10 — not a buffer-state change either way.)
     assert cpp.UNSUPPORTED == (
-        "dropout", "float32", "cuda", "amp",
+        "float32", "cuda", "amp",
     )
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)

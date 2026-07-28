@@ -580,7 +580,7 @@ def test_checkpoint_format_is_version_one_and_holds_only_persistent_state(
     save_native_checkpoint(path, model, optimizer=optimizer,
                            metadata={"steps_completed": 1})
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     with np.load(path, allow_pickle=False) as archive:
         names = list(archive.files)
         manifest = archive["manifest"].tobytes().decode("utf-8")
@@ -594,7 +594,7 @@ def test_checkpoint_format_is_version_one_and_holds_only_persistent_state(
     assert ('"keys": ["conv.weight", "conv.bias", "linear.weight", '
             '"linear.bias"]') in manifest
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 1' in manifest
+    assert '"format_version": 2' in manifest
     x.close()
     _close(model, optimizer)
 
@@ -1100,11 +1100,16 @@ def test_e8_adds_no_capability_inventory_entry():
         "NativeLayerNorm",     # Phase F, milestone F2 (unrelated to E8)
         "NativeBatchNorm1d",   # Phase F, milestone F3 (unrelated to E8)
         "NativeBatchNorm2d",   # Phase F, milestone F4 (unrelated to E8)
+        "NativeDropout",       # Phase G, milestone G4 (unrelated to E8)
     )
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
-    assert cpp.AUTOGRAD_OPS[-1] == "cross_entropy"
+    # "cross_entropy" was the last autograd op when E8 landed and E8 added
+    # nothing after it. The one entry that follows is Phase G milestone
+    # G3's differentiable "dropout", which is unrelated to this proof.
+    assert cpp.AUTOGRAD_OPS[-2] == "cross_entropy"
+    assert cpp.AUTOGRAD_OPS[-1] == "dropout"
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # The proof is an integration result, never a named capability.
@@ -1120,7 +1125,7 @@ def test_e8_adds_no_capability_inventory_entry():
 
 
 def test_e8_changes_no_checkpoint_schema_and_no_stable_framework():
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2
     assert cpp.backend_info()["stable_framework_integration"] is False
     # The example never touches the stable framework.
     text = EXAMPLE.read_text(encoding="utf-8")

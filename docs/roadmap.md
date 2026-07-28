@@ -1094,6 +1094,329 @@ The Python line is done; what remains is expansion on its own terms:
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,
     AMP, fused normalization kernels, and CPU optimization.
+  - **Phase G — Native RNG and Dropout — is complete; G0 through G10
+    have all landed.** The **G0 architecture contract is written** —
+    [native_rng_dropout_design.md](native_rng_dropout_design.md) locks
+    the phase's central split (random state is Python-managed; native
+    random kernels are stateless and receive the complete key for one
+    call), the `NativeGenerator` contract (an explicit unsigned 64-bit
+    seed and call counter plus an algorithm identifier and version, no
+    native resource and therefore no `close()`, identity equality, and no
+    global or process-wide state anywhere), the deterministic
+    counter-based algorithm and its known-answer requirements, the
+    call-consumption transaction (**one successful stochastic forward
+    consumes exactly one call**; a validation, allocation, kernel, or
+    graph-construction failure consumes none, and neither does evaluation
+    mode, `p == 0`, or backward) and the lock-protected, token-validated
+    reservation protocol that carries it (one private lock covering
+    reservation, commit, cancellation, and every state read and write,
+    with native computation outside it; opaque single-use tokens so a
+    stale, foreign, or duplicated commit changes nothing; at most one
+    live reservation, so a concurrent or reentrant caller fails **before
+    an index is minted** and no two callers can ever receive the same
+    call index; and seed or counter replacement refused while a
+    reservation is live — serialization for correctness, with parallel
+    stochastic execution explicitly not claimed), the probability contract
+    (`0 <= p < 1`, with `p == 1` rejected so inverted scaling never
+    divides by zero), the stateless forward boundary (one new kernel
+    producing the output **and** a private multiplier mask, no backward
+    kernel, logical-order element indexing independent of physical
+    strides), the differentiable operation whose backward reads **only**
+    that graph-owned mask — never the input, never the generator — the
+    module surface, generator registration as a fourth `NativeModule`
+    state category, native checkpoint **version 2** whose generator
+    section records the **alias topology** — every registered generator
+    path and its canonical target, so shared-versus-independent generator
+    identity is restored and not merely the states, with every topology
+    mismatch failing in prevalidation before any live state changes — and
+    an explicit version-1 compatibility rule that never fabricates a seed
+    or counter, **whole-checkpoint transaction atomicity** (validate
+    everything, stage everything that can allocate or raise, then commit
+    under one rollback guard, so any ordinary synchronous failure — and
+    any deliverable asynchronous one, including `KeyboardInterrupt` —
+    restores parameters, persistent buffers, optimizer state, and
+    generator state together with every object identity intact, leaving
+    external process or interpreter death as the only documented
+    exception), the ownership and failure matrices, and the **G0–G10**
+    milestone sequence. **G0 added no numerical behavior**: it is design,
+    documentation, and semantic guardrails only.
+    **G1 is complete** — the generator state foundation:
+    `NativeGenerator` (pure Python, no native storage, no `close()`; the
+    four locked fields as read-only properties; atomic `state()` /
+    `load_state()` / `reseed()` / `reset()`; exact-`int` seeds with one
+    `secrets` entropy draw for `seed=None`; identity semantics with
+    copying and pickling refused; and the lock-protected,
+    token-validated reservation transaction — a two-phase claim /
+    construct / publish / deliver sequence whose token is allocated with
+    **no generator lock held**, so no callback-capable operation ever runs
+    while a lock is held and a finalizer cannot invert the global
+    multi-generator lock order, with the construction claim refusing every
+    conflicting mutation in the meantime and an exact-match cleanup for a
+    reservation that was published but never delivered, so a dropped token
+    can never strand the generator) plus generators as a
+    **fourth** `NativeModule` registration category with deterministic
+    identity-deduplicated cycle-safe traversal and their own
+    `generator_state_dict()` / `load_generator_state_dict()` surface,
+    leaving `state_dict()` tensor-only and unchanged. **G1 generates no
+    random values by itself.**
+    **G2 is complete** — the deterministic stateless
+    native Dropout-forward **Core**: the exact locked `tensorforge.splitmix64` derivation in
+    unsigned 64-bit arithmetic (`mix64` finalizer, per-call stream key
+    `mix64(seed + GOLDEN*(call_index + 1))`, per-element bits
+    `mix64(stream + GOLDEN*(element + 1))`, uniform
+    `(bits >> 11) * 2**-53`, dropped when `u < p`) as internal hidden
+    `namespace tf` functions in the new `cpp/src/random.cpp` /
+    `cpp/include/tf_random_internal.h`; the inverted-dropout float64 CPU
+    kernel writing the output **and** the private multiplier mask in one
+    pass; the self-validating guarded export `tf_core_dropout_forward`;
+    its ctypes declaration carrying the whole key as two `c_uint64`
+    arguments; `"dropout_forward"` in `TENSOR_CORE_OPS` and
+    `"tf_core_dropout_forward"` in the checked-kernel inventory; the
+    public `NativeTensorCore.dropout_forward(p, *, seed, call_index)` and
+    the private `_dropout_forward_with_mask` that keeps the mask; a
+    dependency-free CTest over both layers; and committed known-answer
+    vectors asserted **identically** from C++ and Python. It is
+    **stateless**: the complete random key arrives as two explicit
+    integers, the Core reserves, commits, cancels, inspects, and mutates
+    **no** `NativeGenerator`, and no C++ translation unit holds random
+    state of any kind. Randomness is keyed by the **logical** row-major
+    element index, so a transposed, narrowed, or nonzero-offset view
+    receives the same mask as a contiguous tensor of the same logical
+    shape. Both results are fresh owning contiguous cores that alias
+    neither the input nor each other, and the two-result boundary is
+    failure-atomic in C++ *and* in the Python wrapper.
+    **G3 is complete** — the differentiable
+    `NativeTensor.dropout(p, *, generator)` over that Core, and the whole
+    milestone is one method plus one name, `"dropout"`, appended to
+    `AUTOGRAD_OPS`: no C++, no C ABI symbol, no ctypes declaration, no
+    `NativeTensorCore` method, no module, no export, and no
+    checkpoint-format change. The `generator` is **required and
+    keyword-only** — no default, process-global, or module-global stream,
+    no implicit per-call generator, and no NumPy or Python `random`
+    fallback — and `p` goes through the *same* shared validator the Core
+    uses, so the accepted/rejected matrix is identical by construction.
+    It owns the §5 call transaction: validate, then reserve one call,
+    then run the G2 Core **outside** the generator's lock with the
+    reservation's own seed and index (never a reread counter), then build
+    the graph, then commit as the **last** state-changing action. So a
+    successful stochastic forward consumes exactly one call — with or
+    without gradients — while `p == 0` returns the caller's own tensor
+    object having reserved, allocated, and consumed nothing, and every
+    ordinary failure before the commit releases the result, abandons the
+    reservation, and leaves the same unconsumed index for the next
+    forward. Backward consumes none, ever. The private multiplier mask
+    becomes **graph-owned** state through the unchanged `graph_resources`
+    contract — the third member of the family beside the native pooling
+    winner buffer and the fused loss's saved probabilities — released
+    exactly once at the
+    same deterministic points the graph history is, retained under
+    `retain_graph=True`, kept alive across a failed retryable backward,
+    freed by an abandoned graph's `close()`, and closed immediately by a
+    no-grad forward. The backward is `upstream * mask` through the
+    existing native `multiply`, so **no dropout backward kernel exists**;
+    it never rereads the input, never redraws, and never touches a
+    generator, and the node therefore records **no** expected parameter
+    version, so mutating the input or reseeding, resetting, or reloading
+    the generator afterwards cannot change an existing graph's gradient
+    and must not raise.
+    **G4 is complete** — `NativeDropout(p=0.5, seed=None,
+    generator=None)`, the public module over that operation, plus its
+    experimental export and one name (`"NativeDropout"`) appended to
+    `NATIVE_MODULES`. Nothing else moved: no C++, no C ABI symbol, no
+    ctypes declaration, no Core method, no autograd operation, and no
+    checkpoint-format change. `p` goes through the *same* shared
+    validator the Core and the operation use; `seed` and `generator` are
+    **mutually exclusive**, so supplying both raises rather than quietly
+    ignoring one; and the module either creates and owns a generator or
+    registers the **exact** object supplied, never a copy — which is how
+    two layers share one interleaved stream while the default gives every
+    layer an independent one. The generator is first-class registered
+    state (in `generators()`, `named_generators()`, and
+    `generator_state_dict()`, and deliberately absent from
+    `state_dict()`, which stays tensor-valued), a state load replaces it
+    in place so identity and sharing survive, and the module owns **no**
+    native storage. Training delegates to the differentiable operation,
+    so a successful forward consumes exactly one call and a failed one
+    none; evaluation returns the **input object itself**, consuming and
+    allocating nothing, so an arbitrary number of eval forwards leaves no
+    gap in the stream and the next training forward takes the next index;
+    and `p == 0` is identity in both modes.
+    **G5 is complete** — native checkpoint **format version 2** and exact
+    generator restoration. The format *name* never moves; the version is
+    now 2 and every new save writes 2, whether or not the model has
+    generators. The manifest gained exactly one field, `"generators"`:
+    `null` when the model registers none, so absence is stated rather
+    than inferred, or `keys`/`entries`/`aliases` — the ordered canonical
+    names, one `{algorithm, algorithm_version, seed, calls}` object each
+    (seed and counter as **canonical decimal strings**, because a
+    `uint64` above `2**53` is not representable in the IEEE double most
+    JSON readers use), and the complete **registered path → canonical
+    name** map. Generator state adds **no array** to the archive. A
+    shared generator's state is written once while its *topology* is
+    written in full, so two paths draw from one stream in the archive
+    exactly when their aliases name the same canonical entry — sharing is
+    **identity**, never state equality. Canonical names and both orders
+    are functions of the model alone, so saving the same model twice is
+    byte-identical. A load compares the archive against a real
+    `named_generators()` traversal, strictly in both directions, and
+    every mismatch — a missing or unexpected canonical key or registered
+    path, an alias targeting an absent entry, a canonical name not
+    self-mapped, a repeated JSON object key, saved-shared versus
+    live-independent (or the reverse), a canonical name changed by a
+    reordered registration, an algorithm or version mismatch, a malformed
+    or out-of-range seed or counter — fails **in prevalidation, with
+    nothing touched**. Generators are restored **in place**, so identity
+    and every sharing relationship survive and the archive never
+    constructs one. A save *or* a load is refused, leaving an existing
+    destination byte-intact, while any target generator has a call
+    reservation in flight. A **version-1** archive still loads into a
+    model with no registered generators and is **rejected**, naming them,
+    for one that has them — no seed and no counter is ever fabricated —
+    while a v2 archive with generator state loaded into a generator-free
+    model fails as an unexpected-generator error. And the load is **one
+    transaction over the whole archive**: model, buffers, optimizer, and
+    generators commit through their own loaders inside a single rollback
+    guard, so any synchronous failure — a deliverable `KeyboardInterrupt`
+    included — restores all four together, preserves every object
+    identity, moves no parameter version, leaves graph-owned multiplier
+    masks from earlier graphs untouched, and returns native live storage
+    to baseline; only external process or interpreter death is outside
+    that guarantee. It is **serializable** as well: every participating
+    state replacement — the checkpoint load commit, `load_state_dict`,
+    `load_generator_state_dict`, and both optimizers' state loads — plus
+    the save snapshot runs under **one** private process-wide `RLock`, in
+    the universal state-replacement lock order (that guard first, then
+    every unique target generator lock in the global `id()` order, never
+    the reverse), so two concurrent loads leave one archive's state
+    followed by the other's rather than a mixture, and a save describes
+    one coherent serial point. Generator reservations deliberately stay
+    outside the guard, so a racing reservation precedes or follows a
+    transaction and no state is replaced underneath a live token.
+    Ordinary training mutation does not take the guard, so thread-safe
+    concurrent training snapshots are not claimed. The whole registry
+    footprint is one reporting-only
+    name, `"checkpoint_generator_state"` in `STATE_SUPPORT`.
+    **G6 is complete** — the hardening milestone. It executed §13 and §14
+    of the design as adversarial tests in a new
+    `tests/test_native_phase_g_hardening.py`: the reservation transition
+    matrix, the exact `uint64` boundary, forced concurrent interleavings
+    with bounded joins and no sleeps, the deterministic Core's structural
+    key properties beside its committed vectors, every pre-commit and
+    post-commit failure position of the call transaction over four
+    exception classes, all four graph-owned saved-resource families in one
+    graph, a 76-case checkpoint corruption matrix, whole-transaction
+    rollback at every commit position, save-seam destination atomicity,
+    and repeated success-and-failure lifecycle loops measured against a
+    real native live-storage baseline. **It added no capability,
+    operation, module, export, checkpoint field, or checkpoint version**
+    and moved no registry value; it found and fixed exactly one runtime
+    defect — a cleanup-failure `__context__` chain that could become
+    cyclic — with a dedicated regression guard.
+    Milestone **G7 is complete** — the end-to-end exact stochastic resume,
+    and **no new capability**. `examples/native_dropout_training.py` trains
+    `NativeLinear(4, 8)` -> `NativeBatchNorm1d(8)` -> `NativeReLU` ->
+    `NativeDropout(p=0.5, seed=20240707)` -> `NativeLayerNorm(8)` ->
+    `NativeLinear(8, 3)` over raw logits with `NativeCrossEntropyLoss` and
+    `NativeAdam` on a fixed twelve-sample three-class task computed from an
+    explicit formula, in three fixed batches on a schedule that is a **pure
+    function of the training step**. It carries all four TensorForge-owned
+    state families at once — parameters, the persistent native BatchNorm
+    running buffers, a registered `NativeGenerator`, and NativeAdam moments with
+    per-parameter step counters — so an incomplete restore diverges
+    immediately. Two uninterrupted runs are bit-identical; an interrupted run
+    checkpointed after 7 **completed** steps (deliberately mid-cycle in the
+    batch schedule), whose model, optimizer, and generator are **released
+    before the resume begins**, reloads into a completely fresh set built
+    with a *different* native Dropout seed and reproduces the uninterrupted run by
+    **exact equality**: the whole loss sequence, every parameter, both
+    running statistics, every optimizer moment and step counter, the
+    generator's algorithm/version/seed/calls, the final training logits, and
+    the final evaluation output. Two negative controls make that meaningful —
+    restoring all four families but restarting the batch schedule at 0
+    **diverges**, and restoring everything but re-seeding the generator
+    **diverges**. Evaluation is proved state-neutral (repeated eval passes
+    leave `calls` bit-identical, produce identical outputs, restore the
+    caller's mode, and leave a probed run's loss sequence equal to an
+    unprobed one's), and a separate throwaway reload matches the restored
+    module's next native Dropout output against `NativeTensorCore.dropout_forward`
+    at the exact restored `(seed, call_index)`, advancing `calls` by exactly
+    one. **External loop progress is carried explicitly**, as validated JSON
+    metadata (`{"training_step": ..., "next_batch_index": ...}`), because
+    checkpoint v2 captures TensorForge-owned state and **not** data-loader
+    position, batch order, shuffle state, epoch counters, scheduler state,
+    Python's `random`, or NumPy's global random state — a missing or inconsistent
+    field raises rather than silently restarting from step 0.
+    Reproducibility is exact **for the state actually captured**;
+    full-program determinism is not claimed. The whole milestone is one
+    example, one test module, and documentation: **no** C++, C ABI symbol,
+    ctypes declaration, Core method, autograd operation, module, export,
+    schema field, checkpoint version, benchmark, or registry value changed.
+    Milestone **G8 is complete** — `benchmarks/benchmark_native_dropout.py`,
+    the honest characterization, adding **no capability**. Thirty-five
+    cases in eight families: the stateless Core against an **exact
+    bit-for-bit** vectorized NumPy implementation of the same locked
+    derivation, scalar-to-large size scaling, four physical layouts over
+    one logical shape, a five-value probability sweep at three layers,
+    the no-grad / differentiable / backward-only / forward-plus-backward
+    operation layers, the module's training and identity paths, and one
+    complete native Dropout training step — each gated for correctness **before**
+    timing against the committed known-answer vectors, each recording its
+    exact generator consumption, and all of them followed by an untimed
+    lifecycle pass that returns native live storage to baseline. The
+    operation and module cases are `native_only` and publish no ratio.
+    **No speed assertion, no committed timing number, no CI timing
+    threshold**, and no result file unless `--json-out` names one; the
+    numbers are a machine-specific snapshot and nothing was optimized to
+    improve one. Milestone **G9 is complete** — the cross-cutting Phase-G
+    integration suite, `tests/test_native_phase_g.py`, adding **no
+    capability** and changing no runtime file. One test-only model
+    carries every registered state family at once (convolution, NCHW
+    normalization buffers, pooling, two native Dropout layers over one
+    shared generator, flatten, linear layers, 1-D normalization,
+    native LayerNorm, and the fused loss over raw logits), and the suite
+    proves
+    the interactions: four saved-resource families in one graph released
+    exactly once, exact version-2 resume into a fresh
+    model/optimizer/generator set with a negative control that diverges,
+    the generator-topology matrix with every mismatch rejected before any
+    state changes, evaluation consuming no call anywhere, p == 0,
+    non-contiguous NCHW and strided views, whole-state rollback at every
+    commit position, four deterministic concurrency cases, a Phase A–F
+    regression matrix, and live storage returning exactly to baseline
+    across success and failure cycles. Milestone **G10 is complete** —
+    the phase closure. The validation matrix ran with observed results:
+    fresh Windows Release and Debug builds, each **11/11 CTests** with
+    zero project warnings and the active runtime proved to stay the
+    Release DLL; a fresh Clang 18.1.3 ASan+UBSan build in WSL2 with
+    instrumentation proved rather than assumed, **11/11 sanitized
+    CTests** with leak detection on, **3,166 sanitized Python tests**,
+    the G7 example reproducing its exact resume, and the G8 benchmark
+    smoke path passing every correctness gate — all with zero ASan and
+    zero UBSan diagnostics; and a LeakSanitizer lifecycle returning
+    native live storage exactly to baseline with no TensorForge frame in
+    the remaining process-exit allocations and **no suppression file
+    added**. Reproducibility stays exact only for
+    the state actually captured (no Python `random`, no NumPy global
+    random state, no data-loader position, and no scheduler state), and
+    ordinary concurrent training is not claimed thread-safe.
+    **`dropout` stayed listed unsupported for the whole of G0–G9** — G4
+    implemented and exported `NativeDropout` and G5 persisted its stream,
+    neither moving the boundary, because a capability
+    whose value is exact reproducibility is not finished until
+    reproducibility has been demonstrated under fresh Release and Debug
+    builds and the sanitizers — and the name was removed at **G10**,
+    after that matrix passed, leaving exactly `float32`, `cuda`, and
+    `amp`. The claim it makes is narrow: native Dropout is supported in
+    the **experimental native float64 CPU** backend, which says nothing
+    about the stable framework, float32, CUDA, or AMP.
+    Deliberately outside Phase G: a generic
+    sampling or distribution API, global random state, NumPy
+    global-random-state integration, parameter-initialization changes,
+    data-loader shuffling,
+    augmentation, 2-D and 3-D dropout variants, stochastic depth, attention
+    dropout, integer tensors, embeddings, float32, CUDA, AMP,
+    schedulers, new optimizers, CPU performance tuning, and any stable
+    framework change.
   - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

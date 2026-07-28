@@ -112,6 +112,27 @@ def test_backend_info_reports_accurate_integration_flags():
     assert info["stable_framework_integration"] is False
 
 
+# Historically this held the one name deliberately in UNSUPPORTED *and* in
+# an implemented inventory, with the milestone that put it there and the
+# one that would take it out.
+#
+# Phase G locked that split (docs/native_rng_dropout_design.md §19): the
+# operation inventories report what *exists*, UNSUPPORTED reports what is
+# *closed and validated*. G3 shipped the differentiable "dropout"
+# operation into AUTOGRAD_OPS and G4 added "NativeDropout" to
+# NATIVE_MODULES, while "dropout" stayed unsupported through G9 — because
+# Dropout's whole value is exact cross-platform reproducibility, which has
+# to be *demonstrated* under fresh Release, Debug, and sanitized builds and
+# survive a checkpoint before the registry may claim it.
+#
+# **The G10 closure demonstrated exactly that, and the name left.** The
+# allowance set is therefore empty, and the rule below is back to its
+# unrelaxed form: no unsupported name may appear in any implemented
+# inventory, with no exception. A future capability that wants one has to
+# add itself here deliberately.
+_UNSUPPORTED_BUT_IMPLEMENTED = frozenset()
+
+
 def test_unsupported_list_names_only_absent_capabilities():
     info = cpp.backend_info()
     # None of the Phase-D-and-beyond names may leak into the implemented
@@ -122,7 +143,48 @@ def test_unsupported_list_names_only_absent_capabilities():
         | set(info["raw_kernels"])
     )
     for name in info["unsupported"]:
+        if name in _UNSUPPORTED_BUT_IMPLEMENTED:
+            continue
         assert name not in implemented
+
+
+def test_the_deliberate_dropout_overlap_ended_at_the_g10_closure():
+    """The closure form of the old allowance guard.
+
+    For the whole of G3-G9 exactly one name — ``"dropout"`` — appeared in
+    both ``UNSUPPORTED`` and an implemented inventory, deliberately, because
+    the two tuples answer different questions. The G10 closure ended that:
+    the capability is now closed and validated, so the name left
+    ``UNSUPPORTED`` and **no** overlap remains.
+
+    This is asserted in both directions — the set is empty, and the
+    operation is still exactly where it belongs — so a future change that
+    reintroduces an overlap (for any name) fails here rather than silently
+    re-opening the loophole."""
+    from tensorforge.experimental import NativeTensor, native_checkpoint
+
+    info = cpp.backend_info()
+    implemented = (
+        set(info["tensor_core_ops"])
+        | set(info["autograd_ops"])
+        | set(info["raw_kernels"])
+    )
+    assert set(info["unsupported"]) & implemented == set(), (
+        "a name is claimed both unsupported and implemented"
+    )
+
+    # The operation is still the differentiable one, and only that.
+    assert "dropout" in cpp.AUTOGRAD_OPS
+    assert hasattr(NativeTensor, "dropout")
+    assert "dropout" not in cpp.TENSOR_CORE_OPS
+    assert "dropout" not in cpp.RAW_KERNELS
+    assert "dropout" not in cpp.TENSOR_CORE_KERNELS
+    # ...and the Core wrapper keeps its own layer-qualified name.
+    assert "dropout_forward" in cpp.TENSOR_CORE_OPS
+    # G10 has run: the capability is closed, and the conditions that
+    # justified the old allowance are settled.
+    assert "dropout" not in cpp.UNSUPPORTED
+    assert native_checkpoint._FORMAT_VERSION == 2
 
 
 # --- guardrails: the advertised capabilities must match reality ------------
@@ -217,11 +279,19 @@ def test_e8_added_no_capability_inventory_entry():
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        # Phase G milestone G4 appended the Dropout module. It is
+        # unrelated to this milestone, which added no module of its own.
+        "NativeDropout",
     )
     assert info["native_losses"] == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert info["native_metrics"] == ("native_accuracy",)
     assert info["native_optimizers"] == ("NativeSGD", "NativeAdam")
-    assert info["autograd_ops"][-1] == "cross_entropy"
+    # "cross_entropy" was the last autograd op when E8 landed; "dropout"
+    # was appended after it by Phase G milestone G3, which is again
+    # unrelated to E8. The E-phase claim is that classification added
+    # nothing beyond cross_entropy, so that is what is asserted.
+    assert info["autograd_ops"][-1] == "dropout"
+    assert info["autograd_ops"][-2] == "cross_entropy"
     # E8 added no state capability. "persistent_buffers" joined this
     # tuple in Phase F milestone F1 as *reconciliation* of a capability
     # that already existed (register_buffer / buffers / named_buffers,
@@ -230,7 +300,9 @@ def test_e8_added_no_capability_inventory_entry():
     assert info["state_support"] == (
         "persistent_buffers",
         "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     for inventory in ("raw_kernels", "tensor_core_ops", "autograd_ops",
                       "native_modules", "native_losses", "native_metrics",
@@ -305,7 +377,7 @@ def test_f4_reports_both_batchnorm_shapes_and_frees_the_capability():
     assert "batchnorm" not in info["unsupported"]
     assert "layernorm" not in info["unsupported"]
     # ...and the remaining boundary is exactly what it was.
-    assert info["unsupported"] == ("dropout", "float32", "cuda", "amp")
+    assert info["unsupported"] == ("float32", "cuda", "amp")
     # BatchNorm3d was never in scope.
     assert "NativeBatchNorm3d" not in info["native_modules"]
     assert not hasattr(experimental, "NativeBatchNorm3d")
@@ -374,8 +446,11 @@ def test_f9_closed_phase_f_without_registering_anything():
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        # Phase G milestone G4 appended the Dropout module. It is
+        # unrelated to this milestone, which added no module of its own.
+        "NativeDropout",
     )
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
@@ -383,7 +458,9 @@ def test_f9_closed_phase_f_without_registering_anything():
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state",   # Phase G, milestone G1 (in-memory only)
         "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
     # No normalization *operation* exists at any numerical layer, and no
     # closure/validation artifact became a capability name.
@@ -409,4 +486,4 @@ def test_f9_closed_phase_f_without_registering_anything():
     # The checkpoint format did not move at closure.
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 1
+    assert native_checkpoint._FORMAT_VERSION == 2

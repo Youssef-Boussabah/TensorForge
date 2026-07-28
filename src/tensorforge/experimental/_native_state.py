@@ -53,6 +53,16 @@ core a factory returns**: it will either install it or close it, exactly
 once, on every path. A staging failure closes every core staged so far,
 exactly once, and leaves every destination untouched.
 
+All four phases run under the shared **state-transaction guard**
+(``_native_state_lock``, Phase G milestone G5), which is item 1 of the
+universal state-replacement lock order. Individually atomic is not the
+same as serializable: two concurrent transactions could each be
+all-or-nothing and still interleave into a state assembled from both. The
+guard gives every participating replacement a valid serial order. It is
+reentrant, so the whole-checkpoint transaction holds it and then calls
+``NativeModule.load_state_dict``, which arrives here and re-enters it.
+This path takes no generator lock, so it cannot invert the order.
+
 **Commit (reversible until the boundary).** Each destination's core is
 swapped, then every affected parameter's value version is incremented.
 Both steps live inside one rollback guard, so a failure at *either*
@@ -86,6 +96,7 @@ from collections import namedtuple
 
 from tensorforge.backends import cpp
 
+from ._native_state_lock import state_transaction
 from .native_parameter import NativeParameter
 from .native_tensor import NativeTensor
 
@@ -354,9 +365,26 @@ def replace_native_state(entries):
     no core, no version — and every staged core has been closed exactly
     once. The original exception propagates unchanged.
 
+    The whole transaction — plan, stage, commit, and release — runs under
+    the shared state-transaction guard (``_native_state_lock``), which is
+    item 1 of the universal state-replacement lock order. That is what
+    makes two concurrent replacements *serializable* rather than merely
+    individually atomic: planning captures each destination's current core
+    and the commit re-checks it, so without the guard two overlapping
+    transactions could each be all-or-nothing and still leave a state
+    assembled from both. This path takes **no** generator lock, so it can
+    never invert the order; a checkpoint transaction that already holds
+    the guard re-enters it here through the ``RLock``.
+
     See the module docstring for the commit boundary and the ownership
     rules for factory-produced cores.
     """
+    with state_transaction():
+        return _replace_native_state_locked(entries)
+
+
+def _replace_native_state_locked(entries):
+    """The transaction body, with the shared guard already held."""
     planned = _plan_entries(entries)
     if not planned:
         return 0
