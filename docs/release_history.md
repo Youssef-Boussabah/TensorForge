@@ -2400,6 +2400,157 @@ recorded. Every number is a local characterization of one machine,
 reported with its spread, and asserted by no test — there is no CI timing
 threshold anywhere in this repository.
 
+
+### Phase H — native CPU performance and runtime efficiency (H1)
+
+**Milestone H1 — the explicit output-allocation contract — is complete,
+and is the first Phase-H change to production code.**
+
+H0 measured that native storage was value-initialized on construction
+(`new double[n]()`), a full write pass over a buffer that most kernels
+then overwrite completely — and that the cost of that pass scales with
+the buffer while the allocation itself does not. H1 removed it, but only
+where "the kernel overwrites the whole destination before reading any of
+it" is a *proved* property rather than a plausible one.
+
+**What shipped.** Exactly one new C ABI symbol,
+`tf_storage_create_uninitialized`, sharing a single file-local body with
+`tf_storage_create` so the two cannot drift apart on any shared
+guarantee: identical size validation, zero and negative rejection, fault
+injection, allocation-failure handling, thread-local error state, handle
+shape, ownership, destruction through `tf_storage_destroy`, and
+live-storage accounting. The buffer's initial contents are the only
+difference, and the zero-initializing path remains the default with
+byte-for-byte unchanged behavior. That takes the library from the pre-H1
+baseline of **51** exported `tf_*` symbols to **52**, a count a scope
+test verifies by parsing the built image's own export table.
+
+On the Python side: one private keyword-only flag on
+`NativeStorage.__init__` — deliberately on the constructor, so both
+allocation kinds pass through the one function every live-storage
+accounting hook in the suite wraps — plus the private
+`NativeStorage._uninitialized` and `NativeTensorCore._uninitialized`
+helpers. **No public API was added**: there is no `Tensor.empty`, no
+`NativeTensor.empty`, no `empty_like`, no registry capability, and no
+stable-framework surface, and a test asserts the absence of each.
+
+**No global policy, and no runtime debugging hook.** There is no
+allocator switch, no environment variable, no heuristic, no memory pool,
+no scratch arena, and **no poison control or other mechanism anywhere in
+the shipped library or the installed Python backend that can alter what
+an allocation contains**. Each call site opts in explicitly, by name,
+against a per-kernel audit table in
+`docs/native_cpu_performance_design.md`, and a failed precondition means
+the safe existing path rather than a guess.
+
+**The audit corrected H0's sketch.** H0 had guessed "12 of 14"; the real
+inventory differs. The three scatter-add backwards — both convolution
+gradients and the pooling gradient — **do** qualify, because their
+kernels zero their own whole span before accumulating, so the caller's
+fill was pure duplication. `matmul` qualifies too, despite accumulating,
+because it accumulates into a local register and assigns the destination
+once. Two operations are **rejected** and keep a zeroed destination:
+`sum`/`mean`, whose output *is* the accumulator so the zero is the
+additive identity, and `narrow_backward`, which writes only the narrowed
+region and whose untouched zeros *are* the gradient's value.
+
+**Poison, where it lives, and what it proves.** Neither ASan nor UBSan
+detects a read of an uninitialized *value* — that is MemorySanitizer's
+job, and MSan needs a fully instrumented libc and CPython that this
+project does not have, so **no MSan result is claimed**. Real
+uninitialized memory is also a useless oracle, because a fresh OS page
+reads back as zeros and a kernel with a hole would look correct. So
+completeness is proved by filling an uninitialized allocation with a
+chosen pattern — a quiet NaN with a distinctive payload, or a large
+negative finite value — making any unwritten element a deterministic,
+locatable value.
+
+**That poison is injected exclusively by test infrastructure, around the
+allocator.** The suite wraps the private `NativeStorage._uninitialized`
+helper, which every uninitialized allocation funnels through; per
+allocation the real constructor runs first (so the real
+`tf_storage_create_uninitialized` allocates), the wrapper then fills that
+buffer through the ordinary `tf_storage_fill` primitive, and the **same**
+storage object is handed to the real operation, which runs the real
+kernel over it. The pattern is therefore in place strictly after the real
+allocation and strictly before the real kernel, which the suite asserts
+directly by reading each buffer back through the very handle the
+operation receives. **Nothing in the shipped library or the installed
+Python backend participates**: there is no exported poison hook, no
+thread-local flag, no environment variable, and no global mode, and a
+scope test asserts their absence against the loaded image's export table
+and over the backend module's namespace.
+
+An earlier draft of this milestone did ship such a hook — an exported
+`tf_test_set_uninitialized_poison` plus `cpp._set_uninitialized_poison` /
+`cpp._uninitialized_poison` — on the argument that a thread-local seam
+disarmed by default is harmless. That argument was rejected and the
+mechanism removed in full: a symbol compiled into and exported from the
+normal runtime is part of that runtime whatever its intended audience,
+and a caller could activate it and change what production allocations
+contain. The rebuilt proof lost no coverage and gained a control.
+
+Four negative controls prove the detector can actually fail: a bare
+uninitialized allocation is entirely poison; a partial-write kernel
+(`tf_core_narrow_backward`) leaves poison in exactly its holes; an
+accumulating kernel (`tf_core_sum`) returns NaN; and a *complete* kernel
+given a deliberate hole — the real `tf_core_add_contiguous` told to write
+8 of a 9-element destination — is rejected by the very assertion helper
+every proof uses. A mutation test confirms the suite's teeth — moving
+`sum` onto the fast path is caught by five independent tests.
+
+The three tools are kept distinct on purpose: **poison** proves complete
+destination initialization, **ASan/UBSan** prove memory-boundary and
+undefined-behavior safety and say nothing about initialization, and
+**LeakSanitizer plus live-storage accounting** prove lifecycle cleanup.
+
+**Bit-identical.** H1 changed allocation, not arithmetic, so the
+requirement is exact equality rather than a tolerance. Every enabled
+operation and a complete eight-step `NativeAdam` training run are
+computed twice — once as shipped, once with the private constructors
+forced back to `zeros` — and compared element-wise, with the
+uninitialized side running **under poison** so a hole cannot match by
+luck.
+
+**Measured, honestly.** Isolated, the removed fill is large and scales
+with the buffer: roughly 52x at 2 MB, 119x at 8 MB, and 552x at 32 MB,
+while falling *inside the noise and reading slightly negative* below
+about 16,000 elements. End to end it is far more modest and frequently
+inconclusive — clearly real for large memory-bound elementwise work
+(about 1.5-1.8x on an 8 MB output), small and variable for normalization
+and Adam, and with **no measurable effect** on Conv2d, the MLP training
+step, or matmul, whose arithmetic dwarfs its allocation. The matmul rows
+read slightly *below* 1.0 across three runs; that is this machine's
+run-to-run variation, not a regression, and it is published as-is rather
+than explained away. The primary comparison throughout is TensorForge
+zeroed versus TensorForge uninitialized; `numpy.zeros` is reported for
+context only and is explicitly not load-bearing, because `calloc` can be
+answered with lazy zero pages and would measure the operating system
+rather than an allocator TensorForge could adopt.
+
+**Failure paths.** An uninitialized buffer must never reach a caller, so
+every enabled site now closes its destination on failure — which required
+adding the guard to the sites that previously relied on garbage
+collection. Tested at invalid arguments before allocation, injected
+allocation failure, native kernel failure after allocation across eight
+kernels, a Python-side wrapper failure, a failed copy inside
+`from_array`, a rejected fill value in `full`, and fifty interleaved
+success/failure cycles with live storage returning to an exact baseline
+each time — plus fifty more of those cycles with the poison wrapper
+installed, and a failure of the poison fill itself, which closes the
+storage it had just allocated. No check relies on garbage collection to
+reach its baseline.
+
+**Nothing else moved.** No memory pool, scratch arena, SIMD, threading,
+BLAS, fusion, matmul loop change, or reduction fast path — all of those
+are later, still-conditional milestones. `UNSUPPORTED` still reads
+`("float32", "cuda", "amp")`, `SUPPORTED_DTYPES` still reads
+`("float64",)`, `SUPPORTED_DEVICES` still reads `("cpu",)`, and the
+native checkpoint format is still version 2 with versions 1 and 2
+supported. `tf_storage_create_uninitialized` remains the only C ABI
+symbol H1 added. Phase G remains the latest *completed* phase; Phase H
+remains the current one.
+
 ### A hardening milestone before Phase D
 
 Between Phase C and the native CNN stack, a repair-and-hardening pass

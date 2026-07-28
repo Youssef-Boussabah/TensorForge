@@ -800,7 +800,17 @@ all currently **rejected on evidence**, with the criteria that would
 reopen each recorded rather than an answer invented. Every measured
 number is a local characterization of one machine, reported with its
 spread, and asserted by **no** test; there is no CI timing threshold
-anywhere in this repository. Data loaders, native integer tensors, further
+anywhere in this repository.
+**Milestone H1 — the Explicit Output-Allocation Contract — has since
+shipped, and is the first Phase-H change to production code.** **Milestone H1 — the output-allocation contract — has now shipped.** It removed the redundant zero-fill from output storage that a kernel provably overwrites in full, behind one new C ABI symbol (`tf_storage_create_uninitialized`) that matches the zero-initializing default in size validation, allocation-failure handling, error state, ownership, destruction, and live-storage accounting, and differs only in the buffer's initial contents. The zero-initializing path remains the default; there is **no** global allocator policy, environment variable, heuristic, memory pool, scratch arena, or public empty-tensor API, and every enabled call site opts in explicitly against a per-kernel audit table. `sum`/`mean` and `narrow_backward` are explicitly **rejected** and keep a zeroed destination: the first accumulates into its output, the second writes only the narrowed region and the untouched zeros *are* the gradient. Completeness is proved by deterministic **poison** tests that are injected **exclusively by test infrastructure, around the allocator**: the suite wraps the private uninitialized allocation helper, lets the real constructor allocate, fills the returned storage with a quiet NaN or a large finite pattern through the ordinary fill primitive, and hands that same storage to the real operation — so the pattern is in place after the real allocation and before the real kernel runs. **No poison-control mechanism exists in the production runtime**: no exported hook, no thread-local flag, no environment variable, no global mode. ASan and UBSan stay separate from the initialization proof — they do not detect uninitialized-value reads — and MemorySanitizer is not available here, so neither is claimed; negative controls prove the detector can actually fail. H1 is bit-identical: every enabled operation and a full training run are compared element-wise against the zero-initializing allocator. No capability, dtype, device, registry value, checkpoint field, or checkpoint version changed, and `tf_storage_create_uninitialized` is the **only** export it added, taking the library from the pre-H1 baseline of 51 exported `tf_*` symbols to **52**. An earlier draft of H1
+also exported a test-only `tf_test_set_uninitialized_poison` (with
+`cpp._set_uninitialized_poison` / `cpp._uninitialized_poison` in Python);
+that mechanism was **removed in full**, because a symbol compiled into and
+exported from the normal runtime is part of the runtime however carefully
+it is disarmed, and one that can alter production allocation contents does
+not belong there. The proof was rebuilt around the allocator with no
+coverage lost. The measured result is reported honestly rather than as a headline: isolated, the zero-fill is enormous and scales with the buffer (about 52x at 2 MB, 119x at 8 MB, 552x at 32 MB, and *negative* below roughly 16,000 elements, where it sits inside the noise). End to end it is much smaller and often inconclusive — clearly real for large memory-bound elementwise work (about 1.5-1.8x on an 8 MB output), small and variable for normalization and Adam, and with no measurable effect on Conv2d, the MLP step, or matmul, whose arithmetic dwarfs its allocation. Those inconclusive and negative rows are published as such.
+Data loaders, native integer tensors, further
 dtypes/devices, and CUDA experiments are
 future work beyond Phase H.
 Position the project as serious and systems-focused — never
@@ -869,9 +879,14 @@ production-ready, not a PyTorch replacement.
   `benchmarks/benchmark_native_cpu_performance.py`, its contract tests,
   and documentation reconciliation; architecture, profiling, and baseline
   work with **no optimization, no capability, and no registry move**),
-  with H1–H8 proposed and explicitly conditional on that evidence, and
-  the closure milestones still ahead of the project, so **Phase H has
-  begun but is not complete**). When a milestone changes the
+  with **H1 complete** (the output-allocation contract: one new C ABI
+  symbol — `tf_storage_create_uninitialized`, and nothing else — a
+  per-kernel audit table, completeness proved by poison injected purely
+  by test infrastructure around the allocator (no poison control exists
+  in the shipped runtime), bit-identical results, `sum` and
+  `narrow_backward` rejected, and no
+  capability move) and H2–H8 proposed and explicitly conditional on that
+  evidence, so **Phase H has begun but is not complete**). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the

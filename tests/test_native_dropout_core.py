@@ -1229,7 +1229,13 @@ def test_wrapper_construction_failure_closes_the_first_result(
             raise RuntimeError("injected wrapper failure")
         return original(shape, *args, **kwargs)
 
-    monkeypatch.setattr(cpp.NativeTensorCore, "zeros", failing_zeros)
+    monkeypatch.setattr(cpp.NativeTensorCore, "zeros",
+                        failing_zeros)
+    # H1: the enabled output-allocation sites construct through
+    # _uninitialized, so the same probe must watch both
+    # constructors for this test to still observe the real path.
+    monkeypatch.setattr(cpp.NativeTensorCore, "_uninitialized",
+                        failing_zeros)
     x = _core(np.arange(10.0))
     baseline = len(live_storages)
     with pytest.raises(RuntimeError, match="injected wrapper failure"):
@@ -1271,7 +1277,13 @@ def test_public_forward_failure_leaves_nothing_allocated(
             raise RuntimeError("injected wrapper failure")
         return original(shape, *args, **kwargs)
 
-    monkeypatch.setattr(cpp.NativeTensorCore, "zeros", failing_zeros)
+    monkeypatch.setattr(cpp.NativeTensorCore, "zeros",
+                        failing_zeros)
+    # H1: the enabled output-allocation sites construct through
+    # _uninitialized, so the same probe must watch both
+    # constructors for this test to still observe the real path.
+    monkeypatch.setattr(cpp.NativeTensorCore, "_uninitialized",
+                        failing_zeros)
     x = _core(np.arange(6.0))
     baseline = len(live_storages)
     with pytest.raises(RuntimeError, match="injected wrapper failure"):

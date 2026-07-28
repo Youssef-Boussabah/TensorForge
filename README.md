@@ -252,7 +252,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
 - [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **complete**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, and milestone G7, the deterministic stochastic training example and its exact checkpoint resume (no capability), and milestone G8, the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` (also no capability — correctness gated before timing, no speed asserted), and milestone G9, the cross-cutting integration suite `tests/test_native_phase_g.py` (integration evidence only — no capability, and no runtime file changed), and milestone G10, the phase closure — the Release/Debug/sanitizer validation matrix, the documentation reconciliation, and the single registry line that finally removed `dropout` from `UNSUPPORTED` — are all complete, so end-to-end **exact stochastic training resume is demonstrated** and native Dropout is now supported on the experimental native float64 CPU line)
-- [docs/native_cpu_performance_design.md](docs/native_cpu_performance_design.md) — architecture contract for native CPU performance and runtime efficiency (Phase H — the **current** phase, **begun at milestone H0 only**: the design lock, the unified baseline harness `benchmarks/benchmark_native_cpu_performance.py`, its contract tests, and documentation reconciliation. H0 is architecture, profiling, and baseline work — **no performance optimization has shipped**, no numerical capability, dtype, device, export, registry value, or checkpoint version changed, and the proposed H1–H8 ladder is explicitly evidence-driven and conditional, so a milestone whose premise the measurement does not support is narrowed, reordered, or dropped)
+- [docs/native_cpu_performance_design.md](docs/native_cpu_performance_design.md) — architecture contract for native CPU performance and runtime efficiency (Phase H — the **current** phase, **begun at milestone H0 only**: the design lock, the unified baseline harness `benchmarks/benchmark_native_cpu_performance.py`, its contract tests, and documentation reconciliation. H0 is architecture, profiling, and baseline work — **no performance optimization has shipped**, no numerical capability, dtype, device, export, registry value, or checkpoint version changed, and the proposed H1–H8 ladder is explicitly evidence-driven and conditional, so a milestone whose premise the measurement does not support is narrowed, reordered, or dropped. **Milestone H1 — the output-allocation contract — has since shipped**: redundant zero-initialization removed from output storage a kernel provably overwrites in full, behind one new C ABI symbol, bit-identical, with the zero-initializing path still the default, `sum` and `narrow_backward` explicitly rejected, completeness proved by deterministic poison tests, and no capability, dtype, device, export, registry value, or checkpoint version changed)
 
 ## Limitations
 
@@ -825,7 +825,43 @@ behavior and a memory access pattern rather than raw arithmetic, the
 Python-side per-call metadata path costs several times the ctypes
 boundary it wraps, and the `NativeTensor` wrapper and its autograd graph
 node are measurably **not** a bottleneck — a negative result that rules
-out a family of plausible optimizations. The proposed H1–H8 ladder is
+out a family of plausible optimizations.
+
+**Milestone H1 — the output-allocation contract — has since shipped**, and
+it is the first Phase-H change to production code. Every native operation
+allocates a fresh owning output, and native storage was value-initialized
+on construction — a full write pass over a buffer most kernels then
+overwrite completely. H1 added one C ABI symbol,
+`tf_storage_create_uninitialized`, identical to the zero-initializing
+constructor in size validation, allocation-failure handling, error state,
+ownership, destruction, and live-storage accounting, and differing only in
+the buffer's initial contents. The zero-initializing path is still the
+default: there is no global allocator policy, no environment variable, no
+heuristic, no memory pool, no scratch arena, and **no public
+empty-tensor API**. Each call site opts in explicitly against a
+per-kernel audit table, and two operations are deliberately **rejected** —
+`sum`/`mean`, which accumulates into its output, and `narrow_backward`,
+whose untouched zeros *are* the gradient.
+
+Because ASan and UBSan do not detect uninitialized-value reads (that is
+MemorySanitizer's job, and MSan needs an instrumented libc and CPython,
+which this project does not have), completeness is proved separately, by
+**deterministic poison tests**: an uninitialized allocation is filled with
+a quiet NaN or a nontrivial finite pattern, and no poison may survive into
+a result. The poison is applied **entirely by test infrastructure wrapped
+around the allocator** — the real constructor allocates, the test fills
+the returned storage through the ordinary fill primitive, and that same
+storage goes to the real operation — so **the shipped library and the
+installed Python backend contain no poison control at all**: no exported
+hook, no thread-local flag, no environment variable, no global mode.
+Negative controls prove the detector can actually fail. H1 is
+bit-identical — every enabled operation and a complete training run are
+compared element-wise against the zero-initializing allocator — and no
+capability, dtype, device, registry value, or checkpoint version changed;
+`tf_storage_create_uninitialized` is its only added export, taking the
+library from 51 exported `tf_*` symbols to 52. The measured result is reported honestly rather than as a headline: isolated, the zero-fill is enormous and scales with the buffer (about 52x at 2 MB, 119x at 8 MB, 552x at 32 MB, and *negative* below roughly 16,000 elements, where it sits inside the noise). End to end it is much smaller and often inconclusive — clearly real for large memory-bound elementwise work (about 1.5-1.8x on an 8 MB output), small and variable for normalization and Adam, and with no measurable effect on Conv2d, the MLP step, or matmul, whose arithmetic dwarfs its allocation. Those inconclusive and negative rows are published as such.
+
+The proposed H2–H8 ladder is
 explicitly conditional on that evidence: a milestone whose premise the
 measurements do not support is narrowed, reordered, or dropped, and
 allocation pooling, SIMD, threading, and BLAS are all currently

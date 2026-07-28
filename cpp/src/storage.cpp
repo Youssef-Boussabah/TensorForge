@@ -12,14 +12,26 @@
 using tf::Storage;
 using tf::as_storage;
 
-// Returns an opaque handle, or null (with the thread-local error set) if
-// allocation fails. The buffer is zero-initialized for predictable
-// behavior. Allocation is RAII-ordered so the failure scenario the ABI
-// contract calls out — data allocated, then metadata allocation throws,
-// leaking the data — cannot happen: the unique_ptr owns the buffer until
-// the Storage node has successfully adopted it.
-TF_EXPORT void* tf_storage_create(int64_t size) {
-    TF_GUARD_BEGIN
+namespace {
+
+// The one creation body both exported constructors share, so the two
+// paths cannot drift apart on size validation, fault injection,
+// allocation-failure handling, error state, ownership, or the RAII
+// ordering that makes the "buffer allocated, then metadata throws"
+// leak impossible. ``zero_initialize`` is the *only* difference, and it
+// is a compile-time-fixed argument of the two exports rather than any
+// kind of runtime policy:
+//
+//   * true  — ``new double[n]()`` value-initializes the whole buffer,
+//     a full write pass. This is the default everywhere and the only
+//     behavior any caller had before Phase H.
+//   * false — ``new double[n]`` leaves the buffer unwritten. Legal only
+//     for a destination the caller has *proved* is completely written
+//     before any read (see docs/native_cpu_performance_design.md §H1).
+//
+// Returns the handle, or null with the thread-local error already set.
+// Never throws across the caller's guard boundary by itself.
+void* create_storage(int64_t size, bool zero_initialize) {
     if (size <= 0) {
         tf::set_error(TF_ERROR_INVALID, "storage size must be positive");
         return nullptr;
@@ -27,12 +39,22 @@ TF_EXPORT void* tf_storage_create(int64_t size) {
     if (tf::should_fail_alloc()) {  // test-only injected failure (one point)
         throw std::bad_alloc();
     }
+    const size_t count = static_cast<size_t>(size);
     std::unique_ptr<double[]> data(
-        new (std::nothrow) double[static_cast<size_t>(size)]());
+        zero_initialize ? new (std::nothrow) double[count]()
+                        : new (std::nothrow) double[count]);
     if (!data) {
         tf::set_error(TF_ERROR_ALLOC, "could not allocate native storage");
         return nullptr;
     }
+    // Nothing else happens to the buffer here. In particular there is no
+    // poison hook, debug flag, environment variable, or global mode that
+    // could alter what an uninitialized allocation contains: the
+    // "every destination element is written" proof is built by test
+    // infrastructure *around* this function (it fills the returned
+    // storage through tf_storage_fill before running the real kernel),
+    // not by a switch inside it. See tf_internal.h.
+    //
     // If this metadata allocation fails for real, the unique_ptr frees the
     // buffer — the "data allocated, then metadata throws, buffer leaks"
     // scenario the ABI contract calls out cannot happen.
@@ -43,6 +65,45 @@ TF_EXPORT void* tf_storage_create(int64_t size) {
     }
     data.release();  // ownership transferred to the Storage node
     return storage;
+}
+
+}  // namespace
+
+// Returns an opaque handle, or null (with the thread-local error set) if
+// allocation fails. The buffer is zero-initialized for predictable
+// behavior. Allocation is RAII-ordered so the failure scenario the ABI
+// contract calls out — data allocated, then metadata allocation throws,
+// leaking the data — cannot happen: the unique_ptr owns the buffer until
+// the Storage node has successfully adopted it.
+//
+// **This is the default and it did not change in Phase H.** Every caller
+// that has not explicitly proved its destination is fully written still
+// lands here.
+TF_EXPORT void* tf_storage_create(int64_t size) {
+    TF_GUARD_BEGIN
+    return create_storage(size, /*zero_initialize=*/true);
+    TF_GUARD_END(nullptr)
+}
+
+// The Phase-H (H1) uninitialized sibling: identical in every observable
+// respect — size validation, zero/negative rejection, fault injection,
+// allocation-failure handling, error state, handle shape, ownership,
+// destruction through ``tf_storage_destroy``, and live-storage
+// accounting — except that the buffer's initial contents are
+// **indeterminate**.
+//
+// It exists for exactly one reason: a destination that a kernel
+// completely overwrites before reading pays a full extra write pass for
+// a zero nobody ever observes. Callers must have proved that property
+// per kernel; the audit table lives in
+// docs/native_cpu_performance_design.md. It is an internal backend
+// detail — no public ``empty`` API is built on it, and the Python
+// wrapper exposes it only through a private helper.
+//
+// This is the **only** C ABI symbol milestone H1 added.
+TF_EXPORT void* tf_storage_create_uninitialized(int64_t size) {
+    TF_GUARD_BEGIN
+    return create_storage(size, /*zero_initialize=*/false);
     TF_GUARD_END(nullptr)
 }
 

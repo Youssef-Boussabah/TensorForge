@@ -159,9 +159,33 @@ BACKWARD = "backward"
 OPTIMIZER_STEP = "optimizer_step"
 TRAINING_STEP = "training_step"
 
+# Phase H, milestone H1. The same production code path as its sibling
+# layer, run with every H1 output allocation forced back onto the
+# zero-initializing allocator. Pairing a layer with its ``_zeroed`` twin
+# is the **primary** H1 comparison: both run identical arithmetic through
+# identical Python, so the difference between them is the zero-fill and
+# nothing else. NumPy is deliberately *not* the comparison here —
+# ``numpy.zeros`` is served by ``calloc`` and can be answered with lazy
+# zero pages, so timing against it would measure the operating system's
+# page-fault policy rather than TensorForge's allocator.
+TENSOR_CORE_ZEROED = "tensor_core_zeroed"
+NATIVE_TENSOR_GRAPH_ZEROED = "native_tensor_graph_zeroed"
+OPTIMIZER_STEP_ZEROED = "optimizer_step_zeroed"
+TRAINING_STEP_ZEROED = "training_step_zeroed"
+
+# Each H1 layer and the layer it is the zeroed twin of.
+ZEROED_TWIN = {
+    TENSOR_CORE_ZEROED: TENSOR_CORE,
+    NATIVE_TENSOR_GRAPH_ZEROED: NATIVE_TENSOR_GRAPH,
+    OPTIMIZER_STEP_ZEROED: OPTIMIZER_STEP,
+    TRAINING_STEP_ZEROED: TRAINING_STEP,
+}
+
 LAYERS = (NUMPY, STABLE, RAW_KERNEL, RAW_KERNEL_TILED, TENSOR_CORE,
           NATIVE_TENSOR, NATIVE_TENSOR_GRAPH, BACKWARD, OPTIMIZER_STEP,
-          TRAINING_STEP)
+          TRAINING_STEP,
+          TENSOR_CORE_ZEROED, NATIVE_TENSOR_GRAPH_ZEROED,
+          OPTIMIZER_STEP_ZEROED, TRAINING_STEP_ZEROED)
 
 # Reference types. ``native_only`` means no honest equivalent exists, so
 # no ratio is published for that case anywhere.
@@ -363,6 +387,46 @@ def _install_state(module, **arrays):
             tensor.close()
 
 
+class _forced_zero_initialized_allocation:
+    """Run a block with every H1 output allocation forced back onto the
+    zero-initializing allocator (Phase H, milestone H1).
+
+    This is measurement scaffolding, not a production switch: it patches
+    the two private constructors for the duration of one timed call and
+    restores them in a ``finally``. The arithmetic, the Python path, the
+    kernels, and the ownership rules are all identical either way, so a
+    ``_zeroed`` layer differs from its twin by exactly one thing — the
+    redundant zero-fill H1 removed.
+    """
+
+    def __enter__(self):
+        self._core = cpp.NativeTensorCore._uninitialized
+        self._storage = cpp.NativeStorage._uninitialized
+        cpp.NativeTensorCore._uninitialized = cpp.NativeTensorCore.zeros
+        cpp.NativeStorage._uninitialized = staticmethod(
+            lambda size, dtype=None, device="cpu":
+            cpp.NativeStorage(size, dtype=dtype, device=device)
+        )
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        cpp.NativeTensorCore._uninitialized = self._core
+        cpp.NativeStorage._uninitialized = self._storage
+        return False
+
+
+def _zeroed_layer(layer):
+    """Wrap a layer so its timed ``run`` executes under the
+    zero-initializing allocator. ``prepare`` and ``cleanup`` stay outside
+    that scope, exactly as they stay outside the timer."""
+    def run(state):
+        with _forced_zero_initialized_allocation():
+            return layer["run"](state)
+
+    return {"prepare": layer["prepare"], "run": run,
+            "cleanup": layer["cleanup"]}
+
+
 def _nothing():
     return None
 
@@ -470,12 +534,26 @@ def _build_scalar_dispatch(config, spec):
 
 def _build_storage_allocation(config, spec):
     """Allocating and releasing one native storage buffer of the case's
-    size, with **no** compute at all.
+    size, with **no** compute at all — the purest measurement of what
+    Phase H, milestone H1 changed.
 
     Every native operation allocates a fresh owning output, so this is the
-    fixed tax on every result the stack produces. ``numpy.zeros`` is the
-    honest reference: the same request, answered by a different allocator
-    strategy."""
+    fixed tax on every result the stack produces. The two native layers
+    are the **primary** comparison:
+
+    * ``tensor_core``        — the H1 uninitialized allocation;
+    * ``tensor_core_zeroed`` — the zero-initializing default.
+
+    Their difference is the zero-fill in isolation: one full write pass
+    over the buffer, with no kernel, no metadata, and no Python
+    bookkeeping in the way.
+
+    ``numpy.zeros`` is measured for context only and is **deliberately
+    not load-bearing evidence**: it is served by ``calloc``, which an
+    operating system can answer with lazy zero pages that are not
+    actually written until first touch. Timing against it would compare
+    TensorForge's eager fill to the kernel's page-fault policy rather
+    than to an alternative TensorForge could adopt."""
     del spec
     size = int(np.prod(config["shape"]))
 
@@ -491,6 +569,23 @@ def _build_storage_allocation(config, spec):
                      "native storage is not zero-initialized on construction")
         finally:
             storage.close()
+        # The H1 sibling: same size, same metadata, same ownership, same
+        # close semantics. Its *contents* are indeterminate by contract,
+        # so nothing is asserted about them — reading them would be the
+        # very thing the milestone exists to keep out of results.
+        raw = cpp.NativeStorage._uninitialized(size)
+        try:
+            _require(raw.size == size,
+                     f"the uninitialized storage reports size {raw.size}")
+            _require(raw.dtype == "float64" and raw.device == "cpu",
+                     "the uninitialized storage reports the wrong metadata")
+            raw.fill(1.0)
+            _require(np.array_equal(raw.to_numpy(), np.ones(size)),
+                     "the uninitialized storage is not writable")
+        finally:
+            raw.close()
+        _require(repr(raw) == "NativeStorage(closed)",
+                 "close() did not release the uninitialized handle")
         # NativeStorage has no ``closed`` flag; a released handle is
         # observable through its repr, which is the documented surface.
         _require(repr(storage) == "NativeStorage(closed)",
@@ -505,7 +600,10 @@ def _build_storage_allocation(config, spec):
             "max_abs_error": 0.0,
             "element_count": size,
             "checks": ["reported_size", "zero_initialized_storage",
-                       "zero_initialized_core", "close_is_observable"],
+                       "zero_initialized_core", "close_is_observable",
+                       "uninitialized_metadata_matches",
+                       "uninitialized_storage_is_writable",
+                       "uninitialized_close_is_observable"],
         }
 
     return {
@@ -513,6 +611,10 @@ def _build_storage_allocation(config, spec):
         "layers": {
             NUMPY: _layer(lambda _s=None: np.zeros(size)),
             TENSOR_CORE: _layer(
+                lambda _s=None: cpp.NativeStorage._uninitialized(size),
+                cleanup=lambda _s, result: result.close(),
+            ),
+            TENSOR_CORE_ZEROED: _layer(
                 lambda _s=None: cpp.NativeStorage(size),
                 cleanup=lambda _s, result: result.close(),
             ),
@@ -2222,6 +2324,7 @@ CASES = {
                   "because a larger one would measure something else."),
     },
     "storage_allocation": {
+        "allocation_layers": (TENSOR_CORE_ZEROED,),
         "workload": "dispatch_overhead",
         "section": "native storage allocation and release",
         "operation": ("NativeStorage(size) construction and close(), with no "
@@ -2254,6 +2357,7 @@ CASES = {
 
     # -- elementwise ---------------------------------------------------------
     "elementwise_contiguous": {
+        "allocation_layers": (TENSOR_CORE_ZEROED,),
         "workload": "elementwise",
         "section": "multiply, both operands contiguous",
         "operation": ("multiply() with two row-major contiguous operands "
@@ -2350,6 +2454,7 @@ CASES = {
 
     # -- matmul --------------------------------------------------------------
     "matmul_square_contiguous": {
+        "allocation_layers": (TENSOR_CORE_ZEROED,),
         "workload": "matmul",
         "section": "square matmul, both operands contiguous",
         "operation": "(n, n) @ (n, n) with two contiguous operands",
@@ -2428,6 +2533,7 @@ CASES = {
 
     # -- materialization -----------------------------------------------------
     "contiguous_materialization": {
+        "allocation_layers": (TENSOR_CORE_ZEROED,),
         "workload": "materialization",
         "section": "contiguous_copy of a transposed view",
         "operation": ("contiguous_copy() materializing a transposed view "
@@ -2452,6 +2558,7 @@ CASES = {
 
     # -- linear --------------------------------------------------------------
     "linear_forward": {
+        "allocation_layers": (NATIVE_TENSOR_GRAPH_ZEROED,),
         "workload": "linear",
         "section": "NativeLinear forward",
         "operation": ("NativeLinear(in, out)(input) with graph construction "
@@ -2503,6 +2610,7 @@ CASES = {
 
     # -- convolution ---------------------------------------------------------
     "conv2d_forward": {
+        "allocation_layers": (TENSOR_CORE_ZEROED,),
         "workload": "convolution",
         "section": "conv2d forward",
         "operation": "NCHW cross-correlation forward with bias",
@@ -2620,6 +2728,7 @@ CASES = {
 
     # -- training steps ------------------------------------------------------
     "mlp_training_step": {
+        "allocation_layers": (TRAINING_STEP_ZEROED,),
         "workload": "training_step",
         "section": "MLP training step",
         "operation": ("zero_grad -> Linear/ReLU/Linear forward -> "
@@ -2651,6 +2760,7 @@ CASES = {
                   "happens inside the timed region."),
     },
     "cnn_classification_training_step": {
+        "allocation_layers": (TRAINING_STEP_ZEROED,),
         "workload": "training_step",
         "section": "CNN classification training step",
         "operation": ("zero_grad -> Conv2d/ReLU/MaxPool2d/Flatten/Linear "
@@ -2684,6 +2794,7 @@ CASES = {
                   "repetition."),
     },
     "normalized_training_step": {
+        "allocation_layers": (TRAINING_STEP_ZEROED,),
         "workload": "normalization",
         "section": "normalization-heavy training step",
         "operation": ("zero_grad -> Linear/BatchNorm1d/ReLU/LayerNorm/Linear "
@@ -2754,6 +2865,7 @@ CASES = {
 
     # -- optimizers ----------------------------------------------------------
     "adam_step": {
+        "allocation_layers": (OPTIMIZER_STEP_ZEROED,),
         "workload": "optimizer",
         "section": "NativeAdam.step()",
         "operation": ("one NativeAdam.step() with gradients already present, "
@@ -2949,6 +3061,14 @@ def _measure_case(name, warmup, repetitions, variant):
         timings = {}
         layers = dict(case["layers"])
         layers.update(case.get("extra_layers", {}))
+        # Phase H (H1): a case that names an allocation-sensitive layer
+        # gets that layer measured twice — once as it ships, once with
+        # the zero-fill forced back on. Same code, same arithmetic; the
+        # difference between the pair is the fill.
+        for zeroed_name, twin in ZEROED_TWIN.items():
+            if (zeroed_name in spec.get("allocation_layers", ())
+                    and zeroed_name not in layers):
+                layers[zeroed_name] = _zeroed_layer(layers[twin])
         for layer_name, layer in layers.items():
             timings[layer_name] = _statistics(measure(
                 layer["prepare"], layer["run"], layer["cleanup"],
@@ -2971,6 +3091,27 @@ def _measure_case(name, warmup, repetitions, variant):
             "ratio_to_reference": ratio,
         })
 
+    # The primary H1 statistic: each shipped layer against its zeroed
+    # twin. >1 means the zero-fill cost time in this run; <1 means the
+    # difference fell inside this machine's noise, which is an honest and
+    # common outcome for small outputs and is reported as such.
+    allocation = {}
+    for zeroed_name, twin in ZEROED_TWIN.items():
+        if zeroed_name in timings and twin in timings:
+            fast = timings[twin]["median_s"]
+            zeroed = timings[zeroed_name]["median_s"]
+            allocation[twin] = {
+                "uninitialized_median_s": fast,
+                "zero_initialized_median_s": zeroed,
+                "zero_fill_median_s": zeroed - fast,
+                "speedup_from_skipping_the_fill": (zeroed / fast)
+                if fast > 0 else None,
+                "uninitialized_relative_spread":
+                    timings[twin]["relative_spread"],
+                "zero_initialized_relative_spread":
+                    timings[zeroed_name]["relative_spread"],
+            }
+
     return {
         "case": name,
         "workload": spec["workload"],
@@ -2989,6 +3130,7 @@ def _measure_case(name, warmup, repetitions, variant):
         "warmup": warmup,
         "sample_count": case_repetitions,
         "layers": rows,
+        "allocation_comparison": allocation or None,
         "notes": spec["notes"],
     }
 
@@ -3266,6 +3408,48 @@ def format_report(payload):
                 f"{record['reference_type']:<20} "
                 f"{record['correctness']['status']:<8}"
             )
+    # Phase H (H1): the allocation-contract comparison, reported on its
+    # own because it is a native-vs-native measurement and the ratios
+    # above are native-vs-reference.
+    allocation_rows = [
+        (record, layer, data)
+        for record in payload["cases"]
+        for layer, data in (record.get("allocation_comparison") or {}).items()
+    ]
+    if allocation_rows:
+        lines.append("")
+        lines.append("H1 allocation contract "
+                     "(uninitialized output vs the zero-initializing default)")
+        header = (
+            f"{'case':<34} {'layer':<21} {'uninit':>12} {'zeroed':>12} "
+            f"{'fill':>12} {'x':>7}  {'spread(u/z)':>13}"
+        )
+        lines.append(header)
+        lines.append("-" * len(header))
+        for record, layer, data in allocation_rows:
+            speedup = data["speedup_from_skipping_the_fill"]
+            fill = data["zero_fill_median_s"]
+            spread_u = data["uninitialized_relative_spread"]
+            spread_z = data["zero_initialized_relative_spread"]
+            lines.append(
+                f"{record['case']:<34} {layer:<21} "
+                f"{_format_duration(data['uninitialized_median_s']):>12} "
+                f"{_format_duration(data['zero_initialized_median_s']):>12} "
+                f"{('-' if fill < 0 else '') + _format_duration(abs(fill)):>12} "
+                f"{(f'{speedup:.2f}' if speedup else 'n/a'):>7}  "
+                f"{f'{spread_u:.0%}/{spread_z:.0%}':>13}"
+            )
+        lines.append("")
+        lines.append(
+            "'fill' is the zeroed median minus the uninitialized median: "
+            "the cost of the\nredundant write pass H1 removed. A negative "
+            "fill or an x below 1.00 means the\ndifference fell inside this "
+            "run's noise -- compare it against the spread column\nbefore "
+            "reading anything into it. numpy.zeros is shown in the table "
+            "above for\ncontext only and is NOT the comparison: calloc can "
+            "be answered with lazy zero\npages, so it measures the OS "
+            "rather than an allocator TensorForge could adopt."
+        )
     lines.append("")
     lines.append(
         "ratio = this layer's median / the case's reference-layer median "

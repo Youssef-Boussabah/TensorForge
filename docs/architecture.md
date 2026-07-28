@@ -360,10 +360,37 @@ explicit layer at a time:
   measures each of the layers in the execution path below separately,
   gates correctness before timing, and publishes no ratio where no honest
   equivalent exists. Its ranked evidence, and the explicitly conditional
-  H1–H8 ladder derived from it, live in the design document; a memory
+  H2–H8 ladder derived from it, live in the design document; a memory
   pool, scratch allocation, SIMD, threading, and BLAS are all currently
   rejected on that evidence, with the criteria that would reopen each
   recorded rather than an answer invented.
+- **Milestone H1 — the output-allocation contract — is complete**, and is
+  the first Phase-H change to production code. Native storage was
+  value-initialized on construction, a full write pass over a buffer most
+  kernels then overwrite completely; H1 removed that fill wherever a
+  kernel *provably* writes every destination element before reading any
+  of it. It added one production C ABI symbol,
+  `tf_storage_create_uninitialized`, sharing one body with the unchanged
+  zero-initializing `tf_storage_create` so the two cannot drift apart on
+  size validation, allocation failure, error state, ownership,
+  destruction, or live-storage accounting. The zero-initializing path
+  remains the default; each call site opts in explicitly against a
+  per-kernel audit table, with `sum`/`mean` and `narrow_backward`
+  deliberately **rejected** because the first accumulates into its output
+  and the second leaves untouched zeros that *are* the gradient.
+  Completeness is proved by deterministic **poison** tests rather than by
+  ASan or UBSan, which do not detect uninitialized-value reads and stay
+  separate from this proof. The poison belongs to the test suite alone:
+  it wraps the private uninitialized allocation helper, fills the real
+  storage the real constructor returned, and hands that same storage to
+  the real operation, so **no poison control exists in the shipped
+  library or the installed Python backend** — no exported hook, no
+  thread-local flag, no environment variable, no global mode.
+  H1 is bit-identical and moved no capability, dtype, device,
+  registry value, or checkpoint version; it added **no** public
+  empty-tensor API, and `tf_storage_create_uninitialized` is the only C
+  ABI symbol it added, taking the library to **52** exported `tf_*`
+  symbols.
 
 The execution path for a native training step is:
 

@@ -3972,7 +3972,50 @@ arithmetic; the Python-side per-call metadata path costs several times
 the ctypes boundary it wraps; and the `NativeTensor` wrapper and its
 autograd graph node are measurably **not** a bottleneck — a negative
 result that rules out a family of plausible optimizations before any of
-them is written. The proposed H1–H8 ladder is explicitly conditional on
+them is written.
+
+**Milestone H1 — the output-allocation contract — has since shipped**,
+and it is the first Phase-H change to production code. **Milestone H1 — the output-allocation contract — has now shipped.** It removed the redundant zero-fill from output storage that a kernel provably overwrites in full, behind one new C ABI symbol (`tf_storage_create_uninitialized`) that matches the zero-initializing default in size validation, allocation-failure handling, error state, ownership, destruction, and live-storage accounting, and differs only in the buffer's initial contents. The zero-initializing path remains the default; there is **no** global allocator policy, environment variable, heuristic, memory pool, scratch arena, or public empty-tensor API, and every enabled call site opts in explicitly against a per-kernel audit table. `sum`/`mean` and `narrow_backward` are explicitly **rejected** and keep a zeroed destination: the first accumulates into its output, the second writes only the narrowed region and the untouched zeros *are* the gradient. Completeness is proved by deterministic **poison** tests that are injected **exclusively by test infrastructure, around the allocator**: the suite wraps the private uninitialized allocation helper, lets the real constructor allocate, fills the returned storage with a quiet NaN or a large finite pattern through the ordinary fill primitive, and hands that same storage to the real operation — so the pattern is in place after the real allocation and before the real kernel runs. **No poison-control mechanism exists in the production runtime**: no exported hook, no thread-local flag, no environment variable, no global mode. ASan and UBSan stay separate from the initialization proof — they do not detect uninitialized-value reads — and MemorySanitizer is not available here, so neither is claimed; negative controls prove the detector can actually fail. H1 is bit-identical: every enabled operation and a full training run are compared element-wise against the zero-initializing allocator. No capability, dtype, device, registry value, checkpoint field, or checkpoint version changed, and `tf_storage_create_uninitialized` is the **only** export it added, taking the library from the pre-H1 baseline of 51 exported `tf_*` symbols to **52**.
+
+The measured result is reported honestly rather than as a headline: isolated, the zero-fill is enormous and scales with the buffer (about 52x at 2 MB, 119x at 8 MB, 552x at 32 MB, and *negative* below roughly 16,000 elements, where it sits inside the noise). End to end it is much smaller and often inconclusive — clearly real for large memory-bound elementwise work (about 1.5-1.8x on an 8 MB output), small and variable for normalization and Adam, and with no measurable effect on Conv2d, the MLP step, or matmul, whose arithmetic dwarfs its allocation. Those inconclusive and negative rows are published as such.
+
+**H1's validation matrix, re-run in full after the poison-control
+removal.** Windows Release **and** Debug builds (Visual Studio 17 2022,
+MSVC 19.44.35207), the Debug library written outside the repository so
+the active runtime stayed the Release DLL (58,880 bytes, unchanged;
+Debug 177,152 bytes elsewhere), each with **zero project compiler,
+linker, and CMake diagnostics** and **12/12 CTests** (0.92 s and 1.07 s).
+The full Python suite is **5,108 passed**, the native smoke check passes,
+the Phase-H harness passes all 24 correctness gates in both `--smoke` and
+`--smoke --json` while writing no result file, stable `tensorforge`
+imports pull in no native or experimental module, and the
+deterministic-training and exact-resume suites pass — including
+`examples/native_dropout_training.py` reproducing its exact stochastic
+resume with live native storage 0 → 0. The DLL's own export directory
+lists **52** symbols, all `tf_*` — the pre-H1 baseline of 51 plus
+`tf_storage_create_uninitialized` — with **none** matching "poison", and
+asking the loaded library for `tf_test_set_uninitialized_poison` through
+the platform loader raises `AttributeError`.
+
+A fresh Clang **18.1.3** `-DTF_SANITIZE=address,undefined` build in WSL2
+Ubuntu 24.04.4 compiled with zero diagnostics and has instrumentation
+**proved present**: `nm -D` shows **22 `__asan*`** and **14 `__ubsan*`**
+dynamic symbols beside the **52** exported `tf_*` symbols and **zero**
+poison symbols, and the library refuses to load without the sanitizer
+runtime. Under it: **12/12 sanitized CTests** with `detect_leaks=1`,
+**2,049** sanitized Python tests across the H1 and native suites, **432**
+more across the deterministic-training and exact-resume suites, **326**
+more in a focused re-run of the H1 suite plus the documentation
+guardrails and the harness contract tests, the G7 example reproducing its
+exact resume, and the harness passing all 24 gates — with **zero ASan
+errors and zero UBSan runtime errors**. A LeakSanitizer lifecycle drove
+three complete harness runs and returned native live storage **exactly to
+baseline (0 → 0)** at every checkpoint; the remaining process-exit
+allocations (775,248 bytes in 694 allocations) contain **no TensorForge
+frame** — every named frame is CPython, libc, NumPy, or the ASan runtime —
+and **no suppression file was added**.
+
+The proposed H2–H8 ladder is explicitly conditional on
 that evidence, and a memory pool, scratch allocation, SIMD, threading,
 and BLAS are all currently rejected on it, each with the criteria that
 would reopen it recorded rather than an answer invented. Every number is

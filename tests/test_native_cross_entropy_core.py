@@ -1222,6 +1222,11 @@ def test_native_cross_entropy_outputs_close_if_the_kernel_fails(monkeypatch):
 
     monkeypatch.setattr(cpp.NativeTensorCore, "zeros",
                         staticmethod(_recording_zeros))
+    # H1: the enabled output-allocation sites construct through
+    # _uninitialized, so the same probe must watch both
+    # constructors for this test to still observe the real path.
+    monkeypatch.setattr(cpp.NativeTensorCore, "_uninitialized",
+                        staticmethod(_recording_zeros))
     monkeypatch.setattr(library, "tf_core_cross_entropy_forward",
                         _failing_kernel)
     core = cpp.NativeTensorCore.from_array(LOGITS)
@@ -1237,6 +1242,11 @@ def test_native_cross_entropy_outputs_close_if_the_kernel_fails(monkeypatch):
     result = core.cross_entropy_forward(TARGETS, "mean")
     seed = scalar_core(1.0)          # allocated before the recorder is armed
     monkeypatch.setattr(cpp.NativeTensorCore, "zeros",
+                        staticmethod(_recording_zeros))
+    # H1: the enabled output-allocation sites construct through
+    # _uninitialized, so the same probe must watch both
+    # constructors for this test to still observe the real path.
+    monkeypatch.setattr(cpp.NativeTensorCore, "_uninitialized",
                         staticmethod(_recording_zeros))
     monkeypatch.setattr(library, "tf_core_cross_entropy_backward",
                         _failing_kernel)
@@ -1269,6 +1279,11 @@ def test_native_cross_entropy_second_allocation_failure_closes_the_first(
         return core
 
     monkeypatch.setattr(cpp.NativeTensorCore, "zeros",
+                        staticmethod(_failing_second_zeros))
+    # H1: the enabled output-allocation sites construct through
+    # _uninitialized, so the same probe must watch both
+    # constructors for this test to still observe the real path.
+    monkeypatch.setattr(cpp.NativeTensorCore, "_uninitialized",
                         staticmethod(_failing_second_zeros))
     core = cpp.NativeTensorCore.from_array(LOGITS)
     with pytest.raises(MemoryError, match="simulated"):

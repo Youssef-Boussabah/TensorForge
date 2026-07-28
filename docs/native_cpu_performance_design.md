@@ -1058,10 +1058,18 @@ An allocation-strategy change (H1) raises the bar rather than lowering
 it: removing an eager zero-fill means a buffer can legitimately contain
 garbage before its kernel writes it, and **MemorySanitizer-class
 mistakes become possible for the first time in this project**. H1 must
-therefore prove, per kernel, that every destination byte is written
-before it is read — by C++ test, by ASan/UBSan, and by the existing
-bit-exact resume proofs, which would diverge immediately on an
-uninitialized read.
+therefore prove, per kernel, that every destination element is written
+before it is read.
+
+That proof is **separate from the sanitizers**, which do not answer the
+question: ASan and UBSan cover memory-boundary safety and undefined
+behavior, and neither reports a read of an uninitialized *value*.
+Initialization completeness is established instead by the deterministic
+poison tests of §16.1.3 — injected by test infrastructure around the
+allocator, never by the runtime — supported by the existing bit-exact
+resume proofs, which would diverge immediately if a destination's initial
+contents ever reached a result. The sanitizer matrix above is still
+required in full; it simply proves different properties.
 
 ---
 
@@ -1076,7 +1084,7 @@ milestone re-runs the H0 harness before and after and reports both.
 | # | Milestone | Evidence | Status |
 |---|---|---|---|
 | **H0** | **Architecture, profiling, and baseline** | — | **complete** |
-| H1 | Output allocation contract: uninitialized allocation for fully-written destinations | B1 (measured, ~74 % of a 2 MB elementwise op) | proposed |
+| **H1** | **Output allocation contract: uninitialized allocation for fully-written destinations** | B1 (measured, ~74 % of a 2 MB elementwise op) | **complete** — see 16.1 |
 | H2 | Matmul memory access: loop order and cache blocking in the production kernel | B2 (measured, 3.3×, **bit-identical**) | proposed |
 | H3 | Per-call dispatch cost: cached layout metadata at the Core boundary | B3 (measured, ~20 µs fixed, ~10 % of it ctypes) | proposed |
 | H4 | Optimizer step cost: fewer native calls and allocations per parameter | B4 (measured, 27 allocations/parameter, 83 % of a step) | proposed |
@@ -1092,25 +1100,372 @@ milestone re-runs the H0 harness before and after and reports both.
 This document, the unified harness, its contract tests, and
 documentation reconciliation. No production numerical change.
 
-### H1 — Output allocation contract *(recommended next)*
+### H1 — Output allocation contract **(complete)**
 
-Give the native allocation path an explicit **initialized / uninitialized**
-choice, and use the uninitialized one only for destinations a kernel
-provably overwrites in full.
+The shipped contract, the per-kernel audit, the poison
+methodology, the parity proof, and the measured results are
+section 16.1 below.
 
-- Adds one C ABI entry point beside `tf_storage_create` (not a
-  replacement — the zero-initializing one stays and stays the default).
-- The Core-level allocation helpers gain an explicit opt-in. There is no
-  global switch and no heuristic.
-- **The audit in §3.1/B1 is the contract**, enumerated per kernel in
-  H1's own section of this document, with `tf_core_sum`,
-  `tf_core_narrow_backward`, and the scatter-add backwards explicitly
-  keeping the zeroed destination.
-- Must be bit-identical everywhere (§7.3). It changes no arithmetic at
-  all, so this is a hard requirement, not a tolerance.
-- Raises the sanitizer bar per §15.
-- Preserves every §9 invariant, in particular failure atomicity: an
-  uninitialized buffer must never escape to a caller on a failure path.
+---
+
+## 16.1 H1 — the output-allocation contract, as shipped
+
+**Status: complete.** H1 removed the redundant zero-initialization from
+output storage that a kernel provably overwrites in full. It is an
+allocation change and nothing else: no arithmetic, no traversal, no loop
+order, no kernel, and no capability moved.
+
+### 16.1.1 What was added
+
+**Exactly one new C ABI symbol, and no other:**
+
+| Symbol | Kind | Purpose |
+|---|---|---|
+| `tf_storage_create_uninitialized(int64_t size)` | production | The uninitialized sibling of `tf_storage_create`. Identical size validation, zero/negative rejection, fault injection, allocation-failure handling, error state, handle shape, ownership, destruction, and live-storage accounting; the buffer's initial contents are the **only** difference. |
+
+That brings the library's exported surface from the pre-H1 baseline of
+**51** `tf_*` symbols to **52**, and
+`tests/test_native_storage_allocation.py` asserts that count by parsing
+the built image's own export table rather than by consulting a list this
+repository maintains.
+
+There is **no poison-control symbol, and no runtime initialization
+control of any kind**: no exported hook, no thread-local flag, no
+environment variable, no global mode, and no per-call policy argument.
+An earlier draft of this milestone shipped an exported
+`tf_test_set_uninitialized_poison` and matching Python helpers, on the
+argument that a thread-local seam disarmed by default is harmless. That
+argument is rejected: a symbol compiled into and exported from the normal
+runtime is part of the runtime whatever its intended audience, and one
+that can alter what production allocations contain is not something the
+shipped library should offer. The mechanism was removed and the proof
+rebuilt around the allocator instead (§16.1.3), losing no coverage.
+
+Both exported constructors run through **one file-local body**
+(`create_storage(size, zero_initialize)`), so the two cannot drift apart
+on any shared guarantee. `zero_initialize` is a compile-time-fixed
+argument of the two exports, not a runtime switch. The zero-initializing
+path is still the default and its behavior is byte-for-byte what it was
+before H1.
+
+On the Python side:
+
+| Name | Visibility | Notes |
+|---|---|---|
+| `NativeStorage.__init__(..., *, _zero_initialize=True)` | private keyword | Both allocation kinds pass through the one constructor, so **every** live-storage accounting hook in the test suite — each of which wraps `NativeStorage.__init__` — sees an uninitialized allocation exactly as it sees a zeroed one. |
+| `NativeStorage._uninitialized(size, ...)` | private | The classmethod that sets that flag. Also the single seam the poison tests wrap. |
+| `NativeTensorCore._uninitialized(shape, ...)` | private | The Core-level counterpart of `zeros`. |
+
+**No public API was added.** There is no `Tensor.empty`, no
+`NativeTensor.empty`, no `empty_like`, no registry capability, and no
+stable-framework surface. A test asserts the absence of each. The
+installed backend module likewise exposes no poison-shaped name, which is
+asserted over `dir(cpp)` and against the loaded library through
+`ctypes`.
+
+### 16.1.2 The per-kernel audit
+
+Every production destination allocation was re-read from source. H0's
+preliminary "12 of 14" sketch was **not** trusted, and the real inventory
+differs from it: in particular the three scatter-add backwards **do**
+qualify (they zero their own span before accumulating, so the caller's
+fill is pure duplication), while `tf_core_sum` and
+`tf_core_narrow_backward` do not.
+
+Column meanings. **Every element written?** — does the kernel assign
+every element of the destination it was given? **Read before first
+write?** — does the kernel ever read a destination cell before writing
+it? **Uninit?** — is the uninitialized path enabled?
+
+| Operation / kernel | Destination allocation site | Every element written? | Read before first write? | Uninit? | Reason | Proof |
+|---|---|---|---|---|---|---|
+| `add` / `subtract` / `multiply`, same-shape contiguous | `_binary_core_op` | Yes — flat loop over `[0, numel)` | No | **Enabled** | `dst[i] = op(a[i], b[i])` for every `i`; the destination holds exactly `numel` | poison, both patterns, contiguous and nonzero-offset |
+| `add` / `subtract` / `multiply`, same-shape strided | `_binary_core_op` | Yes — odometer, one write per logical position | No | **Enabled** | Same coverage, different traversal | poison through a real transposed view |
+| `add` / `subtract` / `multiply`, broadcast | `_binary_core_op` | Yes — odometer over `prod(out_shape)` | No | **Enabled** | Broadcasting changes how *operands* are read (zero strides), never which output positions are visited | poison over a `(7,5)` with `(1,5)` case |
+| `relu` | `relu` | Yes | No | **Enabled** | `core_unary` assigns every element | poison: contiguous, strided, narrowed |
+| `sqrt`, `reciprocal`, `exp`, `log` | `_unary_compute` | Yes | No | **Enabled** | Same `core_unary` coverage | poison, both patterns |
+| `contiguous_copy` (Core and View) | `contiguous_copy` | Yes | No | **Enabled** | `core_unary` with the identity op | poison over transposed and narrowed views |
+| `matmul` | `matmul` | Yes — `dst[i*p + j] = sum` over the full `(m, p)` | No — accumulates into a **local register**, then assigns once | **Enabled** | The destination is never an accumulator | poison; also the precondition H2 must preserve |
+| `relu_backward` | `relu_backward` | Yes — binary odometer | No | **Enabled** | Same coverage as the binary ops | poison |
+| `softmax`, `log_softmax` | `_axis_fused_forward` | Yes — pass 2 assigns every `(outer, k, inner)` slot | No — pass 3's read-modify-write reads what pass 2 wrote | **Enabled** | The index map covers `[0, numel)` bijectively | poison on both axes |
+| `cross_entropy_forward` — loss | `cross_entropy_forward` | Yes — the single scalar element | No | **Enabled** | `*loss = ...` unconditionally | poison, both reductions |
+| `cross_entropy_forward` — probabilities | `cross_entropy_forward` | Yes — every `(batch, class)` | No | **Enabled** | Pass 2 writes the whole row; pass 3 normalizes what it wrote | poison, both reductions |
+| `cross_entropy_backward` | `cross_entropy_backward` | Yes — every `(batch, class)` | No | **Enabled** | Assigns the gradient for every class | poison |
+| `conv2d_forward` | `conv2d_forward` | Yes — assigns over the full output extent | No — bias seeds a **local** accumulator | **Enabled** | Padding skips *source* reads, never output positions | poison at stride/padding `(1,0)`, `(1,1)`, `(2,1)` |
+| `conv2d_input_backward` | `conv2d_input_backward` | Yes — **the kernel zeroes its own whole span first** | No | **Enabled** | It writes `0.0` across the complete `N*C*H*W` before any accumulation; the caller's fill was duplication | poison at three stride/padding settings |
+| `conv2d_weight_backward` | `conv2d_weight_backward` | Yes — same self-zeroing over `O*C*kh*kw` | No | **Enabled** | Same | poison at three settings |
+| `maxpool2d_forward` — values | `_maxpool2d_forward_with_winners` | Yes — assigns over the full output extent | No | **Enabled** | The running best is a **local**, initialized before the window loop, so even a degenerate window assigns | poison at three kernel/stride settings |
+| `maxpool2d_forward` — winners | same | Yes — same extent, same loop | No | **Enabled** | Same | poison |
+| `maxpool2d_backward` | `maxpool2d_backward` | Yes — **the kernel zeroes its own whole span first** | No | **Enabled** | Same self-zeroing as the convolution backwards; overlapping windows then accumulate | poison including overlapping windows (kernel 3, stride 1) |
+| `dropout_forward` — output | `_dropout_forward_with_mask` | Yes — every `i` in `[0, count)` | No | **Enabled** | One pass writes both destinations | poison at `p` of 0.0, 0.25, 0.9 |
+| `dropout_forward` — mask | same | Yes — same loop | No | **Enabled** | Same | poison at the same probabilities |
+| `NativeStorage.from_array` | `from_array` | Yes — the copy writes the whole `storage->size` | No | **Enabled** | The size comes from the same array, so no element can survive | poison |
+| `NativeTensorCore.full` | `full` | Yes — the fill writes every element | No | **Enabled** | `float(value)` is evaluated **before** the allocation, so a bad value allocates nothing | poison plus a value check |
+| **`sum` / `mean`** (`tf_core_sum`) | `sum` | **No** — accumulates | **Yes** — `dst[out_pos] += src[in_pos]` | **REJECTED** | The zero is the **additive identity** the reduction starts from. Every reduced axis folds many inputs into one cell, which is read on every accumulation after the first. | negative control: with poison armed and the fast path forced, the result is NaN rather than the correct sum |
+| **`narrow_backward`** (`tf_core_narrow_backward`) | `narrow_backward` | **No** — writes only the narrowed region | No, but leaves cells untouched | **REJECTED** | The un-narrowed cells' zero **is the gradient's value**, not an initialization detail. An uninitialized buffer would leak heap contents into a gradient. | negative control: 10 of 15 cells retain poison, exactly the un-narrowed rows |
+| `NativeTensorCore.zeros` | — | n/a | n/a | **REJECTED by definition** | Its contract *is* zeros, and the two rejected kernels depend on it | asserted directly |
+
+Two rows deserve emphasis, because they are the ones an incautious
+reading gets wrong in opposite directions:
+
+- **The three scatter-add backwards qualify.** "Accumulating kernel" does
+  not automatically mean "needs a zeroed destination" — what matters is
+  whether *the caller* must supply the zero. These three supply their
+  own, and always did; H1 simply stopped paying for it twice.
+- **`matmul` qualifies despite accumulating.** It accumulates into a
+  local `double sum` and assigns once, so the destination is never read.
+
+### 16.1.3 Why poison, where it lives, and what each tool actually proves
+
+Three tools prove three different things, and they are not
+interchangeable:
+
+| Tool | Proves | Does **not** prove |
+|---|---|---|
+| **Deterministic poison tests** | Every destination element is written before it is read | Nothing about memory safety or lifetimes |
+| **ASan / UBSan** | Memory-boundary safety and undefined behavior | **Nothing about uninitialized-value reads** |
+| **LeakSanitizer and live-storage accounting** | Lifecycle cleanup and exactly-once destruction | Nothing about initialization |
+
+The poison exists because the two obvious alternatives do not work:
+
+- **Real uninitialized memory is a useless oracle.** A fresh page from
+  the operating system reads back as zeros, so a kernel that skipped an
+  element would silently look correct — and would keep looking correct
+  until the allocator happened to hand back a dirty page in production.
+- **ASan and UBSan do not detect uninitialized *value* reads.** That is
+  MemorySanitizer's job, and MSan needs a fully instrumented libc and
+  CPython. This project has neither, so **MSan was not used and no MSan
+  result is claimed anywhere.** ASan and UBSan remain entirely separate
+  from the initialization proof: they are run over the same code, but
+  they answer a different question.
+
+The poison fills an uninitialized allocation with a chosen pattern, so an
+unwritten element becomes a deterministic, locatable value. Two patterns
+are used: a **quiet NaN** with a distinctive payload (`0x7FF8DEADBEEFCAFE`
+— it propagates through arithmetic, so an unwritten element that is later
+*read* contaminates everything downstream) and a **large negative finite**
+value, `-1.2345678901234567e300` (which catches code that special-cases
+NaN, or a comparison a NaN would silently fail).
+
+**The poison is injected exclusively by test infrastructure, around the
+allocator.** It is not a capability of the runtime, and the runtime has
+no way to produce it. The whole mechanism is a context manager in
+`tests/test_native_storage_allocation.py` that temporarily wraps the one
+private allocation helper, `NativeStorage._uninitialized` — the single
+funnel through which every uninitialized allocation passes, including
+`NativeTensorCore._uninitialized` and `NativeStorage.from_array`. Per
+allocation the sequence is exactly:
+
+1. the **real** `NativeStorage._uninitialized` runs, so the real
+   `tf_storage_create_uninitialized` export allocates the buffer;
+2. the wrapper fills that buffer with the pattern through the ordinary
+   `fill` primitive (`tf_storage_fill`), which writes every element;
+3. the **same** storage object is returned to the production operation,
+   which then runs the **real** kernel over it.
+
+So the pattern is in place strictly after the real allocation and
+strictly before the real kernel executes, which is asserted directly
+rather than assumed: an opt-in log records, for every allocation, how
+much of the buffer held the pattern when it was handed over — read back
+through the very handle the operation receives — and every allocation
+must be *entirely* poison at that moment.
+
+**The detector is proved capable of failing**, which is what makes the
+passing results mean anything. Four negative controls:
+
+1. A bare uninitialized allocation under poison is *entirely* poison.
+2. `tf_core_narrow_backward` aimed at an uninitialized destination leaves
+   poison in exactly the un-narrowed cells — 10 of 15 in the test.
+3. `tf_core_sum` aimed at an uninitialized destination returns NaN
+   instead of the correct sum.
+4. A *complete* kernel is given a deliberate hole — the real
+   `tf_core_add_contiguous` told to write 8 of a 9-element destination —
+   and the very assertion helper that every §16.1.2 proof uses is shown
+   to reject it.
+
+Controls 2 and 3 are simultaneously the executable justification for the
+two rejections. A fifth control proves the poison never reaches the
+zero-initializing path — by construction, since only the uninitialized
+helper is wrapped — so the rejection tests are testing the kernels rather
+than the poison.
+
+A **mutation test** confirms the suite has teeth: moving `sum` onto the
+uninitialized path is caught by **five independent tests** — the
+whole-training-step poison proof, the `sum` rejection test, the source
+pin, and both bit-identity parity tests.
+
+The C++ CTest (`cpp/tests/test_storage_allocation.cpp`) covers the
+allocator contract itself — the zeroed constructor, the uninitialized
+constructor's ownership and lifecycle, size validation, zero and negative
+sizes, allocation failure, error clearing, repeated create/destroy
+cycles, and many live handles accounted independently — against **both**
+constructors. It needs no poison-control export and calls none; it
+demonstrates the technique using `tf_storage_fill` alone, which is
+exactly how the Python suite does it.
+
+### 16.1.4 Numerical parity
+
+H1 changed allocation only, so the requirement is **bit identity**, not a
+tolerance, and it is tested directly: every enabled operation is computed
+twice — once as shipped, once with the private uninitialized constructors
+forced back to `zeros` — and compared for exact array equality. The same
+comparison runs over a complete eight-step `NativeAdam` training run,
+covering the loss sequence and every final parameter.
+
+Crucially, the uninitialized side of both comparisons runs **under
+poison**. Without that, an unpoisoned fresh page usually reads back as
+zeros and a kernel with a hole could match the zeroed path by luck.
+
+### 16.1.5 Measured results
+
+Measurement follows §6. The **primary comparison is TensorForge zeroed
+versus TensorForge uninitialized** — the same code, the same arithmetic,
+the same Python path, differing only in the fill. `numpy.zeros` is
+reported for context and is **explicitly not load-bearing**: it is served
+by `calloc`, which an operating system can answer with lazy zero pages,
+so timing against it measures page-fault policy rather than an allocator
+TensorForge could adopt.
+
+**The allocator in isolation** (allocate and close, no compute; medians
+of 25 after 6 warm-ups, one machine):
+
+| Elements | MB | Zeroed | Uninitialized | Fill | Ratio |
+|---|---|---|---|---|---|
+| 1 | 0.00 | 1.40 us | 1.60 us | -0.20 us | 0.9x |
+| 1,024 | 0.01 | 1.50 us | 1.70 us | -0.20 us | 0.9x |
+| 16,384 | 0.13 | 3.60 us | 1.80 us | 1.80 us | 2.0x |
+| 65,536 | 0.52 | 10.60 us | 1.90 us | 8.70 us | 5.6x |
+| 262,144 | 2.10 | 580.60 us | 11.10 us | 569.50 us | **52.3x** |
+| 1,048,576 | 8.39 | 2035.10 us | 17.10 us | 2018.00 us | **119.0x** |
+| 4,194,304 | 33.55 | 8386.20 us | 15.20 us | 8371.00 us | **551.7x** |
+
+That is the honest shape of the win: the fill scales with the buffer
+while the allocation itself stays roughly constant. **Below about 16,000
+elements the difference falls inside the noise and reads slightly
+negative** — reported, not hidden.
+
+**End to end**, the picture is much more modest and several results are
+inconclusive. Profile shapes, medians of 15 after 5 warm-ups, with three
+independent runs of the volatile cases:
+
+| Case | Shape | Ratio (uninitialized vs zeroed) | Verdict |
+|---|---|---|---|
+| `storage_allocation` | 2048 x 2048 (32 MB) | **1126x** | Decisive — the fill in isolation |
+| `elementwise_contiguous` | 1024 x 1024 (8 MB) | 1.80, 1.54, 1.78 | **Real** — large memory-bound output, cheap arithmetic |
+| `contiguous_materialization` | 1024 x 1024 | 1.62 (spread 120%/85%) | Probably real, very noisy |
+| `normalized_training_step` | 256 x 256 | 1.02, 1.14, 1.03 | Small positive, variable |
+| `adam_step` | 64 x 256 | 1.16, 1.04, 1.13 | Small positive, noisy (spread up to 104%) |
+| `linear_forward` | 256 x 512 | 1.05 (spread 39%/36%) | **Inconclusive** |
+| `conv2d_forward` | 8 x 3 x 16 x 16 | 1.01 | **No measurable effect** |
+| `mlp_training_step` | 64 x 32 | 1.00 | **No measurable effect** |
+| `matmul_square_contiguous` | 384 x 384 x 384 | 0.85, 0.88, 0.92 | **Inconclusive, reads negative** — see below |
+
+**The matmul row is reported as-is rather than explained away.** At 384
+cubed the kernel performs roughly 44 ms of arithmetic against a 1.2 MB
+output whose fill costs well under a millisecond, so the fill sits far
+below this machine's run-to-run variation; the sub-1.0 ratios are noise,
+not a regression. Nothing in H1 touches matmul's arithmetic, and the
+bit-identity test proves its results are unchanged. A matmul improvement
+is H2's subject — access pattern, not allocation.
+
+**Honest summary.** H1 removes a cost that is enormous *per byte
+allocated* and negligible *per unit of arithmetic performed*. It shows up
+clearly in memory-bound work on multi-megabyte outputs and disappears
+into the noise everywhere else. It was still worth shipping: it is the
+smallest possible change, it is bit-identical, it removes a full write
+pass no caller ever observed, and it takes a size-proportional constant
+out of every later milestone's measurements.
+
+### 16.1.6 Failure paths
+
+An uninitialized buffer must never reach a caller. Every enabled site now
+closes its destination on failure, which required adding the missing
+guard to the sites that previously relied on garbage collection —
+`relu`, `_unary_compute`, `relu_backward`, both `_binary_core_op` paths,
+`matmul`, plus `full` and `from_array`. Tested at:
+
+- invalid arguments **before** allocation (nothing is allocated);
+- injected allocation failure (`MemoryError`, live storage unchanged);
+- native kernel failure after allocation, across eight kernels;
+- a Python-side wrapper failure after the native call;
+- a failed copy inside `from_array`;
+- a rejected fill value in `full`;
+- fifty interleaved success and failure cycles, with live storage
+  returning to an exact baseline each time;
+- fifty more of those cycles **with the poison wrapper installed**, so
+  the test infrastructure is proved not to perturb the accounting it is
+  used to verify;
+- a failure of the poison fill itself, which closes the storage it had
+  just allocated rather than handing back a half-prepared buffer.
+
+No check anywhere in this section relies on garbage collection to reach
+its baseline.
+
+### 16.1.7 What H1 did **not** do
+
+No memory pool. No scratch arena or workspace. No global allocator
+policy. No environment variable. No heuristic — a site opts in
+explicitly, by name, with a row in the table above, and a failed
+precondition means the safe path rather than a guess. No public
+empty-tensor API. **No poison-control API, debug hook, or global runtime
+mode of any kind in the shipped library or the installed Python
+backend** — the initialization proof lives entirely in the test suite. No
+change to any kernel's arithmetic, loop order, or traversal. No
+capability, dtype, device, registry value, checkpoint field, or
+checkpoint version moved, and the only export added is
+`tf_storage_create_uninitialized`.
+
+### 16.1.8 Validation
+
+The matrix H1 was accepted against, re-run in full after the
+poison-control removal.
+
+**Windows.** A fresh Release build (Visual Studio 17 2022, MSVC
+19.44.35207) and a fresh Debug build, the Debug library written outside
+the repository so the **active runtime stays the Release DLL** (58,880
+bytes, unchanged; the Debug DLL is 177,152 bytes and lives elsewhere).
+Both configurations build with **zero project compiler, linker, and CMake
+diagnostics** and pass **12/12 CTests** (Release 0.92 s, Debug 1.07 s).
+The full Python suite is **5,108 passed**;
+`scripts/smoke_cpp_backend.py` passes; the Phase-H harness passes all 24
+correctness gates in both `--smoke` and `--smoke --json` and writes no
+result file; stable `tensorforge` imports pull in **no** native or
+experimental module; and the deterministic-training and exact-resume
+suites pass, including `examples/native_dropout_training.py` reproducing
+its exact stochastic resume with live native storage 0 → 0.
+
+**Export inventory.** The built DLL's own export directory lists **52**
+symbols, all `tf_*`: the pre-H1 baseline of 51 plus
+`tf_storage_create_uninitialized`. No name contains "poison", and asking
+the loaded library for `tf_test_set_uninitialized_poison` through the
+platform loader raises `AttributeError`.
+
+**Clang ASan/UBSan** (18.1.3, WSL2 Ubuntu 24.04.4,
+`-DTF_SANITIZE=address,undefined`, fresh out-of-source build, zero
+compiler diagnostics). Instrumentation is **proved present**: `nm -D`
+shows **22 `__asan*`** and **14 `__ubsan*`** dynamic symbols beside the
+**52** exported `tf_*` symbols, `tf_storage_create_uninitialized` among
+them and **zero** symbols matching "poison"; the library refuses to load
+without the sanitizer runtime. Under
+`halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1` and
+`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`: **12/12 sanitized
+CTests** with `detect_leaks=1`, **2,049** sanitized Python tests across
+the H1 and native suites, **432** more across the deterministic-training
+and exact-resume suites, the G7 example reproducing its exact resume, and
+the harness passing all 24 gates in both modes — with **zero ASan errors
+and zero UBSan runtime errors**. A focused re-run of the H1 suite, the
+documentation guardrails, and the harness contract tests against the
+final sources adds **326** more.
+
+**LeakSanitizer.** Three complete harness lifecycles returned native live
+storage **exactly to baseline (0 → 0)** at every checkpoint. The
+remaining process-exit allocations — 775,248 bytes in 694 allocations —
+contain **no TensorForge frame**: every named frame is CPython, libc,
+NumPy, or the ASan runtime itself. **No suppression file was added.**
+
+---
+
+## 16.2 Remaining ladder detail
 
 ### H2 — Matmul memory access
 

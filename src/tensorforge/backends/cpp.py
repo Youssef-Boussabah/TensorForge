@@ -564,6 +564,12 @@ def _load_library():
     library.tf_matmul_tiled.restype = None
     library.tf_storage_create.argtypes = [ctypes.c_int64]
     library.tf_storage_create.restype = ctypes.c_void_p
+    # Phase H (H1): the uninitialized sibling of tf_storage_create. Same
+    # signature, same validation, same failure contract; it differs only
+    # in leaving the buffer's initial contents indeterminate. Internal
+    # backend detail — no public "empty" API is built on it.
+    library.tf_storage_create_uninitialized.argtypes = [ctypes.c_int64]
+    library.tf_storage_create_uninitialized.restype = ctypes.c_void_p
     library.tf_storage_destroy.argtypes = [ctypes.c_void_p]
     library.tf_storage_destroy.restype = None
     library.tf_storage_size.argtypes = [ctypes.c_void_p]
@@ -815,6 +821,11 @@ _STATUS_EXCEPTIONS = {
 # earlier call could be misread as their own failure.
 _CHECKED_KERNELS = (
     "tf_storage_create",
+    # Phase H (H1). The uninitialized constructor reports failure exactly
+    # like the zero-initializing one — a null handle with the thread-local
+    # error set — so it takes the identical errcheck hook rather than a
+    # second, divergent failure convention.
+    "tf_storage_create_uninitialized",
     "tf_storage_materialize",
     "tf_core_relu", "tf_core_relu_contiguous",
     "tf_core_sqrt", "tf_core_sqrt_contiguous",
@@ -943,6 +954,25 @@ def _arm_alloc_failure(nth=1):
     _require_library().tf_test_arm_alloc_failure(int(nth))
 
 
+# Deliberately absent: any poison-control helper (Phase H, H1).
+#
+# H1's "every destination element is written" proof uses a deterministic
+# poison, but that poison belongs to the *test infrastructure*, not to
+# this runtime. The suite wraps ``NativeStorage._uninitialized``, lets
+# the real uninitialized constructor allocate, fills the returned storage
+# through the ordinary ``fill`` primitive, and hands that same storage to
+# the real operation — so the pattern is in place before the real kernel
+# runs, with nothing in the shipped library or this module able to alter
+# an allocation's contents. There is no ``_set_uninitialized_poison``, no
+# ``_uninitialized_poison`` context manager, no environment variable, and
+# no global mode here, and none may be added: a switch that can change
+# what production allocations contain is not a debugging convenience
+# worth shipping, however carefully it is disarmed by default. The
+# corresponding C ABI hook does not exist either — see
+# tests/test_native_storage_allocation.py, which asserts its absence
+# against the loaded library's real export table.
+
+
 def list_kernels():
     """The experimental kernels this backend provides, in stable order."""
     return KERNELS
@@ -1008,7 +1038,21 @@ class NativeStorage:
     RuntimeError, and closing twice is safe.
     """
 
-    def __init__(self, size, dtype=None, device="cpu"):
+    def __init__(self, size, dtype=None, device="cpu", *,
+                 _zero_initialize=True):
+        """Allocate ``size`` float64 elements, **zero-initialized**.
+
+        The zero-initializing default did not change in Phase H: every
+        existing caller behaves exactly as before.
+
+        ``_zero_initialize`` is a private, keyword-only escape hatch used
+        by the ``_uninitialized`` classmethod below and by nothing else.
+        It lives on ``__init__`` rather than on a separate construction
+        path on purpose: both allocation kinds must pass through the one
+        constructor so that **every** live-storage accounting hook in the
+        test suite — each of which wraps ``NativeStorage.__init__`` — sees
+        an uninitialized allocation exactly as it sees a zeroed one.
+        """
         self._handle = None  # so a failed __init__ still __del__s safely
         if not isinstance(size, (int, np.integer)) or isinstance(size, bool) or size <= 0:
             raise ValueError(f"size must be a positive int, got {size!r}")
@@ -1017,7 +1061,9 @@ class NativeStorage:
         dtype = normalize_dtype(dtype)
         device = normalize_device(device)
         lib = _require_library()
-        handle = lib.tf_storage_create(int(size))
+        create = (lib.tf_storage_create if _zero_initialize
+                  else lib.tf_storage_create_uninitialized)
+        handle = create(int(size))
         if not handle:
             raise MemoryError(f"could not allocate native storage of size {size}")
         self._lib = lib
@@ -1027,17 +1073,56 @@ class NativeStorage:
         self._device = device
 
     @classmethod
+    def _uninitialized(cls, size, dtype=None, device="cpu"):
+        """Allocate ``size`` float64 elements whose **initial contents are
+        indeterminate** (Phase H, milestone H1).
+
+        Identical to ``NativeStorage(size, ...)`` in every observable
+        respect — argument validation, dtype/device normalization,
+        allocation-failure handling, the ``MemoryError`` it raises, the
+        handle it owns, ``close()`` semantics, exactly-once destruction,
+        and live-storage accounting (it runs through the same
+        ``__init__``) — except that the buffer is not written before it is
+        returned.
+
+        **Private on purpose.** This is an internal backend detail, not a
+        public ``empty`` constructor: the only legitimate caller is a Core
+        operation whose kernel has been *proved* to write every
+        destination element before reading any of it. That audit is a
+        table in ``docs/native_cpu_performance_design.md``, and every row
+        of it is backed by a poison test. A caller that cannot point at
+        its row uses ``NativeStorage(...)``.
+
+        This is also the **one seam the poison tests wrap**: they replace
+        this classmethod with a wrapper that calls it, fills the returned
+        storage with a recognizable pattern, and returns that same
+        storage — so the poison is in place before the real kernel runs
+        without the runtime itself owning any poison control.
+        """
+        return cls(size, dtype=dtype, device=device, _zero_initialize=False)
+
+    @classmethod
     def from_array(cls, values, dtype=None, device="cpu"):
         """Create storage sized to ``values`` and copy them in.
 
         The input is always converted to contiguous float64 and flattened
         (the only element type the kernels compute); ``dtype``/``device``
         record the metadata and default to ``"float64"``/``"cpu"``.
+
+        H1: the allocation is uninitialized because ``copy_from`` writes
+        **every** element (``tf_storage_copy_from`` loops over the whole
+        ``storage->size``) and the size is taken from the same array, so
+        no element can survive unwritten. A failed copy closes the
+        storage rather than returning a partly written buffer.
         """
         array = np.ascontiguousarray(values, dtype=np.float64).ravel()
         # empty input fails size validation; dtype/device validated too
-        storage = cls(int(array.size), dtype=dtype, device=device)
-        storage.copy_from(array)
+        storage = cls._uninitialized(int(array.size), dtype=dtype, device=device)
+        try:
+            storage.copy_from(array)
+        except BaseException:
+            storage.close()
+            raise
         return storage
 
     @property
@@ -1308,12 +1393,45 @@ class NativeTensorCore:
         return cls(storage, NativeTensorView(storage, shape))
 
     @classmethod
+    def _uninitialized(cls, shape, dtype="float64", device="cpu"):
+        """A row-major contiguous tensor of ``shape`` whose element values
+        are **indeterminate** (Phase H, milestone H1).
+
+        The private counterpart of ``zeros``: identical shape validation,
+        identical storage ownership, identical ``close()`` semantics — it
+        simply skips the zero-fill pass, which is a full extra write over
+        the output.
+
+        **Only for a destination a kernel completely overwrites.** Every
+        call site is listed, with its proof and its poison test, in the
+        H1 audit table in ``docs/native_cpu_performance_design.md``. This
+        is not a public ``empty`` constructor and nothing in
+        ``tensorforge.experimental`` or the stable framework exposes it;
+        an operation that accumulates into its output, scatters into it,
+        or leaves any element untouched must keep using ``zeros``.
+        """
+        count = numel(shape)  # validates shape by the v0.7 rules
+        storage = NativeStorage._uninitialized(count, dtype=dtype, device=device)
+        return cls(storage, NativeTensorView(storage, shape))
+
+    @classmethod
     def full(cls, shape, value, dtype="float64", device="cpu"):
         """A row-major contiguous tensor of ``shape`` filled with
         ``value`` (anything float() accepts). ``dtype``/``device`` default
-        to ``"float64"``/``"cpu"``; unsupported values are rejected."""
-        tensor = cls.zeros(shape, dtype=dtype, device=device)
-        tensor._storage.fill(float(value))
+        to ``"float64"``/``"cpu"``; unsupported values are rejected.
+
+        H1: allocated uninitialized because ``tf_storage_fill`` writes
+        every element of the storage, so the zero-fill would be
+        immediately and completely overwritten. ``float(value)`` is
+        evaluated **before** the allocation, so a bad value allocates
+        nothing; a failed fill closes the tensor."""
+        fill_value = float(value)  # reject a bad value before allocating
+        tensor = cls._uninitialized(shape, dtype=dtype, device=device)
+        try:
+            tensor._storage.fill(fill_value)
+        except BaseException:
+            tensor.close()
+            raise
         return tensor
 
     # -- metadata (readable even after close) --------------------------
@@ -1398,7 +1516,8 @@ class NativeTensorCore:
         the freshly allocated output before propagating, so no partially
         initialized core escapes."""
         self._require_open()
-        out = NativeTensorCore.zeros(
+        # H1 uninitialized — contiguous_copy: core_unary identity assigns every one of the numel elements.
+        out = NativeTensorCore._uninitialized(
             self.shape, dtype=self.dtype, device=self.device
         )
         try:
@@ -1429,46 +1548,69 @@ class NativeTensorCore:
         A contiguous input takes the flat fast-path kernel (a plain
         pointer loop); a strided view takes the generic odometer kernel.
         Both produce bit-for-bit identical results — the fast path is
-        purely a traversal choice."""
+        purely a traversal choice.
+
+        H1: the output is allocated **uninitialized**. Both kernels write
+        `dst[i]` for every `i` in `[0, numel)` — the flat loop directly,
+        the odometer once per logical element — and the destination holds
+        exactly `numel` elements, so no element survives unwritten. A
+        failed kernel closes the output rather than returning it."""
         self._require_open()
-        out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
-        if self.contiguous:
-            self._storage._lib.tf_core_relu_contiguous(
+        out = NativeTensorCore._uninitialized(
+            self.shape, dtype=self.dtype, device=self.device
+        )
+        try:
+            if self.contiguous:
+                self._storage._lib.tf_core_relu_contiguous(
+                    self._storage._require_open(),
+                    out._storage._require_open(),
+                    self.numel, self.offset,
+                )
+                return out
+            shape_arr, strides_arr = self._layout_arrays()
+            self._storage._lib.tf_core_relu(
                 self._storage._require_open(),
                 out._storage._require_open(),
-                self.numel, self.offset,
+                shape_arr, strides_arr, self.offset, self.ndim,
             )
             return out
-        shape_arr, strides_arr = self._layout_arrays()
-        self._storage._lib.tf_core_relu(
-            self._storage._require_open(),
-            out._storage._require_open(),
-            shape_arr, strides_arr, self.offset, self.ndim,
-        )
-        return out
+        except BaseException:
+            out.close()
+            raise
 
     def _unary_compute(self, odometer_name, contiguous_name):
         """Shared plumbing for the unary compute ops (v3.11): require
         open, allocate the fresh contiguous output, then dispatch to
         the contiguous fast-path kernel or the generic odometer kernel
         by this tensor's contiguity — exactly relu's strategy, and the
-        two paths are bit-for-bit identical."""
+        two paths are bit-for-bit identical.
+
+        H1: the output is allocated **uninitialized**, on the same proof
+        as ``relu`` — every one of these kernels assigns each of the
+        destination's ``numel`` elements exactly once. A failed kernel
+        closes the output."""
         self._require_open()
-        out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
-        if self.contiguous:
-            getattr(self._storage._lib, contiguous_name)(
+        out = NativeTensorCore._uninitialized(
+            self.shape, dtype=self.dtype, device=self.device
+        )
+        try:
+            if self.contiguous:
+                getattr(self._storage._lib, contiguous_name)(
+                    self._storage._require_open(),
+                    out._storage._require_open(),
+                    self.numel, self.offset,
+                )
+                return out
+            shape_arr, strides_arr = self._layout_arrays()
+            getattr(self._storage._lib, odometer_name)(
                 self._storage._require_open(),
                 out._storage._require_open(),
-                self.numel, self.offset,
+                shape_arr, strides_arr, self.offset, self.ndim,
             )
             return out
-        shape_arr, strides_arr = self._layout_arrays()
-        getattr(self._storage._lib, odometer_name)(
-            self._storage._require_open(),
-            out._storage._require_open(),
-            shape_arr, strides_arr, self.offset, self.ndim,
-        )
-        return out
+        except BaseException:
+            out.close()
+            raise
 
     def sqrt(self):
         """Elementwise square root, computed by the native kernel
@@ -1618,7 +1760,8 @@ class NativeTensorCore:
             source = (
                 self if self.contiguous else self._contiguous_temp(temporaries)
             )
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — softmax/log_softmax: pass 2 assigns every (outer, k, inner) destination slot.
+            out = NativeTensorCore._uninitialized(
                 shape, dtype=self.dtype, device=self.device
             )
             try:
@@ -1753,10 +1896,12 @@ class NativeTensorCore:
             # probability block. If the second allocation fails the first
             # is closed below, so a failed forward leaves nothing
             # half-built and returns no result object.
-            loss = NativeTensorCore.zeros(
+            # H1 uninitialized — cross_entropy loss: the kernel assigns the single scalar element.
+            loss = NativeTensorCore._uninitialized(
                 (), dtype=self.dtype, device=self.device
             )
-            probabilities = NativeTensorCore.zeros(
+            # H1 uninitialized — cross_entropy probabilities: pass 2 assigns every (batch, class) element.
+            probabilities = NativeTensorCore._uninitialized(
                 (batch_size, num_classes), dtype=self.dtype, device=self.device
             )
             self._storage._lib.tf_core_cross_entropy_forward(
@@ -1862,7 +2007,8 @@ class NativeTensorCore:
 
         out = None
         try:
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — cross_entropy backward: assigns every (batch, class) gradient element.
+            out = NativeTensorCore._uninitialized(
                 (batch_size, num_classes), dtype=self.dtype, device=self.device
             )
             self._storage._lib.tf_core_cross_entropy_backward(
@@ -1904,16 +2050,25 @@ class NativeTensorCore:
                 f"relu_backward requires the upstream gradient shape to "
                 f"match the input shape, got {upstream.shape} and {self.shape}"
             )
-        out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
-        shape_arr, x_strides = self._layout_arrays()
-        u_strides = np.asarray(upstream.strides, dtype=np.int64)
-        self._storage._lib.tf_core_relu_backward(
-            self._storage._require_open(),
-            upstream._storage._require_open(),
-            out._storage._require_open(),
-            shape_arr, x_strides, u_strides,
-            self.offset, upstream.offset, self.ndim,
+        # H1: uninitialized — the binary odometer assigns every one of the
+        # destination's numel elements exactly once. A failed kernel
+        # closes the output.
+        out = NativeTensorCore._uninitialized(
+            self.shape, dtype=self.dtype, device=self.device
         )
+        try:
+            shape_arr, x_strides = self._layout_arrays()
+            u_strides = np.asarray(upstream.strides, dtype=np.int64)
+            self._storage._lib.tf_core_relu_backward(
+                self._storage._require_open(),
+                upstream._storage._require_open(),
+                out._storage._require_open(),
+                shape_arr, x_strides, u_strides,
+                self.offset, upstream.offset, self.ndim,
+            )
+        except BaseException:
+            out.close()
+            raise
         return out
 
     def _require_matching_metadata(self, other, op_name):
@@ -1952,7 +2107,16 @@ class NativeTensorCore:
 
         Paths A and B are bit-for-bit unchanged from before; only when the
         shapes actually differ does broadcasting engage. The output is
-        always freshly allocated row-major contiguous storage."""
+        always freshly allocated row-major contiguous storage.
+
+        H1: every one of the three paths allocates its output
+        **uninitialized**. All three write ``dst[i]`` for every ``i`` in
+        ``[0, prod(out_shape))`` — the flat loop directly, the odometer
+        once per logical output position — and the destination holds
+        exactly that many elements. Broadcasting changes only how the
+        *operands* are read (a zero stride re-reads one element); it does
+        not skip an output position, so the coverage proof is the same.
+        A failed kernel closes the output."""
         self._require_open()
         if not isinstance(other, NativeTensorCore):
             raise TypeError(
@@ -1965,48 +2129,60 @@ class NativeTensorCore:
 
         # Same-shape paths (A and B) — the exact-shape behavior, unchanged.
         if self.shape == other.shape:
-            out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
-            if self.contiguous and other.contiguous:
-                getattr(lib, kernel_name + "_contiguous")(
+            out = NativeTensorCore._uninitialized(
+                self.shape, dtype=self.dtype, device=self.device
+            )
+            try:
+                if self.contiguous and other.contiguous:
+                    getattr(lib, kernel_name + "_contiguous")(
+                        self._storage._require_open(),
+                        other._storage._require_open(),
+                        out._storage._require_open(),
+                        self.numel, self.offset, other.offset,
+                    )
+                    return out
+                shape_arr, a_strides = self._layout_arrays()
+                b_strides = np.asarray(other.strides, dtype=np.int64)
+                getattr(lib, kernel_name)(
                     self._storage._require_open(),
                     other._storage._require_open(),
                     out._storage._require_open(),
-                    self.numel, self.offset, other.offset,
+                    shape_arr, a_strides, b_strides,
+                    self.offset, other.offset, self.ndim,
                 )
                 return out
-            shape_arr, a_strides = self._layout_arrays()
-            b_strides = np.asarray(other.strides, dtype=np.int64)
-            getattr(lib, kernel_name)(
-                self._storage._require_open(),
-                other._storage._require_open(),
-                out._storage._require_open(),
-                shape_arr, a_strides, b_strides,
-                self.offset, other.offset, self.ndim,
-            )
-            return out
+            except BaseException:
+                out.close()
+                raise
 
         # Broadcasting path (C) — differing shapes. broadcast_shapes
         # raises (naming both shapes) if they are incompatible, before
         # any output is allocated.
         out_shape = broadcast_shapes(self.shape, other.shape)
-        out = NativeTensorCore.zeros(out_shape, dtype=self.dtype, device=self.device)
-        out_ndim = len(out_shape)
-        shape_arr = np.asarray(out_shape, dtype=np.int64)
-        a_strides = np.asarray(
-            _broadcast_strides(self.shape, self.strides, out_shape),
-            dtype=np.int64,
+        out = NativeTensorCore._uninitialized(
+            out_shape, dtype=self.dtype, device=self.device
         )
-        b_strides = np.asarray(
-            _broadcast_strides(other.shape, other.strides, out_shape),
-            dtype=np.int64,
-        )
-        getattr(lib, kernel_name)(
-            self._storage._require_open(),
-            other._storage._require_open(),
-            out._storage._require_open(),
-            shape_arr, a_strides, b_strides,
-            self.offset, other.offset, out_ndim,
-        )
+        try:
+            out_ndim = len(out_shape)
+            shape_arr = np.asarray(out_shape, dtype=np.int64)
+            a_strides = np.asarray(
+                _broadcast_strides(self.shape, self.strides, out_shape),
+                dtype=np.int64,
+            )
+            b_strides = np.asarray(
+                _broadcast_strides(other.shape, other.strides, out_shape),
+                dtype=np.int64,
+            )
+            getattr(lib, kernel_name)(
+                self._storage._require_open(),
+                other._storage._require_open(),
+                out._storage._require_open(),
+                shape_arr, a_strides, b_strides,
+                self.offset, other.offset, out_ndim,
+            )
+        except BaseException:
+            out.close()
+            raise
         return out
 
     def add(self, other):
@@ -2056,16 +2232,28 @@ class NativeTensorCore:
             )
         m, n = self.shape
         p = other.shape[1]
-        out = NativeTensorCore.zeros((m, p), dtype=self.dtype, device=self.device)
-        self._storage._lib.tf_core_matmul(
-            self._storage._require_open(),
-            other._storage._require_open(),
-            out._storage._require_open(),
-            m, n, p,
-            self.strides[0], self.strides[1],
-            other.strides[0], other.strides[1],
-            self.offset, other.offset,
+        # H1: uninitialized. The kernel accumulates each dot product into
+        # a *local* `sum` register and then assigns `dst[i * p + j] = sum`
+        # for every (i, j) in the full (m, p) extent — it never reads the
+        # destination, so an initial zero is never observed. Note this is
+        # the accumulation shape H1 relies on and H2 must preserve. A
+        # failed kernel closes the output.
+        out = NativeTensorCore._uninitialized(
+            (m, p), dtype=self.dtype, device=self.device
         )
+        try:
+            self._storage._lib.tf_core_matmul(
+                self._storage._require_open(),
+                other._storage._require_open(),
+                out._storage._require_open(),
+                m, n, p,
+                self.strides[0], self.strides[1],
+                other.strides[0], other.strides[1],
+                self.offset, other.offset,
+            )
+        except BaseException:
+            out.close()
+            raise
         return out
 
     # -- reductions (v1.19) ---------------------------------------------
@@ -2082,6 +2270,14 @@ class NativeTensorCore:
         not bit-for-bit (see docs/native_reductions_design.md)."""
         self._require_open()
         out_shape = reduce_shape(self.shape, axis, keepdims)  # validates axis/keepdims
+        # H1 REJECTED — this output must stay zero-initialized. tf_core_sum
+        # accumulates (`dst[out_pos] += src[in_pos]`), so the zero is the
+        # additive identity the reduction starts from, not a redundant
+        # write: every reduced axis folds many inputs into one destination
+        # cell, and that cell is *read* on every accumulation after the
+        # first. Giving this an uninitialized buffer would return garbage.
+        # A contiguous/accumulating fast path for reductions is H5's
+        # subject, not H1's.
         out = NativeTensorCore.zeros(out_shape, dtype=self.dtype, device=self.device)
         if axis is None:
             reduced = set(range(self.ndim))
@@ -2228,7 +2424,8 @@ class NativeTensorCore:
                 bias_handle = bias_core._storage._require_open()
                 bias_offset = bias_core.offset
 
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — conv2d forward: assigns output[n, o, i, j] over the full output extent.
+            out = NativeTensorCore._uninitialized(
                 (n, o, out_h, out_w), dtype=self.dtype, device=self.device
             )
             try:
@@ -2318,7 +2515,8 @@ class NativeTensorCore:
                 weight if weight.contiguous
                 else weight._contiguous_temp(temporaries)
             )
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — conv2d input gradient: the kernel zeroes the whole span itself, then accumulates.
+            out = NativeTensorCore._uninitialized(
                 (n, c, h, w), dtype=self.dtype, device=self.device
             )
             try:
@@ -2398,7 +2596,8 @@ class NativeTensorCore:
                 input if input.contiguous
                 else input._contiguous_temp(temporaries)
             )
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — conv2d weight gradient: the kernel zeroes the whole span itself, then accumulates.
+            out = NativeTensorCore._uninitialized(
                 (o, c, kh, kw), dtype=self.dtype, device=self.device
             )
             try:
@@ -2536,10 +2735,12 @@ class NativeTensorCore:
             # Deterministic allocation order: output first, then winners.
             # If the second allocation fails the first is closed below, so
             # a failed forward leaves nothing half-built.
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — maxpool2d values: assigns output[n, c, i, j] over the full output extent.
+            out = NativeTensorCore._uninitialized(
                 (n, c, out_h, out_w), dtype=self.dtype, device=self.device
             )
-            winners = NativeTensorCore.zeros(
+            # H1 uninitialized — maxpool2d winners: assigns winners[n, c, i, j] over the same full extent.
+            winners = NativeTensorCore._uninitialized(
                 (n, c, out_h, out_w), dtype=self.dtype, device=self.device
             )
             self._storage._lib.tf_core_maxpool2d_forward(
@@ -2649,7 +2850,8 @@ class NativeTensorCore:
                 winners if winners.contiguous
                 else winners._contiguous_temp(temporaries)
             )
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — maxpool2d backward: the kernel zeroes the whole span itself, then accumulates.
+            out = NativeTensorCore._uninitialized(
                 (n, c, h, w), dtype=self.dtype, device=self.device
             )
             self._storage._lib.tf_core_maxpool2d_backward(
@@ -2793,10 +2995,12 @@ class NativeTensorCore:
             # Deterministic allocation order: output first, then the mask.
             # If the second allocation fails the first is closed below, so
             # a failed forward leaves nothing half-built.
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — dropout output: assigns output[i] for every i in [0, count).
+            out = NativeTensorCore._uninitialized(
                 self.shape, dtype=self.dtype, device=self.device
             )
-            mask = NativeTensorCore.zeros(
+            # H1 uninitialized — dropout mask: assigns mask[i] for the same full range.
+            mask = NativeTensorCore._uninitialized(
                 self.shape, dtype=self.dtype, device=self.device
             )
             self._storage._lib.tf_core_dropout_forward(
@@ -2950,6 +3154,13 @@ class NativeTensorCore:
                     f"compatible with original shape {original} along axis "
                     f"{axis}"
                 )
+        # H1 REJECTED — this output must stay zero-initialized. It is the
+        # clearest *partial-write* case in the runtime: tf_core_narrow_backward
+        # assigns only the narrowed region, and every un-narrowed cell is
+        # supposed to keep the zero the allocation gave it. That zero is
+        # the gradient's value, not an initialization detail, so an
+        # uninitialized buffer would leak heap contents straight into a
+        # gradient. Its poison test pins exactly this.
         out = NativeTensorCore.zeros(original, dtype=self.dtype, device=self.device)
         # The gradient lives at the logical shape, so the output is always a
         # fresh row-major contiguous buffer (offset 0) regardless of the

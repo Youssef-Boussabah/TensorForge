@@ -301,8 +301,30 @@ def test_layer_names_are_a_closed_declared_set():
         "numpy", "stable_tensorforge", "raw_kernel", "raw_kernel_tiled",
         "tensor_core", "native_tensor", "native_tensor_graph", "backward",
         "optimizer_step", "training_step",
+        # Phase H, milestone H1: each of these is the *same* production
+        # path as its twin, run with the H1 output allocation forced back
+        # onto the zero-initializing allocator. They exist so the
+        # allocation contract can be measured against itself rather than
+        # against numpy.zeros.
+        "tensor_core_zeroed", "native_tensor_graph_zeroed",
+        "optimizer_step_zeroed", "training_step_zeroed",
     )
     assert len(set(bench.LAYERS)) == len(bench.LAYERS)
+
+
+def test_every_zeroed_layer_names_a_real_twin():
+    """A ``_zeroed`` layer is only meaningful next to the layer it
+    mirrors, so the mapping must be total and must point at real
+    layers."""
+    assert set(bench.ZEROED_TWIN) <= set(bench.LAYERS)
+    assert set(bench.ZEROED_TWIN.values()) <= set(bench.LAYERS)
+    for zeroed, twin in bench.ZEROED_TWIN.items():
+        assert zeroed.endswith("_zeroed"), zeroed
+        assert zeroed == f"{twin}_zeroed", (zeroed, twin)
+    # ...and every case that declares one declares a layer it builds.
+    for name, spec in bench.CASES.items():
+        for layer in spec.get("allocation_layers", ()):
+            assert layer in bench.ZEROED_TWIN, (name, layer)
 
 
 def test_reference_labels_are_honest():
@@ -1196,8 +1218,22 @@ def test_h0_adds_no_kernel_or_abi_declaration():
         "tf_internal.h", "tf_pooling_internal.h", "tf_random_internal.h",
     ]
     ctests = sorted(p.name for p in (REPO_ROOT / "cpp" / "tests").glob("*.cpp"))
-    assert len(ctests) == 11
+    # H0 left 11. H1 added exactly one — the storage-creation contract
+    # test — and no numerical kernel test.
+    assert len(ctests) == 12
+    assert "test_storage_allocation.cpp" in ctests
     assert cpp._CHECKED_KERNELS[-1] == "tf_core_dropout_forward"
+    # H1 added exactly one checked ABI symbol, and it is an allocator
+    # rather than a kernel: it takes the identical errcheck hook as the
+    # zero-initializing constructor beside it.
+    assert "tf_storage_create_uninitialized" in cpp._CHECKED_KERNELS
+    assert cpp._CHECKED_KERNELS.index("tf_storage_create_uninitialized") == (
+        cpp._CHECKED_KERNELS.index("tf_storage_create") + 1
+    )
+    assert sum(1 for name in cpp._CHECKED_KERNELS
+               if name.startswith("tf_core_")) == len(
+        [name for name in cpp._CHECKED_KERNELS if name.startswith("tf_core_")]
+    )
 
 
 def test_h0_touches_no_production_numerical_source():
@@ -1209,9 +1245,23 @@ def test_h0_touches_no_production_numerical_source():
                    "_from_op(", "load_native_checkpoint(",
                    "save_native_checkpoint("):
         assert banned not in source, banned
-    # The only classes it defines are its own benchmark models.
+    # The only classes it defines are its own benchmark models and, since
+    # H1, one piece of measurement scaffolding: a context manager that
+    # forces the H1 output allocations back onto the zero-initializing
+    # allocator for the duration of one timed call. It patches only the
+    # two private constructors and restores them in a finally, so it adds
+    # no production behavior and leaves nothing behind.
     classes = re.findall(r"^class (\w+)", source, re.M)
-    assert all(name.startswith("_Benchmark") for name in classes), classes
+    allowed = {"_forced_zero_initialized_allocation"}
+    assert all(name.startswith("_Benchmark") or name in allowed
+               for name in classes), classes
+    assert "_forced_zero_initialized_allocation" in classes
+    # ...and that scaffolding restores what it patched.
+    scaffold = source.split("class _forced_zero_initialized_allocation", 1)[1]
+    scaffold = scaffold.split("\ndef ", 1)[0]
+    assert "__exit__" in scaffold
+    assert scaffold.count("cpp.NativeTensorCore._uninitialized = ") == 2
+    assert scaffold.count("cpp.NativeStorage._uninitialized = ") == 2
 
 
 def test_the_harness_only_reaches_the_native_line_through_public_names():
@@ -1248,3 +1298,182 @@ def test_the_benchmark_is_separate_from_every_earlier_phase_harness():
         names.add(match.group(1))
     assert bench.BENCHMARK_NAME in names
     assert len(names) == len(harnesses) - 1
+
+
+# --------------------------------------------------------------------------
+# Phase H, milestone H1 — the allocation-contract measurement
+#
+# H1 extended this harness with one thing: the ability to measure a
+# shipped layer against the *same* layer running under the
+# zero-initializing allocator. These tests check that the comparison is
+# real, honest, and still asserts no duration.
+# --------------------------------------------------------------------------
+
+H1_ALLOCATION_CASES = (
+    "storage_allocation",
+    "elementwise_contiguous",
+    "matmul_square_contiguous",
+    "contiguous_materialization",
+    "conv2d_forward",
+    "linear_forward",
+    "adam_step",
+    "mlp_training_step",
+    "cnn_classification_training_step",
+    "normalized_training_step",
+)
+
+
+def test_the_h1_allocation_cases_cover_the_named_workloads():
+    """The milestone names the allocation-heavy workloads that must be
+    measured; each must actually declare a zeroed twin."""
+    for case in H1_ALLOCATION_CASES:
+        assert case in bench.CASES, case
+        assert bench.CASES[case].get("allocation_layers"), case
+    # ...and no case declares one it cannot build.
+    for name, spec in bench.CASES.items():
+        declared = bool(spec.get("allocation_layers"))
+        assert declared == (name in H1_ALLOCATION_CASES), name
+
+
+@needs_native
+def test_the_allocation_comparison_is_published_with_both_medians():
+    payload = _by_name(bench.run_benchmark(
+        cases=["storage_allocation", "elementwise_contiguous"], **SMOKE))
+    for name in ("storage_allocation", "elementwise_contiguous"):
+        comparison = payload[name]["allocation_comparison"]
+        assert comparison, name
+        for layer, data in comparison.items():
+            assert layer in bench.LAYERS
+            for key in ("uninitialized_median_s", "zero_initialized_median_s",
+                        "zero_fill_median_s",
+                        "speedup_from_skipping_the_fill",
+                        "uninitialized_relative_spread",
+                        "zero_initialized_relative_spread"):
+                assert key in data, (name, key)
+            assert np.isfinite(data["uninitialized_median_s"])
+            assert np.isfinite(data["zero_initialized_median_s"])
+            assert data["uninitialized_median_s"] >= 0.0
+            assert data["zero_initialized_median_s"] >= 0.0
+            # The fill is a difference of the two medians, by definition.
+            assert data["zero_fill_median_s"] == pytest.approx(
+                data["zero_initialized_median_s"]
+                - data["uninitialized_median_s"]
+            )
+
+
+@needs_native
+def test_cases_without_a_zeroed_twin_publish_no_allocation_comparison():
+    payload = _by_name(bench.run_benchmark(
+        cases=["reduction_contiguous", "sgd_step"], **SMOKE))
+    for name in ("reduction_contiguous", "sgd_step"):
+        assert payload[name]["allocation_comparison"] is None, name
+
+
+@needs_native
+def test_the_zeroed_layer_really_runs_under_the_zero_initializing_allocator():
+    """The scaffolding must actually change the allocator during the timed
+    call, and must restore it afterwards."""
+    # Both are classmethods, so attribute access yields a fresh bound
+    # method each time; compare the underlying functions.
+    original = cpp.NativeTensorCore._uninitialized.__func__
+    observed = []
+
+    with bench._forced_zero_initialized_allocation():
+        observed.append(cpp.NativeTensorCore._uninitialized.__func__)
+    assert observed[0] is cpp.NativeTensorCore.zeros.__func__
+    assert cpp.NativeTensorCore._uninitialized.__func__ is original
+    # ...and an allocation inside the scope really is zeroed.
+    with bench._forced_zero_initialized_allocation():
+        core = cpp.NativeTensorCore._uninitialized((4, 4))
+    try:
+        assert np.array_equal(core.to_numpy(), np.zeros((4, 4)))
+    finally:
+        core.close()
+
+
+@needs_native
+def test_the_scaffolding_restores_the_allocator_after_a_failure():
+    original_core = cpp.NativeTensorCore._uninitialized.__func__
+    original_storage = cpp.NativeStorage._uninitialized.__func__
+    with pytest.raises(RuntimeError, match="injected"):
+        with bench._forced_zero_initialized_allocation():
+            raise RuntimeError("injected")
+    assert cpp.NativeTensorCore._uninitialized.__func__ is original_core
+    assert cpp.NativeStorage._uninitialized.__func__ is original_storage
+
+
+@needs_native
+def test_the_zeroed_layer_produces_the_same_values_as_its_twin():
+    """The pair must differ only in allocation. If the zeroed layer
+    computed something else, every comparison would be meaningless."""
+    spec = bench.CASES["elementwise_contiguous"]
+    case = spec["build"](spec["configurations"]["smoke"], spec)
+    try:
+        layer = case["layers"][bench.TENSOR_CORE]
+        zeroed = bench._zeroed_layer(layer)
+        fast_result = layer["run"](layer["prepare"]())
+        try:
+            fast = fast_result.to_numpy().copy()
+        finally:
+            fast_result.close()
+        zeroed_result = zeroed["run"](zeroed["prepare"]())
+        try:
+            slow = zeroed_result.to_numpy().copy()
+        finally:
+            zeroed_result.close()
+        assert np.array_equal(fast, slow)
+    finally:
+        case["close"]()
+
+
+@needs_native
+def test_the_allocation_comparison_still_returns_storage_to_baseline(
+        live_storages):
+    """The zeroed twin doubles the number of allocations a case makes, so
+    its cleanup has to be as complete as the original's."""
+    bench.run_benchmark(cases=list(H1_ALLOCATION_CASES), **SMOKE)
+    gc.collect()
+    baseline = len(live_storages)
+    bench.run_benchmark(cases=list(H1_ALLOCATION_CASES), **SMOKE)
+    gc.collect()
+    assert len(live_storages) == baseline
+
+
+@needs_native
+def test_the_human_report_explains_why_numpy_zeros_is_not_the_comparison():
+    """The honesty requirement: ``numpy.zeros`` is served by calloc and
+    can be answered with lazy zero pages, so it measures the OS rather
+    than an allocator TensorForge could adopt. The report has to say so
+    rather than leaving a reader to infer a speedup from it."""
+    payload = bench.run_benchmark(cases=["storage_allocation"], **SMOKE)
+    report = bench.format_report(payload)
+    assert "H1 allocation contract" in report
+    lowered = report.lower()
+    assert "calloc" in lowered
+    assert "lazy zero" in lowered
+    assert "not the comparison" in lowered
+    # ...and it warns the reader to read the spread before believing a
+    # small difference.
+    assert "noise" in lowered and "spread" in lowered
+
+
+def test_the_h1_comparison_asserts_no_duration():
+    """Same standing rule as H0: the harness measures, it never judges."""
+    source = BENCHMARK_FILE.read_text(encoding="utf-8")
+    for banned in ("assert_faster", "min_speedup", "timing_threshold",
+                   "performance_budget", "max_seconds"):
+        assert banned not in source.lower(), banned
+    # The speedup figure is computed and reported, never compared.
+    assert "speedup_from_skipping_the_fill" in source
+    comparison = re.compile(
+        r"speedup_from_skipping_the_fill[\"'\]\s]{0,3}\s*[<>]=?\s*[0-9.]"
+    )
+    assert comparison.search(source) is None
+    # ...and no test in this file compares it against a number either.
+    # Regex-literal lines are skipped, so this guard cannot match its own
+    # pattern — the failure mode that a naive whole-file scan hits.
+    for line in TEST_FILE.read_text(encoding="utf-8").splitlines():
+        if 'r"' in line or "r'" in line:
+            continue
+        if "speedup_from_skipping_the_fill" in line and "assert" in line:
+            assert "<" not in line and ">" not in line, line

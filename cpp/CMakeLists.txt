@@ -355,4 +355,31 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME dropout_forward COMMAND test_dropout_forward)
+
+  # Storage creation contract (Phase H, H1): links the storage source
+  # directly plus error.cpp, which owns the thread-local error slot the
+  # guarded exports feed and the pre-existing allocation fault-injection
+  # hook. It drives the *exported* layer only — tf_storage_create,
+  # tf_storage_create_uninitialized, and their shared validation,
+  # allocation-failure, error, ownership, destruction, and live-handle
+  # behavior — and runs every shared check against **both** constructors
+  # so the two cannot drift apart. Whether a given kernel writes every
+  # destination element is a per-kernel property proved from Python,
+  # where the poison wraps the private allocation helper around a real
+  # Core operation; no poison-control export exists in this library.
+  add_executable(test_storage_allocation
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_storage_allocation.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_storage_allocation PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_storage_allocation PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_storage_allocation PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_storage_allocation PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME storage_allocation COMMAND test_storage_allocation)
 endif()

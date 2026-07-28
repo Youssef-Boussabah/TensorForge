@@ -6851,3 +6851,298 @@ def test_no_ci_job_or_test_asserts_a_phase_h_duration():
     for banned in ("timing_threshold", "max_seconds", "min_speedup",
                    "performance_budget", "assert_faster"):
         assert banned not in text, banned
+
+
+# ==========================================================================
+# Phase H, milestone H1 — semantic documentation guardrails
+#
+# H1 is the first Phase-H change to production code, which creates two new
+# ways for the documentation to become wrong: claiming more than an
+# allocation change, or claiming a proof the tooling cannot deliver. Every
+# guard below is premised on a live registry value, a real symbol, or a
+# real file rather than on prose.
+# ==========================================================================
+
+
+def test_h1_is_recorded_as_shipped_on_every_status_surface():
+    """H1 really shipped — its symbol exists — and the surfaces say so."""
+    from tensorforge.backends import cpp
+
+    # Premise, from the live backend: the symbol and the private helpers
+    # are real.
+    assert "tf_storage_create_uninitialized" in cpp._CHECKED_KERNELS
+    assert hasattr(cpp.NativeStorage, "_uninitialized")
+    assert hasattr(cpp.NativeTensorCore, "_uninitialized")
+
+    shipped = re.compile(
+        r"\bH1\b[^.]{0,160}?\b(is|are|was|has|have|shipped|complete"
+        r"|completed|landed)\b", re.I,
+    )
+    for surface in _PHASE_H_SURFACES:
+        text = _status_text(surface)
+        assert "H1" in text, f"{surface} does not name milestone H1"
+        assert shipped.search(text), f"{surface} does not record H1 as shipped"
+
+
+def test_no_surface_calls_h1_more_than_an_allocation_change():
+    """H1 changed allocation only. No surface may present it as a kernel,
+    arithmetic, loop-order, pooling, SIMD, threading, or BLAS change —
+    all of which remain later, still-conditional milestones."""
+    from tensorforge.backends import cpp
+
+    # Premise from the tree: the matmul kernel is still the naive loop and
+    # no pooling/SIMD/threading machinery exists.
+    matmul_source = (REPO_ROOT / "cpp" / "src"
+                     / "matmul.cpp").read_text(encoding="utf-8")
+    assert "deliberately unoptimized reference loops" in matmul_source
+    storage_source = (REPO_ROOT / "cpp" / "src"
+                      / "storage.cpp").read_text(encoding="utf-8")
+    for banned in ("free_list", "memory_pool", "arena", "std::thread",
+                   "immintrin", "omp parallel"):
+        assert banned not in storage_source, banned
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+
+    overclaims = re.compile(
+        r"\bH1\b[^.]{0,90}\b(memory pool|scratch (?:arena|workspace|"
+        r"allocator)|SIMD|BLAS|OpenMP|thread pool)\b"
+        r"|\bH1\b[^.]{0,90}\b(loop order|blocking|tiled|vectori[sz]ed)\b"
+        r"|\bH1\b[^.]{0,90}\bfused\b",
+        re.I,
+    )
+    negations = re.compile(
+        r"\b(no|not|never|none|without|neither|nor|rejected|future"
+        r"|proposed|conditional|beyond|would|will)\b", re.I,
+    )
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in overclaims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 90):match.end() + 40]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_no_surface_claims_a_public_empty_tensor_api():
+    """The uninitialized path is a backend implementation detail. The
+    premise is the real public surface, checked directly."""
+    import tensorforge
+    import tensorforge.experimental as experimental
+
+    for module in (tensorforge, tensorforge.nn, experimental):
+        for name in ("empty", "empty_like", "uninitialized"):
+            assert not hasattr(module, name), f"{module.__name__}.{name}"
+
+    claims = re.compile(
+        r"\b(Tensor|NativeTensor)\.empty\b|\bempty_like\b"
+        r"|\bpublic\b[^.]{0,40}\bempty[- ]tensor\b(?![^.]{0,60}\bno\b)",
+        re.I,
+    )
+    negations = re.compile(r"\b(no|not|never|none|without)\b", re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            # The honest form is "no public empty-tensor API", where the
+            # negation can sit a clause earlier than a 70-character
+            # window reaches.
+            if not negations.search(
+                text[max(0, match.start() - 130):match.end() + 20]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_no_surface_claims_asan_or_ubsan_detects_uninitialized_reads():
+    """The single most tempting wrong claim in this milestone. ASan and
+    UBSan prove memory-boundary and undefined-behavior safety; they do
+    **not** detect a read of an uninitialized value."""
+    wrong = re.compile(
+        r"\b(ASan|AddressSanitizer|UBSan|UndefinedBehaviorSanitizer)\b"
+        r"[^.]{0,80}\b(uninitialized|uninit)\b[^.]{0,40}\b(read|value|"
+        r"detect\w*|prove\w*|catch\w*)\b",
+        re.I,
+    )
+    negations = re.compile(
+        r"\b(no|nothing|not|never|none|neither|nor|without|cannot"
+        r"|does not|do not|rather than)\b", re.I,
+    )
+    surfaces = _PHASE_H_SURFACES + (_PHASE_H_DESIGN,
+                                    "docs/release_history.md")
+    for surface in surfaces:
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in wrong.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 120):match.end() + 60]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_no_surface_claims_a_memorysanitizer_result():
+    """MSan needs a fully instrumented libc and CPython, which this
+    project does not have. No surface may claim an MSan run."""
+    claims = re.compile(
+        r"\b(MemorySanitizer|MSan)\b[^.]{0,60}"
+        r"\b(passed|ran|clean|validated|proves?|confirmed)\b", re.I,
+    )
+    negations = re.compile(
+        r"\b(no|not|never|none|without|cannot|would|needs?|requires?"
+        r"|is not|are not)\b", re.I,
+    )
+    surfaces = _PHASE_H_SURFACES + (_PHASE_H_DESIGN,
+                                    "docs/release_history.md")
+    for surface in surfaces:
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 110):match.end() + 50]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_the_design_records_the_per_kernel_audit_and_both_rejections():
+    """The audit table is the contract. It must name every enabled family
+    and must record the two rejections with their reasons."""
+    text = _normalized_doc(_PHASE_H_DESIGN)
+    lowered = text.lower()
+
+    assert "16.1" in text, "the design has no H1 section"
+    for subject in ("per-kernel audit", "every element written",
+                    "read before first write"):
+        assert subject in lowered, subject
+
+    # The two rejections, by name and by reason.
+    assert "rejected" in lowered
+    assert "additive identity" in lowered
+    assert "narrow_backward" in lowered
+    assert "tf_core_sum" in lowered
+
+    # The enabled families each appear in the table.
+    for enabled in ("contiguous_copy", "relu_backward", "log_softmax",
+                    "cross_entropy_forward", "conv2d_input_backward",
+                    "conv2d_weight_backward", "maxpool2d_backward",
+                    "dropout_forward", "from_array", "matmul"):
+        assert enabled in lowered, enabled
+
+    # ...and the correction to H0's preliminary sketch is recorded rather
+    # than silently applied.
+    assert "12 of 14" in text
+
+
+def test_the_design_records_the_poison_methodology_and_its_limits():
+    text = _normalized_doc(_PHASE_H_DESIGN)
+    lowered = text.lower()
+    for subject in ("poison", "quiet nan", "negative control",
+                    "memorysanitizer"):
+        assert subject in lowered, subject
+    # The three-tool distinction the milestone requires.
+    assert "leaksanitizer" in lowered
+    assert "lifecycle cleanup" in lowered
+    # ...and the honest statement that the detector was proved able to
+    # fail, which is what makes the passing results mean anything.
+    assert "capable of failing" in lowered or "can actually fail" in lowered
+    # ...and where the poison actually lives, which is the whole point:
+    # test infrastructure around the allocator, never the runtime.
+    assert "test infrastructure" in lowered
+    assert "tf_storage_fill" in lowered
+
+
+def test_no_surface_describes_a_runtime_poison_control():
+    """The correction this milestone required, guarded permanently.
+
+    The premise is the live runtime: no poison-control symbol exists in
+    the loaded library or in the backend module. No document may present
+    one as existing — and none may excuse an exported test hook on the
+    grounds that it is disarmed by default. Documents *may* record that
+    such a hook once existed and was removed, so every hit is allowed
+    only when a rejection or removal is stated nearby."""
+    import pytest
+
+    from tensorforge.backends import cpp
+
+    # Premise 1: the Python backend exposes nothing poison-shaped.
+    assert not any("poison" in name.lower() for name in dir(cpp))
+    # Premise 2: neither does the built library, asked through the real
+    # platform loader.
+    if cpp.is_available():
+        library = cpp._require_library()
+        for name in ("tf_test_set_uninitialized_poison",
+                     "tf_set_uninitialized_poison"):
+            with pytest.raises(AttributeError):
+                getattr(library, name)
+
+    claims = re.compile(
+        r"tf_test_set_uninitialized_poison\s*\(|"
+        r"cpp\._set_uninitialized_poison|cpp\._uninitialized_poison|"
+        r"\b(?:disarmed|inert|thread-local|test-only)\b[^.]{0,120}"
+        r"\b(?:acceptable|harmless|safe to (?:ship|export))\b", re.I)
+    rejected = re.compile(
+        r"\b(remov\w+|deleted|no longer|earlier draft|reject\w+|absence"
+        r"|does not exist|no poison|never)\b", re.I)
+
+    surfaces = _PHASE_H_SURFACES + (_PHASE_H_DESIGN,
+                                    "docs/release_history.md")
+    for surface in surfaces:
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not rejected.search(
+                text[max(0, match.start() - 400):match.end() + 200]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_every_h1_surface_states_the_final_exported_symbol_count():
+    """H1's ABI footprint is one symbol, and the surfaces that quantify
+    it must say so in the same terms the built library reports."""
+    from tensorforge.backends import cpp
+
+    if cpp.is_available():
+        library = cpp._require_library()
+        assert getattr(library, "tf_storage_create_uninitialized") is not None
+
+    total = re.compile(r"\b52\b[^.]{0,80}exported|exported[^.]{0,80}\b52\b",
+                       re.I)
+    for surface in ("docs/native_cpu_performance_design.md",
+                    "docs/native_support_matrix.md",
+                    "docs/release_history.md",
+                    "docs/architecture.md",
+                    "README.md"):
+        text = _status_text(surface)
+        assert total.search(text), (
+            f"{surface} does not state the 52 exported tf_* symbol total"
+        )
+        assert "tf_storage_create_uninitialized" in text, surface
+
+
+def test_the_design_reports_the_inconclusive_h1_results():
+    """The milestone requires negative and noisy results to be published.
+    The design must not read as an unqualified speedup claim."""
+    text = _normalized_doc(_PHASE_H_DESIGN)
+    lowered = text.lower()
+    assert "inconclusive" in lowered
+    assert "no measurable effect" in lowered
+    # ...and it must say why numpy.zeros is not the comparison.
+    assert "calloc" in lowered
+    assert "lazy zero" in lowered
+
+
+def test_h1_left_the_public_capability_boundary_untouched():
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    # Allocation strategy is not a capability and appears in no inventory.
+    for value in cpp.backend_info().values():
+        if isinstance(value, (tuple, list)):
+            assert not any("uninitialized" in str(item) for item in value)
