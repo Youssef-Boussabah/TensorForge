@@ -871,8 +871,10 @@ def test_f1_changed_no_other_capability_inventory():
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    # ("dropout" was in this tuple when F1 landed and left at the Phase-G
+    # closure, G10 — not a buffer-state change either way.)
     assert cpp.UNSUPPORTED == (
-        "dropout", "float32", "cuda", "amp",
+        "float32", "cuda", "amp",
     )
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)

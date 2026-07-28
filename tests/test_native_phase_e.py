@@ -231,16 +231,16 @@ def test_capability_inventories_are_internally_consistent():
         for attribute in _STATE_CAPABILITY_API.get(name, (name,)):
             assert (hasattr(experimental, attribute)
                     or hasattr(NativeModule, attribute)), (name, attribute)
-    # Implemented and unsupported names stay disjoint everywhere, with
-    # the one deliberate exception Phase G locks (design §19): milestone
-    # G3 shipped the differentiable "dropout" operation while the
-    # *capability* stays unsupported until the G10 closure. No Phase-E
-    # name is involved, which is exactly what this asserts.
+    # Implemented and unsupported names are disjoint everywhere. Phase G
+    # held one deliberate exception for G3-G9 (design §19) — "dropout"
+    # named both a shipped operation and an unclosed capability — and the
+    # G10 closure ended it. No Phase-E name was ever involved, which is
+    # exactly what this asserts.
     implemented = (set(cpp.TENSOR_CORE_OPS) | set(cpp.AUTOGRAD_OPS)
                    | set(cpp.RAW_KERNELS) | set(cpp.NATIVE_MODULES)
                    | set(cpp.NATIVE_LOSSES) | set(cpp.NATIVE_METRICS)
                    | set(cpp.NATIVE_OPTIMIZERS))
-    assert implemented & set(cpp.UNSUPPORTED) == {"dropout"}
+    assert implemented & set(cpp.UNSUPPORTED) == set()
 
 
 def test_the_phase_e_capability_set_is_exactly_what_shipped():
@@ -281,11 +281,12 @@ def test_unsupported_stays_honest_after_closure():
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.NATIVE_MODULES
-    # "dropout" is still an unsupported *capability* — a boundary Phase E
-    # kept and Phase G has not yet moved — even though Phase G milestones
-    # G2 and G3 shipped a Core wrapper and a differentiable operation
-    # underneath it. It leaves UNSUPPORTED only at the G10 closure.
-    assert "dropout" in cpp.UNSUPPORTED
+    # "dropout" was an unsupported *capability* Phase E kept, and Phase G
+    # moved it — at the **G10** closure, not at G2 or G3, which shipped
+    # only a Core wrapper and a differentiable operation underneath it.
+    # Either way it is a Phase-G event, never a Phase-E one.
+    assert "dropout" not in cpp.UNSUPPORTED
+    assert "dropout" in cpp.AUTOGRAD_OPS
     assert "dropout" not in cpp.NATIVE_MODULES
     import tensorforge.experimental as experimental
 

@@ -10,8 +10,8 @@ declaration, no `NativeTensorCore` method, no `NativeTensor` operation,
 no module, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-G status: in progress. G0, G1, G2, G3, G4, G5, G6, and G7 are
-complete; G8–G10 have not started.** Milestone **G1** shipped `NativeGenerator` and
+**Phase-G status: complete. G0, G1, G2, G3, G4, G5, G6, G7, G8, G9, and
+G10 have all shipped.** Milestone **G1** shipped `NativeGenerator` and
 generator registration on `NativeModule` — random **state** and its
 ownership; it generates no random values by itself. Milestone **G2**
 shipped the stateless Dropout-forward **Core**: §4's derivation, §7's
@@ -56,40 +56,55 @@ proves that an interrupted run resumed into a **completely fresh**
 model/optimizer/generator set reproduces the uninterrupted run by exact
 equality, with the external loop position carried as explicit, validated
 metadata rather than claimed as automatic checkpoint state. **G7 added no
-capability**: one example, one test module, and documentation.
+capability**: one example, one test module, and documentation. Milestone
+**G8** delivered the honest characterization,
+`benchmarks/benchmark_native_dropout.py` — every case correctness-gated
+**before** timing, medians with spread after warm-up, `--smoke`/`--quick`
+and `--json` modes, no result file, and **no speed assertion anywhere**;
+**measurement only**. Milestone **G9** delivered the cross-cutting
+integration suite `tests/test_native_phase_g.py` over one model carrying
+every registered state family at once — **integration evidence only**,
+with no runtime file touched. Milestone **G10** closed the phase: the §18
+validation matrix was executed with observed results, the durable closure
+guardrails were added, and `"dropout"` left `UNSUPPORTED` as the last act
+of the phase.
 
-That is a demonstrated exact stochastic resume and nothing above it. There
-is no implicit, global, or default generator anywhere — the operation's
-generator is **required and keyword-only**, and the module's is explicit
-registered state; the Core still consumes **no** generator call and
+There is no implicit, global, or default generator anywhere — the
+operation's generator is **required and keyword-only**, and the module's
+is explicit registered state; the Core consumes **no** generator call and
 touches no `NativeGenerator` at all; reproducibility is exact **for the
 state actually captured**, and data-loader position, shuffle state,
 scheduler state, Python's `random`, and NumPy's global RNG are captured by
-nothing (§11.1); and `"dropout"` is still in `UNSUPPORTED`, deliberately,
-until the G10 closure.
+nothing (§11.1).
 
-The capability boundary is therefore exactly what Phase F closed with,
-except for the format version G5 was always going to move:
+The capability boundary Phase G closes with is exactly what Phase F left,
+minus the one name this phase earned, plus the format version G5 was
+always going to move:
 
-- `UNSUPPORTED == ("dropout", "float32", "cuda", "amp")`
+- `UNSUPPORTED == ("float32", "cuda", "amp")`
 - `SUPPORTED_DTYPES == ("float64",)`, `SUPPORTED_DEVICES == ("cpu",)`
 - native checkpoint format `"tensorforge.native_checkpoint"` — the
   **name** never moves — at **format version 2** since G5, with version 1
   still loadable exactly where §10.6 says
 
-`"dropout"` stays in `UNSUPPORTED` for the **whole** of G0–G9 and leaves
-it **only at G10**, and only after the complete Phase-G closure matrix of
-§18 has passed. G4 implements and publicly exports `NativeDropout`, but
-it does **not** move the capability boundary: the registry reports a
-*closed, validated* capability, not an *implemented* one (§19, G4). So
+`"dropout"` stayed in `UNSUPPORTED` for the **whole** of G0–G9 and left it
+**only at G10**, after the complete Phase-G closure matrix of §18 had
+passed. G4 implemented and publicly exported `NativeDropout` without
+moving the boundary: the registry reports a *closed, validated*
+capability, not an *implemented* one (§19, G4). So
 
 - through G9: `UNSUPPORTED == ("dropout", "float32", "cuda", "amp")`
-- after a successful G10 closure: `UNSUPPORTED == ("float32", "cuda", "amp")`
+- after the G10 closure: `UNSUPPORTED == ("float32", "cuda", "amp")`
+
+The claim that move makes is deliberately narrow: **native Dropout is
+supported in TensorForge's experimental native float64 CPU backend**. It
+is not a stable-framework claim (`tensorforge.nn.Dropout` has always been
+its own separate implementation), not a float32, CUDA, or AMP claim, not a
+generic random-number API, and not a production-readiness or
+speed-superiority claim.
 
 The checkpoint format version became **2** at milestone **G5**, and not
-before. Everything below describes what the remaining milestones *will*
-do; the present tense is used for locked contracts, never for unshipped
-behavior.
+before.
 
 Related contracts this phase inherits and must not weaken:
 [native_autograd_design.md](native_autograd_design.md) (graph lifetime,
@@ -148,8 +163,8 @@ claims; speed-superiority claims; or **parallel stochastic execution** —
 the generator's lock (§3.6) serializes for correctness, and two threads
 drawing from one generator is a deterministic error, not a feature.
 
-`float32`, `cuda`, and `amp` remain in `UNSUPPORTED` when Phase G closes.
-`"dropout"` leaves it at G10 and not before (§19).
+`float32`, `cuda`, and `amp` remain in `UNSUPPORTED` now that Phase G has
+closed. `"dropout"` left it at G10 and not before (§19).
 
 ---
 
@@ -2548,6 +2563,11 @@ boundary**: `"dropout"` leaves `UNSUPPORTED` as the *last* act of G10,
 after every item below has passed. If any item fails, the boundary does
 not move and the phase is not closed.
 
+**Every item below passed at the G10 closure, and §18.1 records what was
+observed.** The rule stated here is the rule that was applied: the
+registry line was edited last, after the builds, the sanitizers, the
+suites, the example, and the benchmark had all run.
+
 - the full Python suite, with exact passed/skipped totals
 - the focused Phase-G suites
 - a **fresh Windows Release** build and its full CTest run
@@ -2577,6 +2597,120 @@ not move and the phase is not closed.
 - durable semantic guardrails replacing the milestone-era absence checks,
   including one that pins the post-closure tuple
 
+### 18.1 Observed at the G10 closure
+
+Every number below was measured during this closure; none is carried over
+from an earlier phase. G10 changed **no** C++ source, header, CTest, C ABI
+export, ctypes declaration, `NativeTensorCore` method, kernel, operation,
+module, loss, metric, optimizer, example, benchmark, checkpoint schema
+field, checkpoint version, or export — the single non-documentation change
+is the removal of `"dropout"` from `UNSUPPORTED`.
+
+- **Windows environment.** Windows 11 Home 10.0.26200, PowerShell 5.1,
+  x64 (Intel Core Ultra 9 185H, 22 logical CPUs), Python 3.13.14,
+  NumPy 2.5.1, CMake 4.4.0, generator **Visual Studio 17 2022**,
+  MSVC **19.44.35228.0** (toolset 14.44.35207), Windows SDK
+  10.0.26100.0.
+- **Release build and CTests.** Configured fresh and out-of-source
+  (outside the repository) with `-DTF_BUILD_TESTS=ON` and `TF_OUTPUT_DIR`
+  pointing at `src/tensorforge/backends`, then built `--config Release
+  --clean-first`: **zero compiler, zero linker, and zero CMake warnings**
+  across the whole clean rebuild, and **11/11 CTests passed** (0.86 s) —
+  the ten inherited from Phase F plus G2's `dropout_forward`. The rebuilt
+  Release DLL loads and passes `scripts/smoke_cpp_backend.py`.
+- **Debug build and CTests.** A second fresh out-of-source configuration
+  writing its library to a separate external directory, built `--config
+  Debug --clean-first`: **zero compiler, zero linker, and zero CMake
+  warnings**, and **11/11 CTests passed** (0.94 s). Debug semantics are
+  genuinely enabled — the configuration defines `_DEBUG`, never `NDEBUG`,
+  and compiles `/Od` with `/RTC1` — and no debug assertion exposed a
+  defect. The Debug library never reached the package: the active
+  `src/tensorforge/backends/_tensorforge_cpp.dll` stayed the 58,880-byte
+  Release build linking `MSVCP140.dll`/`VCRUNTIME140.dll`, while the Debug
+  library is a separate 176,128-byte file linking
+  `MSVCP140D.dll`/`ucrtbased.dll`.
+- **Windows Python regression.** `uv run pytest -q` with the Release
+  backend active: **4,859 passed, 5 skipped** (71.67 s) at the pre-closure
+  baseline. All five skips are the pre-existing "the backend is built, so
+  the unavailable path cannot be forced" cases — no test skipped because
+  the backend was missing.
+- **WSL/Linux environment.** WSL2, Ubuntu 24.04.4 LTS, kernel
+  6.6.87.2-microsoft-standard-WSL2, x86_64; CMake 3.28.3; clang++
+  **18.1.3**; `llvm-symbolizer-18`; GNU nm (binutils) 2.42; Python 3.12.3
+  with NumPy 2.5.1 and pytest 9.1.1 in an environment **outside** the
+  repository (no repository `.venv` was created or replaced, and no
+  dependency manifest or lockfile was touched).
+- **Sanitizer build.** A fresh build directory outside the repository,
+  configured `-DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_COMPILER=clang++
+  -DTF_SANITIZE=address,undefined -DTF_BUILD_TESTS=ON`, which reported
+  `TensorForge backend: sanitizers enabled -> address,undefined` and built
+  with **zero project warnings**.
+- **Instrumentation proved, not assumed.** `nm -D` on the produced library
+  shows **22 `__asan*`** and **14 `__ubsan*`** dynamic symbols alongside
+  the **51** exported `tf_*` C ABI symbols — 50 inherited plus G2's
+  `tf_core_dropout_forward`. Loading the library **without** the ASan
+  runtime fails with `undefined symbol: __ubsan_vptr_type_cache`; loading
+  it **with** the runtime preloaded succeeds.
+- **Sanitized native CTests.** With
+  `ASAN_OPTIONS=halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1:detect_leaks=1`
+  and `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`: **11/11 CTests
+  passed** (0.08 s) with **leak detection on**, no sanitizer diagnostic,
+  no leak, no suppression, and no recovery mode.
+- **Sanitized Python.** Because CPython itself is not instrumented, the
+  Clang ASan runtime is preloaded (`LD_PRELOAD`, resolved from `clang++
+  -print-file-name=libclang_rt.asan-x86_64.so`) with
+  `ASAN_SYMBOLIZER_PATH` set. Forty-three test files — the whole Phase-G
+  surface (the generator, the Core, the autograd operation, the module,
+  checkpoint v2, the state transaction, the G6 hardening matrix, the G7
+  resume, the G8 benchmark, and the G9 integration suite) plus the
+  autograd, buffer, state, parameter-versioning, storage, view, module,
+  optimizer, checkpoint, normalization, classification, and
+  backend-introspection dependencies they exercise — ran through the
+  sanitized library: **3,166 passed**, **zero ASan diagnostics, zero UBSan
+  diagnostics**, and no backend-unavailable skip.
+  `examples/native_dropout_training.py` then ran under the same library
+  and reproduced its exact resume, and
+  `benchmarks/benchmark_native_dropout.py --smoke` passed every
+  correctness gate and wrote no result file — both with zero diagnostics.
+- **LeakSanitizer, scope stated honestly.** A temporary (never committed)
+  workload drove one complete Phase-G lifecycle: the `Linear →
+  BatchNorm1d → ReLU → Dropout → LayerNorm → Linear` classifier with
+  `NativeCrossEntropyLoss` and `NativeAdam`, six training steps, a
+  reporting eval pass proved to consume no generator call and to restore
+  the caller's mode, a **version-2** checkpoint saved and loaded into a
+  **fresh** model/optimizer/generator set built with a different seed, the
+  restored generator and the exact eval output verified, a
+  shared-generator alias topology round-tripped through its own archive,
+  and explicit closure of the optimizers, every unique parameter, and
+  every unique buffer. With `detect_leaks=1` and symbolization on, **the
+  native live-storage counter returned exactly to baseline (0 → 0)** — the
+  save and the load each added zero net storage. Running LSan over that
+  *Python* process reports 926,478 bytes in 831 allocations at exit, but
+  **not one leak frame names `_tensorforge_cpp`, `tf_core_`,
+  `tf_storage_`, or `tf::`**: every site is CPython, libc, NumPy,
+  `_ctypes`, or the ASan runtime itself — interpreter and
+  module-initialization allocations a non-instrumented interpreter never
+  frees at shutdown. **No suppression file was added**, and the project's
+  leak contract remains the deterministic live-storage counters and
+  explicit-cleanup tests, which assert an exact return to baseline.
+- **Scope of the sanitizer claim.** ASan and UBSan observed the **native**
+  library and the native CTest binaries. They did not observe Python
+  object lifetimes, which remain covered by the separate live-storage
+  accounting and explicit-cleanup tests — that evidence is not
+  interchangeable, and neither is claimed as the other.
+- **The example and the benchmark on Windows Release.**
+  `examples/native_dropout_training.py` exits 0 with every resume boolean
+  true — the exact loss sequence, the final parameters, both running
+  statistics, the optimizer state, the generator state, the final training
+  logits, the final evaluation output, preserved identities, checkpoint
+  format version 2, the next-mask proof against the G2 Core at the
+  restored index, evaluation consuming no calls, and live native storage
+  `0 / 0`. `benchmarks/benchmark_native_dropout.py --quick` and the full
+  run both exit 0 with the correctness prologue passing (7 committed mask
+  vectors, 9 stream vectors), **35/35 cases correct**, the lifecycle
+  verification returning native live storage `0 -> 0`, JSON mode
+  serializing only finite values, and no result file of any kind written.
+
 ---
 
 ## 19. Milestone ladder
@@ -2593,7 +2727,7 @@ not move and the phase is not closed.
 | G7 | Deterministic stochastic training and exact resume | **Complete** (one example and its tests — no capability) |
 | G8 | Honest native Dropout benchmark | **Complete** (one harness and its tests — measurement only, no capability) |
 | G9 | Cross-cutting Phase-G integration | **Complete** (one integration suite — no capability) |
-| G10 | Phase-G closure, and `"dropout"` leaving `UNSUPPORTED` | Not started |
+| G10 | Phase-G closure, and `"dropout"` leaving `UNSUPPORTED` | **Complete** (validation, documentation, and one registry line — no numerical capability) |
 
 ### G0 — Architecture contract and design lock
 
@@ -3009,11 +3143,13 @@ Advertising it at G4 would mean the registry says "supported" while the
 committed known-answer vectors have not been reproduced under a fresh
 Release build, a fresh Debug build, and ASan/UBSan, and while checkpoint
 v2 does not yet exist to persist the stream at all. So for Phase G the
-registry reports a **closed, validated** capability: `"dropout"` stays in
-`UNSUPPORTED` for the whole of G0–G9 and is removed at G10, as the last
-act of the closure matrix in §18. The export and `NATIVE_MODULES` entry
-land at G4 and honestly describe what exists; `UNSUPPORTED` describes what
-is finished.
+registry reports a **closed, validated** capability: `"dropout"` stayed in
+`UNSUPPORTED` for the whole of G0–G9 and was removed at G10, as the last
+act of the closure matrix in §18 — after that matrix had actually
+reproduced the committed vectors under fresh Release, Debug, and
+ASan/UBSan builds and the exact stochastic resume had run. The export and
+`NATIVE_MODULES` entry landed at G4 and honestly described what existed;
+`UNSUPPORTED` described what was finished, and now says so.
 
 ### G5 — Checkpoint version 2 and exact RNG restoration
 
@@ -3290,29 +3426,45 @@ defines no public training API — none of its helpers is exported.
 
 ### G10 — Phase-G closure and the capability boundary
 
+**Complete.** Validation, documentation, and one registry line.
+
 - **Objective.** §18, and the single registry change the whole phase has
   been earning.
-- **Files.** Documentation and documentation-guardrail tests, **plus one
-  registry line**: `src/tensorforge/backends/cpp.py`, where `"dropout"`
-  is removed from `UNSUPPORTED`, which then reads exactly
-  `("float32", "cuda", "amp")`.
-- **Ordering.** The removal is the **last** step. Every item in §18 —
-  both builds, both CTest runs, ASan, UBSan, LeakSanitizer, the sanitized
-  Python suites, the resume example, and the benchmark gates — is
-  recorded with observed results **first**. A failure anywhere in that
-  matrix means the boundary does not move and the phase does not close.
-- **Forbidden.** Any numerical capability, C++, CTest, ABI, ctypes,
-  example, benchmark, or production numerical file change. The
-  `UNSUPPORTED` edit is the **only** permitted non-documentation change,
-  and it adds no code path — `float32`, `cuda`, and `amp` stay listed,
-  and `SUPPORTED_DTYPES` and `SUPPORTED_DEVICES` are untouched.
-- **Done when.** Every item in §18 is recorded with observed results, the
-  durable guardrails are in place, and `UNSUPPORTED` reads
-  `("float32", "cuda", "amp")`.
+- **Files.** Documentation and documentation-guardrail tests, the new
+  `tests/test_native_phase_g_closure.py`, **plus one registry line**:
+  `src/tensorforge/backends/cpp.py`, where `"dropout"` is removed from
+  `UNSUPPORTED`, which now reads exactly `("float32", "cuda", "amp")`.
+- **Ordering, as executed.** The removal was the **last** step. Every item
+  in §18 — both builds, both CTest runs, ASan, UBSan, LeakSanitizer, the
+  sanitized Python suites, the resume example, and the benchmark gates —
+  was recorded with observed results **first**, in §18.1. A failure
+  anywhere in that matrix would have meant the boundary did not move and
+  the phase did not close.
+- **What it found.** No runtime defect, and no C++ edit was required. The
+  Phase-G stack behaved identically under Release, Debug, and
+  ASan/UBSan/LSan builds: the same committed known-answer vectors, the
+  same exact stochastic resume, and the same live-storage baseline.
+- **Forbidden, and observed.** No numerical capability, C++, CTest, ABI,
+  ctypes, example, benchmark, or production numerical file change. The
+  `UNSUPPORTED` edit is the **only** non-documentation change, and it adds
+  no code path — `float32`, `cuda`, and `amp` stay listed, and
+  `SUPPORTED_DTYPES` and `SUPPORTED_DEVICES` are untouched.
+- **Done when.** Every item in §18 is recorded with observed results
+  (§18.1), the durable guardrails are in place, and `UNSUPPORTED` reads
+  `("float32", "cuda", "amp")`. **Observed: all of it.**
 
 ---
 
 ## 20. What G0's guardrails assert
+
+**This section is a historical record of the guardrails as they stood at
+G0**, kept verbatim so the contract's starting point stays legible. Several
+of its items describe absences that later milestones deliberately filled —
+item 6's format version 1 moved to 2 at G5, item 12's exports and
+inventories were populated at G1–G4, and items 3, 4, and 14's boundary
+moved at G10. Each was retired by the milestone that earned it, and the
+**durable** post-closure form lives in §21. Read this list as "what was
+asserted then", never as a description of the tree today.
 
 The semantic tests added with this document check the contract, not its
 prose. They derive their premises from the live registry, the live
@@ -3373,3 +3525,50 @@ exports, the real file tree, and the C++ sources, and they assert:
     deliverable `KeyboardInterrupt` is explicitly *not* an exception —
     and the four failure classes (prevalidation, staging, synchronous
     commit, asynchronous death) are distinguished.
+
+---
+
+## 21. What the G10 closure guardrails assert
+
+`tests/test_native_phase_g_closure.py` replaces the milestone-era absence
+checks with their durable positive form. Like §20's, these premises come
+from the live registry, the live exports, the real file tree, and real
+archives — never from prose matching. They assert:
+
+1. **The phase is closed and the ladder is whole.** Phase G is marked
+   complete, `G0` through `G10` each appear exactly once in the ladder and
+   in order, every row is marked complete, and no `G11` or later Phase-G
+   milestone is claimed anywhere.
+2. **The final boundary is exact.** `UNSUPPORTED == ("float32", "cuda",
+   "amp")` — `"dropout"` absent, the other three present, nothing added,
+   nothing reordered — with `SUPPORTED_DTYPES == ("float64",)` and
+   `SUPPORTED_DEVICES == ("cpu",)` unchanged.
+3. **No inventory overlap remains.** After the move, no name appears in
+   both `UNSUPPORTED` and an implemented inventory — the deliberate
+   G3–G9 `"dropout"` overlap is gone, and any *new* one is a failure.
+4. **Each Dropout name sits in exactly one layer-appropriate inventory,
+   exactly once**: `"dropout_forward"` in `TENSOR_CORE_OPS`, `"dropout"`
+   in `AUTOGRAD_OPS`, `"NativeDropout"` in `NATIVE_MODULES`, and
+   `tf_core_dropout_forward` in the checked-kernel inventory.
+5. **The checkpoint contract is pinned**: format name unchanged, format
+   version **2**, supported versions `(1, 2)`, and both
+   `"generator_state"` and `"checkpoint_generator_state"` still reported
+   in `STATE_SUPPORT`.
+6. **The deliverables still exist**: the G7 example, the G8 benchmark
+   (with its quick mode and its characterization-only contract), the G9
+   integration suite, the G6 hardening suite, and the C++ Dropout source
+   and CTest.
+7. **The claim stays narrow.** `NativeGenerator` and `NativeDropout` are
+   exported from `tensorforge.experimental` **only** and never from the
+   root package; the stable framework keeps its own separate `Dropout`;
+   and no surface claims float32, CUDA, AMP, a generic RNG API,
+   `Dropout2d`/`Dropout3d`, production readiness, or universal speed.
+8. **The closure evidence is recorded**, not merely asserted: the build,
+   CTest, sanitizer, and leak results live on a durable surface, and no
+   status surface still says G10 is unstarted or Dropout unsupported.
+9. **No machine-specific artifact is committed** — no benchmark result
+   file, sanitizer log, build directory, or compiled library in a tracked
+   source directory.
+
+The guardrails deliberately test *values and structure*, not wording, so
+ordinary prose improvements do not require rewriting them.

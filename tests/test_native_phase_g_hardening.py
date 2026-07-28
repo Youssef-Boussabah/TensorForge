@@ -3073,12 +3073,15 @@ def test_the_dropout_path_reaches_no_numpy_numerical_routine(monkeypatch):
 
 
 def test_g6_moved_no_capability_registry_value():
-    """The whole point of the milestone: nothing in any registry changed.
-    ``"dropout"`` is still unsupported and only G10 removes it."""
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    """The whole point of the milestone: nothing in any registry changed
+    *at G6*. ``"dropout"`` stayed unsupported through it, and only the
+    G10 closure removed the name — so the durable form of this guard is
+    that the removal is attributed there and every other value G6 could
+    have touched is still exactly what it was."""
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" not in cpp.UNSUPPORTED
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "dropout_forward" in cpp.TENSOR_CORE_OPS
     assert "dropout_backward" not in cpp.TENSOR_CORE_OPS

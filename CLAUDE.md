@@ -230,8 +230,8 @@ capability, no C++, no CTest, no ABI or ctypes surface, no example, no
 benchmark, and no production numerical file changed.**)
 **Phase F is complete**, and no normalization operation, kernel, C ABI
 symbol, or custom backward exists at all.
-**Phase G — Native RNG and Dropout — is the current phase and is *in
-progress*: milestones G0 (the architecture contract in
+**Phase G — Native RNG and Dropout — is the latest phase and is
+*complete*: milestones G0 (the architecture contract in
 `docs/native_rng_dropout_design.md`), G1 (`NativeGenerator` and module
 generator-state ownership), G2 (the deterministic stateless
 Dropout-forward **Core**), G3 (the differentiable
@@ -241,7 +241,7 @@ its public export), and G5 (native checkpoint **format version 2** with
 persisted generator state and its alias topology), and G6 (RNG, graph,
 ownership, and checkpoint hardening — **no new capability**), and G7 (the
 deterministic stochastic training example and its exact checkpoint resume
-— also **no new capability**) are complete, and G8 (the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` — measurement only, no capability), and G9 (the cross-cutting integration suite `tests/test_native_phase_g.py` — integration evidence only, no capability, no runtime file changed) are complete; G10 has not started.** G0 locked Python-managed generator state (an explicit
+— also **no new capability**), and G8 (the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` — measurement only, no capability), and G9 (the cross-cutting integration suite `tests/test_native_phase_g.py` — integration evidence only, no capability, no runtime file changed), and G10 (the phase closure — the Windows Release/Debug and Clang ASan/UBSan/LeakSanitizer validation matrix, documentation reconciliation, durable closure guardrails in `tests/test_native_phase_g_closure.py`, and the single registry line that removed `"dropout"` from `UNSUPPORTED`, which now reads exactly `("float32", "cuda", "amp")`; validation, documentation, and that one line — **no C++, CTest, ABI, ctypes, Core method, operation, module, export, schema field, checkpoint version, example, or benchmark changed**) are all complete.** G0 locked Python-managed generator state (an explicit
 64-bit seed plus call counter and an algorithm identifier), stateless
 native random kernels that receive the whole key for one call, inverted
 Dropout with a graph-owned multiplier mask whose backward never rereads
@@ -264,8 +264,8 @@ atomicity, where any ordinary synchronous commit failure rolls back
 parameters, buffers, optimizer state, and generator state together and
 external process/interpreter death is the only documented exception.
 G4 implements and exports `NativeDropout` but **does not** move the
-capability boundary: `"dropout"` stays in `UNSUPPORTED` through G9 and
-leaves it only at **G10**, after the full closure matrix passes, leaving
+capability boundary: `"dropout"` stayed in `UNSUPPORTED` through G9 and
+left it at **G10**, after the full closure matrix passed, leaving
 `("float32", "cuda", "amp")`. The format version became 2 at G5 — none
 of this in G0.
 **G1 is complete**: `src/tensorforge/experimental/native_generator.py`
@@ -808,7 +808,6 @@ production-ready, not a PyTorch replacement.
   its C ABI), G3 (the differentiable `NativeTensor.dropout`), G4 (the
   `NativeDropout` module), and G5 (native checkpoint **format version 2**
   with persisted generator state and its alias topology), and G6 (the
-  RNG/graph/ownership/checkpoint hardening, which added no capability)
   RNG/graph/ownership/checkpoint hardening, which added no capability),
   and G7 (`examples/native_dropout_training.py` and its tests — the
   deterministic stochastic training and exact-resume proof, which also
@@ -817,7 +816,11 @@ production-ready, not a PyTorch replacement.
   before timing, no speed asserted, no capability), and G9
   (`tests/test_native_phase_g.py` — the cross-cutting integration
   suite over one model carrying every registered state family, also
-  no capability) shipped, G10 not started). When a milestone changes the
+  no capability), and G10 (`tests/test_native_phase_g_closure.py` and
+  the documentation reconciliation — the Release/Debug/sanitizer
+  validation matrix and the single registry line that removed
+  `"dropout"` from `UNSUPPORTED`) have all shipped — **Phase G is
+  complete**). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the

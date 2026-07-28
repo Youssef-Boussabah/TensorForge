@@ -1359,7 +1359,7 @@ def test_native_modules_gained_exactly_one_entry():
 def test_the_capability_boundary_did_not_move():
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 2
@@ -1396,11 +1396,19 @@ def test_g4_added_no_operation_kernel_or_generic_rng_surface():
         assert forbidden not in source, forbidden
 
 
-def test_g10_has_not_begun():
+def test_the_boundary_move_belongs_to_g10_not_to_g4():
+    """G4 shipped the module without moving the capability boundary, and
+    that ordering is the whole point of the milestone. The boundary has
+    since moved at **G10**, so what stays durable is the attribution —
+    plus the standing rule that no machine-specific benchmark artifact is
+    ever committed."""
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parent.parent
     assert not (repo_root / "benchmark_results").exists()
     from tensorforge.backends import cpp
 
-    assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" not in cpp.UNSUPPORTED
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    # The module G4 shipped is still exactly one entry, in one inventory.
+    assert cpp.NATIVE_MODULES.count("NativeDropout") == 1

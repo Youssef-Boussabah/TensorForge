@@ -112,24 +112,25 @@ def test_backend_info_reports_accurate_integration_flags():
     assert info["stable_framework_integration"] is False
 
 
-# The one name that is deliberately in UNSUPPORTED *and* in an
-# implemented inventory, with the milestone that put it there and the one
-# that will take it out.
+# Historically this held the one name deliberately in UNSUPPORTED *and* in
+# an implemented inventory, with the milestone that put it there and the
+# one that would take it out.
 #
-# Phase G locks this split (docs/native_rng_dropout_design.md §19): the
+# Phase G locked that split (docs/native_rng_dropout_design.md §19): the
 # operation inventories report what *exists*, UNSUPPORTED reports what is
 # *closed and validated*. G3 shipped the differentiable "dropout"
-# operation into AUTOGRAD_OPS and G4 will add "NativeDropout" to
-# NATIVE_MODULES, while "dropout" stays unsupported through G9 and leaves
-# only at the G10 closure — because Dropout's whole value is exact
-# cross-platform reproducibility, which has to be *demonstrated* under
-# fresh Release, Debug, and sanitized builds and survive a checkpoint (the
-# format is still version 1) before the registry may claim it.
+# operation into AUTOGRAD_OPS and G4 added "NativeDropout" to
+# NATIVE_MODULES, while "dropout" stayed unsupported through G9 — because
+# Dropout's whole value is exact cross-platform reproducibility, which has
+# to be *demonstrated* under fresh Release, Debug, and sanitized builds and
+# survive a checkpoint before the registry may claim it.
 #
-# Written as a single-name allowance rather than a relaxed rule: any
-# *other* unsupported name leaking into an implemented inventory still
-# fails, and this one is required to keep meeting the conditions below.
-_UNSUPPORTED_BUT_IMPLEMENTED = {"dropout"}
+# **The G10 closure demonstrated exactly that, and the name left.** The
+# allowance set is therefore empty, and the rule below is back to its
+# unrelaxed form: no unsupported name may appear in any implemented
+# inventory, with no exception. A future capability that wants one has to
+# add itself here deliberately.
+_UNSUPPORTED_BUT_IMPLEMENTED = frozenset()
 
 
 def test_unsupported_list_names_only_absent_capabilities():
@@ -147,12 +148,19 @@ def test_unsupported_list_names_only_absent_capabilities():
         assert name not in implemented
 
 
-def test_the_one_deliberate_unsupported_implemented_overlap_is_dropout():
-    """The exception above is pinned rather than assumed, in both
-    directions: exactly ``"dropout"`` overlaps, it overlaps in exactly
-    ``AUTOGRAD_OPS`` (never in a kernel or Core inventory), and the
-    conditions that justify it — the checkpoint format has not moved and
-    the capability has not been closed — are still true."""
+def test_the_deliberate_dropout_overlap_ended_at_the_g10_closure():
+    """The closure form of the old allowance guard.
+
+    For the whole of G3-G9 exactly one name — ``"dropout"`` — appeared in
+    both ``UNSUPPORTED`` and an implemented inventory, deliberately, because
+    the two tuples answer different questions. The G10 closure ended that:
+    the capability is now closed and validated, so the name left
+    ``UNSUPPORTED`` and **no** overlap remains.
+
+    This is asserted in both directions — the set is empty, and the
+    operation is still exactly where it belongs — so a future change that
+    reintroduces an overlap (for any name) fails here rather than silently
+    re-opening the loophole."""
     from tensorforge.experimental import NativeTensor, native_checkpoint
 
     info = cpp.backend_info()
@@ -161,18 +169,21 @@ def test_the_one_deliberate_unsupported_implemented_overlap_is_dropout():
         | set(info["autograd_ops"])
         | set(info["raw_kernels"])
     )
-    overlap = set(info["unsupported"]) & implemented
-    assert overlap == _UNSUPPORTED_BUT_IMPLEMENTED, overlap
+    assert set(info["unsupported"]) & implemented == set(), (
+        "a name is claimed both unsupported and implemented"
+    )
 
-    # It is the differentiable operation, and only that.
+    # The operation is still the differentiable one, and only that.
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert hasattr(NativeTensor, "dropout")
     assert "dropout" not in cpp.TENSOR_CORE_OPS
     assert "dropout" not in cpp.RAW_KERNELS
     assert "dropout" not in cpp.TENSOR_CORE_KERNELS
-    # G10 has not run: the closure conditions the allowance rests on are
-    # still open.
-    assert "dropout" in cpp.UNSUPPORTED
+    # ...and the Core wrapper keeps its own layer-qualified name.
+    assert "dropout_forward" in cpp.TENSOR_CORE_OPS
+    # G10 has run: the capability is closed, and the conditions that
+    # justified the old allowance are settled.
+    assert "dropout" not in cpp.UNSUPPORTED
     assert native_checkpoint._FORMAT_VERSION == 2
 
 
@@ -366,7 +377,7 @@ def test_f4_reports_both_batchnorm_shapes_and_frees_the_capability():
     assert "batchnorm" not in info["unsupported"]
     assert "layernorm" not in info["unsupported"]
     # ...and the remaining boundary is exactly what it was.
-    assert info["unsupported"] == ("dropout", "float32", "cuda", "amp")
+    assert info["unsupported"] == ("float32", "cuda", "amp")
     # BatchNorm3d was never in scope.
     assert "NativeBatchNorm3d" not in info["native_modules"]
     assert not hasattr(experimental, "NativeBatchNorm3d")
@@ -439,7 +450,7 @@ def test_f9_closed_phase_f_without_registering_anything():
         # unrelated to this milestone, which added no module of its own.
         "NativeDropout",
     )
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")

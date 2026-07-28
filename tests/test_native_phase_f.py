@@ -1607,7 +1607,7 @@ def test_every_state_capability_maps_to_a_real_api():
 def test_the_remaining_capability_boundary_is_unchanged():
     import tensorforge.experimental as experimental
 
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     for never in ("NativeBatchNorm3d", "NativeInstanceNorm",
@@ -1634,28 +1634,30 @@ def test_the_remaining_capability_boundary_is_unchanged():
                   "half", "float"):
         assert not hasattr(NativeTensor, never), never
     # "dropout" left that list at Phase G milestone G3, which shipped the
-    # differentiable NativeTensor.dropout. It is an *operation*, it takes
-    # an explicit NativeGenerator (there is still no global stream or
-    # manual_seed), and the *capability* it is named after is still in
-    # UNSUPPORTED above — so the boundary this test guards is unchanged.
+    # differentiable NativeTensor.dropout. It is an *operation*, and it
+    # takes an explicit NativeGenerator — there is still no global stream
+    # and no manual_seed, which is the boundary this test actually
+    # guards. The *capability* it is named after left UNSUPPORTED later
+    # still, at the G10 closure; both are Phase-G events and neither is a
+    # normalization change.
     assert hasattr(NativeTensor, "dropout")
     assert "dropout" in cpp.AUTOGRAD_OPS
-    assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" not in cpp.UNSUPPORTED
     assert "dropout" not in cpp.NATIVE_MODULES
     with pytest.raises((ValueError, TypeError)):
         NativeTensor.zeros((2, 2), dtype="float32")
     with pytest.raises((ValueError, TypeError)):
         NativeTensor.zeros((2, 2), device="cuda")
-    # Implemented and unsupported names stay disjoint, with the one
-    # deliberate exception Phase G locks (design §19): milestone G3
-    # shipped the differentiable "dropout" operation while the
-    # *capability* stays unsupported until the G10 closure. No Phase-F
-    # name is involved, which is exactly what this asserts.
+    # Implemented and unsupported names are disjoint. Phase G held one
+    # deliberate exception for G3-G9 (design §19) — "dropout" named both
+    # a shipped operation and an unclosed capability — and the G10
+    # closure ended it. No Phase-F name was ever involved, which is
+    # exactly what this asserts.
     implemented = (set(cpp.TENSOR_CORE_OPS) | set(cpp.AUTOGRAD_OPS)
                    | set(cpp.RAW_KERNELS) | set(cpp.NATIVE_MODULES)
                    | set(cpp.NATIVE_LOSSES) | set(cpp.NATIVE_METRICS)
                    | set(cpp.NATIVE_OPTIMIZERS))
-    assert implemented & set(cpp.UNSUPPORTED) == {"dropout"}
+    assert implemented & set(cpp.UNSUPPORTED) == set()
 
 
 def test_the_phase_f_artifacts_are_present_and_no_cpp_file_was_added():

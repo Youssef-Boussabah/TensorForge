@@ -72,8 +72,9 @@ mathematics end to end — float64/CPU only, with no implicit
 stable/native dispatch and no change to the stable framework or the
 version-1 checkpoint format.
 
-**The latest phase is Phase F — Native Normalization and Stateful
-Buffers — and it is *complete* (F0–F9).** Milestone **F0** is complete: it
+**Phase F — Native Normalization and Stateful Buffers — is *complete*
+(F0–F9)**; the latest phase is Phase G, recorded further
+below. Milestone **F0** is complete: it
 locks the architecture contract in
 [native_normalization_design.md](native_normalization_design.md) —
 `NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d`
@@ -244,8 +245,8 @@ baseline. F9 is **validation and documentation only** — no numerical
 capability, no C++, no CTest, no ABI or ctypes surface, no example, no
 benchmark, and no production behavior changed.
 
-**The current phase is Phase G — Native RNG and Dropout — and it is in
-progress; milestones G0, G1, G2, G3, G4, and G5 have landed.** G0 is the architecture
+**The latest phase is Phase G — Native RNG and Dropout — and it is
+complete; milestones G0 through G10 have all landed.** G0 is the architecture
 contract, [native_rng_dropout_design.md](native_rng_dropout_design.md),
 and it adds **no numerical behavior**. It locks: random state is
 **Python-managed** while native random kernels stay **stateless** and
@@ -791,22 +792,76 @@ suite proves the interactions no single-module file can:
   boundary, and native live storage returning exactly to baseline across
   success **and** failure cycles.
 
-**Above that, nothing exists.** Milestone **G10 has not started**: the
-closure matrix — fresh Windows Release and Debug builds with their CTest
-runs, the Clang ASan/UBSan/LeakSanitizer validation in WSL2, the
-sanitized Python suites, and the final documentation reconciliation — is
-still ahead. Reproducibility is exact **for the state actually
-captured**: Python's `random`, NumPy's global RNG, data-loader position,
-and scheduler state are not captured, and full-program determinism is not
-claimed. `dropout` is still listed
-unsupported
-beside `float32`, `cuda`, and `amp`. It stays listed unsupported
-for the whole of **G0–G9** — G4 implements and exports `NativeDropout`
-and G5 persists its stream, neither moving the boundary, because a
-capability whose value is exact reproducibility is not finished until
-reproducibility has been shown under fresh Release and Debug builds and
-the sanitizers — and the name is removed only at **G10**, after the
-closure matrix passes.
+Milestone **G10 is complete**, and it closed the phase. Every number
+below was measured during that closure.
+
+**Windows builds.** Fresh Release **and** Debug builds (Visual Studio 17
+2022, MSVC 19.44.35228.0, CMake 4.4.0), each configured out-of-source
+outside the repository with `TF_BUILD_TESTS=ON` and each passing the full
+**11-test** CTest suite — the ten inherited from Phase F plus G2's
+`dropout_forward` — at 11/11 in 0.86 s and 0.94 s respectively, with
+**zero project compiler, linker, and CMake warnings** across both clean
+rebuilds. Debug semantics are genuinely on (`_DEBUG`, `/Od`, `/RTC1`) and
+no debug assertion exposed a defect. The Debug library was written
+elsewhere so the active runtime stayed the Release DLL, proved by size
+(58,880 vs 176,128 bytes) and linked CRT
+(`MSVCP140.dll`/`VCRUNTIME140.dll` vs `MSVCP140D.dll`/`ucrtbased.dll`).
+The rebuilt Release DLL passes `scripts/smoke_cpp_backend.py`.
+
+**Sanitizers, with instrumentation proved.** A fresh Clang **18.1.3**
+`-DTF_SANITIZE=address,undefined` build in WSL2 Ubuntu 24.04.4 built with
+zero project warnings. `nm -D` shows **22 `__asan*`** and **14
+`__ubsan*`** dynamic symbols alongside the **51** exported `tf_*` C ABI
+symbols (50 inherited plus `tf_core_dropout_forward`), and the library
+refuses to load without the sanitizer runtime (`undefined symbol:
+__ubsan_vptr_type_cache`). Under
+`halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1:detect_leaks=1`
+and `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`: **11/11 sanitized
+native CTests** with leak detection on, and every sanitized Python
+workload passing — 43 Phase-G and dependency suites (**3,166 tests**), the
+G7 training example reproducing its exact resume, and the G8 benchmark
+smoke path passing every correctness gate and writing no result file — all
+with **zero ASan and zero UBSan diagnostics attributable to TensorForge**.
+Python-level runs preload the ASan runtime (`LD_PRELOAD`) because the
+interpreter itself is not instrumented, so the sanitizer claim covers the
+**native** library and the native test binaries; Python object lifetimes
+remain the separate concern of the live-storage accounting below.
+
+**LeakSanitizer, scope stated honestly.** A temporary (never committed)
+workload drove one complete Phase-G lifecycle — the `Linear →
+BatchNorm1d → ReLU → Dropout → LayerNorm → Linear` classifier with
+`NativeCrossEntropyLoss` and `NativeAdam`, six training steps, a reporting
+eval pass proved to consume no generator call, a version-2 checkpoint
+loaded into a **fresh** model/optimizer/generator set built with a
+different seed, the restored generator and exact eval output verified, a
+shared-generator alias topology round-tripped, and explicit closure of the
+optimizers and every unique parameter and buffer. The native live-storage
+counter returned **exactly to baseline (0 → 0)**, with the save and the
+load each adding zero net storage. Running LSan over that *Python* process
+reports 926,478 bytes in 831 allocations, but **not one leak frame names
+`_tensorforge_cpp`, `tf_core_`, `tf_storage_`, or `tf::`**: every site is
+CPython, libc, NumPy, `_ctypes`, or the ASan runtime itself. **No
+suppression file was added**, and the project's leak contract remains the
+deterministic live-storage counters and explicit-cleanup tests.
+
+**The boundary moved last.** Only after all of the above did `dropout`
+leave `UNSUPPORTED` at **G10**, which now reads exactly
+`("float32", "cuda", "amp")`. It stayed listed unsupported for the whole of **G0–G9** — G4
+implemented and exported `NativeDropout` and G5 persisted its stream,
+neither moving the boundary, because a capability whose value is exact
+reproducibility is not finished until reproducibility has been shown under
+fresh Release and Debug builds and the sanitizers. G10 is **validation,
+documentation, and one registry line**: no C++, CTest, C ABI symbol,
+ctypes declaration, Core method, operation, module, export, schema field,
+checkpoint version, example, or benchmark changed.
+
+The claim stays narrow: **native Dropout is supported in the experimental
+native float64 CPU backend**. The stable framework keeps its own separate
+`Dropout`; `float32`, `cuda`, and `amp` remain unsupported; there is no
+generic random-number API and no `Dropout2d`/`Dropout3d`. Reproducibility
+is exact **for the state actually captured**: Python's `random`, NumPy's
+global RNG, data-loader position, and scheduler state are not captured,
+and full-program determinism is not claimed.
 
 ## C++ backend — the raw kernel layer (v1.21, historical)
 
@@ -3782,9 +3837,15 @@ differentiable operation over it, `NativeCrossEntropyLoss` and the
 reporting-only `native_accuracy`, a deterministic classification
 training run with exact checkpoint resume, an honest characterization
 benchmark, and phase closure under Release/Debug builds and Clang
-ASan/UBSan/LeakSanitizer. **The latest phase is Phase F — Native
-Normalization and Stateful Buffers — and it is complete (F0–F9).** Its
-contract is locked in
+ASan/UBSan/LeakSanitizer. **Phase F — Native Normalization and Stateful
+Buffers — is complete (F0–F9)**, and **Phase G — Native RNG and
+Dropout — is the latest phase and is complete (G0–G10)**: an explicit
+`NativeGenerator`, a stateless deterministic Dropout-forward Core, the
+differentiable `NativeTensor.dropout`, the `NativeDropout` module,
+checkpoint format version 2 with generator state and alias topology, an
+exact stochastic training resume, an honest benchmark, cross-cutting
+integration, and a closure that moved `dropout` out of `UNSUPPORTED`.
+Phase F's contract is locked in
 [native_normalization_design.md](native_normalization_design.md)
 (milestone **F0**, complete: design and repository reconciliation only,
 adding no numerical behavior), **F1** is complete (the private atomic

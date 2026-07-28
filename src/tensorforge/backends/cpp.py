@@ -142,11 +142,12 @@ TENSOR_CORE_OPS = (
     # maxpool2d_forward / winner-buffer split.
     #
     # There is deliberately **no** bare "dropout" entry here and no
-    # "dropout_backward": the differentiable operation is milestone G3 and
-    # does not exist, and inverted Dropout's gradient is the existing
-    # `multiply` over the saved mask, so no backward kernel was written
-    # (design §7.5). "dropout" as a *capability* name is still in
-    # UNSUPPORTED and stays there through G9 (design §19).
+    # "dropout_backward": that name belongs to the differentiable
+    # NativeTensor operation, which G3 shipped into AUTOGRAD_OPS, and
+    # inverted Dropout's gradient is the existing `multiply` over the
+    # saved mask, so no backward kernel was ever written (design §7.5).
+    # "dropout" as a *capability* name stayed in UNSUPPORTED through G9
+    # and left it at the G10 closure (design §19).
     "dropout_forward",         # G2
 )
 
@@ -193,18 +194,20 @@ TENSOR_CORE_OPS = (
 # reserve/commit/abandon call transaction; the Core below it stays
 # generator-free.
 #
-# **"dropout" is deliberately in this tuple AND still in UNSUPPORTED**, and
-# that is the one place in the whole registry where a name appears in both.
-# It is not an inconsistency: the two tuples answer different questions.
-# This one says "a differentiable native operation by that name exists";
-# UNSUPPORTED says "the user-level Dropout capability is not closed". Phase
-# G locks that split explicitly (design §19): "dropout" names a capability
-# whose entire value is exact cross-platform reproducibility, so it stays
-# unsupported through G9 — past the G4 module and the G5 checkpoint format
-# — and is removed only at G10, after the closure matrix has actually
-# reproduced the committed vectors under fresh Release, Debug, and
-# sanitized builds. Advertising it earlier would mean the registry claims
-# reproducibility that has not been demonstrated.
+# For the whole of G3-G9 "dropout" was deliberately in this tuple **and**
+# in UNSUPPORTED — the one place in the whole registry where a name
+# appeared in both. That was never an inconsistency: the two tuples answer
+# different questions. This one says "a differentiable native operation by
+# that name exists"; UNSUPPORTED says "the user-level Dropout capability is
+# not closed". Phase G locked that split explicitly (design §19), because
+# "dropout" names a capability whose entire value is exact reproducibility,
+# and reproducibility is not a claim that can be made from source.
+#
+# **The G10 closure ended the overlap**: the committed known-answer vectors
+# were reproduced under fresh Windows Release and Debug builds and a Clang
+# ASan/UBSan build, the exact stochastic resume ran, and "dropout" left
+# UNSUPPORTED as the last act of the phase. No name appears in both tuples
+# any more, and the guardrail tests assert exactly that.
 AUTOGRAD_OPS = (
     "add", "subtract", "multiply", "relu",
     "sum", "mean", "matmul",
@@ -274,12 +277,13 @@ NATIVE_MODULES = (
     # **"dropout" deliberately did NOT leave UNSUPPORTED here**, and that
     # is the one place Phase G departs from Phase F's precedent (which
     # moved "layernorm" at F2 and "batchnorm" at F4). Dropout's whole
-    # value is exact, reproducible randomness: the module exists, but the
-    # checkpoint format is still version 1 and does not persist generator
-    # state, so exact stochastic resume does not exist yet and the
-    # committed known-answer vectors have not been reproduced under the
-    # closure matrix's fresh Release, Debug, and sanitized builds. The
-    # name is removed at G10 and not before (design §19).
+    # value is exact, reproducible randomness: at G4 the module existed,
+    # but the checkpoint format was still version 1 and did not persist
+    # generator state, so exact stochastic resume did not exist yet. G5
+    # moved the format to version 2, G7 demonstrated the resume, and the
+    # **G10** closure reproduced the committed known-answer vectors under
+    # fresh Release, Debug, and sanitized builds — only then did the name
+    # leave UNSUPPORTED (design §19).
     "NativeDropout",
 )
 # Native loss *modules*. Losses are tracked here and deliberately not in
@@ -347,8 +351,9 @@ NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
 # RNG, data-loader/shuffle position, or scheduler state — none of which
 # the native line has or captures (design §11.1). Reproducibility is
 # exact for the state actually captured, and full-program determinism is
-# not claimed. And it is not a Dropout *capability* claim: "dropout"
-# stays in UNSUPPORTED through G9 (see the note above).
+# not claimed. It is also not, by itself, a Dropout *capability* claim:
+# "dropout" stayed in UNSUPPORTED through G9 and left it only at the G10
+# closure, on the strength of the validation matrix (see the note above).
 STATE_SUPPORT = (
     "persistent_buffers",
     "state_dict",
@@ -427,24 +432,32 @@ STATE_SUPPORT = (
 # end-to-end proof, a benchmark, integration, and closure — none of them
 # a capability — so this tuple is exactly what F4 left.
 #
-# Phase G is in progress and has deliberately NOT moved this tuple.
-# "dropout" is the one name that appears here *and* in an implemented
-# inventory: G3 shipped the differentiable "dropout" operation into
-# AUTOGRAD_OPS, and G4 will add "NativeDropout" to NATIVE_MODULES, while
-# this entry stays put through G9 and is removed only at the G10 closure
-# (design §19). The reason is specific to this capability: Dropout's whole
-# value is exact, reproducible randomness, and reproducibility is not a
-# claim that can be made from source — it has to be demonstrated against
-# committed known-answer vectors under fresh Release, Debug, and
-# ASan/UBSan builds, and the stream has to survive a checkpoint (the
-# format is still version 1). So this tuple reports what is *closed and
-# validated*, and the operation inventories report what *exists*. See the
-# AUTOGRAD_OPS comment above; the split is asserted by guardrail tests
-# rather than left to prose.
+# **"dropout" has now left this tuple**, at the G10 closure and not one
+# milestone earlier. It was the one name that ever appeared here *and* in
+# an implemented inventory: G3 shipped the differentiable "dropout"
+# operation into AUTOGRAD_OPS and G4 added "NativeDropout" to
+# NATIVE_MODULES, while this entry stayed put through G9 (design §19). The
+# reason was specific to this capability — Dropout's whole value is exact,
+# reproducible randomness, and reproducibility is not a claim that can be
+# made from source. It has to be demonstrated: against committed
+# known-answer vectors under fresh Release, Debug, and ASan/UBSan builds,
+# and with the stream surviving a checkpoint. G5 moved the format to
+# version 2 so the stream survives, G7 demonstrated the exact stochastic
+# resume, and G10 ran the §18 closure matrix — both Windows builds and
+# their CTests, the Clang ASan/UBSan/LeakSanitizer validation, the
+# sanitized Python suites, the resume example, and the benchmark gates.
+# Only then did the name move. This tuple reports what is *closed and
+# validated*; the operation inventories report what *exists*, and after
+# G10 no name appears in both.
+#
+# The claim the move makes is deliberately narrow: **native Dropout is
+# supported in TensorForge's experimental native float64 CPU backend**. It
+# says nothing about the stable framework (which has always had its own
+# separate `tensorforge.nn.Dropout`), and float32, CUDA, and AMP stay
+# listed below because they remain genuinely absent.
 #
 # What remains below is genuinely absent from the native line.
 UNSUPPORTED = (
-    "dropout",
     "float32", "cuda", "amp",
 )
 

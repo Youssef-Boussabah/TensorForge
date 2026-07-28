@@ -1337,4 +1337,4 @@ def test_other_capability_tuples_remain_exact():
     )
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")

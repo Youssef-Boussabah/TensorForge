@@ -420,14 +420,14 @@ def test_phase_d_status_is_consistent_across_docs_and_registry():
     for absent in ("float32", "cuda", "amp"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS and absent not in cpp.NATIVE_MODULES
-    # "dropout" is the one unsupported name that now also names a shipped
-    # operation: Phase G milestone G3 added the differentiable
-    # NativeTensor.dropout, while the *capability* stays unsupported until
-    # the G10 closure (design §19). Neither half is a Phase-D claim, so
-    # both are asserted rather than one being dropped.
-    assert "dropout" in cpp.UNSUPPORTED
+    # "dropout" is Phase G's, at every layer: G3 added the differentiable
+    # NativeTensor.dropout, G4 the module, and the G10 closure moved the
+    # capability out of UNSUPPORTED. None of that is a Phase-D claim, so
+    # each half is asserted rather than assumed.
+    assert "dropout" not in cpp.UNSUPPORTED
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "dropout" not in cpp.NATIVE_MODULES
+    assert "NativeDropout" in cpp.NATIVE_MODULES
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
@@ -1262,23 +1262,28 @@ def test_no_future_phase_is_claimed_by_phase_e_closure():
         assert future in cpp.UNSUPPORTED, future
         assert future not in cpp.AUTOGRAD_OPS and future not in cpp.TENSOR_CORE_OPS
         assert future not in cpp.NATIVE_MODULES
-    # RNG/Dropout is Phase G's, not Phase E's. G2 shipped the Core wrapper
-    # and G3 the differentiable operation, so the honest statement is that
-    # the *capability* is still unsupported while those two layers exist.
-    assert "dropout" in cpp.UNSUPPORTED
+    # RNG/Dropout is Phase G's, not Phase E's — every layer of it. G2
+    # shipped the Core wrapper, G3 the differentiable operation, G4 the
+    # module, and the G10 closure the capability itself.
+    assert "dropout" not in cpp.UNSUPPORTED       # G10
     assert "dropout" in cpp.AUTOGRAD_OPS          # G3
     assert "dropout_forward" in cpp.TENSOR_CORE_OPS   # G2
     assert "dropout" not in cpp.NATIVE_MODULES
+    assert "NativeDropout" in cpp.NATIVE_MODULES  # G4
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.backend_info()["stable_framework_integration"] is False
-    # ("LayerNorm" left this list at Phase F milestone F2 and "BatchNorm"
-    # at F4, because both are now genuinely shipped; a document saying so
-    # is honest, not an over-claim. The remaining subjects are still
-    # absent from the native line.)
+    # ("LayerNorm" left this list at Phase F milestone F2, "BatchNorm" at
+    # F4, and "dropout" at the Phase-G closure (G10), because each is now
+    # genuinely shipped; a document saying so is honest, not an over-claim.
+    # "native RNG" deliberately stays banned even though NativeGenerator
+    # exists: what the native line has is one deterministic Dropout stream
+    # behind an explicit generator, never a generic random-number API, and
+    # "native RNG is supported" is exactly how that distinction erodes. The
+    # remaining subjects are still absent from the native line.)
     claim = re.compile(
         r"(CUDA|AMP|float32|float16|bfloat16|GPU|"
-        r"dropout|data loader|dataloader|native RNG|integer tensor)"
+        r"data loader|dataloader|native RNG|integer tensor)"
         r"[^.]{0,60}(is|are|now)\s+(supported|implemented|shipped|available)",
         re.I,
     )
@@ -1320,9 +1325,11 @@ def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():
         assert op in cpp.AUTOGRAD_OPS
     # Stable/native separation and the remaining future work stay explicit.
     assert cpp.backend_info()["stable_framework_integration"] is False
-    # ("layernorm" left UNSUPPORTED at F2 and "batchnorm" at F4.)
-    for future in ("cuda", "float32", "amp", "dropout"):
+    # ("layernorm" left UNSUPPORTED at F2, "batchnorm" at F4, and
+    # "dropout" at the Phase-G closure, G10.)
+    for future in ("cuda", "float32", "amp"):
         assert future in cpp.UNSUPPORTED, future
+    assert "dropout" not in cpp.UNSUPPORTED
 
 
 # Where the *current* capability status is stated. Per-milestone historical
@@ -1900,8 +1907,11 @@ def test_phase_f_changes_only_the_normalization_module_inventory():
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    # "dropout" was in this tuple when Phase F closed and stayed there
+    # through G9; the G10 closure removed it. Neither event is a
+    # normalization change, which is what this test is about.
     assert cpp.UNSUPPORTED == (
-        "dropout", "float32", "cuda", "amp",
+        "float32", "cuda", "amp",
     )
     # The Phase-E operation surface is intact and nothing normalization
     # shaped joined it — none of the three modules added an operation.
@@ -1964,7 +1974,7 @@ def test_state_support_reports_the_real_in_memory_state_surface():
     assert "save_native_generator_state" not in public
     assert "load_native_generator_state" not in public
     # Neither generator name is a Dropout capability claim.
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
 
 
 def test_f1_added_no_normalization_capability():
@@ -2299,21 +2309,29 @@ def test_no_document_claims_persistent_buffers_are_unreported():
 
 def test_dropout_float32_cuda_and_amp_stay_unsupported_through_phase_f():
     """Requirement 10. Phase F excludes all four explicitly, and its
-    design document must say so rather than leaving it to the registry."""
+    design document must say so rather than leaving it to the registry.
+
+    Three of the four are still unsupported and always were. The fourth,
+    ``"dropout"``, was left unsupported by Phase F — which is the claim
+    this test owns — and was closed later by **Phase G**, at its G10
+    closure. So the Phase-F-era assertion is kept for the three, and the
+    Dropout half is now stated as the history it is: Phase F added no
+    Dropout capability, and the one that exists came from a later phase."""
     from tensorforge.backends import cpp
 
-    for future in ("dropout", "float32", "cuda", "amp"):
+    for future in ("float32", "cuda", "amp"):
         assert future in cpp.UNSUPPORTED, future
         assert future not in cpp.NATIVE_MODULES
-    for future in ("float32", "cuda", "amp"):
         assert future not in cpp.AUTOGRAD_OPS
         assert future not in cpp.TENSOR_CORE_OPS
-    # Phase F really did leave all four unsupported, and all four still
-    # are. What has changed since is *below* the capability line and
-    # belongs to Phase G: the G2 Core wrapper and the G3 differentiable
-    # operation exist, and "dropout" is unsupported anyway until G10.
+    # Phase F left Dropout entirely alone: it shipped no Dropout module,
+    # operation, or Core wrapper. Everything Dropout-shaped in the tree
+    # arrived in Phase G — the G2 Core wrapper, the G3 differentiable
+    # operation, the G4 module, and the G10 capability move.
     assert "dropout_forward" in cpp.TENSOR_CORE_OPS
     assert "dropout" in cpp.AUTOGRAD_OPS
+    assert "NativeDropout" in cpp.NATIVE_MODULES
+    assert "dropout" not in cpp.UNSUPPORTED
     design = _status_text(PHASE_F_DESIGN)
     for excluded in ("dropout", "CUDA", "AMP", "float32"):
         assert excluded in design, (
@@ -2426,7 +2444,7 @@ def test_f4_completed_the_normalization_module_surface_not_the_phase():
     # boundary is exactly what it was, in its established order.
     assert "layernorm" not in cpp.UNSUPPORTED
     assert "batchnorm" not in cpp.UNSUPPORTED
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.backend_info()["unsupported"] == cpp.UNSUPPORTED
     # Nothing normalization-shaped appeared at any numerical layer.
     for name in _NORMALIZATION_OP_NAMES:
@@ -2519,7 +2537,7 @@ def test_phase_f_closed_without_changing_the_capability_boundary():
     assert "complete" in row.group(1).lower()
     assert "planned" not in row.group(1).lower()
     # The registry is unchanged where F7-F9 would have touched it.
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
@@ -2591,7 +2609,7 @@ def test_f6_shipped_the_normalized_training_and_resume_proof():
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     # No normalization operation, kernel, or checkpoint-schema change.
     for name in ("layer_norm", "batch_norm", "layernorm", "batchnorm"):
         assert name not in cpp.TENSOR_CORE_OPS
@@ -2732,7 +2750,7 @@ def test_docs_present_the_shipped_phase_f_integration_suite():
     assert re.search(r"F9[^.]{0,80}\bcomplete\b", design, re.I)
 
     # Nothing changed in the registry, exports, or checkpoint format.
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
@@ -3064,6 +3082,9 @@ def test_project_summary_testing_inventory_covers_phase_f():
         "D": "test_native_phase_d.py",
         "E": "test_native_phase_e.py",
         "F": "test_native_phase_f.py",
+        # Phase G's cross-cutting suite shipped at G9 and its closure
+        # guardrails at G10, so the inventory must name it too.
+        "G": "test_native_phase_g.py",
     }
     for name in integration_suites.values():
         assert (REPO_ROOT / "tests" / name).is_file(), name
@@ -3132,7 +3153,7 @@ def test_capability_commentary_keeps_the_boundary_and_the_closed_phase():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.backend_info()["unsupported"] == cpp.UNSUPPORTED
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
     assert native_checkpoint._FORMAT_VERSION == 2
@@ -3186,7 +3207,7 @@ def test_the_status_reconciliation_moved_no_capability_surface():
         "save_native_checkpoint", "load_native_checkpoint",
         "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.backend_info()["stable_framework_integration"] is False
@@ -3478,24 +3499,28 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
     layer-qualified ``NativeTensorCore.dropout_forward``, and milestone
     G3's differentiable ``NativeTensor.dropout``, which is one
     ``AUTOGRAD_OPS`` entry and one method over that Core. So the
-    dtype/device boundary, the checkpoint format, and every
-    module/loss/metric/optimizer inventory are still exactly what Phase F
-    closed with; ``"dropout"`` is still in ``UNSUPPORTED``, deliberately,
-    until the G10 closure; the generator export appears in **no**
+    dtype/device boundary and every module/loss/metric/optimizer
+    inventory stay tightly pinned; the generator export appears in **no**
     inventory at all; the Core op appears in ``TENSOR_CORE_OPS`` and
     nowhere else; and the autograd op appears in ``AUTOGRAD_OPS`` and
     nowhere else. (Before G1 this guard asserted ``NativeGenerator`` did
     not exist; before G2 it asserted the same of every random symbol;
     before G3, of the differentiable operation. Each absence check is
     replaced, as its milestone lands, by the stronger positive statement
-    of what the thing is *allowed* to be.)"""
+    of what the thing is *allowed* to be.)
+
+    Two boundaries moved after this guard was written and are now asserted
+    in their post-closure form rather than their Phase-F one: the
+    checkpoint format went to version **2** at G5, and ``"dropout"`` left
+    ``UNSUPPORTED`` at the **G10** closure. Both are still checked
+    exactly, so a drift in either direction fails here."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import NativeTensor, native_checkpoint
     import tensorforge
     import tensorforge.experimental as experimental
 
-    # The capability boundary is untouched.
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    # The capability boundary, in its post-G10 form.
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.backend_info()["unsupported"] == cpp.UNSUPPORTED
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
@@ -3553,9 +3578,10 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
         assert not hasattr(cpp.NativeTensorCore, name), name
         assert not hasattr(experimental, name), name
         assert f"tf_core_{name}" not in cpp._CHECKED_KERNELS, name
-        # ...and the *capability* by the same name is still unsupported:
-        # G3 shipped an operation, not a closed capability (design §19).
-        assert name in cpp.UNSUPPORTED, name
+        # ...and the *capability* by the same name is no longer listed
+        # unsupported: G3 shipped an operation, and the G10 closure — not
+        # G3 — is what finally closed the capability (design §19).
+        assert name not in cpp.UNSUPPORTED, name
 
     # G4 shipped: exactly one module, exported from the experimental
     # namespace only, in NATIVE_MODULES and in no other inventory — a
@@ -3597,9 +3623,10 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
         assert not hasattr(cpp.NativeTensorCore, name), name
         assert not hasattr(NativeTensor, name), name
         assert not hasattr(experimental, name), name
-    # "dropout" is in exactly two places and no others: AUTOGRAD_OPS (the
-    # G3 operation) and UNSUPPORTED (the capability, until G10).
-    assert "dropout" in cpp.UNSUPPORTED
+    # "dropout" is in exactly one place and no others: AUTOGRAD_OPS (the
+    # G3 operation). It was also in UNSUPPORTED until the G10 closure
+    # moved it, which is why that membership is now asserted absent.
+    assert "dropout" not in cpp.UNSUPPORTED
     assert "dropout" in cpp.AUTOGRAD_OPS
     for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS,
                       cpp.TENSOR_CORE_OPS, cpp.NATIVE_MODULES,
@@ -3676,12 +3703,10 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
         assert not hasattr(NativeModule, attribute), attribute
 
 
-def test_no_surface_claims_a_phase_g_capability_exists():
-    """Guardrail 3, and the replacement for the phase-name scan the
-    Phase-F closure guard used to run: naming Phase G is now correct, but
-    no surface may claim a Phase-G *capability* is supported, implemented,
-    shipped, or available. The premise comes from the live registry, so
-    this guard tracks reality rather than a frozen expectation.
+def test_no_surface_overclaims_beyond_what_phase_g_shipped():
+    """Guardrail 3, in its final post-closure form. The premise comes from
+    the live registry, so this guard tracks reality rather than a frozen
+    expectation.
 
     Subjects have been deliberately **un**-banned as their milestones
     landed, each time leaving a smaller and sharper list.
@@ -3692,30 +3717,44 @@ def test_no_surface_claims_a_phase_g_capability_exists():
     left at **G3**, which shipped exactly those; and ``NativeDropout``
     itself left at **G4**, which shipped and exported the module.
 
-    Every *surface* Phase G contracts now exists, so what stays banned is
-    no longer a name but the **capability claim**: nothing may say the
-    Dropout capability is supported, or that stochastic training resumes
-    exactly. Both are false at G4 — the checkpoint format is version 1
-    and does not persist generator state — and both are exactly what a
-    reader would take "native Dropout is supported now" to mean. The
-    separate ``test_g4_module_claims_are_layer_qualified`` guard then
-    requires each status surface to say so positively."""
+    The last two subjects — "the Dropout capability is supported" and
+    "exact stochastic resume" — left at **G10**, because the closure
+    matrix demonstrated both. Un-banning them is the whole point of the
+    milestone, and the separate
+    ``test_g4_module_claims_are_layer_qualified`` guard requires each
+    status surface to say so positively rather than merely stop denying
+    it.
+
+    What remains banned is durable, and is the set of claims Phase G
+    never earned and never will: a **generic** random-number API (the
+    native line has one deterministic Dropout stream behind an explicit
+    generator, not `rand`/`randn`/sampling), ``Dropout2d``/``Dropout3d``,
+    stochastic depth, and any suggestion that the **stable** framework
+    gained native Dropout support — it keeps its own separate NumPy
+    implementation. Those are exactly the over-readings the narrow claim
+    invites, so they are what this guard now protects."""
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
     import tensorforge.experimental as experimental
 
-    # Premise, from the live registry: the operation and the module
-    # exist, the capability is not closed, and nothing is persisted.
-    assert "dropout" in cpp.UNSUPPORTED
+    # Premise, from the live registry: the operation, the module, the
+    # version-2 format, and now the closed capability all exist.
+    assert "dropout" not in cpp.UNSUPPORTED
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert native_checkpoint._FORMAT_VERSION == 2
     for name in _PHASE_G_PUBLIC_NAMES:
         assert not hasattr(experimental, name), name
 
-    subject = (r"(dropout[\w ]{0,20}capability|capability[\w ]{0,20}dropout"
-               r"|exact stochastic resume|stochastic resume"
-               r"|exact (?:random|RNG) resume)")
+    # Retired at G10: "the Dropout capability is supported" and "exact
+    # stochastic resume" are both now true, and every status surface is
+    # required to say so positively. What stays banned is the set of
+    # claims Phase G never earned and never will — a *generic* random
+    # API, the extra Dropout ranks, and stable-framework Dropout support
+    # — which is the durable form of the same guard.
+    subject = (r"(generic (?:random|RNG)[\w ]{0,20}(?:API|interface)"
+               r"|Dropout2d|Dropout3d|stochastic depth"
+               r"|stable[\w .]{0,30}dropout)")
     claim = (r"(is|are|now|has been|have been)\s+"
              r"(supported|implemented|shipped|available|complete|completed"
              r"|live)")
@@ -3745,36 +3784,52 @@ def test_no_surface_claims_a_phase_g_capability_exists():
             )
 
 
-def test_phase_g_is_presented_as_in_progress_not_complete():
-    """The mirror of the Phase-F completion guard: no surface may present
-    Phase G — or a milestone that has not shipped — as finished.
+def test_phase_g_is_positively_marked_complete_everywhere():
+    """The G10 closure form of the old in-progress guard, and the mirror
+    of the Phase-F completion check.
 
-    The milestone boundary is derived from the ladder table rather than
-    from a pinned sentence, so this guard survives each milestone landing
-    while still catching a phase declared complete early or a milestone
-    marked done before it exists. The *reality* check that the ladder
-    matches the tree lives in
-    ``test_phase_g_ladder_status_matches_the_shipped_tree``."""
+    Through G9 this asserted the *opposite*: that no surface presented
+    Phase G as finished, because it was not. G10 ran the §18 matrix and
+    moved the boundary, so the requirement inverts — every authoritative
+    status surface must now say the phase is complete, and none may still
+    describe it as in progress or leave a milestone unstarted.
+
+    The *reality* check that the ladder matches the tree stays separate,
+    in ``test_phase_g_ladder_status_matches_the_shipped_tree``, so this
+    guard is about the prose agreeing with the registry rather than about
+    the tree itself."""
+    from tensorforge.backends import cpp
+
+    # Premise from the live registry: the closure really has happened.
+    assert "dropout" not in cpp.UNSUPPORTED
+
     design = _status_text(PHASE_G_DESIGN)
-    assert re.search(r"Phase-G status: in progress", design), (
-        "the design document no longer states its in-progress status"
+    assert re.search(r"Phase-G status: complete", design), (
+        "the design document no longer states its completed status"
     )
-    # Whatever has shipped, the tail of the ladder must still be open —
-    # G10 is the closure milestone, so it can never be complete while the
-    # phase says "in progress".
-    assert re.search(r"not started", design, re.I), (
-        "the design no longer marks any milestone as unstarted, but the "
-        "phase still claims to be in progress"
+    assert not re.search(r"Phase-G status: in progress", design), (
+        "the design document still claims to be in progress"
     )
-    finished = re.compile(
-        r"Phase.G\b[^.]{0,70}?\b(is|are|was|has been)\s+"
-        r"(complete|completed|finished|closed|shipped)\b", re.I,
+
+    # No surface may still present the phase, or its closure milestone, as
+    # unfinished. Spans that carry their own negation ("was in progress
+    # until G10", "no longer in progress") are the honest historical form.
+    unfinished = re.compile(
+        r"Phase.G\b[^.]{0,70}?\b(is|are)\s+(in progress|unfinished"
+        r"|not (?:yet )?complete|incomplete|pending)\b"
+        r"|\bG10\b[^.]{0,40}\bnot started\b",
+        re.I,
     )
-    # "Phase G — in progress: milestone G0 ... is complete" is the honest
-    # form: the completion belongs to a milestone, not to the phase. A
-    # span that names a milestone or says "in progress" is therefore not
-    # a phase-completion claim.
-    scoped = re.compile(r"in progress|\bG\d\b|milestone", re.I)
+    negations = re.compile(
+        r"\b(was|were|until|through|before|no longer|had|used to"
+        r"|historically|earlier|previously)\b", re.I,
+    )
+    complete = re.compile(
+        r"Phase.G\b[^.]{0,80}?\b(is|are|was|has been|have been)\s+"
+        r"(complete|completed|finished|closed)\b"
+        r"|Phase.G status:\s*complete"
+        r"|G0.{0,6}G10[^.]{0,60}(complete|shipped|landed)", re.I,
+    )
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
@@ -3782,13 +3837,19 @@ def test_phase_g_is_presented_as_in_progress_not_complete():
                     PHASE_G_DESIGN):
         text = _status_text(surface)
         offenders = [
-            match.group(0) for match in finished.finditer(text)
-            if not scoped.search(match.group(0))
+            match.group(0) for match in unfinished.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 60):match.end() + 30]
+            )
         ]
         assert offenders == [], (
-            f"{surface} presents Phase G as complete: {offenders[:3]}"
+            f"{surface} still presents Phase G as unfinished: "
+            f"{offenders[:3]}"
         )
-        # ...and each one says what G0 actually was.
+        assert complete.search(text), (
+            f"{surface} does not state that Phase G is complete"
+        )
+        # ...and each one still says what G0 actually was.
         assert re.search(r"G0", text), f"{surface} does not name milestone G0"
 
 
@@ -3952,14 +4013,18 @@ _PHASE_G_OVERCLAIMS = (
      r"|global rng|global random)\b[^.]{0,40}"
      r"\b(captured?|stored?|saved?|persisted?|restored?|included?)\b"),
     # Retired one milestone at a time: G6 (hardening), G7 (the
-    # end-to-end resume), G8 (the honest benchmark characterization), and
-    # now G9 (the cross-cutting integration suite) really have landed, so
-    # claiming them is accurate. **G10 is now the boundary** a status
-    # surface must not cross — and it is the one that moves the capability
-    # boundary, so it is the most important of the four.
-    ("a later milestone has begun",
-     r"\bG10\b[^.]{0,60}\b(is|are|has|have)\s+"
-     r"(complete|completed|started|begun|shipped|landed|done)\b"),
+    # end-to-end resume), G8 (the honest benchmark characterization), G9
+    # (the cross-cutting integration suite), and finally **G10** (the
+    # closure itself) really have landed, so claiming any of them is
+    # accurate. With the ladder exhausted there is no "later milestone"
+    # left inside Phase G to guard against; what replaces that entry is
+    # the boundary *beyond* the phase — no surface may claim a Phase-H,
+    # a CUDA/float32/AMP milestone, or any successor phase has begun,
+    # because none has.
+    ("a later phase has begun",
+     r"\bPhase[- ]H\b|\bG11\b"
+     r"|(CUDA|float32|AMP)[^.]{0,40}\b(phase|milestone)\b[^.]{0,40}"
+     r"\b(has|have|is|are)\s+(begun|started|shipped|landed|complete)\b"),
 )
 
 
@@ -3987,12 +4052,12 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
     import tensorforge.experimental as experimental
 
     # Premises, all from reality: the operation and the module exist, the
-    # capability is not closed, and nothing is persisted.
+    # capability was closed at G10, and the format is version 2.
     assert hasattr(NativeTensor, "dropout")
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert hasattr(experimental, "NativeDropout")
     assert "NativeDropout" in cpp.NATIVE_MODULES
-    assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" not in cpp.UNSUPPORTED
     assert native_checkpoint._FORMAT_VERSION == 2
     # The generator really does not produce a value of any kind: G2's
     # derivation lives in C++ behind the Core, never on this object.
@@ -4353,7 +4418,7 @@ def test_g2_core_inventory_is_exactly_one_operation_and_one_abi_symbol():
     assert dropout_symbols == ["tf_core_dropout_forward"], dropout_symbols
 
     # Everything else Phase F closed with, unchanged.
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.RAW_KERNELS == (
@@ -4587,7 +4652,7 @@ def test_g7_did_not_begin_g8_or_any_later_milestone():
         assert not (Path(REPO_ROOT) / absent).exists(), absent
     # G6 is hardening only: it added no export, no inventory entry, and no
     # schema field, so the whole public surface is still exactly G5's.
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
     assert native_checkpoint._GENERATOR_SECTION_KEYS == {
         "keys", "entries", "aliases"
@@ -4638,7 +4703,7 @@ def test_g6_is_stated_as_hardening_only_on_every_phase_surface():
     # Premises from the live tree: the suite exists, and nothing moved.
     assert (REPO_ROOT / "tests"
             / "test_native_phase_g_hardening.py").is_file()
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert native_checkpoint._FORMAT_VERSION == 2
 
     for surface in PHASE_G_STATUS_SURFACES:
@@ -4718,7 +4783,7 @@ def test_g7_added_no_capability_and_no_public_training_api():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 2
@@ -4769,7 +4834,7 @@ def test_g6_claims_no_new_capability_anywhere():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 2
@@ -4821,7 +4886,7 @@ def test_g5_persistence_claims_are_layer_qualified():
     assert "dropout_forward" in cpp.TENSOR_CORE_OPS
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "NativeDropout" in cpp.NATIVE_MODULES
-    assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" not in cpp.UNSUPPORTED      # closed at G10
     assert native_checkpoint._FORMAT_VERSION == 2
     assert "checkpoint_generator_state" in cpp.STATE_SUPPORT
 
@@ -4897,7 +4962,7 @@ def test_g4_inventory_is_exactly_one_module():
     assert dropout_autograd_ops == ["dropout"], dropout_autograd_ops
 
     # Everything else exactly as G3 left it.
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
@@ -5043,7 +5108,7 @@ def test_g3_inventory_is_exactly_one_autograd_operation():
     assert "multiply" in cpp.TENSOR_CORE_OPS
 
     # Everything else exactly as G2 left it.
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.RAW_KERNELS == (
@@ -5290,20 +5355,22 @@ def _phase_g_milestone(index):
     )
 
 
-def test_phase_g_keeps_dropout_unsupported_until_the_g10_closure():
-    """Revised guardrail 1. ``"dropout"`` is a *closure* capability, not an
-    implementation one: G4 implements and exports ``NativeDropout``, but
-    the registry does not advertise Dropout until the whole Phase-G
-    closure matrix has passed at G10.
+def test_phase_g_kept_dropout_unsupported_until_the_g10_closure():
+    """Revised guardrail 1, in its post-closure form. ``"dropout"`` is a
+    *closure* capability, not an implementation one: G4 implemented and
+    exported ``NativeDropout``, but the registry did not advertise Dropout
+    until the whole Phase-G closure matrix had passed at G10.
 
-    This is checked per milestone rather than document-wide, because the
-    failure this guards against is exactly a later milestone quietly
-    reinstating the old "move it at G4" rule."""
+    The ordering rule outlived the milestone it governed, and that is the
+    point of keeping this guard: every block G0-G9 must still say the name
+    stays put, only G10 may remove it, and no surface may retroactively
+    re-attribute the move to G4. What changed at closure is the live
+    premise — the name is now gone from the tuple — not the history."""
     from tensorforge.backends import cpp
 
-    # Premise, straight from the live registry: it is unsupported today,
-    # and G0 did not move it.
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    # Premise, straight from the live registry: the closure has run and
+    # the tuple is in its final form.
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
 
     text = _status_text(PHASE_G_DESIGN)
     # The opening contract summary — what a reader sees before §1 — must
@@ -6146,7 +6213,7 @@ def test_docs_present_the_shipped_dropout_benchmark():
     # G8 is a benchmark, not a capability: the boundary is where G7 left it.
     from tensorforge.backends import cpp
 
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert not (REPO_ROOT / "benchmark_results").exists()
     assert not list((REPO_ROOT / "benchmarks").glob("*.json"))
 
@@ -6230,7 +6297,7 @@ def test_docs_present_the_shipped_phase_g_integration_suite():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 2
@@ -6243,23 +6310,28 @@ def test_docs_present_the_shipped_phase_g_integration_suite():
             assert "integration" not in name.lower(), name
 
 
-def test_no_surface_claims_the_phase_g_closure_matrix_has_run():
-    """G10 alone records the builds, the sanitizers, the boundary move,
-    and the final reconciliation. Until then no status surface may claim
-    the phase is closed, and the design must still describe the closure
-    matrix as a **gate** rather than as history."""
+def test_the_phase_g_closure_matrix_is_recorded_with_observed_results():
+    """The closure form of the old "the matrix has not run" guard.
+
+    Through G9 this asserted that no surface claimed the phase was closed.
+    G10 ran the matrix, so the requirement inverts: the evidence must
+    actually be **recorded**, not merely asserted, and the design must
+    keep both halves - the ordering rule that governed the move, and the
+    observed results that justify it.
+
+    Evidence is checked by *subject* (a build configuration, a CTest run,
+    each sanitizer, the leak result) rather than by exact wording, so
+    ordinary prose improvements do not require rewriting this test."""
     from tensorforge.backends import cpp
 
-    assert "dropout" in cpp.UNSUPPORTED
+    assert "dropout" not in cpp.UNSUPPORTED
 
+    # Every status surface must now positively record the closure.
     closure = re.compile(
-        r"phase.{0,4}g[^.]{0,120}\b(closed|closure (is|was) (complete|done))"
-        r"|\bG10\b[^.]{0,80}\b(complete|completed|shipped|landed|done)\b",
+        r"phase.{0,4}g[^.]{0,140}\b(closed|complete)"
+        r"|\bG10\b[^.]{0,100}\b(complete|completed|shipped|landed|done"
+        r"|clos\w+)\b",
         re.I,
-    )
-    negations = re.compile(
-        r"\b(not|never|no|yet|until|before|only|after|once|when|will"
-        r"|would|remains?|pending|ahead)\b", re.I,
     )
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/project_summary.md",
@@ -6267,19 +6339,11 @@ def test_no_surface_claims_the_phase_g_closure_matrix_has_run():
                     "docs/backend_experiments.md", "CLAUDE.md",
                     PHASE_G_DESIGN):
         text = _status_text(surface)
-        # Spans carrying their own negation ("not yet closed", "closes
-        # only at G10") are the honest form and pass — the same rule the
-        # Phase-G overclaim scan uses.
-        offenders = [
-            match.group(0) for match in closure.finditer(text)
-            if not negations.search(
-                text[max(0, match.start() - 80):match.end() + 40]
-            )
-        ]
-        assert offenders == [], (surface, offenders[:3])
-
-    # The design still states the matrix as a gate on the boundary, with
-    # the removal as its last act — not as something already recorded.
+        assert closure.search(text), (
+            f"{surface} does not record the Phase-G closure"
+        )
+    # The design keeps the gate rule - it is the rule that was applied -
+    # and now records the observed results beside it.
     closure_section = _top_level_section("18. Phase-closure requirements",
                                          relative_path=PHASE_G_DESIGN)
     lowered = closure_section.lower()
@@ -6289,8 +6353,24 @@ def test_no_surface_claims_the_phase_g_closure_matrix_has_run():
                      r"\s+(act|step)", closure_section, re.I), (
         "the design no longer binds the boundary move to the end of G10"
     )
-    # ...and the ladder still marks it open.
+    for evidence in ("release", "debug", "ctest", "asan", "ubsan",
+                     "leaksanitizer", "baseline"):
+        assert evidence in lowered, (
+            f"the closure section records no {evidence!r} evidence"
+        )
+
+    # ...and the ladder now marks it complete.
     ladder = _top_level_section("Milestone ladder", PHASE_G_DESIGN)
     row = re.search(r"\|\s*G10\s*\|[^|]*\|([^|]*)\|", ladder)
     assert row is not None
-    assert "not started" in re.sub(r"[*`]", "", row.group(1)).strip().lower()
+    status = re.sub(r"[*`]", "", row.group(1)).strip().lower()
+    assert status.startswith("complete"), status
+    assert "not started" not in status
+
+    # The evidence is discoverable without reading the design document.
+    durable = _status_text("docs/backend_experiments.md").lower()
+    for evidence in ("release", "debug", "ctest", "asan", "ubsan",
+                     "leaksanitizer"):
+        assert evidence in durable, (
+            f"docs/backend_experiments.md records no {evidence!r} evidence"
+        )

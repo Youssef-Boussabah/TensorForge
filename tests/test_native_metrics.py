@@ -612,16 +612,16 @@ def test_native_metrics_backend_info_reports_the_inventory():
     assert "native_accuracy" not in info["autograd_ops"]
     assert "native_accuracy" not in info["tensor_core_ops"]
     assert "native_accuracy" not in info["native_modules"]
-    # Implemented and unsupported inventories stay disjoint, with the one
-    # deliberate exception Phase G locks (design §19): milestone G3
-    # shipped the differentiable "dropout" operation while the
-    # *capability* stays unsupported until the G10 closure. Nothing in
-    # this metric's inventory is involved either way.
+    # Implemented and unsupported inventories are disjoint. Phase G held
+    # one deliberate exception for G3-G9 — "dropout" named both a shipped
+    # operation and an unclosed capability (design §19) — and the G10
+    # closure ended it. Nothing in this metric's inventory was ever
+    # involved either way.
     implemented = (set(info["raw_kernels"]) | set(info["tensor_core_ops"])
                    | set(info["autograd_ops"]) | set(info["native_modules"])
                    | set(info["native_losses"]) | set(info["native_metrics"])
                    | set(info["native_optimizers"]))
-    assert implemented & set(info["unsupported"]) == {"dropout"}
+    assert implemented & set(info["unsupported"]) == set()
     # Existing keys are unchanged.
     for key in ("raw_kernels", "kernels", "tensor_core_ops", "autograd_ops",
                 "native_modules", "native_losses", "native_optimizers",

@@ -248,7 +248,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_cnn_design.md](docs/native_cnn_design.md) — architecture contract for the native CNN stack (Phase D)
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
-- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, and milestone G7, the deterministic stochastic training example and its exact checkpoint resume (no capability), and milestone G8, the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` (also no capability — correctness gated before timing, no speed asserted), and milestone G9, the cross-cutting integration suite `tests/test_native_phase_g.py` (integration evidence only — no capability, and no runtime file changed), are complete; G10 has not started, so end-to-end **exact stochastic training resume is demonstrated** while `dropout` stays unsupported until the G10 closure)
+- [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **in progress**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, and milestone G7, the deterministic stochastic training example and its exact checkpoint resume (no capability), and milestone G8, the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` (also no capability — correctness gated before timing, no speed asserted), and milestone G9, the cross-cutting integration suite `tests/test_native_phase_g.py` (integration evidence only — no capability, and no runtime file changed), and milestone G10, the phase closure — the Release/Debug/sanitizer validation matrix, the documentation reconciliation, and the single registry line that finally removed `dropout` from `UNSUPPORTED` — are all complete, so end-to-end **exact stochastic training resume is demonstrated** and native Dropout is now supported on the experimental native float64 CPU line)
 
 ## Limitations
 
@@ -522,8 +522,9 @@ Closing Phase F closes that phase, not the project: the native line is
 still experimental, still float64/CPU only, and still not
 production-ready.
 
-**Phase G — Native RNG and Dropout — is the current phase, and it is in
-progress.** Six milestones have landed. **G0** locked the architecture
+**Phase G — Native RNG and Dropout — is the latest phase, and it is
+complete.** All eleven milestones, G0 through G10, have landed. **G0**
+locked the architecture
 contract in
 [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) —
 Python-managed generator state (an explicit 64-bit seed and call counter
@@ -753,23 +754,38 @@ matrix; and native live storage returning exactly to baseline across
 success and failure cycles. It changed **no** runtime file and found no
 defect.
 
-Milestone **G10 has not started.** What is left is the closure matrix:
-fresh Windows Release and Debug builds with their CTest runs, the Clang
-ASan/UBSan/LeakSanitizer validation in WSL2, the sanitized Python suites,
-the final documentation reconciliation — and, only after all of it
-passes, the single registry line that removes `dropout` from the
-unsupported list. Reproducibility is exact for the state actually
-captured; Python's `random`, NumPy's global RNG, data-loader position,
-and scheduler state are **not** captured and full-program determinism is
-not claimed. Ordinary concurrent *training* is not claimed thread-safe
-either: the serializability guarantee covers the participating state
-transactions, not an optimizer `step()` racing a forward. That remaining
-work is exactly why `dropout` (with `float32`, `cuda`, and `amp`) is
-**still listed as unsupported**: the registry reports what is closed and
-validated, while the inventories report what exists.
-`dropout` leaves the unsupported list only at **G10**. More
-activations/math, data loaders, and CPU optimization sit beyond Phase G,
-and CUDA/GPU experiments remain future work. See
+Milestone **G10 is complete, and it closed the phase.** The validation
+matrix ran with observed results: fresh Windows **Release** and **Debug**
+builds (Visual Studio 17 2022, MSVC 19.44.35228.0), each passing
+**11/11 native CTests** with zero project compiler, linker, and CMake
+warnings, and the active runtime proved to remain the Release DLL. A fresh
+Clang 18.1.3 `-DTF_SANITIZE=address,undefined` build in WSL2 Ubuntu
+24.04.4 with **instrumentation proved rather than assumed** — 22 `__asan*`
+and 14 `__ubsan*` dynamic symbols beside the 51 exported `tf_*` symbols,
+and a library that refuses to load without the sanitizer runtime — then
+**11/11 sanitized CTests** with leak detection on, **3,166 sanitized
+Python tests** across 43 suites, the G7 example reproducing its exact
+resume, and the G8 benchmark passing every correctness gate, all with
+**zero ASan and zero UBSan diagnostics**. A practical LeakSanitizer
+lifecycle returned native live storage **exactly to baseline (0 → 0)**,
+and not one of its remaining process-exit allocations names a TensorForge
+frame — **no suppression file was added**.
+
+Only after all of that did the single registry line move: at **G10**, and
+not one milestone earlier, `dropout` **left** the unsupported list, which
+now reads exactly `("float32", "cuda", "amp")`. The claim is deliberately narrow — **native Dropout is
+supported in TensorForge's experimental native float64 CPU backend**. That
+is not a stable-framework claim (`tensorforge.nn.Dropout` is its own
+separate NumPy implementation), not float32, CUDA, or AMP support, not a
+generic random-number API, and not a production-readiness or speed claim.
+Reproducibility is exact for the state actually captured; Python's
+`random`, NumPy's global RNG, data-loader position, and scheduler state
+are **not** captured and full-program determinism is not claimed. Ordinary
+concurrent *training* is not claimed thread-safe either: the
+serializability guarantee covers the participating state transactions, not
+an optimizer `step()` racing a forward. More activations/math, data
+loaders, and CPU optimization sit beyond Phase G, and CUDA/GPU experiments
+remain future work. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 

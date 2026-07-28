@@ -783,12 +783,15 @@ def test_no_out_of_scope_capability_is_advertised():
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.NATIVE_MODULES
-    # "dropout" is still an unsupported *capability* — the boundary Phase
-    # D drew and Phase G has not yet moved — even though Phase G
-    # milestones G2 and G3 shipped a Core wrapper and a differentiable
-    # operation underneath it. It leaves UNSUPPORTED only at the G10
-    # closure, after the phase's reproducibility matrix has run.
-    assert "dropout" in cpp.UNSUPPORTED
+    # "dropout" was an unsupported *capability* at the boundary Phase D
+    # drew, and stayed one through G9 even after Phase G milestones G2
+    # and G3 shipped a Core wrapper and a differentiable operation. It
+    # left UNSUPPORTED at the **G10** closure, once the phase's
+    # reproducibility matrix had run — a Phase-G event, never a Phase-D
+    # one, which is why the attribution is asserted here rather than the
+    # membership.
+    assert "dropout" not in cpp.UNSUPPORTED
+    assert "dropout" in cpp.AUTOGRAD_OPS
     assert "dropout" not in cpp.NATIVE_MODULES
     # The differentiable cross-entropy operation shipped at E6 and is
     # reported as an autograd operation, not as a Core wrapper.

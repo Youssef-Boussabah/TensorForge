@@ -1094,8 +1094,8 @@ The Python line is done; what remains is expansion on its own terms:
     checkpoint state, further activations, more losses, schedulers, data
     loaders, native integer tensors, further dtypes or devices, CUDA,
     AMP, fused normalization kernels, and CPU optimization.
-  - **Phase G — Native RNG and Dropout — in progress; G0, G1, G2, G3, and
-    G4 have landed.** The **G0 architecture contract is written** —
+  - **Phase G — Native RNG and Dropout — is complete; G0 through G10
+    have all landed.** The **G0 architecture contract is written** —
     [native_rng_dropout_design.md](native_rng_dropout_design.md) locks
     the phase's central split (random state is Python-managed; native
     random kernels are stateless and receive the complete key for one
@@ -1383,25 +1383,33 @@ The Python line is done; what remains is expansion on its own terms:
     non-contiguous NCHW and strided views, whole-state rollback at every
     commit position, four deterministic concurrency cases, a Phase A–F
     regression matrix, and live storage returning exactly to baseline
-    across success and failure cycles. Milestone **G10 has not started**,
-    and what is left is the closure matrix — fresh Windows Release and
-    Debug builds and their CTests, the Clang ASan/UBSan/LeakSanitizer
-    validation in WSL2, the sanitized Python suites, and the final
-    documentation reconciliation. Reproducibility stays exact only for
+    across success and failure cycles. Milestone **G10 is complete** —
+    the phase closure. The validation matrix ran with observed results:
+    fresh Windows Release and Debug builds, each **11/11 CTests** with
+    zero project warnings and the active runtime proved to stay the
+    Release DLL; a fresh Clang 18.1.3 ASan+UBSan build in WSL2 with
+    instrumentation proved rather than assumed, **11/11 sanitized
+    CTests** with leak detection on, **3,166 sanitized Python tests**,
+    the G7 example reproducing its exact resume, and the G8 benchmark
+    smoke path passing every correctness gate — all with zero ASan and
+    zero UBSan diagnostics; and a LeakSanitizer lifecycle returning
+    native live storage exactly to baseline with no TensorForge frame in
+    the remaining process-exit allocations and **no suppression file
+    added**. Reproducibility stays exact only for
     the state actually captured (no Python `random`, no NumPy global
     random state, no data-loader position, and no scheduler state), and
-    ordinary concurrent training is not claimed thread-safe. That, with
-    the unrun closure matrix, is why `dropout`
-    is still listed unsupported beside
-    `float32`, `cuda`, and `amp`. **`dropout` stays listed unsupported
-    for the whole of G0–G9** — G4 implements and exports `NativeDropout`
-    and G5 persists its stream, neither moving the boundary, because a
-    capability
+    ordinary concurrent training is not claimed thread-safe.
+    **`dropout` stayed listed unsupported for the whole of G0–G9** — G4
+    implemented and exported `NativeDropout` and G5 persisted its stream,
+    neither moving the boundary, because a capability
     whose value is exact reproducibility is not finished until
     reproducibility has been demonstrated under fresh Release and Debug
-    builds and the sanitizers — and the name is removed only at **G10**,
-    after the closure matrix passes, leaving `float32`, `cuda`, and
-    `amp`. Deliberately outside Phase G: a generic
+    builds and the sanitizers — and the name was removed at **G10**,
+    after that matrix passed, leaving exactly `float32`, `cuda`, and
+    `amp`. The claim it makes is narrow: native Dropout is supported in
+    the **experimental native float64 CPU** backend, which says nothing
+    about the stable framework, float32, CUDA, or AMP.
+    Deliberately outside Phase G: a generic
     sampling or distribution API, global random state, NumPy
     global-random-state integration, parameter-initialization changes,
     data-loader shuffling,

@@ -1207,7 +1207,7 @@ def test_g8_changes_no_capability_inventory():
     boundary, and ``"dropout"`` stays unsupported until G10."""
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "dropout" in cpp.AUTOGRAD_OPS
@@ -1243,16 +1243,23 @@ def test_the_benchmark_composes_only_shipped_public_apis():
     assert "_has_active_reservation" in source
 
 
-def test_g10_has_not_begun():
-    """G10's boundary move must not have happened. (G9's integration
-    suite exists — it is a later milestone, guarded in its own file.)"""
-    assert "dropout" in cpp.UNSUPPORTED
+def test_the_boundary_move_belongs_to_g10_not_to_this_benchmark():
+    """G8 is measurement only: it must never have been the milestone that
+    moved the capability boundary. That boundary has since moved — at
+    **G10**, the closure — so the durable claim is the attribution, not
+    the absence: the ladder shows G8, G9, and G10 all complete, and
+    ``dropout`` left ``UNSUPPORTED`` at the last of them."""
+    assert "dropout" not in cpp.UNSUPPORTED
     design = (REPO_ROOT / "docs"
               / "native_rng_dropout_design.md").read_text(encoding="utf-8")
     ladder = design[design.index("| Milestone | Scope | Status |"):]
     ladder = ladder[:ladder.index("### G0")]
-    for row, expected in (("G8", "complete"), ("G9", "complete"),
-                          ("G10", "not started")):
+    for row in ("G8", "G9", "G10"):
         match = re.search(rf"\|\s*{row}\s*\|[^|]*\|([^|]*)\|", ladder)
         assert match is not None, row
-        assert expected in re.sub(r"[*`]", "", match.group(1)).strip().lower()
+        status = re.sub(r"[*`]", "", match.group(1)).strip().lower()
+        assert status.startswith("complete"), (row, status)
+    # The G8 row still describes itself as measurement only, so a future
+    # edit cannot quietly re-attribute the capability move to this file.
+    g8_row = re.search(r"\|\s*G8\s*\|([^|]*)\|([^|]*)\|", ladder)
+    assert "measurement only" in g8_row.group(2).lower()

@@ -121,7 +121,7 @@ integration and semantic guardrails** (`tests/test_native_phase_f.py`),
 and **F9 closed the phase** under Release and Debug builds with Clang
 ASan/UBSan and LeakSanitizer — validation and documentation only, adding
 no numerical capability. **Phase G (native RNG and Dropout) is the
-current phase and is in progress: milestones G0, G1, G2, G3, G4, and G5 have
+latest phase and is complete: milestones G0 through G10 have all
 landed.** G0, the architecture
 contract in [native_rng_dropout_design.md](native_rng_dropout_design.md),
 locks Python-managed generator state, stateless native
@@ -151,17 +151,18 @@ dispatch. The exact per-operation status lives in the
 
 ## Testing and reliability (both lines)
 
-Over 3,650 pytest tests cover every feature of both lines: known-value
+Over 4,900 pytest tests cover every feature of both lines: known-value
 checks against hand-computed math, finite-difference gradient
 verification (stable and native), exact resume-equivalence tests for
 checkpointing, NumPy-tripwire tests proving the native paths never
-fall back, cross-cutting Phase C, **Phase D, Phase E, and Phase F**
-integration
+fall back, cross-cutting Phase C, **Phase D, Phase E, Phase F, and
+Phase G** integration
 guardrails
 (shared/frozen/late-active parameters, failure recovery at every
 boundary, graph-version interactions, saved-winner,
-saved-probability, and normalization-snapshot lifetime, atomic
-running-statistics transactions, and
+saved-probability, normalization-snapshot, and Dropout-mask lifetime,
+atomic running-statistics transactions, generator reservation and
+call-consumption discipline, whole-checkpoint transaction rollback, and
 lifetime discipline), and guardrail tests keeping docs, examples, and
 the public API from drifting. The native C++ kernels additionally have
 dependency-free CTest binaries, validated under ASan/UBSan. Native tests
@@ -321,8 +322,8 @@ documentation only, adding no numerical capability**. Closing Phase F
 closes that phase only; the native line remains experimental,
 float64/CPU, and explicitly scoped.
 
-**Phase G — Native RNG and Dropout — then opened, and it is in
-progress.** Milestone **G0 is complete**: the architecture contract in
+**Phase G — Native RNG and Dropout — then opened, and it is now
+complete.** Milestone **G0 is complete**: the architecture contract in
 [native_rng_dropout_design.md](native_rng_dropout_design.md), which locks
 `NativeGenerator` (an explicit 64-bit seed and call counter with an
 algorithm identifier, owning no native resource), stateless native random
@@ -550,15 +551,31 @@ regression matrix, and live storage returning exactly to baseline across
 success and failure cycles. No runtime file changed and no defect was
 found.
 
-**G10 has not started.** What remains is the closure matrix — fresh
-Windows Release and Debug builds and their CTests, Clang
-ASan/UBSan/LeakSanitizer in WSL2, the sanitized Python suites, and the
-final documentation reconciliation — after which, and only after which,
-`dropout` leaves `UNSUPPORTED`. Reproducibility is exact only for the
-state actually captured (no Python `random`, NumPy global RNG,
-data-loader position, or scheduler state), and ordinary concurrent
-training is not claimed thread-safe: the serializability guarantee covers
-the participating state transactions only.
+**G10 is complete, and with it Phase G.** The closure matrix ran with
+observed results: fresh Windows Release and Debug builds, each **11/11
+CTests** with zero project warnings and the active runtime proved to stay
+the Release DLL; a fresh Clang 18.1.3 ASan+UBSan build in WSL2 with
+instrumentation proved rather than assumed (22 `__asan*` and 14
+`__ubsan*` dynamic symbols beside 51 exported `tf_*` symbols, and a
+library that refuses to load without the runtime), **11/11 sanitized
+CTests** with leak detection on, **3,166 sanitized Python tests** across
+43 suites, the G7 example reproducing its exact resume, and the G8
+benchmark passing every correctness gate — all with zero ASan and zero
+UBSan diagnostics; and a LeakSanitizer lifecycle returning native live
+storage exactly to baseline (0 → 0), whose remaining process-exit
+allocations name **no** TensorForge frame, with **no suppression file
+added**. Only then did `dropout` leave `UNSUPPORTED`, which now reads
+`("float32", "cuda", "amp")`.
+
+The claim is narrow on purpose: **native Dropout is supported in the
+experimental native float64 CPU backend**. The stable framework keeps its
+own separate `Dropout`, and float32, CUDA, and AMP remain unsupported.
+There is no generic random-number API and no `Dropout2d`/`Dropout3d`.
+Reproducibility is exact only for the state actually captured (no Python
+`random`, NumPy global RNG, data-loader position, or scheduler state), and
+ordinary concurrent training is not claimed thread-safe: the
+serializability guarantee covers the participating state transactions
+only.
 Beyond Phase G
 (**not started**): more activations/math, data
 loaders, a CPU optimization phase, then the CUDA

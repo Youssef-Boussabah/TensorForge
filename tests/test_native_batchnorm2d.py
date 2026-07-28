@@ -2549,7 +2549,7 @@ def test_f4_completes_the_public_normalization_module_surface():
     assert "batchnorm" not in cpp.UNSUPPORTED
     assert "layernorm" not in cpp.UNSUPPORTED
     # ...and the remaining boundary is exactly what it was.
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     # BatchNorm3d was never in scope.
     assert not hasattr(experimental, "NativeBatchNorm3d")
     assert "NativeBatchNorm3d" not in cpp.NATIVE_MODULES

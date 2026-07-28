@@ -2468,7 +2468,7 @@ def test_the_capability_inventories_are_exactly_what_g8_left():
     is unchanged, and ``"dropout"`` stays unsupported until G10."""
     from tensorforge.experimental import native_checkpoint as checkpoint
 
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_MODULES.count("NativeDropout") == 1
@@ -2493,10 +2493,17 @@ def test_the_capability_inventories_are_exactly_what_g8_left():
         assert absent not in cpp._CHECKED_KERNELS, absent
 
 
-def test_g10_has_not_begun():
+def test_the_closure_belongs_to_g10_and_not_to_this_suite():
     """The closure milestone owns the boundary move, the sanitizer matrix,
-    and the final documentation reconciliation. None of it is here."""
-    assert "dropout" in cpp.UNSUPPORTED
+    and the final documentation reconciliation. G10 has since run — the
+    ladder says so and the boundary has moved — but **none of that work
+    lives here**. G9 is integration evidence, and this file must stay
+    that: no sanitizer material, no build validation, no closure claim.
+
+    The old form of this guard asserted G10 had not begun. That premise
+    expired at the closure; the *scope* separation it protected did
+    not, so that is what it now checks."""
+    assert "dropout" not in cpp.UNSUPPORTED
     design = (REPO_ROOT / "docs"
               / "native_rng_dropout_design.md").read_text(encoding="utf-8")
     ladder = design[design.index("| Milestone | Scope | Status |"):]
@@ -2505,7 +2512,8 @@ def test_g10_has_not_begun():
 
     row = re.search(r"\|\s*G10\s*\|[^|]*\|([^|]*)\|", ladder)
     assert row is not None
-    assert "not started" in row.group(1).lower()
+    status = re.sub(r"[*`]", "", row.group(1)).strip().lower()
+    assert status.startswith("complete"), status
     # Assembled at runtime so this guard's own list is not a match for it.
     source = Path(__file__).read_text(encoding="utf-8").lower()
     for banned in ("a" + "san", "ub" + "san", "leak" + "sanitizer",

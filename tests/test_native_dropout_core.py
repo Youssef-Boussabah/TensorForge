@@ -1575,7 +1575,7 @@ def test_g2_ships_the_core_layer_and_nothing_above_it():
         assert symbol not in cpp._CHECKED_KERNELS, symbol
 
     # The capability boundary and the format version are untouched.
-    assert cpp.UNSUPPORTED == ("dropout", "float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 2
