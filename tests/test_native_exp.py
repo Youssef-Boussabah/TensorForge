@@ -572,13 +572,12 @@ def test_native_exp_abi_rejects_invalid_spans():
     assert np.array_equal(source.exp().to_numpy(), np.exp(np.arange(4.0)))
 
 
-def test_native_exp_requires_the_built_backend():
-    """Without the compiled library the operation raises ImportError with
-    build instructions — never a silent NumPy fallback."""
-    if cpp.is_available():
-        pytest.skip("backend is built; the unavailable path cannot be forced")
-    with pytest.raises(ImportError, match="cpp/build.py"):
-        cpp.NativeTensorCore.from_array(VALUES).exp()
+# The unavailable-backend contract for `exp` — ImportError with build
+# instructions, never a silent NumPy fallback — is proved in
+# tests/test_native_backend_unavailable.py (the "exp" case). It used to
+# live here and skip whenever the backend was built, which is every
+# machine that can run this file at all; it now runs unconditionally, in
+# a fresh child process that repoints only its *own* library path.
 
 
 # ======================================================================

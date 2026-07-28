@@ -963,13 +963,12 @@ def test_native_softmax_abi_rejects_invalid_calls():
     assert library.tf_last_error_code() == cpp.TF_OK
 
 
-def test_native_softmax_requires_the_built_backend():
-    """Without the compiled library the operation raises ImportError with
-    build instructions — never a silent NumPy fallback."""
-    if cpp.is_available():
-        pytest.skip("backend is built; the unavailable path cannot be forced")
-    with pytest.raises(ImportError, match="cpp/build.py"):
-        cpp.NativeTensorCore.from_array(VALUES).softmax(-1)
+# The unavailable-backend contract for `softmax` — ImportError with build
+# instructions, never a silent NumPy fallback — is proved in
+# tests/test_native_backend_unavailable.py (the "softmax" case). It used
+# to live here and skip whenever the backend was built, which is every
+# machine that can run this file at all; it now runs unconditionally, in
+# a fresh child process that repoints only its *own* library path.
 
 
 # ======================================================================
