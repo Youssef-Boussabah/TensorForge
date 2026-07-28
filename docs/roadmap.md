@@ -1417,6 +1417,52 @@ The Python line is done; what remains is expansion on its own terms:
     dropout, integer tensors, embeddings, float32, CUDA, AMP,
     schedulers, new optimizers, CPU performance tuning, and any stable
     framework change.
+  - **Phase H — Native CPU Performance and Runtime Efficiency — is the
+    current phase, and it has begun at milestone H0 only.** Its
+    architecture contract is
+    [native_cpu_performance_design.md](native_cpu_performance_design.md).
+    **H0 is architecture, profiling, and baseline work: nothing was made
+    faster.** It shipped that contract, the unified measurement harness
+    `benchmarks/benchmark_native_cpu_performance.py`, that harness's
+    behavioral contract tests, and documentation reconciliation — and no
+    C++, C ABI symbol, ctypes declaration, `NativeTensorCore` method,
+    autograd operation, module, loss, metric, optimizer, export,
+    capability registry value, dtype, device, or checkpoint change. The
+    native checkpoint format stays version 2 with versions 1 and 2
+    supported, `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
+    and **Phase G remains the latest completed phase**. The harness
+    measures 24 cases across twelve workload families — dispatch
+    overhead, elementwise, reductions, matmul, materialization, linear,
+    convolution, normalization, stochastic, optimizer, training step, and
+    in-memory state operations — separating up to nine implementation
+    layers (NumPy, the stable line, the raw-buffer kernels,
+    `NativeTensorCore`, `NativeTensor` with and without a graph,
+    backward, an optimizer step, and a whole training step), with a
+    correctness gate that runs **before** timing everywhere, honest
+    reference labelling that publishes **no ratio** where no equivalent
+    exists, `--smoke` / `--json` / `--case` / `--workload` and a focused
+    `--profile CASE` mode, and no result file of any kind. Checkpoint
+    file I/O is deliberately excluded from every training-step total, and
+    the in-memory state surface is its own category. The evidence it
+    produced is deliberately ranked and honest — the largest measured
+    factors are an allocator behavior and a memory access pattern rather
+    than raw arithmetic, the Python-side per-call metadata path costs
+    several times the ctypes boundary it wraps, and the `NativeTensor`
+    wrapper and its autograd graph node are measurably **not** a
+    bottleneck. The proposed **H1–H8 ladder is explicitly conditional**:
+    a milestone whose premise the measurement does not confirm is
+    narrowed, reordered, or dropped, and a memory pool, scratch
+    allocation, SIMD, threading, and BLAS are all currently **rejected on
+    evidence**, with the criteria that would reopen each recorded rather
+    than an answer invented. H9 (re-measurement, hardening, and the full
+    sanitizer matrix) and H10 (phase closure) are **not started**.
+    Deliberately outside Phase H: CUDA, float32/float16/bfloat16,
+    casting, dtype promotion, AMP, Tensor Cores, pybind11, C++ autograd,
+    implicit dispatch, Transformers, attention, embeddings, integer
+    tensors, data loaders, distributed training, a memory pool, scratch
+    allocation, SIMD, threading, OpenMP, BLAS, any required dependency,
+    checkpoint format version 3, and **any CI timing threshold or
+    committed performance number**.
   - **Then beyond (not started):** the CUDA
     runtime (where `device` gains a second value), an AMP / Tensor Core path
     (where `dtype` gains float16/bfloat16), Transformer / text examples,

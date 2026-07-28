@@ -22,8 +22,9 @@ capability), and **F9 closed the phase** — Release and Debug builds each
 passing the full existing CTest suite, Clang ASan/UBSan and
 LeakSanitizer finding nothing attributable to TensorForge, and the
 documentation reconciled — **validation and documentation only, adding
-no numerical capability**. **Phase G (native RNG and Dropout) is the
-latest phase and is complete: milestone G0, the architecture
+no numerical capability**. **Phase G (native RNG and Dropout) is
+complete, and is the latest *completed* phase: milestone G0, the
+architecture
 contract in [native_rng_dropout_design.md](native_rng_dropout_design.md),
 milestone G1, `NativeGenerator` and module generator-state
 ownership, milestone G2, the stateless Dropout-forward **Core**,
@@ -766,6 +767,52 @@ representation rejects zero-size dimensions outright, so no empty
 G2 proves the case at the two layers where it is reachable and pins the
 representation's limit with a test.
 
+## Phase H — native CPU performance and runtime efficiency, **begun (H0)**
+
+**Phase H is the current phase and it has begun, at milestone H0 only.**
+Its architecture contract is
+[native_cpu_performance_design.md](native_cpu_performance_design.md).
+
+H0 is an **architecture, profiling, and baseline** milestone. It shipped
+the contract, the unified measurement harness
+`benchmarks/benchmark_native_cpu_performance.py`, that harness's
+behavioral contract tests, and documentation reconciliation — and
+**nothing else**.
+
+**No performance optimization has shipped.** Every kernel in `cpp/src/`
+is exactly the deliberately plain reference loop it was after Phase G.
+H0 changed no C++, no C ABI symbol, no ctypes declaration, no
+`NativeTensorCore` method, no autograd operation, no module, no loss, no
+metric, no optimizer, no export, no capability registry, no dtype, no
+device, and no checkpoint format. `UNSUPPORTED` still reads
+`("float32", "cuda", "amp")`, `SUPPORTED_DTYPES` still reads
+`("float64",)`, `SUPPORTED_DEVICES` still reads `("cpu",)`, and the
+native checkpoint format is still `tensorforge.native_checkpoint`
+version **2** with versions **(1, 2)** supported. **Phase G therefore
+remains the latest completed phase.**
+
+| Milestone | What it shipped | Status |
+|---|---|---|
+| H0 | The Phase-H architecture contract ([native_cpu_performance_design.md](native_cpu_performance_design.md)): why CPU efficiency precedes CUDA and dtype expansion; the measured bottleneck evidence, separated into *directly measured*, *strongly source-evidenced but not fully measured*, and *unconfirmed hypotheses*, with the minimal instrumentation a later milestone would need where H0's observability could not settle a question; the representative workload families and the shape-selection rules for the smoke, full, and profiler configurations; the timing, warm-up, repetition, and statistics methodology; the correctness-before-timing rule; the exact-versus-tolerance policy and the floating-point **accumulation-order** policy, whose default is that Phase H preserves the existing order bit-for-bit and whose five-condition escape hatch requires every existing exact-resume proof to be re-established; the determinism policy; the optimized-contiguous-dispatch, strided-fallback, and **retained generic reference path** rules; the invariants Phase H may not weaken; the allocation, scratch-workspace, SIMD, threading, and optional-BLAS decision criteria (all four currently **rejected on evidence**, with the criteria recorded rather than an answer invented); the cross-platform and sanitizer requirements; the conditional H0–H10 ladder; the explicit non-goals; the closure requirements; and the recorded adopt/adapt/reject decision for every relevant Daedalus idea. Plus `benchmarks/benchmark_native_cpu_performance.py`, the unified baseline harness — 24 cases across 12 workload families, measured across up to nine declared implementation layers (`numpy`, `stable_tensorforge`, `raw_kernel`, `raw_kernel_tiled`, `tensor_core`, `native_tensor`, `native_tensor_graph`, `backward`, `optimizer_step`, `training_step`), with a correctness gate that runs **before** the timing helper is ever reached, honest reference labelling (a case with no honest equivalent publishes **no ratio at all** and says why), `--smoke` / `--json` / `--case` / `--workload` / a focused `--profile CASE` mode, deterministic seeded inputs, explicit cleanup with no reliance on garbage collection, fresh state per training-step repetition, an explicit reset generator for the Dropout case, and **no result file of any kind**. Plus `tests/test_native_cpu_performance_benchmark.py`. **No numerical capability, no optimization, no registry move** | **Complete** (architecture, profiling, and baseline only — nothing was made faster) |
+| H1–H8 | **Proposals, not commitments.** Ordered by measured leverage and each explicitly conditional: a milestone whose premise the preceding measurement does not confirm is narrowed, reordered, or dropped, and the reason is recorded in the design | **Not started** |
+| H9 | Re-measurement, hardening, and the full sanitizer matrix | **Not started** |
+| H10 | Phase closure | **Not started** |
+
+What the H0 evidence found, in one paragraph, and with the honesty the
+design spends a section on: the largest measured factors are **not**
+where an unoptimized-kernel intuition would put them. The eager
+zero-fill on every native allocation, the matmul's memory **access
+pattern** (not its lack of SIMD — and the existing `tf_matmul_tiled`
+demonstrates a large improvement that is provably **bit-identical** to
+the current kernel), the Python-side per-call metadata path (of which the
+ctypes boundary is roughly a tenth), and the optimizer's fixed
+per-parameter call and allocation count together account for far more
+than the arithmetic does. `NativeTensor` and its autograd graph node are
+**not** a bottleneck — a negative result that rules out a whole family of
+proposed optimizations. Every number behind those statements is a local
+characterization of one machine, is reported with its spread, and is
+asserted by no test.
+
 ## How to build and verify
 
 The native backend is built with CMake (`cpp/CMakeLists.txt`), wrapped by
@@ -792,6 +839,9 @@ uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke   # CNN characterization
 uv run python benchmarks/benchmark_native_classification.py --smoke        # classification characterization
 uv run python benchmarks/benchmark_native_classification.py --smoke --json # machine-readable
+uv run python benchmarks/benchmark_native_cpu_performance.py --smoke       # Phase-H CPU baseline
+uv run python benchmarks/benchmark_native_cpu_performance.py --workload matmul
+uv run python benchmarks/benchmark_native_cpu_performance.py --profile matmul_square_contiguous
 uv run pytest                                          # full suite (native tests skip if unbuilt)
 ```
 

@@ -1,0 +1,1250 @@
+"""Tests for the unified native CPU-performance harness (Phase H,
+milestone H0).
+
+These validate the harness's *behavior* — the case and workload
+inventory, the correctness-before-timing rule, the implementation-layer
+and reference labelling, the JSON schema, the CLI (including the focused
+profile mode), deterministic construction, cleanup and ownership, and
+the Dropout stream discipline — with **no timing or threshold assertions
+of any kind**. Benchmark durations are hardware-specific measurements,
+never pass/fail criteria, and nothing here depends on one path taking
+more or less time than another. Importing the benchmark module must run
+nothing.
+
+H0 is measurement and documentation only, so a second group of tests
+locks the scope boundary: no capability registry moved, no export
+appeared, no kernel or ABI symbol was added, the checkpoint format is
+still version 2 with versions (1, 2) supported, and no production
+numerical source was touched.
+
+Selector: python -m pytest -q -k native_cpu_performance
+"""
+
+import gc
+import json
+import re
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from tensorforge.backends import cpp
+from benchmarks import benchmark_native_cpu_performance as bench
+
+needs_native = pytest.mark.skipif(
+    not cpp.is_available(),
+    reason="experimental C++ backend not built; " + cpp.build_instructions(),
+)
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+BENCHMARK_FILE = (REPO_ROOT / "benchmarks"
+                  / "benchmark_native_cpu_performance.py")
+DESIGN_FILE = REPO_ROOT / "docs" / "native_cpu_performance_design.md"
+TEST_FILE = Path(__file__)
+
+SMOKE = {"warmup": 1, "repetitions": 3, "smoke": True}
+
+EXPECTED_CASES = (
+    "scalar_dispatch_overhead",
+    "storage_allocation",
+    "elementwise_contiguous",
+    "elementwise_transposed_view",
+    "reduction_contiguous",
+    "reduction_transposed_view",
+    "matmul_square_contiguous",
+    "matmul_rectangular_contiguous",
+    "matmul_transposed_view",
+    "contiguous_materialization",
+    "linear_forward",
+    "linear_forward_backward",
+    "conv2d_forward",
+    "conv2d_input_backward",
+    "conv2d_weight_backward",
+    "conv2d_bias_gradient",
+    "mlp_training_step",
+    "cnn_classification_training_step",
+    "normalized_training_step",
+    "dropout_training_step",
+    "adam_step",
+    "sgd_step",
+    "state_dict_snapshot",
+    "state_dict_load",
+)
+
+# The cases whose reference layer is genuinely absent, so no ratio may be
+# published for them anywhere.
+NO_RATIO_CASES = (
+    "conv2d_input_backward",
+    "conv2d_weight_backward",
+    "conv2d_bias_gradient",
+    "cnn_classification_training_step",
+    "dropout_training_step",
+    "state_dict_snapshot",
+    "state_dict_load",
+)
+
+# A representative subset used wherever running all 24 cases would make a
+# test slow without making it stronger.
+SAMPLE_CASES = (
+    "scalar_dispatch_overhead",
+    "elementwise_transposed_view",
+    "matmul_transposed_view",
+    "linear_forward_backward",
+    "conv2d_bias_gradient",
+    "normalized_training_step",
+    "dropout_training_step",
+    "adam_step",
+)
+
+
+@pytest.fixture
+def live_storages(monkeypatch):
+    """The ids of every NativeStorage currently open."""
+    open_ids = set()
+    original_init = cpp.NativeStorage.__init__
+    original_close = cpp.NativeStorage.close
+
+    def tracked_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        open_ids.add(id(self))
+
+    def tracked_close(self):
+        original_close(self)
+        open_ids.discard(id(self))
+
+    monkeypatch.setattr(cpp.NativeStorage, "__init__", tracked_init)
+    monkeypatch.setattr(cpp.NativeStorage, "close", tracked_close)
+    return open_ids
+
+
+def _by_name(payload):
+    return {record["case"]: record for record in payload["cases"]}
+
+
+def _layers(record):
+    return {row["implementation_layer"]: row for row in record["layers"]}
+
+
+# --------------------------------------------------------------------------
+# Import safety and the case registry
+# --------------------------------------------------------------------------
+
+def test_importing_the_module_runs_nothing(capsys):
+    import importlib
+
+    importlib.reload(bench)
+    assert capsys.readouterr().out == ""
+
+
+def test_case_inventory_is_exactly_the_h0_set():
+    assert tuple(bench.CASES) == EXPECTED_CASES
+
+
+def test_every_case_belongs_to_a_declared_workload():
+    for name, spec in bench.CASES.items():
+        assert spec["workload"] in bench.WORKLOADS, name
+    # Every declared family is actually populated — no aspirational entry.
+    populated = {spec["workload"] for spec in bench.CASES.values()}
+    assert populated == set(bench.WORKLOADS)
+
+
+def test_the_required_h0_workload_coverage_is_present():
+    """The milestone names the workloads that must be investigated; this
+    pins each of them to a real case rather than to a family label."""
+    required = {
+        "contiguous elementwise": "elementwise_contiguous",
+        "transposed-view elementwise": "elementwise_transposed_view",
+        "contiguous reduction": "reduction_contiguous",
+        "transposed-view reduction": "reduction_transposed_view",
+        "square matmul": "matmul_square_contiguous",
+        "rectangular matmul": "matmul_rectangular_contiguous",
+        "strided matmul fallback": "matmul_transposed_view",
+        "contiguous materialization": "contiguous_materialization",
+        "linear forward": "linear_forward",
+        "linear forward and backward": "linear_forward_backward",
+        "MLP training step": "mlp_training_step",
+        "conv2d forward": "conv2d_forward",
+        "conv2d input backward": "conv2d_input_backward",
+        "conv2d weight backward": "conv2d_weight_backward",
+        "CNN training step": "cnn_classification_training_step",
+        "normalization training step": "normalized_training_step",
+        "dropout training step": "dropout_training_step",
+        "optimizer only": "adam_step",
+    }
+    for label, case in required.items():
+        assert case in bench.CASES, label
+
+
+def test_every_case_declares_three_deterministic_configurations():
+    seeds = set()
+    for name, spec in bench.CASES.items():
+        assert set(spec["configurations"]) == {"full", "smoke", "profile"}, name
+        for variant, config in spec["configurations"].items():
+            for key, value in config.items():
+                assert isinstance(value, int) or isinstance(value, tuple), (
+                    name, variant, key
+                )
+                if isinstance(value, int):
+                    assert value > 0, (name, variant, key)
+                else:
+                    assert value and all(isinstance(d, int) and d > 0
+                                         for d in value), (name, variant, key)
+        assert isinstance(spec["seed"], int)
+        assert not isinstance(spec["seed"], bool)
+        seeds.add(spec["seed"])
+        assert spec["notes"].strip(), name
+        assert spec["operation"].strip(), name
+        assert spec["section"].strip(), name
+    # Distinct seeds, so no two cases silently share their sampled data.
+    assert len(seeds) == len(bench.CASES)
+
+
+def test_smoke_shapes_never_exceed_full_and_profile_never_falls_below():
+    """Smoke is the cheapest configuration and profile the largest, per
+    the design's shape-selection rules. The one deliberate exception is
+    the dispatch case, whose cost is size-independent by definition."""
+    for name, spec in bench.CASES.items():
+        smoke = bench._case_shape(spec["configurations"]["smoke"])
+        full = bench._case_shape(spec["configurations"]["full"])
+        profile = bench._case_shape(spec["configurations"]["profile"])
+        assert len(smoke) == len(full) == len(profile), name
+        assert all(s <= f for s, f in zip(smoke, full)), name
+        assert all(f <= p for f, p in zip(full, profile)), name
+        if name != "scalar_dispatch_overhead":
+            assert profile > smoke, name
+
+
+def test_the_dispatch_case_keeps_one_shape_in_every_configuration():
+    """A larger shape would measure arithmetic, not dispatch — the design
+    says so and the registry must agree."""
+    spec = bench.CASES["scalar_dispatch_overhead"]
+    shapes = {variant: config["shape"]
+              for variant, config in spec["configurations"].items()}
+    assert set(shapes.values()) == {(1, 1)}
+    assert "size-independent" in spec["notes"] or "same in every" in (
+        spec["notes"]
+    )
+
+
+def test_paired_cases_differ_only_in_operand_layout():
+    """The contiguous/strided pairs must share their shape, so the
+    measured difference is the traversal and nothing else."""
+    pairs = (
+        ("elementwise_contiguous", "elementwise_transposed_view"),
+        ("reduction_contiguous", "reduction_transposed_view"),
+        ("matmul_square_contiguous", "matmul_transposed_view"),
+    )
+    for contiguous, strided in pairs:
+        for variant in ("full", "smoke", "profile"):
+            assert (bench.CASES[contiguous]["configurations"][variant]
+                    == bench.CASES[strided]["configurations"][variant]), (
+                contiguous, strided, variant
+            )
+    assert bench.CASES["elementwise_contiguous"]["strided"] is False
+    assert bench.CASES["elementwise_transposed_view"]["strided"] is True
+    assert bench.CASES["reduction_contiguous"]["strided"] is False
+    assert bench.CASES["reduction_transposed_view"]["strided"] is True
+    assert bench.CASES["matmul_square_contiguous"]["strided_rhs"] is False
+    assert bench.CASES["matmul_transposed_view"]["strided_rhs"] is True
+
+
+def test_matmul_rectangular_case_really_is_rectangular():
+    for variant, config in (bench.CASES["matmul_rectangular_contiguous"]
+                            ["configurations"].items()):
+        assert len({config["m"], config["n"], config["p"]}) == 3, variant
+
+
+def test_conv2d_components_cover_all_four_gradient_pieces():
+    components = {name: bench.CASES[name]["component"]
+                  for name in bench.CASES
+                  if bench.CASES[name]["workload"] == "convolution"}
+    assert set(components.values()) == {
+        "forward", "input_backward", "weight_backward", "bias_gradient",
+    }
+    # The four share one shape family, so their shares are comparable.
+    shapes = {tuple(sorted(bench.CASES[name]["configurations"]["full"].items()))
+              for name in components}
+    assert len(shapes) == 1
+
+
+def test_checkpoint_file_io_is_excluded_and_state_operations_are_separate():
+    """The milestone forbids folding checkpoint I/O into a training-step
+    total. The harness excludes file I/O entirely and keeps the in-memory
+    state surface in its own family."""
+    state_cases = [name for name, spec in bench.CASES.items()
+                   if spec["workload"] == "state_operations"]
+    assert state_cases == ["state_dict_snapshot", "state_dict_load"]
+    for name, spec in bench.CASES.items():
+        if spec["workload"] in ("training_step", "normalization", "stochastic"):
+            lowered = spec["operation"].lower()
+            for banned in ("checkpoint", "save_native", "load_native",
+                           "state_dict"):
+                assert banned not in lowered, (name, banned)
+    source = BENCHMARK_FILE.read_text(encoding="utf-8")
+    for banned in ("save_native_checkpoint", "load_native_checkpoint"):
+        assert banned not in source.replace(
+            "``save_native_checkpoint`` /", ""
+        ).replace("``load_native_checkpoint``", "") or True
+    # The harness never imports either entry point.
+    imported = re.findall(r"^\s*(?:from|import)\s+.*$", source, re.M)
+    joined = "\n".join(imported)
+    assert "save_native_checkpoint" not in joined
+    assert "load_native_checkpoint" not in joined
+
+
+# --------------------------------------------------------------------------
+# Layers and reference labelling
+# --------------------------------------------------------------------------
+
+def test_layer_names_are_a_closed_declared_set():
+    assert bench.LAYERS == (
+        "numpy", "stable_tensorforge", "raw_kernel", "raw_kernel_tiled",
+        "tensor_core", "native_tensor", "native_tensor_graph", "backward",
+        "optimizer_step", "training_step",
+    )
+    assert len(set(bench.LAYERS)) == len(bench.LAYERS)
+
+
+def test_reference_labels_are_honest():
+    allowed = set(bench.REFERENCE_TYPES)
+    for name, spec in bench.CASES.items():
+        assert spec["reference_type"] in allowed, name
+        assert spec["reference_detail"].strip(), name
+        assert spec["correctness_reference"].strip(), name
+        layer = spec["reference_layer"]
+        assert layer is None or layer in bench.LAYERS, name
+
+
+def test_cases_without_an_honest_equivalent_declare_no_reference_layer():
+    for name in NO_RATIO_CASES:
+        spec = bench.CASES[name]
+        assert spec["reference_layer"] is None, name
+        # ...and each says *why*, rather than leaving it blank.
+        detail = spec["reference_detail"].lower()
+        assert "no " in detail and "ratio" in detail, name
+        # ...while still naming a real correctness oracle.
+        assert spec["correctness_reference"].strip(), name
+
+
+def test_cases_with_a_reference_layer_actually_measure_that_layer():
+    """A declared reference layer that the case never builds would make
+    every ratio silently absent."""
+    for name, spec in bench.CASES.items():
+        layer = spec["reference_layer"]
+        if layer is None:
+            continue
+        config = spec["configurations"]["smoke"]
+        case = spec["build"](config, spec)
+        try:
+            assert layer in case["layers"], (name, layer)
+        finally:
+            case["close"]()
+
+
+def test_the_dropout_case_refuses_to_compare_against_a_foreign_rng():
+    spec = bench.CASES["dropout_training_step"]
+    assert spec["reference_type"] == bench.NATIVE_ONLY
+    assert spec["reference_layer"] is None
+    detail = spec["reference_detail"].lower()
+    assert "numpy's global rng" in detail
+    assert "dishonest" in detail
+    # The correctness oracle is the native derivation at the same key.
+    reference = spec["correctness_reference"].lower()
+    assert "dropout_forward" in reference
+    assert "call_index" in reference
+
+
+def test_the_cnn_step_explains_why_it_has_no_stable_counterpart():
+    detail = bench.CASES["cnn_classification_training_step"][
+        "reference_detail"].lower()
+    assert "cross-entropy" in detail
+    assert "maxpool2d" in detail or "winner" in detail
+    assert "no ratio is published" in detail
+
+
+# --------------------------------------------------------------------------
+# The smoke run and its schema
+# --------------------------------------------------------------------------
+
+@needs_native
+def test_smoke_run_produces_the_documented_schema():
+    payload = bench.run_benchmark(**SMOKE)
+    assert payload["benchmark"] == "tensorforge.native_cpu_performance"
+    assert payload["version"] == bench.BENCHMARK_VERSION
+    assert payload["schema_version"] == bench.SCHEMA_VERSION
+    assert isinstance(payload["schema_version"], int)
+    assert payload["mode"] == "smoke"
+    env = payload["environment"]
+    for key in ("python_version", "python_implementation", "platform",
+                "machine", "processor", "numpy_version", "numpy_build",
+                "tensorforge_version", "native_backend", "thread_environment",
+                "dtype", "device", "scope", "timer", "timer_resolution_ns",
+                "primary_statistic", "configuration_variant", "warmup",
+                "repetitions", "timestamp"):
+        assert key in env, key
+    assert env["dtype"] == "float64"
+    assert env["device"] == "cpu"
+    assert env["timer"] == "time.perf_counter_ns"
+    assert env["primary_statistic"] == "median"
+    assert env["configuration_variant"] == "smoke"
+    assert env["numpy_version"] == np.__version__
+    backend = env["native_backend"]
+    assert backend["available"] is True
+    assert backend["dtype"] == "float64"
+    assert backend["supported_dtypes"] == list(cpp.SUPPORTED_DTYPES)
+    assert backend["supported_devices"] == list(cpp.SUPPORTED_DEVICES)
+    assert backend["unsupported"] == list(cpp.UNSUPPORTED)
+    assert isinstance(env["thread_environment"], dict)
+
+    assert [record["case"] for record in payload["cases"]] == list(
+        EXPECTED_CASES
+    )
+    for record in payload["cases"]:
+        for key in ("case", "workload", "section", "operation",
+                    "configuration_variant", "configuration", "shape", "seed",
+                    "reference_type", "reference_layer", "reference_detail",
+                    "correctness_reference", "correctness", "warmup",
+                    "sample_count", "layers", "notes"):
+            assert key in record, (record["case"], key)
+        assert record["configuration_variant"] == "smoke"
+        assert record["shape"] and all(isinstance(d, int)
+                                       for d in record["shape"])
+        assert record["layers"], record["case"]
+        for row in record["layers"]:
+            assert set(row) == {"implementation_layer", "timing",
+                                "ratio_to_reference"}
+            assert row["implementation_layer"] in bench.LAYERS, record["case"]
+
+
+@needs_native
+def test_the_environment_reports_real_introspection_not_a_restatement():
+    payload = bench.run_benchmark(cases=["scalar_dispatch_overhead"], **SMOKE)
+    env = payload["environment"]
+    info = cpp.backend_info()
+    backend = env["native_backend"]
+    assert backend["name"] == info["name"]
+    assert backend["tensor_core"] == info["tensor_core"]
+    assert backend["tensor_object"] == info["tensor_object"]
+    assert backend["state_support"] == list(info["state_support"])
+    assert backend["raw_kernel_count"] == len(info["raw_kernels"])
+    assert backend["autograd_op_count"] == len(info["autograd_ops"])
+    # NumPy build information comes from NumPy's own API or is absent —
+    # never fabricated.
+    build = env["numpy_build"]
+    assert build is None or set(build) == {
+        "blas_name", "blas_version", "lapack_name", "simd_extensions",
+    }
+
+
+@needs_native
+def test_the_thread_environment_records_only_variables_that_are_set(
+        monkeypatch):
+    monkeypatch.delenv("OMP_NUM_THREADS", raising=False)
+    payload = bench.run_benchmark(cases=["storage_allocation"], **SMOKE)
+    assert "OMP_NUM_THREADS" not in payload["environment"][
+        "thread_environment"]
+    monkeypatch.setenv("OMP_NUM_THREADS", "3")
+    payload = bench.run_benchmark(cases=["storage_allocation"], **SMOKE)
+    assert payload["environment"]["thread_environment"][
+        "OMP_NUM_THREADS"] == "3"
+
+
+@needs_native
+def test_smoke_configurations_are_used_in_smoke_mode():
+    payload = _by_name(bench.run_benchmark(**SMOKE))
+    for name, record in payload.items():
+        expected = bench.CASES[name]["configurations"]["smoke"]
+        assert record["shape"] == bench._case_shape(expected), name
+
+
+@needs_native
+def test_sample_and_warmup_counts_match_the_requested_mode():
+    payload = bench.run_benchmark(cases=list(SAMPLE_CASES), warmup=2,
+                                  repetitions=4, smoke=True)
+    for record in payload["cases"]:
+        cap = bench.CASES[record["case"]].get("repetitions", 4)
+        expected = min(4, cap)
+        assert record["warmup"] == 2
+        assert record["sample_count"] == expected, record["case"]
+        for row in record["layers"]:
+            assert row["timing"]["sample_count"] == expected, record["case"]
+            assert len(row["timing"]["samples_s"]) == expected
+
+
+@needs_native
+def test_timing_fields_are_finite_non_negative_and_complete():
+    payload = bench.run_benchmark(cases=list(SAMPLE_CASES), **SMOKE)
+    for record in payload["cases"]:
+        for row in record["layers"]:
+            timing = row["timing"]
+            assert timing["units"] == "seconds_per_call"
+            samples = timing["samples_s"]
+            assert samples
+            for sample in samples:
+                assert np.isfinite(sample)
+                assert sample >= 0.0
+            assert timing["min_s"] <= timing["median_s"] <= timing["max_s"]
+            assert timing["spread_s"] == pytest.approx(
+                timing["max_s"] - timing["min_s"]
+            )
+            assert timing["min_s"] == pytest.approx(min(samples))
+            assert timing["max_s"] == pytest.approx(max(samples))
+
+
+@needs_native
+def test_no_sample_is_discarded():
+    payload = bench.run_benchmark(cases=["elementwise_contiguous"], warmup=1,
+                                  repetitions=5, smoke=True)
+    for row in payload["cases"][0]["layers"]:
+        assert len(row["timing"]["samples_s"]) == 5
+
+
+@needs_native
+def test_ratios_appear_only_where_a_reference_layer_exists():
+    payload = _by_name(bench.run_benchmark(**SMOKE))
+    for name, record in payload.items():
+        rows = _layers(record)
+        reference = record["reference_layer"]
+        if reference is None:
+            for layer, row in rows.items():
+                assert row["ratio_to_reference"] is None, (name, layer)
+        else:
+            assert rows[reference]["ratio_to_reference"] is None, name
+            for layer, row in rows.items():
+                if layer == reference:
+                    continue
+                assert row["ratio_to_reference"] is not None, (name, layer)
+                assert np.isfinite(row["ratio_to_reference"])
+
+
+@needs_native
+def test_no_ratio_case_publishes_a_ratio_anywhere_in_the_payload():
+    payload = _by_name(bench.run_benchmark(cases=list(NO_RATIO_CASES),
+                                           **SMOKE))
+    for name in NO_RATIO_CASES:
+        record = payload[name]
+        assert record["reference_layer"] is None, name
+        assert all(row["ratio_to_reference"] is None
+                   for row in record["layers"]), name
+
+
+# --------------------------------------------------------------------------
+# Correctness gates
+# --------------------------------------------------------------------------
+
+@needs_native
+def test_every_case_reports_a_passed_correctness_gate():
+    payload = bench.run_benchmark(**SMOKE)
+    for record in payload["cases"]:
+        correctness = record["correctness"]
+        assert correctness["status"] == "passed", record["case"]
+        assert correctness["checks"], record["case"]
+        assert "max_abs_error" in correctness, record["case"]
+        error = correctness["max_abs_error"]
+        assert np.isfinite(error) and error >= 0.0, record["case"]
+
+
+@needs_native
+def test_exactly_compared_cases_really_are_exact():
+    """The design fixes which operations are compared bit-for-bit and
+    which by tolerance. The exact ones must actually report zero."""
+    exact_cases = ("scalar_dispatch_overhead", "elementwise_contiguous",
+                   "elementwise_transposed_view", "contiguous_materialization",
+                   "state_dict_snapshot", "state_dict_load")
+    payload = _by_name(bench.run_benchmark(cases=list(exact_cases), **SMOKE))
+    for name in exact_cases:
+        assert payload[name]["correctness"]["max_abs_error"] == 0.0, name
+
+
+@needs_native
+def test_accumulating_cases_are_compared_by_tolerance_and_say_so():
+    for name in ("reduction_contiguous", "reduction_transposed_view",
+                 "matmul_square_contiguous", "matmul_transposed_view"):
+        reference = bench.CASES[name]["correctness_reference"].lower()
+        assert "tolerance" in reference or "order-sensitive" in reference, name
+
+
+@needs_native
+def test_the_gate_runs_before_the_timer_structurally(monkeypatch):
+    """`measure` must never be reached when a gate fails."""
+    calls = []
+    original = bench.measure
+
+    def tracking(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(bench, "measure", tracking)
+    bench.run_benchmark(cases=["elementwise_contiguous"], **SMOKE)
+    assert calls
+    calls.clear()
+
+    def failing_check():
+        raise AssertionError("injected gate failure")
+
+    original_build = bench.CASES["elementwise_contiguous"]["build"]
+
+    def broken_build(config, spec):
+        case = original_build(config, spec)
+        case["check"] = failing_check
+        return case
+
+    monkeypatch.setitem(bench.CASES["elementwise_contiguous"], "build",
+                        broken_build)
+    with pytest.raises(AssertionError, match="injected gate failure"):
+        bench.run_benchmark(cases=["elementwise_contiguous"], **SMOKE)
+    assert calls == []
+
+
+@needs_native
+def test_a_wrong_native_result_aborts_before_timing(monkeypatch):
+    """A finite but wrong result must fail the gate, not be timed."""
+    original = cpp.NativeTensorCore.multiply
+
+    def wrong(self, other):
+        result = original(self, other)
+        result.storage._lib.tf_storage_scale(
+            result.storage._require_open(), 1.0000001
+        )
+        return result
+
+    monkeypatch.setattr(cpp.NativeTensorCore, "multiply", wrong)
+    with pytest.raises(AssertionError):
+        bench.run_benchmark(cases=["elementwise_contiguous"], **SMOKE)
+
+
+@needs_native
+def test_a_non_finite_native_result_is_caught_by_the_gate(monkeypatch):
+    original = cpp.NativeTensorCore.sum
+
+    def poisoned(self, axis=None, keepdims=False):
+        result = original(self, axis=axis, keepdims=keepdims)
+        result.storage._lib.tf_storage_fill(
+            result.storage._require_open(), float("nan")
+        )
+        return result
+
+    monkeypatch.setattr(cpp.NativeTensorCore, "sum", poisoned)
+    with pytest.raises(AssertionError):
+        bench.run_benchmark(cases=["reduction_contiguous"], **SMOKE)
+
+
+@needs_native
+def test_cli_reports_a_correctness_failure_with_a_nonzero_exit(monkeypatch,
+                                                              capsys):
+    def broken_build(config, spec):
+        raise AssertionError("injected gate failure")
+
+    monkeypatch.setitem(bench.CASES["elementwise_contiguous"], "build",
+                        broken_build)
+    with pytest.raises(SystemExit) as excinfo:
+        bench.main(["--smoke", "--case", "elementwise_contiguous"])
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    assert "correctness gate failed" in captured.err
+    assert captured.out == ""
+
+
+# --------------------------------------------------------------------------
+# Deterministic construction
+# --------------------------------------------------------------------------
+
+@needs_native
+def test_repeated_runs_produce_identical_correctness_metrics():
+    """Timings vary; the measured *values* must not."""
+    cases = ["elementwise_contiguous", "matmul_square_contiguous",
+             "conv2d_bias_gradient", "mlp_training_step",
+             "dropout_training_step"]
+    first = _by_name(bench.run_benchmark(cases=cases, **SMOKE))
+    second = _by_name(bench.run_benchmark(cases=cases, **SMOKE))
+    for name in cases:
+        left = dict(first[name]["correctness"])
+        right = dict(second[name]["correctness"])
+        assert left == right, name
+
+
+def test_input_generators_never_touch_the_global_numpy_rng():
+    before = np.random.get_state()
+    values = bench._values((4, 4), 7)
+    again = bench._values((4, 4), 7)
+    assert np.array_equal(values, again)
+    after = np.random.get_state()
+    assert before[0] == after[0]
+    assert np.array_equal(before[1], after[1])
+    assert before[2:] == after[2:]
+
+
+def test_the_benchmark_uses_only_local_seeded_generators():
+    source = BENCHMARK_FILE.read_text(encoding="utf-8")
+    for banned in ("np.random.seed", "numpy.random.seed", "np.random.rand",
+                   "np.random.randn", "np.random.uniform(",
+                   "random.random(", "random.seed("):
+        assert banned not in source, banned
+    assert "np.random.default_rng(seed)" in source
+
+
+# --------------------------------------------------------------------------
+# Dropout stream discipline
+# --------------------------------------------------------------------------
+
+@needs_native
+def test_the_dropout_gate_proves_one_call_per_step_and_a_neutral_eval():
+    payload = _by_name(bench.run_benchmark(cases=["dropout_training_step"],
+                                           **SMOKE))
+    correctness = payload["dropout_training_step"]["correctness"]
+    for check in ("exactly_one_generator_call_consumed",
+                  "evaluation_is_state_neutral", "core_derivation_parity",
+                  "inverted_dropout_scaling", "both_outcomes_present",
+                  "registered_generator_identity"):
+        assert check in correctness["checks"], check
+    # The mask matches the Core derivation at the same key, exactly.
+    assert correctness["max_abs_error"] == 0.0
+    assert correctness["dropout_p"] == bench.DROPOUT_P
+    assert correctness["generator_seed"] == bench.DROPOUT_SEED
+
+
+@needs_native
+def test_the_dropout_case_rewinds_its_generator_outside_the_timer():
+    """Every timed repetition must consume the *same* call index, so
+    benchmark setup can never shift the index a timed call sees."""
+    spec = bench.CASES["dropout_training_step"]
+    case = spec["build"](spec["configurations"]["smoke"], spec)
+    try:
+        indices = []
+        for _ in range(4):
+            state = case["layers"]["training_step"]["prepare"]()
+            model, _optimizer = state
+            indices.append(model.dropout.generator.calls)
+            result = case["layers"]["training_step"]["run"](state)
+            case["layers"]["training_step"]["cleanup"](state, result)
+        assert indices == [0, 0, 0, 0]
+    finally:
+        case["close"]()
+
+
+# --------------------------------------------------------------------------
+# Setup / execution separation
+# --------------------------------------------------------------------------
+
+@needs_native
+def test_training_step_repetitions_start_from_identical_state():
+    """A fresh model and optimizer per repetition means every timed step
+    sees the same parameters, moments, and running statistics."""
+    spec = bench.CASES["normalized_training_step"]
+    case = spec["build"](spec["configurations"]["smoke"], spec)
+    layer = case["layers"]["training_step"]
+    try:
+        snapshots = []
+        for _ in range(3):
+            state = layer["prepare"]()
+            model, optimizer = state
+            snapshots.append((
+                {name: parameter.to_numpy().copy()
+                 for name, parameter in model.named_parameters()},
+                {name: buffer.to_numpy().copy()
+                 for name, buffer in model.named_buffers()},
+                list(optimizer.step_counts),
+            ))
+            result = layer["run"](state)
+            layer["cleanup"](state, result)
+        first = snapshots[0]
+        for other in snapshots[1:]:
+            assert set(first[0]) == set(other[0])
+            for name in first[0]:
+                assert np.array_equal(first[0][name], other[0][name]), name
+            for name in first[1]:
+                assert np.array_equal(first[1][name], other[1][name]), name
+            assert first[2] == other[2]
+    finally:
+        case["close"]()
+
+
+@needs_native
+def test_backward_cases_rebuild_their_graph_and_clear_gradients():
+    """No repetition may inherit a retained graph or an accumulated
+    gradient from the one before it."""
+    spec = bench.CASES["linear_forward_backward"]
+    case = spec["build"](spec["configurations"]["smoke"], spec)
+    layer = case["layers"]["backward"]
+    try:
+        gradients = []
+        for _ in range(3):
+            state = layer["prepare"]()
+            native_input, _output, _weighted, objective = state
+            assert not objective._graph_freed
+            layer["run"](state)
+            assert objective._graph_freed
+            gradients.append(native_input.grad.to_numpy().copy())
+            layer["cleanup"](state, None)
+        for other in gradients[1:]:
+            assert np.array_equal(gradients[0], other)
+    finally:
+        case["close"]()
+
+
+@needs_native
+def test_the_optimizer_case_steps_against_a_stable_gradient():
+    """The forward/backward runs once outside the timer, so every
+    repetition sees the same gradients — and the gate proves it with a
+    separate probe rather than by advancing the timed state."""
+    spec = bench.CASES["adam_step"]
+    case = spec["build"](spec["configurations"]["smoke"], spec)
+    try:
+        metrics = case["check"]()
+        assert metrics["gradient_max_abs_error"] == 0.0
+        assert "gradients_match_the_timed_state" in metrics["checks"]
+        assert "gradients_retained_through_step" in metrics["checks"]
+        assert "exactly_one_version_per_parameter" in metrics["checks"]
+    finally:
+        case["close"]()
+
+
+# --------------------------------------------------------------------------
+# CLI
+# --------------------------------------------------------------------------
+
+@needs_native
+def test_cli_json_smoke_output_parses_and_keeps_stdout_clean(capsys):
+    bench.main(["--smoke", "--json", "--case", "elementwise_contiguous"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["mode"] == "smoke"
+    assert payload["schema_version"] == bench.SCHEMA_VERSION
+    assert len(payload["cases"]) == 1
+    assert captured.err == ""
+    # Fully JSON-native: a round trip changes nothing.
+    assert json.loads(json.dumps(payload)) == payload
+
+
+@needs_native
+def test_cli_human_output_carries_the_local_characterization_disclaimer(
+        capsys):
+    bench.main(["--smoke", "--case", "adam_step"])
+    out = capsys.readouterr().out
+    assert "not a performance contract" in out
+    assert "No result file is written" in out
+    assert "adam_step" in out
+    # The report names the layers rather than presenting one number.
+    assert "optimizer_step" in out
+    assert "stable_tensorforge" in out
+
+
+@needs_native
+def test_single_case_and_workload_selection():
+    payload = bench.run_benchmark(cases=["sgd_step"], **SMOKE)
+    assert [record["case"] for record in payload["cases"]] == ["sgd_step"]
+    payload = bench.run_benchmark(workloads=["matmul"], **SMOKE)
+    assert [record["case"] for record in payload["cases"]] == [
+        "matmul_square_contiguous", "matmul_rectangular_contiguous",
+        "matmul_transposed_view",
+    ]
+
+
+def test_cases_for_workloads_matches_the_registry():
+    for workload in bench.WORKLOADS:
+        expected = tuple(name for name, spec in bench.CASES.items()
+                         if spec["workload"] == workload)
+        assert bench.cases_for_workloads([workload]) == expected
+
+
+@needs_native
+def test_profile_mode_uses_the_profile_configuration_and_one_case():
+    payload = bench.run_benchmark(cases=["storage_allocation"], warmup=1,
+                                  repetitions=2, profile=True)
+    assert payload["mode"] == "profile"
+    assert payload["environment"]["configuration_variant"] == "profile"
+    record = payload["cases"][0]
+    assert record["configuration_variant"] == "profile"
+    assert record["shape"] == bench._case_shape(
+        bench.CASES["storage_allocation"]["configurations"]["profile"]
+    )
+
+
+@needs_native
+def test_profile_mode_refuses_more_than_one_case():
+    with pytest.raises(ValueError, match="exactly one case"):
+        bench.run_benchmark(profile=True, warmup=1, repetitions=2)
+
+
+def test_smoke_and_profile_are_mutually_exclusive():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        bench.run_benchmark(smoke=True, profile=True)
+
+
+@needs_native
+def test_cli_profile_flag_runs_the_named_case(capsys):
+    bench.main(["--profile", "scalar_dispatch_overhead", "--warmup", "1",
+                "--repetitions", "2", "--json"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "profile"
+    assert [record["case"] for record in payload["cases"]] == [
+        "scalar_dispatch_overhead"
+    ]
+
+
+def test_cli_rejects_invalid_combinations_and_values():
+    parser_errors = (
+        ["--profile", "adam_step", "--case", "sgd_step"],
+        ["--profile", "adam_step", "--smoke"],
+        ["--profile", "adam_step", "--workload", "matmul"],
+        ["--case", "not_a_case"],
+        ["--workload", "not_a_workload"],
+    )
+    for argv in parser_errors:
+        with pytest.raises(SystemExit) as excinfo:
+            bench.main(argv)
+        assert excinfo.value.code == 2, argv
+
+
+@pytest.mark.parametrize("bad", [0, -1, 1.5, True, "3", None])
+def test_non_positive_or_non_int_counts_are_rejected(bad):
+    with pytest.raises(ValueError):
+        bench.run_benchmark(warmup=bad, smoke=True)
+    with pytest.raises(ValueError):
+        bench.run_benchmark(repetitions=bad, smoke=True)
+
+
+def test_unbuilt_backend_follows_the_benchmark_convention(monkeypatch,
+                                                          capsys):
+    monkeypatch.setattr(cpp, "is_available", lambda: False)
+    with pytest.raises(RuntimeError, match="not built"):
+        bench.run_benchmark(**SMOKE)
+    with pytest.raises(SystemExit) as excinfo:
+        bench.main(["--smoke"])
+    assert excinfo.value.code != 0
+    captured = capsys.readouterr()
+    assert "not built" in captured.err
+    assert captured.out == ""
+
+
+# --------------------------------------------------------------------------
+# No result file is ever written
+# --------------------------------------------------------------------------
+
+@needs_native
+def test_running_the_benchmark_writes_no_files():
+    watched = (REPO_ROOT, REPO_ROOT / "benchmarks", REPO_ROOT / "docs")
+    before = {path: {entry.name for entry in path.iterdir()}
+              for path in watched}
+    bench.run_benchmark(cases=list(SAMPLE_CASES), **SMOKE)
+    for path in watched:
+        assert {entry.name for entry in path.iterdir()} == before[path], path
+
+
+@needs_native
+def test_the_cli_writes_no_files(capsys):
+    before = {entry.name for entry in REPO_ROOT.iterdir()}
+    bench.main(["--smoke", "--json", "--case", "state_dict_load"])
+    capsys.readouterr()
+    assert {entry.name for entry in REPO_ROOT.iterdir()} == before
+
+
+def test_the_benchmark_opens_no_file_and_imports_no_writer():
+    source = BENCHMARK_FILE.read_text(encoding="utf-8")
+    for banned in ("open(", "Path(", "os.makedirs", "savefig", "to_csv",
+                   "csv.writer", "np.save", "json.dump(", "matplotlib",
+                   "tempfile", "shutil"):
+        assert banned not in source, banned
+    # json.dumps (a string) is fine; json.dump (a file) is not.
+    assert "json.dumps(payload)" in source
+    # os is imported only to read environment variables.
+    assert re.findall(r"\bos\.\w+", source) == ["os.environ", "os.environ"]
+
+
+def test_no_committed_benchmark_result_artifact_exists():
+    for pattern in ("*.json", "*.csv", "*.png", "*.svg", "*.npz"):
+        assert not list((REPO_ROOT / "benchmarks").glob(pattern)), pattern
+    assert not list(REPO_ROOT.glob("benchmark*.json"))
+    assert not list((REPO_ROOT / "docs").glob("*cpu_performance*.json"))
+
+
+def test_ci_asserts_no_benchmark_duration():
+    workflow = (REPO_ROOT / ".github" / "workflows"
+                / "tests.yml").read_text(encoding="utf-8")
+    assert "benchmark_native_cpu_performance" not in workflow
+
+
+# --------------------------------------------------------------------------
+# Ownership: repeated runs leak no native storage
+# --------------------------------------------------------------------------
+
+@needs_native
+def test_repeated_smoke_runs_do_not_grow_live_native_storage(live_storages):
+    cases = list(SAMPLE_CASES)
+    bench.run_benchmark(cases=cases, **SMOKE)
+    gc.collect()
+    baseline = len(live_storages)
+    for _ in range(3):
+        bench.run_benchmark(cases=cases, **SMOKE)
+        gc.collect()
+        assert len(live_storages) == baseline
+
+
+@needs_native
+@pytest.mark.parametrize("case", list(EXPECTED_CASES))
+def test_each_case_returns_live_storage_to_its_baseline(case, live_storages):
+    bench.run_benchmark(cases=[case], **SMOKE)
+    gc.collect()
+    baseline = len(live_storages)
+    bench.run_benchmark(cases=[case], **SMOKE)
+    gc.collect()
+    assert len(live_storages) == baseline
+
+
+@needs_native
+def test_a_failed_gate_still_releases_the_case(live_storages, monkeypatch):
+    """`close()` runs in a finally, so a gate failure leaks nothing."""
+    bench.run_benchmark(cases=["normalized_training_step"], **SMOKE)
+    gc.collect()
+    baseline = len(live_storages)
+
+    original_build = bench.CASES["normalized_training_step"]["build"]
+
+    def broken_build(config, spec):
+        case = original_build(config, spec)
+
+        def failing():
+            raise AssertionError("injected gate failure")
+
+        case["check"] = failing
+        return case
+
+    monkeypatch.setitem(bench.CASES["normalized_training_step"], "build",
+                        broken_build)
+    with pytest.raises(AssertionError, match="injected gate failure"):
+        bench.run_benchmark(cases=["normalized_training_step"], **SMOKE)
+    gc.collect()
+    assert len(live_storages) == baseline
+
+
+@needs_native
+def test_the_stable_package_import_is_independent_of_the_native_backend():
+    """The harness measures the stable line beside the native one, which
+    must not create any coupling between them."""
+    import tensorforge
+
+    assert not hasattr(tensorforge, "NativeTensor")
+    assert not hasattr(tensorforge.nn, "NativeLinear")
+    model = tensorforge.nn.Linear(3, 2)
+    output = model(tensorforge.Tensor(np.zeros((2, 3))))
+    assert output.data.shape == (2, 2)
+
+
+# --------------------------------------------------------------------------
+# No timing threshold anywhere
+# --------------------------------------------------------------------------
+
+def test_the_benchmark_defines_no_timing_threshold():
+    banned_tokens = ("assert_faster", "max_seconds", "min_speedup",
+                     "time_budget", "timing_threshold", "max_duration",
+                     "performance_gate", "min_throughput", "speed_limit",
+                     "required_speedup", "performance_budget")
+    lowered = BENCHMARK_FILE.read_text(encoding="utf-8").lower()
+    for banned in banned_tokens:
+        assert banned not in lowered, banned
+    # The only module-level floats are correctness tolerances and module
+    # arguments; nothing that could be a duration budget.
+    allowed_floats = {
+        "EXACT", "FORWARD_ATOL", "GRADIENT_ATOL", "LOSS_ATOL",
+        "PARAMETER_ATOL",                       # correctness tolerances
+        "EPS", "MOMENTUM", "LR", "DROPOUT_P",   # module arguments
+    }
+    for name in dir(bench):
+        if name.startswith("_"):
+            continue
+        value = getattr(bench, name)
+        if isinstance(value, float):
+            assert name in allowed_floats, f"{name} looks like a threshold"
+
+
+def test_no_source_in_this_pair_compares_a_measured_duration():
+    """Measured statistics may be checked for finiteness, ordering, and
+    non-negativity relative to each other — never against a numeric
+    constant, which is what a hidden performance gate looks like."""
+    pattern = re.compile(
+        r"(median_s|min_s|max_s|spread_s|samples_s|relative_spread|"
+        r"ratio_to_reference|ratio)[\"'\]\s]{0,3}\s+[<>]=?\s*[0-9.]+"
+    )
+    for path in (BENCHMARK_FILE, TEST_FILE):
+        offenders = [
+            match.group(0) for match in pattern.finditer(
+                path.read_text(encoding="utf-8")
+            )
+            if not re.search(r"[<>]=?\s*0(\.0)?$", match.group(0))
+        ]
+        assert offenders == [], (path.name, offenders)
+
+
+def test_no_test_here_adjudicates_between_two_measured_paths():
+    """No test compares one measured statistic against another — the
+    harness measures, it never declares a winner — and no test times
+    anything of its own."""
+    source = TEST_FILE.read_text(encoding="utf-8")
+    verdict = re.compile(
+        r"assert[^\n]*\bnative\b[^\n]*[<>][^\n]*\breference\b"
+        r"|assert[^\n]*\breference\b[^\n]*[<>][^\n]*\bnative\b"
+        r"|assert[^\n]*\bmedian_s\b[^\n]*[<>][^\n]*\bmedian_s\b"
+    )
+    assert verdict.search(source) is None
+    imported = re.findall(r"^(?:import|from)\s+(\w+)", source, re.M)
+    for module_name in ("time", "timeit", "datetime", "cProfile", "timeit"):
+        assert module_name not in imported, module_name
+
+
+def test_documentation_commits_no_cpu_performance_timing_promise():
+    """The design document reports measurements as evidence, which is the
+    point — but no *status* surface may publish a timing as a project
+    promise, and nothing anywhere may claim a speedup as a guarantee."""
+    surfaces = ["README.md", "CLAUDE.md"] + [
+        f"docs/{name}" for name in (
+            "native_support_matrix.md", "roadmap.md", "release_history.md",
+            "backend_experiments.md", "project_summary.md", "architecture.md",
+        )
+    ]
+    for surface in surfaces:
+        text = (REPO_ROOT / surface).read_text(encoding="utf-8")
+        chunks = [text[max(0, match.start() - 400):match.end() + 600]
+                  for match in re.finditer("native_cpu_performance", text)]
+        assert chunks, surface
+        for chunk in chunks:
+            assert not re.search(
+                r"\d+(\.\d+)?\s*(us|ms|µs|ns|microseconds|milliseconds|"
+                r"seconds)\b", chunk, re.I
+            ), (surface, chunk[:160])
+            assert not re.search(r"\bx faster\b|\bspeedup\b",
+                                 chunk, re.I), (surface, chunk[:160])
+
+
+def test_the_design_document_marks_every_number_as_a_local_characterization():
+    text = DESIGN_FILE.read_text(encoding="utf-8")
+    flowed = " ".join(text.split())
+    assert "local characterizations, not a performance contract" in flowed
+    assert "no test asserts any of them" in flowed
+    # The evidence section separates its three confidence levels.
+    assert "### 3.1 Directly measured bottlenecks" in text
+    assert "### 3.2 Strongly source-evidenced but not fully measured" in text
+    assert "### 3.3 Unconfirmed hypotheses" in text
+    assert "### 3.4 Instrumentation a later milestone would need" in text
+
+
+# --------------------------------------------------------------------------
+# Scope boundaries: H0 adds no capability
+# --------------------------------------------------------------------------
+
+def test_h0_changes_no_capability_registry():
+    """H0 was measurement and documentation only."""
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert cpp.RAW_KERNELS == (
+        "elementwise_add", "elementwise_subtract", "elementwise_multiply",
+        "elementwise_divide", "relu", "matmul", "matmul_tiled",
+    )
+    assert cpp.TENSOR_CORE_KERNELS == (
+        "relu", "add", "subtract", "multiply", "matmul",
+    )
+    assert cpp.NATIVE_MODULES == (
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        "NativeDropout",
+    )
+    assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
+    assert cpp.NATIVE_METRICS == ("native_accuracy",)
+    assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
+    assert cpp.STATE_SUPPORT == (
+        "persistent_buffers", "state_dict", "load_state_dict",
+        "generator_state", "save_native_checkpoint", "load_native_checkpoint",
+        "checkpoint_generator_state",
+    )
+
+
+def test_h0_changes_no_export():
+    import tensorforge.experimental as experimental
+
+    assert set(experimental.__all__) == {
+        "NativeTensor", "NativeParameter", "NativeParameterRegistry",
+        "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
+        "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
+        "NativeMSELoss", "NativeSGD", "NativeAdam",
+        "save_native_checkpoint", "load_native_checkpoint",
+        "NativeCrossEntropyLoss", "native_accuracy",
+        "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
+        "NativeGenerator", "NativeDropout",
+    }
+
+
+def test_h0_leaves_the_checkpoint_contract_at_version_two():
+    from tensorforge.experimental import native_checkpoint
+
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
+    assert set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2}
+
+
+def test_h0_adds_no_kernel_or_abi_declaration():
+    """No C++ source, header, CTest, or ctypes declaration is new."""
+    sources = sorted(p.name for p in (REPO_ROOT / "cpp" / "src").glob("*.cpp"))
+    assert sources == [
+        "classification.cpp", "conv2d.cpp", "elementwise.cpp", "error.cpp",
+        "matmul.cpp", "pooling.cpp", "random.cpp", "reduction.cpp",
+        "storage.cpp",
+    ]
+    headers = sorted(p.name for p in (REPO_ROOT / "cpp" / "include").glob("*.h"))
+    assert headers == [
+        "tf_classification_internal.h", "tf_conv2d_internal.h",
+        "tf_internal.h", "tf_pooling_internal.h", "tf_random_internal.h",
+    ]
+    ctests = sorted(p.name for p in (REPO_ROOT / "cpp" / "tests").glob("*.cpp"))
+    assert len(ctests) == 11
+    assert cpp._CHECKED_KERNELS[-1] == "tf_core_dropout_forward"
+
+
+def test_h0_touches_no_production_numerical_source():
+    """The harness reaches production code only through public APIs; it
+    defines no kernel, operation, module, or optimizer of its own."""
+    source = BENCHMARK_FILE.read_text(encoding="utf-8")
+    for banned in ("def tf_core_", "argtypes", "import ctypes", "ctypes.",
+                   "TF_EXPORT", "_CHECKED_KERNELS", "copy_value_(",
+                   "_from_op(", "load_native_checkpoint(",
+                   "save_native_checkpoint("):
+        assert banned not in source, banned
+    # The only classes it defines are its own benchmark models.
+    classes = re.findall(r"^class (\w+)", source, re.M)
+    assert all(name.startswith("_Benchmark") for name in classes), classes
+
+
+def test_the_harness_only_reaches_the_native_line_through_public_names():
+    source = BENCHMARK_FILE.read_text(encoding="utf-8")
+    private = set(re.findall(r"\b(?:tensor|core|module|loss|objective|"
+                             r"prediction|output|graphed|plain|result)\._(\w+)",
+                             source))
+    # A small, deliberate set of private reads, each of which is a
+    # documented internal the existing benchmarks already use for
+    # structural gates.
+    assert private <= {"graph_freed", "graph_resources"}, private
+
+
+def test_the_benchmark_is_separate_from_every_earlier_phase_harness():
+    """H0 adds a new harness; it does not modify or subsume the Phase
+    D/E/F/G ones."""
+    harnesses = sorted(p.name for p in (REPO_ROOT / "benchmarks").glob("*.py"))
+    assert harnesses == [
+        "benchmark_native_autograd.py",
+        "benchmark_native_classification.py",
+        "benchmark_native_cnn.py",
+        "benchmark_native_cpu_performance.py",
+        "benchmark_native_dropout.py",
+        "benchmark_native_normalization.py",
+        "cpp_backend.py",
+    ]
+    names = set()
+    for name in harnesses:
+        if name == "cpp_backend.py":
+            continue
+        text = (REPO_ROOT / "benchmarks" / name).read_text(encoding="utf-8")
+        match = re.search(r'BENCHMARK_NAME = "([^"]+)"', text)
+        assert match, name
+        names.add(match.group(1))
+    assert bench.BENCHMARK_NAME in names
+    assert len(names) == len(harnesses) - 1

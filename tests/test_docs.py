@@ -26,12 +26,16 @@ DOCS = (
     "native_classification_design.md",
     "native_normalization_design.md",
     "native_rng_dropout_design.md",
+    "native_cpu_performance_design.md",
 )
 
 # The native line's phase ladder, oldest to newest. Phases A-G are all
-# complete; Phase G (native RNG and Dropout) is the latest completed
-# phase, closed at milestone G10. Nothing after G exists.
-NATIVE_PHASE_LADDER = "ABCDEFG"
+# complete; Phase G (native RNG and Dropout) is the latest *completed*
+# phase, closed at milestone G10. Phase H (native CPU performance and
+# runtime efficiency) is the current phase: it has begun at milestone
+# H0, which is architecture, profiling, and baseline work only and
+# shipped no optimization and no capability. Nothing after H exists.
+NATIVE_PHASE_LADDER = "ABCDEFGH"
 
 EXAMPLE_FILES = (
     "train_linear_regression.py",
@@ -2348,13 +2352,16 @@ def test_status_docs_agree_on_the_phase_sequence():
     Phase G (native RNG and Dropout) opened with milestone G0, so naming
     it is now correct rather than an over-claim — what it may not do is
     claim a Phase-G *capability* exists, which the Phase-G guardrails
-    below check against the live registry. Phase H is still invented."""
+    below check against the live registry. Phase H (native CPU
+    performance) opened with milestone H0 on the same terms: naming it is
+    correct, claiming it delivered a capability is not, and Phase I is
+    still invented."""
     for surface in PHASE_STATUS_DOCS:
         text = _status_text(surface)
         assert "Phase E" in text and "Phase F" in text, surface
-        # Phase G is the newest phase; nothing later may be named.
-        assert "Phase H" not in text, f"{surface} names Phase H"
-    # The phase sequence is A..G with no gaps: the set of phases a
+        # Phase H is the newest phase; nothing later may be named.
+        assert "Phase I" not in text, f"{surface} names Phase I"
+    # The phase sequence is A..H with no gaps: the set of phases a
     # document names must be a contiguous prefix-suffix of that ladder,
     # never a set that skips one. (Ordering *within* a document is not
     # pinned — the support matrix legitimately leads with the newest
@@ -2370,10 +2377,10 @@ def test_status_docs_agree_on_the_phase_sequence():
             f"{surface} skips a phase: names {named}, expected the "
             f"contiguous run {list(span)}"
         )
-        # The newest phase named must be G — no document may stop at F
-        # and thereby imply Phase F is still the current phase.
-        assert named[-1] == "G", (
-            f"{surface} stops at Phase {named[-1]}; Phase G is current"
+        # The newest phase named must be H — no document may stop at G
+        # and thereby imply Phase G is still the current phase.
+        assert named[-1] == "H", (
+            f"{surface} stops at Phase {named[-1]}; Phase H is current"
         )
 
 
@@ -2793,8 +2800,12 @@ def test_the_phase_f_closure_claims_no_later_phase():
     started = (r"(is|are|was|were|now|has|have)\s+"
                r"(begun|started|under way|underway|in progress|complete"
                r"|completed|shipped|implemented|supported)")
-    later = (r"(Phase H|CUDA (phase|runtime|"
-             r"backend)|AMP (phase|path)|Tensor Core|CPU optimization phase"
+    # Phase H left this list when milestone H0 opened it: "Phase H has
+    # begun" is now simply true. What it may not claim is a Phase-H
+    # *capability*, which the H0 guardrails check against the live
+    # registry — a stronger check than a phase-name scan.
+    later = (r"(Phase I|CUDA (phase|runtime|"
+             r"backend)|AMP (phase|path)|Tensor Core"
              r"|distributed (phase|training)|float16|bfloat16)")
     # Negated or explicitly-future forms are the honest ones.
     excluded = re.compile(
@@ -4026,13 +4037,29 @@ _PHASE_G_OVERCLAIMS = (
     # closure itself) really have landed, so claiming any of them is
     # accurate. With the ladder exhausted there is no "later milestone"
     # left inside Phase G to guard against; what replaces that entry is
-    # the boundary *beyond* the phase — no surface may claim a Phase-H,
+    # the boundary *beyond* the phase — no surface may claim a Phase-I,
     # a CUDA/float32/AMP milestone, or any successor phase has begun,
     # because none has.
+    #
+    # ``Phase H`` itself was retired from this entry when milestone H0
+    # opened that phase: naming it is now accurate. What replaces it is
+    # the narrower claim H0 must not let erode — that Phase H *shipped an
+    # optimization*, which it did not. H0 is architecture, profiling, and
+    # baseline work; every kernel is still the reference loop Phase G
+    # left behind, and the memory pool, scratch workspace, SIMD,
+    # threading, and BLAS questions are all recorded as rejected-on-
+    # evidence rather than answered.
     ("a later phase has begun",
-     r"\bPhase[- ]H\b|\bG11\b"
+     r"\bPhase[- ]I\b|\bG11\b|\bH11\b"
      r"|(CUDA|float32|AMP)[^.]{0,40}\b(phase|milestone)\b[^.]{0,40}"
      r"\b(has|have|is|are)\s+(begun|started|shipped|landed|complete)\b"),
+    ("a Phase-H optimization has shipped",
+     r"(memory pool|scratch (?:allocator|workspace)|SIMD|AVX|OpenMP|BLAS"
+     r"|multi-?threading|thread pool)[^.]{0,60}"
+     r"\b(is|are|was|were|has been|have been)\s+"
+     r"(added|shipped|implemented|enabled|introduced|adopted|landed)\b"
+     r"|\bH[1-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
+     r"(begun|started|shipped|landed|complete|completed)\b"),
 )
 
 
@@ -6420,7 +6447,16 @@ CURRENT_STATUS_SURFACES = (
     "src/tensorforge/experimental/__init__.py",
 )
 
-_LATEST_PHASE = "G"
+# The current phase and the newest *closed* one, which are deliberately
+# different letters: Phase H opened at H0, and H0 shipped no optimization
+# and closed no phase, so Phase G is still the latest completed phase.
+_LATEST_PHASE = "H"
+_LATEST_COMPLETED_PHASE = "G"
+# Deliberately scoped to Phase G. H0 also shipped, but ``H0`` is a short
+# token that sits a few words away from the legitimately *unstarted*
+# H1-H10 rows in the support matrix's ladder table, so a proximity scan
+# over it would flag honest prose. H0's shipped status is asserted
+# directly instead, in ``test_h0_is_marked_shipped_but_claims_no_speedup``.
 _CLOSED_MILESTONES = ("G7", "G8", "G9", "G10")
 
 # Past-tense and milestone-scoping markers. A span carrying one of these
@@ -6452,22 +6488,35 @@ def test_only_the_newest_phase_is_called_the_latest_phase():
     # Premise, from the live registry: Phase G really did close.
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert "dropout" not in cpp.UNSUPPORTED
+    # ...and from a real file: Phase H really did open.
+    assert (REPO_ROOT / "docs" / "native_cpu_performance_design.md").is_file()
 
+    # Two distinct claims, which now name two different letters and must
+    # not be conflated: Phase H is the latest phase (it opened at H0),
+    # and Phase G is the latest *completed* one (H0 shipped no
+    # optimization and closed nothing).
     forms = (
-        re.compile(r"Phase ([A-G])\b[^.;]{0,60}?\bis the latest\b", re.I),
-        re.compile(r"latest (?:completed )?(?:native )?phase is Phase "
-                   r"([A-G])\b", re.I),
-        re.compile(r"latest (?:completed )?(?:native )?phase[^.;]{0,40}?"
-                   r"\bPhase ([A-G])\b", re.I),
+        (_LATEST_PHASE,
+         re.compile(r"Phase ([A-H])\b[^.;]{0,60}?\bis the latest phase\b",
+                    re.I)),
+        (_LATEST_PHASE,
+         re.compile(r"(?<!completed )latest (?:native )?phase is Phase "
+                    r"([A-H])\b", re.I)),
+        (_LATEST_COMPLETED_PHASE,
+         re.compile(r"latest completed (?:native )?phase is Phase ([A-H])\b",
+                    re.I)),
+        (_LATEST_COMPLETED_PHASE,
+         re.compile(r"Phase ([A-H])\b[^.;]{0,60}?\bis the latest completed\b",
+                    re.I)),
     )
     for surface in CURRENT_STATUS_SURFACES:
         text = _status_text(surface)
-        for pattern in forms:
+        for expected, pattern in forms:
             named = {match.group(1).upper()
                      for match in pattern.finditer(text)}
-            assert named <= {_LATEST_PHASE}, (
-                f"{surface} calls a phase other than {_LATEST_PHASE} the "
-                f"latest phase: {sorted(named)}"
+            assert named <= {expected}, (
+                f"{surface} calls a phase other than {expected} the latest "
+                f"(pattern {pattern.pattern!r}): {sorted(named)}"
             )
 
 
@@ -6623,3 +6672,182 @@ def test_the_current_testing_story_claims_no_expected_skips():
         "the project summary does not say the missing-backend contract is "
         "executed in a child process"
     )
+
+
+# ==========================================================================
+# Phase H, milestone H0 — semantic documentation guardrails
+#
+# H0 opened Phase H with architecture, profiling, and baseline work only.
+# The failure mode this section exists for is a document that reads the
+# opening of a *performance* phase as a performance *claim*. Every guard
+# below is premised on a live registry value or a real file rather than on
+# prose, and each is a handful of assertions rather than a wording rule.
+# ==========================================================================
+
+_PHASE_H_DESIGN = "docs/native_cpu_performance_design.md"
+_PHASE_H_HARNESS = "benchmarks/benchmark_native_cpu_performance.py"
+
+# The surfaces that must agree about Phase H's status.
+_PHASE_H_SURFACES = (
+    "README.md",
+    "CLAUDE.md",
+    "docs/project_summary.md",
+    "docs/roadmap.md",
+    "docs/native_support_matrix.md",
+    "docs/backend_experiments.md",
+    "docs/architecture.md",
+)
+
+
+def test_h0_is_marked_shipped_but_claims_no_speedup():
+    """H0 really shipped — its files exist — and every status surface says
+    so *and* says it optimized nothing."""
+    for path in (_PHASE_H_DESIGN, _PHASE_H_HARNESS,
+                 "tests/test_native_cpu_performance_benchmark.py"):
+        assert (REPO_ROOT / path).is_file(), path
+
+    shipped = re.compile(
+        r"\bH0\b[^.]{0,120}?\b(is|are|was|has|have|shipped|complete"
+        r"|completed|landed|begun|only)\b", re.I,
+    )
+    for surface in _PHASE_H_SURFACES:
+        text = _status_text(surface)
+        assert "Phase H" in text, f"{surface} does not name Phase H"
+        assert shipped.search(text), f"{surface} does not record milestone H0"
+        # ...and each names the design contract, so a reader can find the
+        # evidence rather than take the prose on trust.
+        assert "native_cpu_performance_design" in text, surface
+
+
+def test_no_surface_claims_phase_h_delivered_an_optimization():
+    """The premise is the tree, not the prose: no Phase-H optimization
+    exists yet, so no document may say one does.
+
+    ``tf_matmul_tiled`` is the trap. It is a *pre-existing* raw-buffer
+    experiment (it predates Phase H and is on no production path), so a
+    document may describe it — what none may say is that the production
+    matmul is now blocked, vectorized, threaded, or BLAS-backed."""
+    from tensorforge.backends import cpp
+
+    # Premise: the production matmul is still the naive strided loop, and
+    # no optimization-related kernel or registry entry exists.
+    matmul_source = (REPO_ROOT / "cpp" / "src"
+                     / "matmul.cpp").read_text(encoding="utf-8")
+    assert "deliberately unoptimized reference loops" in matmul_source
+    for banned in ("immintrin", "__m256", "_mm256", "omp parallel",
+                   "cblas_", "std::thread"):
+        assert banned not in matmul_source, banned
+    assert cpp.RAW_KERNELS[-1] == "matmul_tiled"   # pre-existing, unchanged
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+
+    claims = re.compile(
+        r"\b(production|native)\s+matmul\b[^.]{0,60}\b(is|are|was|were|now)"
+        r"\s+(blocked|tiled|vectori[sz]ed|threaded|parallel\w*|BLAS)"
+        r"|\bPhase.H\b[^.]{0,80}\b(made|makes|is making)\b[^.]{0,30}\bfaster\b"
+        r"|\bH0\b[^.]{0,60}\b(sped|speeds|speeded|optimi[sz]ed)\b",
+        re.I,
+    )
+    negations = re.compile(
+        r"\b(not|never|no|none|without|would|will|future|proposed"
+        r"|conditional|rejected|beyond|if)\b", re.I,
+    )
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 70):match.end() + 30]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_phase_h_surfaces_state_the_unchanged_capability_boundary():
+    """H0 moved nothing, and the surfaces that describe it must say which
+    boundary stayed put — checked against the live registry, so the prose
+    cannot drift away from reality."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+
+    # Every surface that carries a Phase-H section says H0 changed no
+    # capability. The subject list is deliberately short: the claim is
+    # what matters, not the wording around it.
+    # Deliberately spans sentence boundaries: every surface makes this
+    # claim, but some make it across two sentences ("nothing was made
+    # faster. ... no capability changed"), which a sentence-scoped window
+    # would miss. The window is bounded so the two halves still have to be
+    # about the same milestone.
+    unchanged = re.compile(
+        r"\bH0\b[\s\S]{0,700}?\b(no|nothing)\b[\s\S]{0,250}?"
+        r"\b(capabilit\w+|optimi[sz]ation|registry|dtype|device"
+        r"|checkpoint)\b",
+        re.I,
+    )
+    for surface in _PHASE_H_SURFACES:
+        text = _status_text(surface)
+        assert unchanged.search(text), (
+            f"{surface} does not state that H0 changed no capability"
+        )
+
+
+def test_the_phase_h_design_keeps_its_conditional_ladder_and_rejections():
+    """H1-H8 are proposals. The design must say so, must carry every
+    section the milestone requires, and must record the four
+    infrastructure questions as *criteria* rather than as answers."""
+    text = _normalized_doc(_PHASE_H_DESIGN)
+
+    # The ladder exists in full and is explicitly conditional.
+    for index in range(11):
+        assert f"H{index}" in text, f"the design does not name milestone H{index}"
+    assert "proposals, not commitments" in text.lower()
+    assert "narrowed, reordered, or dropped" in text.lower()
+
+    # The four infrastructure decisions are recorded as rejected-for-now
+    # with criteria, not as adopted.
+    lowered = text.lower()
+    for subject in ("memory pool", "scratch workspace", "simd", "threading",
+                    "blas"):
+        assert subject in lowered, subject
+    assert "rejected for now" in lowered
+
+    # The required contract sections are present by subject.
+    for subject in ("accumulation order", "determinism",
+                    "generic reference path", "strided fallback",
+                    "failure atomicity", "parameter version",
+                    "sanitizer", "cross-platform", "non-goals",
+                    "closure requirements"):
+        assert subject in lowered, subject
+
+
+def test_the_phase_h_design_records_daedalus_decisions():
+    """Every relevant reference-project idea gets an explicit
+    adopt/adapt/reject decision — not a silent copy and not silence."""
+    text = _normalized_doc(_PHASE_H_DESIGN)
+    lowered = text.lower()
+    assert "daedalus" in lowered
+    for decision in ("adopt", "adapt", "reject"):
+        assert decision in lowered, decision
+    # The ideas the milestone specifically named must each appear.
+    for idea in ("matmul", "avx2", "memory pool", "scratch workspace",
+                 "benchmark", "profil", "conv2d", "cuda", "pybind11"):
+        assert idea in lowered, idea
+
+
+def test_no_ci_job_or_test_asserts_a_phase_h_duration():
+    """The standing repository rule, restated where Phase H could break
+    it: no workflow references the harness and no test times anything."""
+    workflow = (REPO_ROOT / ".github" / "workflows"
+                / "tests.yml").read_text(encoding="utf-8")
+    assert "benchmark_native_cpu_performance" not in workflow
+    # Scoped to the harness itself. Its test module deliberately *names*
+    # these tokens, in the guard that bans them from the harness, so
+    # scanning that file here would flag the guard rather than a defect.
+    text = (REPO_ROOT / _PHASE_H_HARNESS).read_text(encoding="utf-8").lower()
+    for banned in ("timing_threshold", "max_seconds", "min_speedup",
+                   "performance_budget", "assert_faster"):
+        assert banned not in text, banned

@@ -73,7 +73,7 @@ stable/native dispatch and no change to the stable framework or the
 version-1 checkpoint format.
 
 **Phase F — Native Normalization and Stateful Buffers — is *complete*
-(F0–F9)**; the latest phase is Phase G, recorded further
+(F0–F9)**. Phase G is the latest *completed* phase and Phase H is the current one; both are recorded further
 below. Milestone **F0** is complete: it
 locks the architecture contract in
 [native_normalization_design.md](native_normalization_design.md) —
@@ -245,7 +245,7 @@ baseline. F9 is **validation and documentation only** — no numerical
 capability, no C++, no CTest, no ABI or ctypes surface, no example, no
 benchmark, and no production behavior changed.
 
-**The latest phase is Phase G — Native RNG and Dropout — and it is
+**The latest completed phase is Phase G — Native RNG and Dropout — and it is
 complete; milestones G0 through G10 have all landed.** G0 is the architecture
 contract, [native_rng_dropout_design.md](native_rng_dropout_design.md),
 and it adds **no numerical behavior**. It locks: random state is
@@ -3839,7 +3839,7 @@ training run with exact checkpoint resume, an honest characterization
 benchmark, and phase closure under Release/Debug builds and Clang
 ASan/UBSan/LeakSanitizer. **Phase F — Native Normalization and Stateful
 Buffers — is complete (F0–F9)**, and **Phase G — Native RNG and
-Dropout — is the latest phase and is complete (G0–G10)**: an explicit
+Dropout — is the latest *completed* phase (G0–G10)**: an explicit
 `NativeGenerator`, a stateless deterministic Dropout-forward Core, the
 differentiable `NativeTensor.dropout`, the `NativeDropout` module,
 checkpoint format version 2 with generator state and alias topology, an
@@ -3920,7 +3920,67 @@ practical LeakSanitizer lifecycle returning native live storage
 no suppression file — **validation and documentation only, adding no
 numerical capability**. **Phase F is therefore complete**, and there is
 still no normalization operation, kernel, or C ABI export.
-Dropout and a native RNG sit **beyond** Phase F. CUDA experiments
+Dropout and a native RNG sit **beyond** Phase F. They belong to Phase G,
+which has since closed.
+
+**Phase H — native CPU performance and runtime efficiency — is the
+current phase, and it has begun at milestone H0 only.** Its contract is
+[native_cpu_performance_design.md](native_cpu_performance_design.md).
+H0 is architecture, profiling, and baseline work; **nothing was made
+faster**. It shipped that contract, the unified measurement harness
+`benchmarks/benchmark_native_cpu_performance.py`, that harness's
+behavioral contract tests, and documentation reconciliation, and it
+changed no C++, C ABI symbol, ctypes declaration, `NativeTensorCore`
+method, autograd operation, module, loss, metric, optimizer, export,
+capability-registry value, dtype, device, or checkpoint format —
+`UNSUPPORTED` still reads `("float32", "cuda", "amp")` and the native
+checkpoint format is still version 2 with versions 1 and 2 supported.
+
+The harness is the first one in this repository that measures the runtime
+*as a whole* rather than one phase's surface. It runs 24 cases across
+twelve workload families — dispatch overhead, elementwise, reductions,
+matmul, materialization, linear, convolution, normalization, stochastic,
+optimizer, training step, and in-memory state operations — and separates
+up to nine declared implementation layers: NumPy, the stable
+`tensorforge` line, the raw-buffer C++ kernels (`cpp.matmul` and the
+existing `cpp.matmul_tiled` blocking experiment, neither of which is on
+any production path), `NativeTensorCore`, `NativeTensor` without a graph,
+`NativeTensor` with graph construction, a `backward()`, an optimizer
+`step()`, and a complete training step. Every case runs its correctness
+gate **before** the timing helper is ever reached, so a failed gate
+publishes no timing; a case with no honest equivalent is labelled
+`native_only` and publishes **no ratio at all**, with the reason
+recorded; setup, cleanup, and any state a call advances are handled
+outside the timer; and **no result file of any kind is written**. It
+offers `--smoke`, `--json`, `--case`, `--workload`, and a focused
+`--profile CASE` mode that runs one case at a deliberately larger shape
+with more repetitions, which is the shape a profiler should attach to.
+
+Checkpoint file I/O is deliberately excluded — it is dominated by the
+filesystem and the NPZ writer rather than by TensorForge, and it belongs
+to no training iteration — so the in-memory `state_dict()` /
+`load_state_dict()` surface is measured as its own category instead.
+
+The evidence H0 produced is separated into what was *directly measured*,
+what is *strongly source-evidenced but not fully measured*, and what
+remains an *unconfirmed hypothesis*, with the minimal instrumentation a
+later milestone would need recorded wherever H0's observability could not
+settle a question. The ranking is deliberately not the one an
+unoptimized-kernel intuition would predict: the largest measured factors
+are an allocator behavior and a memory **access pattern** rather than raw
+arithmetic; the Python-side per-call metadata path costs several times
+the ctypes boundary it wraps; and the `NativeTensor` wrapper and its
+autograd graph node are measurably **not** a bottleneck — a negative
+result that rules out a family of plausible optimizations before any of
+them is written. The proposed H1–H8 ladder is explicitly conditional on
+that evidence, and a memory pool, scratch allocation, SIMD, threading,
+and BLAS are all currently rejected on it, each with the criteria that
+would reopen it recorded rather than an answer invented. Every number is
+a local characterization of one machine, reported with its spread, and
+asserted by no test — there is no CI timing threshold anywhere in this
+repository.
+
+CUDA experiments
 remain a separate future branch (where `device` gains a second value),
 and an AMP / Tensor Core path is where `dtype` later gains
 float16/bfloat16. The Python framework stays the reference implementation

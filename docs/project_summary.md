@@ -120,8 +120,8 @@ cases, no speed assertion anywhere), **F8 shipped the cross-cutting
 integration and semantic guardrails** (`tests/test_native_phase_f.py`),
 and **F9 closed the phase** under Release and Debug builds with Clang
 ASan/UBSan and LeakSanitizer — validation and documentation only, adding
-no numerical capability. **Phase G (native RNG and Dropout) is the
-latest phase and is complete: milestones G0 through G10 have all
+no numerical capability. **Phase G (native RNG and Dropout) is complete
+and is the latest *completed* phase: milestones G0 through G10 have all
 landed.** G0, the architecture
 contract in [native_rng_dropout_design.md](native_rng_dropout_design.md),
 locks Python-managed generator state, stateless native
@@ -535,9 +535,40 @@ Reproducibility is exact only for the state actually captured (no Python
 ordinary concurrent training is not claimed thread-safe: the
 serializability guarantee covers the participating state transactions
 only.
-Beyond Phase G
+**Phase H — native CPU performance and runtime efficiency — is the
+current phase, and it has begun at milestone H0 only.** H0 is an
+architecture, profiling, and baseline milestone and **nothing was made
+faster**: it shipped the contract in
+[native_cpu_performance_design.md](native_cpu_performance_design.md), the
+unified measurement harness
+`benchmarks/benchmark_native_cpu_performance.py`, that harness's
+behavioral contract tests, and documentation reconciliation — H0 added
+no numerical capability, kernel, C ABI symbol, ctypes declaration, Core
+method, operation, module, export, capability-registry value, dtype, or
+device, and the native checkpoint format stays version 2 with versions 1
+and 2 supported.
+
+The harness separates the layers a caller actually pays for — NumPy, the
+stable line, the raw-buffer kernels, `NativeTensorCore`, `NativeTensor`
+with and without a graph, backward, an optimizer step, and a whole
+training step — across twelve workload families, gates correctness
+**before** timing everywhere, publishes no ratio where no honest
+equivalent exists, and writes no result file. The evidence it produced is
+ranked honestly and is deliberately surprising in places: the largest
+measured factors are an allocator behavior and a memory access pattern
+rather than raw arithmetic, the Python-side per-call metadata path costs
+several times the ctypes boundary it wraps, and the `NativeTensor`
+wrapper and its autograd graph node are measurably **not** a bottleneck.
+The proposed H1–H8 ladder is explicitly **conditional** on that evidence,
+and a memory pool, scratch allocation, SIMD, threading, and BLAS are all
+currently rejected on it, with the criteria that would reopen each
+recorded rather than an answer invented. Every number is a local
+characterization of one machine, reported with its spread, and asserted
+by no test.
+
+Beyond Phase H
 (**not started**): more activations/math, data
-loaders, a CPU optimization phase, then the CUDA
+loaders, then the CUDA
 runtime, dtype/AMP work, and Transformer/text and distributed
 experiments. See [roadmap.md](roadmap.md) and
 [release_history.md](release_history.md) for the full arc.

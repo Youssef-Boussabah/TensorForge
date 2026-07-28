@@ -344,6 +344,26 @@ explicit layer at a time:
   `("float32", "cuda", "amp")` — a claim scoped to the **experimental
   native float64 CPU** line, never to the stable framework, which keeps
   its own separate `Dropout`.
+- **Native CPU performance (Phase H) has begun, at milestone H0 only.**
+  H0 is architecture, profiling, and baseline work and **shipped no
+  optimization**: the contract in
+  [native_cpu_performance_design.md](native_cpu_performance_design.md),
+  the unified measurement harness
+  `benchmarks/benchmark_native_cpu_performance.py`, its contract tests,
+  and documentation reconciliation. Every kernel in `cpp/src/` is still
+  the deliberately plain reference loop Phase G left behind, and no
+  numerical capability, kernel, C ABI symbol, ctypes declaration, Core
+  method, operation, module, export, capability-registry value, dtype,
+  device, or checkpoint version changed — the format stays version 2 with
+  versions 1 and 2 supported, so **Phase G remains the latest completed
+  phase**. What H0 added is the ability to *attribute* cost: the harness
+  measures each of the layers in the execution path below separately,
+  gates correctness before timing, and publishes no ratio where no honest
+  equivalent exists. Its ranked evidence, and the explicitly conditional
+  H1–H8 ladder derived from it, live in the design document; a memory
+  pool, scratch allocation, SIMD, threading, and BLAS are all currently
+  rejected on that evidence, with the criteria that would reopen each
+  recorded rather than an answer invented.
 
 The execution path for a native training step is:
 

@@ -2326,6 +2326,80 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
+### Phase H — native CPU performance and runtime efficiency (H0, phase begun)
+
+**Phase H is the current phase, and it has begun at milestone H0 only.**
+The last sentence of the Phase-G entry above — "the kernels still
+deliberately naive" — is what this phase exists to address, and H0 is the
+milestone that decides *how*, by measuring rather than assuming.
+
+**H0 shipped four things and nothing else:** the architecture contract
+`docs/native_cpu_performance_design.md`; the unified baseline harness
+`benchmarks/benchmark_native_cpu_performance.py`; that harness's
+behavioral contract tests `tests/test_native_cpu_performance_benchmark.py`;
+and documentation reconciliation across every status surface.
+
+**No performance optimization has shipped.** H0 changed no C++, no C ABI
+symbol, no ctypes declaration, no `NativeTensorCore` method, no autograd
+operation, no module, no loss, no metric, no optimizer, no export, no
+capability registry, no dtype, no device, and no checkpoint format.
+`UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
+`SUPPORTED_DTYPES` still reads `("float64",)`, `SUPPORTED_DEVICES` still
+reads `("cpu",)`, and the native checkpoint format is still
+`tensorforge.native_checkpoint` version **2** with versions **(1, 2)**
+supported. **Phase G therefore remains the latest completed phase.**
+
+The contract locks the things a later optimization must obey: why CPU
+efficiency precedes CUDA and dtype expansion (both would inherit whatever
+runtime this phase leaves behind); the workload families and the
+shape-selection rules for the smoke, full, and profiler configurations;
+the timing, warm-up, repetition, and statistics methodology; the
+correctness-before-timing rule; the exact-versus-tolerance policy; the
+floating-point **accumulation-order** policy, whose default is that Phase
+H preserves the existing order bit-for-bit and whose five-condition
+escape hatch requires every existing exact-resume proof to be
+re-established and every committed loss trajectory to be re-derived; the
+determinism policy; the optimized-contiguous-dispatch, strided-fallback,
+and **retained generic reference path** rules; the invariants Phase H may
+not weaken; the allocation, scratch-workspace, SIMD, threading, and
+optional-BLAS decision criteria; the cross-platform and sanitizer
+requirements; the conditional H0–H10 ladder; the explicit non-goals; the
+closure requirements; and an adopt/adapt/reject decision for every
+relevant idea taken from the Daedalus reference project.
+
+The harness is the first in this repository to measure the runtime *as a
+whole* rather than one phase's surface: 24 cases across twelve workload
+families, separating up to nine declared implementation layers, with a
+correctness gate that runs **before** the timing helper is ever reached,
+honest reference labelling that publishes **no ratio** where no
+equivalent exists, `--smoke` / `--json` / `--case` / `--workload` and a
+focused `--profile CASE` mode, deterministic seeded inputs, explicit
+cleanup that never relies on garbage collection, fresh state per
+training-step repetition, an explicitly reset generator for the Dropout
+case, and **no result file of any kind**. Checkpoint file I/O is
+deliberately excluded from every training-step total; the in-memory state
+surface is its own category.
+
+The evidence is separated into what was directly measured, what is
+strongly source-evidenced but not fully measured, and what remains an
+unconfirmed hypothesis — with the minimal instrumentation a later
+milestone would need recorded wherever H0's observability could not
+settle a question, rather than a result being invented. The ranking is
+deliberately not the one an unoptimized-kernel intuition predicts: the
+largest measured factors are an allocator behavior and a memory **access
+pattern** rather than raw arithmetic; the Python-side per-call metadata
+path costs several times the ctypes boundary it wraps; and the
+`NativeTensor` wrapper and its autograd graph node are measurably **not**
+a bottleneck — a negative result that rules out a family of plausible
+optimizations before any of them is written. The proposed **H1–H8 ladder
+is explicitly conditional**: a milestone whose premise the measurement
+does not confirm is narrowed, reordered, or dropped, and a memory pool,
+scratch allocation, SIMD, threading, and BLAS are all currently
+**rejected on evidence**, each with the criteria that would reopen it
+recorded. Every number is a local characterization of one machine,
+reported with its spread, and asserted by no test — there is no CI timing
+threshold anywhere in this repository.
+
 ### A hardening milestone before Phase D
 
 Between Phase C and the native CNN stack, a repair-and-hardening pass

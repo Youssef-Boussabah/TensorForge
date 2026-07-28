@@ -230,8 +230,8 @@ capability, no C++, no CTest, no ABI or ctypes surface, no example, no
 benchmark, and no production numerical file changed.**)
 **Phase F is complete**, and no normalization operation, kernel, C ABI
 symbol, or custom backward exists at all.
-**Phase G — Native RNG and Dropout — is the latest phase and is
-*complete*: milestones G0 (the architecture contract in
+**Phase G — Native RNG and Dropout — is the latest *completed* phase
+and is *complete*: milestones G0 (the architecture contract in
 `docs/native_rng_dropout_design.md`), G1 (`NativeGenerator` and module
 generator-state ownership), G2 (the deterministic stateless
 Dropout-forward **Core**), G3 (the differentiable
@@ -757,9 +757,52 @@ ctypes declaration, Core method, autograd operation, module, export,
 schema field, checkpoint version, benchmark, or registry value changed,
 and the example defines **no public training API** — none of its helpers
 is exported.
-Data loaders, native integer tensors, further
-dtypes/devices, CPU optimization, and CUDA experiments are
-future work beyond Phase G.
+**Phase H — Native CPU Performance and Runtime Efficiency — is the
+latest phase and is the current one; it has *begun*, at milestone **H0**
+only, and Phase G remains the latest *completed* phase.** H0 is an
+architecture, profiling, and baseline milestone: it shipped
+`docs/native_cpu_performance_design.md` (the contract), the unified
+measurement harness `benchmarks/benchmark_native_cpu_performance.py`,
+its behavioral contract tests
+`tests/test_native_cpu_performance_benchmark.py`, and documentation
+reconciliation — and **nothing else. No performance optimization has
+shipped.** H0 changed no C++, no C ABI symbol, no ctypes declaration, no
+`NativeTensorCore` method, no autograd operation, no module, no loss, no
+metric, no optimizer, no export, no capability registry, no dtype, no
+device, and no checkpoint format: `UNSUPPORTED` still reads
+`("float32", "cuda", "amp")`, `SUPPORTED_DTYPES` still reads
+`("float64",)`, `SUPPORTED_DEVICES` still reads `("cpu",)`, and the
+native checkpoint format is still `tensorforge.native_checkpoint`
+version **2** with versions **(1, 2)** supported. The harness runs 24
+cases across twelve workload families (dispatch overhead, elementwise,
+reduction, matmul, materialization, linear, convolution, normalization,
+stochastic, optimizer, training step, and in-memory state operations),
+separating up to nine declared implementation layers (`numpy`,
+`stable_tensorforge`, `raw_kernel`, `raw_kernel_tiled`, `tensor_core`,
+`native_tensor`, `native_tensor_graph`, `backward`, `optimizer_step`,
+`training_step`); every case's correctness gate runs **before** the
+timing helper is ever reached; a case with no honest equivalent is
+labelled `native_only` and publishes **no ratio at all**; `--smoke`,
+`--json`, `--case`, `--workload`, and a focused `--profile CASE` mode
+exist; setup, cleanup, and any advanced state are handled outside the
+timer (a fresh model and optimizer per training-step repetition, an
+explicitly `reset()` generator per Dropout repetition); checkpoint file
+I/O is deliberately excluded and the in-memory state surface is its own
+category; and **no result file of any kind is written**. The design
+separates its evidence into *directly measured*, *strongly
+source-evidenced but not fully measured*, and *unconfirmed hypotheses*,
+records the minimal instrumentation a later milestone would need
+wherever H0's observability could not settle a question, and makes the
+proposed **H1–H8 ladder explicitly conditional** — a milestone whose
+premise the measurement does not confirm is narrowed, reordered, or
+dropped. A memory pool, scratch allocation, SIMD, threading, and BLAS are
+all currently **rejected on evidence**, with the criteria that would
+reopen each recorded rather than an answer invented. Every measured
+number is a local characterization of one machine, reported with its
+spread, and asserted by **no** test; there is no CI timing threshold
+anywhere in this repository. Data loaders, native integer tensors, further
+dtypes/devices, and CUDA experiments are
+future work beyond Phase H.
 Position the project as serious and systems-focused — never
 "educational", "toy", or "mini" — while staying honest: not
 production-ready, not a PyTorch replacement.
@@ -821,7 +864,14 @@ production-ready, not a PyTorch replacement.
   the documentation reconciliation — the Release/Debug/sanitizer
   validation matrix and the single registry line that removed
   `"dropout"` from `UNSUPPORTED`) have all shipped — **Phase G is
-  complete**). When a milestone changes the
+  complete** —, and `native_cpu_performance_design.md` for Phase H —
+  **H0 only** (the design lock, the unified baseline harness
+  `benchmarks/benchmark_native_cpu_performance.py`, its contract tests,
+  and documentation reconciliation; architecture, profiling, and baseline
+  work with **no optimization, no capability, and no registry move**),
+  with H1–H8 proposed and explicitly conditional on that evidence, and
+  the closure milestones still ahead of the project, so **Phase H has
+  begun but is not complete**). When a milestone changes the
   public API or the examples, update the matching docs file (and
   README links) in the same milestone.
 - `.github/workflows/tests.yml` — minimal CI: install uv, build the
@@ -860,6 +910,11 @@ production-ready, not a PyTorch replacement.
   - `uv run python examples/train_mlp_with_dropout.py`
   - `uv run python examples/train_tiny_cnn.py`
   - `uv run python examples/native_dropout_training.py`
+- Run the Phase-H CPU baseline (measurement only; no speed asserted):
+  - `uv run python benchmarks/benchmark_native_cpu_performance.py --smoke`
+  - `uv run python benchmarks/benchmark_native_cpu_performance.py --json`
+  - `uv run python benchmarks/benchmark_native_cpu_performance.py --workload matmul`
+  - `uv run python benchmarks/benchmark_native_cpu_performance.py --profile matmul_square_contiguous`
 
 ## Style rules
 

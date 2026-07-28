@@ -188,6 +188,9 @@ uv run python benchmarks/benchmark_native_normalization.py --smoke         # nor
 uv run python benchmarks/benchmark_native_normalization.py --smoke --json  # machine-readable JSON
 uv run python benchmarks/benchmark_native_dropout.py --smoke               # Dropout characterization
 uv run python benchmarks/benchmark_native_dropout.py --smoke --json        # machine-readable JSON
+uv run python benchmarks/benchmark_native_cpu_performance.py --smoke       # Phase-H CPU baseline
+uv run python benchmarks/benchmark_native_cpu_performance.py --workload matmul
+uv run python benchmarks/benchmark_native_cpu_performance.py --profile matmul_square_contiguous
 ```
 
 The native API mirrors the stable one, explicitly:
@@ -249,6 +252,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
 - [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **complete**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, and milestone G7, the deterministic stochastic training example and its exact checkpoint resume (no capability), and milestone G8, the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` (also no capability — correctness gated before timing, no speed asserted), and milestone G9, the cross-cutting integration suite `tests/test_native_phase_g.py` (integration evidence only — no capability, and no runtime file changed), and milestone G10, the phase closure — the Release/Debug/sanitizer validation matrix, the documentation reconciliation, and the single registry line that finally removed `dropout` from `UNSUPPORTED` — are all complete, so end-to-end **exact stochastic training resume is demonstrated** and native Dropout is now supported on the experimental native float64 CPU line)
+- [docs/native_cpu_performance_design.md](docs/native_cpu_performance_design.md) — architecture contract for native CPU performance and runtime efficiency (Phase H — the **current** phase, **begun at milestone H0 only**: the design lock, the unified baseline harness `benchmarks/benchmark_native_cpu_performance.py`, its contract tests, and documentation reconciliation. H0 is architecture, profiling, and baseline work — **no performance optimization has shipped**, no numerical capability, dtype, device, export, registry value, or checkpoint version changed, and the proposed H1–H8 ladder is explicitly evidence-driven and conditional, so a milestone whose premise the measurement does not support is narrowed, reordered, or dropped)
 
 ## Limitations
 
@@ -310,7 +314,12 @@ Phase B (native autograd), Phase C (the native training stack),
 Phase D (the native CNN stack), Phase E (native classification and
 stable math), and Phase F (native normalization and stateful buffers)
 are all complete, and so is Phase G (native RNG and Dropout), the latest
-completed native phase. Phase C shipped
+completed native phase. **Phase H — native CPU performance and runtime
+efficiency — is the current phase and has begun at milestone H0**, which
+is architecture, profiling, and baseline work only: it shipped the design
+contract, the unified measurement harness, and its tests, and **no
+performance optimization, numerical capability, dtype, device, export,
+registry value, or checkpoint version came with it**. Phase C shipped
 parameters, modules, state dictionaries,
 Linear/ReLU/Sequential, MSE loss, parameter versioning with stale-graph
 safety, `sqrt`/`reciprocal` optimizer primitives, SGD and adaptive Adam,
@@ -530,8 +539,8 @@ Closing Phase F closes that phase, not the project: the native line is
 still experimental, still float64/CPU only, and still not
 production-ready.
 
-**Phase G — Native RNG and Dropout — is the latest phase, and it is
-complete.** All eleven milestones, G0 through G10, have landed. **G0**
+**Phase G — Native RNG and Dropout — is complete, and is the latest
+*completed* phase.** All eleven milestones, G0 through G10, have landed. **G0**
 locked the architecture
 contract in
 [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) —
@@ -791,9 +800,43 @@ Reproducibility is exact for the state actually captured; Python's
 are **not** captured and full-program determinism is not claimed. Ordinary
 concurrent *training* is not claimed thread-safe either: the
 serializability guarantee covers the participating state transactions, not
-an optimizer `step()` racing a forward. More activations/math, data
-loaders, and CPU optimization sit beyond Phase G, and CUDA/GPU experiments
-remain future work. See
+an optimizer `step()` racing a forward.
+
+**Phase H — Native CPU Performance and Runtime Efficiency — is the
+current phase, and it has begun at milestone H0 only.** H0 is an
+architecture, profiling, and baseline milestone: it locked the contract
+in
+[docs/native_cpu_performance_design.md](docs/native_cpu_performance_design.md),
+shipped `benchmarks/benchmark_native_cpu_performance.py` — a unified
+measurement harness that separates the layers a caller actually pays for
+(NumPy, the stable line, the raw-buffer kernels, `NativeTensorCore`,
+`NativeTensor` with and without a graph, backward, an optimizer step, and
+a whole training step) across twelve workload families, gates correctness
+**before** timing everywhere, publishes no ratio where no honest
+equivalent exists, and writes no result file — and its contract tests.
+
+**Nothing was made faster.** Every kernel is exactly the deliberately
+plain reference loop Phase G left behind; no numerical capability, dtype,
+device, export, capability-registry value, or checkpoint version changed,
+and the checkpoint format remains version 2 with versions 1 and 2
+supported. What H0 produced is *evidence*, and it is deliberately
+surprising in places: the largest measured factors are an allocator
+behavior and a memory access pattern rather than raw arithmetic, the
+Python-side per-call metadata path costs several times the ctypes
+boundary it wraps, and the `NativeTensor` wrapper and its autograd graph
+node are measurably **not** a bottleneck — a negative result that rules
+out a family of plausible optimizations. The proposed H1–H8 ladder is
+explicitly conditional on that evidence: a milestone whose premise the
+measurements do not support is narrowed, reordered, or dropped, and
+allocation pooling, SIMD, threading, and BLAS are all currently
+**rejected on evidence**, with the criteria that would reopen each one
+recorded rather than an answer invented. Every number in that document is
+a local characterization of one machine, reported with its spread, and
+asserted by no test — there is no CI timing threshold anywhere in this
+repository.
+
+More activations/math, data loaders, further dtypes, and CUDA/GPU
+experiments remain future work beyond Phase H. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 
