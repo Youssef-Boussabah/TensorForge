@@ -477,17 +477,20 @@ def test_native_phase_c_failure_recovery_lifecycle(tmp_path, monkeypatch):
 
     world = snapshot_world()
 
-    # (a) optimizer step staging failure.
-    real_full = cpp.NativeTensorCore.full
+    # (a) optimizer step staging failure. Injected at a per-parameter
+    # native allocation (each staged entry issues nine multiplies), so
+    # the failure lands part-way through staging with earlier entries
+    # already complete.
+    real_multiply = cpp.NativeTensorCore.multiply
     calls = {"n": 0}
 
-    def flaky_full(*args, **kwargs):
+    def flaky_multiply(*args, **kwargs):
         calls["n"] += 1
-        if calls["n"] == 9:
+        if calls["n"] == 14:
             raise MemoryError("forced step staging failure")
-        return real_full(*args, **kwargs)
+        return real_multiply(*args, **kwargs)
 
-    monkeypatch.setattr(cpp.NativeTensorCore, "full", flaky_full)
+    monkeypatch.setattr(cpp.NativeTensorCore, "multiply", flaky_multiply)
     with pytest.raises(MemoryError, match="forced step staging failure"):
         optimizer.step()
     monkeypatch.undo()

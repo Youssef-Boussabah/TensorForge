@@ -375,16 +375,18 @@ def test_native_sgd_staging_failure_changes_nothing_and_recovers(monkeypatch):
     first = _param_with_grad()
     second = _param_with_grad()
     optimizer = NativeSGD([first, second], lr=LR)
-    real_full = cpp.NativeTensorCore.full
+    # Injected at a *per-parameter* native allocation (the lr multiply),
+    # so the failure lands with the first entry already fully staged.
+    real_multiply = cpp.NativeTensorCore.multiply
     calls = {"n": 0}
 
-    def flaky_full(*args, **kwargs):
+    def flaky_multiply(*args, **kwargs):
         calls["n"] += 1
-        if calls["n"] == 2:  # the second staged update's lr scalar
+        if calls["n"] == 2:  # the second staged update's lr multiply
             raise MemoryError("forced staging failure")
-        return real_full(*args, **kwargs)
+        return real_multiply(*args, **kwargs)
 
-    monkeypatch.setattr(cpp.NativeTensorCore, "full", flaky_full)
+    monkeypatch.setattr(cpp.NativeTensorCore, "multiply", flaky_multiply)
     with pytest.raises(MemoryError, match="forced staging failure"):
         optimizer.step()
     monkeypatch.undo()

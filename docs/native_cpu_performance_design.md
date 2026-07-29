@@ -1,8 +1,10 @@
 # Native CPU Performance and Runtime Efficiency — Phase H design
 
-**Status: milestones H0, H1, and H2 complete. No supported capability has
-changed. H2 is the first milestone to change a numerical kernel's
-execution — its memory-access pattern, not its arithmetic.**
+**Status: milestones H0, H1, H2, H3, and H4 complete. No supported
+capability has changed. H2 is the first milestone to change a numerical
+kernel's execution — its memory-access pattern, not its arithmetic; H3
+and H4 are Python-only, and H4 is the first whose subject is a
+training-stack component rather than the tensor runtime.**
 
 This document is the architecture contract for **Phase H — Native CPU
 Performance and Runtime Efficiency**, the phase that follows the
@@ -1154,7 +1156,7 @@ milestone re-runs the H0 harness before and after and reports both.
 | **H1** | **Output allocation contract: uninitialized allocation for fully-written destinations** | B1 (measured, ~74 % of a 2 MB elementwise op) | **complete** — see 16.1 |
 | **H2** | **Matmul memory access: loop order in the production kernel** | B2 (measured, 3.3×, accumulation order preserved) | **complete** — see 16.2. Cache blocking was measured and **rejected**; the generic/optimized agreement is §16.2.3's four-part contract, not unconditional bit identity |
 | **H3** | **Per-call dispatch cost: one normalization boundary and per-view layout metadata** | B3 (measured, ~20 µs fixed, ~10 % of it ctypes) | **complete** — see 16.3 |
-| H4 | Optimizer step cost: fewer native calls and allocations per parameter | B4 (measured, 27 allocations/parameter, 83 % of a step) | proposed |
+| **H4** | **Optimizer step cost: fewer native calls and allocations per parameter** | B4 (measured, 27 allocations/parameter, 83 % of a step) | **complete** — see 16.4. Bit-identical; the scalar-materialization variant was measured and **rejected** |
 | H5 | Reduction execution: a contiguous fast path for the accumulate kernels | B5, B7 (measured) | proposed |
 | H6 | Composed-module cost: normalization and the composed convolution bias gradient | B6, B7 (measured) | conditional on H1/H3/H5 |
 | H7 | Elementwise and materialization traversal | B9 + §3.2 stride-collapsing hypothesis | conditional |
@@ -1184,6 +1186,12 @@ section 16.2 below.
 The single normalization boundary, the private validated view
 constructor, the per-view layout-array memoization, the immutability
 proof, and the measured results are section 16.3 below.
+
+### H4 — Optimizer step cost **(complete)**
+
+The per-step scalar holder, the exact reciprocal substitution, the
+eager temporary release, the retained pre-H4 reference, the rejected
+alternatives, and the measured results are section 16.4 below.
 
 ---
 
@@ -2636,47 +2644,387 @@ those same sources in a Debug configuration with assertions on.
 
 ---
 
-## 16.4 Remaining ladder detail
+## 16.4 H4 — optimizer step cost, as shipped
 
-### H4 — Optimizer step cost
+**Status: complete.** H4 reduced the fixed native allocation and call
+count of `NativeAdam.step()`, and — where the evidence supported it —
+`NativeSGD.step()`. It is a **Python composition change and nothing
+else**: no C++, no C ABI symbol, no ctypes declaration, no kernel, no
+`NativeTensorCore` method, no autograd operation, no module, no export,
+no registry value, no dtype, no device, and no checkpoint format moved.
+The library still exports exactly **52** `tf_*` symbols. Every value the
+optimizers produce is **bit-identical** to the pre-H4 composition.
 
-Reduce the fixed 27 native calls and allocations per parameter per Adam
-step — including the six one-element broadcast-scalar allocations §3.2
-identifies.
+### 16.4.1 The pre-H4 architecture, re-measured
 
-- Must preserve the two-phase mutation-atomic contract exactly: every
-  validation and every staged computation completes before the first
-  parameter mutates; a staging failure commits nothing and leaves
-  gradients retryable.
-- Must preserve one `copy_value_` and exactly one version increment per
-  updated parameter, gradient retention until `zero_grad()`, and the
-  moment-buffer replacement ordering.
-- Bit-identical unless §7.3's procedure is invoked, which for an
-  optimizer would immediately break the exact-resume proofs, so in
-  practice: bit-identical.
+B4's counts were re-instrumented on the **current post-H3 code** rather
+than taken from H0, by wrapping `NativeStorage.__init__` (the one
+constructor every allocation path runs through, zeroed and uninitialized
+alike), `NativeTensorCore.full`, `_binary_core_op`, and `_unary_compute`
+in a test-local counter. H0's figure was confirmed exactly:
 
-**Re-measured after H3, and confirmed as the highest-leverage remaining
-milestone.** H3 made every one of those calls cheaper without reducing
-their *number*, which sharpened rather than removed B4:
+**`NativeAdam.step()`, per parameter, before H4 — 27 native storage
+allocations**, fully attributed:
 
-| Measurement | Pre-H3 | Post-H3 |
+| Group | Count | What |
 |---|---|---|
-| `NativeAdam.step()` vs `tensorforge.optim.Adam` | 39.8× | **31.9×** |
-| a whole MLP training step vs the stable line | 8.88× | 8.38× |
-| a normalized training step vs the stable line | 6.76× | 5.28× |
-| `NativeAdam.step()`, small MLP | 1480 µs | 1046 µs |
-| `NativeAdam.step()`, one (128, 128) parameter | 1508 µs | 1326 µs |
+| Scalar coefficients | **8** | `full((), v)` for `beta1`, `1 - beta1`, `beta2`, `1 - beta2`, `1 - beta1**t`, `1 - beta2**t`, `eps`, `lr` |
+| Binary compute | 13 | 9 `multiply`, 2 `add`, 1 `subtract`, plus the commit's `add` |
+| Unary compute | 4 | `sqrt`, `reciprocal` on the denominator, and **two `reciprocal`s on one-element tensors** |
+| Commit copy | 2 | `copy_value_` → `_native_copy` = `zeros` + `add` |
 
-The optimizer step is still **roughly four times worse against the
-stable line than a complete training step is**, which is what identifies
-it rather than the forward or the backward as the remaining structural
-cost. The 128×128 row is the confirming detail: it improved only 1.14×
-against the small MLP's 1.42×, because at that size the arithmetic — not
-the per-call overhead H3 addressed — is the cost. The 27 allocations per
-parameter, and in particular the **six one-element broadcast scalars**
-`_stage_entry` builds per parameter per step, are now the target that
-H3 cannot reach: they are a *count* problem, not a *per-call-cost*
-problem.
+§3.2 said "six one-element broadcast scalars"; the measured number is
+**eight**, because `eps` and `lr` are scalars too. Two further
+one-element allocations come from the `reciprocal` calls on the
+bias-correction coefficients, so **ten of the 27 allocations per
+parameter were one-element**.
+
+**`NativeSGD.step()`, per parameter, before H4 — 5 allocations**: one
+`full((), lr)`, the `multiply` output, the `subtract` output, and the
+commit copy's two.
+
+Dispatch composition per Adam parameter: **8 of the 13 binary operations
+took the broadcasting path** (a `()`-shaped operand against a
+parameter-shaped one), and 5 took the same-shape contiguous fast path.
+
+### 16.4.2 What was implemented
+
+Three changes, all in `src/tensorforge/experimental/native_adam.py` and
+`native_sgd.py`.
+
+**1. The step's scalar coefficients are built once per step, not once
+per parameter.** `beta1`, `1 - beta1`, `beta2`, `1 - beta2`, `eps`, and
+`lr` are the same value for every parameter in a step, so a private
+`_StepConstants` holder builds each on first use, keyed by
+`(dtype, device)` — never assuming one dtype exists — and hands the same
+read-only core to every later parameter. The two bias-correction
+coefficients depend on the per-parameter step counter, so they are cached
+per `t`: steady-state training gives every parameter the same `t` and one
+pair, while a parameter that skipped earlier steps legitimately gets its
+own. NativeSGD does the same for its single `lr` scalar. The holder is
+created inside `step()`, allocates nothing until the first entry asks for
+a coefficient — so a step with no active parameter allocates nothing at
+all — and is released before the commit begins.
+
+**2. The bias-correction reciprocal is evaluated in Python.** Before H4,
+`1 - beta ** t` was allocated as a one-element core and the native
+`reciprocal` kernel was run on it. H4 computes `1.0 / (1.0 - beta ** t)`
+in Python and allocates the result directly, removing one allocation and
+one kernel call per coefficient per parameter.
+
+**This is an exact substitution, not a reassociation.** The kernel *is*
+`1.0 / x`:
+
+```cpp
+double op_reciprocal(double x) { return 1.0 / x; }   // cpp/src/elementwise.cpp
+```
+
+A Python `float` and a C++ `double` are the same IEEE-754 binary64
+value, `full((), y)` stores `float(y)` exactly, and IEEE-754 requires
+division to be correctly rounded — so there is exactly one possible
+result and both spellings produce it. Proved, not asserted: a test sweeps
+**20,000+ values** — random magnitudes across the full exponent range,
+±0, ±∞, the smallest subnormal, the largest finite magnitude, and every
+`1 - beta ** t` the optimizer actually forms — and compares the kernel's
+output against Python's division on **raw `uint64` bit patterns**, with
+zero mismatches.
+
+**3. Temporaries are released at their last use.** Pre-H4 `_stage_entry`
+appended every intermediate to a `transients` list and closed the whole
+list in one `finally` at the end, so seventeen parameter-sized buffers
+were simultaneously live at the peak. H4 closes each intermediate at the
+point its last consumer has run and sets its local to `None`, so the
+single cleanup `finally` closes only what is genuinely still live and can
+never close anything twice. The arithmetic is untouched — a release is
+not an operation.
+
+### 16.4.3 The numerical contract
+
+**Bit identity, unconditionally.** Unlike H2, H4 makes no four-part
+carve-out: it changes no accumulation order, no operand position, and no
+kernel, so every result is bit-identical including NaN payloads.
+
+The **pre-H4 composition is retained in the test suite** as a literal
+transcription of the shipped pre-H4 `_stage_entry` body, executed
+natively. Every equality below is against real native execution of the
+old composition, never a NumPy re-derivation:
+
+- one parameter × 4 shapes (`()`, `(1,)`, `(2, 2)`, `(3, 1, 4)`) × 3 step
+  counts × 5 hyperparameter sets (default, small betas, `beta = 0`,
+  betas at `0.99999`/`0.9999999` with `eps = 1e-30`, and `lr = 1e10`
+  with `eps = 2.5`) — 60 combinations, parameter and both moments;
+- a six-step run over four parameters of mixed shapes;
+- NativeSGD across four learning rates spanning `1e-9` to `1e12`.
+
+A separate test asserts the **exact operation sequence** a staged entry
+issues, so a future change that reorders or fuses operations fails
+loudly rather than silently: `multiply, multiply, add, multiply,
+multiply, multiply, add, multiply, multiply, sqrt, add, reciprocal,
+multiply, multiply, subtract`, plus the commit copy's `add`.
+
+Every committed loss trajectory, every deterministic training example,
+and every exact-resume proof in the repository therefore reproduces
+unchanged — which the full suite confirms.
+
+### 16.4.4 What did *not* change
+
+The two-phase contract is exactly what it was, and this is the point
+H4 was most constrained by. Stated as the H4 entry stated it before the
+milestone shipped, and still true after it: **every validation and every
+staged computation completes before the first parameter mutates; a
+staging failure commits nothing and leaves gradients retryable.** In
+detail:
+
+- **Stage mutates nothing.** Validation order is unchanged and still four
+  complete passes — optimizer open, every parameter open, every m/v state
+  valid, then every active gradient — each finishing before the next
+  begins. No validation moved behind a mutation.
+- **One `copy_value_` and exactly one version increment per updated
+  parameter.** The commit path is untouched.
+- **Gradients are read and never written**, by identity, value, and
+  storage identity.
+- **The staging seam keeps its name and its meaning.** `_stage_entry`
+  gained an optional fourth argument, the shared holder; called with
+  three arguments it builds and releases its own scalars, which is
+  exactly the pre-H4 behavior, and a test asserts both spellings produce
+  the same bits.
+- **The documented per-entry commit boundary is unchanged.** H4 does not
+  claim the commit is infallible; a test injects a failure into
+  `copy_value_` and asserts that exactly the entries committed before it
+  stand, that no staged core leaks, and that the exception reaches the
+  caller — the honest window the pre-H4 docstring already recorded.
+
+### 16.4.5 Measured results
+
+Two independent measurements, both with correctness gated before timing.
+
+**(a) A controlled A/B**, alternating `pre` and `post` **subprocess**
+rounds so system drift affects both arms equally, 366 samples per case
+(150 for the largest), medians:
+
+| Case | pre-H4 | post-H4 | ratio |
+|---|---|---|---|
+| `NativeAdam.step()`, one (128, 128) | 1041 µs | 660 µs | **1.58×** |
+| `NativeAdam.step()`, one (256, 256) | 3659 µs | 2382 µs | **1.54×** |
+| `NativeAdam.step()`, MLP profile (4 params, largest 256²) | 5461 µs | 3690 µs | **1.48×** |
+| `NativeAdam.step()`, non-default betas, MLP full | 1246 µs | 1020 µs | 1.22× |
+| `NativeAdam.step()`, MLP full (4 params, largest 32×64) | 1221 µs | 1008 µs | 1.21× |
+| `NativeAdam.step()`, **first** step, MLP full | 1219 µs | 1060 µs | 1.15× |
+| `NativeAdam.step()`, mixed gradients (2 of 4 frozen) | 636 µs | 566 µs | 1.12× |
+| `NativeAdam.step()`, one scalar parameter | 285 µs | 255 µs | 1.12× |
+| `NativeAdam.step()`, one 16-element vector | 274 µs | 252 µs | 1.09× |
+| `NativeAdam.step()`, one (512, 512) | 12 326 µs | 12 053 µs | 1.02× — **neutral** |
+| MLP training step, 256→256→64 | 7946 µs | 6480 µs | 1.23× |
+| MLP training step, 32→64→8 | 1837 µs | 1597 µs | 1.15× |
+| Normalized training step | 4330 µs | 3846 µs | 1.13× |
+| CNN training step | 1675 µs | 1539 µs | 1.09× |
+| Dropout training step | 1430 µs | 1446 µs | 0.99× — **neutral** |
+| `NativeSGD.step()`, MLP full | 206 µs | 192 µs | 1.07× |
+| `NativeSGD.step()`, one (128, 128) | 98 µs | 101 µs | 0.97× — **neutral** |
+| `NativeSGD.step()`, MLP profile | 529 µs | 602 µs | 0.88× — **noise, see below** |
+| **`matmul` 256², control (code unchanged)** | 2501 µs | 2587 µs | **0.97×** |
+
+**(b) The shipped harness's own cases**, `pre`/`post`, 81 samples,
+6 alternating rounds:
+
+| Harness row | pre-H4 | post-H4 | ratio | vs stable, pre → post |
+|---|---|---|---|---|
+| `adam_step` / `optimizer_step` | 1303 µs | 1040 µs | **1.25×** | 23.8× → **19.7×** |
+| `sgd_step` / `optimizer_step` | 194 µs | 190 µs | 1.03× | 31.5× → 30.9× |
+| `cnn_classification_training_step` | 1706 µs | 1596 µs | 1.07× | — |
+| `normalized_training_step` | 5469 µs | 5121 µs | 1.07× | 6.70× → 5.48× |
+| `mlp_training_step` | 1670 µs | 1669 µs | 1.00× | — |
+| `matmul_square_contiguous`, all 7 layers (control) | — | — | 0.84×–1.26× | — |
+
+### 16.4.6 Negative, neutral, and noise results
+
+Reported as findings, not omitted.
+
+- **This machine's noise floor is wide.** The matmul control case, whose
+  compiled code and Python path H4 did not touch, varied **0.84×–1.26×**
+  across its seven layers between arms. Any single-case reading inside
+  that band is not a result. That is why the Adam figures are quoted from
+  the 366-sample alternating-subprocess A/B rather than from one harness
+  run, and why the `sgd_mlp_profile` 0.88× row is reported as **noise**:
+  a focused re-measurement (three independent pre/post pairs, 200 samples
+  each) gave pre medians 897/881/850 µs against post 884/894/900 µs, with
+  post *minima* lower in every pair. SGD's honest result is
+  **neutral-to-slightly-positive**, not a regression and not a win.
+- **Large parameters are neutral.** At (512, 512) the step is
+  memory-bandwidth-bound: the arithmetic dominates, ten fewer one-element
+  allocations are invisible, and the measured 1.02× is inside the spread.
+  H4 helps where the *count* is the cost, which is small and medium
+  parameters and multi-parameter models — exactly what B4 predicted.
+- **The Dropout training step is neutral** (0.99×): its optimizer is one
+  small MLP's worth of parameters and the stochastic forward dominates.
+- **H2 is intact.** Large-matmul rows moved only within the control
+  band, and no matmul code path was touched.
+
+### 16.4.7 Memory
+
+Measured by tracking every `NativeStorage` construction and destruction
+during one steady-state step; **fully deterministic and reproducible
+across runs**:
+
+| Case | peak live transient storages | peak live transient bytes | allocations |
+|---|---|---|---|
+| Adam, one (128, 128) | 25 → **13** | 1 966 160 → **655 424** (**3.00×**) | 27 → 25 |
+| Adam, one (512, 512) | 25 → **13** | 31 457 360 → **10 485 824** (**3.00×**) | 27 → 25 |
+| Adam, MLP full (4 params) | 34 → **22** | 245 840 → **95 936** (**2.56×**) | 108 → **76** |
+| Adam, MLP profile (4 params) | 34 → **22** | 7 864 400 → **3 022 336** (**2.60×**) | 108 → **76** |
+| SGD, MLP profile (4 params) | 9 → 9 | unchanged | 20 → **17** |
+
+The wall-clock improvement therefore does **not** hide a memory
+increase: peak transient memory during an Adam step fell by 2.6–3.0×
+while the time fell. Per-parameter marginal allocation cost went from 27
+to **17**, with at most **eight** shared scalars for the whole step
+instead of eight per parameter — so a four-parameter model allocates
+**76 instead of 108** (−29.6 %), and the gap widens with the parameter
+count.
+
+### 16.4.8 Optimizations measured and rejected
+
+**1. Materializing the scalar coefficients to the operand's shape**
+(so the multiply takes the flat contiguous kernel instead of the
+broadcasting odometer). Measured per-operation, and it is genuinely
+faster below roughly 32 K elements and genuinely slower above:
+
+| Operand | broadcast `()` scalar | materialized + multiply | same-shape contiguous (floor) |
+|---|---|---|---|
+| 16 | 15.3 µs | 11.2 µs | 6.8 µs |
+| 1 024 | 22.0 µs | 12.0 µs | 7.2 µs |
+| 16 384 | 58.3 µs | **23.6 µs** | 13.0 µs |
+| 65 536 | 148.4 µs | **313.5 µs** | 32.0 µs |
+| 262 144 | 816.4 µs | **942.8 µs** | 543.0 µs |
+
+**Rejected**, for four reasons. The crossover tracks this machine's L2
+cache, not layout metadata, so the predicate would be a tuned magnitude
+threshold rather than the §8.1 kind of dispatch. It **regresses** the
+harness's own `profile` configuration, whose largest parameter is 65 536
+elements. It adds a parameter-sized buffer per scalar operation, against
+§16.4.7's requirement that time must not be bought with peak memory. And
+a whole-optimizer A/B confirmed it: the materializing variant measured
+0.87×–1.36× depending on size, against the shipped variant's consistent
+improvement.
+
+**2. Same-shape stride-0 views for scalar operands** (dispatch path B
+instead of path C: the *same* kernel with the *same* arguments, proved by
+construction, but skipping the Python broadcast computation).
+**Rejected on measurement**: path C builds three NumPy `int64` arrays per
+call; path B builds four, because both the fresh output-shaped operand
+and the freshly constructed stride-0 view have cold layout caches and
+each view is used once. The whole-optimizer A/B put it at or below the
+shipped variant on every workload.
+
+**3. Adopting the staged parameter core instead of copying it.**
+`copy_value_` runs `_native_copy` = `zeros` + `add`, which is two
+allocations — one of them **zero-initialized**, a full extra write — and
+one full-width kernel pass, purely to duplicate a core the optimizer just
+built and owns exclusively. `NativeParameter._adopt_value_core` would
+remove all three. **Rejected**: §16.4 above and this document's own H4
+entry require *one `copy_value_` per updated parameter*, and that is the
+project's single sanctioned mutation primitive. Recorded as H5+ scope.
+
+**4. Making `_native_copy` use `contiguous_copy`.** The same two
+allocations again, from the other side. **Rejected as out of scope and
+not obviously correct**: `_native_copy` is `zeros.add(core)`, and
+`0.0 + (-0.0) = +0.0`, so it *normalizes negative zero* where
+`contiguous_copy` would preserve it. That is a real observable difference
+in a helper shared by gradient accumulation, state loading, and both
+optimizers — a change that needs its own milestone, its own parity
+argument, and its own tests, not a drive-by inside an optimizer
+milestone. Recorded here so a later milestone starts from the finding
+rather than rediscovering it.
+
+**5. A persistent per-optimizer scalar cache**, keyed on the current
+hyperparameters so it could never go stale, which would make the
+steady-state scalar allocation count **zero**. **Rejected by contract**:
+it is exactly the "hidden optimizer-wide scratch tensor whose lifetime
+complicates checkpointing" that §10 and the H4 scope forbid — it would
+have to be released by `close()`, appear in every live-storage baseline,
+and be reasoned about in the checkpoint transaction. The per-step holder
+gets most of the benefit with none of the lifetime surface.
+
+**6. Reassociating the update to fold scalars together** — for example
+`(m_hat * lr) * inv_denominator` into `m_hat * (lr * inv_denominator)`,
+which would remove one broadcast operation per parameter. **Rejected
+outright**: floating-point multiplication is not associative, this is a
+§7.3 order change, and for an optimizer it would break every committed
+exact-resume proof in the project.
+
+### 16.4.9 Validation
+
+**Windows.** A fresh Release build (Visual Studio 17 2022, MSVC) with
+zero project compiler, linker, and CMake warnings, **13/13 CTests** in
+0.24 s, and the native backend smoke check. The shipped DLL's own PE
+export directory lists **52** symbols, all `tf_*`, with **none** matching
+"adam", "sgd", "optimizer", or "poison". The full Python suite is
+**5 517 passed, 0 failed, 0 skipped** — the 5 295 pre-H4 cases plus 222
+H4 cases. The Phase-H harness passes all **26** correctness gates in
+`--smoke` and in `--smoke --json` while writing no result file, the JSON
+carries its full schema, the focused `--case adam_step` / `--case
+sgd_step` runs pass, and the existing quick backend benchmark runs.
+
+**Clang 18.1.3 `-DTF_SANITIZE=address,undefined` in WSL2**, built
+out-of-source outside the repository so the active Windows runtime stayed
+the Release DLL:
+
+- **Zero** compiler warnings or errors.
+- **Instrumentation proved**: `nm -D` shows **22** `__asan*` and **14**
+  `__ubsan*` dynamic symbols beside the **52** exported `tf_*`, and
+  **zero** symbols matching "adam", "sgd", or "optimizer" — the H4
+  architecture is Python composition, and the library says so.
+- **13/13 sanitized native CTests** with `detect_leaks=1`.
+- **909 sanitized Python tests** across the H4 suite and every
+  optimizer-touching suite (Adam, SGD, optimizer math, optimizer state,
+  parameter, versioning, state_dict, state transaction, both checkpoint
+  suites, storage allocation, metadata dispatch, matmul dispatch, and the
+  harness contract tests) — zero ASan and zero UBSan diagnostics.
+- **568 sanitized Python tests** across the deterministic-training and
+  exact-resume suites (MLP, CNN, classification, normalization, Dropout,
+  and Phases C, D, E, F, G including the G6 hardening matrix).
+- The harness under the sanitized library: **26 cases, all gates
+  passed**.
+- The G7 example reproducing its exact stochastic resume with live native
+  storage **0 → 0**.
+- **A LeakSanitizer optimizer lifecycle**: 25 Adam create/step×4/close
+  cycles, 25 SGD cycles, and a **112-position injected-failure matrix**
+  (seven Core seams × four call indices × `RuntimeError`, `MemoryError`,
+  `KeyboardInterrupt`, and a non-`Exception` class). Every failed step
+  was checked **immediately, with no collection**, for storage growth
+  against the count taken before it: **zero growth at all 112
+  positions**. Live native storage returned **exactly** to its measured
+  baseline. The remaining process-exit allocations (764 486 bytes in 680
+  allocations) contain **no TensorForge frame** — the leak frames name
+  only CPython, the ASan runtime, libc, and NumPy, and none names
+  `_tensorforge_cpp.so` — with **no suppression file added**.
+
+**Not run, and not claimed:** a Windows **Debug** build and its CTests.
+H4 changed no C++ file, no CMake input, and no ABI declaration — the
+`cpp/` tree is byte-identical, which `git diff --stat -- cpp/` confirms —
+so a second Windows configuration would recompile unchanged sources. The
+Clang sanitizer build above compiles those same sources in a Debug
+configuration with assertions on. MemorySanitizer is still unavailable
+here and still not claimed.
+
+### 16.4.10 Three tests were re-anchored, and why
+
+Three pre-existing tests injected a failure at the *N*-th
+`NativeTensorCore.full` call. H4 legitimately changes how many `full`
+calls a step makes and when, so those indices no longer named the
+position the tests were written to exercise ("fail after at least one
+entry is fully staged"). Each was re-anchored to a **per-parameter**
+allocation seam — `NativeTensorCore.multiply` — which expresses that
+position directly rather than through a magic count. **Every assertion in
+all three is unchanged.** A fourth, `test_native_phase_f.py`'s optimizer
+staging-failure boundary, patched `_stage_entry` with a three-argument
+signature; it now forwards `*rest`, so it injects at the same place
+without pinning the seam's arity. New H4 tests cover the `full` seam
+directly, at every position the shared holder builds.
+
+---
+
+## 16.5 Remaining ladder detail
 
 ### H5 — Reduction execution
 

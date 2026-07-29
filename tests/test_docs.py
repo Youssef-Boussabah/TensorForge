@@ -1,5 +1,6 @@
 """Lightweight checks that the docs exist and stay in sync with the repo."""
 
+import inspect
 import re
 from pathlib import Path
 
@@ -4047,9 +4048,10 @@ _PHASE_G_OVERCLAIMS = (
     #
     # Retired one milestone at a time, exactly as the Phase-G entries
     # above were: H1 (the output-allocation contract), **H2** (the matmul
-    # loop order), and **H3** (the metadata and dispatch contract) really
-    # have shipped, so claiming any of them is accurate and the
-    # milestone-number arm now starts at H4. What is
+    # loop order), **H3** (the metadata and dispatch contract), and
+    # **H4** (the optimizer step contract) really have shipped, so
+    # claiming any of them is accurate and the milestone-number arm now
+    # starts at H5. What is
     # *not* retired, and will not be until §11–§13 of the design are met,
     # is the family of optimizations Phase H has deliberately rejected on
     # evidence: no memory pool, scratch workspace, SIMD, threading,
@@ -4064,7 +4066,7 @@ _PHASE_G_OVERCLAIMS = (
      r"|multi-?threading|thread pool)[^.]{0,60}"
      r"\b(is|are|was|were|has been|have been)\s+"
      r"(added|shipped|implemented|enabled|introduced|adopted|landed)\b"
-     r"|\bH[4-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
+     r"|\bH[5-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
      r"(begun|started|shipped|landed|complete|completed)\b"),
 )
 
@@ -4100,6 +4102,15 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert "dropout" not in cpp.UNSUPPORTED
     assert native_checkpoint._FORMAT_VERSION == 2
+    # H4's premise, also from reality: the optimizer really does build its
+    # scalar coefficients once per step through a private holder, and the
+    # staging seam really does accept one, so retiring H4 from the
+    # milestone-number arm above tracks the tree rather than the prose.
+    from tensorforge.experimental import native_adam as _native_adam
+    assert hasattr(_native_adam, "_StepConstants")
+    assert "constants" in inspect.signature(
+        _native_adam.NativeAdam._stage_entry
+    ).parameters
     # The generator really does not produce a value of any kind: G2's
     # derivation lives in C++ behind the Core, never on this object.
     generator = NativeGenerator(1)

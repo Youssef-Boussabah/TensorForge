@@ -3255,7 +3255,14 @@ CASES = {
                   "from existing Core operations (reciprocal and sqrt, no "
                   "division), which means a fixed number of small native "
                   "calls and allocations per parameter regardless of "
-                  "parameter size."),
+                  "parameter size. Phase H, milestone H4 reduced that fixed "
+                  "count from 27 native allocations per parameter to 17 per "
+                  "parameter plus at most eight shared scalar coefficients "
+                  "for the whole step, and cut the transient bytes live at "
+                  "once during staging by about 3x by releasing each "
+                  "temporary at its last use. The arithmetic is unchanged "
+                  "bit for bit, so this case measures allocation and "
+                  "dispatch count, never a different update."),
     },
     "sgd_step": {
         "workload": "optimizer",
@@ -3285,7 +3292,14 @@ CASES = {
         "notes": ("The minimal update, measured beside Adam so the "
                   "difference between them attributes the adaptive "
                   "optimizer's extra cost to its extra operations rather "
-                  "than to optimizer machinery in general."),
+                  "than to optimizer machinery in general. Phase H, "
+                  "milestone H4 built SGD's one lr scalar once per step "
+                  "instead of once per parameter — the only change the "
+                  "evidence supported for this optimizer, since its four "
+                  "remaining allocations per parameter are all "
+                  "parameter-sized and none is redundant. The measured "
+                  "effect is small and, on the noisier configurations, "
+                  "inside this machine's spread; it is published as such."),
     },
 
     # -- state operations ----------------------------------------------------
