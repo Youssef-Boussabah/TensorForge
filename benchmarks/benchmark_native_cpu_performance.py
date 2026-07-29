@@ -667,6 +667,160 @@ def _build_storage_allocation(config, spec):
     }
 
 
+def _build_metadata_preparation(config, spec):
+    """Python-side layout preparation with **no native call at all**
+    (Phase H, milestone H3).
+
+    §3.4 of the design recorded that H0 could not split B3's fixed
+    per-operation cost between the metadata helpers and the ctypes
+    boundary, and named the instrumentation a later milestone would need.
+    This case and ``ctypes_boundary`` are that split, measured inside the
+    harness rather than in a scratch script:
+
+    * this case times the pure Python half — normalizing a shape and a
+      stride tuple and constructing the ``NativeTensorView`` that binds
+      them, including its storage bounds check;
+    * ``ctypes_boundary`` times the other half — one already-prepared
+      kernel call with every buffer preallocated.
+
+    Together they account for a per-call cost that neither the arithmetic
+    nor the allocation explains.
+
+    ``native_only``: there is no honest NumPy or stable-TensorForge
+    equivalent of "normalize a native layout descriptor", so **no ratio is
+    published**. The gate is a correctness gate on the values produced,
+    not a comparison.
+    """
+    del spec
+    shape = config["shape"]
+    strides = cpp.row_major_strides(shape)
+    # A deliberately non-contiguous layout for the strided row: the same
+    # rank, reversed, which is what a transposed view really carries.
+    permuted_shape = tuple(reversed(shape))
+    permuted_strides = tuple(reversed(strides))
+    storage = cpp.NativeStorage(int(np.prod(shape)) if shape else 1)
+
+    def check():
+        info = cpp.shape_info(shape)
+        _require(info["shape"] == tuple(shape),
+                 "shape_info did not normalize the shape to a plain tuple")
+        _require(info["strides"] == strides,
+                 "shape_info did not derive the row-major strides")
+        _require(info["contiguous"] is True,
+                 "a row-major layout was not reported contiguous")
+        _require(info["numel"] == int(np.prod(shape)) if shape else True,
+                 "shape_info reported the wrong element count")
+        _require(all(type(dim) is int for dim in info["shape"]),
+                 "shape_info left a non-plain-int dimension in the shape")
+        strided_info = cpp.shape_info(permuted_shape, strides=permuted_strides)
+        _require(strided_info["contiguous"] is (permuted_strides == strides),
+                 "contiguity was misreported for the permuted layout")
+        view = cpp.NativeTensorView(storage, shape)
+        _require(view.shape == tuple(shape) and view.strides == strides,
+                 "the view did not bind the normalized layout")
+        _require(view.contiguous is True and view.offset == 0,
+                 "the view misreported its layout")
+        # The layout arrays a strided kernel call would receive: exact
+        # dtype, contiguity, and read-only, so no caller can mutate this
+        # view's metadata through them.
+        shape_array, strides_array = view._native_layout()
+        _require(shape_array.dtype == np.int64 and strides_array.dtype == np.int64,
+                 "the native layout arrays are not int64")
+        _require(shape_array.flags.c_contiguous and strides_array.flags.c_contiguous,
+                 "the native layout arrays are not C-contiguous")
+        _require(not shape_array.flags.writeable
+                 and not strides_array.flags.writeable,
+                 "the native layout arrays are writable")
+        _require(view._native_layout() is shape_array.base
+                 or view._native_layout()[0] is shape_array,
+                 "the native layout arrays are not reused across calls")
+        return {
+            "max_abs_error": 0.0,
+            "element_count": int(np.prod(shape)) if shape else 1,
+            "rank": len(shape),
+            "checks": ["normalized_shape", "derived_row_major_strides",
+                       "contiguity_flag", "element_count",
+                       "plain_int_dimensions", "permuted_layout_contiguity",
+                       "view_binds_normalized_layout",
+                       "layout_array_dtype", "layout_array_contiguity",
+                       "layout_array_read_only", "layout_array_reuse"],
+        }
+
+    return {
+        "check": check,
+        "layers": {
+            # One layer only: this is Python-side preparation, and the
+            # thing being measured is the production path a caller takes
+            # when it constructs a view over existing storage.
+            TENSOR_CORE: _layer(
+                lambda _s=None: cpp.NativeTensorView(storage, shape)),
+        },
+        "close": storage.close,
+    }
+
+
+def _build_ctypes_boundary(config, spec):
+    """One native kernel call with **everything already prepared**
+    (Phase H, milestone H3) — the ctypes boundary in isolation.
+
+    Every buffer is preallocated and every handle already open, so the
+    timed region is exactly: the ctypes argument conversion, the foreign
+    call, the kernel's own work on the case's element count, and the
+    ``errcheck`` hook that reads the native error slot afterwards. No
+    allocation, no shape normalization, and no wrapper object is inside
+    the timer.
+
+    Paired with ``metadata_preparation``, this is the §3.4 "kernel-only
+    timing seam": the two together decompose the fixed per-operation cost
+    that ``scalar_dispatch_overhead`` reports as a single number.
+
+    ``native_only``: timing a bare foreign-function call against a NumPy
+    *expression* would compare a boundary crossing to a complete
+    operation, so **no ratio is published**."""
+    del spec
+    shape = config["shape"]
+    count = int(np.prod(shape)) if shape else 1
+    library = cpp._require_library()
+    left = cpp.NativeTensorCore.from_array(np.ones(shape))
+    right = cpp.NativeTensorCore.from_array(np.full(shape, 2.0))
+    out = cpp.NativeTensorCore.zeros(shape)
+    # Resolved once, outside the timer: the handles are what the call
+    # takes, and looking them up is not part of the boundary cost.
+    handle_a = left.storage._require_open()
+    handle_b = right.storage._require_open()
+    handle_out = out.storage._require_open()
+
+    def call():
+        library.tf_core_add_contiguous(handle_a, handle_b, handle_out,
+                                       count, 0, 0)
+
+    def check():
+        call()
+        produced = out.to_numpy()
+        expected = np.full(shape, 3.0)
+        _require_shape(produced, shape, "the preallocated destination")
+        _require_finite(produced, "the preallocated destination")
+        _require_parity(_max_abs(produced - expected), EXACT,
+                        "the preallocated destination",
+                        "NumPy elementwise addition")
+        _require_unchanged(left.to_numpy(), np.ones(shape),
+                           "the left operand")
+        _require_unchanged(right.to_numpy(), np.full(shape, 2.0),
+                           "the right operand")
+        return {
+            "max_abs_error": 0.0,
+            "element_count": count,
+            "checks": ["shape", "finite", "numpy_exact_parity",
+                       "no_operand_mutation"],
+        }
+
+    return {
+        "check": check,
+        "layers": {TENSOR_CORE: _layer(lambda _s=None: call())},
+        "close": lambda: (left.close(), right.close(), out.close()),
+    }
+
+
 def _build_elementwise(config, spec):
     """One elementwise ``multiply`` across every layer.
 
@@ -2421,6 +2575,9 @@ CASES = {
     # -- dispatch overhead ---------------------------------------------------
     "scalar_dispatch_overhead": {
         "workload": "dispatch_overhead",
+        # One shape in every configuration: the cost is size-independent,
+        # so a larger shape would measure arithmetic instead.
+        "size_independent": True,
         "section": "add on a one-element tensor",
         "operation": ("add() on a (1, 1) tensor across NumPy, "
                       "NativeTensorCore, NativeTensor, and NativeTensor with "
@@ -2474,6 +2631,69 @@ CASES = {
                   "pass over the buffer; numpy.zeros answers the same "
                   "request through a different allocator strategy. Measured, "
                   "not judged."),
+    },
+    "metadata_preparation": {
+        "workload": "dispatch_overhead",
+        # Rank-driven, not extent-driven, and the guardrail requires
+        # equal rank across configurations — so one shape everywhere.
+        "size_independent": True,
+        "section": "Python layout normalization and view construction",
+        "operation": ("NativeTensorView construction over existing storage: "
+                      "shape and stride normalization, element count, "
+                      "contiguity, and the storage bounds check — no native "
+                      "call at all"),
+        "build": _build_metadata_preparation,
+        "seed": 20260230,
+        "reference_type": NATIVE_ONLY,
+        "reference_layer": None,
+        "reference_detail": ("none — normalizing a native layout descriptor "
+                             "has no NumPy or stable-TensorForge equivalent"),
+        "correctness_reference": ("the documented layout contract: row-major "
+                                  "strides, element count, contiguity, plain "
+                                  "int dimensions, and read-only int64 layout "
+                                  "arrays"),
+        "configurations": {
+            "full": {"shape": (8, 16)},
+            "smoke": {"shape": (8, 16)},
+            "profile": {"shape": (8, 16)},
+        },
+        "notes": ("Phase H, milestone H3. Design §3.4 recorded that H0 could "
+                  "not split B3's fixed per-operation cost between the "
+                  "metadata helpers and the ctypes boundary. This case is "
+                  "the Python half of that split and ctypes_boundary is the "
+                  "other half; scalar_dispatch_overhead reports the sum. The "
+                  "shape is small on purpose — this cost is size-independent, "
+                  "so a large one would only add noise. No ratio is published: "
+                  "there is nothing honest to divide by."),
+    },
+    "ctypes_boundary": {
+        "workload": "dispatch_overhead",
+        # A larger shape would time the kernel, not the boundary.
+        "size_independent": True,
+        "section": "one prepared native call",
+        "operation": ("tf_core_add_contiguous over three preallocated "
+                      "storages with resolved handles — the foreign call, its "
+                      "argument conversion, and the error-contract hook"),
+        "build": _build_ctypes_boundary,
+        "seed": 20260231,
+        "reference_type": NATIVE_ONLY,
+        "reference_layer": None,
+        "reference_detail": ("none — a bare foreign-function call is not a "
+                             "complete operation, so dividing it by one would "
+                             "compare different things"),
+        "correctness_reference": "NumPy elementwise addition, exactly",
+        "configurations": {
+            "full": {"shape": (1, 1)},
+            "smoke": {"shape": (1, 1)},
+            "profile": {"shape": (1, 1)},
+        },
+        "notes": ("Phase H, milestone H3. Everything is preallocated and "
+                  "every handle resolved before the timer starts, so the "
+                  "measured region contains no allocation, no shape "
+                  "normalization, and no wrapper object — only the boundary "
+                  "crossing and a one-element kernel. Paired with "
+                  "metadata_preparation it decomposes the fixed cost that "
+                  "B3 measured as a single ~20 microsecond figure."),
     },
 
     # -- elementwise ---------------------------------------------------------

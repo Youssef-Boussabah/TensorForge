@@ -758,8 +758,9 @@ schema field, checkpoint version, benchmark, or registry value changed,
 and the example defines **no public training API** — none of its helpers
 is exported.
 **Phase H — Native CPU Performance and Runtime Efficiency — is the
-latest phase and is the current one; it has *begun*, at milestone **H0**
-only, and Phase G remains the latest *completed* phase.** H0 is an
+latest phase and is the current one; it has *begun*, with milestones
+**H0, H1, H2, and H3** complete, and Phase G remains the latest
+*completed* phase.** H0 is an
 architecture, profiling, and baseline milestone: it shipped
 `docs/native_cpu_performance_design.md` (the contract), the unified
 measurement harness `benchmarks/benchmark_native_cpu_performance.py`,
@@ -773,8 +774,9 @@ device, and no checkpoint format: `UNSUPPORTED` still reads
 `("float32", "cuda", "amp")`, `SUPPORTED_DTYPES` still reads
 `("float64",)`, `SUPPORTED_DEVICES` still reads `("cpu",)`, and the
 native checkpoint format is still `tensorforge.native_checkpoint`
-version **2** with versions **(1, 2)** supported. The harness runs 24
-cases across twelve workload families (dispatch overhead, elementwise,
+version **2** with versions **(1, 2)** supported. The harness runs 26
+cases (24 at H0, plus the two H3 added to decompose the per-call
+cost) across twelve workload families (dispatch overhead, elementwise,
 reduction, matmul, materialization, linear, convolution, normalization,
 stochastic, optimizer, training step, and in-memory state operations),
 separating up to nine declared implementation layers (`numpy`,
@@ -870,6 +872,67 @@ where a fixed ~10 microsecond per-call Python cost dominates and control
 cases whose compiled code did not change at all vary by 0.50-1.44x. No
 capability, dtype, device, registry value, checkpoint field, or
 checkpoint version moved.
+
+**Milestone H3 — native metadata and dispatch efficiency — has since
+shipped**, and unlike H1 and H2 it is **Python-only**: no C++, no C ABI
+symbol, no ctypes declaration, and no kernel changed, so the library
+still exports exactly **52** `tf_*` symbols. The measured cause of B3's
+fixed per-call cost was redundant *re-validation*: one `shape_info` call
+ran `_as_int_tuple` **four** times over a tuple that was fully validated
+after the first pass and computed the row-major strides **twice**, while
+`NativeTensorCore.zeros` validated the caller's shape a second complete
+time — instrumented at **815** `_as_int_tuple` calls per MLP training
+step and 604 per `NativeAdam` step, using test-local monkeypatching
+because **no production counter exists or may exist**. H3 shipped three
+things. (1) **One normalization boundary**, the private
+`_normalized_layout`, performing exactly the checks `shape_info` always
+performed in the same order with the same messages and normalizing the
+shape once, with the strides, element count, and contiguity derived by
+private `_checked` primitives that validate nothing because nothing is
+left to validate; each public helper (`row_major_strides`, `numel`,
+`reduce_shape`, `broadcast_shapes`) is now its own validation plus the
+matching primitive, so the two cannot disagree. (2) **Two view
+constructors, one binding**: the public `NativeTensorView(...)`
+normalizes, the private `_from_validated` skips **only** that
+normalization, and both funnel through a shared `_bind` that still runs
+the storage open check and the **full reachable-offset bounds check**
+(not skipped — bounds depend on the storage, not the metadata); the
+element count and contiguity flag are **derived inside** the private
+constructor rather than passed to it, so an inconsistent pair is
+unrepresentable, which is why this is a separate constructor and not a
+misusable `validated=True` flag. (3) **Lazy, read-only, per-view `int64`
+layout arrays** for the strided C ABI — memoization of a pure function of
+immutable state, where staleness is impossible *by construction*: a
+view's layout is assigned exactly once in `_bind` and every
+layout-changing operation returns a *new* view, so no invalidation is
+required and **none exists**. `narrow` gained an explicit `int()`
+normalization of `dim`/`start`/`length`, since the private constructor no
+longer re-normalizes. **No validation was removed** — every rejection
+keeps its exception type, message, and shape-then-strides-then-offset
+ordering — nothing global was introduced (no shape cache, stride
+interning, weak-reference machinery, or thread-local state), and **no
+public API of any kind was added**: no cache control, statistic, reset,
+profiling counter, dispatch selector, or environment variable. Measured:
+`shape_info` 2.6-4.5x, view construction 3.2x, `_as_int_tuple` per MLP
+step **815 -> 149**, a one-element allocation 2.1x, `reshape` 3.1x, a
+small `add` 1.56x, `NativeAdam` on a small MLP 1.42x, an **MLP training
+step 1.43x**, a **CNN step 1.29x**, a **normalized step 1.51x**. Reported
+just as honestly: **large kernel-bound work shows no measurable change in
+either direction** (384/512/128 cubed matmul, 256 squared elementwise,
+128 squared reduction all inside their own spread), so H2's result is
+intact; the layout-array cache is the weakest of the three changes and
+was kept on measured merit, saving 0.6-1.5 microseconds per *strided*
+small operation and nothing on large ones or on a contiguous training
+step, with even a cold-cache measurement no slower than pre-H3. One
+methodology finding is published rather than buried: at the harness's
+default 11 repetitions a case appeared to regress 35% and at 201
+repetitions measured 1.19x *faster*, so no default-repetition figure is
+quoted as H3 evidence. Cold object footprint is byte-identical; a view
+that takes a strided path costs +328 bytes, and only **5 of 134** views
+in an MLP step ever populate it. The harness gained two `native_only`
+cases, `metadata_preparation` and `ctypes_boundary`, decomposing B3's
+single figure into its Python and boundary halves. No capability, dtype,
+device, registry value, checkpoint field, or checkpoint version moved.
 Data loaders, native integer tensors, further
 dtypes/devices, and CUDA experiments are
 future work beyond Phase H.
@@ -935,7 +998,7 @@ production-ready, not a PyTorch replacement.
   validation matrix and the single registry line that removed
   `"dropout"` from `UNSUPPORTED`) have all shipped — **Phase G is
   complete** —, and `native_cpu_performance_design.md` for Phase H —
-  **H0 only** (the design lock, the unified baseline harness
+  **H0** (the design lock, the unified baseline harness
   `benchmarks/benchmark_native_cpu_performance.py`, its contract tests,
   and documentation reconciliation; architecture, profiling, and baseline
   work with **no optimization, no capability, and no registry move**),
@@ -956,7 +1019,20 @@ production-ready, not a PyTorch replacement.
   accumulation order, bit identity on every non-NaN result, NaN-class
   equivalence, and NaN payload bits deliberately outside the contract;
   H1's uninitialized-output contract preserved on both paths; **no exported C
-  ABI symbol added**, still 52; and no capability move) and H3–H8
+  ABI symbol added**, still 52; and no capability move) and **H3 complete**
+  (native metadata and dispatch efficiency — **Python-only**: one
+  normalization boundary (`_normalized_layout`) replacing the four
+  redundant re-validations every `shape_info` call performed, private
+  `_checked` primitives for the derived strides/count/contiguity, a
+  private `NativeTensorView._from_validated` sharing one
+  bounds-checking `_bind` with the public constructor, and lazy
+  read-only per-view `int64` layout arrays whose immutability makes
+  staleness impossible by construction; every rejection, message, and
+  ordering preserved; nothing global; no public cache, profiling, or
+  dispatch API; **no C++, no ABI, still 52 symbols**; measured
+  `_as_int_tuple` per MLP step 815 → 149, an MLP step 1.43×, a CNN step
+  1.29×, a normalized step 1.51×, and **no measurable change on large
+  kernel-bound work**; no capability move) and H4–H8
   proposed and explicitly conditional on that evidence, so **Phase H has
   begun but is not complete**). When a milestone changes the
   public API or the examples, update the matching docs file (and

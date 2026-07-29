@@ -1218,13 +1218,57 @@ class NativeTensorView:
                 f"storage must be a NativeStorage, got {type(storage).__name__}"
             )
         storage._require_open()  # a closed storage cannot back a view
-        info = shape_info(shape, strides=strides, offset=offset)
+        dims, stride_tuple, offset_value, count, contiguous = _normalized_layout(
+            shape, strides=strides, offset=offset
+        )
+        self._bind(storage, dims, stride_tuple, offset_value, count, contiguous)
 
+    @classmethod
+    def _from_validated(cls, storage, dims, strides, offset):
+        """Private: a view over layout metadata this module already
+        normalized (Phase H, milestone H3).
+
+        ``dims`` and ``strides`` must be tuples of exact ``int`` that came
+        from ``_as_shape`` or from a live view's own ``shape``/``strides``,
+        and ``offset`` must be an exact ``int``. Under that precondition
+        the normalization the public constructor performs is a no-op — it
+        would re-check a tuple this module produced one construction
+        earlier — so it is skipped, and **nothing else is**.
+
+        The element count and the contiguity flag are deliberately
+        *derived here* rather than accepted as arguments: a caller that
+        cannot pass them cannot pass an inconsistent pair, which is why
+        this is a separate constructor rather than a ``validated=True``
+        flag on the public one. The storage's open state and the full
+        reachable-offset bounds check are performed exactly as the public
+        constructor performs them, because neither is a property of the
+        metadata alone — a derived layout can still be handed a storage
+        that has since been closed, and bounds depend on the storage size.
+        """
+        view = cls.__new__(cls)
+        storage._require_open()  # a closed storage cannot back a view
+        view._bind(
+            storage, dims, strides, offset,
+            _numel_checked(dims),
+            strides == _row_major_strides_checked(dims),
+        )
+        return view
+
+    def _bind(self, storage, dims, strides, offset, count, contiguous):
+        """Bounds-check ``dims``/``strides``/``offset`` against ``storage``
+        and bind this view's immutable layout.
+
+        Shared by both constructors so the reachable-offset check and the
+        field assignment can never drift apart between them. Every field
+        assigned here is assigned exactly once in a view's lifetime and is
+        never reassigned — not by any operation, and not by ``close()``,
+        which is what makes ``_native_layout``'s cache safe.
+        """
         # Bounds: each dimension contributes between 0 and
         # (dim - 1) * stride to the offset — negative strides make the
         # low end move. The whole reachable range must fit in storage.
-        low = high = info["offset"]
-        for dim, stride in zip(info["shape"], info["strides"]):
+        low = high = offset
+        for dim, stride in zip(dims, strides):
             contribution = (dim - 1) * stride
             if contribution >= 0:
                 high += contribution
@@ -1237,11 +1281,57 @@ class NativeTensorView:
             )
 
         self._storage = storage
-        self._shape = info["shape"]
-        self._strides = info["strides"]
-        self._offset = info["offset"]
-        self._numel = info["numel"]
-        self._contiguous = info["contiguous"]
+        self._shape = dims
+        self._strides = strides
+        self._offset = offset
+        self._numel = count
+        self._contiguous = contiguous
+        # Lazily built by _native_layout(); see its docstring for why this
+        # memoization cannot go stale and why it is not built eagerly.
+        self._layout_cache = None
+
+    def _native_layout(self):
+        """This view's ``(shape, strides)`` as the ``int64`` arrays the
+        strided C ABI takes — built at most once per view (Phase H, H3).
+
+        **Why this cannot go stale.** The arrays are a pure function of
+        ``self._shape`` and ``self._strides``, and a view's layout is
+        immutable: both are assigned exactly once, in ``_bind``, and no
+        code path anywhere reassigns them. A view never changes shape —
+        reshaping, transposing, and narrowing all produce *new* views over
+        the same storage — so there is no mutation for an invalidation
+        design to guard against. This is memoization of a pure function of
+        immutable state, not a cache with a coherence problem.
+
+        **Why the arrays are read-only.** They describe this view's
+        metadata, and handing a mutable alias of them to a kernel caller
+        would let that caller silently change what every subsequent native
+        call believes this view's layout to be. ``writeable = False`` makes
+        that a raised ``ValueError`` instead. The C ABI only ever *reads*
+        shape and stride arrays, so nothing legitimate is lost, and a
+        read-only C-contiguous ``int64`` array still satisfies the
+        ``ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")`` argtype.
+
+        **Why it is lazy.** The contiguous fast-path kernels take a flat
+        element count and an offset, not shape/stride arrays, so the
+        dominant training path never calls this at all. Building the pair
+        eagerly in ``_bind`` would put two NumPy objects on every view
+        — including the many short-lived ones a training step allocates —
+        to serve calls most of them never make.
+
+        The arrays hold plain integers copied out of the layout tuples.
+        They contain no native pointer and no reference to the storage, so
+        they cannot keep native memory alive.
+        """
+        arrays = self._layout_cache
+        if arrays is None:
+            shape_array = np.asarray(self._shape, dtype=np.int64)
+            strides_array = np.asarray(self._strides, dtype=np.int64)
+            shape_array.flags.writeable = False
+            strides_array.flags.writeable = False
+            arrays = (shape_array, strides_array)
+            self._layout_cache = arrays
+        return arrays
 
     @classmethod
     def from_array(cls, values):
@@ -1284,11 +1374,12 @@ class NativeTensorView:
         the native materialization kernel."""
         handle = self._storage._require_open()
         out = np.empty(self._numel, dtype=np.float64)
+        shape_array, strides_array = self._native_layout()
         self._storage._lib.tf_storage_materialize(
             handle,
             out,
-            np.asarray(self._shape, dtype=np.int64),
-            np.asarray(self._strides, dtype=np.int64),
+            shape_array,
+            strides_array,
             self._offset,
             len(self._shape),
         )
@@ -1312,11 +1403,12 @@ class NativeTensorView:
             self._numel, dtype=self._storage.dtype, device=self._storage.device
         )
         try:
+            shape_array, strides_array = self._native_layout()
             storage._lib.tf_core_contiguous_copy(
                 self._storage._require_open(),
                 storage._require_open(),
-                np.asarray(self._shape, dtype=np.int64),
-                np.asarray(self._strides, dtype=np.int64),
+                shape_array,
+                strides_array,
                 self._offset,
                 len(self._shape),
             )
@@ -1330,6 +1422,20 @@ class NativeTensorView:
             f"NativeTensorView(shape={self._shape}, strides={self._strides}, "
             f"offset={self._offset}, contiguous={self._contiguous})"
         )
+
+
+def _contiguous_view(storage, dims):
+    """A row-major contiguous view of ``dims`` at offset 0 over ``storage``.
+
+    The shape of every freshly allocated tensor core (Phase H, H3).
+    ``dims`` must already be validated — every caller has just passed it
+    through ``_as_shape`` and sized the storage from it — so the strides
+    follow from the shape and the bounds check inside ``_from_validated``
+    is the one that matters.
+    """
+    return NativeTensorView._from_validated(
+        storage, dims, _row_major_strides_checked(dims), 0
+    )
 
 
 class NativeTensorCore:
@@ -1380,7 +1486,7 @@ class NativeTensorCore:
         array = np.ascontiguousarray(values, dtype=np.float64)
         # empty input fails here; dtype/device validated in the storage
         storage = NativeStorage.from_array(array, dtype=dtype, device=device)
-        return cls(storage, NativeTensorView(storage, array.shape))
+        return cls(storage, _contiguous_view(storage, _as_shape(array.shape)))
 
     @classmethod
     def zeros(cls, shape, dtype="float64", device="cpu"):
@@ -1388,9 +1494,11 @@ class NativeTensorCore:
         (native storage is zero-initialized, so no fill pass runs).
         ``dtype``/``device`` default to ``"float64"``/``"cpu"``;
         unsupported values are rejected."""
-        count = numel(shape)  # validates shape by the v0.7 rules
-        storage = NativeStorage(count, dtype=dtype, device=device)
-        return cls(storage, NativeTensorView(storage, shape))
+        dims = _as_shape(shape)  # validates shape by the v0.7 rules
+        storage = NativeStorage(
+            _numel_checked(dims), dtype=dtype, device=device
+        )
+        return cls(storage, _contiguous_view(storage, dims))
 
     @classmethod
     def _uninitialized(cls, shape, dtype="float64", device="cpu"):
@@ -1410,9 +1518,11 @@ class NativeTensorCore:
         an operation that accumulates into its output, scatters into it,
         or leaves any element untouched must keep using ``zeros``.
         """
-        count = numel(shape)  # validates shape by the v0.7 rules
-        storage = NativeStorage._uninitialized(count, dtype=dtype, device=device)
-        return cls(storage, NativeTensorView(storage, shape))
+        dims = _as_shape(shape)  # validates shape by the v0.7 rules
+        storage = NativeStorage._uninitialized(
+            _numel_checked(dims), dtype=dtype, device=device
+        )
+        return cls(storage, _contiguous_view(storage, dims))
 
     @classmethod
     def full(cls, shape, value, dtype="float64", device="cpu"):
@@ -1535,10 +1645,15 @@ class NativeTensorCore:
     # -- native compute (arithmetic happens in C++ over storage) ---------
 
     def _layout_arrays(self):
-        return (
-            np.asarray(self.shape, dtype=np.int64),
-            np.asarray(self.strides, dtype=np.int64),
-        )
+        """This core's ``(shape, strides)`` int64 arrays for the strided
+        C ABI, delegated to its view's per-view cache (Phase H, H3).
+
+        The arrays are **read-only**: this is a private helper, every
+        caller is a kernel dispatch inside this module that only reads
+        them, and marking them so is what makes returning the cached pair
+        instead of a fresh one incapable of exposing shared mutable
+        state."""
+        return self._view._native_layout()
 
     def relu(self):
         """max(x, 0) elementwise, computed by the native kernel reading
@@ -1743,7 +1858,7 @@ class NativeTensorCore:
         # Validate/normalize the axis first — nothing is allocated if this
         # raises. _normalize_axis rejects bool/non-int/out-of-range and
         # every axis on a rank-0 shape.
-        normalized = _normalize_axis(axis, self.shape)
+        normalized = _normalize_axis_checked(axis, self.shape)
         shape = self.shape
         # Python ints are arbitrary precision, so these products cannot
         # overflow here; the C ABI re-proves them in int64 anyway.
@@ -2058,7 +2173,9 @@ class NativeTensorCore:
         )
         try:
             shape_arr, x_strides = self._layout_arrays()
-            u_strides = np.asarray(upstream.strides, dtype=np.int64)
+            # Same shape, so only the upstream's *strides* differ; take
+            # them from its own view cache rather than rebuilding.
+            u_strides = upstream._layout_arrays()[1]
             self._storage._lib.tf_core_relu_backward(
                 self._storage._require_open(),
                 upstream._storage._require_open(),
@@ -2142,7 +2259,10 @@ class NativeTensorCore:
                     )
                     return out
                 shape_arr, a_strides = self._layout_arrays()
-                b_strides = np.asarray(other.strides, dtype=np.int64)
+                # Path B is the same-shape case, so the shared shape array
+                # is this operand's; only the other operand's strides are
+                # needed, and they come from its own view cache.
+                b_strides = other._layout_arrays()[1]
                 getattr(lib, kernel_name)(
                     self._storage._require_open(),
                     other._storage._require_open(),
@@ -2158,7 +2278,7 @@ class NativeTensorCore:
         # Broadcasting path (C) — differing shapes. broadcast_shapes
         # raises (naming both shapes) if they are incompatible, before
         # any output is allocated.
-        out_shape = broadcast_shapes(self.shape, other.shape)
+        out_shape = _broadcast_shapes_checked(self.shape, other.shape)
         out = NativeTensorCore._uninitialized(
             out_shape, dtype=self.dtype, device=self.device
         )
@@ -2289,7 +2409,9 @@ class NativeTensorCore:
         sums are order-sensitive, so results match NumPy to a tolerance,
         not bit-for-bit (see docs/native_reductions_design.md)."""
         self._require_open()
-        out_shape = reduce_shape(self.shape, axis, keepdims)  # validates axis/keepdims
+        # self.shape is already validated; axis and keepdims are the
+        # caller-supplied half and are still fully validated here.
+        out_shape = _reduce_shape_checked(self.shape, axis, keepdims)
         # H1 REJECTED — this output must stay zero-initialized. tf_core_sum
         # accumulates (`dst[out_pos] += src[in_pos]`), so the zero is the
         # additive identity the reduction starts from, not a redundant
@@ -2302,13 +2424,17 @@ class NativeTensorCore:
         if axis is None:
             reduced = set(range(self.ndim))
         else:
-            reduced = {_normalize_axis(axis, self.shape)}
+            reduced = {_normalize_axis_checked(axis, self.shape)}
         out_strides = _reduce_out_strides(self.shape, reduced, bool(keepdims), out_shape)
+        # This tensor's own layout arrays come from its view's cache; the
+        # write-strides are a property of *this reduction*, not of any
+        # tensor, so they stay an operation-local array.
+        shape_arr, strides_arr = self._layout_arrays()
         self._storage._lib.tf_core_sum(
             self._storage._require_open(),
             out._storage._require_open(),
-            np.asarray(self.shape, dtype=np.int64),
-            np.asarray(self.strides, dtype=np.int64),
+            shape_arr,
+            strides_arr,
             np.asarray(out_strides, dtype=np.int64),
             self.offset, self.ndim,
         )
@@ -2325,7 +2451,7 @@ class NativeTensorCore:
         if axis is None:
             count = self.numel
         else:
-            count = self.shape[_normalize_axis(axis, self.shape)]
+            count = self.shape[_normalize_axis_checked(axis, self.shape)]
         # In-place native scale of the freshly summed output — no copy,
         # no NumPy round trip. count >= 1 always (dims are positive).
         result._storage._lib.tf_storage_scale(
@@ -3046,9 +3172,19 @@ class NativeTensorCore:
 
     # -- view operations (metadata only: no data is copied) --------------
 
-    def _view_core(self, shape, strides, offset):
-        """A new core borrowing this core's storage with new layout."""
-        view = NativeTensorView(self._storage, shape, strides=strides, offset=offset)
+    def _view_core(self, dims, strides, offset):
+        """A new core borrowing this core's storage with a new layout.
+
+        Every caller derives ``dims``/``strides``/``offset`` from *this*
+        core's already-validated layout — a permutation of it
+        (``transpose``), one axis shortened with the offset advanced
+        (``narrow``), or a freshly ``_as_shape``-validated shape whose
+        element count has been checked to match (``reshape``) — so the
+        metadata arrives normalized and takes the private view
+        constructor. The storage-bounds check still runs in full."""
+        view = NativeTensorView._from_validated(
+            self._storage, dims, strides, offset
+        )
         return NativeTensorCore(self._storage, view, owns_storage=False)
 
     def reshape(self, new_shape):
@@ -3065,13 +3201,16 @@ class NativeTensorCore:
                 "reshape requires a contiguous tensor; call "
                 "contiguous_copy() first"
             )
-        count = numel(new_shape)  # validates the shape by the v0.7 rules
+        dims = _as_shape(new_shape)  # validates the shape by the v0.7 rules
+        count = _numel_checked(dims)
         if count != self.numel:
             raise ValueError(
                 f"cannot reshape {self.shape} ({self.numel} elements) "
                 f"into {tuple(new_shape)} ({count} elements)"
             )
-        return self._view_core(new_shape, None, self.offset)
+        return self._view_core(
+            dims, _row_major_strides_checked(dims), self.offset
+        )
 
     def transpose(self, *axes):
         """A view with permuted axes. Metadata only — no copy.
@@ -3113,6 +3252,13 @@ class NativeTensorCore:
         for name, value in (("dim", dim), ("start", start), ("length", length)):
             if not isinstance(value, (int, np.integer)) or isinstance(value, bool):
                 raise TypeError(f"{name} must be an int, got {value!r}")
+        # Normalize to exact ints immediately after the type check. A NumPy
+        # integer argument is accepted (it always was), and the derived
+        # shape and offset must be plain ints exactly as the shape
+        # normalization used to make them — the private view constructor no
+        # longer re-normalizes, so this is where it happens. The bounds
+        # messages below are unaffected: these values format identically.
+        dim, start, length = int(dim), int(start), int(length)
         if not 0 <= dim < self.ndim:
             raise ValueError(f"dim must be in [0, {self.ndim}), got {dim}")
         if start < 0 or length < 1 or start + length > self.shape[dim]:
@@ -3187,13 +3333,16 @@ class NativeTensorCore:
         # narrowed parent's own layout. Each narrowed axis maps 1:1 to the
         # same output axis, so the write-strides are just the parent's full
         # row-major strides; the base offset skips the leading `start` slabs.
-        out_full = row_major_strides(original)
+        out_full = _row_major_strides_checked(original)
         out_offset = start * out_full[dim]
+        # This gradient's own layout comes from its view's cache; the
+        # output write-strides belong to this scatter, not to a tensor.
+        shape_arr, strides_arr = self._layout_arrays()
         self._storage._lib.tf_core_narrow_backward(
             self._storage._require_open(),
             out._storage._require_open(),
-            np.asarray(self.shape, dtype=np.int64),
-            np.asarray(self.strides, dtype=np.int64),
+            shape_arr,
+            strides_arr,
             np.asarray(out_full, dtype=np.int64),
             self.offset, out_offset, self.ndim,
         )
@@ -3586,10 +3735,21 @@ def _as_int_tuple(values, name):
         raise TypeError(
             f"{name} must be a sequence of ints, got {values!r}"
         ) from None
+    # Every element is type-checked exactly as before. The `plain` flag only
+    # records whether the rebuild below is *needed*: a tuple that is already
+    # all exact ``int`` is its own normalization, so re-materializing it
+    # through a generator would allocate a second, equal tuple for nothing.
+    # ``type(value) is int`` deliberately excludes ``bool`` and every ``int``
+    # subclass, so those still take the checking branch and are still
+    # converted (or rejected) exactly as they were.
+    plain = True
     for value in items:
+        if type(value) is int:
+            continue
         if not isinstance(value, (int, np.integer)) or isinstance(value, bool):
             raise TypeError(f"{name} must contain only ints, got {value!r}")
-    return tuple(int(value) for value in items)
+        plain = False
+    return items if plain else tuple(int(value) for value in items)
 
 
 def _as_shape(shape):
@@ -3609,13 +3769,30 @@ def _as_offset(offset):
     return int(offset)
 
 
-def row_major_strides(shape):
-    """Element strides for a row-major contiguous layout of ``shape``.
+# ---------------------------------------------------------------------------
+# Checked primitives (Phase H, milestone H3)
+#
+# Each ``_..._checked`` function below computes exactly what its public
+# counterpart computes, but takes metadata **this module has already
+# normalized** — a tuple of exact ``int`` dimensions from ``_as_shape``, or
+# strides/axes derived from one. They perform no validation because there is
+# nothing left to validate: re-running ``_as_int_tuple`` over a tuple this
+# module just produced cannot reject it and cannot change it.
+#
+# They are private and unexported. The public ``row_major_strides`` /
+# ``numel`` / ``reduce_shape`` / ``broadcast_shapes`` remain the validating
+# entry points for anything a caller supplies, with unchanged signatures,
+# unchanged behavior, and unchanged messages — each is now that validation
+# followed by the matching primitive. The rule for using a ``_checked``
+# variant is narrow and mechanical: the argument must be a shape tuple that
+# came out of ``_as_shape`` (or out of a live view's ``shape``/``strides``,
+# which is the same thing one construction earlier). An argument that came
+# from a caller goes through the public function.
+# ---------------------------------------------------------------------------
 
-    The last dimension varies fastest: row_major_strides((2, 3, 4))
-    is (12, 4, 1). The scalar shape () gives ().
-    """
-    dims = _as_shape(shape)
+
+def _row_major_strides_checked(dims):
+    """``row_major_strides`` over already-validated ``dims``."""
     strides = []
     running = 1
     for dim in reversed(dims):
@@ -3624,13 +3801,26 @@ def row_major_strides(shape):
     return tuple(reversed(strides))
 
 
-def numel(shape):
-    """Number of elements in ``shape``; 1 for the scalar shape ()."""
-    dims = _as_shape(shape)
+def _numel_checked(dims):
+    """``numel`` over already-validated ``dims``."""
     count = 1
     for dim in dims:
         count *= dim
     return count
+
+
+def row_major_strides(shape):
+    """Element strides for a row-major contiguous layout of ``shape``.
+
+    The last dimension varies fastest: row_major_strides((2, 3, 4))
+    is (12, 4, 1). The scalar shape () gives ().
+    """
+    return _row_major_strides_checked(_as_shape(shape))
+
+
+def numel(shape):
+    """Number of elements in ``shape``; 1 for the scalar shape ()."""
+    return _numel_checked(_as_shape(shape))
 
 
 def is_contiguous_shape(shape, strides):
@@ -3643,7 +3833,7 @@ def is_contiguous_shape(shape, strides):
             f"shape and strides must have the same length, "
             f"got {len(dims)} and {len(stride_tuple)}"
         )
-    return stride_tuple == row_major_strides(dims)
+    return stride_tuple == _row_major_strides_checked(dims)
 
 
 def flat_offset(indices, strides, offset=0):
@@ -3665,16 +3855,32 @@ def flat_offset(indices, strides, offset=0):
     )
 
 
-def shape_info(shape, strides=None, offset=0):
-    """A small metadata dictionary describing one array layout.
+def _normalized_layout(shape, strides=None, offset=0):
+    """The one validating normalization boundary for a native layout
+    (Phase H, milestone H3).
 
-    With ``strides=None`` the row-major contiguous strides are used
-    (and ``contiguous`` is True by construction). Explicit strides are
-    validated against the shape's length and checked for contiguity.
+    Returns ``(dims, strides, offset, numel, contiguous)`` — the five
+    values every internal consumer of a layout actually wants — having
+    performed **exactly** the checks ``shape_info`` has always performed,
+    in exactly the same order, with exactly the same messages:
+
+    1. the shape (type, then positivity),
+    2. the strides (element type, then length against the shape),
+    3. the offset.
+
+    The shape is normalized **once**. Everything downstream of that — the
+    row-major strides, the element count, the contiguity comparison — is
+    derived from the resulting tuple through the ``_checked`` primitives,
+    because a tuple ``_as_shape`` just returned cannot fail ``_as_shape``
+    again. Before H3 this function's work was spread across ``shape_info``
+    in a form that re-validated the same tuple four times and computed the
+    row-major strides twice; the values it produces are identical.
     """
     dims = _as_shape(shape)
+    contiguous_strides = _row_major_strides_checked(dims)
     if strides is None:
-        stride_tuple = row_major_strides(dims)
+        stride_tuple = contiguous_strides
+        contiguous = True  # by construction, not by comparison
     else:
         stride_tuple = _as_int_tuple(strides, "strides")
         if len(stride_tuple) != len(dims):
@@ -3682,13 +3888,30 @@ def shape_info(shape, strides=None, offset=0):
                 f"shape and strides must have the same length, "
                 f"got {len(dims)} and {len(stride_tuple)}"
             )
+        contiguous = stride_tuple == contiguous_strides
+    # The offset is validated last, as it always was: neither the stride
+    # derivation nor the element count can raise on a validated shape, so
+    # this is still the third and final rejection point.
+    return dims, stride_tuple, _as_offset(offset), _numel_checked(dims), contiguous
+
+
+def shape_info(shape, strides=None, offset=0):
+    """A small metadata dictionary describing one array layout.
+
+    With ``strides=None`` the row-major contiguous strides are used
+    (and ``contiguous`` is True by construction). Explicit strides are
+    validated against the shape's length and checked for contiguity.
+    """
+    dims, stride_tuple, offset_value, count, contiguous = _normalized_layout(
+        shape, strides=strides, offset=offset
+    )
     return {
         "shape": dims,
         "strides": stride_tuple,
         "ndim": len(dims),
-        "numel": numel(dims),
-        "offset": _as_offset(offset),
-        "contiguous": stride_tuple == row_major_strides(dims),
+        "numel": count,
+        "offset": offset_value,
+        "contiguous": contiguous,
     }
 
 
@@ -3711,8 +3934,14 @@ def broadcast_shapes(shape_a, shape_b):
     built. Incompatible shapes raise a ValueError naming both original
     shapes and the conflicting extents.
     """
-    a = _as_shape(shape_a)  # validates positive-int dims (v0.7 rules)
-    b = _as_shape(shape_b)
+    return _broadcast_shapes_checked(
+        _as_shape(shape_a),  # validates positive-int dims (v0.7 rules)
+        _as_shape(shape_b),
+    )
+
+
+def _broadcast_shapes_checked(a, b):
+    """``broadcast_shapes`` over two already-validated shape tuples."""
     rank = max(len(a), len(b))
     pa = (1,) * (rank - len(a)) + a  # left-pad with leading 1s
     pb = (1,) * (rank - len(b)) + b
@@ -3755,7 +3984,13 @@ def _normalize_axis(axis, shape):
     Raises ``TypeError`` for a non-int axis and ``ValueError`` naming both
     the axis and the shape when out of bounds (including any integer axis
     on a scalar). Pure Python — no NumPy, no compiled library."""
-    dims = _as_shape(shape)
+    return _normalize_axis_checked(axis, _as_shape(shape))
+
+
+def _normalize_axis_checked(axis, dims):
+    """``_normalize_axis`` over an already-validated shape tuple. The
+    ``axis`` itself is still fully validated — it is the caller-supplied
+    half of this pair and is never assumed."""
     ndim = len(dims)
     if not isinstance(axis, (int, np.integer)) or isinstance(axis, bool):
         raise TypeError(f"axis must be None or an int, got {axis!r}")
@@ -3789,13 +4024,18 @@ def reduce_shape(shape, axis=None, keepdims=False):
     ``TypeError`` for a non-bool ``keepdims`` or non-int ``axis``, and
     ``ValueError`` naming both axis and shape for an out-of-bounds axis.
     """
-    dims = _as_shape(shape)
+    return _reduce_shape_checked(_as_shape(shape), axis, keepdims)
+
+
+def _reduce_shape_checked(dims, axis=None, keepdims=False):
+    """``reduce_shape`` over an already-validated shape tuple. ``axis``
+    and ``keepdims`` are caller-supplied and still fully validated."""
     if not isinstance(keepdims, bool):
         raise TypeError(f"keepdims must be a bool, got {keepdims!r}")
     ndim = len(dims)
     if axis is None:
         return (1,) * ndim if keepdims else ()
-    normalized = _normalize_axis(axis, dims)
+    normalized = _normalize_axis_checked(axis, dims)
     if keepdims:
         return tuple(1 if d == normalized else dims[d] for d in range(ndim))
     return tuple(dims[d] for d in range(ndim) if d != normalized)
@@ -3810,8 +4050,9 @@ def _reduce_out_strides(in_shape, reduced_axes, keepdims, out_shape):
     keeps the reduced axes (as size 1), so input axis ``d`` maps to
     output axis ``d``; without it, the kept input axes map in order to the
     surviving output axes. Assumes ``out_shape == reduce_shape(in_shape,
-    ...)`` for the same reduction."""
-    out_full = row_major_strides(out_shape)
+    ...)`` for the same reduction, which makes ``out_shape`` already
+    validated."""
+    out_full = _row_major_strides_checked(out_shape)
     result = [0] * len(in_shape)
     if keepdims:
         for d in range(len(in_shape)):

@@ -47,6 +47,12 @@ SMOKE = {"warmup": 1, "repetitions": 3, "smoke": True}
 EXPECTED_CASES = (
     "scalar_dispatch_overhead",
     "storage_allocation",
+    # Phase H, milestone H3. The two halves of the per-call cost
+    # decomposition design §3.4 named as the instrumentation a later
+    # milestone would need: the Python-side layout normalization and the
+    # bare ctypes boundary. Both are `native_only` and publish no ratio.
+    "metadata_preparation",
+    "ctypes_boundary",
     "elementwise_contiguous",
     "elementwise_transposed_view",
     "reduction_contiguous",
@@ -201,8 +207,14 @@ def test_every_case_declares_three_deterministic_configurations():
 
 def test_smoke_shapes_never_exceed_full_and_profile_never_falls_below():
     """Smoke is the cheapest configuration and profile the largest, per
-    the design's shape-selection rules. The one deliberate exception is
-    the dispatch case, whose cost is size-independent by definition."""
+    the design's shape-selection rules.
+
+    The deliberate exceptions are the cases whose cost is size-independent
+    by definition, which must keep **one** shape everywhere — growing them
+    would measure arithmetic or kernel time instead of the fixed cost they
+    exist to isolate. Those cases declare ``size_independent`` in the
+    registry rather than being named here, so the rule is a property of
+    the case and a new one cannot be added without stating it."""
     for name, spec in bench.CASES.items():
         smoke = bench._case_shape(spec["configurations"]["smoke"])
         full = bench._case_shape(spec["configurations"]["full"])
@@ -210,8 +222,21 @@ def test_smoke_shapes_never_exceed_full_and_profile_never_falls_below():
         assert len(smoke) == len(full) == len(profile), name
         assert all(s <= f for s, f in zip(smoke, full)), name
         assert all(f <= p for f, p in zip(full, profile)), name
-        if name != "scalar_dispatch_overhead":
+        if spec.get("size_independent"):
+            assert smoke == full == profile, name
+        else:
             assert profile > smoke, name
+
+
+def test_the_size_independent_cases_are_exactly_the_declared_ones():
+    """The exemption above is not a loophole: exactly these three cases
+    may keep one shape, and each is a fixed-per-call-cost measurement."""
+    declared = {name for name, spec in bench.CASES.items()
+                if spec.get("size_independent")}
+    assert declared == {"scalar_dispatch_overhead", "metadata_preparation",
+                        "ctypes_boundary"}
+    for name in declared:
+        assert bench.CASES[name]["workload"] == "dispatch_overhead", name
 
 
 def test_the_dispatch_case_keeps_one_shape_in_every_configuration():
@@ -969,10 +994,18 @@ def test_the_cli_writes_no_files(capsys):
 
 def test_the_benchmark_opens_no_file_and_imports_no_writer():
     source = BENCHMARK_FILE.read_text(encoding="utf-8")
-    for banned in ("open(", "Path(", "os.makedirs", "savefig", "to_csv",
+    for banned in ("Path(", "os.makedirs", "savefig", "to_csv",
                    "csv.writer", "np.save", "json.dump(", "matplotlib",
                    "tempfile", "shutil"):
         assert banned not in source, banned
+    # File opening, precisely: bare ``open(``, ``io.open(``, and
+    # ``something.open(`` all match, while an identifier that merely *ends*
+    # in "open" does not. The backend's checked handle accessor
+    # ``_require_open()`` is not file I/O and must not trip a guardrail
+    # about writing files — matching it would be a false positive that
+    # invites the next author to dodge the check by renaming rather than
+    # by not writing a file.
+    assert not re.search(r"(?<![_\w])open\(", source), "open("
     # json.dumps (a string) is fine; json.dump (a file) is not.
     assert "json.dumps(payload)" in source
     # os is imported only to read environment variables.

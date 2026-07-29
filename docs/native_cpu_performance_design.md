@@ -1153,7 +1153,7 @@ milestone re-runs the H0 harness before and after and reports both.
 | **H0** | **Architecture, profiling, and baseline** | — | **complete** |
 | **H1** | **Output allocation contract: uninitialized allocation for fully-written destinations** | B1 (measured, ~74 % of a 2 MB elementwise op) | **complete** — see 16.1 |
 | **H2** | **Matmul memory access: loop order in the production kernel** | B2 (measured, 3.3×, accumulation order preserved) | **complete** — see 16.2. Cache blocking was measured and **rejected**; the generic/optimized agreement is §16.2.3's four-part contract, not unconditional bit identity |
-| H3 | Per-call dispatch cost: cached layout metadata at the Core boundary | B3 (measured, ~20 µs fixed, ~10 % of it ctypes) | proposed |
+| **H3** | **Per-call dispatch cost: one normalization boundary and per-view layout metadata** | B3 (measured, ~20 µs fixed, ~10 % of it ctypes) | **complete** — see 16.3 |
 | H4 | Optimizer step cost: fewer native calls and allocations per parameter | B4 (measured, 27 allocations/parameter, 83 % of a step) | proposed |
 | H5 | Reduction execution: a contiguous fast path for the accumulate kernels | B5, B7 (measured) | proposed |
 | H6 | Composed-module cost: normalization and the composed convolution bias gradient | B6, B7 (measured) | conditional on H1/H3/H5 |
@@ -1172,6 +1172,18 @@ documentation reconciliation. No production numerical change.
 The shipped contract, the per-kernel audit, the poison
 methodology, the parity proof, and the measured results are
 section 16.1 below.
+
+### H2 — Matmul memory access **(complete)**
+
+The two shipped compute paths, the metadata dispatch predicate, the
+rejected blocking experiment, and the four-part numerical contract are
+section 16.2 below.
+
+### H3 — Per-call dispatch cost **(complete)**
+
+The single normalization boundary, the private validated view
+constructor, the per-view layout-array memoization, the immutability
+proof, and the measured results are section 16.3 below.
 
 ---
 
@@ -2048,19 +2060,583 @@ H3's subject, and H2 sharpened rather than answered it.
 
 ---
 
-## 16.3 Remaining ladder detail
+## 16.3 H3 — metadata and dispatch efficiency, as shipped
 
-### H3 — Per-call dispatch cost
+**Status: complete.** H3 reduced the repeated Python-side metadata
+normalization on the way to a native kernel. It is a **Python-only**
+milestone: no C++, no C ABI symbol, no ctypes declaration, no kernel, no
+arithmetic, no traversal order, no dtype, no device, no registry value,
+no checkpoint field, and no public API changed. The library still exports
+exactly **52** `tf_*` symbols.
 
-Reduce the ~20 µs fixed cost, of which the ctypes boundary is ~2 µs.
+### 16.3.1 The pre-H3 metadata flow, measured
 
-- Cache the normalized shape/stride/layout arrays on the tensor core,
-  since they are a pure function of metadata that view operations
-  already know when they change.
-- Reduce redundant `_as_int_tuple` / `_as_shape` calls in the hot path.
-- **Pure Python; no C++, no ABI change.** Bit-identical by construction.
-- Must not weaken any validation. Every rejection the current path
-  performs still happens, with the same message.
+`shape_info` was the hub, and it re-validated the *same* tuple four
+times. With `strides=None`:
+
+| Step | Work |
+|---|---|
+| `_as_shape(shape)` | `_as_int_tuple` **(1)** + positivity scan |
+| `row_major_strides(dims)` | `_as_shape(dims)` → `_as_int_tuple` **(2)** |
+| `numel(dims)` | `_as_shape(dims)` → `_as_int_tuple` **(3)** |
+| `_as_offset(offset)` | type check |
+| `contiguous:` `row_major_strides(dims)` **again** | `_as_int_tuple` **(4)** |
+
+So one `shape_info` call ran `_as_int_tuple` **four** times over a tuple
+that was fully validated after the first, and computed the row-major
+strides **twice**. `NativeTensorView.__init__` called `shape_info` once;
+`NativeTensorCore.zeros`/`_uninitialized` called `numel(shape)` *and
+then* constructed a view, validating the caller's shape a **second**
+complete time.
+
+Measured per-call cost of that arrangement, isolated (medians, this
+machine):
+
+| Helper | Pre-H3 |
+|---|---|
+| `_as_int_tuple((4, 5, 6))` | 0.70 µs |
+| `_as_shape((4, 5, 6))` | 0.80 µs |
+| `row_major_strides` (validating) | 1.10 µs |
+| `numel` (validating) | 0.90 µs |
+| `shape_info((4, 5, 6))` | 4.10 µs |
+| `NativeTensorView(storage, (4, 5, 6))` | 5.00 µs |
+| `NativeTensorCore.zeros((1, 1))` + close | 7.50 µs |
+
+Measured **call counts**, one iteration each, by wrapping each helper
+(test-local monkeypatching; no production instrumentation exists):
+
+| Workload | `_as_int_tuple` | `shape_info` | `row_major_strides` | `numel` |
+|---|---|---|---|---|
+| one `(1, 1)` `add` | 13 | 3 | 6 | 4 |
+| `NativeLinear` forward | 24 | 5 | 10 | 7 |
+| `NativeLayerNorm` forward | 87 | 14 | 30 | 25 |
+| `NativeBatchNorm1d` training forward | 195 | 34 | 70 | 65 |
+| one `NativeAdam` step | 604 | 108 | 216 | 216 |
+| one MLP training step | 815 | 148 | 296 | 287 |
+| one CNN training step | 815 | 147 | 296 | 287 |
+
+This both **confirms and refines** §3.1/B3, which recorded 755
+`_as_int_tuple` calls per CNN step from a `cProfile` run on a
+differently shaped model. It also settles §3.2's first open question —
+how much of B3 each helper contributes — and answers §3.4's request for
+per-callsite counts *without* adding any production counter.
+
+Evidence level: **directly measured**.
+
+### 16.3.2 What was implemented
+
+**1 — One normalization boundary.** A new private
+`_normalized_layout(shape, strides, offset)` performs exactly the checks
+`shape_info` always performed, in exactly the same order, with exactly
+the same messages, and normalizes the shape **once**. Everything derived
+from it — the row-major strides, the element count, the contiguity
+comparison — goes through new private `_checked` primitives that perform
+no validation *because there is none left to perform*:
+
+| Private primitive | Public counterpart |
+|---|---|
+| `_row_major_strides_checked(dims)` | `row_major_strides(shape)` |
+| `_numel_checked(dims)` | `numel(shape)` |
+| `_reduce_shape_checked(dims, axis, keepdims)` | `reduce_shape(...)` |
+| `_normalize_axis_checked(axis, dims)` | `_normalize_axis(...)` |
+| `_broadcast_shapes_checked(a, b)` | `broadcast_shapes(...)` |
+
+Each public function is now *its validation plus the primitive*, so the
+two can never compute different answers — a property the suite asserts
+by comparing them over a shape matrix. `shape_info` is
+`_normalized_layout` rearranged into the documented dictionary.
+
+The rule for reaching for a `_checked` variant is narrow and mechanical:
+**the argument must be a shape tuple that came out of `_as_shape`, or a
+live view's own `shape`/`strides`, which is the same thing one
+construction earlier.** Anything a caller supplied goes through the
+public function. Note what is *not* skipped: `_reduce_shape_checked`
+still fully validates `axis` and `keepdims`, and
+`_normalize_axis_checked` still fully validates `axis` — those are the
+caller-supplied half of the pair.
+
+**2 — Two view constructors, one binding.** `NativeTensorView` keeps its
+public constructor (normalize, then bind) and gains a private
+`_from_validated(storage, dims, strides, offset)` that skips **only**
+the normalization. Both funnel through a shared `_bind`, which performs
+the storage open check and the full reachable-offset bounds check.
+
+Two deliberate design choices here:
+
+- The element count and the contiguity flag are **derived inside**
+  `_from_validated`, not passed to it. A caller that cannot pass them
+  cannot pass an inconsistent pair. This is why H3 has a **separate
+  private constructor** rather than a `validated=True` flag on the
+  public one — the flag would have been exactly the ambiguous,
+  misusable switch the milestone was told to avoid.
+- The bounds check is **not** skipped on the private path, because it is
+  not a property of the metadata alone: it depends on the storage size,
+  and a derived layout can still be handed a storage that has since been
+  closed. The suite asserts every out-of-bounds rejection through
+  **both** constructors.
+
+**3 — Constructors validate once.** `zeros`, `_uninitialized`, `full`,
+and `from_array` now call `_as_shape` once and reuse the result for both
+the storage size and the view, via a small `_contiguous_view` helper.
+
+**4 — View operations pass normalized metadata.** `transpose` and
+`narrow` derive their layout from the parent's already-validated tuples
+and normalize nothing; `reshape` normalizes only the caller's new shape.
+`narrow` gained an explicit `int(dim), int(start), int(length)`
+normalization immediately after its type check — because the private
+constructor no longer re-normalizes, `narrow` is now where a NumPy
+integer argument is converted, and the suite pins that the stored shape
+and offset are still plain `int`.
+
+**5 — Per-view layout arrays, memoized.** `NativeTensorView` gained a
+lazily built, read-only `(shape, strides)` `int64` array pair, returned
+by `_native_layout()`; `NativeTensorCore._layout_arrays()` delegates to
+it. The inline `np.asarray(...)` pairs in `sum`, `narrow_backward`,
+`relu_backward`, and the strided binary path now use it too.
+
+### 16.3.3 The immutability proof
+
+The memoization in (5) is safe because it is memoization of a **pure
+function of immutable state**, not a cache with a coherence problem.
+Immutability is proved three ways, not assumed:
+
+1. **By construction.** `_shape`, `_strides`, `_offset`, `_numel`, and
+   `_contiguous` are assigned in exactly one place — `_bind` — and no
+   other statement in `src/` assigns any of them. `close()` sets a flag
+   and releases storage; it does not touch the layout, which is why
+   metadata has always stayed readable after close.
+2. **By behavior.** Every layout-changing operation returns a **new**
+   view: `reshape`, `transpose`, `T`, and `narrow` all construct a fresh
+   `NativeTensorView` over the same storage. There is no in-place
+   reshape and no settable `shape`, so there is no mutation for an
+   invalidation design to guard against. A test asserts that after
+   deriving four views and running materialization, a copy, and a
+   reduction, the original view's five layout fields are unchanged.
+3. **By encapsulation.** Nothing outside `cpp.py` reads or writes
+   `_shape`/`_strides`/`_numel`/`_contiguous`/`_view` — verified across
+   `tests/`, `benchmarks/`, `examples/`, and `scripts/`.
+
+Since no invalidation is ever required, **no invalidation mechanism
+exists**, and there is no state in which the cache and the layout can
+disagree.
+
+### 16.3.4 What is cached, and what deliberately is not
+
+**Cached:**
+
+| Representation | Scope | Built |
+|---|---|---|
+| normalized shape tuple | per view | at construction |
+| normalized stride tuple | per view | at construction |
+| normalized offset, element count, contiguity flag | per view | at construction |
+| `int64` shape array, `int64` stride array | per view | **lazily**, on first strided native call |
+
+**Deliberately not cached, with the reason:**
+
+- **A ctypes representation beside the NumPy one.** The C ABI takes
+  `np.ctypeslib.ndpointer(int64, C_CONTIGUOUS)`; the NumPy array *is*
+  the ctypes-compatible representation. A second one would be redundant
+  memory with no call site.
+- **Broadcast strides** (`_broadcast_strides`). They are a function of
+  *two* operands and the output shape, not of one tensor — they belong
+  to the operation, not the object.
+- **Reduction write-strides** (`_reduce_out_strides`). A property of
+  *this reduction* (axis and keepdims), not of the tensor.
+- **Anything global.** No process-wide shape cache, no stride interning,
+  no dictionary keyed by shape, no weak-reference machinery, no
+  thread-local state, and no unbounded growth. Every cached value is a
+  field of the object it describes and dies with it.
+- **Eager layout arrays.** See below — laziness is what keeps the
+  footprint at zero for the common path.
+
+### 16.3.5 Object footprint
+
+Measured with `sys.getsizeof` over the object and its `__dict__`:
+
+| View rank | Pre-H3 | Post-H3, cache cold | Post-H3, cache warm |
+|---|---|---|---|
+| 0 `()` | 344 B | **344 B** | 616 B |
+| 1 `(1,)` | 336 B | **336 B** | 624 B |
+| 2 `(8, 16)` | 320 B | **320 B** | 624 B |
+| 3 `(4, 5, 6)` | 312 B | **312 B** | 672 B |
+| 4 `(4, 1, 6, 6)` | 304 B | **304 B** | 648 B |
+
+The cold footprint is **byte-identical**: the extra `_layout_cache =
+None` slot fits in the instance dictionary's existing capacity. A warm
+view costs **+328 B** (a 56 B tuple plus two ~136 B `int64` arrays,
+24 B of which is data at rank 3).
+
+The laziness is what makes that acceptable, and it is measurable: in one
+complete MLP training step, **134 views are created and only 5 ever
+populate the cache — 1,560 bytes in total.** The contiguous fast-path
+kernels take a flat element count and an offset rather than shape/stride
+arrays, so the dominant training path never builds them at all.
+
+### 16.3.6 Validation: moved, retained, and never weakened
+
+**Nothing was removed.** Every rejection the pre-H3 path performed still
+happens, with the same exception type and the same message. What moved
+is *how many times the same fact is established*, never *whether* it is.
+
+| Check | Where it lives now |
+|---|---|
+| shape type / positivity | `_as_shape`, once per externally supplied shape |
+| stride element type | `_as_int_tuple`, once |
+| stride length vs. shape | `_normalized_layout`, once |
+| offset type | `_as_offset`, once |
+| storage is open | `_bind`, **both** constructors, every view |
+| reachable-offset bounds | `_bind`, **both** constructors, every view |
+| `axis`, `keepdims` | unchanged — still validated at every operation |
+| `dim`/`start`/`length` for `narrow` | unchanged, plus explicit `int()` normalization |
+| reshape element-count match | unchanged |
+| transpose permutation | unchanged |
+| dtype / device match | unchanged |
+| closed-handle checks | unchanged |
+
+The **ordering** of the three rejection points — shape, then strides,
+then offset — is preserved exactly, and is asserted directly by feeding
+the view constructor metadata with two and three simultaneous faults and
+requiring the first to be reported.
+
+### 16.3.7 Closed-object behavior
+
+Unchanged, and pinned. Descriptive metadata (`shape`, `strides`,
+`offset`, `ndim`, `numel`, `contiguous`, `dtype`, `device`) stays
+readable after `close()` — the documented contract since v0.9 — and
+every operation needing a live handle still raises `RuntimeError`.
+H3 did **not** make any previously invalid operation succeed: a cached
+layout array holds copied integers, not a handle, so it remains readable
+after close *and* confers no ability to touch released memory. Closing an
+owner leaves a borrowing view's layout readable and its data operations
+failing, exactly as before.
+
+### 16.3.8 Ownership and lifetime
+
+- Repeated create/use/close cycles over cores, transposed views,
+  narrowed views, reshapes, materializations, copies, reductions, and
+  additions return live native storage **exactly** to baseline.
+- 50 repeated `to_numpy()` and 50 repeated `contiguous_copy()` calls on
+  one tensor allocate no additional storage — the memoized arrays are
+  Python objects and cause no native allocation.
+- A cached array's `base` is `None` and its referents contain no
+  `NativeStorage`, `NativeTensorCore`, or `NativeTensorView`, so it
+  cannot keep native memory alive.
+- **No reference cycle is introduced.** The cache points at two NumPy
+  arrays; neither points back at the view or the core.
+- Failure atomicity is re-proved on the rewritten paths: a failure in
+  `_bind` releases the freshly allocated storage on all four allocating
+  constructors, a failure while *building* the layout arrays leaves the
+  cache unpopulated and the tensor fully usable, and a failed native
+  call still releases its destination for `tf_core_sum`,
+  `tf_core_contiguous_copy`, `tf_core_multiply`, `tf_core_relu_backward`,
+  and `tf_core_narrow_backward`.
+
+### 16.3.9 Numerical parity
+
+H3 changed no arithmetic, so parity is exact rather than tolerance-based
+wherever the underlying operation is deterministic:
+
+- Every rewritten metadata path — materialization, contiguous copy,
+  strided `relu`, transposes, narrows, reshapes, broadcasting — matches
+  NumPy element-for-element.
+- **H2's contract is preserved.** Matmul results are compared as raw
+  IEEE-754 bit patterns between the row-sweep path and the retained
+  generic path across six shapes, and are bit-identical on finite data,
+  which is what parts 1–3 of §16.2.3 require. Part 4 (NaN payload bits)
+  is untouched and remains outside the contract: H3 changed no kernel.
+- A six-step deterministic MLP training run reproduces its loss sequence
+  and every final parameter **exactly** across repeated runs.
+- The full existing suite — including every deterministic-training and
+  exact-checkpoint-resume proof in the project — passes unchanged.
+
+### 16.3.10 Measured results
+
+All figures are medians on one machine, reported with the method used.
+The pre/post comparison uses a **retained pre-H3 copy of the package
+loaded from a separate path**, with the two sides run in **alternating
+subprocesses** so machine drift affects both equally, and takes the
+best-of-rounds median per side.
+
+**Metadata microbenchmarks** (20,000 repetitions, both implementations
+in the *same* process so the comparison is immune to drift):
+
+| Operation | Pre-H3 | Post-H3 | Speedup |
+|---|---|---|---|
+| `shape_info((8, 16))` | 3.20 µs | 1.00 µs | **3.20×** |
+| `shape_info((4, 1, 6, 6))` | 4.90 µs | 1.10 µs | **4.45×** |
+| `shape_info((3, 2), strides=(1, 3))` | 2.80 µs | 1.10 µs | **2.55×** |
+| `NativeTensorView(storage, (4, 5, 6))` | 4.80 µs | 1.50 µs | **3.20×** |
+| `_layout_arrays()`, warm | 1.00 µs | 0.10 µs | **10×** |
+
+**Call counts** after H3, same measurement as §16.3.1:
+
+| Workload | `_as_int_tuple` | `shape_info` | `row_major_strides` | `numel` |
+|---|---|---|---|---|
+| one `(1, 1)` `add` | 13 → **3** | 3 → **0** | 6 → **0** | 4 → **0** |
+| `NativeLinear` forward | 24 → **5** | 5 → **0** | 10 → **0** | 7 → **0** |
+| `NativeLayerNorm` forward | 87 → **14** | 14 → **0** | 30 → **0** | 25 → **0** |
+| `NativeBatchNorm1d` forward | 195 → **34** | 34 → **0** | 70 → **0** | 65 → **0** |
+| one `NativeAdam` step | 604 → **108** | 108 → **0** | 216 → **0** | 216 → **0** |
+| one MLP training step | 815 → **149** | 148 → **0** | 296 → **0** | 287 → **0** |
+| one CNN training step | 815 → **150** | 147 → **0** | 296 → **0** | 287 → **0** |
+
+The zeros are not a removal of work — the `_checked` primitives still
+compute the strides and the element count. They are the removal of
+*redundant validation*: no validating call remains on a path whose input
+this module already validated.
+
+**Operation benchmarks** (300+ repetitions per case, two interleaved
+rounds):
+
+| Case | Pre-H3 | Post-H3 | Speedup |
+|---|---|---|---|
+| `NativeTensorCore.zeros((1, 1))` + close | 7.90 µs | 3.70 µs | **2.14×** |
+| `zeros((4, 1, 6, 6))` + close | 8.60 µs | 4.20 µs | **2.05×** |
+| `reshape` | 6.40 µs | 2.10 µs | **3.05×** |
+| transpose + narrow chain | 15.80 µs | 6.50 µs | **2.43×** |
+| `add`, `(1, 1)` | 10.00 µs | 6.40 µs | 1.56× |
+| `add`, `(8, 8)` | 9.60 µs | 6.70 µs | 1.43× |
+| `matmul`, 8³ | 10.40 µs | 7.80 µs | 1.33× |
+| `matmul`, 32³ | 14.60 µs | 12.40 µs | 1.18× |
+| `sum(axis=0)`, 16² | 22.30 µs | 15.40 µs | 1.45× |
+| `add`, strided 64² | 25.00 µs | 20.40 µs | 1.23× |
+| contiguous copy of a 32² transpose | 15.40 µs | 13.00 µs | 1.18× |
+| `to_numpy()` of a 32² transpose | 12.00 µs | 10.10 µs | 1.19× |
+| `NativeLinear` forward, no graph | 40.10 µs | 35.10 µs | 1.14× |
+| `NativeLinear` forward, with graph | 40.10 µs | 34.70 µs | 1.16× |
+| `NativeLinear` forward + backward | 240.50 µs | 177.80 µs | 1.35× |
+| `NativeLayerNorm` forward | 221.00 µs | 180.90 µs | 1.22× |
+| `NativeBatchNorm1d` training forward | 529.60 µs | 387.50 µs | 1.37× |
+| `NativeBatchNorm1d` eval forward | 232.30 µs | 171.60 µs | 1.35× |
+| `NativeAdam.step()`, small MLP | 1480 µs | 1046 µs | **1.42×** |
+| `NativeAdam.step()`, (128, 128) | 1508 µs | 1326 µs | 1.14× |
+| **MLP training step** | 1983 µs | 1389 µs | **1.43×** |
+| **CNN training step** | 1829 µs | 1421 µs | **1.29×** |
+| `state_dict()` + `load_state_dict()` | 196.30 µs | 134.90 µs | 1.46× |
+
+**Harness cases** (`benchmark_native_cpu_performance.py`, 201
+repetitions, two interleaved rounds):
+
+| Case | Pre-H3 | Post-H3 | Speedup |
+|---|---|---|---|
+| `scalar_dispatch_overhead` / `tensor_core` | 9.00 µs | 5.30 µs | **1.70×** |
+| `normalized_training_step` | 6418 µs | 4260 µs | **1.51×** |
+| `cnn_classification_training_step` | 2275 µs | 1693 µs | 1.34× |
+| `mlp_training_step` | 2334 µs | 1827 µs | 1.28× |
+| `adam_step` | 1512 µs | 1242 µs | 1.22× |
+| `reduction_contiguous`, 256² | 115.90 µs | 97.40 µs | 1.19× |
+| `sgd_step` | 235.70 µs | 211.00 µs | 1.12× |
+
+**The per-call cost, decomposed.** The harness's two new `native_only`
+cases finally split B3's single ~20 µs figure (smoke configuration):
+
+| Component | Median |
+|---|---|
+| `metadata_preparation` — Python normalization + view construction | 1.70 µs |
+| `ctypes_boundary` — one prepared kernel call, nothing else | 1.10 µs |
+| `scalar_dispatch_overhead` — the whole `(1, 1)` Core `add` | 6.20 µs |
+
+### 16.3.11 Negative, neutral, and noise results
+
+Reported because they are as much of the result as the speedups are.
+
+- **Large kernel-bound cases show no measurable change, in either
+  direction.** 384³, 512³, and 128³ matmul, 256² elementwise, and 128²
+  full reduction all sit inside their own run-to-run spread. For 512³
+  matmul, six interleaved rounds gave pre-H3 medians of 21.2–23.6 ms and
+  post-H3 medians of 21.3–22.9 ms — overlapping, with post-H3 slightly
+  lower on average. **Acceptance criterion 9 (no material large-matmul
+  regression) is met**, and the mechanism is clear: the C++ is byte-
+  identical and the Python does strictly less, so there is no path by
+  which such a case could get slower.
+- **An intermediate measurement that looked like a 35 % regression was
+  noise, and is recorded as a methodology finding.** At the harness's
+  *default* 11 repetitions, `reduction_contiguous` at 256² appeared to
+  go 95 µs → 148 µs. Two things exposed it: the result was internally
+  impossible (the thin `tensor_core` layer "slower" than the
+  `native_tensor` layer wrapping it), and at 201 repetitions the same
+  case measured **1.19× faster**. A dedicated 400-repetition,
+  three-round interleaved run confirmed it. **The harness's default
+  statistics are not sufficient to support a ±20 % claim on a ~100 µs
+  case**; every H3 number above therefore comes from a high-repetition
+  run, and no default-repetition figure is quoted as evidence.
+- **The layout-array cache is the weakest of the three changes, and it
+  was kept on measured merit rather than on principle.** Isolated by
+  disabling only that cache on an otherwise-H3 build, it saves
+  0.6–1.5 µs per *strided* operation on small tensors (`to_numpy`
+  12.1 → 11.1 µs, strided `add` 18.3 → 16.8 µs, strided `relu`
+  14.4 → 13.2 µs) and is **lost in the noise on large tensors**
+  (256² `to_numpy` 92.6 vs 88.5 µs). It contributes essentially nothing
+  to a contiguous training step, which never builds it. It was kept
+  because it is lazy, bounded, and free when unused — and a deliberately
+  **cold-cache** measurement (a fresh view every iteration, so the
+  memoization can only cost) was still equal to or faster than pre-H3,
+  so it has no adverse case.
+- **`NativeTensor`'s wrapper cost remains negligible**, confirming B8:
+  the wrapper and graph layers move with the Core layer rather than
+  independently.
+- **Workloads still dominated by something else.** A 128×128 Adam step
+  improves only 1.14× against the small MLP's 1.42×, because at that
+  size the arithmetic, not the call count, is the cost — which is
+  exactly B4's finding and remains **H4's** subject, not H3's.
+
+### 16.3.12 What H3 did not do
+
+- No C++, no CTest, no C ABI symbol, no ctypes declaration, no kernel.
+  **52 exported `tf_*` symbols, unchanged.**
+- No new `NativeTensorCore` method, no autograd operation, no module, no
+  loss, no metric, no optimizer, no export.
+- No registry moved: `UNSUPPORTED` is still
+  `("float32", "cuda", "amp")`, `SUPPORTED_DTYPES` still `("float64",)`,
+  `SUPPORTED_DEVICES` still `("cpu",)`.
+- No checkpoint field and no checkpoint version: still
+  `tensorforge.native_checkpoint` version **2**, supporting **(1, 2)**.
+- **No public API of any kind**: no cache control, no cache statistic,
+  no reset, no profiling counter, no dispatch selector, no
+  environment variable, no `validated=` flag. The suite asserts the
+  absence of all of these by name against the real modules and classes,
+  and asserts that `cpp.py` reads no environment variable at all.
+- No H4+ work: no optimizer restructuring, no reduction fast path, no
+  fusion, no Conv2d change, no SIMD, no threading, no BLAS, no memory
+  pool, and no scratch workspace. A scope test asserts the absence of
+  each by name.
+
+### 16.3.13 Instrumentation policy
+
+Every measurement above was taken with **test-local or benchmark-local**
+instrumentation: monkeypatched wrappers around the real helpers,
+subprocess A/B runs against a retained copy of the pre-H3 package, and
+two new `native_only` harness cases. **No production counter, no
+environment-variable profiler, no C ABI counter, and no installed
+tracing mode exists**, which is what §3.4 required of any milestone
+answering its questions.
+
+### 16.3.14 Validation
+
+| Check | Result |
+|---|---|
+| Full `uv run pytest` | **5,295 passed**, 0 failed, 0 skipped |
+| Windows Release build (MSVC 19.44, CMake 4.4.0, out of source) | zero project warnings |
+| Release CTests | **13/13** |
+| Native backend smoke | passed |
+| Exported `tf_*` symbols | **52** |
+| All 14 examples | pass, including every exact-resume proof |
+| All 6 benchmark smokes | pass |
+| Harness `--smoke`, `--json`, `--workload`, `--profile` | pass |
+| New H3 suite against the **pre-H3** implementation | **18 of 53 fail** — the tests are not vacuous |
+| New H3 suite: the other 35 | pass on **both** — preservation is real |
+
+The pre-H3 split is the load-bearing evidence that the suite tests
+something: the 18 failures are the architecture tests (single
+normalization, the private constructor, the memoized read-only arrays,
+lazy population, no-cycle, failure cleanup), and the 35 that pass on both
+sides are the preservation tests (every rejection, every message, the
+rejection order, numerical parity, closed-object behavior, the public
+surface, the registries, and the symbol count).
+
+**The collected-case count reconciles exactly.** The suite went from
+5,239 to 5,295 — **+56 collected cases** — while H3 wrote **54 new test
+functions**. The difference is parametrization, not hidden tests:
+
+| Source | Test functions | Collected cases |
+|---|---|---|
+| `tests/test_native_metadata_dispatch.py` (new file) | 53 | 53 |
+| `test_the_size_independent_cases_are_exactly_the_declared_ones` | 1 | 1 |
+| `test_each_case_returns_live_storage_to_its_baseline`, which is `@pytest.mark.parametrize("case", list(EXPECTED_CASES))` and grew with `EXPECTED_CASES` 24 → 26 | 0 | **2** |
+| **Total** | **54** | **56** |
+
+The two extra collected cases are the existing per-case live-storage
+guard picking up `metadata_preparation` and `ctypes_boundary`
+automatically — which is the guard working as designed: every harness
+case must return live native storage to its baseline, including the two
+H3 added.
+
+### 16.3.15 Sanitizer validation
+
+Run because incorrect cached metadata could in principle reach a kernel
+as an out-of-bounds access, an invalid offset or stride, or a
+layout-array lifetime fault — none of which the Python suite alone can
+rule out.
+
+**Build:** Clang 18.1.3, CMake 3.28.3, WSL2 Ubuntu 24.04.4,
+`-DCMAKE_BUILD_TYPE=Debug -DTF_SANITIZE=address,undefined
+-DTF_BUILD_TESTS=ON`, built out of source with **zero project compiler
+warnings**. Instrumentation **proved rather than assumed**: `nm -D`
+reports **22 `__asan*`** and **14 `__ubsan*`** dynamic symbols beside
+the **52** exported `tf_*` symbols, and the library **refuses to load
+without the sanitizer runtime** (`is_available()` is `False` without
+`LD_PRELOAD` and `True` with it). No metadata internal is exported:
+`nm -D` finds zero `normalized_layout` / `layout_cache` / `shape_cache`
+symbols.
+
+| Check | Result |
+|---|---|
+| Sanitized native CTests (`detect_leaks=1`) | **13/13** |
+| H3 focused suites (metadata/dispatch, view, core, tensor, storage, shape metadata, matmul dispatch, storage allocation, checkpoint v2, harness contract, backends) | **747 passed, 0 skipped** |
+| View-consuming suites (autograd, linear, flatten, conv2d, maxpool2d, layernorm, batchnorm 1d/2d, adam, sgd, optimizer math, buffers) | **926 passed** |
+| Deterministic-training and exact-resume suites | **321 passed** |
+| H3 metadata/view stress program | all checks passed |
+| Ownership suites with the **cyclic collector disabled** | **83 passed** |
+| Harness under the sanitized library | 26 cases, every gate `passed` |
+| **ASan diagnostics** | **0** |
+| **UBSan diagnostics** | **0** |
+
+**The stress program** drives every layout the metadata paths can
+produce, repeatedly, so each cached shape/stride array actually crosses
+into a kernel: row-major contiguous, transposed, narrowed, nonzero
+offsets, positive non-unit strides, views of views (three deep), chained
+transpose-then-narrow-then-transpose, reshapes, scalar and one-element
+shapes, rejected zero-size shapes, both H2 matmul paths including a
+strided *left* operand, repeated `_layout_arrays()` reuse, operations
+after close, **both** parent/view close orders, failure during
+layout-array construction, `_bind` failure on all four allocating
+constructors, and a forced failure in each of five kernels.
+
+**Cached-array lifetime.** Phase 5 of the stress takes the cached
+arrays, deletes every caller-side reference so that only the view's own
+cache keeps them alive, then runs ten rounds of `contiguous_copy`,
+`to_numpy`, and `sum` on that view. If the cache did not own them for
+the duration of each call, ASan would report a heap-use-after-free at
+the kernel. It reports nothing, and the arrays still hold the right
+values afterwards.
+
+**Parent/view close ordering**, both directions: closing the **owner**
+first leaves the view's layout and cached arrays readable (same object
+identity, same values) while every data operation raises `RuntimeError`
+rather than touching released memory; closing a **view** first leaves the
+owner and its siblings fully usable.
+
+**The detector is proved able to fail.** A negative control hands
+`tf_storage_materialize` a shape array of length 2 while telling it
+`ndim=3` — exactly the shape a wrong cached layout array would take, and
+a defect the C ABI *cannot* catch because it receives a pointer and a
+rank with no length. ASan catches it as a `heap-buffer-overflow` and
+names the frame (`tf_storage_materialize`, `cpp/src/storage.cpp:176`).
+So "zero diagnostics on the real paths" is a measurement, not an absence
+of instrumentation.
+
+**LeakSanitizer lifecycle.** A create/use/close cycle over the full view
+family returns native live storage **exactly to baseline (0 → 0)**. The
+remaining process-exit allocations — 724,691 bytes in 642 allocations —
+contain **no TensorForge frame at all**: the stacks name only
+`python3.13` (5,913 frames), the ASan runtime (261), `libc` (132), and
+NumPy's `_multiarray_umath` (22). **No suppression file was added.**
+
+**No dependence on the cyclic collector.** Stress phase 9 runs 50
+create/use/close cycles with `gc.disable()` in force and live native
+storage still returns exactly to baseline, and the H3 ownership suites
+pass with automatic collection off — explicit `close()` is sufficient,
+and `gc.collect()` in the tests is defensive rather than load-bearing.
+
+**Not run, and not claimed:** a Windows **Debug** build and its CTests.
+H3 changed no C++ file, no CMake input, and no ABI declaration — the
+`cpp/` tree is byte-identical — so a second Windows configuration would
+re-measure unchanged sources. The Clang sanitizer build above compiles
+those same sources in a Debug configuration with assertions on.
+
+---
+
+## 16.4 Remaining ladder detail
 
 ### H4 — Optimizer step cost
 
@@ -2078,6 +2654,29 @@ identifies.
 - Bit-identical unless §7.3's procedure is invoked, which for an
   optimizer would immediately break the exact-resume proofs, so in
   practice: bit-identical.
+
+**Re-measured after H3, and confirmed as the highest-leverage remaining
+milestone.** H3 made every one of those calls cheaper without reducing
+their *number*, which sharpened rather than removed B4:
+
+| Measurement | Pre-H3 | Post-H3 |
+|---|---|---|
+| `NativeAdam.step()` vs `tensorforge.optim.Adam` | 39.8× | **31.9×** |
+| a whole MLP training step vs the stable line | 8.88× | 8.38× |
+| a normalized training step vs the stable line | 6.76× | 5.28× |
+| `NativeAdam.step()`, small MLP | 1480 µs | 1046 µs |
+| `NativeAdam.step()`, one (128, 128) parameter | 1508 µs | 1326 µs |
+
+The optimizer step is still **roughly four times worse against the
+stable line than a complete training step is**, which is what identifies
+it rather than the forward or the backward as the remaining structural
+cost. The 128×128 row is the confirming detail: it improved only 1.14×
+against the small MLP's 1.42×, because at that size the arithmetic — not
+the per-call overhead H3 addressed — is the cost. The 27 allocations per
+parameter, and in particular the **six one-element broadcast scalars**
+`_stage_entry` builds per parameter per step, are now the target that
+H3 cannot reach: they are a *count* problem, not a *per-call-cost*
+problem.
 
 ### H5 — Reduction execution
 
@@ -2101,7 +2700,17 @@ of B6's cost is removed by them, since a normalization forward is 11–27
 allocations of exactly the kind H1 makes cheaper and exactly the
 operations H3 and H5 make cheaper. H6 proceeds only if a re-measured
 normalization step still shows a material composed-module cost *after*
-those. **It must not introduce a normalization kernel**: F2–F4's
+those.
+
+**Partially answered by H3, and narrowed further.** A normalized
+training step improved **1.51×** at H3 — the largest end-to-end gain of
+the milestone — and its ratio against the stable line fell from 6.76× to
+5.28×. That is consistent with the prediction above: much of B6 was
+per-call overhead, and it is now gone. What remains unmeasured is how
+much of the residual 5.28× H5 removes, since a normalization forward is
+dominated by `mean` and broadcast `subtract`. **H6 should not be entered
+before H5 is measured**, and on current evidence it is more likely to be
+dropped than to ship. **It must not introduce a normalization kernel**: F2–F4's
 achievement is that both families are compositions with no C++ at all,
 and trading that for speed would be a semantic regression, not an
 optimization.

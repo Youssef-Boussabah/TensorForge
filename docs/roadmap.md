@@ -1418,7 +1418,8 @@ The Python line is done; what remains is expansion on its own terms:
     schedulers, new optimizers, CPU performance tuning, and any stable
     framework change.
   - **Phase H — Native CPU Performance and Runtime Efficiency — is the
-    current phase, and it has begun at milestone H0 only.** Its
+    current phase; it has begun, and milestones H0, H1, H2, and H3 are
+    complete.** Its
     architecture contract is
     [native_cpu_performance_design.md](native_cpu_performance_design.md).
     **H0 is architecture, profiling, and baseline work: nothing was made
@@ -1431,7 +1432,8 @@ The Python line is done; what remains is expansion on its own terms:
     native checkpoint format stays version 2 with versions 1 and 2
     supported, `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
     and **Phase G remains the latest completed phase**. The harness
-    measures 24 cases across twelve workload families — dispatch
+    measures 26 cases (24 at H0, plus the two H3 added to
+    decompose the per-call cost) across twelve workload families — dispatch
     overhead, elementwise, reductions, matmul, materialization, linear,
     convolution, normalization, stochastic, optimizer, training step, and
     in-memory state operations — separating up to nine implementation
@@ -1502,6 +1504,77 @@ The Python line is done; what remains is expansion on its own terms:
     per-call Python cost dominates and control cases whose code did not
     change at all vary by 0.50-1.44x. No capability, dtype, device,
     registry value, checkpoint field, or checkpoint version moved.
+    **Milestone H3 — native metadata and dispatch efficiency — has since
+    shipped**, and unlike H1 and H2 it is **Python-only**: no C++, no C
+    ABI symbol, no ctypes declaration, and no kernel changed, so the
+    library still exports exactly **52** `tf_*` symbols. H3 attacked the
+    fixed per-operation cost B3 measured at 18.6-22.6 microseconds, of
+    which only about 1.9 was the ctypes boundary and the rest was
+    Python-side shape and stride work. The measured cause was redundant
+    *re-validation*: one `shape_info` call ran `_as_int_tuple` **four**
+    times over a tuple that was fully validated after the first pass,
+    and computed the row-major strides **twice**, while
+    `NativeTensorCore.zeros` validated the caller's shape a second
+    complete time by calling `numel(shape)` and then constructing a view
+    from the same raw shape. Instrumented call counts put that at
+    **815** `_as_int_tuple` calls per MLP training step and 604 per
+    `NativeAdam` step. H3 introduced **one normalization boundary** —
+    the private `_normalized_layout`, performing exactly the checks
+    `shape_info` always performed, in the same order and with the same
+    messages, and normalizing the shape once — with the derived
+    quantities computed by private `_checked` primitives that validate
+    nothing *because there is nothing left to validate*. Each public
+    helper (`row_major_strides`, `numel`, `reduce_shape`,
+    `broadcast_shapes`) is now its own validation followed by the
+    matching primitive, so the two can never disagree.
+    `NativeTensorView` gained a private `_from_validated` constructor
+    that skips **only** that normalization; both constructors funnel
+    through one shared `_bind` that still performs the storage open
+    check and the full reachable-offset bounds check, and the element
+    count and contiguity flag are **derived inside** the private
+    constructor rather than passed to it, so no caller can supply an
+    inconsistent pair — which is why H3 has a separate private
+    constructor rather than the misusable `validated=True` flag. Views
+    also memoize their `int64` shape/stride arrays for the strided C
+    ABI, **lazily** and **read-only**. That memoization cannot go stale:
+    a view's layout is assigned exactly once, in `_bind`, and every
+    layout-changing operation (`reshape`, `transpose`, `T`, `narrow`)
+    returns a *new* view, so no invalidation is ever required and none
+    exists. Nothing global was introduced — no shape cache, no stride
+    interning, no weak-reference machinery, no thread-local state — and
+    **no validation was removed**: every rejection still happens, with
+    the same exception type, the same message, and the same shape-then-
+    strides- then-offset ordering. Measured: `shape_info` 2.6-4.5x
+    faster, view construction 3.2x, `_as_int_tuple` calls per MLP step
+    **815 -> 149** and per CNN step **815 -> 150**; end to end, a one-
+    element allocation 2.1x, a `reshape` 3.1x, a view chain 2.4x, a
+    small `add` 1.56x, `NativeAdam` on a small MLP 1.42x, a **whole MLP
+    training step 1.43x**, a **CNN training step 1.29x**, and a
+    **normalized training step 1.51x**, which cut the `NativeAdam` step's gap
+    against the stable line from 39.8x to 31.9x. Reported just as
+    honestly: **large kernel-bound work shows no measurable change in
+    either direction** — 384-cubed, 512-cubed and 128-cubed matmul, 256-
+    squared elementwise, and 128-squared reduction all sit inside their
+    own run-to-run spread, so H2's large-matmul result is intact. The
+    layout- array cache is the weakest of the three changes and was kept
+    on measured merit, not principle: isolated, it saves 0.6-1.5
+    microseconds per *strided* small operation and nothing at all on
+    large ones or on a contiguous training step, and even a deliberately
+    cold-cache measurement is no slower than pre-H3. One methodology
+    finding is published rather than buried: at the harness's default 11
+    repetitions a case appeared to regress 35%, and at 201 repetitions
+    the same case measured 1.19x *faster* — so no default-repetition
+    figure is quoted as H3 evidence. Object footprint is unchanged for a
+    cold view (byte-identical) and +328 bytes for one that actually
+    takes a strided path; in a full MLP step only **5 of 134** views
+    ever populate it, 1,560 bytes in total. All instrumentation was
+    test-local or benchmark-local monkeypatching and subprocess A/B runs
+    against a retained pre-H3 copy of the package — **no production
+    counter, environment-variable profiler, or installed tracing mode
+    exists**, and H3 added no public API of any kind: no cache control,
+    statistic, reset, profiling counter, or dispatch selector. No
+    capability, dtype, device, registry value, checkpoint field, or
+    checkpoint version moved.
     The proposed **H3–H8 ladder is explicitly conditional**:
     a milestone whose premise the measurement does not confirm is
     narrowed, reordered, or dropped, and a memory pool, scratch

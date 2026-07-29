@@ -344,7 +344,8 @@ explicit layer at a time:
   `("float32", "cuda", "amp")` — a claim scoped to the **experimental
   native float64 CPU** line, never to the stable framework, which keeps
   its own separate `Dropout`.
-- **Native CPU performance (Phase H) has begun, at milestone H0 only.**
+- **Native CPU performance (Phase H) has begun; H0, H1, H2, and H3 are
+  complete.**
   H0 is architecture, profiling, and baseline work and **shipped no
   optimization**: the contract in
   [native_cpu_performance_design.md](native_cpu_performance_design.md),
@@ -429,6 +430,44 @@ explicit layer at a time:
   reads the destination, and the row sweep assigns every element of every
   row in its `k == 0` pass before anything accumulates into it. No
   capability, dtype, device, registry value, or checkpoint version moved.
+
+- **Milestone H3 — native metadata and dispatch efficiency — is
+  complete**, and is the first Phase-H milestone that is **Python-only**:
+  no C++, no C ABI symbol, no ctypes declaration, and no kernel changed,
+  so the library still exports exactly **52** `tf_*` symbols. It removed
+  redundant metadata *re-validation* from the path to a kernel. Before
+  H3 one `shape_info` call ran `_as_int_tuple` **four** times over a
+  tuple that was fully validated after the first pass and computed the
+  row-major strides **twice**, and `NativeTensorCore.zeros` validated the
+  caller's shape a second complete time; instrumented counts put that at
+  **815** `_as_int_tuple` calls per MLP training step. The architecture
+  is three pieces. **One normalization boundary**: the private
+  `_normalized_layout` performs exactly the checks `shape_info` always
+  performed, in the same order and with the same messages, and normalizes
+  the shape once, with everything derived from it computed by private
+  `_checked` primitives that validate nothing because nothing is left to
+  validate — each public helper is now its own validation plus the
+  matching primitive, so the two cannot disagree. **Two view
+  constructors, one binding**: `NativeTensorView` keeps its normalizing
+  public constructor and gains a private `_from_validated` that skips
+  *only* that normalization, with both funnelling through a shared
+  `_bind` that still performs the storage open check and the full
+  reachable-offset bounds check; the element count and contiguity flag
+  are derived *inside* the private constructor rather than passed to it,
+  so an inconsistent pair cannot be supplied — which is why this is a
+  separate constructor and not a misusable `validated=True` flag.
+  **Per-view layout arrays**: the `int64` shape/stride arrays the strided
+  C ABI takes are memoized lazily and read-only. That memoization cannot
+  go stale, because a view's layout is assigned exactly once in `_bind`
+  and every layout-changing operation returns a *new* view — so no
+  invalidation is ever required and none exists. Nothing global was
+  introduced and **no validation was removed**: every rejection still
+  happens with the same exception type, message, and ordering. Measured:
+  view construction 3.2x, `_as_int_tuple` per MLP step 815 -> 149, an MLP
+  training step 1.43x, a CNN step 1.29x, a normalized step 1.51x — with
+  **no measurable change on large kernel-bound matmul or elementwise
+  work**, which is reported as such. No capability, dtype, device,
+  registry value, or checkpoint version moved.
 
 The execution path for a native training step is:
 

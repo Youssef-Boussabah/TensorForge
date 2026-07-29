@@ -1871,6 +1871,16 @@ def test_live_storage_returns_to_baseline_across_a_full_cycle(
     path = tmp_path / "cycle.npz"
     save_native_checkpoint(path, model, optimizer=optimizer)
     load_native_checkpoint(path, model, optimizer=optimizer)
+    # Collect before sampling, exactly as the comparison sample below is
+    # collected before *it* is taken. Both counts must describe *settled*
+    # live storage or the comparison is not like-for-like: a training
+    # advance leaves ordinary cyclic garbage (an autograd graph's nodes
+    # and closures reference each other), and whether a *generational*
+    # collection has happened to fire by any particular statement is a
+    # function of CPython's allocation counters, not of anything
+    # TensorForge owns. Without this the assertion silently tests when the
+    # collector last ran.
+    gc.collect()
     after_cycle = len(live_storages)
 
     for _ in range(3):

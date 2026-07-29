@@ -967,26 +967,44 @@ def test_a_failed_conversion_after_allocation_closes_the_output(
         monkeypatch, live_storages):
     """A Python-side failure *after* the native call still releases the
     destination — the wrapper's cleanup is not conditional on where the
-    failure came from."""
+    failure came from.
+
+    The injected seam is ``NativeTensorView._bind``, the single point both
+    view constructors funnel through: the public ``__init__`` (which
+    normalizes caller-supplied metadata first) and the private
+    ``_from_validated`` the allocating constructors use since H3 (which
+    skips that normalization because this module already performed it).
+    Patching ``_bind`` therefore covers **both** paths at once, where
+    patching ``__init__`` would only reach the public one."""
     a = cpp.NativeTensorCore.from_array(rng(19).uniform(-1, 1, (4, 4)))
+    storage = cpp.NativeStorage.from_array(np.zeros(16))
     gc.collect()
     baseline = len(live_storages)
 
-    original = cpp.NativeTensorView.__init__
+    original = cpp.NativeTensorView._bind
 
-    def failing_view(self, *args, **kwargs):
+    def failing_bind(self, *args, **kwargs):
         raise RuntimeError("simulated wrapper failure")
 
     with monkeypatch.context() as patch:
-        patch.setattr(cpp.NativeTensorView, "__init__", failing_view)
+        patch.setattr(cpp.NativeTensorView, "_bind", failing_bind)
+        # The private, already-normalized path used by every allocation.
         with pytest.raises(RuntimeError, match="simulated"):
             cpp.NativeTensorCore._uninitialized((4, 4))
-    assert cpp.NativeTensorView.__init__ is original
+        with pytest.raises(RuntimeError, match="simulated"):
+            cpp.NativeTensorCore.zeros((4, 4))
+        with pytest.raises(RuntimeError, match="simulated"):
+            cpp.NativeTensorCore.from_array(np.zeros((4, 4)))
+        # The public, fully validating path.
+        with pytest.raises(RuntimeError, match="simulated"):
+            cpp.NativeTensorView(storage, (4, 4))
+    assert cpp.NativeTensorView._bind is original
     gc.collect()
-    # The storage was constructed before the view failed; it is
-    # unreachable, so the invariant here is that it does not survive as a
-    # *live* handle once collected.
+    # Each storage was constructed before its view failed; each is
+    # unreachable, so the invariant here is that they do not survive as
+    # *live* handles once collected.
     assert len(live_storages) <= baseline + 1
+    storage.close()
     a.close()
 
 

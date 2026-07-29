@@ -2328,7 +2328,9 @@ kernels still deliberately naive.
 
 ### Phase H — native CPU performance and runtime efficiency (H0, phase begun)
 
-**Phase H is the current phase, and it has begun at milestone H0 only.**
+**Phase H is the current phase; it has begun, and milestones H0, H1, H2,
+and H3 are complete.** This section records H0; the H1, H2, and H3
+sections follow.
 The last sentence of the Phase-G entry above — "the kernels still
 deliberately naive" — is what this phase exists to address, and H0 is the
 milestone that decides *how*, by measuring rather than assuming.
@@ -2368,8 +2370,8 @@ closure requirements; and an adopt/adapt/reject decision for every
 relevant idea taken from the Daedalus reference project.
 
 The harness is the first in this repository to measure the runtime *as a
-whole* rather than one phase's surface: 24 cases across twelve workload
-families, separating up to nine declared implementation layers, with a
+whole* rather than one phase's surface: 24 cases at H0 across twelve
+workload families, separating up to nine declared implementation layers, with a
 correctness gate that runs **before** the timing helper is ever reached,
 honest reference labelling that publishes **no ratio** where no
 equivalent exists, `--smoke` / `--json` / `--case` / `--workload` and a
@@ -2688,6 +2690,111 @@ control of any kind. `UNSUPPORTED` still reads
 native checkpoint format is still version 2 with versions 1 and 2
 supported. Phase G remains the latest *completed* phase; Phase H remains
 the current one.
+
+### Phase H — native CPU performance and runtime efficiency (H3)
+
+**Milestone H3 — native metadata and dispatch efficiency — is complete,
+and is the first Phase-H milestone that is Python-only.** No C++, no C
+ABI symbol, no ctypes declaration, and no kernel changed, so the library
+still exports exactly **52** `tf_*` symbols.
+
+H0 measured a fixed 18.6–22.6 microseconds per native operation, of
+which only about 1.9 was the ctypes boundary — the rest was Python-side
+shape and stride work — and H2 sharpened the question by making small
+matmuls kernel-cheap while leaving them dominated by that floor. H3
+answered it.
+
+**The measured cause was redundant re-validation, not expensive work.**
+One `shape_info` call ran `_as_int_tuple` **four** times over a tuple
+that was fully validated after the first pass, and computed the
+row-major strides **twice**; `NativeTensorCore.zeros` then validated the
+caller's shape a *second complete time* by calling `numel(shape)` and
+constructing a view from the same raw shape. Instrumented call counts —
+taken with test-local monkeypatching, since **no production counter
+exists or may exist** — put that at **815** `_as_int_tuple` calls per
+MLP training step, 815 per CNN step, and 604 per `NativeAdam` step. This
+confirmed and refined design §3.1/B3, and answered §3.2's open question
+about which helper contributes what.
+
+**One normalization boundary.** The private `_normalized_layout`
+performs exactly the checks `shape_info` always performed, in exactly
+the same order, with exactly the same messages, and normalizes the shape
+**once**. Everything derived from it — the row-major strides, the
+element count, the contiguity comparison — comes from private
+`_checked` primitives that validate nothing *because nothing is left to
+validate*. Each public helper (`row_major_strides`, `numel`,
+`reduce_shape`, `broadcast_shapes`) is now its own validation followed
+by the matching primitive, so the two can never compute different
+answers — a property the suite asserts by comparing them across a shape
+matrix.
+
+**Two view constructors, one binding.** `NativeTensorView` keeps its
+normalizing public constructor and gains a private `_from_validated`
+that skips **only** that normalization. Both funnel through a shared
+`_bind`, which still performs the storage open check and the **full
+reachable-offset bounds check** — deliberately not skipped, because
+bounds depend on the storage size, not on the metadata, and a derived
+layout can still be handed a storage that has since been closed. The
+element count and the contiguity flag are **derived inside** the private
+constructor rather than passed to it, so a caller cannot supply an
+inconsistent pair; that is why H3 ships a separate private constructor
+rather than the misusable `validated=True` flag it was warned against.
+
+**Per-view layout arrays, memoized lazily and read-only.** The `int64`
+shape/stride arrays the strided C ABI takes are built at most once per
+view. **Staleness is impossible by construction rather than prevented by
+invalidation**: a view's layout is assigned exactly once, in `_bind`,
+and `reshape`, `transpose`, `T`, and `narrow` all return *new* views, so
+no invalidation is ever required and **none exists**. The arrays are
+read-only, so no caller can mutate a view's metadata through them, and
+they hold copied integers rather than a handle, so they keep no native
+storage alive and introduce no reference cycle.
+
+**Nothing was weakened.** Every rejection still happens, with the same
+exception type, the same message, and the same shape-then-strides-
+then-offset ordering — asserted by feeding the constructor metadata with
+two and three simultaneous faults. Nothing global was introduced: no
+shape cache, stride interning, process-wide dictionary, weak-reference
+machinery, or thread-local state. No public API of any kind was added:
+no cache control, statistic, reset, profiling counter, dispatch
+selector, or environment variable, and `cpp.py` reads no environment
+variable at all.
+
+**Measured, with the negatives published.** `shape_info` 2.6–4.5x
+faster, view construction 3.2x, `_as_int_tuple` calls per MLP step
+**815 → 149** and per CNN step **815 → 150**. End to end: a one-element
+allocation 2.1x, `reshape` 3.1x, a view chain 2.4x, a small `add` 1.56x,
+`NativeAdam` on a small MLP 1.42x, an **MLP training step 1.43x**, a
+**CNN training step 1.29x**, and a **normalized training step 1.51x**,
+which cut the `NativeAdam` step's gap against the stable line from 39.8x
+to 31.9x. Against that: **large kernel-bound work shows no measurable
+change in either direction** — 384-cubed, 512-cubed, and 128-cubed
+matmul, 256-squared elementwise, and 128-squared reduction all sit
+inside their own run-to-run spread, so H2's large-matmul result is
+intact. The layout-array cache is the weakest of the three changes and
+was kept on measured merit rather than principle: isolated, it saves
+0.6–1.5 microseconds per *strided* small operation and nothing on large
+ones or on a contiguous training step, and even a deliberately
+cold-cache measurement is no slower than pre-H3. Object footprint is
+byte-identical for a cold view and +328 bytes for one that actually
+takes a strided path; in a full MLP step only **5 of 134** views ever
+populate it.
+
+**One methodology finding is published rather than buried.** At the
+harness's *default* 11 repetitions a case appeared to regress 35%; the
+result was internally impossible (a thin layer "slower" than the wrapper
+around it), and at 201 repetitions the same case measured **1.19x
+faster**. No default-repetition figure is quoted as H3 evidence, and the
+harness gained two `native_only` cases — `metadata_preparation` and
+`ctypes_boundary` — that finally decompose B3's single figure into its
+Python and boundary halves, which is exactly the instrumentation
+design §3.4 said a later milestone would need.
+
+`UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
+`SUPPORTED_DTYPES` still reads `("float64",)`, `SUPPORTED_DEVICES` still
+reads `("cpu",)`, and the native checkpoint format is still version 2
+with versions 1 and 2 supported. Phase G remains the latest *completed*
+phase; Phase H remains the current one.
 
 ### A hardening milestone before Phase D
 

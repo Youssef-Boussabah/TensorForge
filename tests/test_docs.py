@@ -4046,9 +4046,10 @@ _PHASE_G_OVERCLAIMS = (
     # the narrower claim the phase must not let erode.
     #
     # Retired one milestone at a time, exactly as the Phase-G entries
-    # above were: H1 (the output-allocation contract) and **H2** (the
-    # matmul loop order) really have shipped, so claiming either is
-    # accurate and the milestone-number arm now starts at H3. What is
+    # above were: H1 (the output-allocation contract), **H2** (the matmul
+    # loop order), and **H3** (the metadata and dispatch contract) really
+    # have shipped, so claiming any of them is accurate and the
+    # milestone-number arm now starts at H4. What is
     # *not* retired, and will not be until §11–§13 of the design are met,
     # is the family of optimizations Phase H has deliberately rejected on
     # evidence: no memory pool, scratch workspace, SIMD, threading,
@@ -4063,7 +4064,7 @@ _PHASE_G_OVERCLAIMS = (
      r"|multi-?threading|thread pool)[^.]{0,60}"
      r"\b(is|are|was|were|has been|have been)\s+"
      r"(added|shipped|implemented|enabled|introduced|adopted|landed)\b"
-     r"|\bH[3-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
+     r"|\bH[4-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
      r"(begun|started|shipped|landed|complete|completed)\b"),
 )
 

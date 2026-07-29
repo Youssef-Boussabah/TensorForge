@@ -252,7 +252,7 @@ The native examples and demos are listed in the native quickstart above.
 - [docs/native_classification_design.md](docs/native_classification_design.md) — architecture contract for the native classification stack (Phase E — complete: E0–E10 shipped)
 - [docs/native_normalization_design.md](docs/native_normalization_design.md) — architecture contract for the native normalization stack (Phase F — **complete**: F0, F1, F2 (`NativeLayerNorm`), F3 (`NativeBatchNorm1d`), F4 (`NativeBatchNorm2d`), F5 (state/checkpoint/graph-safety hardening), F6 (a deterministic normalized training example with exact resume), F7 (the honest benchmark characterization), F8 (the cross-cutting integration and semantic guardrails), and F9 (the phase closure — validation and documentation only) have all shipped)
 - [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) — architecture contract for native RNG and Dropout (Phase G — **complete**: milestone G0, the design lock, milestone G1, `NativeGenerator` and module generator-state ownership, milestone G2, the stateless `dropout_forward` **Core** kernel and its C ABI, milestone G3, the differentiable `NativeTensor.dropout(p, *, generator)` with its graph-owned saved mask and generator call transaction, milestone G4, the `NativeDropout` module and its public export, milestone G5, native checkpoint **format version 2** — persisted generator state with its shared-generator alias topology, strict topology validation, version-1 compatibility rules, and the whole-checkpoint load transaction — and milestone G6, the RNG/graph/ownership/checkpoint hardening that added no capability, and milestone G7, the deterministic stochastic training example and its exact checkpoint resume (no capability), and milestone G8, the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` (also no capability — correctness gated before timing, no speed asserted), and milestone G9, the cross-cutting integration suite `tests/test_native_phase_g.py` (integration evidence only — no capability, and no runtime file changed), and milestone G10, the phase closure — the Release/Debug/sanitizer validation matrix, the documentation reconciliation, and the single registry line that finally removed `dropout` from `UNSUPPORTED` — are all complete, so end-to-end **exact stochastic training resume is demonstrated** and native Dropout is now supported on the experimental native float64 CPU line)
-- [docs/native_cpu_performance_design.md](docs/native_cpu_performance_design.md) — architecture contract for native CPU performance and runtime efficiency (Phase H — the **current** phase, **begun at milestone H0 only**: the design lock, the unified baseline harness `benchmarks/benchmark_native_cpu_performance.py`, its contract tests, and documentation reconciliation. H0 is architecture, profiling, and baseline work — **no performance optimization has shipped**, no numerical capability, dtype, device, export, registry value, or checkpoint version changed, and the proposed H1–H8 ladder is explicitly evidence-driven and conditional, so a milestone whose premise the measurement does not support is narrowed, reordered, or dropped. **Milestone H1 — the output-allocation contract — has since shipped**: redundant zero-initialization removed from output storage a kernel provably overwrites in full, behind one new C ABI symbol, bit-identical, with the zero-initializing path still the default, `sum` and `narrow_backward` explicitly rejected, completeness proved by deterministic poison tests, and no capability, dtype, device, export, registry value, or checkpoint version changed. **Milestone H2 — native matmul memory access — has since shipped too**: the production matmul's loop order swapped from `i`-`j`-`k` to `i`-`k`-`j` over four destination rows at a time, with **cache blocking measured and rejected**, the pre-H2 triple loop retained verbatim as the shipped generic reference path, metadata-driven dispatch between them inside the kernel, a four-part numerical contract rather than a blanket bit-identity claim (identical accumulation order, bit identity on every non-NaN result, NaN-class equivalence, and NaN payload bits deliberately outside the contract), H1's uninitialized-output contract preserved on both paths, **no exported C ABI symbol added** (still 52), and no capability, dtype, device, registry value, or checkpoint version changed)
+- [docs/native_cpu_performance_design.md](docs/native_cpu_performance_design.md) — architecture contract for native CPU performance and runtime efficiency (Phase H — the **current** phase, **begun, with H0, H1, H2, and H3 complete**: the design lock, the unified baseline harness `benchmarks/benchmark_native_cpu_performance.py`, its contract tests, and documentation reconciliation. H0 is architecture, profiling, and baseline work — **no performance optimization has shipped**, no numerical capability, dtype, device, export, registry value, or checkpoint version changed, and the proposed H1–H8 ladder is explicitly evidence-driven and conditional, so a milestone whose premise the measurement does not support is narrowed, reordered, or dropped. **Milestone H1 — the output-allocation contract — has since shipped**: redundant zero-initialization removed from output storage a kernel provably overwrites in full, behind one new C ABI symbol, bit-identical, with the zero-initializing path still the default, `sum` and `narrow_backward` explicitly rejected, completeness proved by deterministic poison tests, and no capability, dtype, device, export, registry value, or checkpoint version changed. **Milestone H2 — native matmul memory access — has since shipped too**: the production matmul's loop order swapped from `i`-`j`-`k` to `i`-`k`-`j` over four destination rows at a time, with **cache blocking measured and rejected**, the pre-H2 triple loop retained verbatim as the shipped generic reference path, metadata-driven dispatch between them inside the kernel, a four-part numerical contract rather than a blanket bit-identity claim (identical accumulation order, bit identity on every non-NaN result, NaN-class equivalence, and NaN payload bits deliberately outside the contract), H1's uninitialized-output contract preserved on both paths, **no exported C ABI symbol added** (still 52), and no capability, dtype, device, registry value, or checkpoint version changed. **Milestone H3 — native metadata and dispatch efficiency — has since shipped as well**, and is **Python-only**: one normalization boundary replacing the four redundant re-validations every `shape_info` call used to perform, private `_checked` primitives for the derived strides/count/contiguity, a private already-validated view constructor sharing one bounds-checking `_bind` with the public one, and lazy read-only per-view `int64` layout arrays whose immutability makes staleness impossible by construction. Every rejection, message, and ordering is preserved, nothing global was introduced, and no public API — cache control, statistic, profiling counter, or dispatch selector — was added. Measured: `_as_int_tuple` calls per MLP training step 815 → 149, view construction 3.2×, an MLP step 1.43×, a CNN step 1.29×, a normalized step 1.51× — and **no measurable change on large kernel-bound matmul or elementwise work**, reported as such. Still 52 exported symbols; no capability, dtype, device, registry value, or checkpoint version changed)
 
 ## Limitations
 
@@ -315,7 +315,8 @@ Phase D (the native CNN stack), Phase E (native classification and
 stable math), and Phase F (native normalization and stateful buffers)
 are all complete, and so is Phase G (native RNG and Dropout), the latest
 completed native phase. **Phase H — native CPU performance and runtime
-efficiency — is the current phase and has begun at milestone H0**, which
+efficiency — is the current phase; it has begun, with H0, H1, H2, and H3
+complete**, which
 is architecture, profiling, and baseline work only: it shipped the design
 contract, the unified measurement harness, and its tests, and **no
 performance optimization, numerical capability, dtype, device, export,
@@ -803,7 +804,8 @@ serializability guarantee covers the participating state transactions, not
 an optimizer `step()` racing a forward.
 
 **Phase H — Native CPU Performance and Runtime Efficiency — is the
-current phase, and it has begun at milestone H0 only.** H0 is an
+current phase; it has begun, and milestones H0, H1, H2, and H3 are
+complete.** H0 is an
 architecture, profiling, and baseline milestone: it locked the contract
 in
 [docs/native_cpu_performance_design.md](docs/native_cpu_performance_design.md),
@@ -921,6 +923,73 @@ where a fixed ~10 microsecond per-call Python cost dominates and control
 cases whose compiled code did not change at all vary by 0.50-1.44x. No
 capability, dtype, device, registry value, checkpoint field, or
 checkpoint version moved.
+
+**Milestone H3 — native metadata and dispatch efficiency — has since
+shipped**, and unlike H1 and H2 it is **Python-only**: no C++, no C ABI
+symbol, no ctypes declaration, and no kernel changed, so the library
+still exports exactly **52** `tf_*` symbols. H3 attacked the fixed
+per-operation cost B3 measured at 18.6-22.6 microseconds, of which only
+about 1.9 was the ctypes boundary and the rest was Python-side shape and
+stride work. The measured cause was redundant *re-validation*: one
+`shape_info` call ran `_as_int_tuple` **four** times over a tuple that
+was fully validated after the first pass, and computed the row-major
+strides **twice**, while `NativeTensorCore.zeros` validated the caller's
+shape a second complete time by calling `numel(shape)` and then
+constructing a view from the same raw shape. Instrumented call counts put
+that at **815** `_as_int_tuple` calls per MLP training step and 604 per
+`NativeAdam` step. H3 introduced **one normalization boundary** — the
+private `_normalized_layout`, performing exactly the checks `shape_info`
+always performed, in the same order and with the same messages, and
+normalizing the shape once — with the derived quantities computed by
+private `_checked` primitives that validate nothing *because there is
+nothing left to validate*. Each public helper (`row_major_strides`,
+`numel`, `reduce_shape`, `broadcast_shapes`) is now its own validation
+followed by the matching primitive, so the two can never disagree.
+`NativeTensorView` gained a private `_from_validated` constructor that
+skips **only** that normalization; both constructors funnel through one
+shared `_bind` that still performs the storage open check and the full
+reachable-offset bounds check, and the element count and contiguity flag
+are **derived inside** the private constructor rather than passed to it,
+so no caller can supply an inconsistent pair — which is why H3 has a
+separate private constructor rather than the misusable `validated=True`
+flag. Views also memoize their `int64` shape/stride arrays for the
+strided C ABI, **lazily** and **read-only**. That memoization cannot go
+stale: a view's layout is assigned exactly once, in `_bind`, and every
+layout-changing operation (`reshape`, `transpose`, `T`, `narrow`)
+returns a *new* view, so no invalidation is ever required and none
+exists. Nothing global was introduced — no shape cache, no stride
+interning, no weak-reference machinery, no thread-local state — and
+**no validation was removed**: every rejection still happens, with the
+same exception type, the same message, and the same shape-then-strides-
+then-offset ordering. Measured: `shape_info` 2.6-4.5x faster, view
+construction 3.2x, `_as_int_tuple` calls per MLP step **815 -> 149** and
+per CNN step **815 -> 150**; end to end, a one-element allocation 2.1x, a
+`reshape` 3.1x, a view chain 2.4x, a small `add` 1.56x, `NativeAdam` on a
+small MLP 1.42x, a **whole MLP training step 1.43x**, a **CNN training
+step 1.29x**, and a **normalized training step 1.51x**, which cut the
+Adam step's gap against the stable line from 39.8x to 31.9x. Reported
+just as honestly: **large kernel-bound work shows no measurable change in
+either direction** — 384-cubed, 512-cubed and 128-cubed matmul, 256-
+squared elementwise, and 128-squared reduction all sit inside their own
+run-to-run spread, so H2's large-matmul result is intact. The layout-
+array cache is the weakest of the three changes and was kept on measured
+merit, not principle: isolated, it saves 0.6-1.5 microseconds per
+*strided* small operation and nothing at all on large ones or on a
+contiguous training step, and even a deliberately cold-cache measurement
+is no slower than pre-H3. One methodology finding is published rather
+than buried: at the harness's default 11 repetitions a case appeared to
+regress 35%, and at 201 repetitions the same case measured 1.19x
+*faster* — so no default-repetition figure is quoted as H3 evidence.
+Object footprint is unchanged for a cold view (byte-identical) and
++328 bytes for one that actually takes a strided path; in a full MLP step
+only **5 of 134** views ever populate it, 1,560 bytes in total. All
+instrumentation was test-local or benchmark-local monkeypatching and
+subprocess A/B runs against a retained pre-H3 copy of the package — **no
+production counter, environment-variable profiler, or installed tracing
+mode exists**, and H3 added no public API of any kind: no cache control,
+statistic, reset, profiling counter, or dispatch selector. No capability,
+dtype, device, registry value, checkpoint field, or checkpoint version
+moved.
 
 The proposed H3–H8 ladder is
 explicitly conditional on that evidence: a milestone whose premise the
