@@ -1452,7 +1452,57 @@ The Python line is done; what remains is expansion on its own terms:
     bottleneck. **Milestone H1 — the output-allocation contract — has
     since shipped**, the first Phase-H change to production code: **Milestone H1 — the output-allocation contract — has now shipped.** It removed the redundant zero-fill from output storage that a kernel provably overwrites in full, behind one new C ABI symbol (`tf_storage_create_uninitialized`) that matches the zero-initializing default in size validation, allocation-failure handling, error state, ownership, destruction, and live-storage accounting, and differs only in the buffer's initial contents. The zero-initializing path remains the default; there is **no** global allocator policy, environment variable, heuristic, memory pool, scratch arena, or public empty-tensor API, and every enabled call site opts in explicitly against a per-kernel audit table. `sum`/`mean` and `narrow_backward` are explicitly **rejected** and keep a zeroed destination: the first accumulates into its output, the second writes only the narrowed region and the untouched zeros *are* the gradient. Completeness is proved by deterministic **poison** tests that are injected **exclusively by test infrastructure, around the allocator**: the suite wraps the private uninitialized allocation helper, lets the real constructor allocate, fills the returned storage with a quiet NaN or a large finite pattern through the ordinary fill primitive, and hands that same storage to the real operation — so the pattern is in place after the real allocation and before the real kernel runs. **No poison-control mechanism exists in the production runtime**: no exported hook, no thread-local flag, no environment variable, no global mode. ASan and UBSan stay separate from the initialization proof — they do not detect uninitialized-value reads — and MemorySanitizer is not available here, so neither is claimed; negative controls prove the detector can actually fail. H1 is bit-identical: every enabled operation and a full training run are compared element-wise against the zero-initializing allocator. No capability, dtype, device, registry value, checkpoint field, or checkpoint version changed, and `tf_storage_create_uninitialized` is the **only** export it added, taking the library from the pre-H1 baseline of 51 exported `tf_*` symbols to **52**.
     The measured result is reported honestly rather than as a headline: isolated, the zero-fill is enormous and scales with the buffer (about 52x at 2 MB, 119x at 8 MB, 552x at 32 MB, and *negative* below roughly 16,000 elements, where it sits inside the noise). End to end it is much smaller and often inconclusive — clearly real for large memory-bound elementwise work (about 1.5-1.8x on an 8 MB output), small and variable for the `normalized_training_step` and `adam_step` cases, and with no measurable effect on `conv2d_forward`, `mlp_training_step`, or `matmul_square_contiguous`, whose arithmetic dwarfs its allocation. Those inconclusive and negative rows are published as such.
-    The proposed **H2–H8 ladder is explicitly conditional**:
+    **Milestone H2 — native matmul memory access — has since shipped**,
+    and is the first Phase-H milestone to change how a numerical kernel
+    executes. It swapped the production matmul's loop order from
+    `i`-`j`-`k` to `i`-`k`-`j` over four destination rows at a time, so
+    the innermost loop walks a *row* of the right operand and a row of
+    the output sequentially instead of walking a column. **Cache blocking,
+    which the milestone title anticipated, was measured against 22 blocked
+    variants and rejected** — an unblocked full-width row sweep was faster
+    at every non-trivial size — so H2 shipped the simpler superior design
+    and recorded the negative blocking result. The pre-H2 triple loop is
+    **retained verbatim as the shipped generic reference path** and still
+    runs, chosen from stride metadata inside the kernel: a right operand
+    whose column stride is 1, with a non-empty inner dimension and at
+    least 8 result columns, takes the row sweep; a transposed right
+    operand, a narrow result, or an empty inner dimension takes the
+    generic path — which is the loop order that case already suits, so
+    the fallback is a design choice rather than a gap. Dispatch is
+    metadata-driven, deterministic, total, side-effect free, and
+    independent of pointer values, alignment, timing, environment
+    variables, and CPU-feature probes; a failed precondition is never an
+    error. **H2 added no exported C ABI symbol** — the count is still 52 —
+    and no kernel selector, block-size setter, dispatch tracer, or public
+    dispatch control of any kind exists. The numerical agreement between
+    the two paths is a **four-part contract**, not a blanket bit-identity
+    claim: (1) accumulation order is preserved exactly; (2) **every
+    non-NaN result is bit-identical**, asserted as raw IEEE-754 bit
+    patterns rather than tolerances across shapes, layouts, signed zeros,
+    infinities, denormals, largest finite magnitudes, gradients, Linear,
+    both optimizers, deterministic training, and exact checkpoint resume;
+    (3) NaNs occur in exactly the same positions on both paths and are
+    always quiet; and (4) **NaN payload bits are deliberately outside
+    TensorForge's numerical contract** and may differ. Ten source-level
+    formulations were measured while trying to close (4), and the only
+    structure that reproduces the reference's payloads is the `i`-`j`-`k`
+    order H2 replaces, so parity is unavailable short of abandoning the
+    optimization; MSVC Release differs on 162 of 208 results in a
+    NaN-saturated matrix, MSVC Debug and Clang on none.
+    H1's uninitialized-output contract still holds on both paths, for a
+    different reason on each: the generic path never reads the
+    destination, and the row sweep's `k == 0` pass assigns every element
+    before anything accumulates into it — proved by poison tests over both
+    paths with both patterns, plus a negative control. The measured result
+    is reported honestly: roughly 4.1-4.7x at 384 cubed, 4.2-4.5x at 128
+    cubed, about 4-6.8x on `NativeLinear` forward, 1.7-2.5x on its
+    backward (only one of its two matmuls qualifies, by design), 2.0-2.4x
+    on a 128x256 MLP training step, and **no measurable effect below
+    roughly 32 cubed or on a small MLP step**, where a fixed ~10 microsecond
+    per-call Python cost dominates and control cases whose code did not
+    change at all vary by 0.50-1.44x. No capability, dtype, device,
+    registry value, checkpoint field, or checkpoint version moved.
+    The proposed **H3–H8 ladder is explicitly conditional**:
     a milestone whose premise the measurement does not confirm is
     narrowed, reordered, or dropped, and a memory pool, scratch
     allocation, SIMD, threading, and BLAS are all currently **rejected on

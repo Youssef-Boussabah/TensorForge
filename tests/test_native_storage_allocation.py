@@ -582,6 +582,109 @@ def test_elementwise_and_unary_operations_write_every_element(pattern):
 
 @needs_native
 @pytest.mark.parametrize("pattern", POISONS)
+def test_both_matmul_paths_write_every_element(pattern):
+    """Phase H, milestone H2, re-proving H1's matmul row on the structure
+    that replaced it.
+
+    Before H2 the argument was simple: the kernel accumulated into a local
+    register and assigned the destination once, so it never read it. H2's
+    optimized path accumulates **in the destination**, which is a
+    different argument and needs its own proof: its ``k == 0`` pass
+    assigns every element of every row in the group before any
+    accumulation reads one.
+
+    Both shipped paths are covered here, chosen by real layouts rather
+    than by a switch — a right operand with unit column stride takes the
+    row sweep, a transposed one takes the generic path — and the shapes
+    span the row-block boundary (``MATMUL_ROW_BLOCK`` is 4) and the
+    column threshold (``MATMUL_MIN_COLUMNS`` is 8) on both sides."""
+    cases = []
+    # (m, n, p): a partial group, an exact group, several groups with a
+    # partial tail, and p immediately below / at / above the threshold.
+    for m, n, p in ((1, 3, 16), (3, 3, 16), (4, 3, 16), (5, 3, 16),
+                    (9, 3, 16), (6, 5, 7), (6, 5, 8), (6, 5, 9),
+                    (7, 1, 16), (12, 9, 13)):
+        left = rng(m * 13 + n).uniform(-1, 1, (m, n))
+        right = rng(n * 13 + p).uniform(-1, 1, (n, p))
+        cases.append((m, n, p, left, right))
+
+    for m, n, p, left, right in cases:
+        core_left = cpp.NativeTensorCore.from_array(left)
+        core_right = cpp.NativeTensorCore.from_array(right)
+        # The same logical right operand through a layout whose column
+        # stride is not 1, so the generic path runs over a poisoned
+        # destination too.
+        transposed_base = cpp.NativeTensorCore.from_array(
+            np.ascontiguousarray(right.T))
+        strided_right = transposed_base.transpose(1, 0)
+        try:
+            assert core_right.strides[1] == 1
+            with poisoned(pattern):
+                fast = core_left.matmul(core_right)
+            fast_values = _assert_no_survivors(
+                fast, pattern, f"matmul unit-column-stride {m}x{n}x{p}")
+
+            if strided_right.strides[1] != 1:   # n == 1 leaves it at 1
+                with poisoned(pattern):
+                    generic = core_left.matmul(strided_right)
+                generic_values = _assert_no_survivors(
+                    generic, pattern, f"matmul strided {m}x{n}x{p}")
+                # Neither result may depend on what the buffer held.
+                assert np.array_equal(fast_values, generic_values), (m, n, p)
+            assert np.allclose(fast_values, left @ right, atol=1e-10)
+        finally:
+            for core in (core_left, core_right, transposed_base,
+                         strided_right):
+                if not core._closed:
+                    core.close()
+
+
+@needs_native
+def test_matmul_results_do_not_depend_on_the_destinations_prior_contents():
+    """The stronger statement the poison alone does not make: the same
+    product computed over a NaN-poisoned buffer, a finite-poisoned buffer,
+    and an ordinary zeroed buffer must agree **bit for bit**, on both
+    paths.
+
+    Unqualified bit equality is the right assertion here, and it is a
+    different claim from H2's cross-path one: this compares **one** path
+    against itself over finite operands, varying only what the
+    destination held beforehand. Nothing about NaN payload selection is
+    involved, because the operands are finite and the two runs execute
+    the identical instructions."""
+    left = rng(80).uniform(-1, 1, (9, 6))
+    right = rng(81).uniform(-1, 1, (6, 16))
+    core_left = cpp.NativeTensorCore.from_array(left)
+    core_right = cpp.NativeTensorCore.from_array(right)
+    transposed_base = cpp.NativeTensorCore.from_array(
+        np.ascontiguousarray(right.T))
+    strided_right = transposed_base.transpose(1, 0)
+    try:
+        for operand in (core_right, strided_right):
+            results = []
+            for pattern in POISONS:
+                with poisoned(pattern):
+                    out = core_left.matmul(operand)
+                try:
+                    results.append(out.to_numpy().copy())
+                finally:
+                    out.close()
+            # ...and once with no poison installed at all.
+            out = core_left.matmul(operand)
+            try:
+                results.append(out.to_numpy().copy())
+            finally:
+                out.close()
+            reference = results[0].view(np.uint64).tobytes()
+            for produced in results[1:]:
+                assert produced.view(np.uint64).tobytes() == reference
+    finally:
+        for core in (core_left, core_right, transposed_base, strided_right):
+            core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("pattern", POISONS)
 def test_host_entry_and_fill_constructors_write_every_element(pattern):
     with poisoned(pattern):
         core = cpp.NativeTensorCore.from_array(rng(5).uniform(-1, 1, (4, 6)))

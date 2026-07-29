@@ -143,7 +143,13 @@ BENCHMARK_NAME = "tensorforge.native_cpu_performance"
 BENCHMARK_VERSION = "1.0"
 # The JSON payload's own contract version. Bumped only when the shape of
 # the payload changes, never when a measured number does.
-SCHEMA_VERSION = 1
+#
+# 1 — H0/H1.
+# 2 — H2 added three fields: the ``tensor_core_generic`` implementation
+#     layer, the per-case ``dispatch_comparison`` block beside
+#     ``allocation_comparison``, and ``environment.native_build``. All
+#     three are additive; no existing field changed meaning.
+SCHEMA_VERSION = 2
 
 # ---------------------------------------------------------------------------
 # Implementation layers. Every timed row declares exactly one.
@@ -181,11 +187,28 @@ ZEROED_TWIN = {
     TRAINING_STEP_ZEROED: TRAINING_STEP,
 }
 
+# Phase H, milestone H2. The **same production Core call** on the **same
+# logical operands**, delivered through a layout whose column stride is
+# not 1 — which is how ``tf_core_matmul``'s metadata dispatch selects its
+# retained generic reference path instead of the H2 row sweep. Pairing
+# ``tensor_core`` with this layer is the primary H2 comparison: identical
+# arithmetic, identical Python, identical accumulation order, differing
+# only in which of the two shipped kernels ran.
+#
+# It is a *probe*, not a second implementation: no benchmark flag, hook,
+# or ABI selector chooses a kernel here. The layout does, exactly as it
+# does in production.
+TENSOR_CORE_GENERIC = "tensor_core_generic"
+
+# Each H2 layer and the layer whose generic-path twin it is.
+GENERIC_TWIN = {TENSOR_CORE_GENERIC: TENSOR_CORE}
+
 LAYERS = (NUMPY, STABLE, RAW_KERNEL, RAW_KERNEL_TILED, TENSOR_CORE,
           NATIVE_TENSOR, NATIVE_TENSOR_GRAPH, BACKWARD, OPTIMIZER_STEP,
           TRAINING_STEP,
           TENSOR_CORE_ZEROED, NATIVE_TENSOR_GRAPH_ZEROED,
-          OPTIMIZER_STEP_ZEROED, TRAINING_STEP_ZEROED)
+          OPTIMIZER_STEP_ZEROED, TRAINING_STEP_ZEROED,
+          TENSOR_CORE_GENERIC)
 
 # Reference types. ``native_only`` means no honest equivalent exists, so
 # no ratio is published for that case anywhere.
@@ -226,6 +249,15 @@ MOMENTUM = 0.1
 LR = 0.05
 DROPOUT_P = 0.5
 DROPOUT_SEED = 20260728
+
+# Phase H, milestone H2. The native matmul's fixed dispatch policy, echoed
+# here so the report can name the path each measured layer took. These are
+# *labels for the payload*, not knobs: nothing in this harness can change
+# which kernel runs, and the values are pinned against the shipped header
+# by tests/test_native_cpu_performance_benchmark.py. See
+# docs/native_cpu_performance_design.md §16.2.
+MATMUL_ROW_BLOCK = 4
+MATMUL_MIN_COLUMNS = 8
 
 # Absolute tolerances for the correctness gates. Ordinary float64
 # agreement bounds taken from the existing parity suites — nothing here
@@ -313,6 +345,18 @@ def _require_parity(error, tolerance, label, reference):
 def _require_unchanged(produced, expected, label):
     _require(np.array_equal(np.asarray(produced), np.asarray(expected)),
              f"{label} was mutated")
+
+
+def _same_bits(left, right):
+    """Raw IEEE-754 bit equality, which is a stricter statement than any
+    tolerance: it separates ``+0.0`` from ``-0.0`` and never treats a NaN
+    as equal to itself. Phase H, milestone H2 uses it for the one claim
+    that is exact rather than approximate — that two native paths over the
+    same operands agree bit for bit."""
+    left = np.ascontiguousarray(left, dtype=np.float64)
+    right = np.ascontiguousarray(right, dtype=np.float64)
+    return (left.shape == right.shape
+            and np.array_equal(left.view(np.uint64), right.view(np.uint64)))
 
 
 def _require_owning_contiguous(tensor, label):
@@ -834,7 +878,15 @@ def _build_matmul(config, spec):
     ``raw_kernel`` covers both ``cpp.matmul`` (the naive triple loop over
     plain buffers) and ``cpp.matmul_tiled`` (the existing cache-blocking
     experiment). Neither is on any production path; they are measured
-    here as evidence, not adopted."""
+    here as evidence, not adopted.
+
+    Phase H (H2): a contiguous case additionally gets a
+    ``tensor_core_generic`` layer — the **same production Core call** on
+    the **same logical operands**, delivered through a layout whose column
+    stride is not 1 so that ``tf_core_matmul``'s metadata dispatch selects
+    its retained generic reference path. That pair is the primary H2
+    comparison; the gate proves the two agree bit for bit before either is
+    timed."""
     m, n, p = config["m"], config["n"], config["p"]
     strided_rhs = spec["strided_rhs"]
     left = _values((m, n), spec["seed"])
@@ -845,19 +897,33 @@ def _build_matmul(config, spec):
     tensor_left_g = NativeTensor.from_array(left, requires_grad=True)
     owned = [core_left, tensor_left, tensor_left_g]
 
+    right_transposed = np.ascontiguousarray(right.T)
     if strided_rhs:
-        right_base = np.ascontiguousarray(right.T)
-        core_right_base = cpp.NativeTensorCore.from_array(right_base)
+        core_right_base = cpp.NativeTensorCore.from_array(right_transposed)
         core_right = core_right_base.transpose(1, 0)
-        tensor_right_base = NativeTensor.from_array(right_base)
+        tensor_right_base = NativeTensor.from_array(right_transposed)
         tensor_right = tensor_right_base.transpose(1, 0)
         owned.extend([core_right_base, tensor_right_base, tensor_right])
+        core_right_generic = None
     else:
         core_right = cpp.NativeTensorCore.from_array(right)
         tensor_right = NativeTensor.from_array(right)
         owned.extend([core_right, tensor_right])
+        # The H2 generic-path probe: identical values, column stride n.
+        generic_base = cpp.NativeTensorCore.from_array(right_transposed)
+        core_right_generic = generic_base.transpose(1, 0)
+        owned.extend([generic_base, core_right_generic])
 
     block = config["block"]
+    # The H2 dispatch precondition, mirrored from
+    # docs/native_cpu_performance_design.md §16.2 so the report can name
+    # the path each layer actually took. The predicate itself is
+    # hidden-visibility C++ with no exported selector — which is the point
+    # — so this restates it rather than querying it.
+    def _path(operand):
+        takes_sweep = (operand.strides[1] == 1 and n >= 1
+                       and p >= MATMUL_MIN_COLUMNS)
+        return "row_sweep" if takes_sweep else "generic_strided"
 
     def check():
         expected = left @ right
@@ -879,6 +945,18 @@ def _build_matmul(config, spec):
                                 "the core matmul result")
         finally:
             core_out.close()
+        if core_right_generic is not None:
+            _require(core_right_generic.strides[1] != 1,
+                     "the generic-path probe still has unit column stride, "
+                     "so it would not select the generic kernel")
+            _require(np.array_equal(core_right_generic.to_numpy(), right),
+                     "the generic-path probe does not hold the same logical "
+                     "values as the contiguous operand")
+            generic_out = core_left.matmul(core_right_generic)
+            try:
+                results[TENSOR_CORE_GENERIC] = generic_out.to_numpy().copy()
+            finally:
+                generic_out.close()
         plain = tensor_left.matmul(tensor_right)
         try:
             results[NATIVE_TENSOR] = plain.to_numpy().copy()
@@ -900,39 +978,82 @@ def _build_matmul(config, spec):
             _require_parity(errors[layer], FORWARD_ATOL * scale,
                             f"the {layer} product",
                             "NumPy's matmul on the same operands")
+        # H2's load-bearing gate: the two shipped native paths are
+        # compared to each other **bit for bit**, not to a tolerance, and
+        # before either is timed. Both the raw naive kernel and the raw
+        # tiled kernel must agree exactly too.
+        #
+        # Unqualified bit equality is the right assertion *here* because
+        # every operand in this harness is finite seeded data, so no
+        # result is a NaN and part (b) of H2's numerical contract applies
+        # in full. The NaN-payload part of that contract (part (d)) is
+        # neither reachable nor tested from a benchmark; it lives in
+        # tests/test_native_matmul_dispatch.py and cpp/tests/test_matmul.cpp.
+        exact_checks = ["operand_layout", "logical_values_match", "shape",
+                        "finite", "numpy_tolerance_parity",
+                        "owning_contiguous_output", "no_operand_mutation"]
+        native = results[TENSOR_CORE]
+        for layer in (RAW_KERNEL, RAW_KERNEL_TILED, TENSOR_CORE_GENERIC,
+                      NATIVE_TENSOR, NATIVE_TENSOR_GRAPH):
+            if layer not in results:
+                continue
+            _require(_same_bits(results[layer], native),
+                     f"the {layer} result is not bit-identical to the "
+                     f"production tensor_core result")
+        exact_checks.append("finite_bit_identical_native_paths")
         _require_unchanged(core_left.to_numpy(), left, "the left operand")
         return {
             "max_abs_error": max(errors.values()),
             "per_layer_max_abs_error": errors,
             "operand_layout": ("contiguous @ transposed_view" if strided_rhs
                                else "contiguous @ contiguous"),
+            "left_strides": list(core_left.strides),
+            "right_strides": list(core_right.strides),
+            "generic_probe_strides": (list(core_right_generic.strides)
+                                      if core_right_generic is not None
+                                      else None),
+            "production_path": _path(core_right),
+            "generic_probe_path": (_path(core_right_generic)
+                                   if core_right_generic is not None
+                                   else None),
+            "matmul_row_block": MATMUL_ROW_BLOCK,
+            "matmul_min_columns": MATMUL_MIN_COLUMNS,
             "tile_block": block,
             "flops": 2 * m * n * p,
-            "comparison": "tolerance (float accumulation is order-sensitive)",
-            "checks": ["operand_layout", "logical_values_match", "shape",
-                       "finite", "numpy_tolerance_parity",
-                       "owning_contiguous_output", "no_operand_mutation"],
+            "comparison": ("tolerance against NumPy; exact bit equality "
+                           "between the native paths"),
+            "checks": exact_checks,
         }
+
+    layers = {
+        NUMPY: _layer(lambda _s=None: left @ right),
+        RAW_KERNEL: _layer(lambda _s=None: cpp.matmul(left, right)),
+        # The existing cache-blocking experiment, measured beside the
+        # naive one so the blocking question has evidence rather than
+        # an assumption. It is on no production path.
+        RAW_KERNEL_TILED: _layer(
+            lambda _s=None: cpp.matmul_tiled(left, right, block)),
+        TENSOR_CORE: _layer(lambda _s=None: core_left.matmul(core_right),
+                            cleanup=_close_result),
+        NATIVE_TENSOR: _layer(
+            lambda _s=None: tensor_left.matmul(tensor_right),
+            cleanup=_close_result),
+        NATIVE_TENSOR_GRAPH: _layer(
+            lambda _s=None: tensor_left_g.matmul(tensor_right),
+            cleanup=_close_result),
+    }
+    # The probe is *gated* whenever it exists, so a configuration that
+    # falls back keeps its bit-identity check. It is only *timed* when the
+    # primary layer really does take the row sweep — otherwise both sides
+    # would be the generic kernel and the pair's labels would lie.
+    if core_right_generic is not None and _path(core_right) == "row_sweep":
+        layers[TENSOR_CORE_GENERIC] = _layer(
+            lambda _s=None: core_left.matmul(core_right_generic),
+            cleanup=_close_result)
 
     return {
         "check": check,
-        "layers": {
-            NUMPY: _layer(lambda _s=None: left @ right),
-            RAW_KERNEL: _layer(lambda _s=None: cpp.matmul(left, right)),
-            # The existing cache-blocking experiment, measured beside the
-            # naive one so the blocking question has evidence rather than
-            # an assumption. It is on no production path.
-            RAW_KERNEL_TILED: _layer(
-                lambda _s=None: cpp.matmul_tiled(left, right, block)),
-            TENSOR_CORE: _layer(lambda _s=None: core_left.matmul(core_right),
-                                cleanup=_close_result),
-            NATIVE_TENSOR: _layer(
-                lambda _s=None: tensor_left.matmul(tensor_right),
-                cleanup=_close_result),
-            NATIVE_TENSOR_GRAPH: _layer(
-                lambda _s=None: tensor_left_g.matmul(tensor_right),
-                cleanup=_close_result),
-        },
+        "layers": layers,
         "close": lambda: [item.close() for item in owned],
     }
 
@@ -2473,11 +2594,19 @@ CASES = {
             "profile": {"m": 384, "n": 384, "p": 384, "block": 32},
         },
         "repetitions": HEAVY_REPETITIONS,
-        "notes": ("The shape NativeLinear actually produces. Both raw-buffer "
-                  "kernels are measured beside the production path: "
-                  "cpp.matmul (the naive triple loop) and cpp.matmul_tiled "
-                  "(the existing cache-blocking experiment). Neither is on "
-                  "any production path; they are evidence, not adoption."),
+        "notes": ("The shape NativeLinear actually produces, and the layout "
+                  "H2's row sweep was chosen for. Four native readings sit "
+                  "beside each other. `raw_kernel` (cpp.matmul) is the "
+                  "**pre-H2 loop order** over contiguous buffers, so "
+                  "tensor_core against it is the honest 'what did H2 buy' "
+                  "figure. `raw_kernel_tiled` (cpp.matmul_tiled) is the "
+                  "standing cache-blocking experiment H2 measured and did "
+                  "**not** adopt. `tensor_core_generic` is the same "
+                  "production call routed to the retained generic path by a "
+                  "strided operand, which is that kernel's *best* case — so "
+                  "it understates the H2 change and answers a different "
+                  "question: is the fallback sound? Neither raw kernel is on "
+                  "any production path."),
     },
     "matmul_rectangular_contiguous": {
         "workload": "matmul",
@@ -2500,7 +2629,9 @@ CASES = {
         "notes": ("Deliberately unequal dimensions, which is the shape a "
                   "real batch @ weight product has. A kernel tuned only on "
                   "square matrices can hide a dimension-dependent cost, so "
-                  "the square and rectangular cases are separate."),
+                  "the square and rectangular cases are separate — and H2's "
+                  "row block and column threshold were both chosen against "
+                  "rectangular shapes as well as square ones."),
     },
     "matmul_transposed_view": {
         "workload": "matmul",
@@ -2528,7 +2659,14 @@ CASES = {
                   "materialized. This is the matmul backward's real shape: "
                   "`upstream @ b.T` and `a.T @ upstream` both feed the "
                   "kernel a transposed view. The pair isolates the access "
-                  "pattern with the arithmetic held constant."),
+                  "pattern with the arithmetic held constant. Phase H "
+                  "(H2): a transposed *right* operand does not meet the "
+                  "row sweep's precondition, so this case measures the "
+                  "retained generic path — deliberately, because that loop "
+                  "order is the better one here and the fallback is a "
+                  "design choice rather than a gap. A transposed *left* "
+                  "operand beside a contiguous right one, which is the "
+                  "other half of the backward, does take the row sweep."),
     },
 
     # -- materialization -----------------------------------------------------
@@ -3112,6 +3250,25 @@ def _measure_case(name, warmup, repetitions, variant):
                     timings[zeroed_name]["relative_spread"],
             }
 
+    # The primary H2 statistic: the shipped optimized path against the
+    # retained generic reference path, on the same logical operands and
+    # the same accumulation order. >1 means the row sweep was ahead in
+    # this run. Present only for the cases that build the probe.
+    dispatch = {}
+    for generic_name, twin in GENERIC_TWIN.items():
+        if generic_name in timings and twin in timings:
+            fast = timings[twin]["median_s"]
+            generic = timings[generic_name]["median_s"]
+            dispatch[twin] = {
+                "row_sweep_median_s": fast,
+                "generic_strided_median_s": generic,
+                "speedup_from_the_row_sweep": (generic / fast)
+                if fast > 0 else None,
+                "row_sweep_relative_spread": timings[twin]["relative_spread"],
+                "generic_strided_relative_spread":
+                    timings[generic_name]["relative_spread"],
+            }
+
     return {
         "case": name,
         "workload": spec["workload"],
@@ -3131,6 +3288,7 @@ def _measure_case(name, warmup, repetitions, variant):
         "sample_count": case_repetitions,
         "layers": rows,
         "allocation_comparison": allocation or None,
+        "dispatch_comparison": dispatch or None,
         "notes": spec["notes"],
     }
 
@@ -3219,6 +3377,50 @@ def _backend_metadata():
     }
 
 
+def _native_build_metadata():
+    """What can honestly be said about the build the measurements ran
+    against, read from the compiled image itself.
+
+    Deliberately short. The compiler identity, its version, and its
+    optimization flags are **not** recorded anywhere by ``cpp/build.py``
+    or the CMake project, so they are reported as ``null`` rather than
+    guessed from the host — ``platform.python_compiler()`` describes the
+    interpreter's toolchain, not this library's, and printing it here
+    would be a fabrication. The image's format and size are real, and
+    together with the object-format field they do distinguish a Release
+    build from a Debug one in practice. No path is emitted."""
+    build = {
+        "image_format": None,
+        "image_bytes": None,
+        "compiler": None,
+        "compiler_detail": ("not recorded by the build; reported as null "
+                            "rather than inferred from the host"),
+        "sanitizers": None,
+    }
+    path = getattr(cpp, "_LIBRARY_PATH", None)
+    try:
+        if path is None or not path.exists():
+            return build
+        data = path.read_bytes()
+        build["image_bytes"] = len(data)
+        if data[:2] == b"MZ":
+            build["image_format"] = "pe"
+        elif data[:4] == b"\x7fELF":
+            build["image_format"] = "elf"
+        else:
+            build["image_format"] = "unknown"
+        # Sanitizer instrumentation is genuinely visible in the image, so
+        # unlike the compiler it is reported rather than left null.
+        build["sanitizers"] = sorted(
+            name for name, marker in (("address", b"__asan_"),
+                                      ("undefined", b"__ubsan_"))
+            if marker in data
+        )
+    except OSError:
+        return build
+    return build
+
+
 def _environment(warmup, repetitions, variant):
     return {
         "python_version": platform.python_version(),
@@ -3230,6 +3432,7 @@ def _environment(warmup, repetitions, variant):
         "numpy_build": _numpy_build_information(),
         "tensorforge_version": tensorforge.__version__,
         "native_backend": _backend_metadata(),
+        "native_build": _native_build_metadata(),
         "thread_environment": _thread_environment(),
         "dtype": "float64",
         "device": "cpu",
@@ -3449,6 +3652,47 @@ def format_report(payload):
             "above for\ncontext only and is NOT the comparison: calloc can "
             "be answered with lazy zero\npages, so it measures the OS "
             "rather than an allocator TensorForge could adopt."
+        )
+    # Phase H (H2): the dispatch comparison, reported on its own for the
+    # same reason — it is a native-vs-native measurement of the *same*
+    # production call under two operand layouts.
+    dispatch_rows = [
+        (record, layer, data)
+        for record in payload["cases"]
+        for layer, data in (record.get("dispatch_comparison") or {}).items()
+    ]
+    if dispatch_rows:
+        lines.append("")
+        lines.append("H2 matmul dispatch "
+                     "(the row sweep vs the retained generic reference path)")
+        header = (
+            f"{'case':<34} {'layer':<21} {'row sweep':>12} {'generic':>12} "
+            f"{'x':>7}  {'spread(r/g)':>13}"
+        )
+        lines.append(header)
+        lines.append("-" * len(header))
+        for record, layer, data in dispatch_rows:
+            speedup = data["speedup_from_the_row_sweep"]
+            spread_r = data["row_sweep_relative_spread"]
+            spread_g = data["generic_strided_relative_spread"]
+            lines.append(
+                f"{record['case']:<34} {layer:<21} "
+                f"{_format_duration(data['row_sweep_median_s']):>12} "
+                f"{_format_duration(data['generic_strided_median_s']):>12} "
+                f"{(f'{speedup:.2f}' if speedup else 'n/a'):>7}  "
+                f"{f'{spread_r:.0%}/{spread_g:.0%}':>13}"
+            )
+        lines.append("")
+        lines.append(
+            "Both columns are the same production Core call on the same "
+            "logical operands and\nthe same accumulation order; only the "
+            "right operand's layout differs, which is\nwhat selects the "
+            "kernel. Every operand here is finite, so\nthe gate proved the "
+            "two results bit-identical before either was timed.\n"
+            "An x below 1.00 means the generic path was "
+            "ahead in this run --\nread it against the spread column, and "
+            "note that the generic path is genuinely\nthe better one for a "
+            "transposed right operand."
         )
     lines.append("")
     lines.append(

@@ -308,6 +308,12 @@ def test_layer_names_are_a_closed_declared_set():
         # against numpy.zeros.
         "tensor_core_zeroed", "native_tensor_graph_zeroed",
         "optimizer_step_zeroed", "training_step_zeroed",
+        # Phase H, milestone H2: the *same* production Core call on the
+        # same logical operands, delivered through a layout whose column
+        # stride is not 1 — which is how tf_core_matmul's metadata
+        # dispatch selects its retained generic reference path. A layout,
+        # not a switch: the harness has no way to choose a kernel.
+        "tensor_core_generic",
     )
     assert len(set(bench.LAYERS)) == len(bench.LAYERS)
 
@@ -1205,7 +1211,16 @@ def test_h0_leaves_the_checkpoint_contract_at_version_two():
 
 
 def test_h0_adds_no_kernel_or_abi_declaration():
-    """No C++ source, header, CTest, or ctypes declaration is new."""
+    """No C++ source or ctypes declaration is new.
+
+    The *source* list is the invariant: Phase H has added no translation
+    unit, so nothing new is compiled into the library. H1 added one
+    internal-contract CTest and H2 added one internal header plus one
+    CTest — both of which are hidden-visibility C++ and test scaffolding,
+    neither of which is an ABI addition. The exported-symbol count, which
+    is the thing that actually matters, is asserted against the built
+    image in tests/test_native_storage_allocation.py and
+    tests/test_native_matmul_dispatch.py."""
     sources = sorted(p.name for p in (REPO_ROOT / "cpp" / "src").glob("*.cpp"))
     assert sources == [
         "classification.cpp", "conv2d.cpp", "elementwise.cpp", "error.cpp",
@@ -1215,13 +1230,15 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     headers = sorted(p.name for p in (REPO_ROOT / "cpp" / "include").glob("*.h"))
     assert headers == [
         "tf_classification_internal.h", "tf_conv2d_internal.h",
-        "tf_internal.h", "tf_pooling_internal.h", "tf_random_internal.h",
+        "tf_internal.h", "tf_matmul_internal.h", "tf_pooling_internal.h",
+        "tf_random_internal.h",
     ]
     ctests = sorted(p.name for p in (REPO_ROOT / "cpp" / "tests").glob("*.cpp"))
-    # H0 left 11. H1 added exactly one — the storage-creation contract
-    # test — and no numerical kernel test.
-    assert len(ctests) == 12
+    # H0 left 11. H1 added the storage-creation contract test; H2 added
+    # the matmul path/dispatch test. Neither is a new numerical kernel.
+    assert len(ctests) == 13
     assert "test_storage_allocation.cpp" in ctests
+    assert "test_matmul.cpp" in ctests
     assert cpp._CHECKED_KERNELS[-1] == "tf_core_dropout_forward"
     # H1 added exactly one checked ABI symbol, and it is an allocator
     # rather than a kernel: it takes the identical errcheck hook as the
@@ -1477,3 +1494,201 @@ def test_the_h1_comparison_asserts_no_duration():
             continue
         if "speedup_from_skipping_the_fill" in line and "assert" in line:
             assert "<" not in line and ">" not in line, line
+
+
+# --------------------------------------------------------------------------
+# Phase H, milestone H2 — the matmul dispatch measurement
+#
+# H2 extended this harness with one thing: the ability to measure the
+# shipped optimized matmul path against the *same* production call routed
+# to its retained generic reference path by the operand's layout. These
+# tests check that the comparison is real, that no kernel selector was
+# introduced to make it, and that it still asserts no duration.
+# --------------------------------------------------------------------------
+
+H2_DISPATCH_CASES = ("matmul_square_contiguous",
+                     "matmul_rectangular_contiguous")
+
+
+def test_the_generic_layer_names_a_real_twin():
+    assert set(bench.GENERIC_TWIN) <= set(bench.LAYERS)
+    assert set(bench.GENERIC_TWIN.values()) <= set(bench.LAYERS)
+    assert bench.GENERIC_TWIN == {"tensor_core_generic": "tensor_core"}
+
+
+def test_the_harness_policy_constants_match_the_shipped_header():
+    """The harness *labels* the path each layer took; it must not be able
+    to drift from the constants the kernel compiles with."""
+    header = (REPO_ROOT / "cpp" / "include"
+              / "tf_matmul_internal.h").read_text(encoding="utf-8")
+    assert f"MATMUL_ROW_BLOCK = {bench.MATMUL_ROW_BLOCK};" in header
+    assert f"MATMUL_MIN_COLUMNS = {bench.MATMUL_MIN_COLUMNS};" in header
+
+
+@needs_native
+def test_the_matmul_gate_reports_the_layout_and_the_selected_path():
+    """Every matmul case must publish the exact strides it fed the kernel
+    and which of the two shipped paths that selected, so a reader never
+    has to infer either."""
+    payload = _by_name(bench.run_benchmark(
+        cases=list(H2_DISPATCH_CASES) + ["matmul_transposed_view"], **SMOKE))
+    for name, record in payload.items():
+        correctness = record["correctness"]
+        assert correctness["production_path"] in ("row_sweep",
+                                                  "generic_strided"), name
+        assert len(correctness["left_strides"]) == 2, name
+        assert len(correctness["right_strides"]) == 2, name
+        assert correctness["matmul_row_block"] == bench.MATMUL_ROW_BLOCK
+        assert correctness["matmul_min_columns"] == bench.MATMUL_MIN_COLUMNS
+        # The bit-identity gate is not optional for a matmul case.
+        assert "finite_bit_identical_native_paths" in correctness["checks"], name
+    # A transposed right operand cannot take the row sweep, by contract.
+    transposed = payload["matmul_transposed_view"]["correctness"]
+    assert transposed["right_strides"][1] != 1
+    assert transposed["production_path"] == "generic_strided"
+
+
+@needs_native
+def test_the_dispatch_comparison_is_published_only_where_the_paths_differ():
+    payload = _by_name(bench.run_benchmark(
+        cases=list(H2_DISPATCH_CASES) + ["matmul_transposed_view"], **SMOKE))
+    for name, record in payload.items():
+        comparison = record["dispatch_comparison"]
+        correctness = record["correctness"]
+        should_publish = (correctness["production_path"] == "row_sweep"
+                          and correctness["generic_probe_path"]
+                          == "generic_strided")
+        assert bool(comparison) is should_publish, name
+        if not comparison:
+            continue
+        data = comparison["tensor_core"]
+        assert set(data) == {
+            "row_sweep_median_s", "generic_strided_median_s",
+            "speedup_from_the_row_sweep", "row_sweep_relative_spread",
+            "generic_strided_relative_spread",
+        }
+        assert data["row_sweep_median_s"] > 0
+        assert data["generic_strided_median_s"] > 0
+
+
+@needs_native
+def test_the_two_matmul_paths_are_gated_bit_for_bit_before_any_timing():
+    """The gate compares raw IEEE-754 bit patterns, not a tolerance —
+    which is the whole H2 claim — and it runs before the timing helper is
+    ever reached."""
+    spec = bench.CASES["matmul_square_contiguous"]
+    case = spec["build"](spec["configurations"]["smoke"], spec)
+    try:
+        metrics = case["check"]()
+        assert metrics["production_path"] == "row_sweep"
+        assert metrics["generic_probe_path"] == "generic_strided"
+        assert metrics["generic_probe_strides"][1] != 1
+    finally:
+        case["close"]()
+    # ...and the helper it uses really is a bit comparison rather than a
+    # tolerance: +0.0 and -0.0 are the same number and different bits, and
+    # two NaNs with different payloads are different bits even though a
+    # value comparison could not tell them apart at all.
+    assert bench._same_bits([1.0, 0.0], [1.0, 0.0])
+    assert not bench._same_bits([1.0, 0.0], [1.0, -0.0])
+    payloads = np.array([0x7FF8000000000000, 0x7FF8DEADBEEFCAFE],
+                        dtype=np.uint64).view(np.float64)
+    assert np.isnan(payloads).all()
+    assert not bench._same_bits(payloads[:1], payloads[1:])
+    assert bench._same_bits(payloads[:1], payloads[:1])
+
+
+@needs_native
+def test_the_dispatch_comparison_still_returns_storage_to_baseline(
+        live_storages):
+    """The generic probe adds two more live cores per matmul case, so its
+    cleanup has to be as complete as the rest."""
+    bench.run_benchmark(cases=list(H2_DISPATCH_CASES), **SMOKE)
+    gc.collect()
+    baseline = len(live_storages)
+    bench.run_benchmark(cases=list(H2_DISPATCH_CASES), **SMOKE)
+    gc.collect()
+    assert len(live_storages) == baseline
+
+
+@needs_native
+def test_the_harness_selects_no_kernel_and_declares_no_dispatch_control():
+    """The probe is a *layout*, not a switch. Nothing in this harness may
+    reach for a kernel selector, because none exists."""
+    source = BENCHMARK_FILE.read_text(encoding="utf-8")
+    for banned in ("tf_matmul_set", "set_matmul", "matmul_path=",
+                   "row_sweep=", "force_generic", "getenv"):
+        assert banned not in source, banned
+    # The generic layer is produced by transposing a real operand.
+    section = source.split("def _build_matmul(", 1)[1].split("\ndef ", 1)[0]
+    assert "transpose(1, 0)" in section
+    assert "strides[1] != 1" in section
+
+
+@needs_native
+def test_the_human_report_explains_what_the_dispatch_pair_does_not_say():
+    """The honesty requirement. The generic column runs over a *strided*
+    operand, which is that kernel's best case — so the pair understates
+    what H2 changed and a reader must be told so rather than left to
+    infer a headline from it."""
+    payload = bench.run_benchmark(cases=["matmul_square_contiguous"], **SMOKE)
+    report = bench.format_report(payload)
+    assert "H2 matmul dispatch" in report
+    lowered = report.lower()
+    assert "same logical operands" in lowered
+    assert "bit-identical" in lowered
+    assert "spread" in lowered
+    # ...and the case's own notes say which reading answers "what did H2
+    # buy", so the honest comparison is never left implicit.
+    notes = bench.CASES["matmul_square_contiguous"]["notes"].lower()
+    assert "pre-h2 loop order" in notes
+    assert "understates" in notes
+
+
+def test_the_h2_comparison_asserts_no_duration():
+    """Same standing rule as H0 and H1: the harness measures, it never
+    judges."""
+    source = BENCHMARK_FILE.read_text(encoding="utf-8")
+    assert "speedup_from_the_row_sweep" in source
+    comparison = re.compile(
+        r"speedup_from_the_row_sweep[\"'\]\s]{0,3}\s*[<>]=?\s*[0-9.]"
+    )
+    assert comparison.search(source) is None
+    for line in TEST_FILE.read_text(encoding="utf-8").splitlines():
+        if 'r"' in line or "r'" in line:
+            continue
+        if "speedup_from_the_row_sweep" in line and "assert" in line:
+            assert "<" not in line and ">" not in line, line
+
+
+def test_the_schema_version_moved_for_h2s_additive_fields():
+    """The harness's own rule (design 6.6): the payload version moves when
+    the *shape* changes and never when a number does. H2 added three
+    fields, so it moved — and the design's guaranteed-field list names all
+    three."""
+    assert bench.SCHEMA_VERSION == 2
+    design = (REPO_ROOT / "docs"
+              / "native_cpu_performance_design.md").read_text(encoding="utf-8")
+    for field in ("native_build", "dispatch_comparison",
+                  "allocation_comparison"):
+        assert field in design, field
+
+
+@needs_native
+def test_the_build_metadata_reports_the_image_and_fabricates_no_compiler():
+    """``native_build`` is read from the compiled image. The compiler is
+    not recorded by the build system, so it must be ``null`` rather than
+    guessed from the host interpreter."""
+    payload = bench.run_benchmark(cases=["scalar_dispatch_overhead"], **SMOKE)
+    build = payload["environment"]["native_build"]
+    assert set(build) == {"image_format", "image_bytes", "compiler",
+                          "compiler_detail", "sanitizers"}
+    assert build["image_format"] in ("pe", "elf", "unknown")
+    assert build["image_bytes"] == cpp._LIBRARY_PATH.stat().st_size
+    assert build["compiler"] is None
+    assert build["compiler_detail"]
+    assert isinstance(build["sanitizers"], list)
+    # No absolute path, user name, or machine identifier is emitted.
+    rendered = json.dumps(payload["environment"])
+    assert str(REPO_ROOT) not in rendered
+    assert cpp._LIBRARY_PATH.name not in rendered

@@ -2207,7 +2207,23 @@ class NativeTensorCore:
         non-contiguous view (transposed, narrowed) — the kernel
         addresses each source through its own strides, so nothing is
         materialized first. Returns a new (m, p) row-major contiguous
-        NativeTensorCore. The naive triple loop; no broadcasting.
+        NativeTensorCore. No broadcasting.
+
+        Phase H (H2): the native side ships **two** compute paths and
+        picks between them inside ``tf_core_matmul``, from the stride
+        metadata this method already passes down. A right operand whose
+        column stride is 1 (any row-major operand, including the
+        contiguous weight a Linear layer holds), with ``n >= 1`` and at
+        least 8 columns, takes an ``i``-``k``-``j`` row sweep whose inner
+        loop walks memory sequentially; everything else — a transposed
+        right operand, a narrow result, an empty inner dimension — takes
+        the generic ``i``-``j``-``k`` triple loop, which is the retained
+        reference path and the case that loop order already suits. The
+        choice is deterministic, allocates nothing, and cannot fail; a
+        failed precondition is a fallback, never an error. There is no
+        selector, environment variable, or public control over it, and
+        the two paths are proved to agree bit for bit (see
+        docs/native_cpu_performance_design.md §16.2).
         """
         self._require_open()
         if not isinstance(other, NativeTensorCore):
@@ -2232,12 +2248,16 @@ class NativeTensorCore:
             )
         m, n = self.shape
         p = other.shape[1]
-        # H1: uninitialized. The kernel accumulates each dot product into
-        # a *local* `sum` register and then assigns `dst[i * p + j] = sum`
-        # for every (i, j) in the full (m, p) extent — it never reads the
-        # destination, so an initial zero is never observed. Note this is
-        # the accumulation shape H1 relies on and H2 must preserve. A
-        # failed kernel closes the output.
+        # H1: uninitialized, and H2 kept it that way through both paths.
+        # The generic path accumulates each dot product into a *local*
+        # `sum` register and assigns `dst[i * p + j] = sum` for every
+        # (i, j), so it never reads the destination at all. The H2 row
+        # sweep does accumulate in the destination, but its k == 0 pass
+        # *assigns* every element of every row it is about to work on
+        # before any accumulation reads one — which is why its dispatch
+        # predicate requires `n >= 1`. Either way no output value can
+        # depend on what the buffer held beforehand, which the poison
+        # tests prove on both paths. A failed kernel closes the output.
         out = NativeTensorCore._uninitialized(
             (m, p), dtype=self.dtype, device=self.device
         )

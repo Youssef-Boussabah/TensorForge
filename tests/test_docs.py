@@ -4043,22 +4043,27 @@ _PHASE_G_OVERCLAIMS = (
     #
     # ``Phase H`` itself was retired from this entry when milestone H0
     # opened that phase: naming it is now accurate. What replaces it is
-    # the narrower claim H0 must not let erode — that Phase H *shipped an
-    # optimization*, which it did not. H0 is architecture, profiling, and
-    # baseline work; every kernel is still the reference loop Phase G
-    # left behind, and the memory pool, scratch workspace, SIMD,
-    # threading, and BLAS questions are all recorded as rejected-on-
-    # evidence rather than answered.
+    # the narrower claim the phase must not let erode.
+    #
+    # Retired one milestone at a time, exactly as the Phase-G entries
+    # above were: H1 (the output-allocation contract) and **H2** (the
+    # matmul loop order) really have shipped, so claiming either is
+    # accurate and the milestone-number arm now starts at H3. What is
+    # *not* retired, and will not be until §11–§13 of the design are met,
+    # is the family of optimizations Phase H has deliberately rejected on
+    # evidence: no memory pool, scratch workspace, SIMD, threading,
+    # OpenMP, or BLAS exists anywhere in this repository, and H2 in
+    # particular measured cache blocking and rejected it.
     ("a later phase has begun",
      r"\bPhase[- ]I\b|\bG11\b|\bH11\b"
      r"|(CUDA|float32|AMP)[^.]{0,40}\b(phase|milestone)\b[^.]{0,40}"
      r"\b(has|have|is|are)\s+(begun|started|shipped|landed|complete)\b"),
-    ("a Phase-H optimization has shipped",
+    ("a Phase-H optimization that does not exist has shipped",
      r"(memory pool|scratch (?:allocator|workspace)|SIMD|AVX|OpenMP|BLAS"
      r"|multi-?threading|thread pool)[^.]{0,60}"
      r"\b(is|are|was|were|has been|have been)\s+"
      r"(added|shipped|implemented|enabled|introduced|adopted|landed)\b"
-     r"|\bH[1-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
+     r"|\bH[3-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
      r"(begun|started|shipped|landed|complete|completed)\b"),
 )
 
@@ -6719,31 +6724,41 @@ def test_h0_is_marked_shipped_but_claims_no_speedup():
         assert "native_cpu_performance_design" in text, surface
 
 
-def test_no_surface_claims_phase_h_delivered_an_optimization():
-    """The premise is the tree, not the prose: no Phase-H optimization
-    exists yet, so no document may say one does.
+def test_no_surface_claims_an_optimization_phase_h_has_not_delivered():
+    """The premise is the tree, not the prose.
+
+    H2 *did* change the production matmul's loop order, so — unlike at H0
+    — a document may now say the native matmul walks memory differently.
+    What none may say is that it is **blocked, vectorized, threaded, or
+    BLAS-backed**: cache blocking was measured and rejected, and SIMD,
+    threading, and BLAS all remain later, still-conditional milestones
+    with no code behind them.
 
     ``tf_matmul_tiled`` is the trap. It is a *pre-existing* raw-buffer
-    experiment (it predates Phase H and is on no production path), so a
-    document may describe it — what none may say is that the production
-    matmul is now blocked, vectorized, threaded, or BLAS-backed."""
+    experiment on no production path, so a document may describe it —
+    what none may claim is that production runs it."""
     from tensorforge.backends import cpp
 
-    # Premise: the production matmul is still the naive strided loop, and
-    # no optimization-related kernel or registry entry exists.
+    # Premise: the production matmul is a plain scalar loop pair with no
+    # intrinsics, threads, or BLAS, and it does not call the tiled kernel.
     matmul_source = (REPO_ROOT / "cpp" / "src"
                      / "matmul.cpp").read_text(encoding="utf-8")
-    assert "deliberately unoptimized reference loops" in matmul_source
     for banned in ("immintrin", "__m256", "_mm256", "omp parallel",
-                   "cblas_", "std::thread"):
+                   "cblas_", "std::thread", "#pragma omp"):
         assert banned not in matmul_source, banned
+    export = matmul_source.split("TF_EXPORT void tf_core_matmul(", 1)[1]
+    export = export.split("\n}\n", 1)[0]     # just that function's body
+    assert "tf_matmul_tiled" not in export
+    assert "tf_matmul(" not in export
+    assert "matmul_generic_strided" in export and "matmul_row_sweep" in export
     assert cpp.RAW_KERNELS[-1] == "matmul_tiled"   # pre-existing, unchanged
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
 
     claims = re.compile(
         r"\b(production|native)\s+matmul\b[^.]{0,60}\b(is|are|was|were|now)"
-        r"\s+(blocked|tiled|vectori[sz]ed|threaded|parallel\w*|BLAS)"
-        r"|\bPhase.H\b[^.]{0,80}\b(made|makes|is making)\b[^.]{0,30}\bfaster\b"
+        r"\s+(vectori[sz]ed|threaded|parallel\w*|BLAS)"
+        r"|\bPhase.H\b[^.]{0,80}\b(uses|adds|added)\b[^.]{0,30}"
+        r"\b(SIMD|BLAS|OpenMP|thread pool|memory pool)\b"
         r"|\bH0\b[^.]{0,60}\b(sped|speeds|speeded|optimi[sz]ed)\b",
         re.I,
     )
@@ -6890,13 +6905,14 @@ def test_no_surface_calls_h1_more_than_an_allocation_change():
     all of which remain later, still-conditional milestones."""
     from tensorforge.backends import cpp
 
-    # Premise from the tree: the matmul kernel is still the naive loop and
-    # no pooling/SIMD/threading machinery exists.
-    matmul_source = (REPO_ROOT / "cpp" / "src"
-                     / "matmul.cpp").read_text(encoding="utf-8")
-    assert "deliberately unoptimized reference loops" in matmul_source
+    # Premise from the tree: the allocator is still one plain
+    # new/delete pair with no pooling, arena, thread, or SIMD machinery —
+    # which is what makes "H1 was an allocation change" true. The matmul
+    # loop order changed at H2, under its own milestone; H1 did not touch
+    # it, and the two exports still share the one creation body.
     storage_source = (REPO_ROOT / "cpp" / "src"
                       / "storage.cpp").read_text(encoding="utf-8")
+    assert storage_source.count("create_storage(size, /*zero_initialize=*/") == 2
     for banned in ("free_list", "memory_pool", "arena", "std::thread",
                    "immintrin", "omp parallel"):
         assert banned not in storage_source, banned
@@ -7146,3 +7162,251 @@ def test_h1_left_the_public_capability_boundary_untouched():
     for value in cpp.backend_info().values():
         if isinstance(value, (tuple, list)):
             assert not any("uninitialized" in str(item) for item in value)
+
+
+# --------------------------------------------------------------------------
+# Phase H, milestone H2 — the matmul memory-access milestone
+#
+# Semantic guardrails. Each one's premise is read from the tree — the real
+# sources, the real registries, the real export table — so the prose
+# cannot drift away from what shipped, and none of them pins a sentence.
+# --------------------------------------------------------------------------
+
+def test_h2_is_marked_shipped_on_every_phase_h_surface():
+    """H2 really shipped — both kernels, the predicate, and the tests
+    exist — and every status surface records it."""
+    for path in ("cpp/include/tf_matmul_internal.h",
+                 "cpp/tests/test_matmul.cpp",
+                 "tests/test_native_matmul_dispatch.py"):
+        assert (REPO_ROOT / path).is_file(), path
+
+    shipped = re.compile(
+        r"\bH2\b[^.]{0,160}?\b(is|are|was|has|have|shipped|complete"
+        r"|completed|landed)\b", re.I,
+    )
+    for surface in _PHASE_H_SURFACES:
+        text = _status_text(surface)
+        assert "H2" in text, f"{surface} does not name milestone H2"
+        assert shipped.search(text), f"{surface} does not record H2 as shipped"
+
+
+def test_every_surface_that_describes_h2_keeps_the_generic_path_visible():
+    """The retained generic reference path (design section 8.3) is the
+    load-bearing architectural claim of this milestone. A surface that
+    describes H2 without it would be describing a kernel replacement,
+    which is not what shipped."""
+    source = (REPO_ROOT / "cpp" / "src" / "matmul.cpp").read_text(
+        encoding="utf-8")
+    # Premise: both paths really are shipped code.
+    assert "void matmul_generic_strided(" in source
+    assert "void matmul_row_sweep(" in source
+
+    generic = re.compile(
+        r"\bgeneric\b[^.]{0,80}\b(path|kernel|loop|reference)\b"
+        r"|\breference path\b|\bfall(s|ing)? back\b|\bfallback\b", re.I)
+    for surface in _PHASE_H_SURFACES:
+        text = _status_text(surface)
+        if "H2" not in text:
+            continue
+        assert generic.search(text), (
+            f"{surface} describes H2 without mentioning the retained "
+            f"generic path or the fallback"
+        )
+
+
+def test_no_surface_claims_the_production_matmul_is_blocked_or_tiled():
+    """H2 measured cache blocking and **rejected** it. The production
+    kernel carries no tile, and no surface may say otherwise — the
+    pre-existing raw ``tf_matmul_tiled`` is a separate benchmark kernel
+    and may of course be described as one."""
+    source = (REPO_ROOT / "cpp" / "src" / "matmul.cpp").read_text(
+        encoding="utf-8")
+    sweep = source.split("void matmul_row_sweep(", 1)[1].split("\n}\n", 1)[0]
+    # Premise from the tree: the shipped optimized kernel groups *rows*
+    # (MATMUL_ROW_BLOCK) but tiles neither j nor k — its inner loop runs
+    # the full result width, and there is no accumulator tile, no j
+    # sub-loop, and no k sub-loop.
+    assert sweep.count("for (int64_t j = 0; j < p; ++j)") == 2
+    for tile in ("j0", "k0", "BLOCK_J", "BLOCK_K", "acc["):
+        assert tile not in sweep, tile
+
+    claims = re.compile(
+        r"\b(production|native|shipped)\b[^.]{0,60}\bmatmul\b[^.]{0,60}"
+        r"\b(is|are|was|were|now|uses|adopts)\b[^.]{0,30}"
+        r"\b(tiled|blocked|cache[- ]block\w*)\b",
+        re.I,
+    )
+    negations = re.compile(
+        r"\b(not|never|no|none|without|rejected|reject|instead of"
+        r"|rather than|would|will|future|proposed|conditional)\b", re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 90):match.end() + 40])
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_every_surface_describing_h2_records_the_blocking_rejection():
+    """A negative result is only useful if it is published. Any surface
+    that describes H2 must also say blocking was rejected — otherwise a
+    reader reasonably assumes the milestone title was delivered as
+    written."""
+    rejection = re.compile(
+        r"\bblocking\b[^.]{0,110}\breject\w*\b"
+        r"|\breject\w*\b[^.]{0,110}\bblocking\b"
+        r"|\bcache blocking\b[^.]{0,110}\b(measured and rejected"
+        r"|not adopted)\b",
+        re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        if "H2" not in text:
+            continue
+        assert rejection.search(text), (
+            f"{surface} describes H2 without recording that cache blocking "
+            f"was measured and rejected"
+        )
+
+
+def test_no_surface_claims_h2_added_an_export_or_a_dispatch_control():
+    """The premise is the loaded library, not the prose: H2's exported
+    footprint is empty."""
+    from tensorforge.backends import cpp
+
+    library = cpp._require_library()
+    for name in ("matmul_row_sweep", "matmul_generic_strided",
+                 "matmul_prefers_row_sweep", "tf_matmul_set_block_size",
+                 "tf_core_matmul_generic"):
+        try:
+            getattr(library, name)
+        except AttributeError:
+            continue
+        raise AssertionError(f"{name} is exported by the built library")
+    assert getattr(library, "tf_core_matmul") is not None
+
+    claims = re.compile(
+        r"\bH2\b[^.]{0,90}\b(added|adds|introduces|introduced|exports?)\b"
+        r"[^.]{0,50}\b(C ABI symbol|export|selector|environment variable"
+        r"|kernel mode|dispatch control)\b",
+        re.I)
+    negations = re.compile(
+        r"\b(no|not|never|none|without|neither|nor|zero)\b", re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 80):match.end() + 40])
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_no_surface_claims_unqualified_nan_payload_identity():
+    """The honest H2 claim is narrower than bit-identity full stop: when
+    two NaN operands meet, which payload propagates is decided by the
+    compiler's instruction operand ordering, and the two paths can differ
+    there. Any surface that mentions the NaN payload must qualify it
+    rather than promise it."""
+    # Premise: the suites assert the *qualified* rule, under a name that
+    # says so, and never an unconditional equality.
+    suite = (REPO_ROOT / "tests"
+             / "test_native_matmul_dispatch.py").read_text(encoding="utf-8")
+    ctest = (REPO_ROOT / "cpp" / "tests"
+             / "test_matmul.cpp").read_text(encoding="utf-8")
+    for text in (suite, ctest):
+        assert "agrees_under_the_numerical_contract" in text
+        assert "agrees_modulo_nan_payload" not in text
+
+    claims = re.compile(
+        r"\bNaN payloads?\b[^.]{0,60}\b(identical|equal|match\w*|preserved"
+        r"|guaranteed)\b",
+        re.I)
+    negations = re.compile(
+        r"\b(no|not|never|none|may|might|can|unspecified|differ\w*|except"
+        r"|exception|outside)\b", re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 110):match.end() + 40])
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_every_surface_describing_h2_states_the_four_part_contract():
+    """Outcome B's central requirement: no surface may present H2 as
+    unconditionally bit-identical. Each one that describes the milestone
+    has to distinguish what is exact (accumulation order, non-NaN
+    results), what is class-level (NaN positions and quietness), and what
+    is explicitly outside the contract (NaN payload bits)."""
+    # Premise from the tree: the shipped comparator really does allow a
+    # payload difference and really does reject everything else.
+    ctest = (REPO_ROOT / "cpp" / "tests"
+             / "test_matmul.cpp").read_text(encoding="utf-8")
+    body = ctest.split("bool agrees_under_the_numerical_contract(", 1)[1]
+    body = body.split("\n}\n", 1)[0]
+    assert "isnan(left[i]) && std::isnan(right[i])" in body
+    assert "return false" in body
+
+    non_nan = re.compile(
+        r"\bnon-NaN\b|\bnot a NaN\b|\bNaN-free\b|\bfinite\b[^.]{0,40}"
+        r"\bbit[- ]identical\b", re.I)
+    payload_excluded = re.compile(
+        r"\bpayload\b[^.]{0,120}\b(outside|not part of|may differ"
+        r"|deliberately)\b"
+        r"|\b(outside|not part of)\b[^.]{0,120}\bpayload\b", re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        if "H2" not in text:
+            continue
+        assert non_nan.search(text), (
+            f"{surface} describes H2 without scoping bit identity to "
+            f"non-NaN results"
+        )
+        assert payload_excluded.search(text), (
+            f"{surface} describes H2 without saying NaN payload bits are "
+            f"outside the contract"
+        )
+
+
+def test_no_surface_calls_the_payload_difference_harmless_without_the_contract():
+    """The specific rhetorical failure to guard against: writing off the
+    payload difference as "not a behavioral difference" instead of
+    defining what *is* supported."""
+    dismissals = re.compile(
+        r"\b(not|no)\s+(a\s+)?behavio\w*\s+(difference|change)\b"
+        r"|\bharmless\b|\bcosmetic\b|\bpurely cosmetic\b",
+        re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        for match in dismissals.finditer(text):
+            window = text[max(0, match.start() - 250):match.end() + 400]
+            # Only dismissals *about the NaN payload* are in scope; the
+            # same words are ordinary English elsewhere in these files.
+            if not re.search(r"\bNaN\b|\bpayload\b", window, re.I):
+                continue
+            # The one legitimate use is the design's own paragraph saying
+            # this framing would be *wrong*, which then states the actual
+            # contract.
+            assert re.search(r"\bwould be wrong\b", window, re.I), (
+                surface, match.group(0))
+
+
+def test_phase_h_surfaces_still_state_the_unchanged_capability_boundary():
+    """H2 moved nothing either, checked against the live registries rather
+    than against the prose describing them."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    # ...and matmul is still exactly where it was in every inventory.
+    assert "matmul" in cpp.TENSOR_CORE_OPS
+    assert "matmul" in cpp.AUTOGRAD_OPS
+    assert cpp.RAW_KERNELS[-2:] == ("matmul", "matmul_tiled")

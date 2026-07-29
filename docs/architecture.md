@@ -391,6 +391,44 @@ explicit layer at a time:
   empty-tensor API, and `tf_storage_create_uninitialized` is the only C
   ABI symbol it added, taking the library to **52** exported `tf_*`
   symbols.
+- **Milestone H2 — native matmul memory access — is complete**, and is
+  the first Phase-H milestone to change how a numerical kernel executes.
+  `tf_core_matmul` now ships **two** compute paths behind the same
+  unchanged export: `tf::matmul_generic_strided`, the pre-H2 `i`-`j`-`k`
+  triple loop kept verbatim as the **retained generic reference path**
+  (§8.3 of the design), and `tf::matmul_row_sweep`, an `i`-`k`-`j` sweep
+  over four destination rows at a time whose innermost loop walks a row
+  of the right operand and a row of the output sequentially instead of a
+  column. **Cache blocking was measured against 22 blocked variants and
+  rejected** — an unblocked full-width sweep was faster at every
+  non-trivial size — so H2 shipped the simpler design and recorded the
+  negative result. The choice is made inside the kernel from the stride
+  metadata it already receives: unit column stride on the right operand,
+  a non-empty inner dimension, and at least 8 result columns select the
+  row sweep; everything else falls to the generic path, which is the loop
+  order those cases already suit. Selection is total, pure, deterministic,
+  and independent of pointer values, alignment, timing, environment
+  variables, and CPU-feature probes; a failed precondition is a fallback,
+  never an error. **No exported C ABI symbol was added** — the count
+  stays **52** — and no kernel selector, block-size setter, dispatch
+  tracer, or public dispatch control exists; the two kernels and the
+  predicate are hidden-visibility C++, which is exactly why the native
+  test target compiles `matmul.cpp` in rather than linking the library.
+  Accumulation order is unchanged per output element. The resulting
+  agreement is stated in four parts rather than as a blanket
+  bit-identity claim: the accumulation sequence is preserved exactly,
+  **every non-NaN result is bit-identical** (asserted as raw bit
+  patterns), NaNs occur in exactly the same positions on both paths and
+  are always quiet, and the **payload bits of a NaN result are outside
+  TensorForge's numerical contract** and may differ — they follow from
+  the compiler's instruction operand ordering, which follows from the
+  loop order, and ten source-level formulations failed to close that gap
+  without reverting the optimization. Every committed loss trajectory and
+  every exact-resume proof runs on finite data, so part two covers all of
+  them. H1's uninitialized-output contract holds on both — the generic path never
+  reads the destination, and the row sweep assigns every element of every
+  row in its `k == 0` pass before anything accumulates into it. No
+  capability, dtype, device, registry value, or checkpoint version moved.
 
 The execution path for a native training step is:
 

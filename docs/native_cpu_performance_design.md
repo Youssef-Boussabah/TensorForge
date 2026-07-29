@@ -1,7 +1,8 @@
 # Native CPU Performance and Runtime Efficiency — Phase H design
 
-**Status: milestone H0 complete. No production numerical kernel has been
-optimized, and no supported capability has changed.**
+**Status: milestones H0, H1, and H2 complete. No supported capability has
+changed. H2 is the first milestone to change a numerical kernel's
+execution — its memory-access pattern, not its arithmetic.**
 
 This document is the architecture contract for **Phase H — Native CPU
 Performance and Runtime Efficiency**, the phase that follows the
@@ -39,12 +40,19 @@ reproducible**: C++-owned storage with exactly-once cleanup, a
 Python-managed reverse-mode graph with parameter versioning and
 stale-graph detection, graph-owned saved resources, whole-checkpoint
 transaction atomicity, a deterministic reservation-protected RNG, and
-bit-exact stochastic resume. What it has never been is *fast*. Every
-kernel in `cpp/src/` is a deliberately plain reference loop. The matmul
-comment says so in the first line of the file:
+bit-exact stochastic resume. What it has never been is *fast*. At H0
+every kernel in `cpp/src/` was a deliberately plain reference loop, and
+the matmul comment said so in the first line of the file:
 
 > All are deliberately unoptimized reference loops (no blocking beyond
 > the explicit tile, no SIMD, no BLAS).
+
+*(That header is the pre-H2 text. **H2 replaced it**: `matmul.cpp` now
+ships an optimized production path beside the reference loop, and the
+reference loop is retained under §8.3 rather than removed. Every other
+kernel in `cpp/src/` is still a plain reference loop, and everything in
+§3 below is still the H0 baseline — the before-and-after comparison lives
+in §16.2.8 rather than being edited back into §3.)*
 
 That was the right call seven phases running: a wrong fast kernel is
 worse than a slow correct one, and every phase so far had a *semantic*
@@ -232,6 +240,14 @@ compares reductions and products to NumPy by tolerance and not
 bit-for-bit.
 
 Evidence level: **directly measured**, including the bit-exactness claim.
+
+**This finding is the one H2 acted on, and H2's outcome differs from the
+sketch above in one respect worth recording**: the win is the `i`–`k`–`j`
+*order*, not the tiles. Measured against 22 blocked variants, an
+unblocked full-row sweep was faster at every non-trivial size, so
+**cache blocking was rejected** and the production kernel carries none
+(§16.2.7). The 3.3× above is the tiled kernel's figure; the shipped row
+sweep measured 4.1–4.7× at the same profile shape (§16.2.8).
 
 #### B3 — A fixed ~9–22 µs is paid per native operation, and most of it is Python
 
@@ -620,21 +636,35 @@ written to no file. Guaranteed fields:
   `environment`, `cases`;
 - `environment`: `python_version`, `python_implementation`, `platform`,
   `machine`, `processor`, `numpy_version`, `numpy_build`,
-  `tensorforge_version`, `native_backend`, `thread_environment`,
-  `dtype`, `device`, `scope`, `timer`, `timer_resolution_ns`,
-  `primary_statistic`, `configuration_variant`, `warmup`,
-  `repetitions`, the per-family repetition caps, and `timestamp`;
+  `tensorforge_version`, `native_backend`, `native_build`,
+  `thread_environment`, `dtype`, `device`, `scope`, `timer`,
+  `timer_resolution_ns`, `primary_statistic`, `configuration_variant`,
+  `warmup`, `repetitions`, the per-family repetition caps, and
+  `timestamp`;
 - each case: `case`, `workload`, `section`, `operation`,
   `configuration_variant`, `configuration`, `shape`, `seed`,
   `reference_type`, `reference_layer`, `reference_detail`,
   `correctness_reference`, `correctness`, `warmup`, `sample_count`,
-  `layers`, `notes`;
+  `layers`, `allocation_comparison`, `dispatch_comparison`, `notes`;
 - each layer row: `implementation_layer`, `timing`,
   `ratio_to_reference`.
 
 `schema_version` is the payload's own contract version. It moves when
 the *shape* of the payload changes and never when a measured number
-does.
+does. It is **2**: H0 and H1 published version 1, and H2 added three
+additive fields — the `tensor_core_generic` layer, the per-case
+`dispatch_comparison` block, and `environment.native_build`. No existing
+field changed meaning.
+
+`environment.native_build` is deliberately short and deliberately
+incomplete. It reports what can honestly be read from the compiled image
+itself — its object format, its size in bytes, and whether ASan/UBSan
+instrumentation is present, which is genuinely visible in the symbol
+table. The **compiler identity, its version, and its optimization flags
+are reported as `null`**, because neither `cpp/build.py` nor the CMake
+project records them anywhere, and `platform.python_compiler()` describes
+the interpreter's toolchain rather than this library's. Printing it here
+would be a fabrication, so it is not printed. No path is emitted.
 
 ### 6.7 Environment and build metadata
 
@@ -741,9 +771,37 @@ metadata caching, allocation strategy, dispatch selection — must be
 it by test.
 
 That is not a theoretical constraint; §3.1/B2 measured that the
-highest-leverage matmul change available (`i`–`k`–`j` blocking)
-**already satisfies it**, at five matrix sizes and four block sizes
-including non-dividing ones.
+highest-leverage matmul change available (`i`–`k`–`j` reordering)
+**already satisfies it**, and **H2 shipped under exactly this rule** — it
+changed only which memory is touched when. H2 therefore did **not**
+invoke the five-condition escape hatch below, and no milestone in this
+project has yet.
+
+**"Bit-identical" above needs one qualification, and H2 is where it first
+bites.** The rule this section states is about the *sequence of
+arithmetic operations*, and H2 preserves that exactly. What a preserved
+sequence does **not** guarantee is the payload of a NaN result: when two
+NaN operands meet, which one propagates is decided by the compiler's
+choice of instruction operand order — a decision C++ cannot express, and
+one that follows from the loop structure rather than from the arithmetic.
+So the requirement this section imposes is stated in four parts, and
+§16.2.3 works them through for H2 with the measurements behind them:
+
+1. **the accumulation sequence is preserved exactly** (the rule above);
+2. **every non-NaN result is bit-identical**, including signed zeros,
+   infinities, denormals, and the largest finite magnitudes;
+3. **NaN-class equivalence** — NaNs appear in exactly the same positions
+   on both paths, and are always quiet;
+4. **NaN payload bits are outside TensorForge's numerical contract** and
+   may differ.
+
+Parts 1–3 are hard requirements that every milestone must prove by test.
+Part 4 is a licence, not a permission slip for a real order change: it
+covers the bits of a value that is *already* NaN, which means the
+computation has already left the supported numerical domain. Every
+committed loss trajectory and every bit-exact resume proof in this
+project runs on finite data, so part 2 covers all of them and none of
+them is affected.
 
 An optimization that genuinely *must* change accumulation order —
 pairwise or blocked summation in a reduction, an FMA contraction, a
@@ -803,8 +861,11 @@ Phase H may add an optimized execution path only under all of:
    There is no "probably contiguous" case.
 3. **Selection is free of side effects.** Choosing a path allocates
    nothing, mutates nothing, and consumes no generator call.
-4. **The optimized path is bit-identical to the generic path**, or the
-   full §7.3 order-change procedure applies.
+4. **The optimized path agrees with the generic path under §7.3's
+   four-part numerical contract** — identical accumulation sequence, bit
+   identity on every non-NaN result, NaN-class equivalence, and NaN
+   payload bits outside the contract — or the full §7.3 order-change
+   procedure applies.
 5. **A failed precondition is never an error.** It is a fallback.
 
 ### 8.2 Strided fallback
@@ -930,10 +991,14 @@ answer.
 
 ## 11. SIMD decision criteria
 
-**Rejected for now, on evidence.** §3.1/B2 shows the matmul gap is an
-access-pattern gap: reordering the loops recovers ~3.3× with
+**Rejected for now, on evidence.** §3.1/B2 showed the matmul gap is an
+access-pattern gap, and **H2 confirmed it by shipping the fix**:
+reordering the loops recovered 4.1–4.7× at the profile shape with
 bit-identical results, no intrinsics, and no build-system change. SIMD
-would be attacking the second-order term first.
+would have been attacking the second-order term first. It still would:
+H2's inner loop is a long unit-stride `acc[j] += scalar * b[j]`, which is
+exactly the shape a compiler auto-vectorizes without help, so criterion 2
+below now has a concrete target rather than a hypothetical one.
 
 SIMD enters Phase-H scope only if **all** of:
 
@@ -994,10 +1059,11 @@ The tempting argument is that NumPy's OpenBLAS beats the native matmul
 and linking a BLAS would close the gap. Three reasons that is the wrong
 move here:
 
-1. **It answers the wrong question.** §3.1/B2 shows the production
-   kernel is 3.3× off its *own* achievable single-threaded scalar
-   performance. Linking BLAS would hide that rather than fix it, and
-   would leave every non-matmul finding untouched.
+1. **It answers the wrong question.** §3.1/B2 showed the production
+   kernel was 3.3× off its *own* achievable single-threaded scalar
+   performance, and H2 recovered 4.1–4.7× of that by changing the loop
+   order alone (§16.2.8). Linking BLAS would have hidden that rather than
+   fixed it, and would leave every non-matmul finding untouched.
 2. **It contradicts the project's premise.** TensorForge is a
    from-scratch systems project; "we call someone else's GEMM" is not
    the thing being demonstrated. `cpp/src/matmul.cpp` already says "no
@@ -1032,7 +1098,8 @@ Every Phase-H milestone must, before it ships:
 - keep the C ABI narrow: hidden default visibility, `TF_EXPORT` only on
   functions Python actually declares;
 - keep the full native CTest suite green in **both** configurations
-  (currently 11 tests);
+  (currently 13 tests: the 11 H0 inherited, plus H1's storage-allocation
+  contract test and H2's matmul path/dispatch test);
 - assume nothing about alignment, endianness, or `long` width beyond
   what C++17 and the existing `int64_t`/`double` contract guarantee.
 
@@ -1085,7 +1152,7 @@ milestone re-runs the H0 harness before and after and reports both.
 |---|---|---|---|
 | **H0** | **Architecture, profiling, and baseline** | — | **complete** |
 | **H1** | **Output allocation contract: uninitialized allocation for fully-written destinations** | B1 (measured, ~74 % of a 2 MB elementwise op) | **complete** — see 16.1 |
-| H2 | Matmul memory access: loop order and cache blocking in the production kernel | B2 (measured, 3.3×, **bit-identical**) | proposed |
+| **H2** | **Matmul memory access: loop order in the production kernel** | B2 (measured, 3.3×, accumulation order preserved) | **complete** — see 16.2. Cache blocking was measured and **rejected**; the generic/optimized agreement is §16.2.3's four-part contract, not unconditional bit identity |
 | H3 | Per-call dispatch cost: cached layout metadata at the Core boundary | B3 (measured, ~20 µs fixed, ~10 % of it ctypes) | proposed |
 | H4 | Optimizer step cost: fewer native calls and allocations per parameter | B4 (measured, 27 allocations/parameter, 83 % of a step) | proposed |
 | H5 | Reduction execution: a contiguous fast path for the accumulate kernels | B5, B7 (measured) | proposed |
@@ -1465,23 +1532,523 @@ NumPy, or the ASan runtime itself. **No suppression file was added.**
 
 ---
 
-## 16.2 Remaining ladder detail
+## 16.2 H2 — matmul memory access, as shipped
 
-### H2 — Matmul memory access
+**Status: complete.** H2 changed *how the production matmul walks
+memory* and nothing else. No arithmetic changed, no accumulation was
+reassociated, no operand was materialized, no capability moved, and **no
+C ABI symbol was added** — the exported surface is still exactly the 52
+symbols H1 left.
 
-Bring `tf_core_matmul` up to the access pattern `tf_matmul_tiled`
-already demonstrates, **preserving the per-output accumulation order
-exactly** (measured bit-identical in §3.1/B2).
+The milestone title says "and cache blocking". **Blocking was measured
+and rejected** (§16.2.7). What shipped is the simpler and measurably
+better change: a loop-order swap.
 
-- The strided-operand capability is not lost: the kernel must still read
-  both operands through their own strides and offsets, so a transposed
-  or narrowed view still multiplies without materializing.
-- The generic path is retained per §8.3.
-- Block size is a fixed, documented constant, not a runtime probe, so
-  the result cannot depend on a hardware query.
-- Bit-exactness against the current kernel is proved by test at multiple
-  sizes including non-dividing ones, which is what makes every committed
-  loss trajectory and every exact-resume proof survive untouched.
+**On the numerical claim, stated up front so it is not discovered
+later:** H2 does **not** claim unconditional bit identity between the two
+paths. It claims an identical accumulation sequence, bit identity on
+every non-NaN result, NaN-class equivalence, and it deliberately leaves
+the *payload bits of a NaN result* outside the contract, because those
+follow from the compiler's instruction operand ordering rather than from
+the arithmetic. §16.2.3 states all four parts, shows the ten formulations
+measured while trying to close the fourth, and records why closing it is
+not available short of abandoning the optimization.
+
+### 16.2.1 What the production kernel was, and what it is
+
+**Before.** One kernel, `i`–`j`–`k`, reading both operands through their
+own strides and offsets:
+
+```cpp
+for i, for j:
+    double sum = 0.0;
+    for k: sum += a[a_off + i*as0 + k*as1] * b[b_off + k*bs0 + j*bs1];
+    dst[i*p + j] = sum;
+```
+
+Its innermost loop walks `b` **down a column**, stepping `bs0` doubles
+per element. For a row-major right operand — which is every weight a
+`NativeLinear` holds — that is a new cache line on every step.
+
+**After.** Two kernels behind the same unchanged export, chosen from
+metadata:
+
+| Function (all `namespace tf`, hidden visibility) | Role |
+|---|---|
+| `matmul_generic_strided` | The **retained generic reference path** (§8.3). Byte-for-byte the pre-H2 loop. Shipped, reachable through ordinary production dispatch, and the oracle every optimized result is compared against. |
+| `matmul_row_sweep` | The optimized path: `i`–`k`–`j` over `MATMUL_ROW_BLOCK` destination rows at a time. |
+| `matmul_prefers_row_sweep` | The dispatch predicate. |
+
+The row sweep, for one group of rows:
+
+```cpp
+// k == 0 — the assigning pass. Every element of every row in the group
+// is written here, before any accumulation reads one.
+for r in group: for j in [0, p): out_r[j] = 0.0 + a[i0+r, 0] * b_row0[j];
+// k >= 1 — the accumulating passes, ascending.
+for k in [1, n):
+    for r in group: for j in [0, p): out_r[j] += a[i0+r, k] * b_row_k[j];
+```
+
+The innermost loop now walks a **row** of `b` and a row of `dst`
+sequentially. Nothing about the arithmetic changed.
+
+Declarations and full rationale live in `cpp/include/tf_matmul_internal.h`;
+the bodies and the export in `cpp/src/matmul.cpp`.
+
+### 16.2.2 The exact optimized-path preconditions
+
+`matmul_prefers_row_sweep(m, n, p, b_stride1)` returns true iff **all
+three** hold. It is total, pure, and a function of metadata alone — never
+of a pointer value, an alignment, a wall-clock reading, an environment
+variable, or a CPU-feature probe (§8.1).
+
+| # | Condition | Why |
+|---|---|---|
+| 1 | `b_stride1 == 1` | Consecutive columns of the right operand are consecutive in memory, which is what makes the row sweep's inner loop a contiguous read. |
+| 2 | `n >= 1` | The `k == 0` pass is what assigns every destination element before anything accumulates into it. With no `k` there is no assigning pass. |
+| 3 | `p >= MATMUL_MIN_COLUMNS` (8) | Below this the inner `j` loop is too short to pay for its per-`k` setup, and the generic kernel measured strictly better (§16.2.7). |
+
+`m` is deliberately **not** a condition: the row sweep is correct and
+useful for every `m >= 0`, including `m == 0`.
+
+**The generic path runs in every other case**, and a failed precondition
+is a fallback, never an error. Concretely it runs for:
+
+- a **transposed right operand** (`b_stride0 == 1`, `b_stride1 == p`) —
+  which is not a gap but a *choice*: that is the layout the `i`–`j`–`k`
+  order already suits, because its inner `k` loop is then the contiguous
+  one. §3.1/B2 measured it at 0.39× the contiguous case *before* H2;
+- any other non-unit column stride, including a strided or interleaved
+  view;
+- a result narrower than 8 columns;
+- an empty inner dimension.
+
+A **transposed left operand** beside a row-major right one — which is
+exactly `db = a.T @ upstream` in the matmul backward — **does** qualify:
+`a` is read through its own strides either way, one scalar per `(i, k)`.
+
+### 16.2.3 The numerical contract between the two paths
+
+H2 does **not** claim unconditional bit identity. The contract has four
+parts, and they are separate claims about separate things.
+
+#### Part 1 — accumulation order is preserved exactly
+
+For a fixed output `(i, j)`, the row sweep accumulates:
+
+```
+0.0, then k = 0, then k = 1, ... then k = n-1
+```
+
+which is the same starting value, the same products, the same
+operations, and the same order as the generic kernel's
+`double sum = 0.0; for k: sum += a*b`. No addition is reassociated, no
+partial sums are combined, no wider or narrower accumulator is used, no
+fused multiply-add is requested, and no parallel or vector reduction
+exists. The `j` loop that the compiler may vectorize carries **no**
+reduction: each lane is a different output element accumulating its own
+independent sequence, so vectorizing it cannot reorder anything.
+
+This is a claim about the *sequence of operations*, and it is exact. It
+is what parts 2 and 3 rest on.
+
+#### Part 2 — every non-NaN result is bit-identical
+
+Whenever the result is not a NaN, the two paths agree **bit for bit** —
+`+0.0` versus `-0.0`, `±inf`, denormals, the smallest normal, and the
+largest finite magnitudes included. This is raw IEEE-754 bit-pattern
+equality, not a tolerance.
+
+**The `0.0 +` on the `k == 0` pass is load-bearing and is written out
+deliberately.** `0.0 + (-0.0)` is `+0.0`, while `-0.0` alone is `-0.0`.
+Dropping the addition would change the sign of a zero result — for
+example `[[-1.0]] @ [[0.0, …]]`, where the reference produces `+0.0`. It
+is not redundant, it is not foldable under IEEE-754, and both a C++ and
+a Python test fail without it.
+
+**This is the part every practical claim rests on.** Every committed loss
+trajectory, every example, every benchmark case, and every bit-exact
+checkpoint-resume proof in this project runs on finite data, so part 2
+covers all of them completely — which is why D11's, E8's, F6's, and G7's
+exact-resume proofs survive H2 untouched, and are re-run to prove it.
+
+#### Part 3 — NaN-class equivalence
+
+Whenever either path produces a NaN, **both** do, in exactly the same
+positions, and both are **quiet**. Neither path can produce a signaling
+NaN. A path that produced a NaN where the other produced a number, or an
+infinity where the other produced a finite value, would be a real defect,
+and both suites assert against it.
+
+#### Part 4 — NaN payload bits are outside the contract
+
+The payload and sign bits of a NaN *result* may differ between the two
+paths, and TensorForge specifies nothing about them.
+
+This is a measured property of the code, not a hedge, and the
+investigation behind it is recorded rather than summarized away. On
+x86-64, `ADDSD dst, src` returns the **destination** operand's NaN when
+both operands are NaN. Which of the two addends the compiler places in
+the destination is an instruction-selection decision that C++ cannot
+express. In the `i`–`j`–`k` kernel MSVC places the freshly computed
+product there, so the **last** NaN in `k` order survives; in the
+`i`–`k`–`j` row sweep it places the accumulator there, so the **first**
+survives.
+
+**Ten source-level formulations were measured**, in a focused MSVC
+Release harness, against the same NaN-saturated matrix:
+
+| Formulation | Payload differences | Finite results |
+|---|---|---|
+| `out[j] += a_ik * b_row[j]` (shipped) | 162 / 208 | bit-identical |
+| `out[j] = out[j] + a_ik * b_row[j]` | 162 / 208 | bit-identical |
+| `double acc = out[j]; acc = acc + …; out[j] = acc` | 162 / 208 | bit-identical |
+| named product, then `acc + product` | 162 / 208 | bit-identical |
+| named left/right, `(left) + (right)` | 162 / 208 | bit-identical |
+| shipped form with `#pragma loop(no_vector)` | 162 / 208 | bit-identical |
+| shipped form with `__restrict` on both pointers | 162 / 208 | bit-identical |
+| blocked `4 × 64` stack accumulator tile | 162 / 208 | bit-identical |
+| blocked `4 × 4` stack accumulator tile | 162 / 208 | bit-identical |
+| **`i`–`j`–`k` register accumulator (the generic order)** | **0 / 208** | bit-identical |
+
+Three conclusions follow, and each rules something out:
+
+- **It is not vectorization.** Disabling inner-loop vectorization changes
+  nothing, so no SIMD or auto-vectorization question is involved.
+- **It is not the destination-versus-stack accumulator.** Both blocked
+  variants, whose accumulator is a local array rather than the output
+  buffer, behave identically to the shipped form.
+- **It is the loop order itself.** The only structure that reproduces the
+  reference's payloads is `i`–`j`–`k` — which is precisely the
+  arrangement H2 exists to replace. Payload parity and H2's memory-access
+  improvement are the same decision viewed two ways, so parity is not
+  available at any price short of abandoning the optimization
+  (4.1–4.7× at the profile shape, §16.2.8).
+
+Forcing it was therefore rejected. The alternatives considered and
+declined: reverting the loop order (loses the entire milestone); a
+NaN-detecting fix-up pass (a branch per element in a numerical inner
+loop, for a property no caller can rely on); `#pragma loop(no_vector)`
+(does not even work, and would be a compiler-specific directive); and
+`volatile` or fast-math-adjacent tricks (fragile, and out of scope).
+
+**Measured across builds**: MSVC Release differs on 162 of 208; MSVC
+Debug and Clang 18 `-O0` differ on **0 of 208**. Both outcomes conform —
+part 4 is a licence, not a requirement — and the tests assert nothing in
+either direction, which is why they pass unchanged on all three.
+
+#### What this is *not*
+
+It would be wrong to call the payload difference "not a behavioral
+difference". It is one: the bits of a NaN result can differ between two
+paths that a caller cannot choose between. What is true is narrower and
+is stated above — the difference is confined to the payload bits of a
+value that is already NaN, those bits have never been part of any
+TensorForge contract, and a NaN result means the computation has already
+left the supported numerical domain.
+
+#### Evidence
+
+Parts 1–3 are asserted as raw IEEE-754 bit patterns, not tolerances, at
+three layers:
+
+- `cpp/tests/test_matmul.cpp` drives the two internal kernels over every
+  `(m, n, p)` from a dimension set spanning 1–65 (primes, powers of two,
+  the row-block and column-threshold boundaries and both sides of each,
+  one-element dimensions, rectangular shapes, multiple row groups and a
+  partial final group) plus larger shapes, transposed / narrowed /
+  non-unit-stride left operands, a special-value matrix, and dedicated
+  cases for a NaN in the left operand, a NaN in the right operand,
+  multiple payloads and a negative NaN meeting in one accumulation, a NaN
+  manufactured by `0 * inf` and `inf - inf`, infinities without a NaN,
+  and signed zeros with denormals and large finite magnitudes. It also
+  checks both paths against the independent raw-buffer `tf_matmul`,
+  making the agreement three-way.
+- `tests/test_native_matmul_dispatch.py` does the same through the real
+  production Core, `NativeTensor`, the autograd node, `NativeLinear`, and
+  both optimizers, by giving the *same logical right operand* through a
+  qualifying layout and through one that cannot qualify.
+- The H0 harness's matmul cases gate the two paths bit-for-bit **before**
+  either is timed. Unqualified equality is the right gate there because
+  every harness operand is finite seeded data, so part 2 applies in full.
+
+### 16.2.4 H1 compatibility: the destination is still fully written first
+
+H1's audit table (§16.1.2) listed `matmul` as enabled with the reason
+"accumulates into a **local** register, then assigns once — the
+destination is never an accumulator". **That reason no longer describes
+the optimized path**, and the row is restated here rather than left
+stale:
+
+| Path | Every element written? | Read before first write? | Reason |
+|---|---|---|---|
+| `matmul_generic_strided` | Yes — `dst[i*p + j] = sum` over the full `(m, p)` | No — a local `double sum` | Unchanged from H1 |
+| `matmul_row_sweep` | Yes — the `k == 0` pass assigns every element of every row in the group | No — accumulation only ever touches elements that pass already wrote | The `n >= 1` precondition is what guarantees the assigning pass runs |
+
+So the destination is still legal to allocate uninitialized, for a
+different reason on each path. This is the milestone's "explicitly
+assigning every output element before any destination accumulation"
+design, and it is proved rather than argued:
+
+- **Python** (`tests/test_native_storage_allocation.py`): both paths are
+  run over a poisoned destination, with both patterns (the quiet NaN
+  `0x7FF8DEADBEEFCAFE` and the large negative finite
+  `-1.2345678901234567e300`), across shapes spanning the row-block
+  boundary (partial group, exact group, several groups with a partial
+  tail) and the column threshold on both sides. No poison survives.
+  A second test makes the **stronger** claim: the same product computed
+  over a NaN-poisoned buffer, a finite-poisoned buffer, and an ordinary
+  zeroed buffer agrees **bit for bit**, so no output value depends in any
+  way on prior destination contents.
+- **C++** (`cpp/tests/test_matmul.cpp`): the same three-way comparison
+  directly on the kernel, plus a **negative control** — the same kernel
+  told the destination is one column narrower than it is, which must
+  leave exactly the 4 untouched cells holding poison. That is what makes
+  the passing results mean something.
+
+No poison-control mechanism was added anywhere; the technique is still
+purely test infrastructure wrapped around the allocator (§16.1.3).
+
+### 16.2.5 What H2 added, and what it did not
+
+**Added:**
+
+| Item | Kind |
+|---|---|
+| `cpp/include/tf_matmul_internal.h` | internal header, hidden visibility |
+| `tf::matmul_generic_strided`, `tf::matmul_row_sweep`, `tf::matmul_prefers_row_sweep` | internal C++, not exported |
+| `cpp/tests/test_matmul.cpp` + its CTest target | test scaffolding (CTest count 12 → **13**) |
+| `tests/test_native_matmul_dispatch.py` | tests |
+| two matmul poison tests in `tests/test_native_storage_allocation.py` | tests |
+| the `tensor_core_generic` harness layer and the `dispatch_comparison` payload block | measurement |
+
+**Not added, and deliberately so:** no exported C ABI symbol (the count
+is still **52**); no kernel selector, block-size setter, benchmark hook,
+dispatch tracer, reference-kernel selector, or CPU-feature control; no
+environment variable; no runtime autotuning; no stored machine-specific
+tuning result; no user-selectable kernel mode; no public dispatch
+control; no threading, SIMD, OpenMP, BLAS, memory pool, or scratch
+workspace; no new build option; no materialization of any operand to get
+it onto the fast path; no change to the public shape contract; no
+capability, dtype, device, registry value, checkpoint field, or
+checkpoint version.
+
+`tests/test_native_matmul_dispatch.py` asserts the absence of nine
+plausible dispatch-control symbol names against the **loaded** library
+through the platform loader, and asserts that the three internal
+functions are not exported either — which is precisely why the C++ test
+target compiles `matmul.cpp` in rather than linking the shared library.
+
+### 16.2.6 Why `tf_matmul_tiled` was not adopted
+
+The milestone required inspecting the pre-existing raw tiled kernel
+rather than assuming it. It was, and it is **not** appropriate as
+production code:
+
+| Question | Answer |
+|---|---|
+| Does it assume contiguous inputs? | **Yes.** Plain `const double*` row-major buffers, `a[i*n + k]`, `b[k*p + j]`. It cannot read a stride or an offset, so a transposed or narrowed view would have to be materialized first — which the milestone forbids without measured end-to-end benefit and explicit approval. |
+| Does it assume a zero-initialized output? | It **zeroes its own** destination (`out[i] = 0.0` over the whole span) and then accumulates. So it is safe, but the zeroing is a **full extra write pass** over the output — exactly the cost H1 removed. |
+| Does it preserve accumulation order? | Yes — ascending `k` blocks, ascending `k` inside a block. §3.1/B2 measured it bit-identical to `tf_matmul`. |
+| Rectangular shapes? | Yes, `m`, `n`, `p` independent. |
+| Non-dividing block boundaries? | Yes, min-clamped ends. |
+| Error and ownership model? | **No.** No `TF_GUARD`, no `Storage` handle, no error contract. It is a raw-buffer benchmark kernel. |
+| Verdict | **Benchmark and reference code, not production code.** Retained exactly as it was. |
+
+Nor was it duplicated: the shipped row sweep is structurally a different
+kernel (strided-aware, no destination zeroing, no `j`/`k` tiles), so
+there are not two nearly identical tiled implementations in the tree.
+There is one tiled kernel — the pre-existing benchmark one — and it is
+still measured beside the production path in the harness, now as the
+*measured alternative that was not adopted*.
+
+### 16.2.7 The blocking decision, and the block size and threshold evidence
+
+Candidates were compiled into a throwaway measurement library (outside
+the repository, on no production path) and timed on identical data, with
+**every** variant's output compared bit-for-bit against the current
+production loop before timing. Every variant agreed on every finite result; the payload-only differences discussed in §16.2.3 were identical across all of them.
+
+Two families were evaluated:
+
+- **`i`–`k`–`j` with a stack accumulator tile**, `BI × BJ`, over
+  `BI ∈ {1, 2, 4, 8, 16}` and `BJ ∈ {16, 32, 64, 128, 256}` — 22
+  combinations, the classic cache-blocking shape;
+- **`i`–`k`–`j` row sweeps at full row width** (no `j` blocking),
+  `BI ∈ {1, 2, 3, 4, 8}`.
+
+Shapes: 4³, 8³, 16³, 31³, 32³, 63³, 64³, 127³, 128³, 255³, 256³, 384³,
+tall-skinny `512×64×8`, short-wide `8×64×512`, `4096×8×8`,
+`256×256×{1,4}`, `64×256×2048`, `32×128×4096`, the Linear shapes
+`64×256×512` and `256×256×512`, the MLP shape `64×32×64`, and the
+weight-gradient shapes `a.T @ u` at `256×64×512` and `32×64×64`.
+
+**Blocking lost, at every non-trivial size.** Speedups over the pre-H2
+loop at 384³, best of each family: blocked `BI=16, BJ=64` **3.33×**
+versus row sweep `BI=4` **5.50×**. At 256³: 3.10× versus 4.67×. At
+`64×256×512`: 3.36× versus 5.38×. The reason is visible in the
+structure — a `BJ`-wide tile shortens the inner loop and adds a zero-and-
+store pass per tile, while the full-width sweep keeps one long
+vectorizable inner loop and the destination row hot in L1 for the whole
+`k` range. **So H2 ships the simpler design and records the negative
+blocking result**, exactly as the milestone's fallback clause requires.
+
+**The row block.** Within the row-sweep family, `BI = 1` was consistently
+the slowest at large sizes (4.18×/4.26×/4.78× at 384³ over three runs)
+and `BI ∈ {3, 4, 8}` the fastest. `BI = 4` was chosen: it won or tied
+most often, was **never** the worst, and its L1 working set is
+`(BI + 1) × p` doubles — the smallest of the leading candidates, which is
+what makes it the portable choice rather than the local optimum. `BI = 8`
+was marginally ahead on a few shapes and behind on others; at `p = 1024`
+its working set leaves a 48 KB L1 while `BI = 4`'s does not.
+
+**The column threshold.** Sweeping `p ∈ {1 … 64}` at
+`m ∈ {32, 256} × n ∈ {16, 64, 256}`, the row sweep is a clear **loss**
+below `p = 8` — down to **0.27×** at `256×64×1` and 0.69–0.85× at
+`512×512×4` — and level-to-ahead from `p = 8` up. `MATMUL_MIN_COLUMNS = 8`
+is that crossover. It is a fixed metadata threshold, not a heuristic, and
+both suites test `p = 7`, `p = 8`, and `p = 9` explicitly.
+
+Both constants are compile-time values in a shipped header. There is no
+autotuner and no stored measurement: the same source makes the same
+dispatch decision on every machine, which is what keeps every bit-exact
+resume proof reproducible.
+
+### 16.2.8 Measured results
+
+Same methodology as §6. The **before** column is the real production
+path built from the pre-H2 `matmul.cpp` into a separate library outside
+the repository and loaded through the same Python; the **after** column
+is the shipped one. Medians, two independent runs each, one machine.
+
+The table carries **control rows in bold italics**: cases whose code is
+byte-identical in both builds, because they fall to the generic path in
+each (`p < 8`, or a transposed right operand). Their ratios measure this
+machine's noise floor, and nothing inside that band should be read as an
+effect.
+
+| Case (Core matmul) | Before (µs) | After (µs) | Ratio |
+|---|---|---|---|
+| ***4×4×4 (control, p < 8)*** | 9.30 / 9.20 | 12.80 / 13.10 | *0.71–0.73×* |
+| ***256×256×4 (control)*** | 114.95 / 118.80 | 116.70 / 235.65 | *0.50–0.99×* |
+| ***256×256×1 (control)*** | 31.10 / 34.70 | 34.90 / 34.90 | *0.89–0.99×* |
+| ***128³, transposed rhs (control)*** | 1006 / 751 | 701 / 751 | *1.00–1.44×* |
+| ***384³, transposed rhs (control)*** | 29392 / 25026 | 25014 / 25853 | *0.97–1.18×* |
+| 8×8×8 | 10.00 / 10.20 | 11.90 / 15.70 | 0.65–0.84× |
+| 16³ | 11.20 / 11.10 | 12.60 / 16.50 | 0.67–0.89× |
+| 31³ (prime) | 19.30 / 17.70 | 19.80 / 24.50 | 0.72–0.97× |
+| 32³ | 19.55 / 18.90 | 19.30 / 23.30 | 0.81–1.01× |
+| 63³ | 107.35 / 75.65 | 68.75 / 76.45 | 0.99–1.56× |
+| 64³ | 101.35 / 78.05 | 57.45 / 67.80 | 1.15–1.76× |
+| 127³ (prime) | 768 / 698 | 630 / 561 | 1.22–1.25× |
+| **128³** | 1830 / 1823 | 441 / 409 | **4.15–4.45×** |
+| 255³ | 6952 / 7312 | 5516 / 2662 | 1.26–2.75× |
+| **256³** | 13069 / 12668 | 3440 / 4252 | **2.98–3.80×** |
+| **384³ (profile shape)** | 46154 / 44084 | 9865 / 10824 | **4.07–4.68×** |
+| tall-skinny 512×64×8 | 97.3 / 89.8 | 80.6 / 76.3 | 1.18–1.21× |
+| **short-wide 8×64×512** | 205 / 192 | 48.9 / 48.4 | **3.97–4.20×** |
+| **Linear 64×256×512** | 5675 / 5530 | 1322 / 2250 | **2.46–4.29×** |
+| **Linear 256×256×512** | 23227 / 26182 | 6044 / 5550 | **3.84–4.72×** |
+| MLP 64×32×64 | 74.3 / 50.1 | 27.9 / 53.5 | 0.94–2.67× |
+
+End to end:
+
+| Case | Before (µs) | After (µs) | Ratio |
+|---|---|---|---|
+| **`NativeLinear` forward 64×128→128** | 960 / 955 | 220 / 241 | **3.96–4.36×** |
+| **`NativeLinear` forward 256×512→512** | 78124 / 65806 | 11576 / 11930 | **5.52–6.75×** |
+| **`NativeLinear` backward 64×128→128** | 1253 / 1159 | 651 / 671 | **1.73–1.92×** |
+| **`NativeLinear` backward 256×512→512** | 116429 / 113505 | 46404 / 46030 | **2.47–2.51×** |
+| MLP Adam step 64×32→32 | 2607 / 2288 | 2742 / 3384 | 0.68–0.95× |
+| **MLP Adam step 128×256→256** | 48352 / 50260 | 20309 / 24114 | **2.00–2.38×** |
+
+**Tiny and small shapes: no measurable effect, and the apparent losses
+are not real.** Every row below about 32³ sits inside the control band,
+and the *controls themselves* — where the compiled code is identical —
+range 0.50× to 1.44×. A higher-repetition re-run (600–4000 samples per
+point instead of 100–600) resolves the small shapes to: 8³ 0.86–1.05×,
+8×8×16 1.05–1.44×, 16³ 1.01–1.30×, 32³ 1.08–1.75×, 64³ 1.62–1.97×,
+against controls of 0.96–1.44×. **The honest reading is that below ~32³
+the ~10 µs fixed Python dispatch cost (§3.1/B3) dominates and H2 is
+invisible; the win becomes real and reproducible from 64³ up.**
+
+**The small MLP step shows no measurable change (0.68–0.95×, and
+0.95–0.99× at higher repetitions), and that is expected rather than a
+regression**: its matmuls are `64×32×32`, tens of microseconds inside a
+~2.3 ms step that §3.1/B4 measured to be 83 % optimizer allocations. The
+matmul was not its bottleneck before H2 and is not after. The larger MLP
+step, where the matmuls are `128×256×256`, does move — 2.00–2.38×.
+
+**The backward gains less than the forward, and the reason is in the
+contract, not in the measurement.** `da = upstream @ b.T` feeds the
+kernel a *transposed* right operand, which takes the generic path by
+design; only `db = a.T @ upstream` qualifies. So a Linear backward gets
+roughly one of its two matmuls accelerated, and 1.7–2.5× is what that
+looks like.
+
+**Nothing here is asserted by any test**, and no CI job runs it. §3.0's
+caveat about this machine applies unchanged.
+
+### 16.2.9 Validation
+
+**Windows.** A fresh Release build (Visual Studio 17 2022, MSVC
+19.44.35228.0, CMake 4.4.0) and a fresh Debug build, the Debug library
+written outside the repository so the **active runtime stays the Release
+DLL** (61,440 bytes; the Debug DLL is 178,688 bytes and lives elsewhere).
+Both configurations build with **zero project compiler, linker, and CMake
+diagnostics** and pass **13/13 CTests** (0.36 s and 1.78 s in the final
+runs).
+The full Python suite is **5,232 passed, 0 skipped, 0 failed** (the
+post-H1 baseline of 5,108 plus H2's 124);
+`scripts/smoke_cpp_backend.py` passes; the harness passes all 24
+correctness gates in `--smoke`, `--smoke --json`, and
+`--workload matmul`, and writes no result file; stable `tensorforge`
+imports pull in **no** native or experimental module; and every
+deterministic-training and exact-resume suite passes, including
+`examples/native_dropout_training.py` reproducing its exact stochastic
+resume with live native storage 0 → 0.
+
+**Export inventory.** The built DLL's own export directory lists **52**
+symbols, all `tf_*` — unchanged from H1. `matmul_row_sweep`,
+`matmul_generic_strided`, and `matmul_prefers_row_sweep` do **not**
+appear, and neither does any of the nine dispatch-control names the scope
+test probes for through the platform loader.
+
+**Clang ASan/UBSan** (18.1.3, WSL2 Ubuntu 24.04.4,
+`-DTF_SANITIZE=address,undefined`, fresh out-of-source build, **zero**
+compiler diagnostics). Instrumentation **proved present**: `nm -D` shows
+**22 `__asan*`** and **14 `__ubsan*`** dynamic symbols beside the **52**
+exported `tf_*` symbols and **0** matmul internals; the library refuses
+to load without the sanitizer runtime. Under
+`halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1` and
+`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`: **13/13 sanitized
+CTests** with `detect_leaks=1`; **1,789** sanitized Python tests across
+the H2, H1, harness, and native suites; **450** more across the
+deterministic-training and exact-resume suites; the harness passing all
+24 gates in both modes plus the focused matmul workload; and the G7
+example reproducing its exact resume — with **zero ASan errors and zero
+UBSan runtime errors**.
+
+**LeakSanitizer.** A complete lifecycle — 160 matmul success cycles over
+both paths, 20 interleaved injected-failure and success cycles, 6
+training runs, a focused harness run, and a full smoke harness run —
+returned native live storage **exactly to baseline (0 → 0)** at every
+checkpoint. The remaining process-exit allocations (784,190 bytes in 702
+allocations) contain **no TensorForge frame**: every named frame is
+CPython, libc, NumPy, or the ASan runtime. **No suppression file was
+added.**
+
+### 16.2.10 What H2 leaves for H3
+
+`tf_core_matmul` is now bound by the same fixed per-call Python cost
+everything else is (§3.1/B3), which is precisely why the sub-32³ rows
+above show nothing: a ~10 µs floor sits under a ~10 µs kernel. That is
+H3's subject, and H2 sharpened rather than answered it.
+
+---
+
+## 16.3 Remaining ladder detail
 
 ### H3 — Per-call dispatch cost
 
@@ -1633,8 +2200,8 @@ explicit decision.
 | Daedalus idea | Decision | Reasoning |
 |---|---|---|
 | Per-device operation directory (`src/ops/cpu/*.cpp`: `binary_ops`, `matmul_ops`, `reduce_ops`, `conv2d_ops`, …) | **Adapt** | TensorForge already organizes `cpp/src/` by concern (`elementwise`, `matmul`, `reduction`, `conv2d`, `pooling`, `classification`, `random`, `storage`, `error`) — the same idea without the device axis, which TensorForge does not have. Keep the existing layout; do not add a `cpu/` level for a project with one device. |
-| Naive CPU matmul as the reference (`cpu_matmul<T>`, triple loop, no blocking/SIMD/OpenMP/BLAS) | **Adopt as a reference, reject as the shipped path** | Daedalus keeps its CPU matmul naive and puts its effort into cuBLAS/CUDA. TensorForge has no GPU path to fall back on, and §3.1/B2 measured 3.3× available with bit-identical results. Keep a naive kernel as the retained reference (§8.3); do not keep it as the only path. |
-| `WITH_AVX2` CMake option (`/arch:AVX2` on MSVC, `-mavx2` elsewhere), default OFF | **Reject for now; adopt the *shape* if §11 is ever met** | The default-off, single-option, no-intrinsics-in-source form is exactly right and is the shape TensorForge would use. But adopting it now would be optimizing the second-order term before the first (§11), and TensorForge's evidence says the win is in loop order. Revisit only under §11. |
+| Naive CPU matmul as the reference (`cpu_matmul<T>`, triple loop, no blocking/SIMD/OpenMP/BLAS) | **Adopt as a reference, reject as the shipped path** | Daedalus keeps its CPU matmul naive and puts its effort into cuBLAS/CUDA. TensorForge has no GPU path to fall back on, and §3.1/B2 measured 3.3× available with bit-identical results. Keep a naive kernel as the retained reference (§8.3); do not keep it as the only path. **Done at H2**: `tf::matmul_generic_strided` is the naive kernel, retained verbatim, shipped, and reachable through ordinary dispatch; `tf::matmul_row_sweep` is the second path beside it. |
+| `WITH_AVX2` CMake option (`/arch:AVX2` on MSVC, `-mavx2` elsewhere), default OFF | **Reject for now; adopt the *shape* if §11 is ever met** | The default-off, single-option, no-intrinsics-in-source form is exactly right and is the shape TensorForge would use. But adopting it now would be optimizing the second-order term before the first (§11), and TensorForge's evidence said the win was in loop order — which **H2 then confirmed by measurement**, recovering 4.1–4.7× at the profile shape with no intrinsics and no build-system change. Revisit only under §11. |
 | Fused operations (`fusion_ops.cpp`) | **Reject for Phase H** | Fusion is a semantic change: it creates new operations with new backward contracts, new saved state, and new versioning obligations. TensorForge's fused kernels (softmax, log-softmax, cross-entropy, dropout) each got their own milestone with its own contract for exactly that reason. Fusion is a future *capability* phase, not a performance milestone. |
 | Memory pooling (documented; "CUDA memory pooling with block splitting, coalescing, stream-aware behavior" listed as future work) | **Reject for now; criteria recorded** | Daedalus's pooling motivation is CUDA allocation latency, which TensorForge does not have. §3.1/B1 shows TensorForge's allocation cost is dominated by the *eager zero-fill*, not by the allocator — a much cheaper fix with no ownership risk. §10 records what would have to be true first. |
 | Scratch workspaces | **Reject for now; criteria recorded** | Daedalus shows no scratch-workspace implementation to adapt, and TensorForge's evidence does not yet identify one. §10 records the criteria. |

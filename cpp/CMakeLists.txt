@@ -382,4 +382,31 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME storage_allocation COMMAND test_storage_allocation)
+
+  # Matmul loop order and dispatch (Phase H, H2): links the matmul source
+  # directly, plus storage.cpp (the exported-wrapper check drives real
+  # tf::Storage handles) and error.cpp (matmul.cpp carries the guarded
+  # tf_core_matmul export, which references the thread-local error slot).
+  # Like the D8/D9 pooling targets it drives *both* layers — the internal
+  # tf::matmul_generic_strided / tf::matmul_row_sweep kernels and the
+  # tf::matmul_prefers_row_sweep predicate, which the shared library does
+  # not export and which are reachable only by compiling the source in.
+  # That is what proves which path a layout takes without adding any
+  # "which kernel ran" control to the shipped ABI.
+  add_executable(test_matmul
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_matmul PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_matmul PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_matmul PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_matmul PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME matmul COMMAND test_matmul)
 endif()
