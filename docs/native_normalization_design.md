@@ -1464,6 +1464,44 @@ F2 added no normalization *operation*, kernel, ABI symbol, or
     *derived* from `_CHANNELS_LAST` rather than configured, so the two
     halves can never drift apart. Channels-last is an internal step of
     one method, never a public layout mode.
+  - **The borrowed operand's owner (corrected during Phase H, at H8's
+    acceptance).** Moving the activation instead of the parameter is
+    right, and it carried one ownership consequence F4 did not follow
+    through: the transposed operand `multiply` receives **borrows** the
+    normalized activation's storage and owns nothing. Whether the graph
+    kept that storage alive depended on where the gradients entered.
+    With the input tracking gradients the transpose is a graph *node*
+    whose parent **is** the activation, so the graph holds the owner;
+    with nothing tracking gradients no graph is built and nothing
+    rereads it. But `gamma`/`beta` can introduce gradients the
+    activation does not carry — a frozen or non-tracking input with a
+    trainable affine, the ordinary fine-tuning shape. Then the transpose
+    is a plain borrowing **leaf**: the graph reached the view (as
+    `multiply`'s parent, and `multiply`'s backward rereads that operand
+    to build `gamma`'s gradient) and never reached its owner, which was
+    an ordinary local temporary released when the forward returned.
+    Backward then read freed storage and raised the bare
+    `RuntimeError: this NativeStorage has been closed` — the same
+    confusing failure §7.1 names, arrived at from the other direction.
+    The fix is stated where the ownership actually is, not in a tracking
+    list: the borrowed operand's owner is graph state, so **the graph
+    owns it**, adopted as a single `graph_resources` entry on the output
+    node through the same D9 contract that already carries the
+    evaluation snapshots, MaxPool2d's winners, and Phase E's saved
+    probabilities. It is adopted **only** when the transposed operand is
+    a borrowing leaf a backward will reread — never when the graph
+    already holds the owner, and never when nothing rereads it (a
+    trainable `beta` beside a frozen `gamma` adopts nothing, because
+    `add`'s backward reads no operand value) — so the
+    input-requires-grad path, the affine-frozen path, and the no-graph
+    path keep their exact previous topology. `NativeBatchNorm1d` needs
+    none of this and gets none: with the channel axis already trailing,
+    `gamma` multiplies the activation **directly**, so the graph holds
+    the owner as a parent in every configuration. The cost is one
+    activation-sized native storage held from forward until the graph is
+    released, in that one configuration only; allocation counts, peak
+    live storages during the forward, and peak transient bytes are all
+    unchanged. See `tests/test_native_batchnorm_affine_ownership.py`.
   - **`_affine` is the only shared method F4 added**, and it keeps the
     `(N, C)` path byte-identical to F3's (`_CHANNELS_LAST is None` means
     the channel axis is already trailing, so the parameters apply

@@ -920,6 +920,123 @@ explicit layer at a time:
   dtype, device, registry value, checkpoint field, or checkpoint version
   moved, and no C ABI symbol was added.
 
+- **Milestone H8 — native elementwise traversal and composed allocation
+  efficiency — is complete**, the fourth Phase-H milestone to change C++
+  and, like H2, H5, and H6, **not the ABI**: still exactly **52** exported
+  `tf_*` symbols. It entered with **two** candidate tracks and an explicit
+  instruction not to force both into production; the measurement kept one
+  as a large result, kept a narrow piece of the other, and rejected the
+  rest. **Track A (elementwise traversal) is the milestone; Track B
+  (composed normalization allocation) is a memory result, reported as
+  timing-neutral.**
+
+  The cost was **decomposed rather than assumed**. The odometer costs
+  **1.60x-6.42x** the flat loop on identical contiguous data; **all
+  broadcasting is on the odometer**, because no broadcast fast path
+  exists; and a guarded standalone split the odometer's cost four ways at
+  `(256, 256)` contiguous `add` — shipped **123.5 us**, templating alone
+  **81.3 us (1.52x)**, collapsing alone **63.6 us (1.94x)**, **both
+  together 11.5 us (10.7x)**. Neither change is worth much alone; only
+  their combination lets the compiler emit a vector loop. The same run
+  showed the **existing flat contiguous kernel was itself hobbled** by its
+  indirect call, at 21.0 us against 11.7 us.
+
+  **The architecture** is the shape H2, H5, and H6 each proved: one hidden
+  metadata builder, inside the existing export, no new symbol, the
+  pre-milestone traversal retained. `tf::build_unary_plan` /
+  `tf::build_binary_plan` (in `cpp/include/tf_elementwise_internal.h`)
+  produce an **operation-local normalized descriptor** — stack-built, used
+  by one call, dropped, with nothing cached, interned, or shared — that
+  applies exactly two sequence-preserving transformations: **unit axes are
+  dropped**, and **adjacent axes are merged** when
+  `stride[outer] == stride[inner] * extent(inner)` holds for *every*
+  operand at once. Axes are never reordered, split, or transposed; the
+  bound is a fixed **4 axes**; **this is not a layout compiler**. The
+  builders are total, pure, allocation-free, and a function of layout
+  metadata alone, and a rejection is a **fallback, never an error**;
+  `core_unary` and `core_binary` are retained **verbatim** as the shipped
+  generic reference paths. **`exp` and `log` are deliberately excluded** —
+  IEEE-754 does not specify them, so a vectorizing toolchain could
+  legitimately return different bits, and the templated traversal measured
+  **1.05x** on both, inside the noise.
+
+  **The numerical contract is H8's own, in four parts.** Every result in
+  which at most one operand is a NaN is **bit-identical** to the pre-H8
+  kernel's (**zero differing results** across 15 op x layout
+  combinations); NaN positions are identical and every NaN the
+  *arithmetic* produces is quiet, while `relu_backward` and the identity
+  gather **select** an operand and so legitimately preserve a signaling
+  NaN, identically on both traversals; **subtraction is bit-identical
+  everywhere**, two-NaN pairs included, because it is not commutative; and
+  for **addition and multiplication with two NaN operands** the surviving
+  payload is outside the contract. **That last part predates H8 and H8
+  narrows it** — the pre-H8 library's own flat kernel and its own odometer
+  already disagreed on **30 of 196** such pairs, while post-H8 only a
+  transposed operand differs, on **5 of 196**. It is a *different*
+  qualification from H2's and H6's, which concerned NaNs meeting inside an
+  accumulation. **H1's contract holds unchanged**, proved by poison over
+  six layouts with two patterns, guard elements, and a negative control.
+
+  **Track B** shipped the one composed-allocation change the evidence
+  supported: `_NativeBatchNorm` builds its `(1 - momentum, momentum)` pair
+  **once per forward** instead of once per buffer — the H4
+  per-step-constants shape, never stored on the module — and each blend
+  releases its temporaries at last use. Against a **retained pre-H8
+  composition executed natively**, running statistics bit-identical first,
+  a `NativeBatchNorm1d` training forward goes **25 -> 23** allocations with
+  **peak live storages 25 -> 17** and constant fills **5 -> 3**, and
+  `NativeBatchNorm2d` **30 -> 28**, **30 -> 22**, and **5 -> 3**. Its
+  **timing effect is neutral**, and it is reported as a memory result
+  rather than a speed one. Four alternatives were rejected with reasons,
+  including adopting the blend result into the running-state transaction —
+  which would have moved numerical work inside the staging phase and
+  changed a failure ordering F5 and F8 prove by test.
+
+  Measured against a pre-H8 library on identical `ctypes` calls with every
+  case bit-identical before timing, control band **0.97x-1.08x**:
+  row-broadcast `multiply` **10.58x**, strided same-shape `add` **9.67x**,
+  NCHW-statistic `multiply` **7.15x**, column broadcast **6.70x**, scalar
+  broadcast **6.31x**, transposed `add` 2.63x, strided `relu` 2.51x,
+  `sqrt` 2.03x, `relu_backward` 1.86x, contiguous `add`/`multiply` 1.76x.
+  End to end, over 11 alternating subprocess rounds with all 31 cases
+  bit-identical first: **`NativeAdam.step()` 2.01x**, **`NativeBatchNorm1d`
+  eval forward 1.40x**, **`NativeBatchNorm2d` eval forward 1.36x**,
+  **`NativeBatchNorm2d` training forward 1.33x**, **`NativeLayerNorm`
+  forward 1.30x**, **the large MLP training step 1.19x**, and **the
+  normalized training step 1.08x**. **This is the milestone that finally
+  moved the normalization modules** — which H6 measured as almost entirely
+  neutral, and which is precisely why H0's composed-module H7 was dropped
+  and this one entered.
+
+  Reported just as honestly: **small normalization shapes are neutral**
+  (`NativeBatchNorm1d` training at `(32, 16)` **0.98x**), **the CNN step is
+  neutral (0.99x)** because its time is in the convolution kernels H8 did
+  not touch, the `exp`/`log` controls read 0.97x-1.07x exactly as the
+  deliberate exclusion predicts, and one control is **published rather
+  than buried** — 256-cubed `matmul` reads **0.93x-0.96x**, isolated by a
+  25-round run to that one size while 64, 128, and 384 cubed are neutral
+  and an identical-code twin reads 0.969x on the same case. `matmul.cpp`
+  is byte-identical source; `elementwise.cpp`'s object code grew 127 KB to
+  188 KB, moving every function's placement — the same
+  whole-translation-unit code-layout effect H6 documented, and the
+  machine-specific tuning the design rejects chasing.
+
+  **Memory: Track A moved none, and the odometer's heap-allocated counter
+  is now removed on every plannable layout** — a strided elementwise call
+  makes **one** allocation where it previously made two, which re-anchored
+  one existing fault-injection test with its assertion unchanged. The
+  harness gained four cases, 34 to **38**, and the native CTests 15 to
+  **16**. Validation added its own **sanitizer negative control**: under
+  Clang ASan, test-only code handing `tf_core_add` two-entry metadata with
+  `ndim = 3` produces a `heap-buffer-overflow`, `READ of size 8`, in
+  `tf::build_binary_plan` — H8's own new code path — which is what makes
+  the **zero diagnostics across 2,726 sanitized tests** a real absence
+  rather than a blind detector. **No exported C ABI symbol, no new
+  translation unit, and no public control of any kind**, and no SIMD,
+  threading, OpenMP, BLAS, memory pool, scratch workspace, general fusion,
+  fast-math, or `restrict`. No public API, capability, dtype, device,
+  registry value, checkpoint field, or checkpoint version moved.
+
 The execution path for a native training step is:
 
 ```

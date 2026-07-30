@@ -11,9 +11,19 @@
 // (Python) owns every Storage handle and the fresh output; these kernels
 // only compute.
 
+// Phase H, milestone H8 gave every export below whose per-element function
+// IEEE-754 actually specifies a second **traversal**: the operation-local
+// collapsed plan in tf_elementwise_internal.h, walked by a templated loop
+// with no odometer carry and no indirect call. The odometers in this file
+// are **retained verbatim as the shipped generic reference path** — they
+// remain the only traversal that can address an arbitrary layout, they run
+// whenever a plan is rejected, and ``exp``/``log`` still use them
+// exclusively. A rejected plan is a fallback, never an error.
+
 #include <cmath>
 
 #include "tf_copy_internal.h"
+#include "tf_elementwise_internal.h"
 #include "tf_internal.h"
 
 using tf::Storage;
@@ -140,21 +150,15 @@ void core_binary(
     }
 }
 
-// Contiguous fast path for a binary op: when both logical views are
-// row-major contiguous, the odometer source sequence degenerates to a
-// flat run, so an index-free pointer loop reads the same elements in the
-// same order — bit-for-bit identical, no counter allocation.
-void core_binary_contiguous(
-    const void* a_handle, const void* b_handle, void* dst_handle,
-    int64_t numel, int64_t a_offset, int64_t b_offset, BinaryOp op
-) {
-    const double* a = as_storage(a_handle)->data + a_offset;
-    const double* b = as_storage(b_handle)->data + b_offset;
-    double* dst = as_storage(dst_handle)->data;
-    for (int64_t i = 0; i < numel; ++i) {
-        dst[i] = op(a[i], b[i]);
-    }
-}
+// (The pre-H8 flat binary loop that used to live here — the same
+// ``dst[i] = op(a[i], b[i])`` walk behind a function pointer — is now
+// ``tf::binary_row<Op>`` with both strides 1, in
+// tf_elementwise_internal.h. It is the identical loop with the operation
+// as a compile-time constant instead of an indirect call, so it reads the
+// same elements in the same order and writes the same bits; nothing was
+// kept here as a second copy that could drift. The *generic* pre-H8
+// reference path, ``core_binary`` above, is retained verbatim and is what
+// every rejected plan still falls back to.)
 
 // -- trust-boundary validation for the guarded unary exports ----------------
 //
@@ -294,7 +298,184 @@ const char* unary_contiguous_error(
     return check_destination(dst_handle, numel);
 }
 
+// -- Phase H, milestone H8: the collapsed-plan traversal --------------------
+//
+// Two helpers keep every dispatch site below to one shape: resolve the
+// handles, build the plan, and either walk it with the templated traversal
+// or hand the call to the retained odometer. The plan is a stack object of
+// this call and nothing outlives the helper.
+
+// Checked signed multiply. Nothing above this file has proved that an
+// arbitrary ctypes caller's strides and extents multiply without wrapping —
+// the older binary exports validate nothing at all — and signed overflow is
+// undefined behavior, so every product the collapse needs is guarded and an
+// unprovable one simply declines the plan.
+bool plan_checked_mul(int64_t x, int64_t y, int64_t& out) {
+    if (x == 0 || y == 0) {
+        out = 0;
+        return true;
+    }
+    if (x > 0) {
+        if (y > 0) {
+            if (x > INT64_MAX / y) return false;
+        } else if (y < INT64_MIN / x) {
+            return false;
+        }
+    } else if (y > 0) {
+        if (x < INT64_MIN / y) return false;
+    } else if (x < INT64_MAX / y) {
+        return false;
+    }
+    out = x * y;
+    return true;
+}
+
+template <class Op>
+void unary_dispatch(
+    const void* src_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim, UnaryOp fallback
+) {
+    tf::ElementwiseUnaryPlan plan;
+    if (tf::build_unary_plan(shape, strides, ndim, plan)) {
+        tf::unary_plan_walk<Op>(as_storage(src_handle)->data,
+                                as_storage(dst_handle)->data, plan, offset);
+        return;
+    }
+    core_unary(src_handle, dst_handle, shape, strides, offset, ndim, fallback);
+}
+
+template <class Op>
+void binary_dispatch(
+    const void* a_handle, const void* b_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
+    int64_t a_offset, int64_t b_offset, int64_t ndim, BinaryOp fallback
+) {
+    tf::ElementwiseBinaryPlan plan;
+    if (tf::build_binary_plan(shape, a_strides, b_strides, ndim, plan)) {
+        tf::binary_plan_walk<Op>(as_storage(a_handle)->data,
+                                 as_storage(b_handle)->data,
+                                 as_storage(dst_handle)->data, plan,
+                                 a_offset, b_offset);
+        return;
+    }
+    core_binary(a_handle, b_handle, dst_handle, shape, a_strides, b_strides,
+                a_offset, b_offset, ndim, fallback);
+}
+
+// The contiguous exports already state "one flat run of ``numel`` elements
+// from ``offset``", which is a rank-1 plan with stride 1 — so they need no
+// plan at all, only the templated row.
+template <class Op>
+void unary_contiguous_dispatch(
+    const void* src_handle, void* dst_handle, int64_t numel, int64_t offset
+) {
+    tf::unary_row<Op>(as_storage(src_handle)->data + offset,
+                      as_storage(dst_handle)->data, numel, 1);
+}
+
+template <class Op>
+void binary_contiguous_dispatch(
+    const void* a_handle, const void* b_handle, void* dst_handle,
+    int64_t numel, int64_t a_offset, int64_t b_offset
+) {
+    tf::binary_row<Op>(as_storage(a_handle)->data + a_offset,
+                       as_storage(b_handle)->data + b_offset,
+                       as_storage(dst_handle)->data, numel, 1, 1);
+}
+
 }  // namespace
+
+// The plan builders. Hidden-visibility C++ in ``namespace tf``; see
+// cpp/include/tf_elementwise_internal.h for the full contract.
+namespace tf {
+
+bool build_unary_plan(const int64_t* shape, const int64_t* strides,
+                      int64_t ndim, ElementwiseUnaryPlan& plan) noexcept {
+    if (ndim <= 0) {
+        return false;
+    }
+    int64_t n = 0;
+    int64_t count = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        if (shape[d] < 1) {
+            return false;
+        }
+        // The logical element count must be representable. The retained
+        // odometer multiplies the extents unchecked, so metadata this
+        // rejects is metadata neither traversal could honor — declining it
+        // here simply leaves such a call behaving exactly as it does today.
+        if (!plan_checked_mul(count, shape[d], count)) {
+            return false;
+        }
+        if (shape[d] == 1) {
+            // Visited once, contributing nothing to any address.
+            continue;
+        }
+        int64_t promoted, merged;
+        if (n > 0 && plan_checked_mul(strides[d], shape[d], promoted)
+                && plan.stride[n - 1] == promoted
+                && plan_checked_mul(plan.shape[n - 1], shape[d], merged)) {
+            plan.shape[n - 1] = merged;
+            plan.stride[n - 1] = strides[d];
+            continue;
+        }
+        if (n == ELEMENTWISE_PLAN_AXES) {
+            return false;
+        }
+        plan.shape[n] = shape[d];
+        plan.stride[n] = strides[d];
+        ++n;
+    }
+    plan.ndim = n;
+    return true;
+}
+
+bool build_binary_plan(const int64_t* shape, const int64_t* a_strides,
+                       const int64_t* b_strides, int64_t ndim,
+                       ElementwiseBinaryPlan& plan) noexcept {
+    if (ndim <= 0) {
+        return false;
+    }
+    int64_t n = 0;
+    int64_t count = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        if (shape[d] < 1) {
+            return false;
+        }
+        if (!plan_checked_mul(count, shape[d], count)) {
+            return false;
+        }
+        if (shape[d] == 1) {
+            continue;
+        }
+        int64_t a_promoted, b_promoted, merged;
+        // A merge must be legal for *both* operands at once: one step of the
+        // outer axis has to be exactly ``shape[d]`` steps of this axis in
+        // each of them, or the merged axis would visit different addresses.
+        if (n > 0 && plan_checked_mul(a_strides[d], shape[d], a_promoted)
+                && plan_checked_mul(b_strides[d], shape[d], b_promoted)
+                && plan.a_stride[n - 1] == a_promoted
+                && plan.b_stride[n - 1] == b_promoted
+                && plan_checked_mul(plan.shape[n - 1], shape[d], merged)) {
+            plan.shape[n - 1] = merged;
+            plan.a_stride[n - 1] = a_strides[d];
+            plan.b_stride[n - 1] = b_strides[d];
+            continue;
+        }
+        if (n == ELEMENTWISE_PLAN_AXES) {
+            return false;
+        }
+        plan.shape[n] = shape[d];
+        plan.a_stride[n] = a_strides[d];
+        plan.b_stride[n] = b_strides[d];
+        ++n;
+    }
+    plan.ndim = n;
+    return true;
+}
+
+}  // namespace tf
 
 // -- ReLU over tensor cores --------------------------------------------------
 
@@ -304,8 +485,8 @@ TF_EXPORT void tf_core_relu(
     int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    core_unary(src, dst, shape, strides, offset, ndim,
-               [](double x) { return x > 0.0 ? x : 0.0; });
+    unary_dispatch<tf::ReluOp>(src, dst, shape, strides, offset, ndim,
+                               [](double x) { return x > 0.0 ? x : 0.0; });
     TF_GUARD_END_VOID()
 }
 
@@ -313,8 +494,7 @@ TF_EXPORT void tf_core_relu_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
-    core_unary_contiguous(src, dst, numel, offset,
-                          [](double x) { return x > 0.0 ? x : 0.0; });
+    unary_contiguous_dispatch<tf::ReluOp>(src, dst, numel, offset);
     TF_GUARD_END_VOID()
 }
 
@@ -325,7 +505,7 @@ TF_EXPORT void tf_core_sqrt(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    core_unary(src, dst, shape, strides, offset, ndim, op_sqrt);
+    unary_dispatch<tf::SqrtOp>(src, dst, shape, strides, offset, ndim, op_sqrt);
     TF_GUARD_END_VOID()
 }
 
@@ -333,7 +513,7 @@ TF_EXPORT void tf_core_sqrt_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
-    core_unary_contiguous(src, dst, numel, offset, op_sqrt);
+    unary_contiguous_dispatch<tf::SqrtOp>(src, dst, numel, offset);
     TF_GUARD_END_VOID()
 }
 
@@ -342,7 +522,8 @@ TF_EXPORT void tf_core_reciprocal(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    core_unary(src, dst, shape, strides, offset, ndim, op_reciprocal);
+    unary_dispatch<tf::ReciprocalOp>(src, dst, shape, strides, offset, ndim,
+                                     op_reciprocal);
     TF_GUARD_END_VOID()
 }
 
@@ -350,7 +531,7 @@ TF_EXPORT void tf_core_reciprocal_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
-    core_unary_contiguous(src, dst, numel, offset, op_reciprocal);
+    unary_contiguous_dispatch<tf::ReciprocalOp>(src, dst, numel, offset);
     TF_GUARD_END_VOID()
 }
 
@@ -430,15 +611,25 @@ TF_EXPORT void tf_core_contiguous_copy(
     // they are bit-identical by construction — the identity map performs
     // no arithmetic, so no signed zero can be normalized and no NaN can
     // be quieted or have its payload chosen on either path.
+    //
+    // H8 keeps both of H5's tiers and adds a middle one. The row-major tier
+    // still runs the flat loop, now with the identity as a compile-time
+    // constant of the loop body rather than an indirect call; a source H5's
+    // predicate rejects gets the collapsed plan; and a plan the builder
+    // rejects still gets the odometer, which remains the only traversal that
+    // can address an arbitrary layout. The bit-identity argument is
+    // unchanged and covers all three: the identity map performs no
+    // arithmetic at all.
     if (tf::copy_prefers_contiguous(shape, strides, ndim)) {
         int64_t numel = 1;
         for (int64_t d = 0; d < ndim; ++d) {
             numel *= shape[d];
         }
-        core_unary_contiguous(src, dst, numel, offset, op_identity);
+        unary_contiguous_dispatch<tf::IdentityOp>(src, dst, numel, offset);
         return;
     }
-    core_unary(src, dst, shape, strides, offset, ndim, op_identity);
+    unary_dispatch<tf::IdentityOp>(src, dst, shape, strides, offset, ndim,
+                                   op_identity);
     TF_GUARD_END_VOID()
 }
 
@@ -521,8 +712,8 @@ TF_EXPORT void tf_core_add(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    core_binary(a, b, dst, shape, a_strides, b_strides,
-                a_offset, b_offset, ndim, op_add);
+    binary_dispatch<tf::AddOp>(a, b, dst, shape, a_strides, b_strides,
+                               a_offset, b_offset, ndim, op_add);
     TF_GUARD_END_VOID()
 }
 
@@ -532,8 +723,8 @@ TF_EXPORT void tf_core_subtract(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    core_binary(a, b, dst, shape, a_strides, b_strides,
-                a_offset, b_offset, ndim, op_subtract);
+    binary_dispatch<tf::SubtractOp>(a, b, dst, shape, a_strides, b_strides,
+                                    a_offset, b_offset, ndim, op_subtract);
     TF_GUARD_END_VOID()
 }
 
@@ -543,8 +734,8 @@ TF_EXPORT void tf_core_multiply(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    core_binary(a, b, dst, shape, a_strides, b_strides,
-                a_offset, b_offset, ndim, op_multiply);
+    binary_dispatch<tf::MultiplyOp>(a, b, dst, shape, a_strides, b_strides,
+                                    a_offset, b_offset, ndim, op_multiply);
     TF_GUARD_END_VOID()
 }
 
@@ -559,8 +750,9 @@ TF_EXPORT void tf_core_relu_backward(
     int64_t x_offset, int64_t u_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    core_binary(x, upstream, dst, shape, x_strides, u_strides,
-                x_offset, u_offset, ndim, op_relu_backward);
+    binary_dispatch<tf::ReluBackwardOp>(x, upstream, dst, shape, x_strides,
+                                        u_strides, x_offset, u_offset, ndim,
+                                        op_relu_backward);
     TF_GUARD_END_VOID()
 }
 
@@ -569,7 +761,7 @@ TF_EXPORT void tf_core_add_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
-    core_binary_contiguous(a, b, dst, numel, a_offset, b_offset, op_add);
+    binary_contiguous_dispatch<tf::AddOp>(a, b, dst, numel, a_offset, b_offset);
     TF_GUARD_END_VOID()
 }
 
@@ -578,7 +770,8 @@ TF_EXPORT void tf_core_subtract_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
-    core_binary_contiguous(a, b, dst, numel, a_offset, b_offset, op_subtract);
+    binary_contiguous_dispatch<tf::SubtractOp>(a, b, dst, numel, a_offset,
+                                               b_offset);
     TF_GUARD_END_VOID()
 }
 
@@ -587,7 +780,8 @@ TF_EXPORT void tf_core_multiply_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
-    core_binary_contiguous(a, b, dst, numel, a_offset, b_offset, op_multiply);
+    binary_contiguous_dispatch<tf::MultiplyOp>(a, b, dst, numel, a_offset,
+                                               b_offset);
     TF_GUARD_END_VOID()
 }
 

@@ -71,6 +71,19 @@ EXPECTED_CASES = (
     # an honest NumPy equivalent, so both publish a ratio.
     "elementwise_broadcast_scalar",
     "elementwise_broadcast_row",
+    # Phase H, milestone H8. The elementwise kernels now ship a collapsed
+    # operation-local traversal behind their unchanged exports, and the
+    # *broadcast shape* decides how far it collapses, so the shapes are
+    # reported separately rather than averaged: a stretched leading axis
+    # (row), a stretched trailing axis (column), and an NCHW statistic
+    # whose stretched axis sits in the middle so neither side folds into
+    # it. The unary pair is here for a different gap — every other
+    # elementwise case is binary, so the one-source traversal was only
+    # ever visible averaged into a two-operand measurement.
+    "elementwise_broadcast_column",
+    "elementwise_broadcast_channel_4d",
+    "elementwise_unary_contiguous",
+    "elementwise_unary_transposed",
     "reduction_contiguous",
     "reduction_transposed_view",
     # Phase H, milestone H6. The reduction kernel ships two traversals
@@ -1302,8 +1315,10 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     internal-contract CTest; H2 added one internal header plus one CTest;
     H5 added one internal header plus one CTest for the copy traversal
     predicate; H6 added one internal header plus one CTest for the
-    reduction traversal predicate — all of which are hidden-visibility C++
-    and test scaffolding, none of which is an ABI addition. The
+    reduction traversal predicate; H8 added one internal header plus one
+    CTest for the elementwise traversal plan — all of which are
+    hidden-visibility C++ and test scaffolding, none of which is an ABI
+    addition. The
     exported-symbol count, which is the thing that actually matters, is
     asserted against the built image in
     tests/test_native_storage_allocation.py,
@@ -1319,20 +1334,22 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     headers = sorted(p.name for p in (REPO_ROOT / "cpp" / "include").glob("*.h"))
     assert headers == [
         "tf_classification_internal.h", "tf_conv2d_internal.h",
-        "tf_copy_internal.h", "tf_internal.h", "tf_matmul_internal.h",
-        "tf_pooling_internal.h", "tf_random_internal.h",
-        "tf_reduction_internal.h",
+        "tf_copy_internal.h", "tf_elementwise_internal.h", "tf_internal.h",
+        "tf_matmul_internal.h", "tf_pooling_internal.h",
+        "tf_random_internal.h", "tf_reduction_internal.h",
     ]
     ctests = sorted(p.name for p in (REPO_ROOT / "cpp" / "tests").glob("*.cpp"))
     # H0 left 11. H1 added the storage-creation contract test; H2 added
     # the matmul path/dispatch test; H5 added the copy path/dispatch
-    # test; H6 added the reduction path/dispatch test. None of the four is
-    # a new numerical kernel.
-    assert len(ctests) == 15
+    # test; H6 added the reduction path/dispatch test; H8 added the
+    # elementwise plan/traversal test. None of the five is a new numerical
+    # kernel.
+    assert len(ctests) == 16
     assert "test_storage_allocation.cpp" in ctests
     assert "test_matmul.cpp" in ctests
     assert "test_contiguous_copy.cpp" in ctests
     assert "test_sum_reduction.cpp" in ctests
+    assert "test_elementwise_traversal.cpp" in ctests
     assert cpp._CHECKED_KERNELS[-1] == "tf_core_dropout_forward"
     # H1 added exactly one checked ABI symbol, and it is an allocator
     # rather than a kernel: it takes the identical errcheck hook as the

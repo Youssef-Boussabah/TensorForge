@@ -66,15 +66,45 @@ def test_alloc_failure_message_has_context():
 
 @needs_fault_injection
 def test_alloc_failure_during_walker_counter():
-    # A strided (non-contiguous) op takes the odometer kernel, which
-    # allocates a counter *after* the output storage. Arm the 2nd
-    # allocation so the output succeeds and the counter alloc fails.
-    base = cpp.NativeTensorCore.from_array(np.arange(6.0).reshape(2, 3))
-    strided = base.T  # non-contiguous -> odometer path
+    # The odometer kernel allocates a counter *after* the output storage.
+    # Arm the 2nd allocation so the output succeeds and the counter alloc
+    # fails.
+    #
+    # Phase H, milestone H8 gave the elementwise kernels a second traversal
+    # that walks a collapsed operation-local plan instead, with no counter
+    # and therefore no second allocation — so this test is anchored to a
+    # layout the plan builder **rejects** and the odometer still owns: a
+    # rank-5 fully reversed transpose, whose axes cannot be merged and whose
+    # rank exceeds the plan's bound. The assertion is exactly what it was;
+    # only the operand is chosen to still reach the counter.
+    # ``test_the_planned_traversal_allocates_no_counter`` below is the other
+    # half, proving the plan path really does skip the allocation.
+    base = cpp.NativeTensorCore.zeros((2, 2, 2, 2, 2))
+    strided = base.transpose((4, 3, 2, 1, 0))  # plan rejected -> odometer
     with pytest.raises(MemoryError):
         cpp._arm_alloc_failure(2)
         strided.relu()
     base.close()
+
+
+@needs_fault_injection
+def test_the_planned_traversal_allocates_no_counter():
+    """The H8 counterpart: a strided view the plan *accepts* makes exactly
+    one allocation (its output), so arming the second one leaves the call
+    to succeed. Pre-H8 this raised MemoryError."""
+    base = cpp.NativeTensorCore.from_array(np.arange(6.0).reshape(2, 3))
+    strided = base.T  # non-contiguous, but a rank-2 plan the builder takes
+    cpp._arm_alloc_failure(2)
+    try:
+        result = strided.relu()
+    finally:
+        cpp._arm_alloc_failure(0)  # disarm before anything else allocates
+    try:
+        assert np.array_equal(result.to_numpy(),
+                              np.arange(6.0).reshape(2, 3).T)
+    finally:
+        result.close()
+        base.close()
 
 
 @needs_fault_injection

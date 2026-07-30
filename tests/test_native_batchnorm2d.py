@@ -244,7 +244,7 @@ def _close_all(module):
 # Everything both public shapes must inherit *by function identity*.
 _SHARED_METHODS = (
     "forward", "_training_forward", "_eval_forward", "_mean_over",
-    "_inverse_std", "_snapshot", "_blend", "_affine",
+    "_inverse_std", "_snapshot", "_blend", "_momentum_coefficients", "_affine",
     "_commit_running_state", "_validate_forward", "_registered_running",
     "__init__", "__repr__",
 )

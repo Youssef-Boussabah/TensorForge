@@ -911,22 +911,37 @@ def _build_elementwise_broadcast(config, spec):
     (Phase H, milestone H7).
 
     ``spec["operand"]`` selects the right operand's shape: ``"scalar"``
-    gives a rank-0 core (the shape every optimizer coefficient has) and
-    ``"row"`` a ``(1, n)`` core (the shape every normalization statistic
-    has). Both take the broadcasting path, where all three layout
+    gives a rank-0 core (the shape every optimizer coefficient has),
+    ``"row"`` a ``(1, n)`` core (the shape every ``(N, C)`` normalization
+    statistic has), ``"column"`` an ``(m, 1)`` core (the shape LayerNorm's
+    per-sample statistics have), and ``"channel"`` a ``(1, C, 1, 1)`` core
+    over an NCHW left operand (the shape every BatchNorm2d statistic has).
+    All four take the broadcasting path, where all three layout
     descriptions belong to the *broadcast* rather than to either operand
     and so are built per call — the dominant array-carrying crossing in the
     whole runtime.
+
+    The four are kept separate rather than averaged (Phase H, milestone
+    H8), because they are genuinely different traversals: a fully
+    broadcast operand collapses the whole call to one flat run, a
+    stretched trailing axis leaves a per-row run, a stretched leading axis
+    leaves a per-row *constant*, and the NCHW statistic leaves three
+    extents with the stretched axis in the middle.
 
     NumPy broadcasts the same way over the same values, so unlike the
     boundary cases this one has an honest reference and publishes a ratio.
     """
     shape = config["shape"]
     left = _values(shape, spec["seed"])
-    if spec["operand"] == "scalar":
+    operand = spec["operand"]
+    if operand == "scalar":
         right = np.asarray(1.5)
-    else:
+    elif operand == "row":
         right = _values((1, shape[1]), spec["seed"] + 1)
+    elif operand == "column":
+        right = _values((shape[0], 1), spec["seed"] + 1)
+    else:  # "channel" — the NCHW per-channel statistic
+        right = _values((1, shape[1], 1, 1), spec["seed"] + 1)
 
     core_left = cpp.NativeTensorCore.from_array(left)
     core_right = cpp.NativeTensorCore.from_array(right)
@@ -1094,6 +1109,110 @@ def _build_elementwise(config, spec):
             NATIVE_TENSOR_GRAPH: _layer(
                 lambda _s=None: tensor_left_g.multiply(tensor_right),
                 cleanup=_close_result),
+        },
+        "close": lambda: [item.close() for item in owned],
+    }
+
+
+def _build_unary(config, spec):
+    """One elementwise ``sqrt`` across every layer (Phase H, milestone H8).
+
+    Every other elementwise case here is *binary*, which means the unary
+    traversal — the one ReLU, sqrt, reciprocal, and the materialization
+    gather all walk — was only ever visible averaged into a two-operand
+    measurement. This separates it, following the same
+    separate-rather-than-average precedent H5 and H6 each set.
+
+    ``spec["strided"]`` picks a row-major contiguous operand or a real
+    transposed view of the same logical values, so the pair isolates the
+    traversal difference and nothing else. ``sqrt`` is chosen over ``exp``
+    or ``log`` deliberately: it is a correctly-rounded IEEE-754 operation,
+    so NumPy's result is exact rather than a tolerance, and it is one of
+    the operations H8's traversal actually covers.
+    """
+    shape = config["shape"]
+    strided = spec["strided"]
+    # Non-negative, and away from zero, so every layer's result is finite
+    # and the exact-parity gate is meaningful.
+    values = np.abs(_values(shape, spec["seed"])) + 0.5
+
+    if strided:
+        base = np.ascontiguousarray(values.T)
+        core_base = cpp.NativeTensorCore.from_array(base)
+        core_input = core_base.transpose(1, 0)
+        tensor_base = NativeTensor.from_array(base)
+        tensor_input = tensor_base.transpose(1, 0)
+        tensor_base_g = NativeTensor.from_array(base, requires_grad=True)
+        tensor_input_g = tensor_base_g.transpose(1, 0)
+        host = base.T
+        owned = [core_base, tensor_base, tensor_input, tensor_base_g,
+                 tensor_input_g]
+    else:
+        core_input = cpp.NativeTensorCore.from_array(values)
+        tensor_input = NativeTensor.from_array(values)
+        tensor_input_g = NativeTensor.from_array(values, requires_grad=True)
+        host = values
+        owned = [core_input, tensor_input, tensor_input_g]
+
+    def check():
+        expected = np.sqrt(host)
+        _require(np.array_equal(host, values),
+                 "the host reference view does not hold the case's values")
+        if strided:
+            _require(not core_input.contiguous,
+                     "the strided case's operand is contiguous after all")
+        else:
+            _require(core_input.contiguous,
+                     "the contiguous case's operand is strided")
+        results = {}
+        core_out = core_input.sqrt()
+        try:
+            results[TENSOR_CORE] = core_out.to_numpy().copy()
+            _require_fresh_core(core_out, (core_input,), "the core result")
+        finally:
+            core_out.close()
+        plain = tensor_input.sqrt()
+        try:
+            results[NATIVE_TENSOR] = plain.to_numpy().copy()
+            _require(not plain.requires_grad,
+                     "the no-grad layer built a gradient-tracking result")
+        finally:
+            plain.close()
+        graphed = tensor_input_g.sqrt()
+        try:
+            results[NATIVE_TENSOR_GRAPH] = graphed.to_numpy().copy()
+            _require(graphed.requires_grad,
+                     "the graph layer built no autograd node")
+        finally:
+            graphed.close()
+        errors = {}
+        for layer, produced in results.items():
+            _require_shape(produced, shape, f"the {layer} result")
+            _require_finite(produced, f"the {layer} result")
+            errors[layer] = _max_abs(produced - expected)
+            # IEEE-754 specifies sqrt exactly, so this is a real equality.
+            _require_parity(errors[layer], EXACT, f"the {layer} result",
+                            "NumPy's square root")
+        _require_unchanged(core_input.to_numpy(), host, "the operand")
+        return {
+            "max_abs_error": max(errors.values()),
+            "per_layer_max_abs_error": errors,
+            "operand_layout": "transposed_view" if strided else "contiguous",
+            "checks": ["operand_layout", "shape", "finite",
+                       "numpy_exact_parity", "owning_contiguous_output",
+                       "no_grad_layer_builds_no_graph", "no_operand_mutation"],
+        }
+
+    return {
+        "check": check,
+        "layers": {
+            NUMPY: _layer(lambda _s=None: np.sqrt(host)),
+            TENSOR_CORE: _layer(lambda _s=None: core_input.sqrt(),
+                                cleanup=_close_result),
+            NATIVE_TENSOR: _layer(lambda _s=None: tensor_input.sqrt(),
+                                  cleanup=_close_result),
+            NATIVE_TENSOR_GRAPH: _layer(lambda _s=None: tensor_input_g.sqrt(),
+                                        cleanup=_close_result),
         },
         "close": lambda: [item.close() for item in owned],
     }
@@ -3157,6 +3276,108 @@ CASES = {
                   "point. Paired with elementwise_broadcast_scalar so the "
                   "two broadcast shapes are separated rather than "
                   "averaged."),
+    },
+    "elementwise_broadcast_column": {
+        "workload": "elementwise",
+        "section": "multiply by an (m, 1) operand (broadcasting)",
+        "operation": ("multiply() with an (m, 1) right operand — the "
+                      "broadcasting path over a stretched *trailing* axis"),
+        "build": _build_elementwise_broadcast,
+        "operand": "column",
+        "seed": 20260851,
+        "reference_type": REFERENCE_NUMPY,
+        "reference_layer": NUMPY,
+        "reference_detail": "numpy multiplication by the same (m, 1) array",
+        "correctness_reference": "NumPy broadcasting multiplication, exactly",
+        "configurations": {
+            "full": {"shape": (256, 256)},
+            "smoke": {"shape": (16, 16)},
+            "profile": {"shape": (1024, 1024)},
+        },
+        "notes": ("Phase H, milestone H8. The mirror of "
+                  "elementwise_broadcast_row and the shape LayerNorm's "
+                  "per-sample statistics have. It is a genuinely different "
+                  "traversal, not a relabelling: the row case stretches the "
+                  "leading axis, so each destination row reads a whole "
+                  "operand row, while this one stretches the trailing axis, "
+                  "so each destination row reads a single operand element. "
+                  "Kept separate for the same reason H5 separated the two "
+                  "materialization cases."),
+    },
+    "elementwise_broadcast_channel_4d": {
+        "workload": "elementwise",
+        "section": "multiply an NCHW operand by a (1, C, 1, 1) statistic",
+        "operation": ("multiply() of an (N, C, H, W) left operand by a "
+                      "(1, C, 1, 1) right operand — the broadcasting path "
+                      "with the stretched axis in the middle"),
+        "build": _build_elementwise_broadcast,
+        "operand": "channel",
+        "seed": 20260852,
+        "reference_type": REFERENCE_NUMPY,
+        "reference_layer": NUMPY,
+        "reference_detail": ("numpy multiplication by the same (1, C, 1, 1) "
+                             "array"),
+        "correctness_reference": "NumPy broadcasting multiplication, exactly",
+        "configurations": {
+            "full": {"shape": (16, 8, 16, 16)},
+            "smoke": {"shape": (2, 3, 4, 4)},
+            "profile": {"shape": (32, 16, 16, 16)},
+        },
+        "notes": ("Phase H, milestone H8. Exactly the shape every "
+                  "BatchNorm2d statistic has, and the rank the 2-D cases "
+                  "cannot give. The stretched axis sits in the *middle*, so "
+                  "neither the axes above it nor the axes below it can be "
+                  "folded into it — the hardest broadcast layout the runtime "
+                  "actually produces, and the one that motivated H8's "
+                  "collapsed descriptor."),
+    },
+    "elementwise_unary_contiguous": {
+        "workload": "elementwise",
+        "section": "sqrt, contiguous operand",
+        "operation": "sqrt() over a row-major contiguous operand",
+        "build": _build_unary,
+        "strided": False,
+        "seed": 20260853,
+        "reference_type": REFERENCE_NUMPY,
+        "reference_layer": NUMPY,
+        "reference_detail": "numpy.sqrt over the same array",
+        "correctness_reference": ("NumPy's square root, exactly — IEEE-754 "
+                                  "specifies sqrt, so this is a real equality "
+                                  "rather than a tolerance"),
+        "configurations": {
+            "full": {"shape": (256, 256)},
+            "smoke": {"shape": (16, 16)},
+            "profile": {"shape": (1024, 1024)},
+        },
+        "notes": ("Phase H, milestone H8. Every other elementwise case here "
+                  "is binary, so the *unary* traversal — the one ReLU, sqrt, "
+                  "reciprocal, and the materialization gather all walk — was "
+                  "only ever visible averaged into a two-operand "
+                  "measurement. Paired with elementwise_unary_transposed, "
+                  "which carries the same logical values through the "
+                  "strided path."),
+    },
+    "elementwise_unary_transposed": {
+        "workload": "elementwise",
+        "section": "sqrt, transposed-view operand",
+        "operation": "sqrt() over a transposed-view operand",
+        "build": _build_unary,
+        "strided": True,
+        "seed": 20260854,
+        "reference_type": REFERENCE_NUMPY,
+        "reference_layer": NUMPY,
+        "reference_detail": "numpy.sqrt through the same transposed view",
+        "correctness_reference": "NumPy's square root, exactly",
+        "configurations": {
+            "full": {"shape": (256, 256)},
+            "smoke": {"shape": (16, 16)},
+            "profile": {"shape": (1024, 1024)},
+        },
+        "notes": ("Phase H, milestone H8. A real transposed view, not a "
+                  "copy: the same logical values as "
+                  "elementwise_unary_contiguous, reached through the strided "
+                  "path. The pair isolates the unary traversal difference "
+                  "alone."),
     },
 
     # -- reductions ----------------------------------------------------------

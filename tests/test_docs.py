@@ -2493,8 +2493,8 @@ def test_both_batchnorm_shapes_share_one_private_implementation():
     assert "_NativeBatchNorm" not in experimental.__all__
 
     shared = ("forward", "_training_forward", "_eval_forward", "_mean_over",
-              "_inverse_std", "_snapshot", "_blend", "_affine",
-              "_commit_running_state", "_validate_forward",
+              "_inverse_std", "_snapshot", "_blend", "_momentum_coefficients",
+              "_affine", "_commit_running_state", "_validate_forward",
               "_registered_running", "__init__", "__repr__")
     source = (REPO_ROOT / "src" / "tensorforge" / "experimental"
               / "native_batchnorm.py").read_text(encoding="utf-8")
@@ -4051,9 +4051,18 @@ _PHASE_G_OVERCLAIMS = (
     # loop order), **H3** (the metadata and dispatch contract), **H4**
     # (the optimizer step contract), **H5** (the copy and
     # mutation-transfer contract), **H6** (the reduction-execution
-    # contract), and **H7** (the Python/C ABI boundary contract) really
+    # contract), **H7** (the Python/C ABI boundary contract), and **H8**
+    # (the elementwise-traversal and composed-allocation contract) really
     # have shipped, so claiming any of them is accurate and the
-    # milestone-number arm now starts at H8.
+    # milestone-number arm now starts at H9.
+    #
+    # H8 is the ladder's worked example of a proposal being **confirmed
+    # and widened**: it entered as the weakest-evidenced numbered
+    # milestone, the one most likely to be dropped, and the measurement
+    # showed both that its premise held and that the composed-
+    # normalization cost the dropped H7 had left as conditional scope was
+    # reachable from the elementwise side (design §16.8.0). It shipped
+    # two tracks and is honest that only one of them moved the clock.
     #
     # H7 is also the ladder's worked example of a milestone **dropped on
     # evidence**: the composed-module milestone that originally held the
@@ -4084,7 +4093,7 @@ _PHASE_G_OVERCLAIMS = (
      r"|multi-?threading|thread pool)[^.]{0,60}"
      r"\b(is|are|was|were|has been|have been)\s+"
      r"(added|shipped|implemented|enabled|introduced|adopted|landed)\b"
-     r"|\bH[89]\b[^.]{0,60}\b(has|have|is|are)\s+"
+     r"|\bH9\b[^.]{0,60}\b(has|have|is|are)\s+"
      r"(begun|started|shipped|landed|complete|completed)\b"),
 )
 
@@ -7580,8 +7589,8 @@ def test_the_boundary_binding_categories_are_documented_where_they_live():
 
 
 def test_the_harness_case_count_is_consistent_across_surfaces():
-    """H5 took the harness 26 to 28, H6 28 to 31, and H7 31 to 34. A
-    surface quoting a stale count is drift."""
+    """H5 took the harness 26 to 28, H6 28 to 31, H7 31 to 34, and H8
+    34 to 38. A surface quoting a stale count is drift."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -7589,8 +7598,8 @@ def test_the_harness_case_count_is_consistent_across_surfaces():
         / "benchmark_native_cpu_performance.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert len(module.CASES) == 34
+    assert len(module.CASES) == 38
     for surface in ("docs/native_cpu_performance_design.md",
                     "docs/native_support_matrix.md", "CLAUDE.md"):
         text = _status_text(surface)
-        assert re.search(r"31 to 34|31 to \*\*34\*\*|34 cases", text), surface
+        assert re.search(r"34 to 38|34 to \*\*38\*\*|38 cases", text), surface

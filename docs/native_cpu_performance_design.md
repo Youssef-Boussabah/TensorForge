@@ -4591,13 +4591,599 @@ allocation count — **H8's** subject — and it remains conditional.
 
 ---
 
-## 16.8 Remaining ladder detail
+## 16.8 H8 — elementwise traversal and composed allocation, as shipped
+
+### 16.8.0 What H8's evidence gate decided, and what it dropped
+
+H8 was proposed in §16.8 (below, preserved) as "stride collapsing and
+materialization cost, if §3.2's hypothesis survives measurement" —
+"presently the weakest-evidenced numbered milestone, and the most likely
+to be dropped." It was entered with **two** candidate tracks and an
+explicit instruction not to force both into production. The measurement
+kept one as a large result, kept a narrow piece of the other, and rejected
+the rest with reasons. All of that is recorded here.
+
+**Track A — elementwise traversal — was confirmed and is the milestone.**
+**Track B — composed normalization allocation — was confirmed only as a
+memory result, and is reported as such: its timing effect is neutral.**
+
+### 16.8.1 The measurement, before any production edit
+
+Everything below was measured on the post-H7 tree, from outside the
+runtime. No production counter was added and none may be.
+
+**Step 1 — is the odometer actually the cost?** The generic strided walker
+and the flat contiguous walker were driven through identical `ctypes`
+calls on identical *contiguous* data, so the only difference is the
+traversal:
+
+| shape | n | odometer | flat | ratio |
+|---|---|---|---|---|
+| `(16,)` | 16 | 1.60 us | 1.00 us | 1.60× |
+| `(1024,)` | 1,024 | 3.50 us | 1.40 us | 2.50× |
+| `(16384,)` | 16,384 | 37.10 us | 8.30 us | 4.47× |
+| `(128, 128)` | 16,384 | 39.80 us | 6.20 us | 6.42× |
+| `(256, 256)` | 65,536 | 141.70 us | 46.60 us | 3.04× |
+| `(64, 64, 16)` | 65,536 | 117.90 us | 20.60 us | 5.72× |
+| `(512, 512)` | 262,144 | 464.20 us | 107.40 us | 4.32× |
+| `(8, 4, 8, 8)` | 2,048 | 6.60 us | 1.60 us | 4.12× |
+
+For the *unary* ops the same comparison gave only **1.33×–1.57×** on
+`sqrt`, because a square root's own cost dominates.
+
+**Step 2 — how much work is on the odometer?** All of broadcasting. There
+is no broadcast fast path at all: `_binary_core_op`'s path C builds
+per-operation broadcast strides and hands them to the same generic walker.
+Measured through the real production path:
+
+| broadcast | n | median | ns/element |
+|---|---|---|---|
+| scalar over `(256, 256)` | 65,536 | 138.7 us | 2.12 |
+| row over `(256, 256)` | 65,536 | 144.1 us | 2.20 |
+| column over `(256, 256)` | 65,536 | 133.5 us | 2.04 |
+| NCHW channel over `(8, 4, 8, 8)` | 2,048 | 7.4 us | 3.61 |
+
+**Step 3 — decompose the odometer's cost.** A standalone binary compared
+four variants of the same computation, with an anti-hoisting guard (each
+iteration mutates an input and consumes an output). At `(256, 256)`
+contiguous `add`:
+
+| variant | us | vs shipped |
+|---|---|---|
+| odometer + function pointer *(ships today)* | 123.5 | — |
+| odometer + template | 81.3 | 1.52× |
+| collapsed plan + function pointer | 63.6 | 1.94× |
+| **collapsed plan + template** | **11.5** | **10.7×** |
+| flat + function pointer *(today's contiguous kernel)* | 21.0 | 5.9× |
+| flat + template | 11.7 | 10.6× |
+
+**This is the finding that decided the architecture.** Neither change is
+worth much alone and together they are worth an order of magnitude,
+because only their combination lets the compiler emit a vector loop:
+the odometer's carry chain blocks vectorization, and so does an indirect
+call it cannot see through. It also showed that **the existing flat
+contiguous kernel was itself hobbled** by the same indirect call — 21.0 us
+against 11.7 us for the identical loop with the operation as a
+compile-time constant.
+
+**Step 4 — the composed-allocation inventory, re-measured rather than
+taken from H7's summary.** Per forward, with the input construction
+excluded:
+
+| module / mode | allocations | native calls | of which reductions | of which constant fills | of which copies |
+|---|---|---|---|---|---|
+| LayerNorm(16) affine, `(32, 16)` | 11 | 13 | 2 | 1 | 0 |
+| LayerNorm(16) non-affine | 9 | 11 | 2 | 1 | 0 |
+| BatchNorm1d(16) train, `(32, 16)` | 25 | 27 | 2 | 5 | 4 |
+| BatchNorm1d(16) eval | 10 | 10 | 0 | 1 | 2 |
+| BatchNorm2d(4) train, `(8, 4, 8, 8)` | 30 | 36 | 6 | 5 | 5 |
+| BatchNorm2d(4) eval | 11 | 11 | 0 | 3 | 3 |
+
+H7's approximate counts (≈11 / ≈25 / ≈30) were confirmed exactly. The
+decomposition is the new information: **of BatchNorm1d's 25 allocations,
+12 belong to the running-statistics update** — two `detach` copies, *four*
+scalar coefficients, four products, two sums — and 5 of its 27 native
+calls are constant fills.
+
+### 16.8.2 Track A, as shipped: the collapsed operation-local plan
+
+New `cpp/include/tf_elementwise_internal.h` declares two hidden
+`namespace tf` builders and the templated traversals that walk what they
+build; `cpp/src/elementwise.cpp` defines the builders and dispatches to
+them. This is the fourth use of the shape H2, H5, and H6 each proved —
+one hidden metadata predicate, inside the existing export, no new symbol,
+the pre-milestone traversal retained.
+
+**A plan is an operation-local normalized descriptor**, built on the
+stack, used by one call, and dropped. Nothing is cached, interned,
+memoized, or shared between calls, and no plan outlives the wrapper that
+built it. It applies exactly two transformations, both of which preserve
+the logical element sequence:
+
+1. **Unit axes are dropped.** An axis of extent 1 is visited once and
+   contributes nothing to any address.
+2. **Adjacent axes are merged** when, for *every* operand at once,
+   `stride[outer] == stride[inner] * extent(inner)` — the statement that
+   the two axes' address progressions form one arithmetic run.
+
+Axes are never reordered, split, or transposed. The destination is
+untouched by all of this: it is the freshly allocated row-major output the
+wrapper already allocated, written at `0, 1, 2, …`, and because merging and
+dropping preserve axis *order* the linear destination index is unchanged.
+
+**This is not a layout compiler.** It merges adjacent axes and drops unit
+axes, and that is all it does. The bound is fixed at **4 axes**, which is
+every tensor this runtime can construct; a plan that will not fit is
+rejected.
+
+**The builders are total, pure, allocation-free, and a function of layout
+metadata alone** — never of a pointer value, an alignment, a wall-clock
+reading, an environment variable, or a CPU-feature probe. A rejection is a
+**fallback**, never an error. The exact rejection conditions:
+
+- `ndim <= 0` — the odometer's own rank-0 branch already handles that case;
+- any extent below 1;
+- an element count not representable in `int64` (the retained odometer
+  multiplies the extents unchecked, so this is metadata neither traversal
+  could honor — declining leaves such a call behaving exactly as it does
+  today rather than guessing);
+- a collapsed rank still above 4;
+- a product needed to *test* a merge that would overflow `int64`. A
+  product needed to *perform* one simply leaves the axes unmerged, which
+  is always a valid description — collapsing is an optimization, never a
+  correctness requirement.
+
+**Why templates and not function pointers.** §16.8.1 step 3 measured it:
+the indirect call is not merely a call, it stops the compiler proving
+anything about the loop body. Each operation is a stateless functor with a
+`static inline double apply(...)` spelling **the same expression,
+character for character, as the retained function-pointer op beside it**,
+so the two cannot drift apart.
+
+**Which operations take it, and which deliberately do not.** Only those
+IEEE-754 actually specifies: `add`, `subtract`, `multiply`,
+`relu_backward`, `relu`, `sqrt`, `reciprocal`, and the identity gather
+behind `tf_core_contiguous_copy`. **`exp` and `log` keep exactly the paths
+they had.** They are library functions with no correctly-rounded
+guarantee, so a toolchain that vectorized them through a vector-math
+library would be free to return different bits. Nothing is lost by
+excluding them: measured, the templated traversal is worth **1.05×** on
+both, inside this machine's noise, because a transcendental's own cost
+dominates the traversal completely. That exclusion is pinned structurally
+by a test, not left to prose.
+
+**What was removed.** The pre-H8 flat *binary* kernel
+(`core_binary_contiguous`) is gone, because `tf::binary_row<Op>` with both
+strides 1 is the identical loop with the operation as a compile-time
+constant, and keeping a second copy that could drift — and that no
+predicate can ever fall back to, since the templated row is total — would
+be worse than removing it. The **generic** pre-H8 reference paths,
+`core_unary` and `core_binary`, are retained **verbatim**, still spelled
+with the odometer's counter, and are what every rejected plan runs.
+
+`tf_core_contiguous_copy` keeps both of H5's tiers and gains a middle one:
+H5's `copy_prefers_contiguous` still picks the flat loop for a row-major
+source (now templated), a source it rejects gets the collapsed plan, and a
+plan the builder rejects still gets the odometer.
+
+**No Python changed for Track A.** `_binary_core_op` and `_unary_compute`
+dispatch exactly as H7 left them; the plan is built from metadata the
+export already receives.
+
+### 16.8.3 Track A's numerical contract, in four parts
+
+Measured, not assumed, over every ordered pair of 14 IEEE-754
+representatives × three operations × five layouts (contiguous export,
+same-shape strided, transposed left operand, row broadcast, column
+broadcast), against a **pre-H8 library built from the identical sources
+with only `elementwise.cpp` restored**:
+
+1. **Every result in which at most one operand is a NaN is bit-identical**
+   to the pre-H8 kernel's, on every path — signed zeros, infinities,
+   denormals, the smallest normal, the largest finite magnitudes, and a
+   lone NaN of either sign with any payload included. **Zero differing
+   results** across all 15 op × layout combinations.
+2. **NaN positions are identical**, and every NaN the *arithmetic*
+   produces is quiet. (`relu_backward` and the identity gather **select**
+   an operand rather than computing, so a signaling NaN legitimately
+   survives them — identically on both traversals, and exactly as H5
+   established for the copy.)
+3. **Subtraction is bit-identical everywhere**, two-NaN pairs included,
+   on every layout. It is not commutative, so the compiler has no freedom
+   over which operand reaches the destination register.
+4. **For addition and multiplication with *two* NaN operands, the
+   surviving payload is outside the contract** and is asserted in neither
+   direction. x86-64's `ADDSD`/`MULSD` return the destination operand's
+   NaN and a commutative operation lets the compiler put either addend
+   there.
+
+**Part 4 is not something H8 introduced, and H8 narrows it.** Measured on
+the pre-H8 library, its *own* flat contiguous kernel and its *own*
+odometer already disagreed on **30 of 196** ordered NaN pairs for `add`
+and for `multiply`. Post-H8 the contiguous, same-shape strided, and
+row-broadcast paths agree with each other exactly, and only a transposed
+operand still differs — on **5 of 196**. The direction of travel is toward
+agreement, and no path is ever wrong: every result is a quiet NaN in the
+right position.
+
+This is a **different** qualification from H2's and H6's, and the
+difference is worth stating because it would be easy to copy the earlier
+contracts blindly. Those concerned NaNs meeting inside an *accumulation*.
+Here there is no accumulation at all — every output element is a function
+of exactly one element of each source — only operand order inside a single
+commutative instruction. H5's stronger claim does not apply either: a
+value transfer performs no arithmetic and so has no operand roles to
+choose between. Four operations, four genuinely different rules.
+
+**Arithmetic order is preserved exactly.** Nothing is reassociated, no
+FMA is used, no fast-math is enabled, no intrinsic is written, no dtype or
+precision changes, and no two outputs are combined. Each functor evaluates
+the same expression the retained op evaluates.
+
+### 16.8.4 H1 compatibility
+
+Elementwise outputs stay **uninitialized** (H1), and the proof carries
+over unchanged: the plan walk writes the destination strictly left to
+right, one element per logical position, over exactly the logical element
+count — the same order and the same count the odometer produces. The C++
+test proves it directly by poisoning the destination with a quiet NaN and
+with a large finite pattern, over six layouts, checking that no poison
+survives inside the output *and* that the guard elements on either side
+are untouched, with a **negative control** (a deliberately one-short
+extent) proving the detector can fail.
+
+### 16.8.5 Track B, as shipped: BatchNorm's running-statistics update
+
+The composed-allocation inventory found one clear, safe, measurable
+target and several that were rejected.
+
+**Shipped.** `_NativeBatchNorm._blend` no longer builds its own
+`(1 - momentum, momentum)` pair; a new private
+`_momentum_coefficients` builds the pair **once per forward** and hands
+the same two read-only scalars to both blends — the per-step-constants
+shape H4 proved on the optimizer. They are never stored on the module, so
+no scalar survives a forward, enters `state_dict()`, reaches a checkpoint,
+or has to be released by anything but the forward's own `finally`. Each
+blend also **releases its temporaries at last use** — the detached copy,
+its borrowing view, and both product terms are dead the moment the sum
+exists — instead of holding them to the end of the call. Both remain in
+the scratch list and `close()` is idempotent, so the failure path still
+closes exactly once.
+
+Measured against a **retained pre-H8 composition executed natively**
+(transcribed into the benchmark and monkeypatched in, so both sides run
+the same production module through the same library), with the running
+statistics proved bit-identical before either side was timed:
+
+| module | allocations | peak live storages | constant fills |
+|---|---|---|---|
+| BatchNorm1d training forward | 25 → **23** | 25 → **17** | 5 → **3** |
+| BatchNorm2d training forward | 30 → **28** | 30 → **22** | 5 → **3** |
+
+Held at every shape measured — `(32, 8)`, `(128, 64)`, `(256, 256)`,
+`(8, 4, 8, 8)`, `(16, 8, 16, 16)`.
+
+**Reported just as honestly: the timing effect is neutral.** Over 15
+alternating pre/post subprocess rounds the ratios were **1.007×–1.106×**,
+with only the smallest BatchNorm1d outside the noise band and only
+marginally. **Track B is a memory result, not a timing result**, and no
+reading should be quoted as if it were otherwise. The values it removes
+are scalar- and channel-sized; the time in a normalization forward is in
+the full passes over the activation, which Track A addresses.
+
+**Rejected, with reasons.**
+
+- **Releasing LayerNorm's or BatchNorm's graph temporaries early.**
+  Impossible, and proved so rather than assumed: walking the forward DAG,
+  every temporary is either read by a backward closure (`sqrt` and
+  `reciprocal` read their **saved output**; `multiply` reads the *other*
+  operand) or must stay open to accumulate a gradient (`add`'s and
+  `subtract`'s backwards read no operand but still call
+  `_accumulate_grad` on both parents). The existing code is already
+  minimal on the success path.
+- **Adopting the blend's result core into the running-state transaction**
+  instead of copying it. It would save two `(C,)`-sized copies per
+  training forward, and it was rejected on risk rather than on principle:
+  the F3 design deliberately computes both replacement values **before**
+  the transaction so "a failure while preparing the update values leaves
+  the running statistics exactly as they were", and adoption would move
+  that arithmetic inside the staging phase, changing a failure ordering
+  F5 and F8 prove by test. A two-copy saving does not buy a change to the
+  most heavily tested transactional path in the phase.
+- **Caching the evaluation-mode inverse standard deviation.** In eval the
+  running statistics do not change between calls, so `inv_std` is
+  recomputable — but caching it is exactly the hidden mutable state this
+  design forbids, and it would have to be invalidated by every state load,
+  checkpoint load, and training step.
+- **Reshaping `gamma`/`beta` to `(1, C, 1, 1)` to avoid BatchNorm2d's two
+  affine transposes.** F4 rejected this for a semantic reason that has not
+  changed: a reshaped parameter is an unversioned view, so the
+  stale-parameter guard would silently stop firing. Not a performance
+  trade at all.
+- **A fused normalization kernel or operation.** Out of scope by
+  instruction and by §17. F2–F4's achievement is that both normalization
+  families are compositions with no C++ at all.
+
+### 16.8.5.1 The one ownership correction H8 shipped
+
+Track B's subject is normalization saved-resource ownership, and reading
+that path closely surfaced a **pre-existing** defect — present verbatim in
+the pre-H8 composition, whose `_affine` bytecode is byte-for-byte
+identical — which H8 fixes before acceptance rather than shipping past.
+
+**The defect.** `NativeBatchNorm2d` applies its rank-1 `gamma`/`beta` by
+transposing the *activation* channels-last (F4's deliberate choice, so
+both parameters stay direct versioned `multiply` operands and the
+stale-parameter guard keeps firing — see the normalization design's F4
+section). That transpose is metadata only: the operand `multiply`
+receives **borrows** the normalized activation's storage. Whether the
+graph kept that storage alive depended on where the gradients entered.
+When the input tracked gradients, the transpose was a graph node whose
+parent was the activation, so the graph held the owner. When
+`gamma`/`beta` were the *only* gradient source — a frozen or non-tracking
+input with a trainable affine, the ordinary fine-tuning shape — the
+transpose was a plain borrowing **leaf**: the graph reached the view and
+never its owner, which was an ordinary local temporary dropped when the
+forward returned. Backward then raised
+`RuntimeError: this NativeStorage has been closed`, in **both** training
+and evaluation mode. Confirmed by construction, not by inference: adding
+a single external strong reference to the activation — and nothing else —
+makes backward succeed with gradients **bit-identical** to the
+input-requires-grad path, and `gc.collect()` does not rescue it, so this
+was reference-counted lifetime, not a collector-timing artifact.
+
+**The correction.** The borrowed operand's owner is genuinely graph
+state, so the graph owns it: `_retain_channels_last_source` adopts
+**exactly that one tensor** as a `graph_resources` entry on the output
+node — the same D9 contract that already carries the evaluation
+snapshots, MaxPool2d's winners, and Phase E's saved probabilities. No new
+lifetime system, no tracking list kept alive, no reliance on cyclic GC,
+no global cache, no scratch storage, no skipped `close()`. It is adopted
+**only** when the transposed operand is a borrowing leaf a backward will
+actually reread, so three configurations are provably untouched: the
+input-requires-grad path (the graph already holds the owner), a trainable
+`beta` beside a frozen `gamma` (`add`'s backward reads no operand value),
+and the no-graph path. `NativeBatchNorm1d` was never affected and was not
+refactored — with the channel axis already trailing, `gamma` multiplies
+the activation directly — and it is covered as the comparison arm.
+
+**Cost, quantified.** Allocations, peak live storages during the forward,
+and peak transient bytes are **unchanged** at every shape — Track B's
+25 → 23 / 30 → 28 and 25 → 17 / 30 → 22 figures above still hold exactly.
+The only movement is graph lifetime, in the adopting configuration only:
+one activation-sized native storage held from forward until the graph is
+released — `(8, 4, 8, 8)` 3 → 4 storages and 49,216 → 65,600 bytes,
+`(32, 16, 16, 16)` 3 → 4 and 3,145,984 → 4,194,560 bytes, exactly
+`N·C·H·W·8` in each case. After the graph is released the held count is
+identical on both sides. When the input requires gradients the increase is
+**zero**, because that activation was already retained as the transpose
+node's parent.
+
+**Timing: neutral, as the attribution predicts** — the change is two
+attribute reads and, in the adopting case, one tuple concatenation. Over
+two independent 11-round alternating pre/post subprocess runs (61
+repetitions each, every shared case proved bit-identical before either
+side was timed), the identical-code control band was **0.878×–1.131×**;
+BatchNorm2d training forward read 1.051× then 0.984×, eval forward 1.055×
+then 1.023×, forward+backward 1.014× then 1.008×, the normalized training
+step 0.973× then 0.952×, and the CNN control 1.000× then 1.034× — every
+reading inside the band, in both directions. The configuration the fix
+unblocks (no-grad input, trainable affine, forward+backward) has no
+"before" number at all, because before the fix it raised.
+
+**Evidence.** `tests/test_native_batchnorm_affine_ownership.py` — 45
+tests covering both modes across every gradient-source combination,
+gradient exactness against explicit NumPy formulas *and* bit-identity
+against the input-requires-grad path, the exact adopted-resource
+inventory, lifetime under `retain_graph`, one-shot release, abandoned-graph
+`close()`, a failed retryable backward, failure atomicity injected both
+before and after publication, repeated cycles and mode transitions, and
+identity/version/checkpoint-resume preservation. **23 of the 45 fail
+without the fix.** The F7 benchmark's `batchnorm2d_eval_forward` gate,
+which previously asserted that every adopted resource was a stat-shaped
+snapshot, now pins the **exact** inventory instead — two snapshots plus,
+for NCHW only, one activation-shaped affine source — which is a
+tightening, not a loosening, and publishes
+`adopted_affine_source_count` beside `adopted_snapshot_count`.
+
+**No new surface.** No public API, C ABI symbol (still exactly **52**
+exported `tf_*`), ctypes declaration, `NativeTensorCore` method, autograd
+operation, module, export, registry capability, dtype, device, checkpoint
+field, checkpoint version, or `state_dict` field. No C++ changed, so no
+rebuild was required and the Release DLL stayed active. H8's elementwise
+numerical behavior, traversal dispatch, and Track B allocation results are
+untouched.
+
+### 16.8.6 Results — kernel level
+
+Measured against the pre-H8 library through identical `ctypes` calls on
+identical data, **every case proved bit-identical before either side was
+timed**, 11 alternating rounds. The identical-code control band for this
+method on this machine — the pre-H8 library against a byte-identical copy
+of itself — is **0.97×–1.08×** on medians and **0.98×–1.02×** on minima.
+
+| case | pre | post | ratio |
+|---|---|---|---|
+| `multiply` row-broadcast `(256,256)+(256,)` | 126.9 us | 12.0 us | **10.58×** |
+| `add` strided same-shape `(256,256)` | 133.5 us | 13.8 us | **9.67×** |
+| `multiply` NCHW-stat `(32,16,16,16)` | 276.6 us | 38.7 us | **7.15×** |
+| `multiply` col-broadcast `(256,256)+(256,1)` | 126.6 us | 18.9 us | **6.70×** |
+| `add` scalar-broadcast `(256,256)` | 130.0 us | 20.6 us | **6.31×** |
+| `add` rank-3 broadcast `(16,32,64)` | 72.3 us | 11.7 us | **6.18×** |
+| `add` strided same-shape `(8,4,8,8)` | 6.0 us | 1.7 us | 3.53× |
+| `subtract` NCHW-stat `(8,4,8,8)` | 5.6 us | 1.8 us | 3.11× |
+| `add` transposed left `(256,256)` | 136.6 us | 51.9 us | 2.63× |
+| `relu` strided `(256,256)` | 130.1 us | 51.9 us | 2.51× |
+| `copy` transposed `(256,256)` | 116.8 us | 50.5 us | 2.31× |
+| `sqrt` contiguous `(256,256)` | 90.2 us | 44.5 us | 2.03× |
+| `reciprocal` contiguous `(256,256)` | 59.1 us | 29.8 us | 1.98× |
+| `relu_backward` `(256,256)` | 411.2 us | 220.8 us | 1.86× |
+| `relu` contiguous `(256,256)` | 18.9 us | 10.6 us | 1.78× |
+| `add`/`multiply` contiguous `(256,256)` | 23.1 us | 13.1 us | 1.76× |
+| `copy` contiguous `(256,256)` | 15.8 us | 9.4 us | 1.68× |
+| small broadcasts `(32,16)` | 2.1 us | 1.3 us | 1.62× |
+| `copy` contiguous `(512,512)` | 82.1 us | 58.7 us | 1.40× |
+| `add` contiguous `(512,512)` | 115.2 us | 99.0 us | 1.16× |
+| `add`/`reciprocal` contiguous `(16,)` | 0.5–0.6 us | 0.5–0.6 us | **1.00×** |
+
+**Controls, behaving exactly as the attribution predicts.** `exp`
+contiguous **1.07×**, `log` contiguous **1.02×**, `exp` strided
+**0.97×** — the three exports H8 deliberately did not touch, all inside
+the band. `sum (512,512)` full **1.00×** and `sum (256,256) axis 0`
+**0.91×**; `matmul 128³` **1.05×**.
+
+**One control reads below the band, and it is published rather than
+buried.** `matmul 256³` measured **0.93×** (11 rounds) and **0.96×**
+(21 rounds). A focused 25-round run isolates it further:
+
+| size | pre | post | post/pre | twin/pre *(identical code)* |
+|---|---|---|---|---|
+| 64³ | 42.5 us | 41.9 us | 1.014× | 1.029× |
+| 128³ | 320.9 us | 309.9 us | 1.035× | 1.018× |
+| **256³** | 2473.8 us | 2686.2 us | **0.921×** | 0.969× |
+| 384³ | 8670.7 us | 8720.4 us | 0.994× | 1.000× |
+
+`matmul.cpp` is byte-identical source compiled with identical flags, and
+the effect appears at exactly one size and vanishes at the three around
+it. `elementwise.cpp`'s object code grew from 127 KB to 188 KB, which
+moves every function's placement in the image. **This is the same
+whole-translation-unit code-layout effect H6 documented** (§16.6.11), and
+it is the machine-specific tuning the design rejects chasing. Every matmul
+result is bit-identical, the H2 CTest passes, and no end-to-end case
+regressed.
+
+### 16.8.7 Results — layer and end-to-end
+
+11 alternating pre/post **subprocess** rounds; all 31 cases proved
+bit-identical (SHA-256 over raw bit patterns) before either side was
+timed. End-to-end control band **0.99×–1.05×**.
+
+| case | pre | post | ratio |
+|---|---|---|---|
+| `TensorCore.multiply` row-broadcast `(256,256)` | 133.4 us | 19.6 us | **6.81×** |
+| `NativeTensor.multiply` broadcast, with graph | 132.9 us | 21.0 us | **6.33×** |
+| `TensorCore.add` scalar-broadcast `(256,256)` | 129.5 us | 25.3 us | **5.12×** |
+| **`NativeAdam.step()` at `(128,128)`** | 537.6 us | 267.7 us | **2.01×** |
+| `TensorCore.relu` `(256,256)` | 23.5 us | 14.8 us | 1.59× |
+| `TensorCore.add` contiguous `(256,256)` | 30.3 us | 19.6 us | 1.55× |
+| `NativeTensor.add` no graph `(256,256)` | 29.7 us | 20.3 us | 1.46× |
+| **BatchNorm1d eval forward** `(128,64)` | 186.1 us | 133.2 us | **1.40×** |
+| **BatchNorm2d eval forward** `(16,8,16,16)` | 732.9 us | 538.5 us | **1.36×** |
+| **BatchNorm2d training forward** | 849.8 us | 638.5 us | **1.33×** |
+| **LayerNorm forward** `(128,64)` | 238.2 us | 183.7 us | **1.30×** |
+| BatchNorm2d forward+backward | 2696.0 us | 2157.6 us | 1.25× |
+| LayerNorm non-affine forward | 174.9 us | 143.6 us | 1.22× |
+| BatchNorm1d training forward, LayerNorm fwd+bwd | — | — | 1.21× |
+| **MLP training step, large** | 8129.2 us | 6856.5 us | **1.19×** |
+| BatchNorm1d forward+backward | 889.1 us | 772.1 us | 1.15× |
+| `contiguous_copy` `(512,512)` | 459.7 us | 403.0 us | 1.14× |
+| **Normalized MLP training step** | 3306.2 us | 3048.4 us | **1.08×** |
+| Dropout MLP training step | 3306.2 us | 3133.8 us | 1.06× |
+| LayerNorm forward, small `(32,16)` | 138.1 us | 130.5 us | 1.06× |
+| `sum(axis=0)` `(256,256)` — control | 17.4 us | 16.7 us | 1.04× |
+| BatchNorm2d training forward, small | 427.3 us | 417.4 us | 1.02× |
+| MLP step small, SGD MLP step | — | — | 1.01–1.02× |
+| CNN training step | 2601.2 us | 2620.7 us | **0.99×** |
+| BatchNorm1d training forward, small `(32,16)` | 286.7 us | 291.1 us | **0.98×** |
+| `matmul` `(256,256)` — control | 2525.3 us | 2653.2 us | **0.95×** |
+
+**This is the milestone that finally moved the normalization modules**,
+which H6 measured as almost entirely neutral (§16.6.11) and which is
+precisely why H0's composed-module H7 was dropped and this one entered.
+The attribution is exactly what §16.8.1 predicted: what was left in B6 was
+the broadcast elementwise traversal.
+
+Reported just as honestly:
+
+- **Small normalization shapes are neutral** — `(32, 16)` BatchNorm1d
+  training **0.98×**, BatchNorm2d `(8,4,8,8)` **1.02×**, LayerNorm
+  `(32, 16)` 1.06×. Below roughly 1,000 elements the fixed Python-plus-
+  ctypes cost dominates, which is H3's, H5's, and H6's documented boundary
+  finding, unchanged.
+- **The CNN step is neutral (0.99×)** and the small MLP and SGD steps are
+  at the band edge (1.01–1.02×). A convolution step's time is in
+  `tf_core_conv2d_*`, which H8 did not touch.
+- **`matmul 256³` reads 0.95×**, discussed in §16.8.6.
+- `NativeAdam` at `(128, 128)` moving **2.01×** was not a stated goal and
+  is worth naming as a consequence rather than a target: H4 measured that
+  8 of Adam's 13 binary operations take the broadcasting path, and that
+  path is now 5–10× cheaper.
+
+### 16.8.8 Memory
+
+**Track A moved no memory.** An elementwise operation allocates exactly
+one native storage — its own output — on both paths, at every layout, and
+the plan is a stack object. The odometer's heap-allocated counter is
+**removed** on every plannable layout, which is a strict reduction: a
+strided elementwise call now makes **one** allocation where it previously
+made two. That is observable, and it re-anchored one existing
+fault-injection test (§16.8.9).
+
+**Track B's numbers are in §16.8.5**: 25 → 23 and 30 → 28 allocations, and
+peak live storages 25 → 17 and 30 → 22.
+
+No measured peak rose anywhere.
+
+### 16.8.9 Tests
+
+- **`cpp/tests/test_elementwise_traversal.cpp`** (new; CTests 15 → **16**)
+  — compiles `elementwise.cpp` in so it can reach the hidden builders and
+  the templated traversals. It drives the builder table (totality, purity,
+  the collapse rule, element-count preservation, the four rejection
+  reasons), the four-part numerical contract as raw bit patterns, the
+  layout-agreement matrix with and without operand offsets, H1's
+  full-write proof with two poison patterns and a negative control, and
+  the declined-plan fallback through the real exported wrappers.
+- **`tests/test_native_elementwise_traversal.py`** (new, 170 cases) — the
+  same properties from the public API, plus Track B's allocation and
+  lifetime architecture, the running-state transaction, failure
+  atomicity before the commit boundary, gradients against central
+  differences, exact checkpoint resume for a normalized model, and the
+  scope guardrails (52 exports, no dispatch control, no fused
+  normalization operation, no capability move, stable-import isolation).
+- **`tests/test_native_abi_errors.py`** — one existing test **re-anchored,
+  with its assertion unchanged**. It armed the *second* allocation of a
+  strided `relu` to make the odometer's counter allocation fail; on a
+  plannable layout there is no longer a second allocation. It now uses a
+  rank-5 fully reversed view, which the builder declines, so the counter
+  is still exercised — and a **new** test asserts the other half, that a
+  plannable strided call really does allocate only its output.
+- The harness gained **four** cases, 34 to **38** (34 → 38):
+  `elementwise_broadcast_column` and `elementwise_broadcast_channel_4d`
+  (following H5's and H6's separate-rather-than-average precedent — the
+  row case stretches the leading axis, the column case the trailing one,
+  and the NCHW case puts the stretched axis in the middle where neither
+  side folds into it), plus `elementwise_unary_contiguous` and
+  `elementwise_unary_transposed`, because every other elementwise case is
+  binary and the one-source traversal was only ever visible averaged into
+  a two-operand measurement.
+
+### 16.8.10 Scope
+
+**No exported C ABI symbol was added; the library still exports exactly
+52 `tf_*` symbols.** No new translation unit. No public control of any
+kind — no path selector, plan inspector, collapse-mode flag, threshold
+setter, dispatch tracer, profiling counter, environment variable, or
+"which path ran" query. No SIMD, threading, OpenMP, BLAS, memory pool,
+scratch workspace, fused operator, or fast-math. No `restrict`. No public
+API, registry value, dtype, device, checkpoint field, or checkpoint
+version moved: `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
+`SUPPORTED_DTYPES` `("float64",)`, `SUPPORTED_DEVICES` `("cpu",)`, and
+the checkpoint format is still `tensorforge.native_checkpoint` version 2
+with versions `(1, 2)` supported.
+
+---
+
+## 16.9 Remaining ladder detail
 
 **The ladder was reordered at H5** (§16.5.0) and **revised again at H7**
 (§16.7.0). Reduction execution, drafted as H5, became H6 and has shipped
 (§16.6); the composed-module milestone drafted as H7 was **dropped on
 evidence** and replaced by the Python/C ABI boundary, which has shipped
-(§16.7). The conditional slots after it keep their numbers.
+(§16.7). H8 has now shipped too (§16.8), and it is where the composed
+normalization cost was finally addressed — from the elementwise side,
+which is what the evidence supported. The conditional slots after it
+keep their numbers.
 
 ### ~~H7~~ — Composed-module cost *(dropped on evidence; see §16.7.0)*
 
@@ -4650,13 +5236,23 @@ measurably cheaper at the boundary (§16.7.9), so what is left in B6 is
 increasingly the allocations and the passes over memory rather than the
 crossing. That is H8's subject, and it stays conditional.
 
-### H8 — Elementwise and materialization traversal *(conditional)*
+### H8 — Elementwise and materialization traversal *(shipped; see §16.8)*
 
-Stride collapsing and materialization cost, if §3.2's hypothesis
-survives measurement after H1 and H3. **Narrowed by H5**, which already
-gave materialization its flat traversal and measured 2.5×–5.5× for it, so
-what remains here is stride collapsing alone. Presently the
-weakest-evidenced numbered milestone, and the most likely to be dropped.
+The proposal, preserved as written: "Stride collapsing and materialization
+cost, if §3.2's hypothesis survives measurement after H1 and H3.
+**Narrowed by H5**, which already gave materialization its flat traversal
+and measured 2.5×–5.5× for it, so what remains here is stride collapsing
+alone. Presently the weakest-evidenced numbered milestone, and the most
+likely to be dropped."
+
+**The hypothesis survived, and the milestone was larger than the proposal
+anticipated.** Stride collapsing alone measured 1.94×; what the
+measurement added was that collapsing and de-virtualizing the inner loop
+are worth an order of magnitude *together* because only their combination
+lets the compiler vectorize (§16.8.1). The milestone also absorbed the
+composed-normalization allocation work the dropped H7 had left as
+conditional scope — as **Track B**, which shipped as a memory result and
+is honestly reported as timing-neutral (§16.8.5).
 
 ### H9 — SIMD, threading, or optional BLAS *(conditional, presumed rejected)*
 

@@ -893,24 +893,43 @@ def _build_batchnorm_eval_forward(config, spec):
                 raise AssertionError(
                     "the evaluation graph reaches a registered running buffer"
                 )
+            # The graph's adopted resources are pinned **exactly**, by
+            # count and by shape, not merely spot-checked: the two
+            # stat-shaped running-statistic snapshots, plus — for the NCHW
+            # layout only — the one activation-shaped tensor whose storage
+            # the channels-last affine operand borrows. Here the input does
+            # not require gradients and the affine parameters do, which is
+            # precisely the configuration in which the transposed operand
+            # is a plain borrowing leaf and the graph must own its source.
             _nodes, resources = _walk_graph(output)
-            if len(resources) < 2:
-                raise AssertionError(
-                    "the evaluation graph adopted no running-statistic "
-                    "snapshots"
-                )
             for resource in resources:
-                if tuple(resource.shape) != stat_shape:
-                    raise AssertionError(
-                        f"an adopted evaluation snapshot has shape "
-                        f"{tuple(resource.shape)}, expected {stat_shape}"
-                    )
                 if not resource.owns_core:
                     raise AssertionError(
-                        "an adopted evaluation snapshot does not own its "
+                        "an adopted evaluation resource does not own its "
                         "storage"
                     )
-            snapshot_count = len(resources)
+            snapshots = [r for r in resources
+                         if tuple(r.shape) == stat_shape]
+            others = [r for r in resources if tuple(r.shape) != stat_shape]
+            if len(snapshots) != 2:
+                raise AssertionError(
+                    f"the evaluation graph adopted {len(snapshots)} "
+                    f"running-statistic snapshots, expected exactly 2"
+                )
+            expected_sources = 1 if len(stat_shape) == 4 else 0
+            if len(others) != expected_sources:
+                raise AssertionError(
+                    f"the evaluation graph adopted {len(others)} non-snapshot "
+                    f"resources, expected exactly {expected_sources}"
+                )
+            for resource in others:
+                if tuple(resource.shape) != shape:
+                    raise AssertionError(
+                        f"the adopted channels-last affine source has shape "
+                        f"{tuple(resource.shape)}, expected {shape}"
+                    )
+            snapshot_count = len(snapshots)
+            affine_source_count = len(others)
         finally:
             output.close()
         _require_shape(produced, shape, "the native output")
@@ -929,10 +948,12 @@ def _build_batchnorm_eval_forward(config, spec):
         checks = ["output_shape", "finite", "owning_contiguous_output",
                   "numpy_formula_parity", "no_running_state_mutation",
                   "graph_holds_snapshots_not_buffers",
-                  "snapshots_own_their_storage", "no_input_mutation"]
+                  "snapshots_own_their_storage",
+                  "adopted_resource_inventory_is_exact", "no_input_mutation"]
         metrics = {
             "max_abs_error": native_error,
             "adopted_snapshot_count": snapshot_count,
+            "adopted_affine_source_count": affine_source_count,
         }
         if spec["reference_type"] == STABLE:
             stable_output = reference_run().data

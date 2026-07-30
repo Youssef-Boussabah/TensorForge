@@ -455,4 +455,27 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME sum_reduction COMMAND test_sum_reduction)
+
+  # Elementwise traversal and its H8 collapsed plan: compiles elementwise.cpp
+  # directly so it can reach the hidden tf::build_unary_plan /
+  # tf::build_binary_plan builders and the templated traversals alongside the
+  # exported wrappers they live inside. storage.cpp supplies the Storage
+  # handles the ABI takes, and error.cpp the thread-local error slot the
+  # guarded wrappers record into.
+  add_executable(test_elementwise_traversal
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_elementwise_traversal.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_elementwise_traversal PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_elementwise_traversal PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_elementwise_traversal PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_elementwise_traversal PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME elementwise_traversal COMMAND test_elementwise_traversal)
 endif()

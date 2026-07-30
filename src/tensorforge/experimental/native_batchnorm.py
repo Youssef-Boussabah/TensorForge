@@ -99,6 +99,30 @@ them, an abandoned graph still frees them, and they are released exactly
 once when the graph history is. No second lifetime system and no custom
 backward is introduced to achieve that.
 
+Borrowed affine operands (NCHW)
+-------------------------------
+
+The same contract carries the one operand the NCHW affine only *borrows*.
+``_affine`` hands ``multiply`` a metadata-only channels-last **view** of
+the normalized activation, and ``multiply``'s backward rereads that
+operand to build ``gamma``'s gradient — so the graph needs the storage
+behind the view, not just the view. Usually it already has it: when the
+input requires gradients the transpose is itself a graph node holding the
+owner as its parent. But ``gamma`` and ``beta`` can introduce gradients
+the activation does not carry, and then the transpose is a plain
+borrowing leaf: the graph reaches the view and never the owner, which is
+an ordinary local temporary released when the forward returns. In that
+one case the owner is genuinely graph state, so the graph owns it —
+adopted as a ``graph_resources`` entry exactly like the evaluation
+snapshots, and exactly one tensor, never the surrounding history. It is
+adopted **only** when it is actually needed, so the input-requires-grad
+path and the no-graph path are untouched. See
+``_retain_channels_last_source``.
+
+``NativeBatchNorm1d`` needs none of this and gets none: with the channel
+axis already trailing, ``gamma`` multiplies the activation **directly**,
+so the graph holds the owner as a parent in every configuration.
+
 Atomic running-statistics transaction (§8)
 ------------------------------------------
 
@@ -286,6 +310,52 @@ def _adopt_graph_resources(node, resources):
     return True
 
 
+def _retain_channels_last_source(output, normalized, channels_last, scaled):
+    """Give the graph explicit ownership of the storage its channels-last
+    affine operand only *borrows*.
+
+    ``_affine``'s NCHW path hands ``multiply`` a **borrowing** transposed
+    view of ``normalized`` (metadata only — the view owns nothing), and
+    ``multiply``'s backward rereads that operand's forward value to build
+    ``gamma``'s gradient. Whether the graph keeps the *storage* behind that
+    view alive depends on where the gradient enters the composition:
+
+    - ``normalized`` requires grad (the input does). Then ``transpose``
+      built a graph node whose parent **is** ``normalized``, so the graph
+      already holds the owner and there is nothing to do. Adopting it here
+      would be redundant *and* wrong: it would close a live graph node the
+      caller can still inspect after backward.
+    - Neither ``normalized`` nor ``gamma`` requires grad, so ``scaled`` is
+      a plain owning leaf. Nothing rereads the view, and ``scaled`` keeps
+      its own storage — again nothing to do. (``beta``-only is exactly this
+      case: ``add``'s backward reads no operand value.)
+    - ``normalized`` does **not** require grad but ``gamma`` does. Then
+      ``transpose`` returned a plain borrowing *leaf*, so the graph reaches
+      the view but never its owner: ``normalized`` is an ordinary local
+      temporary, dropped when the forward returns, and its storage is
+      released while a node that will reread it is still live. That is the
+      one case this function exists for, and it is why the fix belongs at
+      the ownership boundary rather than in a tracking list — the operand
+      is genuinely graph state, so the graph must own it.
+
+    The adopted resource is exactly one tensor — the storage owner the
+    borrowing operand needs and nothing else. It rides the same D9
+    ``graph_resources`` contract as the evaluation snapshots above, so it
+    is released at exactly the points the engine already releases graph
+    history, exactly once, and survives ``retain_graph=True``.
+    """
+    # ``scaled`` requires grad exactly when a graph node was built over
+    # ``channels_last``; ``channels_last`` requires grad exactly when the
+    # graph already owns ``normalized`` through the transpose node.
+    if not scaled._requires_grad or channels_last._requires_grad:
+        return
+    # ``scaled`` carrying a graph forces every node after it to, so
+    # ``output`` always has the history to adopt into here. If it somehow
+    # did not, the tensor simply stays the tracked temporary it already is
+    # and is released with the frame — never leaked, never double-closed.
+    _adopt_graph_resources(output, (normalized,))
+
+
 class _NativeBatchNorm(NativeModule):
     """The shared, private batch-normalization implementation.
 
@@ -471,8 +541,19 @@ class _NativeBatchNorm(NativeModule):
         # -- 2. the graph-free replacement values, from the *same* batch
         # statistics the normalization used — nothing is recomputed, and
         # detach() copies them out of the graph natively.
-        new_mean = self._blend(running_mean, batch_mean, input, temp)
-        new_var = self._blend(running_var, batch_var, input, temp)
+        #
+        # The two momentum coefficients are properties of *this call*, not
+        # of either buffer, so they are built once here and handed to both
+        # blends rather than allocated twice (Phase H, milestone H8 — the
+        # per-step-constants shape H4 proved on the optimizer). They are
+        # ordinary scratch: never stored on the module, so no scalar
+        # survives a forward, enters ``state_dict()``, reaches a checkpoint,
+        # or has to be released by anything but this call's ``finally``.
+        keep_old, take_new = self._momentum_coefficients(input, temp)
+        new_mean = self._blend(running_mean, batch_mean, keep_old, take_new,
+                               temp)
+        new_var = self._blend(running_var, batch_var, keep_old, take_new,
+                              temp)
 
         # -- 3. one atomic two-buffer commit through the F1 transaction.
         self._commit_running_state(
@@ -571,7 +652,18 @@ class _NativeBatchNorm(NativeModule):
         # borrowing strided view, and this layer's contract is a fresh
         # owning contiguous output.
         channels_first = track(shifted.transpose(self._channels_first))
-        return track(channels_first.contiguous_copy())
+        output = track(channels_first.contiguous_copy())
+        # This is the one place in the composition where a *borrowing*
+        # operand can outlive its owner: ``gamma``/``beta`` may introduce
+        # gradients that ``normalized`` itself does not carry, so the graph
+        # can reach the channels-last view without reaching the tensor that
+        # owns its storage. Nothing later can repeat it — the return leg's
+        # ``channels_first`` borrows ``shifted``, which is a graph node
+        # exactly when ``channels_first`` is, and the final
+        # ``contiguous_copy`` owns its result outright.
+        _retain_channels_last_source(output, normalized, channels_last,
+                                     scaled)
+        return output
 
     def _inverse_std(self, variance, like, track):
         """``reciprocal(sqrt(variance + eps))`` — epsilon **inside** the
@@ -607,7 +699,30 @@ class _NativeBatchNorm(NativeModule):
             # wrapper, never the buffer's storage.
             view.close()
 
-    def _blend(self, current, statistic, like, track):
+    def _momentum_coefficients(self, like, track):
+        """The ``(1 - momentum, momentum)`` scalar pair this forward's
+        running-statistics update multiplies by, as native graph-free
+        scalars (no NumPy).
+
+        Built once per forward and shared by both blends. They are plain
+        read-only operands of a ``multiply``: nothing mutates them, they
+        carry no value version, they are never registered, and ``track``
+        puts them in the same scratch list every other working value goes
+        into, so they are released on every path by the caller's
+        ``finally``. If the second allocation fails the first is already
+        tracked, so the failure closes it — the forward has not yet touched
+        the running buffers, and the F1 transaction has not begun."""
+        keep_old = track(NativeTensor.full(
+            (), 1.0 - self.momentum, dtype=like.dtype, device=like.device,
+            requires_grad=False,
+        ))
+        take_new = track(NativeTensor.full(
+            (), self.momentum, dtype=like.dtype, device=like.device,
+            requires_grad=False,
+        ))
+        return keep_old, take_new
+
+    def _blend(self, current, statistic, keep_old, take_new, track):
         """``(1 - momentum) * current + momentum * statistic`` as an
         independent **graph-free** owning ``(num_features,)`` value.
 
@@ -620,6 +735,11 @@ class _NativeBatchNorm(NativeModule):
         arithmetic builds no graph, so the buffer is never captured as a
         rereadable operand.
 
+        ``keep_old``/``take_new`` are this forward's shared coefficient
+        pair (see ``_momentum_coefficients``); the arithmetic, its operand
+        order, and its results are exactly what they were when each blend
+        built its own pair.
+
         At the boundaries the convention is exact: ``momentum=0.0`` gives
         ``1.0 * current + 0.0 * statistic``, numerically the previous
         value; ``momentum=1.0`` gives ``0.0 * current + 1.0 * statistic``,
@@ -629,17 +749,21 @@ class _NativeBatchNorm(NativeModule):
         # buffers are rank-1. A borrowing reshape lines them up without
         # copying — it is only an operand, never the stored result.
         flat = track(detached.reshape((self.num_features,)))
-        keep_old = track(NativeTensor.full(
-            (), 1.0 - self.momentum, dtype=like.dtype, device=like.device,
-            requires_grad=False,
-        ))
-        take_new = track(NativeTensor.full(
-            (), self.momentum, dtype=like.dtype, device=like.device,
-            requires_grad=False,
-        ))
         old_part = track(current.multiply(keep_old))
         new_part = track(flat.multiply(take_new))
-        return track(old_part.add(new_part))
+        # Last use: the detached copy and its borrowing view are consumed
+        # by the multiply above and nothing reads them again, so they are
+        # released here rather than held to the caller's ``finally``
+        # (Phase H, milestone H8). Both stay in ``track``'s list and
+        # ``close()`` is idempotent, so the failure path still closes
+        # exactly once. The borrowing view goes first: it owns nothing, so
+        # closing it releases only the wrapper.
+        flat.close()
+        detached.close()
+        blended = track(old_part.add(new_part))
+        new_part.close()
+        old_part.close()
+        return blended
 
     def _commit_running_state(self, running_mean, running_var,
                               new_mean, new_var):
