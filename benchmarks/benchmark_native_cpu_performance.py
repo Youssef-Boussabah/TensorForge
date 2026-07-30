@@ -822,6 +822,180 @@ def _build_ctypes_boundary(config, spec):
     }
 
 
+def _build_ctypes_boundary_strided(config, spec):
+    """The array-carrying twin of ``ctypes_boundary`` (Phase H, H7).
+
+    ``ctypes_boundary`` times ``tf_core_add_contiguous``, whose arguments
+    are three storage handles and three integers — **no array crosses at
+    all**. That is deliberately the cheap half of the boundary, and it is
+    the half H7 did not touch.
+
+    This case times ``tf_core_add`` on the same preallocated storages: the
+    same foreign call and the same ``errcheck`` hook, plus the three
+    ``shape``/``strides`` layout arguments the strided C ABI takes. The two
+    cases together separate the per-call cost that carries layout metadata
+    from the cost that does not, instead of averaging them — the same
+    "separate rather than average" rule H5 and H6 followed.
+
+    Everything is prepared outside the timer, exactly as in the twin: the
+    storages, the handles, and the layout pointers, which come from the
+    operands' own immutable per-view caches. The timed region is therefore
+    the argument conversion, the foreign call, a one-element kernel, and
+    the error-contract hook.
+
+    ``native_only``: a bare foreign-function call is not a complete
+    operation, so **no ratio is published** — the same reasoning as the
+    twin's."""
+    del spec
+    shape = config["shape"]
+    library = cpp._require_library()
+    left = cpp.NativeTensorCore.from_array(np.ones(shape))
+    right = cpp.NativeTensorCore.from_array(np.full(shape, 2.0))
+    out = cpp.NativeTensorCore.zeros(shape)
+    handle_a = left.storage._require_open()
+    handle_b = right.storage._require_open()
+    handle_out = out.storage._require_open()
+    # Resolved once, outside the timer, exactly like the handles: obtaining
+    # a view's cached layout is metadata_preparation's subject, not this
+    # case's. Both operands have the same shape, so the shared shape
+    # pointer is the left one's and only the strides differ.
+    shape_pointer, a_strides = left._layout_pointers()
+    b_strides = right._layout_pointers()[1]
+    rank = len(shape)
+
+    def call():
+        library.tf_core_add(handle_a, handle_b, handle_out,
+                            shape_pointer, a_strides, b_strides, 0, 0, rank)
+
+    def check():
+        call()
+        produced = out.to_numpy()
+        expected = np.full(shape, 3.0)
+        _require_shape(produced, shape, "the preallocated destination")
+        _require_finite(produced, "the preallocated destination")
+        _require_parity(_max_abs(produced - expected), EXACT,
+                        "the preallocated destination",
+                        "NumPy elementwise addition")
+        _require_unchanged(left.to_numpy(), np.ones(shape),
+                           "the left operand")
+        _require_unchanged(right.to_numpy(), np.full(shape, 2.0),
+                           "the right operand")
+        # The rank passed to the kernel and the length of the metadata it
+        # addresses come from the same immutable view, which is the whole
+        # basis on which these pointers may be trusted.
+        _require(len(left._layout_arrays()[0]) == rank
+                 and len(left._layout_arrays()[1]) == rank,
+                 "a layout array's length does not match the rank passed "
+                 "to the kernel")
+        _require(left._layout_pointers() is
+                 left.view._native_layout_pointers(),
+                 "the layout pointers are not the view's cached pair")
+        return {
+            "max_abs_error": 0.0,
+            "element_count": int(np.prod(shape)) if shape else 1,
+            "rank": rank,
+            "checks": ["shape", "finite", "numpy_exact_parity",
+                       "no_operand_mutation", "metadata_length_equals_rank",
+                       "layout_pointers_are_the_view_cache"],
+        }
+
+    return {
+        "check": check,
+        "layers": {TENSOR_CORE: _layer(lambda _s=None: call())},
+        "close": lambda: (left.close(), right.close(), out.close()),
+    }
+
+
+def _build_elementwise_broadcast(config, spec):
+    """One broadcasting elementwise ``multiply`` across every layer
+    (Phase H, milestone H7).
+
+    ``spec["operand"]`` selects the right operand's shape: ``"scalar"``
+    gives a rank-0 core (the shape every optimizer coefficient has) and
+    ``"row"`` a ``(1, n)`` core (the shape every normalization statistic
+    has). Both take the broadcasting path, where all three layout
+    descriptions belong to the *broadcast* rather than to either operand
+    and so are built per call — the dominant array-carrying crossing in the
+    whole runtime.
+
+    NumPy broadcasts the same way over the same values, so unlike the
+    boundary cases this one has an honest reference and publishes a ratio.
+    """
+    shape = config["shape"]
+    left = _values(shape, spec["seed"])
+    if spec["operand"] == "scalar":
+        right = np.asarray(1.5)
+    else:
+        right = _values((1, shape[1]), spec["seed"] + 1)
+
+    core_left = cpp.NativeTensorCore.from_array(left)
+    core_right = cpp.NativeTensorCore.from_array(right)
+    tensor_left = NativeTensor.from_array(left)
+    tensor_right = NativeTensor.from_array(right)
+    tensor_left_g = NativeTensor.from_array(left, requires_grad=True)
+    owned = [core_left, core_right, tensor_left, tensor_right, tensor_left_g]
+
+    def check():
+        expected = left * right
+        _require(core_left.shape != core_right.shape,
+                 "the operands have equal shapes, so nothing broadcasts")
+        results = {}
+        core_out = core_left.multiply(core_right)
+        try:
+            results[TENSOR_CORE] = core_out.to_numpy().copy()
+            _require_fresh_core(core_out, (core_left, core_right),
+                                "the core result")
+        finally:
+            core_out.close()
+        plain = tensor_left.multiply(tensor_right)
+        try:
+            results[NATIVE_TENSOR] = plain.to_numpy().copy()
+            _require(not plain.requires_grad,
+                     "the no-grad layer built a gradient-tracking result")
+        finally:
+            plain.close()
+        graphed = tensor_left_g.multiply(tensor_right)
+        try:
+            results[NATIVE_TENSOR_GRAPH] = graphed.to_numpy().copy()
+            _require(graphed.requires_grad,
+                     "the graph layer built no autograd node")
+        finally:
+            graphed.close()
+        errors = {}
+        for layer, produced in results.items():
+            _require_shape(produced, shape, f"the {layer} result")
+            _require_finite(produced, f"the {layer} result")
+            errors[layer] = _max_abs(produced - expected)
+            _require_parity(errors[layer], EXACT, f"the {layer} result",
+                            "NumPy broadcasting multiplication")
+        _require_unchanged(core_right.to_numpy().reshape(right.shape), right,
+                           "the right operand")
+        return {
+            "max_abs_error": max(errors.values()),
+            "per_layer_max_abs_error": errors,
+            "broadcast_operand": spec["operand"],
+            "checks": ["operands_differ_in_shape", "shape", "finite",
+                       "numpy_exact_parity", "owning_contiguous_output",
+                       "no_grad_layer_builds_no_graph", "no_operand_mutation"],
+        }
+
+    return {
+        "check": check,
+        "layers": {
+            NUMPY: _layer(lambda _s=None: left * right),
+            TENSOR_CORE: _layer(lambda _s=None: core_left.multiply(core_right),
+                                cleanup=_close_result),
+            NATIVE_TENSOR: _layer(
+                lambda _s=None: tensor_left.multiply(tensor_right),
+                cleanup=_close_result),
+            NATIVE_TENSOR_GRAPH: _layer(
+                lambda _s=None: tensor_left_g.multiply(tensor_right),
+                cleanup=_close_result),
+        },
+        "close": lambda: [item.close() for item in owned],
+    }
+
+
 def _build_elementwise(config, spec):
     """One elementwise ``multiply`` across every layer.
 
@@ -2848,7 +3022,44 @@ CASES = {
                   "normalization, and no wrapper object — only the boundary "
                   "crossing and a one-element kernel. Paired with "
                   "metadata_preparation it decomposes the fixed cost that "
-                  "B3 measured as a single ~20 microsecond figure."),
+                  "B3 measured as a single ~20 microsecond figure. It times "
+                  "the **array-free** half of the boundary — three handles "
+                  "and three integers — which is why H7 added the strided "
+                  "twin beside it rather than changing this case."),
+    },
+    "ctypes_boundary_strided": {
+        "workload": "dispatch_overhead",
+        # As for the twin: a larger shape would time the kernel, not the
+        # boundary.
+        "size_independent": True,
+        "section": "one prepared native call carrying layout metadata",
+        "operation": ("tf_core_add over three preallocated storages with "
+                      "resolved handles and cached layout pointers — the "
+                      "foreign call, its argument conversion including the "
+                      "three shape/stride arguments, and the error-contract "
+                      "hook"),
+        "build": _build_ctypes_boundary_strided,
+        "seed": 20260740,
+        "reference_type": NATIVE_ONLY,
+        "reference_layer": None,
+        "reference_detail": ("none — a bare foreign-function call is not a "
+                             "complete operation, so dividing it by one would "
+                             "compare different things"),
+        "correctness_reference": "NumPy elementwise addition, exactly",
+        "configurations": {
+            "full": {"shape": (1, 1)},
+            "smoke": {"shape": (1, 1)},
+            "profile": {"shape": (1, 1)},
+        },
+        "notes": ("Phase H, milestone H7. The twin of ctypes_boundary, "
+                  "differing in exactly one respect: this call carries the "
+                  "three int64 layout arguments the strided C ABI takes and "
+                  "the other carries none. The pair separates the "
+                  "array-carrying crossing from the array-free one instead "
+                  "of averaging them, which is the only way the cost of the "
+                  "metadata arguments is visible at all. Its gate also "
+                  "asserts the rank/length agreement the trusted binding "
+                  "depends on."),
     },
 
     # -- elementwise ---------------------------------------------------------
@@ -2896,6 +3107,56 @@ CASES = {
         "notes": ("A real transposed view, not a copy: the same logical "
                   "values as elementwise_contiguous, reached through the "
                   "strided odometer. Nothing is materialized first."),
+    },
+    "elementwise_broadcast_scalar": {
+        "workload": "elementwise",
+        "section": "multiply by a rank-0 operand (broadcasting)",
+        "operation": ("multiply() with a rank-0 right operand — the "
+                      "broadcasting path, with all three layout "
+                      "descriptions built per call"),
+        "build": _build_elementwise_broadcast,
+        "operand": "scalar",
+        "seed": 20260741,
+        "reference_type": REFERENCE_NUMPY,
+        "reference_layer": NUMPY,
+        "reference_detail": "numpy multiplication by the same scalar",
+        "correctness_reference": "NumPy broadcasting multiplication, exactly",
+        "configurations": {
+            "full": {"shape": (256, 256)},
+            "smoke": {"shape": (16, 16)},
+            "profile": {"shape": (1024, 1024)},
+        },
+        "notes": ("Phase H, milestone H7. This is the shape every optimizer "
+                  "coefficient has, and the broadcast path was measured as "
+                  "the runtime's single most frequent array-carrying "
+                  "crossing — 35 of an MLP training step's 125 such "
+                  "crossings and 99 of a normalized step's. Unlike the two "
+                  "boundary cases this one is a complete operation with an "
+                  "honest NumPy equivalent, so it publishes a ratio."),
+    },
+    "elementwise_broadcast_row": {
+        "workload": "elementwise",
+        "section": "multiply by a (1, n) operand (broadcasting)",
+        "operation": ("multiply() with a (1, n) right operand — the "
+                      "broadcasting path over a real stretched axis"),
+        "build": _build_elementwise_broadcast,
+        "operand": "row",
+        "seed": 20260742,
+        "reference_type": REFERENCE_NUMPY,
+        "reference_layer": NUMPY,
+        "reference_detail": "numpy multiplication by the same (1, n) array",
+        "correctness_reference": "NumPy broadcasting multiplication, exactly",
+        "configurations": {
+            "full": {"shape": (256, 256)},
+            "smoke": {"shape": (16, 16)},
+            "profile": {"shape": (1024, 1024)},
+        },
+        "notes": ("Phase H, milestone H7. The shape every normalization "
+                  "statistic has: one axis genuinely stretched by a zero "
+                  "stride rather than the whole operand collapsed to a "
+                  "point. Paired with elementwise_broadcast_scalar so the "
+                  "two broadcast shapes are separated rather than "
+                  "averaged."),
     },
 
     # -- reductions ----------------------------------------------------------

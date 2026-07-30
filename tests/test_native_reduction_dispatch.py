@@ -1089,13 +1089,18 @@ def test_a_failing_mean_scale_releases_the_summed_output(error, live_storages,
 
 
 @needs_native
-@pytest.mark.parametrize("seam", ["write_strides", "layout_arrays"])
+@pytest.mark.parametrize("seam", ["write_strides", "layout_pointers"])
 @pytest.mark.parametrize("error", FAILURE_CLASSES)
 def test_a_post_allocation_failure_releases_the_output(seam, error,
                                                        live_storages,
                                                        monkeypatch):
     """The two seams that run *after* the output is allocated and *before*
-    the kernel: the write-stride construction and the layout arrays.
+    the kernel: the write-stride construction and the layout metadata.
+
+    The second seam is ``_layout_pointers`` as of Phase H milestone H7,
+    which is where a reduction now obtains the ``shape``/``strides`` the
+    strided C ABI takes; before H7 it was ``_layout_arrays``. The seam
+    moved, the contract did not — every assertion below is unchanged.
 
     ``sum`` runs both inside the same cleanup boundary every other
     allocating Core op uses, so a failure at either releases the output
@@ -1115,7 +1120,7 @@ def test_a_post_allocation_failure_releases_the_output(seam, error,
         if seam == "write_strides":
             monkeypatch.setattr(cpp, "_reduce_out_strides", exploding)
         else:
-            monkeypatch.setattr(Core, "_layout_arrays", exploding)
+            monkeypatch.setattr(Core, "_layout_pointers", exploding)
         with pytest.raises(error):
             core.sum(axis=1)
         monkeypatch.undo()
@@ -1249,15 +1254,14 @@ def test_a_nonzero_destination_would_change_the_answer_on_both_paths():
         try:
             out = Core.zeros((4,))
             try:
-                shape_arr, strides_arr = view._layout_arrays()
-                out_strides = np.asarray(
-                    cpp._reduce_out_strides(view.shape, {0}, False, (4,)),
-                    dtype=np.int64)
+                shape_ptr, strides_ptr = view._layout_pointers()
+                out_strides = cpp._layout_vector(
+                    cpp._reduce_out_strides(view.shape, {0}, False, (4,)))
                 library.tf_storage_fill(out._storage._require_open(), 100.0)
                 library.tf_core_sum(
                     view._storage._require_open(),
                     out._storage._require_open(),
-                    shape_arr, strides_arr, out_strides,
+                    shape_ptr, strides_ptr, out_strides,
                     view.offset, view.ndim)
                 accumulated = out.to_numpy().copy()
             finally:

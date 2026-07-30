@@ -752,14 +752,16 @@ def test_the_poison_detector_can_actually_fail(poisoned_allocator, poison):
         out = Core._uninitialized((4, 3), dtype=gradient.dtype,
                                   device=gradient.device)
         try:
-            # Only the narrowed region is written by design.
-            shape_arr, strides_arr = gradient._layout_arrays()
+            # Only the narrowed region is written by design. The layout
+            # metadata crosses through H7's trusted binding, exactly as the
+            # production scatter does.
+            shape_ptr, strides_ptr = gradient._layout_pointers()
             full = cpp.row_major_strides((4, 3))
             gradient._storage._lib.tf_core_narrow_backward(
                 gradient._storage._require_open(),
                 out._storage._require_open(),
-                shape_arr, strides_arr,
-                np.array(full, dtype=np.int64),
+                shape_ptr, strides_ptr,
+                cpp._layout_vector(full),
                 gradient.offset, 1 * full[0], gradient.ndim,
             )
             written = out.to_numpy()

@@ -1,0 +1,1544 @@
+"""The H7 Python/C ABI boundary contract (Phase H, milestone H7).
+
+H7 changed how this project's own layout metadata reaches the strided C
+ABI. It changed **no** C++, no exported symbol, no kernel, no arithmetic,
+no public API, and no capability. What it changed is which ctypes
+argument type stands between a Python object and a native pointer, and it
+did so for exactly one category of argument.
+
+The architecture, and what this file proves about it:
+
+1. **Two categories, two bindings.** Every array position in
+   ``backends/cpp.py`` is either *data* — a float64 buffer a caller
+   supplied or that native code writes into and hands back, plus the
+   cross-entropy class labels — or *layout metadata* this module built for
+   itself from a tuple it had already validated. Data positions keep the
+   checked ``numpy.ctypeslib.ndpointer`` binding, which re-verifies the
+   array, its exact dtype, and its contiguity at every call. Layout
+   positions take ``ctypes.POINTER(ctypes.c_int64)``, because every
+   property ``ndpointer`` would re-check is established once, at an
+   immutable construction boundary, and cannot subsequently change.
+
+2. **Exactly two producers.** ``NativeTensorView._native_layout_pointers``
+   returns the per-view pair, derived from the H3 read-only NumPy arrays
+   that remain the owning buffers; ``cpp._layout_vector`` builds a fresh
+   ``c_int64`` vector for metadata that belongs to one *operation* rather
+   than to any tensor. Nothing else may reach a trusted position.
+
+3. **Length is rank, by construction.** This is the invariant
+   ``ndpointer`` never checked and could not check: the ABI receives a
+   pointer and an ``ndim``, and has no access to the Python object's
+   length. Both producers make the two agree structurally — a view's
+   arrays were built from its own ``shape``/``strides``, and a vector is
+   exactly ``len(values)`` long — and this file asserts it directly.
+
+4. **Owner lifetime is NumPy's guarantee, not a convention.**
+   ``ndarray.ctypes.data_as`` stores the array on the pointer it returns,
+   so a cached pointer cannot outlive its buffer.
+   ``POINTER(...).from_address(...)`` would be cheaper and is deliberately
+   not used, precisely because it produces a pointer with no owner.
+
+What H7 must not have done, also asserted here: weaken any public
+rejection, change any error type or message, expose a raw pointer or a
+native address, add a trusted-call flag or an environment fast path, make
+a closed object usable, reconfigure a binding at call time, move the
+exported symbol count, or change any capability, dtype, device, or
+checkpoint value.
+
+No test in this file asserts a duration. H7's measurements live in the
+design document and in the benchmark harness, never in the suite.
+"""
+
+import ctypes
+import gc
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+import numpy as np
+import pytest
+
+from tensorforge.backends import cpp
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+BACKEND_FILE = REPO_ROOT / "src" / "tensorforge" / "backends" / "cpp.py"
+
+needs_native = pytest.mark.skipif(
+    not cpp.is_available(), reason="native backend not built"
+)
+
+Core = cpp.NativeTensorCore
+
+
+@pytest.fixture
+def live_storages(monkeypatch):
+    """The ids of every open NativeStorage — a real live-allocation count,
+    so an ownership test can prove the count returns exactly to its
+    baseline instead of trusting collection."""
+    open_ids = set()
+    original_init = cpp.NativeStorage.__init__
+    original_close = cpp.NativeStorage.close
+
+    def tracked_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        open_ids.add(id(self))
+
+    def tracked_close(self):
+        original_close(self)
+        open_ids.discard(id(self))
+
+    monkeypatch.setattr(cpp.NativeStorage, "__init__", tracked_init)
+    monkeypatch.setattr(cpp.NativeStorage, "close", tracked_close)
+    return open_ids
+
+
+# ==========================================================================
+# 1. The complete binding inventory
+# ==========================================================================
+
+# Every exported function this module configures, and which of its
+# arguments are arrays. The two categories are spelled out per position:
+# "checked" for an ndpointer binding, "trusted" for a layout pointer.
+#
+# This table is the milestone's inventory in executable form. A future
+# change that adds an array argument, or that quietly moves one position
+# from checked to trusted, fails here and has to say so.
+EXPECTED_ARRAY_BINDINGS = {
+    # -- public raw-buffer kernels: caller-supplied float64 -----------------
+    "tf_elementwise_add": ("checked", "checked", "checked"),
+    "tf_elementwise_subtract": ("checked", "checked", "checked"),
+    "tf_elementwise_multiply": ("checked", "checked", "checked"),
+    "tf_elementwise_divide": ("checked", "checked", "checked"),
+    "tf_relu": ("checked", "checked"),
+    "tf_matmul": ("checked", "checked", "checked"),
+    "tf_matmul_tiled": ("checked", "checked", "checked"),
+    # -- the explicit host conversion boundary -----------------------------
+    "tf_storage_copy_from": ("checked",),
+    "tf_storage_copy_to": ("checked",),
+    # the float64 destination stays checked; the layout pair is trusted
+    "tf_storage_materialize": ("checked", "trusted", "trusted"),
+    # -- strided unary Core kernels ----------------------------------------
+    "tf_core_relu": ("trusted", "trusted"),
+    "tf_core_sqrt": ("trusted", "trusted"),
+    "tf_core_reciprocal": ("trusted", "trusted"),
+    "tf_core_exp": ("trusted", "trusted"),
+    "tf_core_log": ("trusted", "trusted"),
+    "tf_core_contiguous_copy": ("trusted", "trusted"),
+    # -- strided binary Core kernels ---------------------------------------
+    "tf_core_add": ("trusted", "trusted", "trusted"),
+    "tf_core_subtract": ("trusted", "trusted", "trusted"),
+    "tf_core_multiply": ("trusted", "trusted", "trusted"),
+    "tf_core_relu_backward": ("trusted", "trusted", "trusted"),
+    # -- reduction and its scatter dual ------------------------------------
+    "tf_core_sum": ("trusted", "trusted", "trusted"),
+    "tf_core_narrow_backward": ("trusted", "trusted", "trusted"),
+    # -- cross-entropy class labels: int64, but deliberately checked -------
+    "tf_core_cross_entropy_forward": ("checked",),
+    "tf_core_cross_entropy_backward": ("checked",),
+}
+
+
+def _carrier_length(carrier):
+    """How many int64 entries a trusted carrier describes.
+
+    Both producers can answer this, which is more than the checked binding
+    ever offered — an ``ndpointer`` argument's length was invisible to
+    everything, which is precisely the gap H3's sanitizer work exposed. A
+    ``c_int64`` vector carries its length in its own type; a cached pointer
+    carries the owning NumPy array NumPy attached to it when ``data_as``
+    built it, and that array's length is the view's rank."""
+    owner = getattr(carrier, "_arr", None)
+    if owner is not None:
+        return len(owner)
+    return len(carrier)
+
+
+def _array_kinds(function):
+    """The category of each array argument of a configured function."""
+    kinds = []
+    for argtype in function.argtypes or ():
+        name = getattr(argtype, "__name__", "")
+        if name.startswith("ndpointer"):
+            kinds.append("checked")
+        elif argtype is cpp._LAYOUT_POINTER:
+            kinds.append("trusted")
+    return tuple(kinds)
+
+
+def _configured_names():
+    source = BACKEND_FILE.read_text(encoding="utf-8")
+    return sorted(set(re.findall(r"\btf_[a-z0-9_]+\b", source)))
+
+
+@needs_native
+def test_the_binding_inventory_is_exactly_the_declared_one():
+    """Every configured export's array arguments, position by position."""
+    library = cpp._require_library()
+    seen = {}
+    for name in _configured_names():
+        function = getattr(library, name, None)
+        if function is None or function.argtypes is None:
+            continue
+        kinds = _array_kinds(function)
+        if kinds:
+            seen[name] = kinds
+    assert seen == EXPECTED_ARRAY_BINDINGS
+
+
+@needs_native
+def test_every_configured_export_declares_its_argument_types():
+    """No function is reachable with ctypes' default (unchecked) argument
+    handling — a missing ``argtypes`` would silently accept anything."""
+    library = cpp._require_library()
+    for name in _configured_names():
+        function = getattr(library, name, None)
+        if function is None:
+            continue
+        assert function.argtypes is not None, name
+
+
+@needs_native
+def test_the_two_bindings_are_the_only_array_argument_types():
+    """Exactly two array bindings exist. In particular no position uses a
+    bare ``c_void_p``, which would express the ABI less precisely than a
+    typed pointer and would accept an integer address."""
+    library = cpp._require_library()
+    layout_positions = 0
+    checked_positions = 0
+    for name in _configured_names():
+        function = getattr(library, name, None)
+        if function is None or function.argtypes is None:
+            continue
+        for argtype in function.argtypes:
+            if argtype is cpp._LAYOUT_POINTER:
+                layout_positions += 1
+            elif getattr(argtype, "__name__", "").startswith("ndpointer"):
+                checked_positions += 1
+    assert layout_positions == 32
+    assert checked_positions == 25
+
+
+@needs_native
+def test_the_checked_bindings_are_unchanged_ndpointers():
+    """The checked binding is exactly what it always was: an ndpointer of
+    the exact dtype, requiring C-contiguity."""
+    assert cpp._CHECKED_F64_ARRAY is np.ctypeslib.ndpointer(
+        dtype=np.float64, flags="C_CONTIGUOUS")
+    assert cpp._CHECKED_I64_ARRAY is np.ctypeslib.ndpointer(
+        dtype=np.int64, flags="C_CONTIGUOUS")
+    assert cpp._CHECKED_F64_ARRAY._dtype_ == np.dtype(np.float64)
+    assert cpp._CHECKED_I64_ARRAY._dtype_ == np.dtype(np.int64)
+
+
+def test_the_layout_binding_is_a_typed_int64_pointer():
+    """Not ``c_void_p``, and not an untyped address."""
+    assert cpp._LAYOUT_POINTER._type_ is ctypes.c_int64
+    assert issubclass(cpp._LAYOUT_POINTER, ctypes._Pointer)
+
+
+# ==========================================================================
+# 2. What the trusted binding still rejects
+# ==========================================================================
+
+@needs_native
+@pytest.mark.parametrize("wrong", [
+    pytest.param(lambda: np.asarray((2, 3), dtype=np.int64), id="numpy_int64"),
+    pytest.param(lambda: np.asarray((2, 3), dtype=np.int32), id="numpy_int32"),
+    pytest.param(lambda: np.asarray((2.0, 3.0)), id="numpy_float64"),
+    pytest.param(lambda: [2, 3], id="python_list"),
+    pytest.param(lambda: (2, 3), id="python_tuple"),
+    pytest.param(lambda: 12345, id="python_int"),
+    pytest.param(lambda: b"\x02\x00\x00\x00\x00\x00\x00\x00", id="bytes"),
+    pytest.param(lambda: "23", id="str"),
+    pytest.param(lambda: (ctypes.c_int32 * 2)(2, 3), id="c_int32_vector"),
+    pytest.param(lambda: (ctypes.c_double * 2)(2.0, 3.0), id="c_double_vector"),
+    pytest.param(
+        lambda: np.asarray((2, 3), dtype=np.int64).ctypes.data_as(
+            ctypes.POINTER(ctypes.c_int32)),
+        id="c_int32_pointer"),
+    pytest.param(lambda: ctypes.c_void_p(1234), id="c_void_p"),
+])
+def test_a_trusted_position_rejects_everything_but_an_int64_carrier(wrong):
+    """ctypes still type-checks every call. The trusted binding is not a
+    hole: it accepts a ``c_int64`` pointer or a ``c_int64`` vector and
+    rejects a NumPy array (of any dtype), a sequence, an integer, bytes, a
+    differently typed pointer or vector, and an untyped ``c_void_p``.
+
+    A NumPy array being rejected is a *deliberate* consequence: it makes
+    it impossible to reach a trusted position by accident from code that
+    still thinks in terms of the old checked binding."""
+    library = cpp._require_library()
+    source = Core.from_array(np.arange(6.0).reshape(2, 3))
+    out = Core.zeros((3,))
+    try:
+        good = cpp._layout_vector((0, 1))
+        with pytest.raises(ctypes.ArgumentError):
+            library.tf_core_sum(
+                source.storage._require_open(), out.storage._require_open(),
+                wrong(), wrong(), good, 0, 2)
+    finally:
+        out.close()
+        source.close()
+
+
+@needs_native
+def test_a_trusted_position_accepts_both_producers_and_nothing_else():
+    """The two producers are interchangeable at the boundary and both
+    really work — this is the positive half of the test above."""
+    library = cpp._require_library()
+    values = np.arange(6.0).reshape(2, 3)
+    source = Core.from_array(values)
+    try:
+        for shape_arg, strides_arg in (
+            (source._layout_pointers()[0], source._layout_pointers()[1]),
+            (cpp._layout_vector((2, 3)), cpp._layout_vector((3, 1))),
+        ):
+            out = Core.zeros((3,))
+            try:
+                library.tf_core_sum(
+                    source.storage._require_open(),
+                    out.storage._require_open(),
+                    shape_arg, strides_arg, cpp._layout_vector((0, 1)), 0, 2)
+                assert np.array_equal(out.to_numpy(), values.sum(axis=0))
+            finally:
+                out.close()
+    finally:
+        source.close()
+
+
+# ==========================================================================
+# 3. The public raw-buffer contract is exactly what it was
+# ==========================================================================
+
+RAW_HELPERS = (
+    ("elementwise_add", 2), ("elementwise_subtract", 2),
+    ("elementwise_multiply", 2), ("elementwise_divide", 2),
+    ("relu", 1), ("matmul", 2), ("matmul_tiled", 2),
+)
+
+
+def _raw_call(name, arity, first):
+    helper = getattr(cpp, name)
+    # Every raw helper normalizes with ascontiguousarray first, so the
+    # reference shape is the normalized one, whatever was passed in.
+    normalized = np.ascontiguousarray(first, dtype=np.float64)
+    if name in ("matmul", "matmul_tiled"):
+        return helper(first, np.ones((normalized.shape[-1], 2)))
+    if arity == 1:
+        return helper(first)
+    return helper(first, np.ones_like(normalized))
+
+
+@needs_native
+@pytest.mark.parametrize("name,arity", RAW_HELPERS)
+@pytest.mark.parametrize("build,label", [
+    (lambda: np.ones((4, 4), dtype=np.float32), "float32"),
+    (lambda: np.ones((4, 4), dtype=np.int64), "int64"),
+    (lambda: np.ones((4, 4), dtype=np.int32), "int32"),
+    (lambda: np.asfortranarray(np.ones((4, 4))), "fortran_order"),
+    (lambda: np.ones((8, 8))[::2, ::2], "sliced_non_contiguous"),
+    (lambda: np.ones((4, 4)).T, "transposed"),
+    (lambda: np.ones((4, 4), dtype=">f8"), "big_endian"),
+    (lambda: np.ones((4, 4), dtype="<f8"), "little_endian"),
+    (lambda: [[1.0] * 4] * 4, "python_list"),
+    (lambda: np.ones((4, 4)).astype(object), "object_dtype"),
+])
+def test_a_raw_public_helper_accepts_exactly_what_it_always_did(
+    name, arity, build, label
+):
+    """The raw helpers normalize their inputs with
+    ``numpy.ascontiguousarray(..., dtype=float64)`` before the checked
+    binding ever sees them, so they accept every one of these and produce
+    a correct float64 result. H7 changed nothing here — none of these
+    functions has a trusted position — and this pins that."""
+    values = build()
+    result = _raw_call(name, arity, values)
+    assert isinstance(result, np.ndarray)
+    assert result.dtype == np.float64
+    assert result.flags.c_contiguous
+    assert np.isfinite(result).all()
+
+
+@needs_native
+@pytest.mark.parametrize("bad", [
+    "not an array",
+    [[1.0, 2.0], [3.0]],
+    [object()],
+    {"a": 1.0},
+])
+def test_a_raw_public_helper_still_rejects_what_it_always_rejected(bad):
+    """The rejections are the same objects and the same exception types:
+    whatever ``ascontiguousarray(..., dtype=float64)`` cannot convert is
+    rejected there, before the checked binding is ever reached. H7 moved
+    nothing here, and this pins the boundary where the rejection happens."""
+    with pytest.raises((ValueError, TypeError)):
+        cpp.relu(bad)
+
+
+@needs_native
+def test_a_raw_public_helper_still_rejects_mismatched_shapes():
+    with pytest.raises(ValueError, match="identical"):
+        cpp.elementwise_add(np.ones((2, 3)), np.ones((3, 2)))
+    with pytest.raises(ValueError, match="inner dimensions"):
+        cpp.matmul(np.ones((2, 3)), np.ones((4, 5)))
+    with pytest.raises(ValueError, match="2-D"):
+        cpp.matmul(np.ones(3), np.ones((3, 3)))
+
+
+@needs_native
+def test_a_read_only_input_is_still_accepted_by_a_raw_helper():
+    """The kernels only read their inputs, so a read-only array is legal
+    and always was."""
+    values = np.ones((4, 4))
+    values.flags.writeable = False
+    assert np.array_equal(cpp.relu(values), values)
+
+
+@needs_native
+def test_the_checked_binding_still_rejects_a_wrong_dtype_at_the_abi():
+    """Driven at the ABI, below the helpers' normalization: the checked
+    positions really do reject, which is why they are still checked."""
+    library = cpp._require_library()
+    good = np.ones(4, dtype=np.float64)
+    for bad in (np.ones(4, dtype=np.float32), np.ones(4, dtype=np.int64),
+                np.ones(4, dtype=">f8"), np.ones(8)[::2], [1.0] * 4, None):
+        with pytest.raises((ctypes.ArgumentError, TypeError)):
+            library.tf_relu(bad, good, 4)
+
+
+@needs_native
+def test_the_cross_entropy_labels_stay_a_checked_position():
+    """Deliberately not trusted: a label array's required length comes
+    from the logits, not from the array, so a dtype and layout check at
+    the boundary is still doing work the construction site cannot."""
+    library = cpp._require_library()
+    assert library.tf_core_cross_entropy_forward.argtypes[2] is (
+        cpp._CHECKED_I64_ARRAY)
+    assert library.tf_core_cross_entropy_backward.argtypes[2] is (
+        cpp._CHECKED_I64_ARRAY)
+    logits = Core.from_array(np.array([[2.0, 1.0, 0.1], [0.5, 2.5, 0.2]]))
+    try:
+        # The public path still validates strictly, unchanged.
+        with pytest.raises(TypeError):
+            logits.cross_entropy_forward(np.array([0, 1], dtype=np.float64))
+        with pytest.raises(ValueError):
+            logits.cross_entropy_forward([0, 1, 2])
+        with pytest.raises(ValueError):
+            logits.cross_entropy_forward([0, 7])
+        result = logits.cross_entropy_forward([0, 1])
+        try:
+            assert result.targets.dtype == np.int64
+            assert not result.targets.flags.writeable
+        finally:
+            result.close()
+    finally:
+        logits.close()
+
+
+# ==========================================================================
+# 4. Metadata length equals rank — the invariant ndpointer never checked
+# ==========================================================================
+
+SHAPES = [(), (5,), (3, 4), (2, 3, 4), (2, 3, 4, 5)]
+
+
+def _core_of_shape(shape):
+    """A core of exactly ``shape``. ``from_array`` cannot make a rank-0 one
+    — ``numpy.ascontiguousarray`` has ``ndmin=1`` — so the scalar shape
+    comes from ``full``, which is how the runtime builds one anyway."""
+    if not shape:
+        return Core.full((), 3.0)
+    return Core.from_array(np.ones(shape))
+
+
+@needs_native
+@pytest.mark.parametrize("shape", SHAPES)
+def test_a_views_layout_length_is_its_rank(shape):
+    """Both cached arrays are exactly ``ndim`` long, for every rank the
+    runtime can construct — rank 0 included, where both are empty and the
+    kernels never dereference them."""
+    core = _core_of_shape(shape)
+    try:
+        shape_array, strides_array = core._layout_arrays()
+        assert len(shape_array) == core.ndim == len(shape)
+        assert len(strides_array) == core.ndim
+        assert shape_array.tolist() == list(core.shape)
+        assert strides_array.tolist() == list(core.strides)
+    finally:
+        core.close()
+
+
+@pytest.mark.parametrize("values", [(), (5,), (3, 4), (2, 3, 4), (2, 3, 4, 5)])
+def test_an_operation_local_vector_length_is_its_input_length(values):
+    """A vector carries its length in its own type, which is the property
+    a raw pointer plus a separate ``ndim`` cannot have."""
+    vector = cpp._layout_vector(values)
+    assert len(vector) == len(values)
+    assert list(vector) == list(values)
+    assert vector._type_ is ctypes.c_int64
+
+
+def test_the_layout_vector_producer_is_total():
+    """It returns a usable carrier for every rank, and never ``None`` —
+    which is the one value the trusted binding would accept and the C ABI
+    could not survive. Rank 0 gives a valid empty vector."""
+    for rank in range(0, 9):
+        vector = cpp._layout_vector(tuple(range(1, rank + 1)))
+        assert vector is not None
+        assert len(vector) == rank
+
+
+@needs_native
+@pytest.mark.parametrize("shape", SHAPES)
+def test_the_pointer_producer_is_total_and_never_none(shape):
+    core = _core_of_shape(shape)
+    try:
+        pointers = core._layout_pointers()
+        assert len(pointers) == 2
+        for pointer in pointers:
+            assert pointer is not None
+            assert isinstance(pointer, cpp._LAYOUT_POINTER)
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("shape", SHAPES)
+def test_the_pointers_address_the_arrays_element_for_element(shape):
+    """The rank the kernel is told and the data the pointer addresses come
+    from one object: reading ``ndim`` entries through the pointer yields
+    exactly the view's own shape and strides, and the owning array NumPy
+    attached to the pointer is exactly ``ndim`` long."""
+    core = _core_of_shape(shape)
+    try:
+        shape_pointer, strides_pointer = core._layout_pointers()
+        assert [shape_pointer[i] for i in range(core.ndim)] == list(core.shape)
+        assert [strides_pointer[i]
+                for i in range(core.ndim)] == list(core.strides)
+        assert _carrier_length(shape_pointer) == core.ndim
+        assert _carrier_length(strides_pointer) == core.ndim
+    finally:
+        core.close()
+
+
+@needs_native
+def test_every_production_kernel_call_agrees_on_rank(monkeypatch):
+    """The structural version of the two tests above, over real calls: for
+    every strided export invoked by a real workload, the ``ndim`` argument
+    equals the length of every layout carrier passed with it.
+
+    This is the invariant H3's sanitizer work showed the C ABI depends on
+    and cannot check for itself — a two-element metadata array with
+    ``ndim=3`` is an out-of-bounds read — so it is asserted here over the
+    production call path rather than argued in prose."""
+    library = cpp._require_library()
+    # (function name, index of the ndim argument, indices of the carriers)
+    strided = {
+        "tf_core_relu": (5, (2, 3)), "tf_core_sqrt": (5, (2, 3)),
+        "tf_core_reciprocal": (5, (2, 3)), "tf_core_exp": (5, (2, 3)),
+        "tf_core_log": (5, (2, 3)), "tf_core_contiguous_copy": (5, (2, 3)),
+        "tf_core_add": (8, (3, 4, 5)), "tf_core_subtract": (8, (3, 4, 5)),
+        "tf_core_multiply": (8, (3, 4, 5)),
+        "tf_core_relu_backward": (8, (3, 4, 5)),
+        "tf_core_sum": (6, (2, 3, 4)),
+        "tf_core_narrow_backward": (7, (2, 3, 4)),
+        "tf_storage_materialize": (5, (2, 3)),
+    }
+    observed = set()
+
+    for name, (ndim_index, carrier_indices) in strided.items():
+        original = getattr(library, name)
+
+        def checking(*args, _o=original, _n=name, _i=ndim_index,
+                     _c=carrier_indices):
+            rank = args[_i]
+            for position in _c:
+                length = _carrier_length(args[position])
+                assert length == rank, (_n, position, length, rank)
+            observed.add(_n)
+            return _o(*args)
+
+        monkeypatch.setattr(library, name, checking, raising=False)
+
+    values = np.arange(24.0).reshape(2, 3, 4)
+    base = Core.from_array(values)
+    transposed = base.transpose(2, 1, 0)
+    scalar = Core.full((), 2.0)
+    try:
+        for produced in (
+            transposed.relu(), transposed.sqrt(), transposed.reciprocal(),
+            transposed.exp(), transposed.log(), transposed.contiguous_copy(),
+            base.add(scalar), base.subtract(scalar), base.multiply(scalar),
+            base.sum(axis=1), base.sum(),
+            transposed.relu_backward(transposed),
+            base.narrow(0, 0, 1).contiguous_copy().narrow_backward(
+                0, 1, (3, 3, 4)),
+        ):
+            produced.close()
+        transposed.to_numpy()
+    finally:
+        scalar.close()
+        transposed.close()
+        base.close()
+
+    assert observed == set(strided), sorted(set(strided) - observed)
+
+
+# ==========================================================================
+# 5. Pointer ownership and lifetime
+# ==========================================================================
+
+@needs_native
+def test_a_cached_pointer_holds_its_owning_array_alive():
+    """NumPy's own guarantee, relied on rather than assumed: ``data_as``
+    stores the array on the pointer. Asserted with the cyclic collector
+    disabled, so nothing here depends on a collection pass."""
+    core = Core.from_array(np.arange(12.0).reshape(3, 4))
+    gc.disable()
+    try:
+        shape_array, strides_array = core._layout_arrays()
+        shape_pointer, strides_pointer = core._layout_pointers()
+        assert shape_pointer._arr is shape_array
+        assert strides_pointer._arr is strides_array
+        # Drop every other reference we hold and read through the pointer.
+        del shape_array, strides_array
+        core.view._layout_cache = None
+        assert [shape_pointer[i] for i in range(3 if False else 2)] == [3, 4]
+        assert [strides_pointer[i] for i in range(2)] == [4, 1]
+    finally:
+        gc.enable()
+        core.close()
+
+
+@needs_native
+def test_the_pointer_cache_introduces_no_reference_cycle():
+    """A view holds its arrays and its pointers; each pointer holds its
+    array. Nothing holds the view, so dropping one needs no collector."""
+    gc.collect()
+    core = Core.from_array(np.arange(12.0).reshape(3, 4))
+    core._layout_pointers()
+    view = core.view
+    shape_array = core._layout_arrays()[0]
+    referrers = [type(r).__name__ for r in gc.get_referrers(shape_array)]
+    assert "NativeTensorView" in referrers or "tuple" in referrers
+    core.close()
+    del core, view, shape_array, referrers
+    gc.collect()
+    collected = gc.collect()
+    assert collected == 0
+
+
+@needs_native
+def test_a_layout_pointer_carries_no_native_storage_and_keeps_none_alive(
+    live_storages
+):
+    """The layout describes a tensor; it does not own one. Holding the
+    pointers after closing the tensor leaks no native storage, and the
+    pointers still address plain integers."""
+    baseline = len(live_storages)
+    core = Core.from_array(np.arange(12.0).reshape(3, 4))
+    shape_pointer, strides_pointer = core._layout_pointers()
+    core.close()
+    assert len(live_storages) == baseline
+    assert [shape_pointer[i] for i in range(2)] == [3, 4]
+    assert [strides_pointer[i] for i in range(2)] == [4, 1]
+    # And there is no route from a layout pointer back to native memory.
+    for pointer in (shape_pointer, strides_pointer):
+        assert not hasattr(pointer, "_storage")
+        assert not isinstance(getattr(pointer, "_arr", None),
+                              cpp.NativeStorage)
+
+
+@needs_native
+def test_an_operation_local_vector_lives_exactly_as_long_as_its_call(
+    monkeypatch
+):
+    """The vector is a live local of the calling frame for the whole
+    native call, and nothing retains it afterwards — no global cache, no
+    id-keyed table, no attribute on any tensor."""
+    library = cpp._require_library()
+    original = library.tf_core_sum
+    seen = []
+
+    def capture(*args):
+        seen.append(args[4])
+        # Readable *during* the call, which is the property that matters.
+        assert list(args[4]) == [0, 1]
+        return original(*args)
+
+    monkeypatch.setattr(library, "tf_core_sum", capture, raising=False)
+    core = Core.from_array(np.arange(6.0).reshape(2, 3))
+    try:
+        core.sum(axis=0).close()
+    finally:
+        core.close()
+    vector = seen[0]
+    referrers = [r for r in gc.get_referrers(vector)
+                 if not isinstance(r, (list, dict)) or r is not seen]
+    assert not any(isinstance(r, cpp.NativeTensorView) for r in referrers)
+    assert not any(isinstance(r, cpp.NativeTensorCore) for r in referrers)
+    assert cpp.__dict__.get("_vector_cache") is None
+
+
+def _backend_code_names():
+    """Every attribute and plain name the backend module's *code* uses.
+
+    Parsed rather than grepped, so a rule stated in a docstring — such as
+    the recorded reason ``from_address`` is not used — cannot be mistaken
+    for the thing it forbids."""
+    import ast
+    tree = ast.parse(BACKEND_FILE.read_text(encoding="utf-8"))
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            names.add(node.attr)
+        elif isinstance(node, ast.Name):
+            names.add(node.id)
+    return names
+
+
+def test_the_module_holds_no_global_pointer_cache():
+    """No pointer table keyed by object id, no interning, no thread-local
+    state, and no owner-free pointer construction. The only pointers that
+    persist are per-view attributes."""
+    used = _backend_code_names()
+    for banned in ("from_address", "from_buffer", "WeakValueDictionary",
+                   "WeakKeyDictionary", "local", "lru_cache", "cache",
+                   "byref", "addressof"):
+        assert banned not in used, banned
+    # ``id()`` is the classic way to key a pointer cache; the module must
+    # not call it at all.
+    assert "id" not in used
+    module_level = [name for name in vars(cpp)
+                    if not name.startswith("__")
+                    and ("cache" in name.lower() or "pointer" in name.lower())]
+    assert module_level == ["_LAYOUT_POINTER"]
+
+
+# ==========================================================================
+# 6. Immutability, views, and staleness
+# ==========================================================================
+
+@needs_native
+def test_the_pointer_cache_is_built_once_and_reused():
+    core = Core.from_array(np.arange(24.0).reshape(2, 3, 4))
+    try:
+        first = core._layout_pointers()
+        assert core._layout_pointers() is first
+        core.sum(axis=1).close()
+        assert core._layout_pointers() is first
+    finally:
+        core.close()
+
+
+@needs_native
+def test_the_pointer_cache_is_lazy():
+    """The contiguous fast path takes a flat count, so it never builds
+    layout metadata of either kind."""
+    core = Core.from_array(np.ones((8, 8)))
+    other = Core.from_array(np.ones((8, 8)))
+    try:
+        assert core.view._layout_pointer_cache is None
+        core.add(other).close()
+        core.relu().close()
+        assert core.view._layout_pointer_cache is None
+        assert core.view._layout_cache is None
+        core.to_numpy()
+        assert core.view._layout_pointer_cache is not None
+        assert core.view._layout_cache is not None
+    finally:
+        other.close()
+        core.close()
+
+
+@needs_native
+def test_a_view_gets_its_own_pointers_not_its_parents():
+    base = Core.from_array(np.arange(24.0).reshape(2, 3, 4))
+    transposed = base.transpose(2, 0, 1)
+    narrowed = base.narrow(2, 1, 2)
+    try:
+        pointers = [c._layout_pointers() for c in (base, transposed, narrowed)]
+        addresses = [(ctypes.addressof(p[0].contents),
+                      ctypes.addressof(p[1].contents)) for p in pointers]
+        assert len(set(a for pair in addresses for a in pair)) == 6
+        for core, pair in zip((base, transposed, narrowed), pointers):
+            assert [pair[0][i] for i in range(core.ndim)] == list(core.shape)
+            assert [pair[1][i] for i in range(core.ndim)] == list(core.strides)
+    finally:
+        narrowed.close()
+        transposed.close()
+        base.close()
+
+
+@needs_native
+def test_chained_views_each_carry_their_own_correct_metadata():
+    values = np.arange(120.0).reshape(2, 3, 4, 5)
+    base = Core.from_array(values)
+    step1 = base.transpose(3, 1, 0, 2)
+    step2 = step1.narrow(0, 1, 3)
+    step3 = step2.transpose(1, 0, 3, 2)
+    try:
+        for core in (base, step1, step2, step3):
+            shape_pointer, strides_pointer = core._layout_pointers()
+            assert [shape_pointer[i]
+                    for i in range(core.ndim)] == list(core.shape)
+            assert [strides_pointer[i]
+                    for i in range(core.ndim)] == list(core.strides)
+        expected = values.transpose(3, 1, 0, 2)[1:4].transpose(1, 0, 3, 2)
+        assert np.array_equal(step3.to_numpy(), expected)
+    finally:
+        for core in (step3, step2, step1, base):
+            core.close()
+
+
+@needs_native
+def test_a_layout_can_never_go_stale_because_nothing_reassigns_it():
+    """Staleness is impossible by construction, not prevented by
+    invalidation: every layout-changing operation returns a *new* view, so
+    a view's shape, strides, arrays, and pointers are each assigned once."""
+    core = Core.from_array(np.arange(24.0).reshape(2, 3, 4))
+    try:
+        first = core._layout_pointers()
+        for derived in (core.reshape((6, 4)), core.transpose(),
+                        core.narrow(0, 0, 1)):
+            try:
+                assert derived.view is not core.view
+                assert derived._layout_pointers() is not first
+            finally:
+                derived.close()
+        assert core._layout_pointers() is first
+        assert core.shape == (2, 3, 4) and core.strides == (12, 4, 1)
+    finally:
+        core.close()
+    # And no invalidation API exists, because none is needed.
+    for banned in ("invalidate", "clear_layout", "reset_layout",
+                   "refresh_layout"):
+        assert not hasattr(cpp.NativeTensorView, banned), banned
+
+
+@needs_native
+def test_closing_a_tensor_leaves_its_metadata_readable_and_its_calls_refused():
+    """Metadata stays readable after close — the long-standing contract —
+    while every data operation still raises."""
+    core = Core.from_array(np.arange(12.0).reshape(3, 4))
+    core._layout_pointers()
+    core.close()
+    assert core.shape == (3, 4) and core.strides == (4, 1) and core.ndim == 2
+    assert core._layout_arrays()[0].tolist() == [3, 4]
+    assert [core._layout_pointers()[0][i] for i in range(2)] == [3, 4]
+    with pytest.raises(RuntimeError, match="closed"):
+        core.to_numpy()
+    with pytest.raises(RuntimeError, match="closed"):
+        core.sum(axis=0)
+    with pytest.raises(RuntimeError, match="closed"):
+        core.contiguous_copy()
+
+
+@needs_native
+def test_a_view_over_closed_storage_refuses_the_kernel_not_the_pointer():
+    """Closing the owner does not turn a metadata pointer into a way in:
+    the storage open check still runs and raises before any native call."""
+    owner = Core.from_array(np.arange(12.0).reshape(3, 4))
+    view = owner.transpose()
+    view._layout_pointers()  # metadata built while the storage was open
+    owner.close()
+    try:
+        with pytest.raises(RuntimeError, match="closed"):
+            view.to_numpy()
+        with pytest.raises(RuntimeError, match="closed"):
+            view.contiguous_copy()
+        with pytest.raises(RuntimeError, match="closed"):
+            view.sum(axis=0)
+    finally:
+        view.close()
+
+
+# ==========================================================================
+# 7. The error contract
+# ==========================================================================
+
+@needs_native
+def test_the_errcheck_hook_is_attached_to_exactly_the_checked_kernels():
+    library = cpp._require_library()
+    for name in _configured_names():
+        function = getattr(library, name, None)
+        if function is None or function.argtypes is None:
+            continue
+        has_hook = getattr(function, "errcheck", None) is not None
+        assert has_hook == (name in cpp._CHECKED_KERNELS), name
+
+
+@needs_native
+def test_a_native_failure_through_a_trusted_call_still_raises_correctly():
+    """The kernels that self-validate still reject through the same hook,
+    with the same exception type and message, when reached with the
+    trusted binding."""
+    library = cpp._require_library()
+    source = Core.from_array(np.arange(4.0))
+    destination = Core.from_array(np.full(4, 7777.5))
+    try:
+        src, dst = (source.storage._require_open(),
+                    destination.storage._require_open())
+        with pytest.raises(ValueError, match="span exceeds its storage"):
+            library.tf_core_exp(src, dst, cpp._layout_vector([4]),
+                                cpp._layout_vector([2]), 0, 1)
+        with pytest.raises(ValueError, match="non-positive dimension"):
+            library.tf_core_exp(src, dst, cpp._layout_vector([0]),
+                                cpp._layout_vector([1]), 0, 1)
+        with pytest.raises(ValueError, match="negative offset"):
+            library.tf_core_exp(src, dst, cpp._layout_vector([4]),
+                                cpp._layout_vector([1]), -1, 1)
+        # Nothing was written by any rejected call.
+        assert np.array_equal(destination.to_numpy(), np.full(4, 7777.5))
+    finally:
+        destination.close()
+        source.close()
+
+
+@needs_native
+def test_alternating_success_and_failure_leaves_no_stale_error():
+    """A failure does not contaminate the next call, and a success does
+    not hide a later failure."""
+    library = cpp._require_library()
+    source = Core.from_array(np.arange(1.0, 5.0))
+    destination = Core.zeros((4,))
+    try:
+        src, dst = (source.storage._require_open(),
+                    destination.storage._require_open())
+        good_shape, good_strides = (cpp._layout_vector([4]),
+                                    cpp._layout_vector([1]))
+        for _ in range(4):
+            library.tf_core_exp(src, dst, good_shape, good_strides, 0, 1)
+            assert library.tf_last_error_code() == cpp.TF_OK
+            with pytest.raises(ValueError):
+                library.tf_core_exp(src, dst, good_shape,
+                                    cpp._layout_vector([2]), 0, 1)
+            assert library.tf_last_error_code() == cpp.TF_OK
+            library.tf_core_exp(src, dst, good_shape, good_strides, 0, 1)
+            assert np.allclose(destination.to_numpy(), np.exp(np.arange(1.0, 5.0)))
+    finally:
+        destination.close()
+        source.close()
+
+
+@needs_native
+def test_an_allocation_failure_in_a_trusted_operation_releases_everything(
+    live_storages
+):
+    """The failure contract is unchanged: nothing half-built escapes and
+    live storage returns exactly to baseline, with no collector pass."""
+    if not cpp.fault_injection_available():
+        pytest.skip("fault injection not compiled in")
+    core = Core.from_array(np.arange(24.0).reshape(2, 3, 4))
+    try:
+        baseline = len(live_storages)
+        before = core.to_numpy().copy()
+        cpp._arm_alloc_failure(1)
+        with pytest.raises(MemoryError):
+            core.transpose().contiguous_copy()
+        cpp._arm_alloc_failure(0)
+        assert len(live_storages) == baseline
+        assert np.array_equal(core.to_numpy(), before)
+        # Still fully usable afterwards.
+        core.transpose().contiguous_copy().close()
+        core.sum(axis=1).close()
+        assert len(live_storages) == baseline
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("error", [RuntimeError, MemoryError,
+                                   KeyboardInterrupt])
+def test_a_failure_building_the_pointers_releases_the_output(
+    error, live_storages, monkeypatch
+):
+    """The pointer lookup sits inside the same cleanup boundary the layout
+    arrays sat in before H7, so a failure there still releases the freshly
+    allocated output."""
+    core = Core.from_array(np.arange(24.0).reshape(2, 3, 4))
+    try:
+        baseline = len(live_storages)
+
+        def exploding(*args, **kwargs):
+            raise error("injected layout-pointer failure")
+
+        monkeypatch.setattr(Core, "_layout_pointers", exploding)
+        with pytest.raises(error):
+            core.sum(axis=1)
+        with pytest.raises(error):
+            core.transpose().contiguous_copy()
+        monkeypatch.undo()
+        assert len(live_storages) == baseline
+        core.sum(axis=1).close()
+        assert len(live_storages) == baseline
+    finally:
+        core.close()
+
+
+@needs_native
+def test_a_failure_building_an_operation_local_vector_releases_the_output(
+    live_storages, monkeypatch
+):
+    core = Core.from_array(np.arange(24.0).reshape(2, 3, 4))
+    scalar = Core.full((), 2.0)
+    try:
+        baseline = len(live_storages)
+
+        def exploding(*args, **kwargs):
+            raise RuntimeError("injected layout-vector failure")
+
+        monkeypatch.setattr(cpp, "_layout_vector", exploding)
+        with pytest.raises(RuntimeError):
+            core.sum(axis=1)
+        with pytest.raises(RuntimeError):
+            core.multiply(scalar)
+        monkeypatch.undo()
+        assert len(live_storages) == baseline
+        core.multiply(scalar).close()
+        assert len(live_storages) == baseline
+    finally:
+        scalar.close()
+        core.close()
+
+
+@needs_native
+def test_repeated_calls_return_live_storage_exactly_to_baseline(live_storages):
+    """Success and failure cycles, with no ``gc.collect()`` anywhere."""
+    core = Core.from_array(np.arange(24.0).reshape(2, 3, 4))
+    scalar = Core.full((), 2.0)
+    try:
+        baseline = len(live_storages)
+        for _ in range(20):
+            core.sum(axis=1).close()
+            core.multiply(scalar).close()
+            core.transpose().contiguous_copy().close()
+            core.to_numpy()
+            with pytest.raises(ValueError):
+                core.sum(axis=9)
+        assert len(live_storages) == baseline
+    finally:
+        scalar.close()
+        core.close()
+
+
+# ==========================================================================
+# 8. Binding configuration is done once, at load
+# ==========================================================================
+
+@needs_native
+def test_no_production_path_reconfigures_a_binding():
+    """``argtypes``/``restype``/``errcheck`` are assigned exactly once,
+    inside the two loader functions. Reconfiguring a shared function
+    object per call would be a data race the project does not claim to be
+    safe against, so it must not exist."""
+    source = BACKEND_FILE.read_text(encoding="utf-8")
+    for attribute in ("argtypes", "restype", "errcheck"):
+        for line_number, line in enumerate(source.splitlines(), 1):
+            if f".{attribute} =" not in line:
+                continue
+            # Every assignment must be inside _load_library or
+            # _configure_error_contract, both of which run once per process.
+            preceding = "\n".join(source.splitlines()[:line_number])
+            owner = re.findall(r"^def (\w+)", preceding, re.M)[-1]
+            assert owner in ("_load_library", "_configure_error_contract"), (
+                attribute, line_number, owner)
+
+
+@needs_native
+def test_the_configured_bindings_are_stable_across_many_calls():
+    """The function objects and their argument types are the same after a
+    workload as before it — nothing swaps a binding in and out."""
+    library = cpp._require_library()
+    before = {name: (getattr(library, name).argtypes,
+                     getattr(library, name).restype,
+                     getattr(library, name).errcheck)
+              for name in EXPECTED_ARRAY_BINDINGS}
+    core = Core.from_array(np.arange(24.0).reshape(2, 3, 4))
+    scalar = Core.full((), 2.0)
+    try:
+        for _ in range(5):
+            core.sum(axis=1).close()
+            core.multiply(scalar).close()
+            core.transpose().exp().close()
+    finally:
+        scalar.close()
+        core.close()
+    for name, expected in before.items():
+        function = getattr(library, name)
+        assert (function.argtypes, function.restype,
+                function.errcheck) == expected, name
+
+
+@needs_native
+def test_reentrant_calls_through_the_same_binding_are_correct():
+    """A kernel call made from inside a wrapper of another kernel call
+    uses the same configured function object and must not disturb it."""
+    library = cpp._require_library()
+    original = library.tf_core_sum
+    inner_results = []
+    depth = []
+
+    def reentrant(*args):
+        if not depth:                      # re-enter exactly once
+            depth.append(1)
+            nested = Core.from_array(np.arange(6.0).reshape(2, 3))
+            try:
+                inner = nested.sum(axis=0)
+                try:
+                    inner_results.append(inner.to_numpy().copy())
+                finally:
+                    inner.close()
+            finally:
+                nested.close()
+        return original(*args)
+
+    # Assigned and restored by *value*, never deleted: ctypes caches a
+    # configured function object on the library, and deleting it would make
+    # the next lookup rebuild an **unconfigured** one that accepts anything.
+    library.tf_core_sum = reentrant
+    try:
+        core = Core.from_array(np.arange(12.0).reshape(3, 4))
+        try:
+            outer = core.sum(axis=0)
+            try:
+                assert np.array_equal(outer.to_numpy(),
+                                      np.arange(12.0).reshape(3, 4).sum(axis=0))
+            finally:
+                outer.close()
+        finally:
+            core.close()
+    finally:
+        library.tf_core_sum = original
+    assert inner_results
+    assert library.tf_core_sum is original
+    assert library.tf_core_sum.argtypes is not None
+    assert np.array_equal(inner_results[0], np.array([3.0, 5.0, 7.0]))
+
+
+# ==========================================================================
+# 9. Numerical parity and exact training
+# ==========================================================================
+
+def _same_bits(a, b):
+    return np.array_equal(np.asarray(a, dtype=np.float64).view(np.int64),
+                          np.asarray(b, dtype=np.float64).view(np.int64))
+
+
+@needs_native
+@pytest.mark.parametrize("shape", [(3,), (2, 3), (2, 3, 4), (2, 3, 4, 5)])
+def test_every_trusted_operation_matches_numpy_bit_for_bit(shape):
+    """H7 changed no arithmetic. Every operation that now crosses through
+    a trusted position is compared against NumPy as raw IEEE-754 bits,
+    over contiguous and strided operands and the whole special-value
+    matrix."""
+    rng = np.random.default_rng(20260801)
+    values = rng.standard_normal(shape)
+    specials = np.array([0.0, -0.0, np.inf, -np.inf, np.nan, 1e308, -1e308,
+                         5e-324, 2.2250738585072014e-308])
+    values.ravel()[:min(values.size, specials.size)] = (
+        specials[:min(values.size, specials.size)])
+    base = Core.from_array(values)
+    transposed = base.T
+    scalar = Core.full((), 2.5)
+    try:
+        # relu's reference is the kernel's own long-standing rule
+        # (`x > 0 ? x : 0`, so a NaN gives 0), not numpy.maximum, which
+        # propagates NaN. That difference predates Phase H entirely.
+        for core, host in ((base, values), (transposed, values.T)):
+            for name, reference in (
+                ("exp", np.exp), ("sqrt", np.sqrt),
+                ("reciprocal", lambda x: 1.0 / x),
+                ("relu", lambda x: np.where(x > 0.0, x, 0.0)),
+            ):
+                produced = getattr(core, name)()
+                try:
+                    with np.errstate(all="ignore"):
+                        expected = reference(host)
+                    assert _same_bits(produced.to_numpy(), expected), name
+                finally:
+                    produced.close()
+            copied = core.contiguous_copy()
+            try:
+                assert _same_bits(copied.to_numpy(), host)
+            finally:
+                copied.close()
+            assert _same_bits(core.to_numpy(), host)
+        with np.errstate(all="ignore"):
+            for name, op in (("add", np.add), ("subtract", np.subtract),
+                             ("multiply", np.multiply)):
+                produced = getattr(base, name)(scalar)
+                try:
+                    assert _same_bits(produced.to_numpy(), op(values, 2.5)), name
+                finally:
+                    produced.close()
+    finally:
+        scalar.close()
+        transposed.close()
+        base.close()
+
+
+@needs_native
+def test_reductions_preserve_the_h6_signed_zero_contract():
+    """H6's contract, re-asserted through the trusted binding: a sum of
+    negative zeros is ``+0.0`` on both traversals, matching NumPy."""
+    for values in (np.full((3, 4), -0.0), np.zeros((3, 4)),
+                   np.array([[-0.0, 0.0], [0.0, -0.0]])):
+        core = Core.from_array(values)
+        try:
+            for axis in (None, 0, 1):
+                for keepdims in (False, True):
+                    produced = core.sum(axis=axis, keepdims=keepdims)
+                    try:
+                        assert _same_bits(produced.to_numpy(),
+                                          values.sum(axis=axis,
+                                                     keepdims=keepdims))
+                    finally:
+                        produced.close()
+        finally:
+            core.close()
+
+
+@needs_native
+def test_matmul_is_untouched_by_h7():
+    """``tf_core_matmul`` takes no array at all — it never did — so H2's
+    result is structurally unaffected. Asserted rather than assumed."""
+    library = cpp._require_library()
+    assert _array_kinds(library.tf_core_matmul) == ()
+    rng = np.random.default_rng(4242)
+    a, b = rng.standard_normal((32, 24)), rng.standard_normal((24, 16))
+    core_a, core_b = Core.from_array(a), Core.from_array(b)
+    try:
+        produced = core_a.matmul(core_b)
+        try:
+            assert np.allclose(produced.to_numpy(), a @ b, atol=1e-12)
+        finally:
+            produced.close()
+    finally:
+        core_b.close()
+        core_a.close()
+
+
+@needs_native
+def test_deterministic_training_and_exact_resume_are_unchanged(tmp_path):
+    """The end-to-end guarantee: two runs are bit-identical, and an
+    interrupted run resumes into a fresh model/optimizer pair that
+    reproduces the remainder exactly."""
+    from tensorforge.experimental import (
+        NativeAdam, NativeBatchNorm1d, NativeLayerNorm, NativeLinear,
+        NativeMSELoss, NativeReLU, NativeSequential, NativeTensor,
+        load_native_checkpoint, save_native_checkpoint,
+    )
+
+    def build():
+        model = NativeSequential(
+            NativeLinear(4, 8, seed=0), NativeBatchNorm1d(8), NativeReLU(),
+            NativeLayerNorm(8), NativeLinear(8, 2, seed=1))
+        return model, NativeAdam(model.parameters(), lr=0.05)
+
+    inputs = np.array([[(i + j) / 8.0 for j in range(4)] for i in range(12)])
+    targets = np.array([[(i % 3) / 2.0, (i % 2) / 2.0] for i in range(12)])
+
+    def run(steps, model=None, optimizer=None, start=0):
+        if model is None:
+            model, optimizer = build()
+        loss_fn = NativeMSELoss()
+        x = NativeTensor.from_array(inputs)
+        y = NativeTensor.from_array(targets)
+        losses = []
+        for _ in range(start, steps):
+            optimizer.zero_grad()
+            loss = loss_fn(model(x), y)
+            losses.append(float(loss.to_numpy()))
+            loss.backward()
+            optimizer.step()
+            loss.close()
+        return losses, model, optimizer
+
+    first, model_a, opt_a = run(10)
+    second, model_b, opt_b = run(10)
+    assert first == second
+
+    losses, model_c, opt_c = run(4)
+    path = tmp_path / "resume.npz"
+    save_native_checkpoint(path, model_c, optimizer=opt_c)
+    model_d, opt_d = build()
+    load_native_checkpoint(path, model_d, optimizer=opt_d)
+    tail, _, _ = run(10, model_d, opt_d, start=4)
+    assert losses + tail == first
+
+    for parameter_a, parameter_d in zip(model_a.parameters(),
+                                        model_d.parameters()):
+        assert _same_bits(parameter_a.to_numpy(), parameter_d.to_numpy())
+
+
+# ==========================================================================
+# 10. Public surface, capabilities, and isolation
+# ==========================================================================
+
+def test_h7_added_no_public_api():
+    """Both producers are private, and neither the pointer cache nor the
+    binding categories are reachable through any public name."""
+    public = [name for name in dir(cpp) if not name.startswith("_")]
+    for banned in ("layout_vector", "layout_pointer", "layout_pointers",
+                   "native_layout", "native_layout_pointers", "trusted_call",
+                   "checked_call", "set_binding", "binding_mode",
+                   "pointer_cache", "data_pointer", "address_of",
+                   "raw_pointer", "storage_address"):
+        assert banned not in public, banned
+        assert not any(banned in name.lower() for name in public), banned
+    for name in ("_layout_vector", "_LAYOUT_POINTER"):
+        assert hasattr(cpp, name)
+        assert name.startswith("_")
+
+
+def test_no_trusted_flag_or_environment_fast_path_exists():
+    source = BACKEND_FILE.read_text(encoding="utf-8")
+    for banned in ("trusted=True", "trusted =", "unsafe", "os.environ",
+                   "getenv", "TF_FAST", "TF_TRUSTED", "fast_mode",
+                   "skip_validation", "no_validate"):
+        assert banned not in source, banned
+    assert "import os" not in source
+
+
+@needs_native
+def test_no_native_address_is_exposed_by_any_public_api():
+    """A storage handle never leaves the module as a number, and no public
+    accessor returns a pointer or an address."""
+    core = Core.from_array(np.arange(6.0).reshape(2, 3))
+    try:
+        for holder in (core, core.storage, core.view):
+            for name in dir(holder):
+                if name.startswith("_"):
+                    continue
+                value = getattr(holder, name)
+                if callable(value):
+                    continue
+                assert not isinstance(value, (ctypes.c_void_p, ctypes._Pointer))
+        assert "handle" not in dir(core.storage)
+        assert repr(core.storage) == "NativeStorage(size=6)"
+    finally:
+        core.close()
+
+
+@needs_native
+def test_the_exported_symbol_count_is_unchanged():
+    """H7 added no C ABI symbol; the library still exports exactly 52."""
+    source_exports = set()
+    for path in sorted((REPO_ROOT / "cpp" / "src").glob("*.cpp")):
+        source_exports.update(
+            re.findall(r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
+                       path.read_text(encoding="utf-8")))
+    assert len(source_exports) == 52
+    library = cpp._require_library()
+    for name in source_exports:
+        assert getattr(library, name, None) is not None, name
+    for absent in ("tf_core_metadata_pointer", "tf_layout_pointer",
+                   "tf_core_trusted_add", "tf_validate_metadata",
+                   "tf_set_binding_mode", "tf_core_noop", "tf_boundary_probe"):
+        assert absent not in source_exports, absent
+        assert absent not in cpp._CHECKED_KERNELS, absent
+
+
+def test_h7_changed_no_capability_dtype_device_or_checkpoint_value():
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert len(cpp._CHECKED_KERNELS) == 34
+    from tensorforge.experimental import native_checkpoint
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert tuple(sorted(native_checkpoint._SUPPORTED_FORMAT_VERSIONS)) == (1, 2)
+
+
+def test_importing_stable_tensorforge_loads_no_native_binding():
+    """The isolation contract: importing the stable framework must not
+    import the backend package, the experimental package, or build a
+    single layout pointer."""
+    code = (
+        "import sys, json;"
+        "import tensorforge;"
+        "leaked = [m for m in sys.modules"
+        " if m.startswith('tensorforge.backends')"
+        " or m.startswith('tensorforge.experimental')];"
+        "print(json.dumps(leaked))"
+    )
+    result = subprocess.run([sys.executable, "-c", code], check=True,
+                            capture_output=True, text=True, cwd=str(REPO_ROOT))
+    assert __import__("json").loads(result.stdout.strip()) == []
+
+
+def test_importing_the_backend_module_loads_no_library_and_no_pointer():
+    """Importing the wrapper is still safe and still lazy: the two binding
+    constants exist (they touch nothing), and the library does not load."""
+    code = (
+        "import tensorforge.backends.cpp as cpp;"
+        "assert cpp._lib is None;"
+        "assert cpp._LAYOUT_POINTER is not None;"
+        "assert cpp._CHECKED_F64_ARRAY is not None;"
+        "assert len(cpp._layout_vector((2, 3))) == 2;"
+        "assert cpp._lib is None;"
+        "print('ok')"
+    )
+    result = subprocess.run([sys.executable, "-c", code], check=True,
+                            capture_output=True, text=True, cwd=str(REPO_ROOT))
+    assert result.stdout.strip() == "ok"
+
+
+@needs_native
+def test_exactly_three_trusted_exports_reject_null_metadata_natively():
+    """The precise version of a claim that is easy to round up, settled by
+    running the ABI rather than by reading the C++.
+
+    Thirteen exports have at least one trusted position. Only **three** of
+    them — ``tf_core_exp``, ``tf_core_log``, and
+    ``tf_core_contiguous_copy``, the self-validating Phase-E-era exports —
+    reject a null layout pointer through the error contract. The other ten
+    dereference it: the older ``tf_core_relu``/``sqrt``/``reciprocal`` sit
+    beside the shared validator in the same translation unit but do not
+    call it, and the binary family, ``tf_core_sum``,
+    ``tf_core_narrow_backward``, and ``tf_storage_materialize`` have no
+    such validator at all.
+
+    That is exactly why "both producers are total" is the **load-bearing**
+    half of H7's null argument rather than a belt-and-braces remark, and
+    this test pins the real number instead of a comfortable one. The
+    dereferencing exports are deliberately not called with a null here —
+    doing so is an access violation, not a testable behavior.
+    """
+    library = cpp._require_library()
+    trusted = [name for name, kinds in EXPECTED_ARRAY_BINDINGS.items()
+               if "trusted" in kinds]
+    assert len(trusted) == 13
+
+    validating = ("tf_core_exp", "tf_core_log", "tf_core_contiguous_copy")
+    assert all(name in trusted for name in validating)
+
+    source = Core.from_array(np.arange(4.0))
+    destination = Core.zeros((4,))
+    try:
+        src = source.storage._require_open()
+        dst = destination.storage._require_open()
+        good = cpp._layout_vector([4])
+        unit = cpp._layout_vector([1])
+        for name in validating:
+            kernel = getattr(library, name)
+            with pytest.raises(ValueError, match="null shape or stride"):
+                kernel(src, dst, None, unit, 0, 1)
+            with pytest.raises(ValueError, match="null shape or stride"):
+                kernel(src, dst, good, None, 0, 1)
+            # A valid call still works afterwards: no stale error survives.
+            kernel(src, dst, good, unit, 0, 1)
+            assert library.tf_last_error_code() == cpp.TF_OK
+    finally:
+        destination.close()
+        source.close()
+
+    # The one shared validator, and the fact that it is shared by exactly
+    # the exports that opt into it.
+    elementwise = (REPO_ROOT / "cpp" / "src"
+                   / "elementwise.cpp").read_text(encoding="utf-8")
+    assert elementwise.count("null shape or stride array") == 1
+
+
+@needs_native
+def test_no_production_path_can_pass_a_null_layout_pointer():
+    """The structural half of the argument above: both producers are
+    total, so the ten dereferencing exports are unreachable with a null.
+
+    Asserted over every rank the runtime can construct and over a real
+    workload, rather than by inspection."""
+    for shape in SHAPES:
+        core = _core_of_shape(shape)
+        try:
+            assert all(p is not None for p in core._layout_pointers())
+            assert cpp._layout_vector(core.shape) is not None
+            assert cpp._layout_vector(core.strides) is not None
+        finally:
+            core.close()
+
+    library = cpp._require_library()
+    strided = ("tf_core_relu", "tf_core_sqrt", "tf_core_reciprocal",
+               "tf_core_exp", "tf_core_log", "tf_core_contiguous_copy",
+               "tf_core_add", "tf_core_subtract", "tf_core_multiply",
+               "tf_core_relu_backward", "tf_core_sum",
+               "tf_core_narrow_backward", "tf_storage_materialize")
+    seen = set()
+    originals = {name: getattr(library, name) for name in strided}
+
+    def watcher(name):
+        original = originals[name]
+
+        def call(*args):
+            for argument, argtype in zip(args, original.argtypes):
+                if argtype is cpp._LAYOUT_POINTER:
+                    assert argument is not None, (name, "null layout pointer")
+            seen.add(name)
+            return original(*args)
+        return call
+
+    for name in strided:
+        setattr(library, name, watcher(name))
+    try:
+        values = np.arange(24.0).reshape(2, 3, 4)
+        base = Core.from_array(values)
+        transposed = base.transpose(2, 1, 0)
+        scalar = Core.full((), 2.0)
+        try:
+            for produced in (
+                transposed.relu(), transposed.sqrt(), transposed.reciprocal(),
+                transposed.exp(), transposed.log(),
+                transposed.contiguous_copy(),
+                base.add(scalar), base.subtract(scalar), base.multiply(scalar),
+                base.sum(axis=1), transposed.relu_backward(transposed),
+                base.narrow(0, 0, 1).contiguous_copy().narrow_backward(
+                    0, 1, (3, 3, 4)),
+            ):
+                produced.close()
+            transposed.to_numpy()
+        finally:
+            scalar.close()
+            transposed.close()
+            base.close()
+    finally:
+        for name, original in originals.items():
+            setattr(library, name, original)
+    assert seen == set(strided), sorted(set(strided) - seen)
+
+
+@needs_native
+def test_the_inventory_arithmetic_adds_up():
+    """The documented category totals are arithmetic over the real
+    bindings, so a future change cannot leave the design's table stale
+    without failing here.
+
+    52 exports = 24 with at least one array position + 26 that carry only
+    storage handles and integers + 2 test-only hooks; and 57 array
+    positions = 32 trusted + 25 checked."""
+    library = cpp._require_library()
+    with_arrays, handle_only, test_only = 0, 0, 0
+    trusted_positions, checked_positions = 0, 0
+    for name in _configured_names():
+        function = getattr(library, name, None)
+        if function is None or function.argtypes is None:
+            continue
+        kinds = _array_kinds(function)
+        trusted_positions += kinds.count("trusted")
+        checked_positions += kinds.count("checked")
+        if kinds:
+            with_arrays += 1
+        elif name in ("tf_test_arm_alloc_failure",
+                      "tf_fault_injection_available"):
+            test_only += 1
+        else:
+            handle_only += 1
+    assert (with_arrays, handle_only, test_only) == (24, 26, 2)
+    assert with_arrays + handle_only + test_only == 52
+    assert (trusted_positions, checked_positions) == (32, 25)
+    assert trusted_positions + checked_positions == 57
+    # Thirteen of the 24 array-carrying exports have a trusted position.
+    trusted_exports = sum(
+        1 for name in _configured_names()
+        if (f := getattr(library, name, None)) is not None
+        and f.argtypes is not None and "trusted" in _array_kinds(f))
+    assert trusted_exports == 13

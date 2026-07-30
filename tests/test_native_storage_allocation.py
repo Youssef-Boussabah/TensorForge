@@ -438,9 +438,9 @@ def test_the_detector_catches_a_partial_write():
         upstream.storage._lib.tf_core_narrow_backward(
             upstream.storage._require_open(),
             out.storage._require_open(),
-            np.asarray((1, 5), dtype=np.int64),
-            np.asarray(upstream.strides, dtype=np.int64),
-            np.asarray((5, 1), dtype=np.int64),
+            cpp._layout_vector((1, 5)),
+            cpp._layout_vector(upstream.strides),
+            cpp._layout_vector((5, 1)),
             upstream.offset, 5, 2,
         )
     try:
@@ -466,9 +466,9 @@ def test_the_detector_catches_read_before_write_accumulation():
         values.storage._lib.tf_core_sum(
             values.storage._require_open(),
             out.storage._require_open(),
-            np.asarray((3, 4), dtype=np.int64),
-            np.asarray(values.strides, dtype=np.int64),
-            np.asarray((0, 1), dtype=np.int64),
+            cpp._layout_vector((3, 4)),
+            cpp._layout_vector(values.strides),
+            cpp._layout_vector((0, 1)),
             values.offset, 2,
         )
     try:

@@ -759,7 +759,7 @@ and the example defines **no public training API** — none of its helpers
 is exported.
 **Phase H — Native CPU Performance and Runtime Efficiency — is the
 latest phase and is the current one; it has *begun*, with milestones
-**H0, H1, H2, H3, H4, H5, and H6** complete, and Phase G remains the latest
+**H0, H1, H2, H3, H4, H5, H6, and H7** complete, and Phase G remains the latest
 *completed* phase.** H0 is an
 architecture, profiling, and baseline milestone: it shipped
 `docs/native_cpu_performance_design.md` (the contract), the unified
@@ -1364,6 +1364,153 @@ scatter dual, was deliberately left alone — widening H6 to it would have
 made this a scatter milestone. No public API, capability, dtype, device,
 registry value, checkpoint field, or checkpoint version moved.
 
+**Milestone H7 - native Python/C ABI boundary efficiency - has since
+shipped**, and it is **Python-only**: no C++, no exported symbol, no
+kernel, no traversal, no arithmetic. The library still exports exactly
+**52** `tf_*` symbols.
+
+**The ladder was revised here, and the revision is recorded rather than
+retrofitted.** H0's H7 slot was *composed-module cost* - the normalization
+modules and the composed convolution bias gradient - explicitly
+conditional on a re-measurement after H1, H3, and H6. That condition was
+tested and **not met**: H6 made `mean` 3.9x-4.1x faster and moved the
+normalization modules almost not at all (`NativeLayerNorm` forward 1.16x,
+`NativeBatchNorm2d` backward 1.10x, everything else inside the
+0.90x-1.03x control band, the normalized training step 1.03x). So the
+milestone was **dropped on evidence**, its proposal and the evidence
+against it preserved verbatim in the design document rather than deleted,
+and the slot was refilled from the *same* measurements: H3, H5, and H6
+had each ended by deferring one identically named cost - H5 "~1.1 us per
+layout array at the ctypes boundary, left to a later dispatch milestone",
+H6 "the fixed ~7 us Python-plus-ctypes cost, left to a dispatch
+milestone". Three milestones deferred one thing to a later dispatch
+milestone; H7 is that milestone. Composed-module allocation count remains
+conditional future scope and is **H8's** subject.
+
+The cost was **decomposed rather than assumed**, and the assumption that
+six kernels were involved was checked and found wrong. All 52 exports are
+configured in one file - **no other module in the repository imports
+`ctypes`** - and **57 of their argument positions are arrays**, every one
+formerly bound as `numpy.ctypeslib.ndpointer`. That binding re-verifies
+array-ness, exact dtype, and contiguity at **every call**, then builds
+`obj.ctypes` and resolves it through `_as_parameter_`: two Python object
+constructions and three checks, per array, per call, measured at **~2.1 us
+per array position**. On real calls, `tf_core_add` on a 4x4 with three
+layout arrays cost **7.6 us**, of which **6.1 us** was the binding, while
+the array-free `tf_core_add_contiguous` cost 0.9 us and is the control.
+Frequency was then counted: an MLP training step makes 245 native calls
+carrying **101** array crossings, a normalized step 692 and **315**, a CNN
+step 242 and **104** - about **20-23 %** of each step - and the provenance
+was the finding that decided the architecture: **~85 % of those crossings
+are operation-local broadcast strides**, not the H3 per-view cache, so a
+design that only cached pointers per view would have captured a seventh of
+the available work.
+
+H7 ships **two bindings for two categories, and deliberately not one
+blanket policy**. *Data* positions keep the checked `ndpointer` binding -
+the seven public raw-buffer kernels (whose callers may pass anything), the
+`copy_from`/`copy_to`/`materialize` host conversion boundary, and the
+cross-entropy **class labels**, which are int64 like the layout metadata
+but stay checked because a label array's required length comes from the
+*logits*, a different object. *Layout metadata* positions - **32 across 13
+exports** - take `ctypes.POINTER(ctypes.c_int64)`, fed by exactly two
+private producers: `NativeTensorView._native_layout_pointers()`, which
+memoizes `data_as` over the **unchanged** H3 read-only NumPy arrays that
+remain the owning buffers, and `_layout_vector(values)`, which builds a
+fresh `(c_int64 * len(values))` for metadata belonging to one operation.
+
+**Nothing was weakened and one thing was strengthened.** ctypes still
+type-checks every call: a trusted position rejects a NumPy array of any
+dtype, a differently typed pointer or vector, a `c_void_p`, a list, an
+int, bytes, and a string - a NumPy array being rejected is a deliberate
+consequence that makes the old binding unreachable by accident. Dtype,
+byte order, and contiguity are established *by construction* rather than
+re-checked, and **the length/rank invariant - the one `ndpointer` never
+checked, because the ABI sees only a pointer and an `ndim`** - became
+checkable for the first time: a vector carries its length in its type, and
+a cached pointer carries its owning array, whose length is the view's
+rank. That is asserted per producer, per rank 0-4, and structurally over
+**every strided call in a real workload**. The one honest difference is
+`None`, which `ndpointer` rejected and a typed pointer converts to NULL;
+it is closed structurally - both producers are total, no public API takes
+a metadata pointer. (Only **three** of the thirteen exports reject a null
+metadata pointer in C++ as well.)
+
+**Ownership is NumPy's guarantee, relied on and tested rather than
+assumed**: `data_as` stores the array on the pointer, so a cached pointer
+cannot outlive its buffer. `POINTER.from_address` was measured **faster**
+(0.9 us against 1.6 us) and **rejected outright** for producing a pointer
+with no owner, and a cached ctypes vector - fastest of all - was
+**rejected** because it would create a second owning description of a
+view's layout and lose H3's `writeable = False`, for ~2 % of a training
+step. Proved with the cyclic collector **disabled**: no reference cycle,
+no native storage kept alive, no usable pointer after close, and
+operation-local vectors retained by nothing. There is no global pointer
+cache and no `from_address`, `byref`, `addressof`, `id`, or weak-reference
+container **anywhere in the module's code**, enforced by parsing it rather
+than grepping it. Binding configuration stays a **load-time act** -
+`argtypes`/`restype`/`errcheck` are assigned only inside the two loader
+functions, asserted by locating each assignment's enclosing function - so
+nothing reconfigures a shared function object per call and **no
+thread-safety claim is broadened**.
+
+Measured against a **retained pre-H7 `cpp.py` driving the same Release
+DLL**, over 11 alternating pre/post subprocess rounds, every case proved
+**bit-identical before either side was timed**; control bands 0.95x-1.10x
+(core) and 0.99x-1.05x (end to end). Core: a 1-element `sum` **1.94x**, a
+16-element `sum` 1.89x, `to_numpy` 16x16 **1.83x**, `sum(axis=0)` 16x16
+1.79x, a 4x4 `contiguous_copy` 1.73x, `narrow_backward` 1.73x, strided
+`relu_backward` 1.71x, scalar-broadcast `add` **1.67x**, 4-D NCHW
+`sum(axis=1)` 1.54x, row-broadcast `add` 1.41x, `sum(axis=0)` 256x256
+1.35x, strided `exp` 1.29x, transposed materialization 1.16x. End to end -
+and this is the result - the **native Dropout step 1.32x, the normalized
+step 1.31x, `NativeAdam` at (32, 32) 1.31x, the CNN step 1.30x, the MLP
+step 1.28x**, `NativeLayerNorm` forward 1.23x, `NativeBatchNorm1d` eval
+1.23x, `NativeAdam` at (128, 128) 1.14x, `NativeSGD` 1.13x, the large MLP
+step 1.08x. **H7 is the first Phase-H milestone to move every training
+step** - H4 moved them 1.09x-1.23x and H5 and H6 were neutral on all of
+them - because the cost is paid per *call* and a step makes hundreds of
+them.
+
+Reported just as honestly: **large kernel-bound work is neutral**, exactly
+as the attribution predicts. 256-cubed matmul **0.99x** and 8-cubed matmul
+1.00x are controls that take no array at all, so **H2's result is
+structurally untouched**; contiguous 16x16 `add` 1.05x is the third
+array-free control; and 512x512 `copy` 1.02x, 256x256 `to_numpy` 1.04x,
+512x512 full `sum` 1.06x, 256x256 broadcast `multiply` 1.08x, and the
+large MLP step 1.08x are all at or inside the band. No reading should be
+**H7 did not make matmul faster**, and no reading should
+say otherwise.
+
+A second, independent 11-round run reproduced every row: all cases again
+bit-identical, every control again holding (256-cubed matmul 0.98x, 8-cubed
+matmul 1.04x, contiguous 16x16 `add` 1.08x, 512x512 `copy` 1.01x), and every
+training step again improving, with individual ratios moving by roughly the
+control band's width in both directions (a 1-element `sum` 2.12x against
+1.94x, `NativeSGD` 1.26x against 1.13x, `NativeAdam` at (128, 128) 1.08x
+against 1.14x). The figures quoted are the first run's; the second is
+recorded in the design so no single number is read as more precise than the
+method supports.
+
+**Memory did not move, and that is asserted**: the same boundary workload
+allocates 5 native storages, peak 4 live, 584 peak bytes before and after.
+A view's cold footprint is byte-identical; a view that actually takes a
+strided path costs **+296 bytes** for the pointer pair, and only **9 of
+98** views in an MLP step ever populate it, which is H3's laziness
+argument unchanged. The harness gained three cases, 31 to **34**:
+`ctypes_boundary_strided` (the array-carrying twin of the array-free
+`ctypes_boundary` - **1.3 us** against **0.8 us**, where pre-H7 it would
+have been ~7 us) plus `elementwise_broadcast_scalar` and
+`elementwise_broadcast_row`. Validation added a **sanitizer negative
+control**: under Clang ASan, test-only code handing `tf_core_sum`
+two-entry metadata with `ndim = 3` produces a `heap-buffer-overflow`,
+`READ of size 8`, `0 bytes after 16-byte region`, in
+`reduce_prefers_contiguous_blocks` - the exact H3 finding - which is what
+makes the **zero diagnostics across 2,834 sanitized tests** a real absence
+rather than a blind detector. No public API, capability, dtype, device,
+registry value, checkpoint field, or checkpoint version moved, and no C
+ABI symbol was added.
+
 Data loaders, native integer tensors, further
 dtypes/devices, and CUDA experiments are
 future work beyond Phase H.
@@ -1537,7 +1684,30 @@ production-ready, not a PyTorch replacement.
   transposed axis-0 fallbacks** published and attributed to
   whole-translation-unit code layout. One allocation per `sum` on
   both paths; harness 28 to **31** cases; CTests 14 to **15**; **no
-  ABI change, still 52 symbols**; no capability move) and H7-H11
+  ABI change, still 52 symbols**; no capability move) and **H7 complete**
+  (native Python/C ABI boundary efficiency - **Python-only**: the ctypes
+  argument binding for this project's own layout metadata. **The ladder
+  was revised here**: H0's composed-module H7 was **dropped on evidence**
+  (H6 measured the normalization modules mostly neutral) and the slot
+  refilled with the boundary work H3, H5, and H6 had each deferred by
+  name. 57 array argument positions were inventoried; **32 layout-metadata
+  positions across 13 exports** moved from the checked
+  `numpy.ctypeslib.ndpointer` binding - measured at **~2.1 us per array
+  per call** - to `ctypes.POINTER(ctypes.c_int64)`, fed by exactly two
+  private producers (a per-view pointer memoized over the **unchanged** H3
+  read-only arrays, and a fresh `c_int64` vector for operation-local
+  metadata), while the **25 data positions stay checked** - the raw public
+  kernels, the host conversion boundary, and the cross-entropy class
+  labels. ctypes still type-checks every call, and the **length/rank
+  invariant `ndpointer` never checked** became checkable for the first
+  time; `POINTER.from_address` was measured faster and **rejected** for
+  owning nothing. Measured against a retained pre-H7 `cpp.py` on the same
+  Release DLL, bit-identical before timing: tiny operations 1.3x-1.9x and
+  **every training step 1.08x-1.32x - the first Phase-H milestone to move
+  them all** - with large kernel-bound work neutral and three array-free
+  control cases confirming it. Harness 31 to **34** cases; an ASan
+  **negative control** proves malformed metadata is detectable; **no C++,
+  no ABI change, still 52 symbols**; no capability move) and H8-H11
   proposed and explicitly conditional on that evidence, so **Phase H has
   begun but is not complete**). When a milestone changes the
   public API or the examples, update the matching docs file (and

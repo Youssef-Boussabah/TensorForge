@@ -4050,9 +4050,19 @@ _PHASE_G_OVERCLAIMS = (
     # above were: H1 (the output-allocation contract), **H2** (the matmul
     # loop order), **H3** (the metadata and dispatch contract), **H4**
     # (the optimizer step contract), **H5** (the copy and
-    # mutation-transfer contract), and **H6** (the reduction-execution
-    # contract) really have shipped, so claiming any of them is accurate
-    # and the milestone-number arm now starts at H7.
+    # mutation-transfer contract), **H6** (the reduction-execution
+    # contract), and **H7** (the Python/C ABI boundary contract) really
+    # have shipped, so claiming any of them is accurate and the
+    # milestone-number arm now starts at H8.
+    #
+    # H7 is also the ladder's worked example of a milestone **dropped on
+    # evidence**: the composed-module milestone that originally held the
+    # H7 slot was not entered, because H6 measured the normalization
+    # modules mostly neutral (design §16.7.0). The slot was refilled with
+    # the boundary work H3, H5, and H6 had each deferred by name. Neither
+    # the drop nor the replacement may be described as if it had always
+    # been the plan, which is why the design keeps the struck-through row
+    # and the original proposal verbatim.
     # What is
     # *not* retired, and will not be until §11–§13 of the design are met,
     # is the family of optimizations Phase H has deliberately rejected on
@@ -4074,7 +4084,7 @@ _PHASE_G_OVERCLAIMS = (
      r"|multi-?threading|thread pool)[^.]{0,60}"
      r"\b(is|are|was|were|has been|have been)\s+"
      r"(added|shipped|implemented|enabled|introduced|adopted|landed)\b"
-     r"|\bH[7-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
+     r"|\bH[89]\b[^.]{0,60}\b(has|have|is|are)\s+"
      r"(begun|started|shipped|landed|complete|completed)\b"),
 )
 
@@ -7430,3 +7440,157 @@ def test_phase_h_surfaces_still_state_the_unchanged_capability_boundary():
     assert "matmul" in cpp.TENSOR_CORE_OPS
     assert "matmul" in cpp.AUTOGRAD_OPS
     assert cpp.RAW_KERNELS[-2:] == ("matmul", "matmul_tiled")
+
+
+# ==========================================================================
+# Phase H, milestone H7 — the boundary contract and the ladder revision
+#
+# H7 is the ladder's worked example of a milestone **dropped on evidence**.
+# The documentation risk it carries is specific and unusual: not that a
+# surface over-claims what shipped, but that a surface quietly rewrites
+# history so the revision looks like it was always the plan. These
+# guardrails are semantic — they read normalized prose, not formatting —
+# and they exist so the drop stays visible.
+# ==========================================================================
+
+_H7_STATUS_SURFACES = (
+    "docs/native_cpu_performance_design.md",
+    "docs/native_support_matrix.md",
+    "docs/roadmap.md",
+    "docs/project_summary.md",
+    "docs/release_history.md",
+    "docs/backend_experiments.md",
+    "docs/architecture.md",
+    "README.md",
+    "CLAUDE.md",
+)
+
+
+def test_every_status_surface_records_h7_as_shipped():
+    """H7 really did ship, so every surface that tracks the Phase-H ladder
+    has to say so — silence on a shipped milestone is its own drift."""
+    for surface in _H7_STATUS_SURFACES:
+        text = _status_text(surface)
+        assert "H7" in text, surface
+        assert re.search(
+            r"H7[^.]{0,200}?\b(complete|completed|shipped|has since shipped)\b"
+            r"|\bH0, H1, H2, H3, H4, H5, H6, and H7\b"
+            r"|\bH0, H1, H2, H3, H4, H5,\s*H6, and H7\b"
+            r"|\bH0-H7\b|\bH0\u2013H7\b",
+            text, re.I), surface
+
+
+def test_every_status_surface_records_that_the_old_h7_was_dropped():
+    """The revision must not be hidden. Each surface that describes H7 has
+    to say that the milestone originally in that slot was **dropped on
+    evidence**, not that H7 was always the boundary work."""
+    # Both halves must appear *together*: what was dropped, and that it was
+    # dropped rather than deferred or forgotten. Requiring proximity is what
+    # makes this a real guard — either half alone occurs innocently.
+    dropped = (r"\b(dropped|not\s+entered|was\s+not\s+met|not\s+met"
+               r"|should\s+not\s+be\s+entered)\b")
+    subject = r"composed[- ]module"
+    together = re.compile(
+        subject + r".{0,600}?" + dropped + r"|" + dropped + r".{0,600}?" + subject,
+        re.I | re.S)
+    for surface in _H7_STATUS_SURFACES:
+        text = _status_text(surface)
+        assert re.search(subject, text, re.I), (surface, "names what was dropped")
+        assert re.search(dropped, text, re.I), (surface, "says it was dropped")
+        assert together.search(text), (surface, "states both together")
+
+
+def test_the_design_preserves_the_original_h7_proposal_verbatim():
+    """A dropped milestone's proposal is evidence about the runtime. The
+    design keeps it, struck through in the ladder table and preserved in
+    full below, rather than deleting it."""
+    raw = (REPO_ROOT / "docs"
+           / "native_cpu_performance_design.md").read_text(encoding="utf-8")
+    # The struck-through ladder row, beside the row that replaced it.
+    assert "| ~~H7~~ |" in raw
+    assert "**dropped on evidence**" in raw
+    assert "| **H7** |" in raw
+    # The original proposal, kept.
+    assert "### ~~H7~~ — Composed-module cost" in raw
+    assert "preserved above rather than deleted" in raw
+    # And the successor is not presented as the original plan.
+    text = _status_text("docs/native_cpu_performance_design.md")
+    assert "The ladder was revised here" in text
+
+
+def test_no_surface_claims_h7_touched_the_c_abi_or_a_capability():
+    """H7 is Python-only. No surface may say it added a symbol, changed a
+    kernel, or moved a capability."""
+    for surface in _H7_STATUS_SURFACES:
+        text = _status_text(surface)
+        for pattern, label in (
+            (r"H7[^.]{0,160}\b(added|adds|introduces|introduced)\b"
+             r"[^.]{0,60}\b(C ABI symbol|export|exported symbol|kernel)\b",
+             "H7 added a C ABI symbol or kernel"),
+            (r"H7[^.]{0,160}\b(moved|moves|changed|changes)\b[^.]{0,60}"
+             r"\b(capability|dtype|device|checkpoint version)\b",
+             "H7 moved a capability"),
+        ):
+            offenders = [m.group(0) for m in re.finditer(pattern, text, re.I)
+                         if not re.search(r"\b(no|not|never|nothing)\b",
+                                          m.group(0), re.I)]
+            assert offenders == [], (surface, label, offenders[:2])
+
+
+def test_no_surface_claims_h7_made_large_kernel_work_faster():
+    """The honest negative. H7's gain is per *call*, so matmul and other
+    large kernel-bound work are neutral — three array-free control cases
+    exist to make that checkable, and no surface may claim otherwise."""
+    for surface in _H7_STATUS_SURFACES:
+        text = _status_text(surface)
+        offenders = [
+            m.group(0) for m in re.finditer(
+                r"H7[^.]{0,200}\bmatmul\b[^.]{0,80}"
+                r"\b(faster|speedup|improved|accelerat\w+)\b", text, re.I)
+            # A surface *denying* the claim states the opposite of it, so
+            # a negation close to the match exempts it — the same shape
+            # the Phase-G guards use. The window is deliberately narrow
+            # and the tokens strict, so a disclaimer elsewhere in the
+            # paragraph cannot launder a real claim.
+            if not re.search(
+                r"\b(no|not|never|nothing|neutral|untouched|unaffected)\b",
+                text[max(0, m.start() - 30):m.end()], re.I)
+        ]
+        assert offenders == [], (surface, offenders[:2])
+
+
+def test_the_boundary_binding_categories_are_documented_where_they_live():
+    """The checked/trusted split is a safety contract, so the module that
+    implements it must state it, and the design must record the inventory
+    counts the suite enforces."""
+    from tensorforge.backends import cpp
+
+    module = (REPO_ROOT / "src" / "tensorforge" / "backends"
+              / "cpp.py").read_text(encoding="utf-8")
+    for phrase in ("CHECKED", "TRUSTED", "_LAYOUT_POINTER", "_layout_vector",
+                   "data_as", "from_address"):
+        assert phrase in module, phrase
+    # The reason from_address is refused is recorded, and it is not used.
+    assert "no reference to its owner" in module
+
+    design = _status_text("docs/native_cpu_performance_design.md")
+    assert "32 positions became trusted; 25 stayed checked" in design
+    # The registry the tests enforce agrees with the documented totals.
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+
+
+def test_the_harness_case_count_is_consistent_across_surfaces():
+    """H5 took the harness 26 to 28, H6 28 to 31, and H7 31 to 34. A
+    surface quoting a stale count is drift."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_h7_bench", REPO_ROOT / "benchmarks"
+        / "benchmark_native_cpu_performance.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert len(module.CASES) == 34
+    for surface in ("docs/native_cpu_performance_design.md",
+                    "docs/native_support_matrix.md", "CLAUDE.md"):
+        text = _status_text(surface)
+        assert re.search(r"31 to 34|31 to \*\*34\*\*|34 cases", text), surface

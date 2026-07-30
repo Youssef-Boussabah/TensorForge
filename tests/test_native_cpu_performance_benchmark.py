@@ -53,8 +53,24 @@ EXPECTED_CASES = (
     # bare ctypes boundary. Both are `native_only` and publish no ratio.
     "metadata_preparation",
     "ctypes_boundary",
+    # Phase H, milestone H7. The array-carrying twin of ctypes_boundary:
+    # the same prepared foreign call and the same errcheck hook, plus the
+    # three int64 layout arguments the strided C ABI takes. The pair
+    # separates the crossing that carries metadata from the one that does
+    # not, which is the only way the cost of those arguments is visible.
+    # Also `native_only`, for the twin's reason.
+    "ctypes_boundary_strided",
     "elementwise_contiguous",
     "elementwise_transposed_view",
+    # Phase H, milestone H7. The broadcasting path, whose three layout
+    # descriptions belong to the operation rather than to either operand
+    # and so are built per call — the runtime's most frequent
+    # array-carrying crossing. The two operand shapes (a rank-0 optimizer
+    # coefficient and a (1, n) normalization statistic) are reported
+    # separately rather than averaged. Both are complete operations with
+    # an honest NumPy equivalent, so both publish a ratio.
+    "elementwise_broadcast_scalar",
+    "elementwise_broadcast_row",
     "reduction_contiguous",
     "reduction_transposed_view",
     # Phase H, milestone H6. The reduction kernel ships two traversals
@@ -257,12 +273,15 @@ def test_smoke_shapes_never_exceed_full_and_profile_never_falls_below():
 
 
 def test_the_size_independent_cases_are_exactly_the_declared_ones():
-    """The exemption above is not a loophole: exactly these three cases
-    may keep one shape, and each is a fixed-per-call-cost measurement."""
+    """The exemption above is not a loophole: exactly these four cases may
+    keep one shape, and each is a fixed-per-call-cost measurement.
+
+    ``ctypes_boundary_strided`` joined them at H7 for its twin's reason: a
+    larger shape would time the kernel rather than the boundary."""
     declared = {name for name, spec in bench.CASES.items()
                 if spec.get("size_independent")}
     assert declared == {"scalar_dispatch_overhead", "metadata_preparation",
-                        "ctypes_boundary"}
+                        "ctypes_boundary", "ctypes_boundary_strided"}
     for name in declared:
         assert bench.CASES[name]["workload"] == "dispatch_overhead", name
 

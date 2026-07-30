@@ -1201,7 +1201,8 @@ milestone re-runs the H0 harness before and after and reports both.
 | **H4** | **Optimizer step cost: fewer native calls and allocations per parameter** | B4 (measured, 27 allocations/parameter, 83 % of a step) | **complete** — see 16.4. Bit-identical; the scalar-materialization variant was measured and **rejected** |
 | **H5** | **Copy and mutation transfer: the value-transfer primitive, and the traversal under it** | B1, B4 (measured; ten call sites of one helper, all pure value transfers) | **complete** — see 16.5. The ladder was **reordered here**: reduction execution, drafted as H5, moved to H6 (§16.5.0). No exported symbol added; the signed-zero and signaling-NaN contract is stated in §16.5.3 |
 | **H6** | **Reduction execution: a metadata-chosen block traversal for the accumulate kernel** | B5, B7 (measured; the traversal was **95 %** of a reduction) | **complete** — see 16.6. No exported symbol added; 2.6×–6.4× on 2-D and **8.6×–10.9×** on 3-D/4-D reductions, **every training step neutral**; the reduction-specific NaN rule is §16.6.8 and is *not* H2's |
-| H7 | Composed-module cost: normalization and the composed convolution bias gradient | B6, B7 (measured) | conditional — **narrowed further by H6**, which measured normalization mostly neutral (§16.6.11) |
+| ~~H7~~ | ~~Composed-module cost: normalization and the composed convolution bias gradient~~ | B6, B7 | **dropped on evidence** — see §16.7.0. H6 measured normalization mostly neutral (§16.6.11), which answered the question this slot existed to ask |
+| **H7** | **Python/C ABI boundary efficiency: the trusted layout binding** | B3, and the ~2.1 µs-per-array `ndpointer` conversion H3, H5, and H6 each left behind (measured directly, §16.7.2) | **complete** — see 16.7. No exported symbol added; the checked binding is retained wherever a caller-facing array crosses, and the **first Phase-H milestone to move every training step** |
 | H8 | Elementwise and materialization traversal | B9 + §3.2 stride-collapsing hypothesis | conditional, **narrowed by H5**, which already gave materialization its flat traversal |
 | H9 | SIMD, threading, or optional BLAS — **only** under §11/§12/§13 | none yet | conditional, presumed rejected |
 | H10 | Re-measurement, hardening, and the full sanitizer matrix | — | planned |
@@ -1255,6 +1256,15 @@ contract, the **measured** reduction-specific NaN rule (which is
 deliberately not H2's), the confirmed H1 Outcome A, the rejected
 candidates, the published fallback regression, and the measured results
 are section 16.6 below.
+
+### H7 — Python/C ABI boundary efficiency **(complete)**
+
+**The ladder was revised here** (§16.7.0): the composed-module milestone
+this slot originally held was **dropped on evidence**, and H7 is now the
+trusted layout binding. The complete binding inventory, the measured
+`ndpointer` attribution, the checked-versus-trusted architecture, the
+rank/length and pointer-lifetime proofs, the rejected candidates, and the
+measured results are section 16.7 below.
 
 ---
 
@@ -4061,20 +4071,545 @@ either.
 
 ---
 
-## 16.7 Remaining ladder detail
+## 16.7 H7 — the Python/C ABI boundary, as shipped
 
-**The ladder was reordered at H5** (§16.5.0). Reduction execution, drafted
-as H5, became H6 and has now shipped (§16.6); the conditional slots after
-it shift accordingly.
+**Status: complete.** H7 changed which ctypes argument type stands between
+this project's own layout metadata and a native pointer. It is a *binding*
+change and nothing else: no C++, no exported symbol, no kernel, no
+traversal, no arithmetic, no public API, and no capability moved.
 
-### H7 — Composed-module cost *(conditional, and now the weakest slot)*
+### 16.7.0 The ladder was revised here, and the old H7 was dropped
 
-Reduce the allocation and dispatch count in the normalization modules
-and the composed convolution bias gradient.
+The H0 ladder's H7 was **composed-module cost** — the normalization
+modules and the composed convolution bias gradient — and it was explicitly
+conditional on a re-measurement after H1, H3, and H6.
+
+**That condition was tested and not met, so the milestone was not
+entered.** H6 measured the normalization modules: LayerNorm forward
+1.16×, BatchNorm2d backward 1.10×, and BatchNorm1d training forward, eval
+forward, backward, BatchNorm2d forward, and LayerNorm backward all inside
+the 0.90×–1.03× control band, with the normalized training step as a whole
+at 1.03× (§16.6.11). Making `mean` 3.9×–4.1× faster moved a composed
+module by nothing measurable, because the cost is spread across two dozen
+components. The proposal, and the evidence against it, are preserved
+verbatim in §16.8 rather than deleted — a milestone dropped on measurement
+is a finding about the runtime, not something to tidy away.
+
+**What replaced it came from the same measurements.** H3, H5, and H6 each
+ended with the *same* leftover: a fixed per-call cost that dominates small
+operations and that none of them was able to remove.
+
+- **H3** cut the Python metadata work and then said so explicitly: after
+  it, "the ctypes boundary is roughly a tenth of the fixed cost" was no
+  longer true, because the Python side had shrunk and the boundary had
+  not.
+- **H5** measured small copies neutral and attributed it precisely: "a
+  `contiguous_copy` call converts two `int64` layout arrays at the ctypes
+  boundary at ~1.1 µs each — a cost measured, attributed, and **left to a
+  later dispatch milestone**."
+- **H6** measured tiny reductions neutral and attributed it the same way:
+  below roughly 1,000 elements "the fixed ~7 µs Python-plus-ctypes cost
+  dominates — H3's and H5's documented boundary finding, **left to a
+  dispatch milestone**."
+
+Three independent milestones deferred the same named cost to a later
+dispatch milestone. H7 is that milestone. The old H7's subject —
+composed-module *allocation count* — remains conditional future scope, and
+H7's own evidence narrows it further (§16.7.11).
+
+This revision is recorded, not retrofitted: the ladder table still carries
+the dropped row, struck through, beside the row that replaced it.
+
+### 16.7.1 The complete binding inventory
+
+Everything ctypes knows about the native library is configured in exactly
+two functions in `src/tensorforge/backends/cpp.py` — `_load_library` and
+`_configure_error_contract` — and **no other module in the repository
+imports `ctypes` or touches an `argtypes`, `restype`, or `errcheck`**. The
+experimental package reaches native code only through `NativeTensorCore`.
+
+52 exported functions are configured. **57 of their argument positions are
+arrays**, and before H7 every one of them was bound as
+`numpy.ctypeslib.ndpointer`. The inventory, by category:
+
+| Category | Functions | Array positions | Who owns the array | Binding after H7 |
+|---|---|---|---|---|
+| **1. Public raw-buffer kernels** | `tf_elementwise_add`/`subtract`/`multiply`/`divide`, `tf_relu`, `tf_matmul`, `tf_matmul_tiled` | 20 float64 | the caller, normalized by `ascontiguousarray` in the helper | **checked, unchanged** |
+| **2. Host conversion boundary** | `tf_storage_copy_from`, `tf_storage_copy_to`, `tf_storage_materialize`'s destination | 3 float64 | TensorForge, but they *are* the data | **checked, unchanged** |
+| **3. Per-view layout metadata** | `tf_storage_materialize`, `tf_core_relu`/`sqrt`/`reciprocal`/`exp`/`log`/`contiguous_copy`, `tf_core_add`/`subtract`/`multiply`/`relu_backward`, `tf_core_sum`, `tf_core_narrow_backward` | 24 int64 | TensorForge — the H3 immutable per-view arrays | **trusted** |
+| **4. Operation-local layout metadata** | the broadcast path of `tf_core_add`/`subtract`/`multiply`, `tf_core_sum`'s write-strides, `tf_core_narrow_backward`'s output strides | 8 int64 (the same positions as category 3, reached on a different path) | TensorForge — built and dropped inside one call | **trusted** |
+| **5. Class labels** | `tf_core_cross_entropy_forward`/`_backward` | 2 int64 | TensorForge, an owned read-only copy | **checked, deliberately** |
+| **6. Storage-handle-only** | 26 further exports (`tf_core_matmul`, every `_contiguous` kernel, conv2d, maxpool2d, softmax, dropout, the storage primitives) | **0** | — | unchanged; no array crosses |
+| **7. Test-only** | `tf_test_arm_alloc_failure`, `tf_fault_injection_available` | 0 | — | unchanged |
+
+**32 positions became trusted; 25 stayed checked.** Categories 3 and 4
+share argument positions because one export serves both — a same-shape
+strided `add` takes its metadata from two view caches, a broadcasting
+`add` builds all three per call — which is why the split is by *producer*,
+not by function.
+
+**The claim that "six kernels are affected" was not taken on trust and is
+wrong.** Thirteen exports have at least one trusted position, and the
+`tf_core_matmul` row matters as much as any: it takes **no** array at all,
+which is why H2's result is structurally untouched by H7 and is asserted
+rather than assumed.
+
+### 16.7.2 What `ndpointer` actually costs, measured
+
+`numpy.ctypeslib.ndpointer(dtype=…, flags="C_CONTIGUOUS").from_param`
+verifies that the argument is an `ndarray`, that its dtype compares equal
+(byte order included), and that its flags include `C_CONTIGUOUS`. It then
+returns `obj.ctypes`, which is **a freshly constructed object on every
+access**, and ctypes then resolves that through `_as_parameter_`, which
+calls `data_as(c_void_p)` — a second construction. Two Python-level object
+constructions and three checks, per array, per call.
+
+Isolated, on one rank-2 metadata array (medians, warm-up, 20,000+
+repetitions):
+
+| Step | Median |
+|---|---|
+| `ndpointer.from_param(array)` | 1.1 µs |
+| `array.ctypes` (the object `from_param` returns) | 0.7 µs |
+| `array.ctypes.data_as(POINTER(c_int64))` | 1.5–1.6 µs |
+| `(c_int64 * 2)(*values)` | **0.3 µs** |
+| `np.asarray(values, dtype=np.int64)` | 0.4 µs |
+| reading a cached pointer (attribute access) | ~0.05 µs |
+
+And end to end, as the *complete per-array cost at a real call* — the same
+kernel, the same data, four carriers (3 arrays, so divide by three):
+
+| Carrier | 3 arrays | per array | build once |
+|---|---|---|---|
+| NumPy array + `ndpointer` (**pre-H7**) | 7.4 µs | **2.47 µs** | 0.40 µs |
+| cached typed pointer (**shipped, category 3**) | 1.0 µs | **0.33 µs** | 1.80 µs |
+| cached `c_int64` vector | 1.1 µs | 0.37 µs | 0.30 µs |
+| fresh `c_int64` vector (**shipped, category 4**) | 1.8 µs | **0.60 µs** | — |
+
+So the binding cost was **~2.1 µs per array position per call**, and the
+`errcheck` hook — which is *not* the problem — is ~0.3 µs per call.
+
+On real calls, with everything else held fixed:
+
+| Call | pre-H7 | post-H7 | delta |
+|---|---|---|---|
+| `tf_core_add`, 4×4, 3 arrays, with `errcheck` | 7.6 µs | 1.5 µs | −6.1 µs |
+| `tf_core_sum`, 4×4, 3 arrays | 7.4 µs | 1.0 µs | −6.4 µs |
+| `tf_core_sum`, 128×128 axis 0, 3 arrays | 9.9 µs | 3.5 µs | −6.4 µs |
+| `tf_core_add_contiguous`, 4×4, **0 arrays** | 0.9 µs | 0.9 µs | — (the control) |
+
+Evidence level: **directly measured**, decomposed, with an array-free
+control that did not move.
+
+### 16.7.3 How often it actually happens
+
+Counting array crossings per workload, by instrumenting the loaded
+library's function objects (test-local; no production counter exists):
+
+| Workload | C calls | array crossings | of which operation-local |
+|---|---|---|---|
+| MLP training step, (32, 64) → 64 → 3 | 245 | **101** | ~85 % |
+| Normalized training step (BatchNorm1d + LayerNorm) | 692 | **315** | ~85 % |
+| CNN training step (conv/pool/flatten/cross-entropy) | 242 | **104** | ~85 % |
+| `core.add` broadcast, one call | 3 | 3 | 3 |
+| `core.sum(axis=0)`, one call | 3 | 3 | 1 |
+| `core.contiguous_copy`, one call | 3 | 2 | 0 |
+| `core.to_numpy`, one call | 1 | 3 | 0 |
+
+Broken down by producer for one MLP step: 35 broadcasting binary
+operations × 3 = 105 **operation-local** descriptions, against 17 from
+per-view caches (4 copies × 2, 3 reductions × 2, 1 `relu_backward` × 3).
+For a normalized step: 99 broadcasts × 3 = 297 operation-local against 57
+cached.
+
+**This was the finding that decided the architecture.** The dominant cost
+is *not* the H3 per-view cache — it is the broadcast path, where all three
+descriptions belong to the operation and are rebuilt every call. A design
+that only added a per-view pointer cache would have captured about 15 % of
+the available work.
+
+At ~2.1 µs per crossing that is ~275 µs of an MLP step's measured 1,354 µs
+(**20 %**) and ~812 µs of a normalized step's 3,579 µs (**23 %**).
+
+### 16.7.4 The safety model: what `ndpointer` protects, and where each
+invariant moved
+
+Before removing a check, what it guaranteed had to be established
+elsewhere. `ndpointer(dtype, flags="C_CONTIGUOUS")` checks exactly three
+things and, importantly, **does not** check several others:
+
+| Property | `ndpointer` | Where it is established for a trusted position |
+|---|---|---|
+| is a NumPy array | yes | not required: the carrier is a ctypes object |
+| exact dtype, byte order included | yes | the carrier **is** `c_int64`; ctypes rejects every other type at the call |
+| C-contiguity | yes | a `c_int64` vector and a NumPy `int64` array are contiguous by construction |
+| **rank / length** | **no** | `len(values)`, or the rank of the immutable view the arrays were built from |
+| alignment | **no** | unchanged — neither binding checked it |
+| writability | **no** | unchanged — the ABI only reads these |
+| null | yes (a `TypeError`) | **the one difference** — see below |
+
+Because a trusted position takes a real ctypes type, **ctypes still type-
+checks every call**. Measured, not assumed: a `POINTER(c_int64)` position
+rejects a NumPy array of *any* dtype, a `POINTER(c_int32)`, a
+`(c_int32 * n)` vector, a `(c_double * n)` vector, a `c_void_p`, a list, a
+tuple, an int, bytes, and a string — every one with `ctypes.ArgumentError`.
+A NumPy array being rejected is a *deliberate* consequence: it makes it
+impossible to reach a trusted position from code still thinking in terms
+of the old binding.
+
+**The one honest difference is `None`.** `ndpointer` rejected it with a
+`TypeError`; `POINTER(c_int64)` converts it to `NULL`, and the exports
+that do not self-validate would then dereference it. This is stated rather
+than glossed. It is closed structurally: both producers are **total** —
+neither can return `None` for any constructible layout, rank 0 included,
+where both yield a valid empty buffer the kernels never dereference — and
+no public API accepts a metadata pointer, so no caller can supply one.
+**Three** of the thirteen affected exports — `tf_core_exp`,
+`tf_core_log`, and `tf_core_contiguous_copy` — additionally reject a null
+metadata pointer *in C++* through the shared `unary_strided_error`
+validator, and that rejection is unchanged. The other eleven, including
+the strided binary family, `tf_core_sum`, `tf_core_narrow_backward`, and
+`tf_storage_materialize`, would dereference it — which is stated plainly
+here rather than rounded up, and is exactly why the producers being total
+is the load-bearing part of this argument rather than a belt-and-braces
+remark.
+
+### 16.7.5 The array-length problem, and the proof
+
+This is the invariant that matters most, and it is the one `ndpointer`
+never checked: the C ABI receives a **pointer and an `ndim`**, and has no
+access to the Python object's length. H3's sanitizer work established the
+consequence — a two-element metadata array passed with `ndim = 3` is an
+out-of-bounds read — and no binding of any kind can prevent it, because
+the length is simply not part of what crosses.
+
+H7 does not merely preserve that situation; it makes the invariant
+*checkable*, which it previously was not:
+
+- an **operation-local vector** carries its length in its own type:
+  `len(vector) == len(values)`, and `values` is the same object the rank is
+  taken from (`out_shape` for a broadcast, `in_shape` for a reduction,
+  `original` for a scatter);
+- a **cached pointer** carries its owning NumPy array, because
+  `data_as` attaches it (`ptr._arr`), and that array's length is the view's
+  rank — the arrays are built from `self._shape` / `self._strides` inside
+  the view, and `ndim` is `len(self._shape)`.
+
+So every trusted carrier can report its own length at runtime, which an
+`ndpointer` argument could not. The suite asserts this three ways: per
+producer, per rank (0 through 4), and — structurally — over **every
+production kernel call in a real workload**, by wrapping all thirteen
+strided exports and asserting `carrier_length == ndim` on each of the
+three-or-two carriers of every call.
+
+**A sanitizer negative control proves the detector is real.** Under Clang
+ASan, test-only code hands `tf_core_sum` two-entry metadata while claiming
+`ndim = 3`:
+
+```
+ERROR: AddressSanitizer: heap-buffer-overflow
+READ of size 8 at 0x50200002f5c0 thread T0
+    #0 tf::reduce_prefers_contiguous_blocks(...) cpp/src/reduction.cpp:36
+    #1 tf_core_sum                              cpp/src/reduction.cpp:199
+0x50200002f5c0 is located 0 bytes after 16-byte region
+```
+
+That is exactly the H3 finding, reproduced through the H7 binding. It
+matters because it makes the *positive* result meaningful: 2,834 sanitized
+tests over the real production paths produced **zero** diagnostics, and
+now that is known to be a real absence rather than a blind detector. No
+production API can construct the malformed call.
+
+### 16.7.6 Pointer ownership and lifetime
+
+**The NumPy arrays remain the owning buffers, and remain read-only.** H3's
+per-view cache is untouched: same laziness, same identity on repeat, same
+`writeable = False`, same `_layout_cache` attribute, same
+`_native_layout()` / `_layout_arrays()` accessors. Every H3 test passes
+unchanged. H7 adds one further lazily built attribute,
+`_layout_pointer_cache`, holding the two typed pointers *into those exact
+arrays*.
+
+Deriving the pointer from the array rather than building a second,
+independent vector is a deliberate safety choice: **there is exactly one
+owning description of a view's layout.** Two copies could in principle
+disagree; a pointer into the one array cannot. It is measurably the slower
+of the two options for a single-use view (a `data_as` costs 1.6 µs against
+0.3 µs to build a vector), and the difference is ~2 % of a training step,
+so the safer option was taken.
+
+`ctypes.POINTER(...).from_address(...)` was measured at 0.9 µs — cheaper
+than `data_as` — and is **rejected outright**: it produces a pointer with
+no reference to its owner, which is precisely the dangling-capable object
+this contract forbids. `data_as` stores the array on the pointer
+(`ptr._arr`), so the buffer cannot be freed while the pointer exists —
+NumPy's own guarantee, relied upon and tested rather than assumed.
+
+Proved in the suite, with the cyclic collector **disabled** where lifetime
+is the subject:
+
+- a cached pointer still reads correctly after every other reference to
+  its array is dropped;
+- the cache introduces **no reference cycle** (view → arrays, view →
+  pointers, pointer → array; nothing points back), and an explicit
+  `gc.collect()` after dropping a view collects **0** objects;
+- a layout pointer keeps **no native storage alive**: closing the tensor
+  leaves live storage exactly at baseline, and the pointer still addresses
+  plain integers;
+- an operation-local vector is a live local of the calling frame for the
+  whole call and is retained by nothing afterwards — no global cache, no
+  id-keyed table, no attribute on any tensor;
+- closing a tensor leaves its metadata readable (the long-standing
+  contract) while every data operation still raises, and a view over
+  closed storage still raises at the storage open check, before any
+  native call.
+
+The absence of a global cache is enforced by parsing the module rather
+than grepping it: `from_address`, `from_buffer`, `id`, `byref`,
+`addressof`, `lru_cache`, and the weak-reference containers appear
+**nowhere in the module's code** (a docstring recording *why*
+`from_address` is not used must not be mistaken for using it).
+
+### 16.7.7 Candidate architectures evaluated
+
+| Candidate | Decision | Reasoning |
+|---|---|---|
+| Typed `POINTER(c_int64)` for layout positions | **adopted** | Every invariant is established at an immutable construction boundary; ctypes still type-checks; the length becomes checkable for the first time. |
+| Bare `c_void_p` everywhere | **rejected** | Expresses the ABI less precisely and would accept an arbitrary integer address. A typed pointer is strictly safer for the same speed. |
+| Cached ctypes *vectors* replacing the NumPy layout arrays | **rejected** | Fastest option measured (0.30 µs to build, 0.37 µs per call), but it would create a second owning description of a view's layout and would lose H3's `writeable = False` protection — a ctypes vector is mutable and has no read-only form. The gain over the shipped design is ~2 % of a training step. Not worth the ownership regression. |
+| Cached pointer per view | **adopted** for category 3 | One owner, read-only, NumPy-guaranteed lifetime. |
+| Fresh vector per call | **adopted** for category 4 | The metadata belongs to the operation; there is nothing to cache, and a global cache is forbidden. |
+| `POINTER.from_address` | **rejected** | 0.9 µs versus 1.6 µs, but no owner reference — a dangling pointer by construction. |
+| A second `CDLL` handle configured differently over the same symbols | **rejected** | Two call views over one symbol would double the binding surface, and there is no need: the two categories are distinguishable *per argument position*, so one `argtypes` list expresses both. |
+| A custom `from_param` classmethod that validates | **rejected** | A Python call per argument is the cost being removed, for a check that is redundant once the object's type is guaranteed by construction. |
+| `CFUNCTYPE` / raw function addresses | **rejected, not needed** | Ordinary configured `CDLL` functions meet the goal. Nothing here required bypassing ctypes' call machinery, so none of the calling-convention, GIL, teardown, or sanitizer risks was taken on. |
+| Removing `ndpointer` from the raw public kernels | **rejected** | Those accept caller-supplied objects. Their checked binding is the point, they are reference/benchmark paths, and the cost is irrelevant there. |
+| Making cross-entropy labels trusted | **rejected** | A label array's required length comes from the *logits*, not from the array — a different object — so a boundary check is still doing real work. One array per call; the cost is nil. |
+| Scalar-argument conversion cleanup | **rejected on measurement** | `c_int64`/`c_double`/`c_uint64` boxing is not visible beside the array cost; changing integer coercion would risk overflow checks for no measurable gain. |
+| A production no-op C ABI function for boundary timing | **forbidden and not added** | The boundary is measured with real low-work kernels and an array-free control. |
+
+### 16.7.8 What was implemented
+
+Three things, all in `src/tensorforge/backends/cpp.py`:
+
+1. **Two named bindings at module scope.** `_CHECKED_F64_ARRAY` and
+   `_CHECKED_I64_ARRAY` are the unchanged `ndpointer` classes;
+   `_LAYOUT_POINTER` is `ctypes.POINTER(ctypes.c_int64)`. Declaring them
+   side by side puts the policy in one readable place. None touches the
+   compiled library, so importing the module still loads nothing.
+2. **`_layout_vector(values)`** — the operation-local producer, returning
+   `(ctypes.c_int64 * len(values))(*values)`.
+3. **`NativeTensorView._native_layout_pointers()`** — the per-view
+   producer, memoizing `data_as` over the H3 arrays, with
+   `NativeTensorCore._layout_pointers()` delegating to it exactly as
+   `_layout_arrays()` delegates to `_native_layout()`.
+
+Eleven call sites were migrated. **No validation was removed anywhere**,
+no error type or message changed, and no public API was added: both
+producers are private, `_LAYOUT_POINTER` is private, and there is no
+binding selector, trusted-call flag, environment variable, pointer-cache
+control, or profiling counter — nor may there be.
+
+**Binding configuration remains a load-time act.** `argtypes`, `restype`,
+and `errcheck` are assigned only inside `_load_library` and
+`_configure_error_contract`, each of which runs once per process; the
+suite asserts that by locating every such assignment's enclosing function.
+Nothing reconfigures a function object per call, which would be a data
+race the project does not claim to be safe against. H7 therefore
+**broadens no thread-safety claim**: the per-view pointer cache is a
+lazily assigned attribute of an immutable object whose value is a pure
+function of state fixed at construction, so a race can at worst build the
+same pointer twice and publish one of two equivalent objects — exactly the
+property H3's array cache already had.
+
+### 16.7.9 Measured results, reported honestly
+
+Method: a **retained pre-H7 `cpp.py`, taken verbatim from the previous
+commit**, driven against the **same Release DLL** as the post-H7 module,
+so nothing in C++ differs and the only variable is the Python binding.
+Eleven alternating pre/post **subprocess** rounds, medians of medians,
+every case's output compared **before** either side was timed.
+
+**Every case in every table below was proved bit-identical between the two
+bindings before any timing was taken.**
+
+This machine's control band, measured by alternating pre against *pre*
+over the identical harness: **0.95×–1.10×** for the Core cases and
+**0.99×–1.05×** for the end-to-end cases. Nothing inside those bands is
+reported as a result.
+
+**Core operations:**
+
+| Case | pre | post | ratio |
+|---|---|---|---|
+| `sum` to scalar, 1 element | 13.8 µs | 7.1 µs | **1.94×** |
+| `sum` to scalar, 16 elements | 13.6 µs | 7.2 µs | **1.89×** |
+| `to_numpy`, 16×16 | 8.8 µs | 4.8 µs | **1.83×** |
+| `sum(axis=0)`, 16×16 | 15.6 µs | 8.7 µs | **1.79×** |
+| `contiguous_copy`, 4×4 | 10.4 µs | 6.0 µs | **1.73×** |
+| `narrow_backward`, 32×4 | 14.7 µs | 8.5 µs | **1.73×** |
+| `relu_backward`, strided 32×32 | 16.2 µs | 9.5 µs | **1.71×** |
+| `add` broadcast by a scalar, 16×16 | 17.7 µs | 10.6 µs | **1.67×** |
+| `sum(axis=1)`, 4-D NCHW | 20.0 µs | 13.0 µs | **1.54×** |
+| `add` broadcast by a row, 64×64 | 26.7 µs | 19.0 µs | **1.41×** |
+| `sum(axis=0)`, 256×256 | 25.0 µs | 18.5 µs | **1.35×** |
+| `exp`, strided 32×32 | 19.9 µs | 15.4 µs | **1.29×** |
+| `contiguous_copy`, transposed 128×128 | 43.4 µs | 37.3 µs | **1.16×** |
+
+**End-to-end** — and this is the milestone's real result:
+
+| Case | pre | post | ratio |
+|---|---|---|---|
+| Dropout training step | 1330.5 µs | 1005.1 µs | **1.32×** |
+| Normalized training step | 3724.3 µs | 2833.8 µs | **1.31×** |
+| `NativeAdam.step()`, (32, 32) | 282.3 µs | 215.7 µs | **1.31×** |
+| CNN training step | 1342.0 µs | 1032.6 µs | **1.30×** |
+| MLP training step, small | 1418.4 µs | 1109.6 µs | **1.28×** |
+| `NativeLayerNorm` forward, (128, 64) | 259.4 µs | 211.4 µs | **1.23×** |
+| `NativeBatchNorm1d` eval forward, (128, 64) | 246.0 µs | 200.5 µs | **1.23×** |
+| `NativeAdam.step()`, (128, 128) | 616.7 µs | 541.7 µs | **1.14×** |
+| `NativeSGD.step()`, (128, 128) | 95.9 µs | 85.0 µs | **1.13×** |
+| MLP training step, large (256²) | 6822.8 µs | 6296.4 µs | **1.08×** |
+
+**H7 is the first Phase-H milestone to move every training step.** H4
+moved them 1.09×–1.23×; H5 and H6 were neutral on all of them. That is
+the direct consequence of §16.7.3: the boundary cost is paid per *call*,
+and a training step makes a hundred to three hundred array-carrying calls.
+
+**Reported just as honestly — the neutral and control rows:**
+
+| Case | ratio | reading |
+|---|---|---|
+| `matmul`, 256³ | 0.99× | **control**: takes no array; H2's result intact |
+| `matmul`, 8³ | 1.00× | **control**: takes no array |
+| `add` contiguous, 16×16 | 1.05× | **control**: takes the flat kernel, no arrays |
+| `copy`, 512×512 | 1.02× | neutral — memory-bound, one crossing |
+| `to_numpy`, 256×256 | 1.04× | neutral |
+| `sum` full, 512×512 | 1.06× | neutral |
+| `multiply` broadcast, 256×256 | 1.08× | neutral — the kernel dominates |
+| MLP step, large | 1.08× | just outside the band; arithmetic-dominated |
+
+The pattern is exactly what the attribution predicts: **the gain is a
+fixed number of microseconds per array-carrying call**, so it is large
+where the call is small and invisible where the kernel is large. **H7 does
+not make large matmul faster**, and the three array-free control cases are
+in the table to make that checkable rather than merely stated.
+
+Harness decomposition, from the two paired `dispatch_overhead` cases: an
+array-free prepared call (`ctypes_boundary`) is **0.8 µs** and the same
+call carrying three layout arguments (`ctypes_boundary_strided`) is
+**1.3 µs**. Before H7 the second would have been ~7 µs.
+
+**A second, independent 11-round run reproduced every row, and the
+run-to-run variation is published rather than hidden.** All 30 cases were
+again bit-identical, every control again held (256³ matmul 0.98×, 8³
+matmul 1.04×, contiguous 16×16 `add` 1.08×, 512×512 `copy` 1.01×), and
+every training step again improved. Individual ratios moved by roughly the
+control band's width in both directions — a 1-element `sum` read 2.12×
+against 1.94×, `to_numpy` 16×16 1.91× against 1.83×, `NativeSGD` 1.26×
+against 1.13×, `NativeLayerNorm` forward 1.31× against 1.23×, while
+`NativeAdam` at (128, 128) read 1.08× against 1.14× and the CNN step 1.27×
+against 1.30×. The tables above quote the first run; the second is
+recorded here so no single figure is read as more precise than the method
+supports. What is stable across both runs, and is the milestone's actual
+claim, is the *shape*: small array-carrying operations improve
+substantially, every training step improves, and array-free work does not
+move.
+
+### 16.7.10 Memory
+
+**Native memory did not move at all, and that is asserted rather than
+assumed.** The same boundary workload allocates **5 native storages, peak
+4 live, 584 peak bytes** before and after — identical. H7 changes host
+argument marshalling; it allocates no native storage, frees none, and
+changes no kernel's output.
+
+Host object footprint: a view's **cold** size is byte-identical (336 bytes
+including its dict). A view that actually takes a strided path costs
+**+296 bytes** for the pointer pair — and in an MLP training step only
+**9 of 98** constructed views ever populate it, because the contiguous
+fast-path kernels take a flat count and never ask. That is H3's laziness
+argument, unchanged and still load-bearing.
+
+The operation-local change moves memory *down* slightly: a
+`(c_int64 * n)` vector replaces a NumPy array plus the two throwaway
+objects `ndpointer` created per call.
+
+### 16.7.11 What H7 did not do, and what it leaves
+
+Not done, deliberately: no C++, no exported symbol (**still exactly 52**),
+no kernel, no traversal, no arithmetic, no numerical carve-out (there is
+nothing to carve out — no operation's operands, order, or values changed),
+no fusion, no Conv2d or MaxPool2d work, no SIMD, threading, OpenMP, BLAS,
+memory pool, or scratch workspace, no public API, no capability, dtype,
+device, registry value, checkpoint field, or checkpoint version, and no
+change to the stable NumPy line or to stable/native isolation.
+
+H1's allocation semantics, H2's matmul arithmetic and NaN contract, H3's
+metadata validation, H4's optimizer atomicity, H5's copy semantics, and
+H6's reduction arithmetic and fallback behavior are all exactly what they
+were, and each phase's suite passes unchanged.
+
+### 16.7.12 Harness cases added
+
+Three, taking the harness from 31 to **34**, following H5's and H6's
+separate-rather-than-average precedent:
+
+- **`ctypes_boundary_strided`** — the array-carrying twin of the existing
+  `ctypes_boundary`. The twin times `tf_core_add_contiguous`, whose
+  arguments are three handles and three integers and where **no array
+  crosses at all**; this one times `tf_core_add` on the same preallocated
+  storages with the same `errcheck` hook, plus the three layout arguments.
+  The pair separates the crossing that carries metadata from the one that
+  does not, which is the only way the cost of those arguments is visible
+  at all. `native_only`, for the twin's reason, and its correctness gate
+  additionally asserts the rank/length agreement the trusted binding
+  depends on.
+- **`elementwise_broadcast_scalar`** — `multiply` by a rank-0 operand: the
+  shape every optimizer coefficient has, and the runtime's single most
+  frequent array-carrying crossing (§16.7.3).
+- **`elementwise_broadcast_row`** — `multiply` by a `(1, n)` operand: the
+  shape every normalization statistic has, with one axis genuinely
+  stretched by a zero stride rather than the whole operand collapsed to a
+  point.
+
+Unlike the two `dispatch_overhead` cases, both broadcast cases are
+complete operations that NumPy performs the same way over the same
+values, so they publish a ratio. No result file is written, no timing is
+asserted, and no CI job runs either.
+
+### 16.7.13 What the evidence now says about H8
+
+H7 removed a fixed per-call cost;
+what is left in a small operation is the *allocation* and the pass over
+memory. A broadcast elementwise operation is now ~1.4×–1.7× cheaper at
+small sizes and unchanged at large ones, which sharpens rather than
+answers B6: a LayerNorm forward is 11 allocations, a BatchNorm1d training
+forward 25, a BatchNorm2d 30, and each is still a separate output buffer
+and a separate full traversal. That is elementwise traversal and
+allocation count — **H8's** subject — and it remains conditional.
+
+---
+
+## 16.8 Remaining ladder detail
+
+**The ladder was reordered at H5** (§16.5.0) and **revised again at H7**
+(§16.7.0). Reduction execution, drafted as H5, became H6 and has shipped
+(§16.6); the composed-module milestone drafted as H7 was **dropped on
+evidence** and replaced by the Python/C ABI boundary, which has shipped
+(§16.7). The conditional slots after it keep their numbers.
+
+### ~~H7~~ — Composed-module cost *(dropped on evidence; see §16.7.0)*
+
+The proposal was to reduce the allocation and dispatch count in the
+normalization modules and the composed convolution bias gradient.
 
 **The original condition was that H1, H3, and H6 must land first and a
 re-measured normalization step must still show a material composed-module
-cost. All three have now landed, and the re-measurement is in.**
+cost. All three landed, the re-measurement came in, and the condition was
+not met — so this milestone was not entered.** The reasoning below is the
+evidence that made dropping it the right call; §16.7.0 records the
+decision itself.
 
 - H3 improved a normalized training step **1.51×** and cut its ratio
   against the stable line from 6.76× to 5.28× — much of B6 was per-call
@@ -4097,12 +4632,23 @@ cost. All three have now landed, and the re-measurement is in.**
   components.
 
 So H7 as originally framed — "make the reductions and dispatch inside
-normalization cheaper" — is **answered and should not be entered**. The
+normalization cheaper" — is **answered and was not entered**. The
 only version of it that could still pay is broadcast-elementwise traversal
 and allocation count, which is **H8's** subject, not a normalization one.
 **It must not introduce a normalization kernel**: F2–F4's achievement is
 that both families are compositions with no C++ at all, and trading that
 for speed would be a semantic regression, not an optimization.
+
+**This proposal is preserved above rather than deleted.** The ladder is a
+record of what was proposed and why, and a milestone that was dropped on
+measurement is evidence about the runtime — not an embarrassment to hide.
+What H7 became instead is §16.7.
+
+**Composed-module allocation count remains conditional future scope**, and
+H7's own evidence bears on it: a broadcast elementwise operation is now
+measurably cheaper at the boundary (§16.7.9), so what is left in B6 is
+increasingly the allocations and the passes over memory rather than the
+crossing. That is H8's subject, and it stays conditional.
 
 ### H8 — Elementwise and materialization traversal *(conditional)*
 

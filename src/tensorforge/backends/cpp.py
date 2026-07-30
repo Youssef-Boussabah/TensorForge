@@ -483,6 +483,112 @@ _MAX_EXACT_WINNER_PLANE = 2 ** 53
 
 _lib = None  # loaded lazily by _require_library()
 
+# ---------------------------------------------------------------------------
+# The two argument bindings for arrays crossing the C ABI (Phase H, H7)
+#
+# Every array position in this module's declarations falls into exactly one
+# of two categories, and they are bound differently on purpose. Applying one
+# blanket policy to both would either leave a real check off a caller-facing
+# path or pay a per-call validation cost for an invariant that was already
+# established, once, at an immutable construction boundary.
+#
+# **CHECKED** — ``_CHECKED_F64_ARRAY`` / ``_CHECKED_I64_ARRAY``.
+# ``numpy.ctypeslib.ndpointer`` re-verifies, at every call, that the argument
+# is a NumPy array, that its dtype matches exactly (byte order included), and
+# that it is C-contiguous. That is exactly right where the array is *data* —
+# a buffer a caller supplied, or one native code writes into and hands back:
+#
+#   * the seven raw public kernels (``elementwise_add`` … ``matmul_tiled``),
+#     which any caller may reach with any object at all;
+#   * ``tf_storage_copy_from`` / ``tf_storage_copy_to`` and the float64
+#     destination of ``tf_storage_materialize`` — the explicit host
+#     conversion boundary;
+#   * the int64 **class labels** of the two cross-entropy exports. Those are
+#     int64 like the layout metadata below, and they are deliberately *not*
+#     bound as trusted: a label array's required length is the logits'
+#     ``batch_size``, which comes from a *different* object than the array
+#     does, so a dtype and layout check at the boundary is still doing work
+#     the construction site cannot do by itself. There is one such array per
+#     cross-entropy call, so the check costs nothing that matters.
+#
+# **TRUSTED** — ``_LAYOUT_POINTER``.
+# The strided C ABI's ``shape`` / ``strides`` / write-stride positions are
+# *layout metadata this module built for itself* from a tuple it had already
+# validated. Exactly two producers exist and no other object can reach these
+# positions:
+#
+#   * ``NativeTensorView._native_layout_pointers()`` — the per-view pair,
+#     derived from the H3 read-only NumPy layout arrays that remain the
+#     owning buffers;
+#   * ``_layout_vector(values)`` — a fresh, exactly ``len(values)`` long
+#     ``c_int64`` vector for the operation-local metadata (broadcast strides,
+#     reduction write-strides, ``narrow_backward``'s output strides).
+#
+# Both establish, **by construction**, every property ``ndpointer`` would
+# re-check and one it never checked at all:
+#
+#   | property        | how it is established                              |
+#   |-----------------|----------------------------------------------------|
+#   | element type    | the pointer/vector *is* ``c_int64``; ctypes rejects |
+#   |                 | every other type at the call (a NumPy array, a      |
+#   |                 | differently typed pointer, bytes, a list, an int)   |
+#   | contiguity      | a ``c_int64`` vector and a NumPy ``int64`` array    |
+#   |                 | are contiguous by construction                      |
+#   | byte order      | native by construction — neither carrier has a      |
+#   |                 | byte-order concept to get wrong                     |
+#   | **length**      | ``len(values)``, or the rank of the immutable view  |
+#   |                 | the arrays were built from — **the one invariant    |
+#   |                 | ``ndpointer`` never checked**, because the ABI takes |
+#   |                 | a pointer and an ``ndim`` and cannot see the        |
+#   |                 | Python object's length                              |
+#   | owner lifetime  | ``ndarray.ctypes.data_as`` stores the array on the  |
+#   |                 | pointer (``ptr._arr``), so the buffer cannot be     |
+#   |                 | freed while the pointer exists; a fresh vector owns |
+#   |                 | its own buffer                                      |
+#
+# The one value ``POINTER(c_int64)`` accepts that ``ndpointer`` rejected is
+# ``None`` (a null pointer). No production path can produce it: both
+# producers are total, and neither can return ``None`` for any constructible
+# layout — including rank 0, where both yield a valid zero-length buffer the
+# kernels never dereference. ``tests/test_native_abi_boundary.py`` proves
+# that, and proves the rank/length agreement these positions depend on.
+# ---------------------------------------------------------------------------
+
+# The checked bindings, exactly as they have always been declared. Building
+# them at module scope rather than inside ``_load_library`` keeps the two
+# policies visible side by side and costs nothing: ``ndpointer`` memoizes its
+# generated classes, and neither of these touches the compiled library, so
+# importing this module still loads nothing.
+_CHECKED_F64_ARRAY = np.ctypeslib.ndpointer(
+    dtype=np.float64, flags="C_CONTIGUOUS"
+)
+_CHECKED_I64_ARRAY = np.ctypeslib.ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")
+
+# Layout metadata is always a pointer to int64. Declared once, used by every
+# trusted position, so no call site can pick a different (or weaker) type.
+_LAYOUT_POINTER = ctypes.POINTER(ctypes.c_int64)
+
+
+def _layout_vector(values):
+    """A fresh ``c_int64`` vector holding ``values``, for the operation-local
+    layout metadata the strided C ABI takes (Phase H, milestone H7).
+
+    ``values`` is a sequence of exact Python ints this module derived from an
+    already-validated layout — broadcast strides, a reduction's write-strides,
+    or ``narrow_backward``'s output strides. Each is a property of *one
+    operation* rather than of any tensor, so there is nothing to cache: the
+    vector is built, passed, and dropped inside a single call.
+
+    The result carries its own length (``len(vector) == len(values)``), owns
+    the buffer the kernel reads, and is a live local of the calling frame for
+    the whole native call — so no pointer here can outlive its storage. It
+    replaces a ``numpy.asarray(values, dtype=numpy.int64)`` that then had to
+    be re-validated by ``ndpointer`` at every call; building the vector
+    directly is both cheaper and stricter, because a ``c_int64`` vector
+    cannot have the wrong element type or the wrong length.
+    """
+    return (ctypes.c_int64 * len(values))(*values)
+
 
 def normalize_dtype(dtype=None):
     """Validate and canonicalize a native dtype tag.
@@ -545,7 +651,12 @@ def _load_library():
             f"The experimental C++ backend library exists but failed to "
             f"load ({error}). Try rebuilding it.\n" + build_instructions()
         ) from error
-    f64_array = np.ctypeslib.ndpointer(dtype=np.float64, flags="C_CONTIGUOUS")
+    # The checked binding for caller-facing float64 data buffers, and the
+    # trusted binding for this module's own int64 layout metadata. See the
+    # contract above ``_LAYOUT_POINTER`` for which positions get which, and
+    # why one blanket policy would be wrong.
+    f64_array = _CHECKED_F64_ARRAY
+    layout = _LAYOUT_POINTER
     for name in _BINARY_KERNELS:
         kernel = getattr(library, name)
         kernel.argtypes = [f64_array, f64_array, f64_array, ctypes.c_int64]
@@ -580,9 +691,15 @@ def _load_library():
     library.tf_storage_copy_from.restype = None
     library.tf_storage_copy_to.argtypes = [ctypes.c_void_p, f64_array]
     library.tf_storage_copy_to.restype = None
-    i64_array = np.ctypeslib.ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")
+    # The class-label binding: int64 like the layout metadata, but bound
+    # CHECKED, because a label array's required length comes from the logits
+    # rather than from the array itself (see the contract above).
+    i64_array = _CHECKED_I64_ARRAY
+    # The float64 destination stays checked — it is a real NumPy buffer this
+    # call writes into and returns — while the shape/stride pair becomes the
+    # trusted layout binding, exactly as for every other strided export.
     library.tf_storage_materialize.argtypes = [
-        ctypes.c_void_p, f64_array, i64_array, i64_array,
+        ctypes.c_void_p, f64_array, layout, layout,
         ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_storage_materialize.restype = None
@@ -597,7 +714,7 @@ def _load_library():
                  "tf_core_exp", "tf_core_log", "tf_core_contiguous_copy"):
         kernel = getattr(library, name)
         kernel.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array,
+            ctypes.c_void_p, ctypes.c_void_p, layout, layout,
             ctypes.c_int64, ctypes.c_int64,
         ]
         kernel.restype = None
@@ -610,7 +727,7 @@ def _load_library():
         kernel = getattr(library, name)
         kernel.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            i64_array, i64_array, i64_array,
+            layout, layout, layout,
             ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
         ]
         kernel.restype = None
@@ -654,8 +771,14 @@ def _load_library():
     # symbol was added; see cpp/include/tf_reduction_internal.h.
     # tf_core_narrow_backward, the scatter dual below, was deliberately
     # left on the generic odometer.
+    #
+    # Phase H, milestone H7 rebound the three int64 positions from the
+    # checked ``ndpointer`` to the trusted ``_LAYOUT_POINTER``. The two
+    # source arrays come from the reducing tensor's own immutable per-view
+    # cache and the write-strides from ``_layout_vector``; the argument
+    # meanings, the order, and the kernel are untouched.
     library.tf_core_sum.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array, i64_array,
+        ctypes.c_void_p, ctypes.c_void_p, layout, layout, layout,
         ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_core_sum.restype = None
@@ -665,7 +788,7 @@ def _load_library():
     # zero output of the parent shape. Same odometer as tf_core_sum plus a
     # base output offset (start * row-major stride of the narrowed axis).
     library.tf_core_narrow_backward.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array, i64_array,
+        ctypes.c_void_p, ctypes.c_void_p, layout, layout, layout,
         ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_core_narrow_backward.restype = None
@@ -1299,6 +1422,12 @@ class NativeTensorView:
         # Lazily built by _native_layout(); see its docstring for why this
         # memoization cannot go stale and why it is not built eagerly.
         self._layout_cache = None
+        # Lazily built by _native_layout_pointers() (Phase H, H7): the
+        # ``c_int64`` pointers into the arrays above, which is what the
+        # strided C ABI actually takes. Same immutability argument, same
+        # reason it cannot go stale — it is derived from the same layout
+        # that is assigned exactly once, here, and never reassigned.
+        self._layout_pointer_cache = None
 
     def _native_layout(self):
         """This view's ``(shape, strides)`` as the ``int64`` arrays the
@@ -1343,6 +1472,53 @@ class NativeTensorView:
             self._layout_cache = arrays
         return arrays
 
+    def _native_layout_pointers(self):
+        """This view's ``(shape, strides)`` as the **typed int64 pointers**
+        the strided C ABI takes — built at most once per view (Phase H, H7).
+
+        H3 gave every view an immutable, read-only ``int64`` NumPy pair and
+        stopped rebuilding it. What it could not remove is what happens to
+        that pair at each *call*: bound as ``ndpointer``, every position was
+        re-verified (is it an ndarray, is its dtype exactly int64, is it
+        C-contiguous) and then converted to a pointer, once per argument,
+        once per call, forever. This memoizes the conversion the same way H3
+        memoized the construction, and for the same reason: it is a pure
+        function of state that is assigned exactly once and never reassigned.
+
+        **The NumPy arrays remain the owning buffers, and remain read-only.**
+        Nothing is copied and no second description of this view's layout is
+        created — a duplicate could in principle disagree with the first,
+        while a pointer *into* the one array cannot. ``ndarray.ctypes.data_as``
+        stores the array on the pointer it returns (``ptr._arr``), so the
+        buffer is reachable for as long as the pointer is and cannot be freed
+        underneath a native call. ``ctypes.POINTER(...).from_address(...)``
+        would be measurably cheaper to build and is **deliberately not used**:
+        it produces a pointer with no reference to its owner, which is exactly
+        the dangling-capable object this contract forbids.
+
+        **The rank comes from the same object as the pointers.** Each array
+        was built from ``self._shape`` / ``self._strides``, so its length *is*
+        ``self.ndim``; a caller that takes the pointers from here and the rank
+        from ``self.ndim`` is reading one immutable layout twice, not
+        combining two. That is the invariant the C ABI depends on and the one
+        ``ndpointer`` never checked — it sees a pointer and an ``ndim`` and
+        has no access to the Python object's length.
+
+        Lazy for H3's reason: the contiguous fast-path kernels take a flat
+        count and an offset, so the dominant training path never calls this.
+        Building it eagerly would put four objects on every short-lived view
+        to serve calls most of them never make.
+        """
+        pointers = self._layout_pointer_cache
+        if pointers is None:
+            shape_array, strides_array = self._native_layout()
+            pointers = (
+                shape_array.ctypes.data_as(_LAYOUT_POINTER),
+                strides_array.ctypes.data_as(_LAYOUT_POINTER),
+            )
+            self._layout_pointer_cache = pointers
+        return pointers
+
     @classmethod
     def from_array(cls, values):
         """Create a contiguous view over new storage holding ``values``.
@@ -1384,12 +1560,15 @@ class NativeTensorView:
         the native materialization kernel."""
         handle = self._storage._require_open()
         out = np.empty(self._numel, dtype=np.float64)
-        shape_array, strides_array = self._native_layout()
+        # ``out`` stays a checked ndpointer argument — it is real data this
+        # call writes into and returns. The layout pair is trusted, and both
+        # pointers and the rank below come from this one view (H7).
+        shape_pointer, strides_pointer = self._native_layout_pointers()
         self._storage._lib.tf_storage_materialize(
             handle,
             out,
-            shape_array,
-            strides_array,
+            shape_pointer,
+            strides_pointer,
             self._offset,
             len(self._shape),
         )
@@ -1413,12 +1592,12 @@ class NativeTensorView:
             self._numel, dtype=self._storage.dtype, device=self._storage.device
         )
         try:
-            shape_array, strides_array = self._native_layout()
+            shape_pointer, strides_pointer = self._native_layout_pointers()
             storage._lib.tf_core_contiguous_copy(
                 self._storage._require_open(),
                 storage._require_open(),
-                shape_array,
-                strides_array,
+                shape_pointer,
+                strides_pointer,
                 self._offset,
                 len(self._shape),
             )
@@ -1641,11 +1820,11 @@ class NativeTensorCore:
             self.shape, dtype=self.dtype, device=self.device
         )
         try:
-            shape_arr, strides_arr = self._layout_arrays()
+            shape_ptr, strides_ptr = self._layout_pointers()
             self._storage._lib.tf_core_contiguous_copy(
                 self._storage._require_open(),
                 out._storage._require_open(),
-                shape_arr, strides_arr, self.offset, self.ndim,
+                shape_ptr, strides_ptr, self.offset, self.ndim,
             )
         except BaseException:
             out.close()
@@ -1658,12 +1837,22 @@ class NativeTensorCore:
         """This core's ``(shape, strides)`` int64 arrays for the strided
         C ABI, delegated to its view's per-view cache (Phase H, H3).
 
-        The arrays are **read-only**: this is a private helper, every
-        caller is a kernel dispatch inside this module that only reads
-        them, and marking them so is what makes returning the cached pair
-        instead of a fresh one incapable of exposing shared mutable
-        state."""
+        The arrays are **read-only**: every caller only reads them, and
+        marking them so is what makes returning the cached pair instead of a
+        fresh one incapable of exposing shared mutable state. They are the
+        buffers the kernels read; ``_layout_pointers`` below is how a kernel
+        addresses them."""
         return self._view._native_layout()
+
+    def _layout_pointers(self):
+        """This core's ``(shape, strides)`` as the typed int64 pointers the
+        strided C ABI takes, delegated to its view's per-view cache
+        (Phase H, H7).
+
+        The pointers address the very arrays ``_layout_arrays`` returns and
+        keep them alive, so the rank to pass alongside them is this core's
+        own ``ndim`` — one immutable layout, read twice, never two."""
+        return self._view._native_layout_pointers()
 
     def relu(self):
         """max(x, 0) elementwise, computed by the native kernel reading
@@ -1692,11 +1881,11 @@ class NativeTensorCore:
                     self.numel, self.offset,
                 )
                 return out
-            shape_arr, strides_arr = self._layout_arrays()
+            shape_ptr, strides_ptr = self._layout_pointers()
             self._storage._lib.tf_core_relu(
                 self._storage._require_open(),
                 out._storage._require_open(),
-                shape_arr, strides_arr, self.offset, self.ndim,
+                shape_ptr, strides_ptr, self.offset, self.ndim,
             )
             return out
         except BaseException:
@@ -1726,11 +1915,11 @@ class NativeTensorCore:
                     self.numel, self.offset,
                 )
                 return out
-            shape_arr, strides_arr = self._layout_arrays()
+            shape_ptr, strides_ptr = self._layout_pointers()
             getattr(self._storage._lib, odometer_name)(
                 self._storage._require_open(),
                 out._storage._require_open(),
-                shape_arr, strides_arr, self.offset, self.ndim,
+                shape_ptr, strides_ptr, self.offset, self.ndim,
             )
             return out
         except BaseException:
@@ -2182,15 +2371,17 @@ class NativeTensorCore:
             self.shape, dtype=self.dtype, device=self.device
         )
         try:
-            shape_arr, x_strides = self._layout_arrays()
+            shape_ptr, x_strides = self._layout_pointers()
             # Same shape, so only the upstream's *strides* differ; take
-            # them from its own view cache rather than rebuilding.
-            u_strides = upstream._layout_arrays()[1]
+            # them from its own view cache rather than rebuilding. The rank
+            # passed below is this tensor's, and the shapes were just proved
+            # equal, so every pointer describes exactly ``self.ndim`` axes.
+            u_strides = upstream._layout_pointers()[1]
             self._storage._lib.tf_core_relu_backward(
                 self._storage._require_open(),
                 upstream._storage._require_open(),
                 out._storage._require_open(),
-                shape_arr, x_strides, u_strides,
+                shape_ptr, x_strides, u_strides,
                 self.offset, upstream.offset, self.ndim,
             )
         except BaseException:
@@ -2268,16 +2459,18 @@ class NativeTensorCore:
                         self.numel, self.offset, other.offset,
                     )
                     return out
-                shape_arr, a_strides = self._layout_arrays()
+                shape_ptr, a_strides = self._layout_pointers()
                 # Path B is the same-shape case, so the shared shape array
                 # is this operand's; only the other operand's strides are
-                # needed, and they come from its own view cache.
-                b_strides = other._layout_arrays()[1]
+                # needed, and they come from its own view cache. The shapes
+                # were just compared equal, so all three pointers describe
+                # exactly the ``self.ndim`` axes passed below.
+                b_strides = other._layout_pointers()[1]
                 getattr(lib, kernel_name)(
                     self._storage._require_open(),
                     other._storage._require_open(),
                     out._storage._require_open(),
-                    shape_arr, a_strides, b_strides,
+                    shape_ptr, a_strides, b_strides,
                     self.offset, other.offset, self.ndim,
                 )
                 return out
@@ -2294,20 +2487,25 @@ class NativeTensorCore:
         )
         try:
             out_ndim = len(out_shape)
-            shape_arr = np.asarray(out_shape, dtype=np.int64)
-            a_strides = np.asarray(
-                _broadcast_strides(self.shape, self.strides, out_shape),
-                dtype=np.int64,
+            # All three descriptions belong to *this broadcast*, not to
+            # either tensor, so none of them is cacheable anywhere: they are
+            # built here, passed, and dropped (H7). ``_broadcast_strides``
+            # returns one entry per output axis, so every vector below is
+            # exactly ``out_ndim`` long by construction — the rank passed to
+            # the kernel and the length of what it addresses are the same
+            # number, read from the same ``out_shape``.
+            shape_vector = _layout_vector(out_shape)
+            a_strides = _layout_vector(
+                _broadcast_strides(self.shape, self.strides, out_shape)
             )
-            b_strides = np.asarray(
-                _broadcast_strides(other.shape, other.strides, out_shape),
-                dtype=np.int64,
+            b_strides = _layout_vector(
+                _broadcast_strides(other.shape, other.strides, out_shape)
             )
             getattr(lib, kernel_name)(
                 self._storage._require_open(),
                 other._storage._require_open(),
                 out._storage._require_open(),
-                shape_arr, a_strides, b_strides,
+                shape_vector, a_strides, b_strides,
                 self.offset, other.offset, out_ndim,
             )
         except BaseException:
@@ -2462,16 +2660,19 @@ class NativeTensorCore:
             out_strides = _reduce_out_strides(
                 self.shape, reduced, bool(keepdims), out_shape
             )
-            # This tensor's own layout arrays come from its view's cache;
-            # the write-strides are a property of *this reduction*, not of
-            # any tensor, so they stay an operation-local array.
-            shape_arr, strides_arr = self._layout_arrays()
+            # This tensor's own layout comes from its view's cache; the
+            # write-strides are a property of *this reduction*, not of any
+            # tensor, so they stay an operation-local vector. Both carriers
+            # hold one entry per **input** axis — ``_reduce_out_strides``
+            # returns ``len(in_shape)`` of them by construction — which is
+            # the ``self.ndim`` passed below.
+            shape_ptr, strides_ptr = self._layout_pointers()
             self._storage._lib.tf_core_sum(
                 self._storage._require_open(),
                 out._storage._require_open(),
-                shape_arr,
-                strides_arr,
-                np.asarray(out_strides, dtype=np.int64),
+                shape_ptr,
+                strides_ptr,
+                _layout_vector(out_strides),
                 self.offset, self.ndim,
             )
         except BaseException:
@@ -3382,14 +3583,18 @@ class NativeTensorCore:
         out_full = _row_major_strides_checked(original)
         out_offset = start * out_full[dim]
         # This gradient's own layout comes from its view's cache; the
-        # output write-strides belong to this scatter, not to a tensor.
-        shape_arr, strides_arr = self._layout_arrays()
+        # output write-strides belong to this scatter, not to a tensor, so
+        # they stay an operation-local vector. ``out_full`` has one entry per
+        # axis of ``original``, whose rank was proved equal to this
+        # gradient's ``self.ndim`` above, so all three carriers describe the
+        # rank passed below.
+        shape_ptr, strides_ptr = self._layout_pointers()
         self._storage._lib.tf_core_narrow_backward(
             self._storage._require_open(),
             out._storage._require_open(),
-            shape_arr,
-            strides_arr,
-            np.asarray(out_full, dtype=np.int64),
+            shape_ptr,
+            strides_ptr,
+            _layout_vector(out_full),
             self.offset, out_offset, self.ndim,
         )
         return out
