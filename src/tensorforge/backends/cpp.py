@@ -644,6 +644,16 @@ def _load_library():
     # input into a fresh contiguous output using per-input-axis output
     # write-strides (0 on reduced axes); tf_storage_scale does mean's
     # in-place 1/count scaling.
+    #
+    # Phase H, milestone H6 gave tf_core_sum a second *traversal* behind
+    # this **unchanged** declaration — a flat block walk for row-major
+    # sources whose reduced axes form one contiguous run, chosen inside the
+    # kernel from these same arguments. The signature, the argument
+    # meanings, the accumulate-into contract, and the required
+    # zero-initialized destination are all exactly what they were, and no
+    # symbol was added; see cpp/include/tf_reduction_internal.h.
+    # tf_core_narrow_backward, the scatter dual below, was deliberately
+    # left on the generic odometer.
     library.tf_core_sum.argtypes = [
         ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array, i64_array,
         ctypes.c_int64, ctypes.c_int64,
@@ -2407,39 +2417,66 @@ class NativeTensorCore:
 
         Deterministic row-major accumulation order over the input; float
         sums are order-sensitive, so results match NumPy to a tolerance,
-        not bit-for-bit (see docs/native_reductions_design.md)."""
+        not bit-for-bit (see docs/native_reductions_design.md).
+
+        H6: the kernel now chooses between two traversals from the layout
+        metadata this method already passes it — a flat block traversal
+        when the source is row-major and the reduced axes form one
+        contiguous run, the retained generic odometer otherwise. Both
+        accumulate the same values into each destination cell in the same
+        ascending order, so the choice is invisible here: the output shape,
+        the write strides, the validation, and the ownership contract are
+        exactly what they were, and there is no path selector to pass."""
         self._require_open()
         # self.shape is already validated; axis and keepdims are the
         # caller-supplied half and are still fully validated here.
         out_shape = _reduce_shape_checked(self.shape, axis, keepdims)
-        # H1 REJECTED — this output must stay zero-initialized. tf_core_sum
-        # accumulates (`dst[out_pos] += src[in_pos]`), so the zero is the
-        # additive identity the reduction starts from, not a redundant
-        # write: every reduced axis folds many inputs into one destination
-        # cell, and that cell is *read* on every accumulation after the
-        # first. Giving this an uninitialized buffer would return garbage.
-        # A contiguous/accumulating fast path for reductions is H6's
-        # subject, not H1's. (It was drafted as H5; the ladder was
-        # reordered when H5 took the copy and mutation-transfer work —
-        # see docs/native_cpu_performance_design.md §16.5.0.)
+        # H1 REJECTED, and H6 CONFIRMED that rejection rather than revisiting
+        # it — this output must stay zero-initialized. tf_core_sum
+        # accumulates (`dst[out_pos] += src[in_pos]`) on *both* of its H6
+        # traversals, so the zero is the additive identity the reduction
+        # starts from, not a redundant write: every reduced axis folds many
+        # inputs into one destination cell, and that cell is *read* on every
+        # accumulation after the first. Giving this an uninitialized buffer
+        # would return garbage. The block traversal's local accumulator is
+        # seeded from the destination for exactly this reason, which is also
+        # what keeps the export's accumulate-into semantics identical on the
+        # two paths. H6 measured the zero-fill it would have removed: a
+        # reduction's output is the *reduced* shape, so a (256, 256) axis-0
+        # reduction zero-fills 2 KB while reading 512 KB — the fill is under
+        # half a percent of the work, against a traversal that was 95 % of
+        # it (docs/native_cpu_performance_design.md §16.6.6).
         out = NativeTensorCore.zeros(out_shape, dtype=self.dtype, device=self.device)
-        if axis is None:
-            reduced = set(range(self.ndim))
-        else:
-            reduced = {_normalize_axis_checked(axis, self.shape)}
-        out_strides = _reduce_out_strides(self.shape, reduced, bool(keepdims), out_shape)
-        # This tensor's own layout arrays come from its view's cache; the
-        # write-strides are a property of *this reduction*, not of any
-        # tensor, so they stay an operation-local array.
-        shape_arr, strides_arr = self._layout_arrays()
-        self._storage._lib.tf_core_sum(
-            self._storage._require_open(),
-            out._storage._require_open(),
-            shape_arr,
-            strides_arr,
-            np.asarray(out_strides, dtype=np.int64),
-            self.offset, self.ndim,
-        )
+        # Everything after the allocation runs inside the same cleanup
+        # boundary every other allocating Core op uses (compare
+        # contiguous_copy): a failure in the write-stride construction, the
+        # layout arrays, or the native call releases the freshly allocated
+        # output before propagating, so no partially accumulated core
+        # escapes and the release is explicit rather than left to a
+        # refcount or the collector.
+        try:
+            if axis is None:
+                reduced = set(range(self.ndim))
+            else:
+                reduced = {_normalize_axis_checked(axis, self.shape)}
+            out_strides = _reduce_out_strides(
+                self.shape, reduced, bool(keepdims), out_shape
+            )
+            # This tensor's own layout arrays come from its view's cache;
+            # the write-strides are a property of *this reduction*, not of
+            # any tensor, so they stay an operation-local array.
+            shape_arr, strides_arr = self._layout_arrays()
+            self._storage._lib.tf_core_sum(
+                self._storage._require_open(),
+                out._storage._require_open(),
+                shape_arr,
+                strides_arr,
+                np.asarray(out_strides, dtype=np.int64),
+                self.offset, self.ndim,
+            )
+        except BaseException:
+            out.close()
+            raise
         return out
 
     def mean(self, axis=None, keepdims=False):
@@ -2450,15 +2487,22 @@ class NativeTensorCore:
         NativeTensorCore. No NumPy touches the data; no autograd."""
         self._require_open()
         result = self.sum(axis=axis, keepdims=keepdims)
-        if axis is None:
-            count = self.numel
-        else:
-            count = self.shape[_normalize_axis_checked(axis, self.shape)]
-        # In-place native scale of the freshly summed output — no copy,
-        # no NumPy round trip. count >= 1 always (dims are positive).
-        result._storage._lib.tf_storage_scale(
-            result._storage._require_open(), 1.0 / count
-        )
+        # Same cleanup boundary as ``sum``'s: the summed output is already
+        # allocated, so a failure in the count or in the in-place scale must
+        # release it explicitly rather than leave it to a refcount.
+        try:
+            if axis is None:
+                count = self.numel
+            else:
+                count = self.shape[_normalize_axis_checked(axis, self.shape)]
+            # In-place native scale of the freshly summed output — no copy,
+            # no NumPy round trip. count >= 1 always (dims are positive).
+            result._storage._lib.tf_storage_scale(
+                result._storage._require_open(), 1.0 / count
+            )
+        except BaseException:
+            result.close()
+            raise
         return result
 
     # -- convolution (Phase D, D3: forward-only Core wrapper) ------------

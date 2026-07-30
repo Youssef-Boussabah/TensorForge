@@ -932,7 +932,28 @@ def _build_reduction(config, spec):
 
     Float sums are order-sensitive, so the gate compares against NumPy to
     a tolerance rather than bit-for-bit — the accumulation-order policy in
-    ``docs/native_cpu_performance_design.md`` §7."""
+    ``docs/native_cpu_performance_design.md`` §7.
+
+    Phase H (H6): the reduction kernel ships two traversals behind one
+    unchanged export, and the *shape* of the reduction decides which one
+    runs and how it behaves, so the cases built here deliberately separate
+    the three forms rather than averaging them (the same principle H5
+    applied to the copy traversals):
+
+    * a **prefix** reduction (``axis=0`` on a contiguous operand) — the
+      block traversal's elementwise row-add branch, where each destination
+      row is independent;
+    * a **suffix** reduction (the last axis) and a **full** reduction to a
+      scalar — the block traversal's local-accumulator branch, which is the
+      shape LayerNorm, softmax, and every mean-reduced loss actually use;
+    * a **middle-axis higher-rank** reduction, where all three block
+      extents exceed 1 and the retained odometer's per-element carry cost
+      scales with the rank;
+    * and the **transposed view**, which the H6 predicate rejects, so it
+      keeps the generic odometer and is this pair's control.
+
+    ``spec["strided"]`` only supports a 2-D operand (it builds a real
+    transposed view); every higher-rank case is contiguous."""
     shape = config["shape"]
     axis = spec["axis"]
     strided = spec["strided"]
@@ -2924,7 +2945,88 @@ CASES = {
         "notes": ("The same logical values as reduction_contiguous, reached "
                   "through a transposed view, so the accumulation order and "
                   "the memory access pattern both change while the "
-                  "mathematics does not."),
+                  "mathematics does not. Phase H (H6): this layout is "
+                  "rejected by the block predicate and keeps the retained "
+                  "generic odometer, so it is the reduction pair's control "
+                  "— its compiled traversal did not change."),
+    },
+    "reduction_last_axis": {
+        "workload": "reduction",
+        "section": "sum over the last axis, contiguous operand",
+        "operation": "sum(axis=-1) over a row-major contiguous operand",
+        "build": _build_reduction,
+        "strided": False,
+        "axis": -1,
+        "seed": 20260729,
+        "reference_type": REFERENCE_NUMPY,
+        "reference_layer": NUMPY,
+        "reference_detail": "numpy.sum over the same axis",
+        "correctness_reference": ("NumPy's sum over the same axis, to a "
+                                  "tolerance (float summation is "
+                                  "order-sensitive)"),
+        "configurations": {
+            "full": {"shape": (256, 256)},
+            "smoke": {"shape": (16, 16)},
+            "profile": {"shape": (1024, 1024)},
+        },
+        "notes": ("Reducing the *trailing* axis gives every output cell one "
+                  "contiguous ascending source run, which is the shape "
+                  "LayerNorm's mean, softmax's backward, and log-softmax's "
+                  "backward all reduce over. Phase H (H6) added a local "
+                  "accumulator for exactly this form, so it is reported "
+                  "separately from reduction_contiguous rather than averaged "
+                  "with it."),
+    },
+    "reduction_full_to_scalar": {
+        "workload": "reduction",
+        "section": "sum over every element, contiguous operand",
+        "operation": "sum() over a row-major contiguous operand",
+        "build": _build_reduction,
+        "strided": False,
+        "axis": None,
+        "seed": 20260730,
+        "reference_type": REFERENCE_NUMPY,
+        "reference_layer": NUMPY,
+        "reference_detail": "numpy.sum over every element",
+        "correctness_reference": ("NumPy's sum over every element, to a "
+                                  "tolerance (float summation is "
+                                  "order-sensitive)"),
+        "configurations": {
+            "full": {"shape": (256, 256)},
+            "smoke": {"shape": (16, 16)},
+            "profile": {"shape": (1024, 1024)},
+        },
+        "notes": ("The whole tensor folded into one cell — the single "
+                  "hottest reduction in the runtime, since every "
+                  "mean-reduced loss ends in it. Every write stride is 0 "
+                  "and the output is rank 0, so the H6 block traversal "
+                  "degenerates to one accumulator over one contiguous run."),
+    },
+    "reduction_middle_axis_4d": {
+        "workload": "reduction",
+        "section": "sum over a middle axis of a 4-D contiguous operand",
+        "operation": "sum(axis=1) over a row-major contiguous NCHW operand",
+        "build": _build_reduction,
+        "strided": False,
+        "axis": 1,
+        "seed": 20260731,
+        "reference_type": REFERENCE_NUMPY,
+        "reference_layer": NUMPY,
+        "reference_detail": "numpy.sum over the same axis",
+        "correctness_reference": ("NumPy's sum over the same axis, to a "
+                                  "tolerance (float summation is "
+                                  "order-sensitive)"),
+        "configurations": {
+            "full": {"shape": (16, 8, 32, 32)},
+            "smoke": {"shape": (2, 3, 4, 4)},
+            "profile": {"shape": (32, 16, 32, 32)},
+        },
+        "notes": ("A reduced axis with kept axes on *both* sides, so all "
+                  "three H6 block extents exceed 1 and neither the prefix "
+                  "nor the suffix special case applies. It is also the "
+                  "rank-4 reading: the retained odometer's per-element "
+                  "carry loop costs more the deeper the tensor is, which is "
+                  "the effect the 2-D cases cannot show."),
     },
 
     # -- matmul --------------------------------------------------------------

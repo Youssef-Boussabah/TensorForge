@@ -4049,9 +4049,10 @@ _PHASE_G_OVERCLAIMS = (
     # Retired one milestone at a time, exactly as the Phase-G entries
     # above were: H1 (the output-allocation contract), **H2** (the matmul
     # loop order), **H3** (the metadata and dispatch contract), **H4**
-    # (the optimizer step contract), and **H5** (the copy and
-    # mutation-transfer contract) really have shipped, so claiming any of
-    # them is accurate and the milestone-number arm now starts at H6.
+    # (the optimizer step contract), **H5** (the copy and
+    # mutation-transfer contract), and **H6** (the reduction-execution
+    # contract) really have shipped, so claiming any of them is accurate
+    # and the milestone-number arm now starts at H7.
     # What is
     # *not* retired, and will not be until §11–§13 of the design are met,
     # is the family of optimizations Phase H has deliberately rejected on
@@ -4073,7 +4074,7 @@ _PHASE_G_OVERCLAIMS = (
      r"|multi-?threading|thread pool)[^.]{0,60}"
      r"\b(is|are|was|were|has been|have been)\s+"
      r"(added|shipped|implemented|enabled|introduced|adopted|landed)\b"
-     r"|\bH[6-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
+     r"|\bH[7-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
      r"(begun|started|shipped|landed|complete|completed)\b"),
 )
 

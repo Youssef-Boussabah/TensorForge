@@ -51,10 +51,14 @@ the matmul comment said so in the first line of the file:
 
 *(That header is the pre-H2 text. **H2 replaced it**: `matmul.cpp` now
 ships an optimized production path beside the reference loop, and the
-reference loop is retained under §8.3 rather than removed. Every other
-kernel in `cpp/src/` is still a plain reference loop, and everything in
-§3 below is still the H0 baseline — the before-and-after comparison lives
-in §16.2.8 rather than being edited back into §3.)*
+reference loop is retained under §8.3 rather than removed. **H5 and H6
+did the same for two more files** — `elementwise.cpp`'s
+strided-to-contiguous gather and `reduction.cpp`'s sum — each behind its
+own hidden metadata predicate, each with the pre-milestone traversal
+retained and reachable. So three of the nine translation units now ship
+two paths; the rest are still plain reference loops. Everything in §3
+below is still the H0 baseline — the before-and-after comparisons live in
+§16.2.8, §16.5.6, and §16.6.10 rather than being edited back into §3.)*
 
 That was the right call seven phases running: a wrong fast kernel is
 worse than a slow correct one, and every phase so far had a *semantic*
@@ -321,6 +325,17 @@ separate concern: it is `g.sum(0).sum(1).sum(1)` — three chained
 reductions, each with its own allocation and its own odometer walk.
 
 Evidence level: **directly measured**.
+
+**This is the finding H6 acted on, and the shipped result differs from
+this sketch in two ways worth recording.** First, the cause was
+decomposed rather than assumed: the traversal turned out to be **95 %** of
+a reduction, with the whole Python wrapper at ~5 µs, so H6's target was
+unambiguous (§16.6.2). Second, the *rank* effect above was not
+anticipated: the odometer's carry loop runs up to `ndim` iterations per
+element, so 3-D and 4-D reductions improved **8.6×–10.9×** against
+2.6×–6.4× for 2-D ones (§16.6.10) — which is also why the bias-gradient
+composition improved 1.46× end to end while every training step stayed
+neutral.
 
 #### B6 — Composed modules pay B1+B3 once per composed operation
 
@@ -805,6 +820,24 @@ committed loss trajectory and every bit-exact resume proof in this
 project runs on finite data, so part 2 covers all of them and none of
 them is affected.
 
+**Part 4 must be re-established per milestone, not assumed from H2.** It
+is a licence each milestone may or may not need, and two later milestones
+show both answers. **H5 did not need it at all**: a value transfer
+performs no arithmetic, so it has no operand roles for a compiler to
+choose between, and the copy traversals are bit-identical *by
+construction* including every NaN payload and both signs of signaling NaN
+(§16.5.3). **H6 did need it, but on its own measured terms and with a
+narrower scope than H2's**: a reduction's two paths agree bit for bit
+whenever at most one NaN enters an accumulation — which is every case that
+occurs in practice — and may differ only when two or more NaNs are
+accumulated into the same destination cell (§16.6.8). H6 also measured
+*why* parity was unavailable rather than asserting it, testing four
+spellings of the optimized accumulation including one structurally
+identical to the reference; all four diverged from the reference
+identically. A milestone invoking part 4 must do the same: state the exact
+circumstance under which payloads can differ, and show that parity was
+not available cheaply.
+
 An optimization that genuinely *must* change accumulation order —
 pairwise or blocked summation in a reduction, an FMA contraction, a
 vector-lane split — is permitted only under all five of:
@@ -864,11 +897,20 @@ Phase H may add an optimized execution path only under all of:
 3. **Selection is free of side effects.** Choosing a path allocates
    nothing, mutates nothing, and consumes no generator call.
 4. **The optimized path agrees with the generic path under §7.3's
-   four-part numerical contract** — identical accumulation sequence, bit
-   identity on every non-NaN result, NaN-class equivalence, and NaN
-   payload bits outside the contract — or the full §7.3 order-change
-   procedure applies.
+   numerical contract** — identical accumulation sequence, bit identity on
+   every non-NaN result, and NaN-class equivalence — or the full §7.3
+   order-change procedure applies. Whether the milestone additionally
+   needs §7.3's part-4 NaN-payload licence is **its own question to
+   measure**, not something inherited: H2 needed it, H5 did not need it at
+   all, and H6 needed it only for accumulations containing two or more
+   NaNs.
 5. **A failed precondition is never an error.** It is a fallback.
+
+Three milestones have now shipped under this rule with the *same*
+structure — one hidden metadata predicate, inside the existing export, no
+new symbol, the pre-milestone traversal retained: H2 (matmul loop order),
+H5 (the copy gather's traversal), and H6 (the sum reduction's traversal).
+That is the shape any further execution-path work should take.
 
 ### 8.2 Strided fallback
 
@@ -1158,8 +1200,8 @@ milestone re-runs the H0 harness before and after and reports both.
 | **H3** | **Per-call dispatch cost: one normalization boundary and per-view layout metadata** | B3 (measured, ~20 µs fixed, ~10 % of it ctypes) | **complete** — see 16.3 |
 | **H4** | **Optimizer step cost: fewer native calls and allocations per parameter** | B4 (measured, 27 allocations/parameter, 83 % of a step) | **complete** — see 16.4. Bit-identical; the scalar-materialization variant was measured and **rejected** |
 | **H5** | **Copy and mutation transfer: the value-transfer primitive, and the traversal under it** | B1, B4 (measured; ten call sites of one helper, all pure value transfers) | **complete** — see 16.5. The ladder was **reordered here**: reduction execution, drafted as H5, moved to H6 (§16.5.0). No exported symbol added; the signed-zero and signaling-NaN contract is stated in §16.5.3 |
-| H6 | Reduction execution: a contiguous fast path for the accumulate kernels | B5, B7 (measured); H5 raised its expected value (§16.6) | proposed |
-| H7 | Composed-module cost: normalization and the composed convolution bias gradient | B6, B7 (measured) | conditional on H1/H3/H6 |
+| **H6** | **Reduction execution: a metadata-chosen block traversal for the accumulate kernel** | B5, B7 (measured; the traversal was **95 %** of a reduction) | **complete** — see 16.6. No exported symbol added; 2.6×–6.4× on 2-D and **8.6×–10.9×** on 3-D/4-D reductions, **every training step neutral**; the reduction-specific NaN rule is §16.6.8 and is *not* H2's |
+| H7 | Composed-module cost: normalization and the composed convolution bias gradient | B6, B7 (measured) | conditional — **narrowed further by H6**, which measured normalization mostly neutral (§16.6.11) |
 | H8 | Elementwise and materialization traversal | B9 + §3.2 stride-collapsing hypothesis | conditional, **narrowed by H5**, which already gave materialization its flat traversal |
 | H9 | SIMD, threading, or optional BLAS — **only** under §11/§12/§13 | none yet | conditional, presumed rejected |
 | H10 | Re-measurement, hardening, and the full sanitizer matrix | — | planned |
@@ -1202,6 +1244,17 @@ traversal inside the unchanged export, the alias and overlap matrix,
 and the measured results are section 16.5 below. **The ladder was
 reordered here** (§16.5.0): reduction execution, drafted as H5, is
 now H6.
+
+### H6 — Reduction execution **(complete)**
+
+The characterized pre-H6 kernel, the bottleneck attribution (the
+traversal was 95 % of a reduction), the metadata predicate and its
+`outer × mid × inner` factorization, the retained odometer and its exact
+fallback conditions, the arithmetic-order proof, the signed-zero
+contract, the **measured** reduction-specific NaN rule (which is
+deliberately not H2's), the confirmed H1 Outcome A, the rejected
+candidates, the published fallback regression, and the measured results
+are section 16.6 below.
 
 ---
 
@@ -3067,8 +3120,8 @@ implementation" among its **rejected** alternatives, for a reason it
 recorded honestly: it would stop normalizing `-0.0` to `+0.0`, a real
 observable change in a helper shared far beyond the optimizer, and H4 was
 not the milestone to decide that. H5 is that milestone. Reduction
-execution moves to **H6**; the later conditional slots shift with it
-(§16.6).
+execution moves to **H6** — which has since shipped (§16.6) — and the
+later conditional slots shift with it (§16.7).
 
 ### 16.5.1 The pre-H5 architecture
 
@@ -3434,62 +3487,622 @@ either.
 
 ---
 
-## 16.6 Remaining ladder detail
+## 16.6 H6 — reduction execution, as shipped
+
+Reductions were the last core family in the runtime that always paid the
+generic strided indexing cost. H6 gave `tf_core_sum` a second
+**traversal** behind the same unchanged export, chosen from the layout
+metadata the export already receives — the dispatch shape H2 and H5 each
+proved, applied a third time.
+
+### 16.6.1 The pre-H6 architecture, characterized exactly
+
+Not taken from H0's or H5's summaries — re-read from the current source
+and re-measured on the post-H5 build.
+
+**The Python half** (`NativeTensorCore.sum`), unchanged by H6:
+
+- `axis` is **a single `int` or `None`**. No tuple axis exists, so there
+  is no duplicate-axis or unsorted-axis case to reject — those are a
+  `TypeError` on the argument type. A negative axis is accepted
+  NumPy-style (`axis + ndim`); out of range raises `ValueError` naming
+  both the axis and the shape; `keepdims` must be an exact `bool`.
+- The output shape is `_reduce_shape_checked(shape, axis, keepdims)`, and
+  the output storage is **zero-initialized** through
+  `NativeTensorCore.zeros`.
+- The write-stride vector is `_reduce_out_strides`: **0** for each reduced
+  input axis, otherwise the row-major stride of the output axis that input
+  axis maps to. `keepdims` changes which output axis that is but not the
+  resulting numbers, because a retained reduced axis has extent 1 and a
+  row-major stride vector over a size-1 axis contributes nothing.
+- `mean` is `sum` followed by an **in-place** `tf_storage_scale(1/count)`
+  on the freshly summed output. It has no kernel of its own, and it
+  divides **after** accumulation, never during it.
+- Reducing all axes (`axis=None`) is not a different code path: every
+  write stride is 0 and everything lands in `dst[0]`. A scalar output is
+  shape `()` (or all-ones under `keepdims`).
+- Zero-length dimensions are **unrepresentable**: the native tensor
+  representation rejects a non-positive dimension, so no empty core can be
+  constructed from Python at all.
+
+**The C++ half** (`tf_core_sum`), which is what H6 changed:
+
+- Rank 0 returns early with `dst[0] += src[offset]` — before any counter
+  is allocated and before any traversal is chosen.
+- Otherwise: a `std::vector<int64_t>` odometer counter, then one flat loop
+  over the element count executing `dst[out_pos] += src[in_pos]` and a
+  per-element **carry loop** from the last axis inward that advances both
+  positions and unwinds them on wrap.
+- So the input traversal order is exactly the source's **logical**
+  row-major order, and for each destination cell the contributions arrive
+  in ascending source order starting from whatever `dst` already holds.
+  The destination is **read** on every accumulation after the first, which
+  is why H1 rejected this output and left it zeroed.
+- `tf_core_narrow_backward` is the odometer's **dual** — a scatter, whose
+  write strides have no zeros — and is deliberately outside H6's scope.
+
+### 16.6.2 Bottleneck attribution
+
+Instrumented test-locally and benchmark-locally; **no production counter
+exists or may exist**. At `(256, 256)`, `axis=0`, contiguous:
+
+| Component | Median | Share |
+|---|---|---|
+| **raw `tf_core_sum` via `ctypes`, output preallocated** | **94.8 µs** | **95 %** |
+| `NativeTensorCore.zeros((256,))` + close | 3.2 µs | 3 % |
+| `reduce_shape` | 0.6 µs | |
+| `_reduce_out_strides` | 0.5 µs | |
+| `_normalize_axis` | 0.4 µs | |
+| `np.asarray(out_strides, int64)` | 0.4 µs | |
+| `_layout_arrays()` (H3 cache hit) | 0.1 µs | |
+| **full `core.sum(axis=0)` + close** | **99.7 µs** | 100 % |
+
+Three of the three `ndpointer` conversions inside that raw figure account
+for ~3.2 µs, so the C++ traversal itself is ≈ 91.6 µs — **92 %** of the
+operation.
+
+**This is the opposite of B3.** H3's subject was a fixed Python cost that
+dominated *small* operations; a reduction of any real size is dominated by
+the compiled loop. The whole Python wrapper is ~5 µs and H3 already made
+it as cheap as it is going to get without weakening validation, so H6's
+only worthwhile target was the traversal.
+
+Measured against NumPy on the pre-H6 build, the gap was **5.6×–17.0×**,
+consistent with H0's B5 (5×–15×) and with the same shape of cause: NumPy
+has a flat inner loop, `tf_core_sum` had a per-element carry loop.
+
+**The zero-fill is not the target, and H6 confirms H1's rejection rather
+than revisiting it.** A reduction's output is the *reduced* shape:
+`(256, 256)` `axis=0` zero-fills **2,048 bytes** while reading 524,288 —
+under half a percent of the traffic — and `axis=None` zero-fills **8
+bytes**. Both traversals accumulate into the destination, so the zero is
+the additive identity, not a redundant write.
+
+### 16.6.3 What was implemented
+
+New `cpp/include/tf_reduction_internal.h` declares three hidden-visibility
+`namespace tf` functions; `cpp/src/reduction.cpp` implements them and
+`tf_core_sum` dispatches between them.
+
+**1. `tf::sum_generic_strided` — the retained generic reference path**
+(§8.3). The pre-H6 odometer, unchanged in loop structure, arithmetic, and
+traversal order. It is shipped, reachable through ordinary production
+dispatch, the **only** path that can address a transposed, narrowed,
+non-unit-strided, or broadcast source at all, and the oracle every
+optimized result is compared against. Its scratch counter is still
+allocated in the exported wrapper, so the guard still maps an allocation
+failure onto the C ABI error contract and the fault-injection hook keeps
+its existing meaning for this kernel.
+
+**2. `tf::reduce_prefers_contiguous_blocks` — the metadata predicate.**
+Total, pure, allocation-free, side-effect-free, and a function of the
+layout metadata alone — never of a pointer value, an alignment, a
+wall-clock reading, an environment variable, or a CPU-feature probe. On
+true it fills three extents; on false it writes nothing and the odometer
+runs. A false answer is never an error.
+
+**3. `tf::sum_contiguous_blocks` — the optimized traversal.** A flat walk
+over the `outer × mid × inner` factorization the predicate computes.
+
+### 16.6.4 The exact fast-path preconditions
+
+All three must hold:
+
+1. **`in_strides` is exactly the row-major stride vector implied by
+   `shape`** — `in_strides[ndim-1] == 1` and
+   `in_strides[d] == in_strides[d+1] * shape[d+1]`. This is the same
+   definition `NativeTensorView` uses in `backends/cpp.py`, so the two
+   layers agree by construction rather than by coincidence.
+2. **The reduced axes — those whose write stride is exactly 0, which is
+   how the kernel has always identified them — form one contiguous,
+   non-empty run of axis indices.**
+3. **The kept axes carry exactly the row-major strides of the output
+   formed by dropping that run**, checked right to left over the kept axes
+   only.
+
+Under those conditions the reduction is exactly
+
+```
+dst[o * inner + i]  accumulates  src[offset + (o * mid + m) * inner + i]
+```
+
+for `o ∈ [0, outer)`, `m ∈ [0, mid)`, `i ∈ [0, inner)`, where `outer` is
+the product of the leading kept axes, `mid` the product of the reduced
+run, and `inner` the product of the trailing kept axes.
+
+**Stride collapsing is done implicitly and provably, not by a general
+layout compiler.** Conditions 1 and 3 *are* the statement that adjacent
+axes of the same class have identical address progressions, so the leading
+kept axes, the reduced run, and the trailing kept axes each collapse into
+one extent by multiplication. Nothing is cached, interned, or stored: the
+factorization is recomputed from the arguments on every call, so there is
+no per-operation collapsed-layout cache and nothing global.
+
+**`keepdims` needs no special case at all** and the kernel cannot even
+observe it: a retained reduced axis has write stride 0 either way, and a
+size-1 output axis contributes nothing to the row-major product.
+
+### 16.6.5 The exact generic fallback conditions
+
+The odometer runs for every layout the predicate rejects:
+
+- **rank 0** (handled by the export before either traversal);
+- a **transposed** source, in any permutation;
+- a source **narrowed on a non-leading axis** (a leading-axis narrow keeps
+  row-major strides and only moves the offset, so it takes the block
+  path — with a nonzero offset the traversal honors);
+- a **positive non-unit stride** on any axis;
+- a **broadcast (stride-0)** source axis;
+- a **negatively strided** source;
+- **non-adjacent reduced axes** — which the Python layer cannot currently
+  express, since it reduces one axis or all of them, so this is
+  future-proofing rather than a live case;
+- **nothing reduced** (no zero write stride);
+- any **write-stride vector that is not the output's row-major strides**.
+
+Each is exercised by a real layout in
+`tests/test_native_reduction_dispatch.py` and by the predicate table in
+`cpp/tests/test_sum_reduction.cpp`.
+
+### 16.6.6 The arithmetic-order proof
+
+**Per-output accumulation order is preserved exactly, and the source
+traversal order is not even reordered.**
+
+The loop nest `o`, `m`, `i` is the lexicographic order of the source's own
+row-major index — `((o · mid) + m) · inner + i` is strictly increasing in
+that order — which is precisely the order the odometer walks. And every
+destination cell is touched by exactly one `(o, i)` pair, so the cells are
+independent: no cell's total can be affected by the order in which the
+*other* cells are computed.
+
+For a fixed destination cell, both paths therefore add the same source
+values, in the same ascending order, starting from the same initial value
+— the value `dst` already holds. Nothing is reassociated, no partial sums
+are combined, no accumulator width changes, no fused multiply-add is
+requested, no Kahan compensation exists, and no pairwise, tree, parallel,
+or horizontal-vector reduction exists anywhere.
+
+The traversal takes two shapes, and the reason for the split is worth
+recording because one of them is the interesting case:
+
+- **`inner == 1`** (a full reduction, or one whose reduced run is a
+  suffix): each destination cell is fed by one contiguous ascending source
+  run, so the run is accumulated in a **local accumulator seeded from
+  `dst[o]`** and stored once. Seeding from the destination rather than
+  from a literal `0.0` is what keeps the export's documented
+  **accumulate-into** semantics identical on both paths — which
+  `cpp/tests/test_sum_reduction.cpp` verifies directly by running both
+  traversals over a pre-filled destination, and which
+  `tests/test_native_reduction_dispatch.py` verifies through the ABI.
+- **`inner > 1`**: for each `(o, m)` a contiguous source row is added
+  elementwise into a contiguous destination row. Distinct `i` are distinct
+  destination cells, so the compiler may vectorize this loop — that is a
+  vectorization *across independent outputs*, never a horizontal reduction
+  within one, and it reassociates nothing. (Reduction vectorization would
+  require reassociation, which no build here enables: there is no
+  `fast-math` anywhere.)
+
+### 16.6.7 The signed-zero contract
+
+A zero sum's sign depends on the initial accumulator and on the addition
+order, which is exactly what a local accumulator could have changed. It
+does not:
+
+- Both paths start from the destination's `+0.0` (a zeroed buffer holds
+  `+0.0`), and `+0.0 + -0.0` is `+0.0`, so **the sum of any number of
+  `-0.0` values is `+0.0` on both paths** and matches NumPy.
+- Seeded with `-0.0` instead, both paths keep `-0.0`.
+- All-positive zeros, all-negative zeros, alternating zeros, `-0.0` first,
+  `-0.0` last, `-0.0` mixed with finite values, a column of `-0.0`, and
+  exactly cancelling finite values are each compared as **raw IEEE-754 bit
+  patterns**, at every axis, both `keepdims` values, and scalar and
+  multi-output shapes. Every one agrees.
+
+One case is recorded rather than idealized: the **rank-0** export branch
+is `dst[0] += src[offset]`, a genuine addition against the zeroed
+destination, so a rank-0 `-0.0` sums to `+0.0`. That is exactly what it
+did before H6 and is now pinned by a test.
+
+### 16.6.8 The NaN contract — measured, not inherited from H2
+
+H2's matmul carve-out was **not** copied over. The reduction-specific rule
+was measured, and the measurement produced a different and narrower
+answer.
+
+**What is contractual:**
+
+1. **NaN positions are identical on both paths.** Whenever either path
+   produces a NaN, both do, in exactly the same positions.
+2. **Every NaN either path produces is quiet.** Neither can emit a
+   signaling NaN, and a signaling-NaN *input* is quieted by both — with
+   identical bits, because only one NaN is involved.
+3. **With at most one NaN per accumulation the two paths are bit-identical,
+   payload included** — every pattern in the sweep, in first, middle, and
+   last position. This is the case that actually occurs in practice.
+
+**What is not contractual:** when **two or more** NaNs are accumulated
+into one destination cell, the paths may select different payload bits.
+This is asserted in **neither** direction.
+
+**Why it is not available at any price.** Four spellings of the optimized
+accumulation were measured on this toolchain — `acc += x`, `acc = x + acc`,
+a named-temporary `acc = acc + x`, and `dst[o] += x` accumulating *through
+memory* exactly as the odometer does. **All four selected the same NaN,
+and all four differed from the odometer.** So the divergence is not caused
+by the local accumulator, and removing the accumulator would not recover
+parity — it is caused by the odometer's destination index being a
+*runtime-varying* value, which changes which addend MSVC places in the
+`ADDSD` destination register, and that is an instruction-selection
+decision C++ cannot express. Parity is therefore unavailable short of
+abandoning the optimization entirely, and the memory-accumulate spelling
+that came closest structurally was also measured **1.2×–1.8× slower** on
+suffix reductions (5.24× vs 7.79× at `(128,128) axis=1`, 11.10× vs 14.88×
+at `(4096,32) axis=1`), so it bought nothing.
+
+**Which payload each keeps, recorded as an observation and not a promise:**
+the block path keeps the **first** NaN in accumulation order, the odometer
+keeps the **last** — and the block path's choice is the one **NumPy**
+makes. So where the two paths differ, H6 moved the answer *toward* NumPy.
+
+**And the divergence is an optimizer artifact, which the build matrix
+demonstrates directly.** `cpp/tests/test_sum_reduction.cpp` counts its own
+payload-only differences and prints the number, so the same binary reports
+it per configuration: **MSVC Release measured 252 payload-only differences
+across 612 traversal comparisons** over a NaN-dense sweep, and **MSVC Debug
+measured 0** — the same pattern H2 recorded (Release 162 of 208, Debug and
+Clang none). Both configurations pass, because the test tolerates a payload
+difference while still asserting NaN-ness and quietness. That is exactly
+why the rule is asserted in **neither** direction: a build whose payloads
+agree and a build whose payloads differ are equally conforming, and pinning
+either answer would make the suite fail on a legitimate toolchain.
+
+**H5's copy rule does not apply here either**, and the reason is the same
+one that made H5's claim strong: a value transfer performs no arithmetic,
+so it has no operand roles for a compiler to choose between. A reduction
+is arithmetic. The three rules are genuinely different because the three
+operations are.
+
+### 16.6.9 The H1 allocation decision
+
+**Outcome A: the destination stays zero-initialized**, on both paths, and
+H6 confirms H1's rejection rather than revisiting it.
+
+Both traversals **read** the destination — that is what accumulation
+means — so an uninitialized buffer would return garbage. The block path's
+local accumulator is seeded from `dst[o]` for exactly this reason.
+
+Outcome B was considered and **rejected on two grounds, one measured and
+one semantic**:
+
+- *Measured*: the fill is 2 KB against 512 KB of reads at `(256,256)`
+  `axis=0`, and 8 bytes at `axis=None` — under half a percent of the
+  traffic, against a traversal that was 92–95 % of the operation. There is
+  nothing material to win.
+- *Semantic*: making the fast path *assign* its first contribution would
+  give the two paths **different** behavior for a non-zero destination,
+  which would break the export's documented accumulate-into contract and
+  make the generic path stop being the reference. A fast path that is not
+  substitutable for the reference path is not a fast path.
+
+So H6 adds **no** poison test, because it introduces no uninitialized
+destination. The existing H1 poison suite is untouched and still passes.
+`sum` reaching `zeros` and never `_uninitialized` is asserted
+structurally, and the accumulate-into behavior that makes the zero
+load-bearing has its own negative control at the ABI.
+
+### 16.6.10 Measured results
+
+Methodology: a **pre-H6 library** built from the identical sources with
+only `reduction.cpp` restored, driven through **identical `ctypes` calls
+on identical data**, with every output proved **bit-identical before
+either side was timed**; 15 alternating pre/post rounds so machine drift
+hits both sides. `time.perf_counter_ns()`, medians reported with minima.
+The machine's control band for this measurement is **0.90×–1.03×**.
+
+**Kernel level** (raw `tf_core_sum`, output preallocated, layout arrays
+prebuilt — so this is the traversal plus one ctypes call):
+
+| Case | pre | post | ratio |
+|---|---|---|---|
+| full, 1 element | 8.5 µs | 8.5 µs | **1.00×** |
+| full, 16 | 8.9 µs | 8.8 µs | **1.01×** |
+| full, 1,024 | 9.9 µs | 8.3 µs | 1.19× |
+| full, 16,384 | 44.1 µs | 17.2 µs | 2.56× |
+| full, (128,128) | 43.0 µs | 16.4 µs | 2.62× |
+| full, (256,256) | 140.9 µs | 40.4 µs | 3.49× |
+| full, (512,512) | 540.9 µs | 136.5 µs | 3.96× |
+| full, 3-D (8,16,32) | 15.4 µs | 8.5 µs | 1.81× |
+| full, 4-D (8,4,16,16) | 23.7 µs | 11.1 µs | 2.14× |
+| (8,8) axis=0 | 7.3 µs | 7.1 µs | **1.03×** |
+| (128,128) axis=0 | 32.4 µs | 10.0 µs | 3.24× |
+| (128,128) axis=1 | 41.3 µs | 11.8 µs | 3.50× |
+| (256,256) axis=0 | 98.2 µs | 18.6 µs | 5.28× |
+| (256,256) axis=1 | 132.1 µs | 28.4 µs | 4.65× |
+| (512,512) axis=0 | 320.8 µs | 50.7 µs | **6.33×** |
+| (512,512) axis=1 | 520.4 µs | 111.6 µs | 4.66× |
+| (1024,1024) axis=0 | 1.41 ms | 221.8 µs | **6.37×** |
+| (1024,1024) axis=1 | 2.23 ms | 490.8 µs | 4.54× |
+| 3-D (32,64,32) axis=0 | 171.9 µs | 19.1 µs | **9.00×** |
+| 3-D (32,64,32) axis=1 | 160.0 µs | 18.6 µs | **8.60×** |
+| 3-D (32,64,32) axis=2 | 163.0 µs | 18.7 µs | **8.72×** |
+| 4-D NCHW (16,8,32,32) axis=0 | 334.5 µs | 37.4 µs | **8.94×** |
+| 4-D NCHW (16,8,32,32) axis=1 | 333.6 µs | 34.7 µs | **9.61×** |
+| 4-D NCHW (16,8,32,32) axis=3 | 317.2 µs | 29.0 µs | **10.94×** |
+| prime (127,131) axis=0 | 32.0 µs | 10.7 µs | 2.99× |
+| prime (127,131) axis=1 | 40.8 µs | 12.3 µs | 3.32× |
+| one-element dim (128,1,64) axis=1 | 27.5 µs | 12.2 µs | 2.25× |
+| inner=2 (100,100,2) axis=1 | 48.6 µs | 27.7 µs | 1.75× |
+| inner=7 (100,100,7) axis=1 | 135.9 µs | 35.2 µs | 3.86× |
+| inner=4 (4096,4) axis=0 | 29.0 µs | 16.4 µs | 1.77× |
+
+**The rank effect is the headline finding, and it was not predicted.** The
+odometer's carry loop runs up to `ndim` iterations per element, so its
+cost grows with rank while the block traversal's does not: 2-D reductions
+improve 2.6×–6.4×, and 3-D and 4-D reductions improve **8.6×–10.9×**. The
+NCHW cases matter because that is the layout the convolution stack
+produces.
+
+**Layer level** (9 alternating subprocess rounds, correctness gated):
+
+| Case | pre | post | ratio |
+|---|---|---|---|
+| `TensorCore.sum(axis=0)` (256,256) | 110.9 µs | 24.7 µs | 4.49× |
+| `TensorCore.sum(axis=1)` (256,256) | 145.2 µs | 36.9 µs | 3.93× |
+| `TensorCore.sum()` (256,256) | 150.6 µs | 44.6 µs | 3.38× |
+| `TensorCore.mean(axis=0)` (256,256) | 105.3 µs | 25.6 µs | 4.11× |
+| `TensorCore.mean(axis=1, keepdims)` | 151.0 µs | 38.4 µs | 3.93× |
+| `TensorCore.sum(axis=0)` (512,512) | 343.6 µs | 70.7 µs | 4.86× |
+| `TensorCore.sum()` (512,512) | 549.4 µs | 149.7 µs | 3.67× |
+| `TensorCore.sum(axis=1)` NCHW | 332.9 µs | 38.9 µs | **8.56×** |
+| `TensorCore.sum(axis=3)` NCHW | 335.9 µs | 38.1 µs | **8.82×** |
+| `NativeTensor.sum(axis=0)`, no graph | 100.5 µs | 25.9 µs | 3.88× |
+| `NativeTensor.sum(axis=0)`, graph | 103.9 µs | 27.2 µs | 3.82× |
+| `sum()` forward + backward | 599.1 µs | 473.3 µs | 1.27× |
+| `mean(axis=1, keepdims)` fwd + bwd | 676.4 µs | 550.0 µs | 1.23× |
+| **conv bias gradient, 3 chained sums** | 75.7 µs | 51.8 µs | **1.46×** |
+| broadcast add backward (`_unbroadcast`) | 522.7 µs | 453.2 µs | 1.15× |
+| `softmax` backward | 135.3 µs | 118.3 µs | 1.14× |
+| `log_softmax` backward | 150.5 µs | 136.4 µs | 1.10× |
+| `NativeLayerNorm` forward | 345.1 µs | 298.2 µs | 1.16× |
+| `NativeBatchNorm2d` backward | 1.411 ms | 1.288 ms | 1.10× |
+| `cross_entropy` forward | 60.0 µs | 57.4 µs | 1.05× |
+| `cross_entropy` backward | 30.7 µs | 29.3 µs | 1.05× |
+
+**Against NumPy**, in the shipped harness at the `full` configuration, the
+contiguous reduction gap closed substantially:
+
+| Harness case | post-H6 vs NumPy |
+|---|---|
+| `reduction_middle_axis_4d` (16,8,32,32) | **1.67×** |
+| `reduction_contiguous` (256,256) axis=0 | **2.43×** |
+| `reduction_last_axis` (256,256) | 2.90× |
+| `reduction_full_to_scalar` (256,256) | 3.75× |
+| `reduction_transposed_view` *(control, generic path)* | 10.33× |
+
+### 16.6.11 Negative, neutral, and noise results
+
+Reported as prominently as the wins.
+
+- **Every training step is neutral.** MLP small **0.99×**, MLP large
+  1.03×, normalized 1.03×, CNN 1.01×, Dropout (control) 1.02× — all
+  inside the control band. A reduction is a small share of a step whose
+  cost is the optimizer and the large matmuls; H4 already showed the
+  optimizer is 83 % of an MLP step's allocations. **H6 does not make
+  training faster**, and no reading here should be quoted as if it did.
+- **BatchNorm and LayerNorm are mostly neutral**: BatchNorm1d training
+  forward 1.04×, eval 0.98×, backward 1.02×; BatchNorm2d training forward
+  1.06×, eval 1.00×; LayerNorm backward 1.01×. Only LayerNorm forward
+  (1.16×) and BatchNorm2d backward (1.10×) are clearly outside the band.
+  These modules are 11–30 allocations of broadcast elementwise work with
+  one or two reductions in them, so speeding the reductions ~4× moves the
+  total little. This narrows H7 rather than motivating it.
+- **Tiny reductions are neutral**: 1 element 1.00×, 16 elements 1.01×,
+  `(8,8)` axis=0 1.03×. Below roughly 1,000 elements the ~7 µs
+  Python-plus-ctypes cost dominates and the traversal is invisible. That
+  cost is H3's and H5's documented boundary finding and belongs to a
+  dispatch milestone, not to this one.
+- **A real, repeatable ~10 % regression on one fallback family.** A **2-D
+  transposed source reduced over `axis=0`** measured **0.89×–0.93×** across
+  four independent 25-round runs (and the `(512,512)` variant 0.84×–0.97×),
+  while the 3-D transposed `axis=0` fallback measured **1.04×–1.05×
+  faster** and every other fallback 0.96×–1.01×. Both libraries run the
+  *identical* odometer on these layouts, so this is not an algorithmic
+  change. It was **isolated**: in a standalone binary the extracted-function
+  spelling versus the inline spelling measured 0.88×–1.67× with no stable
+  direction, so the extracted call is **not** the cause. The remaining
+  attribution is whole-translation-unit code layout — adding the predicate
+  and the second traversal to `reduction.cpp` moved where the odometer
+  lands in the image. Chasing MSVC code placement is exactly the
+  machine-specific tuning §11–§13 reject, so it is **published rather than
+  fixed**. It affects no shipped path: no production call site reduces a
+  transposed 2-D view over `axis=0`, and no end-to-end case regressed.
+- **A small-`inner` middle-axis reduction is the weakest win**: `inner=2`
+  1.75×, `inner=4` 1.77×. A specialized register-blocked path for
+  `inner < 8` was considered and **rejected on complexity**: it would add
+  a second threshold and a second kernel shape to serve a layout no
+  shipped code produces, for a case already 1.75× better.
+- **Methodology, published rather than buried** — the same lesson H3 and
+  H5 each recorded. At 7 alternating rounds the fallback controls read
+  0.85×; at 21–25 rounds the same cases read 0.90×–1.02×. No
+  low-round figure is quoted as H6 evidence.
+
+### 16.6.12 Memory
+
+**H6 changed no allocation anywhere**, and this is asserted rather than
+assumed: a `sum` allocates **exactly one** native storage — its own
+output — on both paths, at every axis, under both `keepdims` values, and
+`mean` allocates the same one because its scale is in place. There is no
+scratch buffer, workspace, arena, or pool; the odometer's counter is the
+only auxiliary allocation and it is unchanged and only on the fallback
+path.
+
+Peak transient bytes are therefore identical, and a 10-step training run
+over a model carrying parameters, BatchNorm buffers, and Adam moments was
+measured to produce a **bit-identical** allocation and live-count profile
+before and after H6 (27/53/79/… on both), which also confirms the
+oscillation in that profile is CPython's collector and not a leak either
+version introduced.
+
+### 16.6.12a One pre-existing cleanup gap was found and closed
+
+Exercising the failure matrix the milestone requires — a failure at axis
+validation, output-shape construction, write-stride construction, the
+layout arrays, the allocation, either traversal, and `mean`'s scale — found
+that `sum` and `mean` were the only allocating Core operations **without an
+explicit post-allocation cleanup boundary**. `sum` allocates its output and
+*then* normalizes the axis, builds the write strides, and builds the layout
+arrays; `mean` calls `sum` and then scales. A failure in any of those
+released the output only because CPython's refcount happened to drop to
+zero on the exception unwind and `__del__` called `close()`.
+
+Nothing leaked in practice, but relying on a refcount is relying on an
+implementation detail rather than on the contract — and the project's own
+rule is that correctness never depends on when a finalizer runs. Both
+methods now wrap their post-allocation work in the same
+`try: … except BaseException: out.close(); raise` boundary every other
+allocating Core operation already uses, `contiguous_copy` included (which
+H5 touched, and which is where the pattern was read from).
+
+This is the narrowest possible change, it is inside the two functions H6
+exists to improve, and it changes **nothing** on the success path: the
+same operations run in the same order and produce the same bits. Each seam
+is now pinned by a test that injects `RuntimeError`, `MemoryError`,
+`KeyboardInterrupt`, and a non-`Exception` `BaseException` and asserts live
+storage returns to baseline with **no `gc.collect()`**, alongside the
+pre-allocation seams asserting that nothing is allocated at all.
+
+### 16.6.13 Fast paths evaluated
+
+Each candidate was investigated independently rather than forced into
+production.
+
+| Candidate | Outcome |
+|---|---|
+| Full contiguous reduction to a scalar | **Shipped** — `outer == 1, inner == 1` |
+| Contiguous suffix-axis reduction | **Shipped** — `inner == 1` |
+| Contiguous prefix-axis reduction | **Shipped** — `outer == 1` |
+| Single last-axis reduction | **Shipped, not separately** — it *is* the suffix case; a distinct kernel measured no better and would have duplicated code |
+| Single first-axis reduction | **Shipped, not separately** — it *is* the prefix case |
+| Middle-axis reduction | **Shipped** — all three extents above 1 |
+| Stride collapsing | **Shipped, bounded** — implicit in preconditions 1 and 3, restricted to one contiguous reduced run; explicitly *not* a general layout compiler, and nothing is cached |
+| Mean | **Unchanged** — it reuses the optimized `sum` and the existing in-place scale. Division placement, order, and the `1/count` value are untouched, and fusing the scale into accumulation was rejected outright as a §7.3 order change |
+| Uninitialized destination (H1 Outcome B) | **Rejected** — §16.6.9 |
+| Memory-accumulate spelling for payload parity | **Rejected** — §16.6.8: it does not achieve parity and is 1.2×–1.8× slower |
+| Register-blocked small-`inner` path | **Rejected** — §16.6.11 |
+| Non-adjacent reduced axes | **Rejected as out of scope** — unreachable from Python; falls back |
+| `tf_core_narrow_backward` | **Rejected as out of scope** — a scatter, not a reduction; widening H6 to it would have made this a scatter milestone |
+
+### 16.6.14 What H6 did not do
+
+- **No exported C ABI symbol.** The library still exports exactly **52**
+  `tf_*` symbols, asserted against the built image.
+- **No new translation unit.** One internal header and one CTest, taking
+  the native suite from 14 to **15**.
+- **No public control of any kind**: no path selector, threshold setter,
+  block-size setter, dispatch tracer, profiling counter, environment
+  variable, or "which path ran" query. The predicate is hidden-visibility
+  C++ the native test reaches only by compiling the source in.
+- **No public API change**: `sum` and `mean` keep their signatures,
+  defaults, axis rules, `keepdims` behavior, error types, and error
+  messages. Multi-axis reduction was **not** added — the kernel can
+  factorize a contiguous reduced run, but the Python layer still accepts
+  one `int` or `None`.
+- **No capability, dtype, device, registry, or checkpoint move.**
+  `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
+  `SUPPORTED_DTYPES` `("float64",)`, `SUPPORTED_DEVICES` `("cpu",)`, and
+  the checkpoint format is still `tensorforge.native_checkpoint` version
+  **2** with versions **(1, 2)** supported.
+- **No SIMD, threading, OpenMP, BLAS, parallel reduction, memory pool,
+  scratch workspace, or fast-math.**
+- **No timing threshold** in any test or CI job.
+
+### 16.6.15 Harness cases added
+
+Three, following H5's separate-rather-than-average precedent, taking the
+harness from 28 to **31**. All three are `reduction`-family, contiguous,
+NumPy-referenced, and correctness-gated before timing.
+
+- **`reduction_last_axis`** — `sum(axis=-1)`. The suffix form, which is
+  what LayerNorm's mean, softmax's backward, and log-softmax's backward
+  actually reduce over, and the form H6 gave a local accumulator.
+- **`reduction_full_to_scalar`** — `sum()`. Every write stride 0, rank-0
+  output: the single hottest reduction in the runtime, since every
+  mean-reduced loss ends in it.
+- **`reduction_middle_axis_4d`** — `sum(axis=1)` over NCHW. Kept axes on
+  both sides, so all three block extents exceed 1, and the rank-4 reading
+  the 2-D cases cannot give.
+
+`reduction_transposed_view` is now explicitly the pair's **control**: the
+predicate rejects it, so its compiled traversal did not change.
+
+No result file is written, no timing is asserted, and no CI job runs
+either.
+
+---
+
+## 16.7 Remaining ladder detail
 
 **The ladder was reordered at H5** (§16.5.0). Reduction execution, drafted
-as H5, is now H6; the conditional slots after it shift accordingly.
+as H5, became H6 and has now shipped (§16.6); the conditional slots after
+it shift accordingly.
 
-### H6 — Reduction execution
-
-Give the accumulate kernels the contiguous fast path the elementwise
-family got at v1.14 — and which H5 has now also given the copy gather,
-leaving reductions as the last strided-only family in the runtime.
-
-- **Accumulation order is preserved**: a contiguous fast path that walks
-  the same logical order is bit-identical, and that is the requirement.
-  A pairwise or blocked summation is a §7.3 order change and is **not**
-  in H6's scope.
-- The odometer is retained per §8.2/§8.3 — it is what implements strided
-  reads and, dually, broadcasting.
-- **H5 raised this milestone's expected value and narrowed its shape.**
-  The H5 traversal measured **2.5×–5.5×** for a flat sweep over the same
-  logical elements the odometer already visited, on an operation whose
-  per-element work is a single load and store. A reduction's per-element
-  work is a load and an add, so the same structural saving applies; the
-  reduction's own H1 note in `backends/cpp.py` already identifies its
-  zeroed destination as intentional and not the target. H6 should reuse
-  H5's dispatch shape exactly — one metadata predicate, hidden
-  visibility, inside the existing export, no new symbol — because that
-  shape is now proved twice (H2, H5).
-- H5 also surfaced the cost H6 must **not** try to fix: the ~2.2 µs
-  `ndpointer` conversion per strided call (§16.5.6). That is a boundary
-  cost shared by six kernels and belongs to a dispatch milestone, not to
-  a reduction one.
-
-### H7 — Composed-module cost *(conditional)*
+### H7 — Composed-module cost *(conditional, and now the weakest slot)*
 
 Reduce the allocation and dispatch count in the normalization modules
 and the composed convolution bias gradient.
 
-**Conditional, and likely to be narrowed:** if H1, H3, and H6 land, most
-of B6's cost is removed by them, since a normalization forward is 11–27
-allocations of exactly the kind H1 makes cheaper and exactly the
-operations H3 and H5 make cheaper. H6 proceeds only if a re-measured
-normalization step still shows a material composed-module cost *after*
-those.
+**The original condition was that H1, H3, and H6 must land first and a
+re-measured normalization step must still show a material composed-module
+cost. All three have now landed, and the re-measurement is in.**
 
-**Partially answered by H3, and narrowed further.** A normalized
-training step improved **1.51×** at H3 — the largest end-to-end gain of
-the milestone — and its ratio against the stable line fell from 6.76× to
-5.28×. That is consistent with the prediction above: much of B6 was
-per-call overhead, and it is now gone. What remains unmeasured is how
-much of the residual 5.28× H6 removes, since a normalization forward is
-dominated by `mean` and broadcast `subtract`. **H7 should not be entered
-before H6 is measured**, and on current evidence it is more likely to be
-dropped than to ship. **It must not introduce a normalization kernel**: F2–F4's
-achievement is that both families are compositions with no C++ at all,
-and trading that for speed would be a semantic regression, not an
-optimization.
+- H3 improved a normalized training step **1.51×** and cut its ratio
+  against the stable line from 6.76× to 5.28× — much of B6 was per-call
+  overhead, and that part is gone.
+- **H6 has now answered the question H3 left open.** A normalization
+  forward is dominated by `mean` and broadcast `subtract`, and H6 made
+  `mean` **3.9×–4.1×** faster. The measured effect on the modules was
+  small: LayerNorm forward **1.16×**, BatchNorm2d backward **1.10×**, and
+  BatchNorm1d training forward, eval forward, backward, BatchNorm2d
+  forward, and LayerNorm backward all **inside the 0.90×–1.03× control
+  band** (§16.6.11). The normalized training step as a whole moved
+  **1.03×**, i.e. not at all.
+- The conclusion the evidence supports: **what is left in B6 is not the
+  reductions and not the per-call cost — it is the sheer count of
+  broadcast elementwise operations** (11 allocations for a LayerNorm
+  forward, 25 for a BatchNorm1d training forward, 30 for BatchNorm2d),
+  each a separate allocation, a separate ctypes crossing, and a separate
+  full pass over a parameter-sized buffer. Speeding one component of a
+  composition 4× cannot move a total that is spread across two dozen
+  components.
+
+So H7 as originally framed — "make the reductions and dispatch inside
+normalization cheaper" — is **answered and should not be entered**. The
+only version of it that could still pay is broadcast-elementwise traversal
+and allocation count, which is **H8's** subject, not a normalization one.
+**It must not introduce a normalization kernel**: F2–F4's achievement is
+that both families are compositions with no C++ at all, and trading that
+for speed would be a semantic regression, not an optimization.
 
 ### H8 — Elementwise and materialization traversal *(conditional)*
 

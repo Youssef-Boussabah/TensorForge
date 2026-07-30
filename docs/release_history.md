@@ -2798,6 +2798,136 @@ reads `("cpu",)`, and the native checkpoint format is still version 2
 with versions 1 and 2 supported. Phase G remains the latest *completed*
 phase; Phase H remains the current one.
 
+### Phase H — native CPU performance and runtime efficiency (H6)
+
+**Milestone H6 — native reduction execution efficiency — is complete**,
+the third Phase-H milestone to change C++ and, like H2 and H5, **not the
+ABI**: the library still exports exactly **52** `tf_*` symbols. Reductions
+were the last core family in the runtime that always paid the generic
+strided indexing cost.
+
+The pre-H6 kernel was re-read from source and re-measured on the post-H5
+build rather than trusted from H0's or H5's summaries, and its cost was
+**decomposed** rather than assumed. At `(256, 256)` `axis=0` a `core.sum`
+costs 99.7 us, of which the **raw native call is 94.8 us — 95 %**; the
+three `ndpointer` conversions inside that account for ~3.2 us, leaving the
+C++ traversal itself at ~91.6 us, **92 %** of the operation. The whole
+Python wrapper — axis normalization, output-shape construction,
+write-stride construction, the H3-cached layout arrays, and the output
+allocation — is about 5 us. This is the **opposite** of B3: H3's subject
+was a fixed Python cost that dominated *small* operations, while a
+reduction of any real size is dominated by the compiled loop.
+
+H6 reused the dispatch shape H2 and H5 each proved — one hidden metadata
+predicate, inside the existing export, no new symbol, the pre-milestone
+traversal retained. New `cpp/include/tf_reduction_internal.h` declares
+three hidden-visibility `namespace tf` functions and `cpp/src/reduction.cpp`
+implements them: **`tf::sum_generic_strided`**, the pre-H6 odometer retained
+as the shipped generic reference path — the only path that can address a
+transposed, narrowed, non-unit-strided, or broadcast source at all, and the
+oracle every optimized result is compared against;
+**`tf::reduce_prefers_contiguous_blocks`**, the predicate — total, pure,
+allocation-free, a function of layout metadata alone, never of a pointer
+value, an alignment, a clock, an environment variable, or a CPU-feature
+probe, with a false answer a fallback and never an error; and
+**`tf::sum_contiguous_blocks`**, a flat walk over an `outer x mid x inner`
+factorization. The predicate accepts a reduction when the source strides
+are exactly the row-major strides implied by the shape (the same definition
+`NativeTensorView` uses, so the two layers agree by construction), the
+reduced axes — those with a zero *write* stride — form **one contiguous
+run**, and the kept axes carry exactly the row-major strides of the output
+formed by dropping that run. Stride collapsing is **implicit and bounded
+rather than a general layout compiler**, nothing is cached or interned, and
+`keepdims` needs no special case because the kernel cannot even observe it.
+
+**Per-output accumulation order is preserved exactly**, and the source
+traversal order is not even reordered: the loop nest is the lexicographic
+order of the source's own row-major index, which is what the odometer
+walks, and every destination cell is touched by exactly one index pair, so
+the cells are independent. Nothing is reassociated, and no FMA, Kahan,
+pairwise, tree, parallel, or horizontal-vector reduction exists. The
+`inner == 1` branch's local accumulator is **seeded from the destination**,
+which keeps the export's accumulate-into semantics identical on both paths.
+
+**Signed zeros are proved as raw bit patterns** across all-positive,
+all-negative, alternating, first, last, mixed-with-finite, and cancelling
+cases at every axis and both `keepdims` values: the sum of any number of
+`-0.0` values is `+0.0` on both paths and matches NumPy, and a `-0.0` seed
+stays `-0.0`. The rank-0 export branch is recorded precisely rather than
+idealized — it is a genuine addition against a zeroed destination, so a
+rank-0 `-0.0` sums to `+0.0`, exactly as before H6.
+
+**The NaN rule is H6's own and was measured, not inherited from H2.**
+Contractual: identical NaN positions on both paths; every NaN quiet, with a
+signaling-NaN input quieted by both to identical bits; and bit identity
+whenever **at most one NaN** enters an accumulation, which is every case
+that occurs in practice. Not contractual, and asserted in neither
+direction: with **two or more** NaNs accumulated into one cell the paths may
+select different payload bits. Four spellings of the optimized accumulation
+were compared — including one accumulating *through memory* exactly as the
+odometer does — and **all four selected the same NaN and all four differed
+from the odometer**, so the accumulator is not the cause and parity is
+unavailable at any spelling; the memory form was also 1.2x-1.8x slower.
+Recorded as observation rather than promise: the block path keeps the
+**first** NaN and the odometer the **last**, and the block path's choice is
+NumPy's — so H6 moved the answer toward NumPy. H5's copy rule does not
+apply either, for the reason that made it strong: a value transfer performs
+no arithmetic, and a reduction is arithmetic.
+
+**H1's rejection of this destination stands and is confirmed rather than
+revisited**: both traversals read the destination, so it stays
+zero-initialized. Outcome B was rejected on measurement (2,048 bytes of
+fill against 524,288 bytes of reads, and 8 bytes at `axis=None`) and on
+semantics (a fast path that assigned its first contribution would behave
+differently from the reference for a non-zero destination). H6 therefore
+adds no poison test, because it introduces no uninitialized destination.
+
+Measured against a **pre-H6 library** built from identical sources with only
+`reduction.cpp` restored, driven through identical `ctypes` calls on
+identical data, outputs proved **bit-identical before either side was
+timed**, 15 alternating rounds, control band **0.90x-1.03x**: full
+reductions 1.19x at 1,024 elements to **3.96x** at `(512, 512)`; 2-D axis
+reductions 3.24x to **6.37x**; and — the finding that was not predicted —
+3-D and 4-D reductions **8.60x-10.94x**, because the odometer's carry loop
+runs up to `ndim` iterations per element while the block traversal's cost
+does not grow with rank. At the layer level `TensorCore.sum(axis=0)` 4.49x,
+`mean(axis=0)` 4.11x, NCHW `sum(axis=1)` **8.56x**, `NativeTensor.sum`
+3.88x, `sum()` forward+backward 1.27x, the **convolution bias gradient's
+three chained sums 1.46x**, `_unbroadcast` 1.15x, softmax backward 1.14x,
+`NativeLayerNorm` forward 1.16x. Against NumPy the contiguous reduction gap
+closed from roughly 8-13x to **1.67x-3.75x**, while the transposed-view
+control stayed at 10.33x.
+
+Reported just as honestly: **every training step is neutral** (0.99x-1.03x,
+inside the control band), so **H6 does not make training faster**;
+**normalization is mostly neutral**, which narrows H7 rather than
+motivating it; **tiny reductions are neutral**, because below roughly 1,000
+elements the fixed ~7 us Python-plus-ctypes cost dominates; and one **real,
+repeatable ~10 % regression** on 2-D transposed `axis=0` fallbacks
+(0.89x-0.93x across four 25-round runs) is published rather than buried,
+with the 3-D transposed fallback measuring 1.04x-1.05x *faster* and the
+cause isolated to whole-translation-unit code layout — an isolated binary
+showed the extracted call is not it — which the design rejects chasing. A
+register-blocked small-trailing-extent path was rejected on complexity.
+
+**Memory moved not at all, and that is asserted**: a `sum` allocates
+exactly one native storage on both paths at every axis, `mean` the same
+one, and a 10-step training run produced a bit-identical allocation profile
+before and after. The harness gained three cases, 28 to **31**
+(`reduction_last_axis`, `reduction_full_to_scalar`,
+`reduction_middle_axis_4d`), with `reduction_transposed_view` now
+explicitly the control; one dependency-free CTest was added,
+`cpp/tests/test_sum_reduction.cpp`, taking the native suite from 14 to
+**15**. No exported C ABI symbol, no new translation unit, no public
+control of any kind, no SIMD, threading, OpenMP, BLAS, parallel reduction,
+memory pool, scratch workspace, or fast-math; multi-axis reduction was not
+added, and `tf_core_narrow_backward` — the scatter dual — was deliberately
+left alone. `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
+`SUPPORTED_DTYPES` still reads `("float64",)`, `SUPPORTED_DEVICES` still
+reads `("cpu",)`, and the native checkpoint format is still version 2 with
+versions 1 and 2 supported. Phase G remains the latest *completed* phase;
+Phase H remains the current one.
+
 ### Phase H — native CPU performance and runtime efficiency (H5)
 
 **Milestone H5 — native copy and mutation-transfer efficiency — is

@@ -432,4 +432,27 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME contiguous_copy COMMAND test_contiguous_copy)
+
+  # Sum reduction and its H6 traversal dispatch: compiles reduction.cpp
+  # directly so it can reach the hidden tf::reduce_prefers_contiguous_blocks
+  # predicate and BOTH hidden traversals alongside the exported tf_core_sum
+  # wrapper they live inside. storage.cpp supplies the Storage handles the
+  # ABI takes, and error.cpp the thread-local error slot the guarded wrapper
+  # records into.
+  add_executable(test_sum_reduction
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sum_reduction.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reduction.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_sum_reduction PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_sum_reduction PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_sum_reduction PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_sum_reduction PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME sum_reduction COMMAND test_sum_reduction)
 endif()

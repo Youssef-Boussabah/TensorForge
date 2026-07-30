@@ -57,6 +57,17 @@ EXPECTED_CASES = (
     "elementwise_transposed_view",
     "reduction_contiguous",
     "reduction_transposed_view",
+    # Phase H, milestone H6. The reduction kernel ships two traversals
+    # behind one unchanged export and the reduction's *shape* decides which
+    # runs, so the three block forms are reported separately rather than
+    # averaged: a trailing-axis reduction and a full reduction to a scalar
+    # (the local-accumulator branch) and a middle-axis 4-D reduction (all
+    # three block extents above 1, and the rank-4 reading of the retained
+    # odometer's carry cost). reduction_transposed_view stays the control:
+    # the predicate rejects it, so its compiled traversal did not change.
+    "reduction_last_axis",
+    "reduction_full_to_scalar",
+    "reduction_middle_axis_4d",
     "matmul_square_contiguous",
     "matmul_rectangular_contiguous",
     "matmul_transposed_view",
@@ -175,6 +186,10 @@ def test_the_required_h0_workload_coverage_is_present():
         "transposed-view elementwise": "elementwise_transposed_view",
         "contiguous reduction": "reduction_contiguous",
         "transposed-view reduction": "reduction_transposed_view",
+        # H6's three block forms.
+        "trailing-axis reduction": "reduction_last_axis",
+        "full reduction to a scalar": "reduction_full_to_scalar",
+        "middle-axis higher-rank reduction": "reduction_middle_axis_4d",
         "square matmul": "matmul_square_contiguous",
         "rectangular matmul": "matmul_rectangular_contiguous",
         "strided matmul fallback": "matmul_transposed_view",
@@ -1267,12 +1282,15 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     unit, so nothing new is compiled into the library. H1 added one
     internal-contract CTest; H2 added one internal header plus one CTest;
     H5 added one internal header plus one CTest for the copy traversal
-    predicate — all of which are hidden-visibility C++ and test
-    scaffolding, none of which is an ABI addition. The exported-symbol
-    count, which is the thing that actually matters, is asserted against
-    the built image in tests/test_native_storage_allocation.py,
-    tests/test_native_matmul_dispatch.py, and
-    tests/test_native_copy_transfer.py."""
+    predicate; H6 added one internal header plus one CTest for the
+    reduction traversal predicate — all of which are hidden-visibility C++
+    and test scaffolding, none of which is an ABI addition. The
+    exported-symbol count, which is the thing that actually matters, is
+    asserted against the built image in
+    tests/test_native_storage_allocation.py,
+    tests/test_native_matmul_dispatch.py,
+    tests/test_native_copy_transfer.py, and
+    tests/test_native_reduction_dispatch.py."""
     sources = sorted(p.name for p in (REPO_ROOT / "cpp" / "src").glob("*.cpp"))
     assert sources == [
         "classification.cpp", "conv2d.cpp", "elementwise.cpp", "error.cpp",
@@ -1284,15 +1302,18 @@ def test_h0_adds_no_kernel_or_abi_declaration():
         "tf_classification_internal.h", "tf_conv2d_internal.h",
         "tf_copy_internal.h", "tf_internal.h", "tf_matmul_internal.h",
         "tf_pooling_internal.h", "tf_random_internal.h",
+        "tf_reduction_internal.h",
     ]
     ctests = sorted(p.name for p in (REPO_ROOT / "cpp" / "tests").glob("*.cpp"))
     # H0 left 11. H1 added the storage-creation contract test; H2 added
     # the matmul path/dispatch test; H5 added the copy path/dispatch
-    # test. None of the three is a new numerical kernel.
-    assert len(ctests) == 14
+    # test; H6 added the reduction path/dispatch test. None of the four is
+    # a new numerical kernel.
+    assert len(ctests) == 15
     assert "test_storage_allocation.cpp" in ctests
     assert "test_matmul.cpp" in ctests
     assert "test_contiguous_copy.cpp" in ctests
+    assert "test_sum_reduction.cpp" in ctests
     assert cpp._CHECKED_KERNELS[-1] == "tf_core_dropout_forward"
     # H1 added exactly one checked ABI symbol, and it is an allocator
     # rather than a kernel: it takes the identical errcheck hook as the
