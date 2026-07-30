@@ -61,6 +61,11 @@ EXPECTED_CASES = (
     "matmul_rectangular_contiguous",
     "matmul_transposed_view",
     "contiguous_materialization",
+    # Phase H, milestone H5. The flat-traversal twin of
+    # contiguous_materialization: the same export on a row-major source,
+    # which is the traversal H5 added inside it. The pair separates the
+    # two traversals rather than averaging them.
+    "row_major_materialization",
     "linear_forward",
     "linear_forward_backward",
     "conv2d_forward",
@@ -75,6 +80,10 @@ EXPECTED_CASES = (
     "sgd_step",
     "state_dict_snapshot",
     "state_dict_load",
+    # Phase H, milestone H5. The controlled mutation primitive every
+    # optimizer commit ends in, and the callsite whose staging H5 moved
+    # off the zeros+add composition. `native_only`: no ratio.
+    "parameter_value_commit",
 )
 
 # The cases whose reference layer is genuinely absent, so no ratio may be
@@ -87,6 +96,10 @@ NO_RATIO_CASES = (
     "dropout_training_step",
     "state_dict_snapshot",
     "state_dict_load",
+    # H5: the stable line mutates a Parameter by rebinding .data, which
+    # is a different operation from a staged storage replacement, so
+    # there is nothing honest to divide by.
+    "parameter_value_commit",
 )
 
 # A representative subset used wherever running all 24 cases would make a
@@ -298,7 +311,11 @@ def test_checkpoint_file_io_is_excluded_and_state_operations_are_separate():
     state surface in its own family."""
     state_cases = [name for name, spec in bench.CASES.items()
                    if spec["workload"] == "state_operations"]
-    assert state_cases == ["state_dict_snapshot", "state_dict_load"]
+    # H5 added the mutation primitive the optimizer commit ends in. It is
+    # in-memory state transfer, so it belongs to this family — and, like
+    # the other two, it touches no file.
+    assert state_cases == ["state_dict_snapshot", "state_dict_load",
+                           "parameter_value_commit"]
     for name, spec in bench.CASES.items():
         if spec["workload"] in ("training_step", "normalization", "stochastic"):
             lowered = spec["operation"].lower()
@@ -1248,12 +1265,14 @@ def test_h0_adds_no_kernel_or_abi_declaration():
 
     The *source* list is the invariant: Phase H has added no translation
     unit, so nothing new is compiled into the library. H1 added one
-    internal-contract CTest and H2 added one internal header plus one
-    CTest — both of which are hidden-visibility C++ and test scaffolding,
-    neither of which is an ABI addition. The exported-symbol count, which
-    is the thing that actually matters, is asserted against the built
-    image in tests/test_native_storage_allocation.py and
-    tests/test_native_matmul_dispatch.py."""
+    internal-contract CTest; H2 added one internal header plus one CTest;
+    H5 added one internal header plus one CTest for the copy traversal
+    predicate — all of which are hidden-visibility C++ and test
+    scaffolding, none of which is an ABI addition. The exported-symbol
+    count, which is the thing that actually matters, is asserted against
+    the built image in tests/test_native_storage_allocation.py,
+    tests/test_native_matmul_dispatch.py, and
+    tests/test_native_copy_transfer.py."""
     sources = sorted(p.name for p in (REPO_ROOT / "cpp" / "src").glob("*.cpp"))
     assert sources == [
         "classification.cpp", "conv2d.cpp", "elementwise.cpp", "error.cpp",
@@ -1263,15 +1282,17 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     headers = sorted(p.name for p in (REPO_ROOT / "cpp" / "include").glob("*.h"))
     assert headers == [
         "tf_classification_internal.h", "tf_conv2d_internal.h",
-        "tf_internal.h", "tf_matmul_internal.h", "tf_pooling_internal.h",
-        "tf_random_internal.h",
+        "tf_copy_internal.h", "tf_internal.h", "tf_matmul_internal.h",
+        "tf_pooling_internal.h", "tf_random_internal.h",
     ]
     ctests = sorted(p.name for p in (REPO_ROOT / "cpp" / "tests").glob("*.cpp"))
     # H0 left 11. H1 added the storage-creation contract test; H2 added
-    # the matmul path/dispatch test. Neither is a new numerical kernel.
-    assert len(ctests) == 13
+    # the matmul path/dispatch test; H5 added the copy path/dispatch
+    # test. None of the three is a new numerical kernel.
+    assert len(ctests) == 14
     assert "test_storage_allocation.cpp" in ctests
     assert "test_matmul.cpp" in ctests
+    assert "test_contiguous_copy.cpp" in ctests
     assert cpp._CHECKED_KERNELS[-1] == "tf_core_dropout_forward"
     # H1 added exactly one checked ABI symbol, and it is an allocator
     # rather than a kernel: it takes the identical errcheck hook as the
@@ -1288,13 +1309,33 @@ def test_h0_adds_no_kernel_or_abi_declaration():
 
 def test_h0_touches_no_production_numerical_source():
     """The harness reaches production code only through public APIs; it
-    defines no kernel, operation, module, or optimizer of its own."""
+    defines no kernel, operation, module, or optimizer of its own.
+
+    Phase H, milestone H5 removed ``copy_value_(`` from this list, and
+    only that one. It is not an internal: it is the native line's single
+    documented controlled-mutation primitive, on the public
+    ``NativeParameter`` surface, and it is H5's subject — the transfer
+    every optimizer commit ends in. Measuring it requires calling it. The
+    checkpoint entry points stay banned for a different reason that has
+    not changed: file I/O is deliberately outside this harness."""
     source = BENCHMARK_FILE.read_text(encoding="utf-8")
     for banned in ("def tf_core_", "argtypes", "import ctypes", "ctypes.",
-                   "TF_EXPORT", "_CHECKED_KERNELS", "copy_value_(",
+                   "TF_EXPORT", "_CHECKED_KERNELS",
                    "_from_op(", "load_native_checkpoint(",
                    "save_native_checkpoint("):
         assert banned not in source, banned
+    # ...and the one newly permitted call is used only where H5 says:
+    # inside the parameter_value_commit case, never as a way for another
+    # case to hand-edit state it should have computed. Matched as a real
+    # call on a parameter object, so the prose that names the operation
+    # in docstrings and case metadata is not mistaken for one.
+    calls = re.findall(r"^\s*\w*\s*=?\s*parameter\.copy_value_\(", source,
+                       re.M)
+    builder = source.split("def _build_parameter_value_commit", 1)[1]
+    builder = builder.split("\ndef ", 1)[0]
+    assert len(calls) == len(
+        re.findall(r"^\s*\w*\s*=?\s*parameter\.copy_value_\(", builder, re.M)
+    ), "copy_value_ is called outside the parameter_value_commit case"
     # The only classes it defines are its own benchmark models and, since
     # H1, one piece of measurement scaffolding: a context manager that
     # forces the H1 output allocations back onto the zero-initializing
@@ -1364,6 +1405,9 @@ H1_ALLOCATION_CASES = (
     "elementwise_contiguous",
     "matmul_square_contiguous",
     "contiguous_materialization",
+    # H5's flat-traversal twin allocates the same output the same way, so
+    # it carries the same zeroed comparison.
+    "row_major_materialization",
     "conv2d_forward",
     "linear_forward",
     "adam_step",

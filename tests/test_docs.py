@@ -4048,17 +4048,24 @@ _PHASE_G_OVERCLAIMS = (
     #
     # Retired one milestone at a time, exactly as the Phase-G entries
     # above were: H1 (the output-allocation contract), **H2** (the matmul
-    # loop order), **H3** (the metadata and dispatch contract), and
-    # **H4** (the optimizer step contract) really have shipped, so
-    # claiming any of them is accurate and the milestone-number arm now
-    # starts at H5. What is
+    # loop order), **H3** (the metadata and dispatch contract), **H4**
+    # (the optimizer step contract), and **H5** (the copy and
+    # mutation-transfer contract) really have shipped, so claiming any of
+    # them is accurate and the milestone-number arm now starts at H6.
+    # What is
     # *not* retired, and will not be until §11–§13 of the design are met,
     # is the family of optimizations Phase H has deliberately rejected on
     # evidence: no memory pool, scratch workspace, SIMD, threading,
     # OpenMP, or BLAS exists anywhere in this repository, and H2 in
     # particular measured cache blocking and rejected it.
+    #
+    # The "one past the end of the ladder" sentinel moved from H11 to H12
+    # when H5 inserted a milestone and pushed reduction execution to H6
+    # (design §16.5.0): the ladder now runs H0–H11, so H11 is the planned
+    # phase-closure milestone and naming it is accurate, while H12 would
+    # again mean a phase that does not exist.
     ("a later phase has begun",
-     r"\bPhase[- ]I\b|\bG11\b|\bH11\b"
+     r"\bPhase[- ]I\b|\bG11\b|\bH12\b"
      r"|(CUDA|float32|AMP)[^.]{0,40}\b(phase|milestone)\b[^.]{0,40}"
      r"\b(has|have|is|are)\s+(begun|started|shipped|landed|complete)\b"),
     ("a Phase-H optimization that does not exist has shipped",
@@ -4066,7 +4073,7 @@ _PHASE_G_OVERCLAIMS = (
      r"|multi-?threading|thread pool)[^.]{0,60}"
      r"\b(is|are|was|were|has been|have been)\s+"
      r"(added|shipped|implemented|enabled|introduced|adopted|landed)\b"
-     r"|\bH[5-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
+     r"|\bH[6-9]\b[^.]{0,60}\b(has|have|is|are)\s+"
      r"(begun|started|shipped|landed|complete|completed)\b"),
 )
 

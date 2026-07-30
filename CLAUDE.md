@@ -759,7 +759,7 @@ and the example defines **no public training API** — none of its helpers
 is exported.
 **Phase H — Native CPU Performance and Runtime Efficiency — is the
 latest phase and is the current one; it has *begun*, with milestones
-**H0, H1, H2, H3, and H4** complete, and Phase G remains the latest
+**H0, H1, H2, H3, H4, and H5** complete, and Phase G remains the latest
 *completed* phase.** H0 is an
 architecture, profiling, and baseline milestone: it shipped
 `docs/native_cpu_performance_design.md` (the contract), the unified
@@ -795,7 +795,7 @@ separates its evidence into *directly measured*, *strongly
 source-evidenced but not fully measured*, and *unconfirmed hypotheses*,
 records the minimal instrumentation a later milestone would need
 wherever H0's observability could not settle a question, and makes the
-proposed **H1–H8 ladder explicitly conditional** — a milestone whose
+proposed **H1–H11 ladder explicitly conditional** — a milestone whose
 premise the measurement does not confirm is narrowed, reordered, or
 dropped. A memory pool, scratch allocation, SIMD, threading, and BLAS are
 all currently **rejected on evidence**, with the criteria that would
@@ -1032,6 +1032,131 @@ allocation seam and a fourth now forwards `*rest` through the staging
 signature - **every assertion in all four unchanged** - and new H4 tests
 cover the `full` seam directly. No capability, dtype, device, registry
 value, checkpoint field, or checkpoint version moved.
+**Milestone H5 — native copy and mutation-transfer efficiency — has
+since shipped**, and it is the first Phase-H milestone since H2 to change
+C++ — though **not the ABI**: the library still exports exactly **52**
+`tf_*` symbols. H5 replaced the native line's **value-transfer
+primitive**. `_native_copy` was `zeros(shape) + core` — two allocations,
+a full zero-fill pass, and a full elementwise-addition pass — and is now
+the E3.1 native identity gather, `NativeTensorCore.contiguous_copy()`:
+one uninitialized allocation (H1) and one pass. The composition predates
+that gather and was simply never migrated to it. A complete inventory
+found **ten** call sites of the one helper — `NativeParameter.copy_value_`
+staging, both `state_dict()` snapshot paths, both `load_state_dict()`
+staging paths, both BatchNorm running-statistic commits, and the
+reshape/transpose/unbroadcast gradient materializations — and every one
+of them is a **pure value transfer**: an independent contiguous
+materialization of some tensor's current value, wanting no arithmetic.
+All ten were enabled. `_broadcast_back`'s `zeros(x_shape) + upstream` was
+**rejected** because it is not a copy at all but a genuine broadcast
+expansion, which `contiguous_copy` cannot express; `sum`/`mean` and
+`narrow_backward` keep their zeroed destinations for H1's unchanged
+reasons.
+
+The semantic question H4 refused to decide in passing was decided here,
+by measurement over a fixed 18-pattern IEEE-754 sweep. **Exactly three**
+patterns behaved differently under the two spellings: the addition
+normalized `-0.0` to `+0.0` and quieted both signs of signaling NaN,
+while the gather preserves all three. Everything else — `±0`, `±inf`,
+quiet NaNs of either sign and **any payload**, denormals, the smallest
+normal, the largest finite magnitudes — was already identical, so no NaN
+payload differed at all (with one NaN operand and one zero, x86-64's
+`ADDSD` returns that operand's NaN). **H2's matmul NaN-payload carve-out
+does not generalize to copies**: it exists because two NaN operands meet
+in an accumulation, and a copy performs no arithmetic. The pre-H5
+behavior was **accidental and inconsistent**, not contracted — three
+other value-copy paths (`NativeParameter(source)` construction,
+`detach()`, and the `to_numpy()`/`from_array` boundary) always used the
+gather and always preserved `-0.0`, while `copy_value_` documented the
+same thing and did not deliver it. H5 states the narrowest coherent rule:
+**a value transfer reproduces its source's bits exactly; an operation —
+`zeros + x` included — follows IEEE arithmetic.** No operation's
+arithmetic changed anywhere, and the whole pre-H5 suite passes unchanged
+apart from the guardrails that pinned the old composition by name.
+
+Swapping the composition alone would have **regressed** the common case,
+so H5's one C++ change is a second **traversal** inside the unchanged
+`tf_core_contiguous_copy` export. `zeros.add(core)` on a contiguous
+source takes a flat pointer loop, while the gather always walked the
+generic odometer — the only unary export without the contiguous fast path
+every other one has — and a naive swap measured **0.48x** at 16,384
+elements. The export now picks its traversal from the layout metadata it
+already receives, exactly as H2's matmul picks its kernel:
+`tf::copy_prefers_contiguous` is hidden-visibility C++ in a new internal
+header, total, pure, allocation-free, and a function of metadata alone —
+never of a pointer value, an alignment, a clock, an environment variable,
+or a CPU-feature probe — testing exact equality against the row-major
+strides implied by the shape, which is the same definition
+`NativeTensorView` uses, so the two layers agree by construction. A false
+answer falls back to the retained odometer and is never an error. **No
+numerical carve-out is needed, and that is the difference from H2**: both
+traversals evaluate `dst[out] = src[pos]` over the same logical elements
+in the same destination order and differ only in how `pos` is computed,
+so they are bit-identical *by construction* — proved directly at the C++
+level by a new dependency-free CTest, taking the suite from 13 to 14.
+There is no copy-mode selector, overlap-mode flag, traversal tracer, or
+public dispatch control of any kind.
+
+Nothing became less safe, because nothing became in-place: every call
+site still **stages** an independent materialization and only then adopts
+it. The overlapping arrangements the runtime can construct —
+`copy_value_(self)`, a source that is a view of the destination's own
+storage, a square parameter's own transpose, sibling views, duplicate
+parameters across optimizers — are each tested and each correct, and no
+`memcpy` is used anywhere. Parameter identity, storage replacement,
+gradient retention by identity and value, the one version increment per
+commit, the F1 state transaction, checkpoint atomicity, and exact resume
+are all exactly what they were; gradient *accumulation* still adds rather
+than assigns. H1's full-write contract is proved on both traversals by
+poison injected purely by test infrastructure around the allocator, with
+a negative control showing the detector can fail.
+
+Measured by alternating pre/post **subprocess** rounds against a retained
+pre-H5 composition, with a control band of **0.96x-1.05x**, and — for
+the C++ half — by building a **pre-H5 library** and driving both through
+identical `ctypes` calls on identical data, outputs proved bit-identical
+before either was timed. The traversal alone: **2.5x-5.5x** on contiguous
+sources from 16 K elements up (5.53x at 512 squared, 5.53x on 4-D NCHW,
+5.46x on an offset view), 1.29-1.62x on small ones, and **0.94x-1.02x on
+transposed and last-axis-narrowed sources**, which take the *unchanged*
+odometer and are the design's own control. End to end: `copy_value_`
+**2.14x** at (512, 512) and 1.26x at (128, 128), optimizer `state_dict()`
+2.40x and `load_state_dict()` 1.69x, module `load_state_dict()` 1.37x,
+`NativeSGD.step()` 1.15-1.31x. Reported just as honestly:
+**`NativeAdam.step()` is neutral** (0.98x-1.06x — the commit copy is one
+of about seventeen buffers and the arithmetic dominates), **every
+training step is neutral** (0.95x-1.07x), the **BatchNorm running update
+is neutral** (0.98x), and **copies below ~16 K elements are neutral**
+(0.93x-1.01x), because a `contiguous_copy` call converts two `int64`
+layout arrays at the ctypes boundary at **~1.1 us each** — a cost
+measured, attributed, and left to a later dispatch milestone rather than
+paid for by weakening H3's validation. Two methodology findings are
+published rather than buried: at 7 alternating rounds the small copies
+read 0.78x-0.94x and looked like a regression, while at 21 rounds the
+same cases read 0.93x-1.01x (the same lesson H3 recorded); and the
+largest single ratio, **7.9x-10.5x at 512-640 KB**, is a **512 KB
+allocator cliff on this machine**, not a loop-speed result — the pre-H5
+composition makes two large allocations and zero-fills one, so it crosses
+that threshold at half the size and pays it twice. The durable statements
+are ~2.1x at 1-2 MB and neutrality below 384 KB.
+
+Memory moved with time, never against it: **no measured peak rose**, and
+the pure-transfer paths halved. `copy_value_` at (512, 512) went 2
+allocations to **1** and 4,194,304 to **2,097,152** peak bytes; module
+`state_dict()` and `load_state_dict()` 4 to **2** allocations with peak
+bytes halved; optimizer `state_dict()` 16 to **8**; `NativeSGD.step()`
+5 to **4** with peak 393,216 to **262,152**; and `NativeAdam.step()` went
+**17 to 16** allocations per parameter (H4 took it 27 to 17), removing a
+whole-parameter zero-fill pass from every committed update. The harness
+gained two cases, 26 to **28**: `row_major_materialization`, the
+flat-traversal twin of the existing transposed-source case, so the two
+traversals are separated rather than averaged; and
+`parameter_value_commit`, `native_only` with **no ratio**, because the
+stable line mutates a `Parameter` by rebinding `.data`, which is a
+different operation. The ladder was **reordered** here — reduction
+execution, drafted as H5, moved to H6 — and no public API, capability,
+dtype, device, registry value, checkpoint field, or checkpoint version
+moved.
 Data loaders, native integer tensors, further
 dtypes/devices, and CUDA experiments are
 future work beyond Phase H.
@@ -1149,7 +1274,22 @@ production-ready, not a PyTorch replacement.
   adaptive optimizer 23.8x -> 19.7x, per-parameter allocations 27 -> 17,
   peak transient bytes down 2.6-3.0x - and **a (512, 512) parameter, the
   Dropout training step, and NativeSGD all neutral**, with six
-  alternatives measured and rejected; no capability move) and H5-H8
+  alternatives measured and rejected; no capability move) and
+  **H5 complete** (native copy and mutation-transfer efficiency: the
+  value-transfer primitive `_native_copy` moved from `zeros + core`
+  to the E3.1 native identity gather across all ten of its call
+  sites, `_broadcast_back` rejected as a genuine broadcast; exactly
+  three of eighteen IEEE-754 patterns moved — the addition
+  normalized `-0.0` and quieted both signs of signaling NaN — with
+  no NaN payload differing at all, so H2's matmul payload carve-out
+  does not generalize; one hidden C++ traversal predicate inside the
+  unchanged export, bit-identical by construction, **no ABI change,
+  still 52 symbols**; `copy_value_` 2.14x at (512, 512), optimizer
+  `state_dict()` 2.40x, the traversal alone 2.5-5.5x contiguous and
+  0.94-1.02x transposed (the unchanged odometer control) — with
+  NativeAdam, every training step, and small copies all neutral;
+  allocations down everywhere and no peak raised; no capability
+  move) and H6-H11
   proposed and explicitly conditional on that evidence, so **Phase H has
   begun but is not complete**). When a milestone changes the
   public API or the examples, update the matching docs file (and

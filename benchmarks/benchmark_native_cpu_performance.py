@@ -133,6 +133,7 @@ from tensorforge.experimental import (
     NativeMaxPool2d,
     NativeModule,
     NativeMSELoss,
+    NativeParameter,
     NativeReLU,
     NativeSequential,
     NativeSGD,
@@ -1279,6 +1280,139 @@ def _build_materialization(config, spec):
             NATIVE_TENSOR_GRAPH: _layer(
                 lambda _s=None: tensor_view_g.contiguous_copy(),
                 cleanup=_close_result),
+        },
+        "close": lambda: [item.close() for item in owned],
+    }
+
+
+def _build_row_major_materialization(config, spec):
+    """Materializing an already **row-major** source into a fresh owning
+    contiguous result — the traversal Phase H, milestone H5 added inside
+    ``tf_core_contiguous_copy``.
+
+    The companion ``contiguous_materialization`` case measures the same
+    export on a *transposed* source, which keeps the generic odometer, so
+    the pair separates H5's two traversals rather than averaging them.
+    The reference is ``numpy.ndarray.copy`` — an honest equivalent, and
+    deliberately not ``numpy.ascontiguousarray``, which returns an
+    already-contiguous array **without copying** and would therefore be
+    timing nothing."""
+    shape = config["shape"]
+    values = np.ascontiguousarray(_values(shape, spec["seed"]))
+    core = cpp.NativeTensorCore.from_array(values)
+    tensor = NativeTensor.from_array(values)
+    tensor_g = NativeTensor.from_array(values, requires_grad=True)
+    owned = [core, tensor, tensor_g]
+
+    def check():
+        _require(core.contiguous, "the source view is not row-major")
+        results = {}
+        core_out = core.contiguous_copy()
+        try:
+            results[TENSOR_CORE] = core_out.to_numpy().copy()
+            _require_fresh_core(core_out, (core,), "the materialized core")
+            _require(core_out.storage is not core.storage,
+                     "contiguous_copy aliased the source storage")
+        finally:
+            core_out.close()
+        plain = tensor.contiguous_copy()
+        try:
+            results[NATIVE_TENSOR] = plain.to_numpy().copy()
+            _require_owning_contiguous(plain, "the no-grad materialization")
+        finally:
+            plain.close()
+        graphed = tensor_g.contiguous_copy()
+        try:
+            results[NATIVE_TENSOR_GRAPH] = graphed.to_numpy().copy()
+            _require(graphed.requires_grad,
+                     "the graph layer built no autograd node")
+        finally:
+            graphed.close()
+        errors = {}
+        for layer, produced in results.items():
+            _require_shape(produced, shape, f"the {layer} result")
+            # A copy must be exact to the *bit*, which is a stronger
+            # statement than the numeric parity the other cases make —
+            # H5's whole contract is that no value is transformed.
+            _require(_same_bits(produced, values),
+                     f"the {layer} result is not bit-identical to its source")
+            errors[layer] = _max_abs(produced - values)
+            _require_parity(errors[layer], EXACT, f"the {layer} result",
+                            "numpy.ndarray.copy of the same values")
+        _require_unchanged(core.to_numpy(), values, "the source storage")
+        return {
+            "max_abs_error": max(errors.values()),
+            "per_layer_max_abs_error": errors,
+            "checks": ["source_is_row_major", "shape", "raw_bit_identity",
+                       "numpy_exact_parity", "owning_contiguous_output",
+                       "no_storage_aliasing", "no_source_mutation"],
+        }
+
+    return {
+        "check": check,
+        "layers": {
+            NUMPY: _layer(lambda _s=None: values.copy()),
+            TENSOR_CORE: _layer(lambda _s=None: core.contiguous_copy(),
+                                cleanup=_close_result),
+            NATIVE_TENSOR: _layer(lambda _s=None: tensor.contiguous_copy(),
+                                  cleanup=_close_result),
+            NATIVE_TENSOR_GRAPH: _layer(
+                lambda _s=None: tensor_g.contiguous_copy(),
+                cleanup=_close_result),
+        },
+        "close": lambda: [item.close() for item in owned],
+    }
+
+
+def _build_parameter_value_commit(config, spec):
+    """One ``NativeParameter.copy_value_`` — the native line's controlled
+    mutation primitive, and the transfer every optimizer commit ends in.
+
+    ``native_only``: the stable line has no versioned parameter-mutation
+    primitive to compare against. ``tensorforge.nn.Parameter`` is mutated
+    by assigning ``.data``, which rebinds a NumPy array rather than
+    staging an independent value and replacing owned storage under a
+    preserved identity — timing them against each other would compare two
+    different operations. The correctness oracle is explicit instead: the
+    committed value must be **bit-identical** to the source, the
+    parameter object and its gradient must survive by identity, and the
+    version must advance by exactly one per call. (The identity, storage,
+    gradient, and failure-atomicity halves of that contract are proved in
+    tests/test_native_copy_transfer.py, which can reach internals; this
+    gate stays on the public surface, as every gate in this harness
+    does.)"""
+    shape = config["shape"]
+    values = _values(shape, spec["seed"])
+    replacement = _values(shape, spec["seed"] + 1)
+    parameter = NativeParameter(values)
+    source = NativeTensor.from_array(replacement)
+    owned = [parameter, source]
+
+    def check():
+        before_version = parameter.version
+        returned = parameter.copy_value_(source)
+        _require(returned is parameter, "copy_value_ did not return self")
+        produced = parameter.to_numpy()
+        _require_shape(produced, shape, "the committed value")
+        _require(_same_bits(produced, replacement),
+                 "the committed value is not bit-identical to the source")
+        _require(parameter.version == before_version + 1,
+                 "the value version did not advance by exactly one")
+        _require(parameter.requires_grad,
+                 "the commit disturbed requires_grad")
+        _require_unchanged(source.to_numpy(), replacement, "the source")
+        return {
+            "max_abs_error": _max_abs(produced - replacement),
+            "checks": ["raw_bit_identity", "returns_self",
+                       "one_version_increment", "requires_grad_preserved",
+                       "no_source_mutation"],
+        }
+
+    return {
+        "check": check,
+        "layers": {
+            NATIVE_TENSOR: _layer(
+                lambda _s=None: parameter.copy_value_(source)),
         },
         "close": lambda: [item.close() for item in owned],
     }
@@ -2911,7 +3045,38 @@ CASES = {
         "notes": ("The Policy-B copy the Core layer performs whenever a "
                   "contiguous-only kernel (conv2d, pooling, softmax, "
                   "cross-entropy, dropout) meets a strided operand. It also "
-                  "runs inside NativeFlatten on every CNN forward."),
+                  "runs inside NativeFlatten on every CNN forward. The "
+                  "source is transposed, so this is the case that keeps "
+                  "H5's generic odometer; row_major_materialization is its "
+                  "flat-traversal twin."),
+    },
+    "row_major_materialization": {
+        "allocation_layers": (TENSOR_CORE_ZEROED,),
+        "workload": "materialization",
+        "section": "contiguous_copy of a row-major source",
+        "operation": ("contiguous_copy() materializing an already "
+                      "row-major source into a fresh owning result"),
+        "build": _build_row_major_materialization,
+        "seed": 20260240,
+        "reference_type": REFERENCE_NUMPY,
+        "reference_layer": NUMPY,
+        "reference_detail": "numpy.ndarray.copy of the same values",
+        "correctness_reference": ("numpy.ndarray.copy of the same values, "
+                                  "compared as raw IEEE-754 bits"),
+        "configurations": {
+            "full": {"shape": (256, 256)},
+            "smoke": {"shape": (16, 16)},
+            "profile": {"shape": (1024, 1024)},
+        },
+        "notes": ("Phase H, milestone H5. This is the traversal H5 added "
+                  "inside the unchanged tf_core_contiguous_copy export: a "
+                  "row-major source is swept with the flat pointer loop "
+                  "instead of the odometer. Pairing it with "
+                  "contiguous_materialization, which stays on the "
+                  "odometer, separates the two traversals rather than "
+                  "averaging them. The reference is numpy.ndarray.copy, "
+                  "not numpy.ascontiguousarray, which would return the "
+                  "same array without copying and time nothing."),
     },
 
     # -- linear --------------------------------------------------------------
@@ -3359,6 +3524,39 @@ CASES = {
                   "memory. The load moves a parameter version by design, "
                   "which is why this case owns its own model and shares "
                   "nothing with the training-step cases."),
+    },
+    # -- mutation transfer ---------------------------------------------------
+    "parameter_value_commit": {
+        "workload": "state_operations",
+        "section": "NativeParameter.copy_value_",
+        "operation": ("NativeParameter.copy_value_(source): stage an "
+                      "independent value, replace the owned storage under a "
+                      "preserved identity, advance the version once"),
+        "build": _build_parameter_value_commit,
+        "seed": 20260241,
+        "reference_type": NATIVE_ONLY,
+        "reference_layer": None,
+        "reference_detail": ("no honest equivalent exists: the stable line "
+                             "mutates a Parameter by rebinding .data, which "
+                             "rebinds a NumPy array rather than staging an "
+                             "independent value and replacing owned storage "
+                             "under a preserved identity and a moving "
+                             "version, so timing them against each other "
+                             "would compare two different operations. No "
+                             "ratio is published."),
+        "correctness_reference": ("raw IEEE-754 bit identity with the "
+                                  "source, plus the identity, storage, "
+                                  "gradient, and version contract"),
+        "configurations": {
+            "full": {"shape": (256, 256)},
+            "smoke": {"shape": (8, 8)},
+            "profile": {"shape": (1024, 1024)},
+        },
+        "notes": ("Phase H, milestone H5. The transfer every optimizer "
+                  "commit ends in, and the callsite whose staging H5 moved "
+                  "from zeros+add to the native gather — one allocation "
+                  "instead of two and no zero-fill pass. No ratio is "
+                  "published: there is nothing honest to divide by."),
     },
 }
 

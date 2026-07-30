@@ -247,13 +247,19 @@ def _pre_h4_sgd_stage(parameter, grad, lr):
 
 def _committed(core):
     """The value ``copy_value_`` would install for ``core``: the commit
-    path materializes through ``_native_copy`` (zeros + add), so the
-    reference must too."""
-    zeros = Core.zeros(core.shape, dtype=core.dtype, device=core.device)
-    try:
-        return zeros.add(core)
-    finally:
-        zeros.close()
+    path materializes through ``_native_copy``, so the reference must
+    use the same materialization.
+
+    Phase H, milestone H5 changed what that is — from ``zeros + add`` to
+    the native identity gather — so this reference moved with it. The
+    two agree on every value these optimizer tests produce; they differ
+    only on ``-0.0`` (the addition normalized it to ``+0.0``, the gather
+    preserves it) and on a signaling NaN (the addition quieted it).
+    Neither is reachable from Adam or SGD arithmetic, which is why every
+    pre-H4 bit-identity comparison built on this helper still holds
+    exactly. The dedicated proof of the difference itself lives in
+    tests/test_native_copy_transfer.py."""
+    return core.contiguous_copy()
 
 
 def _pre_h4_adam_run(values, grads, steps, lr, betas, eps):
@@ -413,10 +419,21 @@ def test_the_staged_expression_issues_exactly_the_pre_h4_operations():
     """The *sequence* of native compute operations per staged entry is
     unchanged: nine multiplies, two adds, one subtract, one sqrt, and one
     reciprocal, in that interleaving. H4 removed the two one-element
-    reciprocals and nothing else."""
+    reciprocals and nothing else.
+
+    Phase H, milestone H5 removed one more entry from this list, and it
+    is deliberately *not* an arithmetic one: the trailing ``add`` used to
+    be ``_native_copy``'s ``zeros + add`` inside ``copy_value_`` — a
+    value copy spelled as arithmetic. It is now the native identity
+    gather, so the commit issues no compute operation at all. The
+    arithmetic that computes the update is byte-for-byte the same
+    sequence it has been since before H4, which is the invariant this
+    test exists to pin."""
     recorded = []
+    copies = {"n": 0}
     real_binary = Core._binary_core_op
     real_unary = Core._unary_compute
+    real_copy = Core.contiguous_copy
 
     def binary(self, other, kernel_name, op_name):
         recorded.append(op_name)
@@ -426,18 +443,22 @@ def test_the_staged_expression_issues_exactly_the_pre_h4_operations():
         recorded.append(odometer_name.replace("tf_core_", ""))
         return real_unary(self, odometer_name, contiguous_name)
 
+    def copy(self):
+        copies["n"] += 1
+        return real_copy(self)
+
     parameter = _parameter([[1.0, -2.0], [0.5, 3.0]],
                            [[0.25, 0.5], [-0.75, 1.0]])
     optimizer = NativeAdam([parameter], lr=LR)
     patchers = [_injected(Core, "_binary_core_op", binary),
-                _injected(Core, "_unary_compute", unary)]
+                _injected(Core, "_unary_compute", unary),
+                _injected(Core, "contiguous_copy", copy)]
     try:
         optimizer.step()
     finally:
         for patcher in patchers:
             patcher.undo()
 
-    # The trailing "add" is _native_copy's zeros+add inside copy_value_.
     assert recorded == [
         "multiply", "multiply", "add",              # m_new
         "multiply", "multiply", "multiply", "add",  # v_new
@@ -445,8 +466,10 @@ def test_the_staged_expression_issues_exactly_the_pre_h4_operations():
         "sqrt", "add", "reciprocal",                # denominator
         "multiply", "multiply",                     # scaled, update
         "subtract",                                 # parameter_new
-        "add",                                      # commit copy
     ], recorded
+    # ...and the commit is exactly one value copy per updated parameter,
+    # issuing no arithmetic kernel of any kind (H5).
+    assert copies["n"] == 1, copies
     optimizer.close()
     parameter.close()
 
@@ -675,14 +698,22 @@ def _peak_live_during(callable_):
 def test_staging_releases_temporaries_before_the_expression_completes():
     """The semantic statement of H4's release discipline.
 
-    The staged Adam expression allocates seventeen parameter-sized
-    buffers. If every one were held until the expression completed — the
-    pre-H4 discipline — the simultaneously live bytes would have to reach
-    that whole total. Because each is released at its last use, the peak
-    stays within a small fixed multiple of one parameter, independent of
-    the expression's length. Stated in *bytes*, because the one-element
-    scalar coefficients are counted the same as a parameter-sized buffer
-    by a raw count and are irrelevant to the memory this measures."""
+    The staged Adam expression plus its commit allocates sixteen
+    parameter-sized buffers. If every one were held until the expression
+    completed — the pre-H4 discipline — the simultaneously live bytes
+    would have to reach that whole total. Because each is released at its
+    last use, the peak stays within a small fixed multiple of one
+    parameter, independent of the expression's length. Stated in *bytes*,
+    because the one-element scalar coefficients are counted the same as a
+    parameter-sized buffer by a raw count and are irrelevant to the
+    memory this measures.
+
+    It was seventeen until Phase H, milestone H5: the commit's value copy
+    used to allocate a zero-filled parameter-sized buffer and then add
+    the staged result into it, and now allocates one uninitialized buffer
+    and gathers into it. That is one whole parameter of allocation and
+    one whole zero-fill pass removed from every committed update, and it
+    is why this bound moved *down*."""
     shape = (32, 32)
     parameter_bytes = int(np.prod(shape)) * 8
     parameter = _parameter(np.ones(shape), np.full(shape, 0.25))
@@ -691,7 +722,9 @@ def test_staging_releases_temporaries_before_the_expression_completes():
     stats = _peak_live_during(optimizer.step)
 
     # The step really does allocate the whole expression...
-    assert stats["bytes"] >= 17 * parameter_bytes, stats
+    assert stats["bytes"] >= 16 * parameter_bytes, stats
+    # ...and no longer allocates the seventeenth, pre-H5 buffer.
+    assert stats["bytes"] < 17 * parameter_bytes, stats
     # ...and never holds more than a small working set of it at once.
     assert stats["peak_bytes"] <= 8 * parameter_bytes, stats
     optimizer.close()
@@ -948,7 +981,13 @@ def _step_and_assert_untouched(optimizer, seam_owner, seam, index,
     ("subtract", 2),      # a later entry's parameter_new
     ("sqrt", 1),
     ("reciprocal", 1),
-    ("zeros", 1),         # inside the commit's _native_copy
+    # The first parameter's commit copy. Pre-H5 this seam was
+    # ``("zeros", 1)``, because ``_native_copy`` began by allocating a
+    # zero-filled destination; H5 replaced that composition with the
+    # identity gather, so the same instant in the same transaction is now
+    # reached through ``contiguous_copy``. Nothing else in a step calls
+    # it, so index 1 still names the first entry's commit exactly.
+    ("contiguous_copy", 1),
 ])
 def test_every_injected_staging_failure_leaves_the_world_untouched(
     seam, index, error, live_storages
@@ -1052,7 +1091,10 @@ def test_a_wrapper_construction_failure_releases_every_staged_core(
 @pytest.mark.parametrize("error", _FAILURE_CLASSES)
 @pytest.mark.parametrize("seam,index", [
     ("full", 1), ("multiply", 1), ("multiply", 2), ("subtract", 1),
-    ("subtract", 3), ("zeros", 1),
+    ("subtract", 3),
+    # The first parameter's commit copy — pre-H5 ``("zeros", 1)``; see
+    # the Adam parametrization above for why it moved.
+    ("contiguous_copy", 1),
 ])
 def test_every_injected_sgd_failure_leaves_the_world_untouched(
     seam, index, error, live_storages

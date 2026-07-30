@@ -409,4 +409,27 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME matmul COMMAND test_matmul)
+
+  # Strided-to-contiguous gather and its H5 traversal dispatch: compiles
+  # elementwise.cpp directly so it can reach the hidden
+  # tf::copy_prefers_contiguous predicate alongside the exported
+  # tf_core_contiguous_copy wrapper it lives inside. storage.cpp supplies
+  # the Storage handles the ABI takes, and error.cpp the thread-local
+  # error slot the guarded wrapper records into.
+  add_executable(test_contiguous_copy
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_contiguous_copy.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_contiguous_copy PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_contiguous_copy PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_contiguous_copy PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_contiguous_copy PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME contiguous_copy COMMAND test_contiguous_copy)
 endif()

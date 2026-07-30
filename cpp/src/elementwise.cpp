@@ -13,6 +13,7 @@
 
 #include <cmath>
 
+#include "tf_copy_internal.h"
 #include "tf_internal.h"
 
 using tf::Storage;
@@ -380,6 +381,35 @@ namespace {
 double op_identity(double x) { return x; }
 }  // namespace
 
+// Phase H, milestone H5: the traversal predicate. See
+// cpp/include/tf_copy_internal.h for the full contract — total, pure, a
+// function of layout metadata alone, and a false answer is a fallback
+// rather than an error.
+namespace tf {
+bool copy_prefers_contiguous(const int64_t* shape, const int64_t* strides,
+                             int64_t ndim) noexcept {
+    if (ndim <= 0) {
+        // A scalar view reads exactly one element at ``offset``, which is
+        // what the flat loop does with numel == 1. (ndim < 0 cannot reach
+        // here: the wrapper's validation rejects it first. Folding it in
+        // keeps the predicate total.)
+        return ndim == 0;
+    }
+    // Row-major strides, right to left, compared for exact equality —
+    // the same definition NativeTensorView uses in backends/cpp.py. The
+    // running product cannot overflow: the wrapper has already proved
+    // that this shape's element count fits in int64.
+    int64_t expected = 1;
+    for (int64_t d = ndim - 1; d >= 0; --d) {
+        if (strides[d] != expected) {
+            return false;
+        }
+        expected *= shape[d];
+    }
+    return true;
+}
+}  // namespace tf
+
 TF_EXPORT void tf_core_contiguous_copy(
     const void* src, void* dst,
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
@@ -388,6 +418,24 @@ TF_EXPORT void tf_core_contiguous_copy(
     if (const char* err =
             unary_strided_error(src, dst, shape, strides, offset, ndim)) {
         tf::set_error(TF_ERROR_INVALID, err);
+        return;
+    }
+    // H5: pick the traversal from the metadata already in hand. A
+    // row-major source is swept with the flat pointer loop every other
+    // unary op's contiguous path already uses; anything else keeps the
+    // generic odometer, which is the retained reference traversal and the
+    // only one that can address a transposed, narrowed, or negatively
+    // strided view at all. Both write ``dst[out] = src[pos]`` over the
+    // same logical elements in the same row-major destination order, so
+    // they are bit-identical by construction — the identity map performs
+    // no arithmetic, so no signed zero can be normalized and no NaN can
+    // be quieted or have its payload chosen on either path.
+    if (tf::copy_prefers_contiguous(shape, strides, ndim)) {
+        int64_t numel = 1;
+        for (int64_t d = 0; d < ndim; ++d) {
+            numel *= shape[d];
+        }
+        core_unary_contiguous(src, dst, numel, offset, op_identity);
         return;
     }
     core_unary(src, dst, shape, strides, offset, ndim, op_identity);

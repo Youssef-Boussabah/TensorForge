@@ -2418,8 +2418,10 @@ class NativeTensorCore:
         # write: every reduced axis folds many inputs into one destination
         # cell, and that cell is *read* on every accumulation after the
         # first. Giving this an uninitialized buffer would return garbage.
-        # A contiguous/accumulating fast path for reductions is H5's
-        # subject, not H1's.
+        # A contiguous/accumulating fast path for reductions is H6's
+        # subject, not H1's. (It was drafted as H5; the ladder was
+        # reordered when H5 took the copy and mutation-transfer work —
+        # see docs/native_cpu_performance_design.md §16.5.0.)
         out = NativeTensorCore.zeros(out_shape, dtype=self.dtype, device=self.device)
         if axis is None:
             reduced = set(range(self.ndim))

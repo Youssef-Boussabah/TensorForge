@@ -1,6 +1,6 @@
 # Native CPU Performance and Runtime Efficiency — Phase H design
 
-**Status: milestones H0, H1, H2, H3, and H4 complete. No supported
+**Status: milestones H0, H1, H2, H3, H4, and H5 complete. No supported
 capability has changed. H2 is the first milestone to change a numerical
 kernel's execution — its memory-access pattern, not its arithmetic; H3
 and H4 are Python-only, and H4 is the first whose subject is a
@@ -1144,7 +1144,7 @@ required in full; it simply proves different properties.
 
 ## 16. Milestone ladder
 
-**H1–H8 are proposals, not commitments.** They are ordered by measured
+**H1–H11 are proposals, not commitments.** They are ordered by measured
 leverage from §3, and each is explicitly conditional: a milestone whose
 premise the preceding measurement does not confirm is **narrowed,
 reordered, or dropped**, and the reason is recorded here. Every
@@ -1157,12 +1157,13 @@ milestone re-runs the H0 harness before and after and reports both.
 | **H2** | **Matmul memory access: loop order in the production kernel** | B2 (measured, 3.3×, accumulation order preserved) | **complete** — see 16.2. Cache blocking was measured and **rejected**; the generic/optimized agreement is §16.2.3's four-part contract, not unconditional bit identity |
 | **H3** | **Per-call dispatch cost: one normalization boundary and per-view layout metadata** | B3 (measured, ~20 µs fixed, ~10 % of it ctypes) | **complete** — see 16.3 |
 | **H4** | **Optimizer step cost: fewer native calls and allocations per parameter** | B4 (measured, 27 allocations/parameter, 83 % of a step) | **complete** — see 16.4. Bit-identical; the scalar-materialization variant was measured and **rejected** |
-| H5 | Reduction execution: a contiguous fast path for the accumulate kernels | B5, B7 (measured) | proposed |
-| H6 | Composed-module cost: normalization and the composed convolution bias gradient | B6, B7 (measured) | conditional on H1/H3/H5 |
-| H7 | Elementwise and materialization traversal | B9 + §3.2 stride-collapsing hypothesis | conditional |
-| H8 | SIMD, threading, or optional BLAS — **only** under §11/§12/§13 | none yet | conditional, presumed rejected |
-| H9 | Re-measurement, hardening, and the full sanitizer matrix | — | planned |
-| H10 | Phase closure | — | planned |
+| **H5** | **Copy and mutation transfer: the value-transfer primitive, and the traversal under it** | B1, B4 (measured; ten call sites of one helper, all pure value transfers) | **complete** — see 16.5. The ladder was **reordered here**: reduction execution, drafted as H5, moved to H6 (§16.5.0). No exported symbol added; the signed-zero and signaling-NaN contract is stated in §16.5.3 |
+| H6 | Reduction execution: a contiguous fast path for the accumulate kernels | B5, B7 (measured); H5 raised its expected value (§16.6) | proposed |
+| H7 | Composed-module cost: normalization and the composed convolution bias gradient | B6, B7 (measured) | conditional on H1/H3/H6 |
+| H8 | Elementwise and materialization traversal | B9 + §3.2 stride-collapsing hypothesis | conditional, **narrowed by H5**, which already gave materialization its flat traversal |
+| H9 | SIMD, threading, or optional BLAS — **only** under §11/§12/§13 | none yet | conditional, presumed rejected |
+| H10 | Re-measurement, hardening, and the full sanitizer matrix | — | planned |
+| H11 | Phase closure | — | planned |
 
 ### H0 — Architecture, profiling, and baseline **(complete)**
 
@@ -1192,6 +1193,15 @@ proof, and the measured results are section 16.3 below.
 The per-step scalar holder, the exact reciprocal substitution, the
 eager temporary release, the retained pre-H4 reference, the rejected
 alternatives, and the measured results are section 16.4 below.
+
+### H5 — Copy and mutation transfer **(complete)**
+
+The value-transfer primitive, the ten-call-site inventory, the
+signed-zero and signaling-NaN findings, the metadata-driven second
+traversal inside the unchanged export, the alias and overlap matrix,
+and the measured results are section 16.5 below. **The ladder was
+reordered here** (§16.5.0): reduction execution, drafted as H5, is
+now H6.
 
 ---
 
@@ -2923,9 +2933,15 @@ one full-width kernel pass, purely to duplicate a core the optimizer just
 built and owns exclusively. `NativeParameter._adopt_value_core` would
 remove all three. **Rejected**: §16.4 above and this document's own H4
 entry require *one `copy_value_` per updated parameter*, and that is the
-project's single sanctioned mutation primitive. Recorded as H5+ scope.
+project's single sanctioned mutation primitive. Recorded as H5+ scope. **H5 revisited it and kept the rejection**: the one
+`copy_value_` per updated parameter is a contract, not an
+inefficiency, so H5 made the *staging* cheap instead of removing the
+commit (§16.5.2, call site 1).
 
-**4. Making `_native_copy` use `contiguous_copy`.** The same two
+**4. Making `_native_copy` use `contiguous_copy`.** *(Rejected at H4;
+**taken up and shipped at H5** — see §16.5, which resolved the
+signed-zero question this entry correctly refused to decide in passing.
+The H4 reasoning below is retained as written.)* The same two
 allocations again, from the other side. **Rejected as out of scope and
 not obviously correct**: `_native_copy` is `zeros.add(core)`, and
 `0.0 + (-0.0) = +0.0`, so it *normalizes negative zero* where
@@ -3024,26 +3040,438 @@ directly, at every position the shared holder builds.
 
 ---
 
-## 16.5 Remaining ladder detail
+## 16.5 H5 — copy and mutation transfer, as shipped
 
-### H5 — Reduction execution
+**Status: complete.** H5 replaced the native line's **value-transfer
+primitive**. `_native_copy` was `zeros(shape) + core` — two allocations,
+a full zero-fill pass, and a full elementwise-addition pass — and is now
+the E3.1 native identity gather, `NativeTensorCore.contiguous_copy()`:
+one uninitialized allocation (H1) and one pass. Underneath it,
+`tf_core_contiguous_copy` gained a second **traversal** — not a second
+kernel, and **not a second export**.
+
+No exported C ABI symbol was added: the library still exports exactly
+**52** `tf_*` symbols. No public API, capability registry value, dtype,
+device, checkpoint field, or checkpoint version moved.
+
+### 16.5.0 The ladder was reordered here
+
+The H0 draft put **reduction execution** in the H5 slot. H4's evidence
+moved it: H4 measured the optimizer commit ending in a `copy_value_`
+whose staging was `zeros + add`, and found the same composition behind
+*every* state snapshot, state load, BatchNorm running-statistics commit,
+and gradient materialization in the runtime — ten call sites of one
+helper, all of them pure value transfers, none of them wanting
+arithmetic. H4 itself listed "give `_native_copy` a `contiguous_copy`
+implementation" among its **rejected** alternatives, for a reason it
+recorded honestly: it would stop normalizing `-0.0` to `+0.0`, a real
+observable change in a helper shared far beyond the optimizer, and H4 was
+not the milestone to decide that. H5 is that milestone. Reduction
+execution moves to **H6**; the later conditional slots shift with it
+(§16.6).
+
+### 16.5.1 The pre-H5 architecture
+
+`_native_copy(core)` allocated a zero-filled destination of the source's
+shape and added the source into it. That composition predates the E3.1
+native gather — when it was written, reading a strided view without a
+NumPy round trip meant going through a binary kernel, because no
+storage-to-storage identity map existed yet. E3.1 added one and
+`_native_copy` was never migrated to it.
+
+The result was a runtime with **two** value-copy spellings that disagreed:
+
+| Path | Spelling | Preserves `-0.0`? |
+|---|---|---|
+| `NativeParameter(source)` construction | `contiguous_copy()` | yes |
+| `NativeTensor.detach()` | `contiguous_copy()` | yes |
+| `to_numpy()` / `from_array` round trip | materialize / copy | yes |
+| `NativeParameter.copy_value_(source)` | `_native_copy` = `zeros + add` | **no** |
+
+The first and last document the same thing — "an independent owning
+contiguous copy of the source's current value" — and did not deliver the
+same thing. That is §7's Outcome C: the behavior was accidental and
+inconsistent, not contracted. H5 resolves it toward the majority and the
+stronger guarantee.
+
+### 16.5.2 The complete call-site inventory
+
+Every `_native_copy` call site in the runtime, classified. All ten are
+**pure value transfers**: an independent contiguous materialization of
+some tensor's current value, for any layout. None wants arithmetic; none
+depended on the normalization.
+
+| # | Call site | Source layout | Destination | Alias/overlap possible | Decision |
+|---|---|---|---|---|---|
+| 1 | `NativeParameter.copy_value_` staging | any (caller-supplied) | fresh core, then adopted | **yes** — self-copy, own-storage view, own transpose | **enable** |
+| 2 | `NativeModule.state_dict()` snapshot | owned contiguous | fresh caller-owned tensor | no | **enable** |
+| 3 | `NativeModule.load_state_dict()` staging | any (caller-supplied) | fresh core, then adopted | yes | **enable** |
+| 4 | `NativeAdam.state_dict()` moment snapshot | owned contiguous | fresh caller-owned tensor | no | **enable** |
+| 5 | `NativeAdam.load_state_dict()` staging | any (caller-supplied) | fresh optimizer-owned tensor | yes | **enable** |
+| 6 | `_NativeBatchNorm` `running_mean` commit | graph-free scratch, contiguous | fresh core, then adopted | no | **enable** |
+| 7 | `_NativeBatchNorm` `running_var` commit | graph-free scratch, contiguous | fresh core, then adopted | no | **enable** |
+| 8 | `reshape` backward materialization | borrowing reshape view | fresh grad contribution | no | **enable** |
+| 9 | `transpose` backward materialization | borrowing transposed view | fresh grad contribution | no | **enable** |
+| 10 | `_unbroadcast` rank-fix materialization | reduction result / reshape view | fresh grad contribution | no | **enable** |
+
+One composition that *looks* like an eleventh is **rejected**:
+
+| Call site | Why rejected |
+|---|---|
+| `_broadcast_back`'s `zeros(x_shape) + upstream` | This is **not a copy**. It is a genuine broadcast expansion — the upstream carries a smaller (keepdims) shape and the addition against a zero-stride operand is what expands it. `contiguous_copy` cannot express broadcasting at all, and the operand shapes differ, so the substitution is not available even in principle. It stays arithmetic, and therefore keeps arithmetic's IEEE behavior. |
+
+Two further rejections, restated from H1 because they are the same
+family of question and the answer has not changed:
+
+| Call site | Why rejected |
+|---|---|
+| `sum` / `mean` output | Accumulates into its destination; the zero is the additive identity the reduction starts from, not a redundant write. |
+| `narrow_backward` output | Writes only the narrowed region; the untouched zeros **are** the gradient. |
+
+### 16.5.3 The signed-zero and NaN findings
+
+Measured, not assumed, over a fixed 18-pattern IEEE-754 sweep asserted
+identically in `tests/test_native_copy_transfer.py` and
+`cpp/tests/test_contiguous_copy.cpp`. **Exactly three** of the eighteen
+patterns behaved differently under the two spellings:
+
+| Pattern | `zeros + add` (pre-H5) | gather (H5) |
+|---|---|---|
+| `-0.0` | `+0.0` — **normalized** | `-0.0` |
+| signaling NaN | quiet NaN, payload kept — **quieted** | signaling NaN |
+| negative signaling NaN | negative quiet NaN, payload kept — **quieted** | negative signaling NaN |
+| everything else — `±0`, `±1`, `±inf`, quiet NaNs of either sign and **any payload**, the smallest subnormal, the largest subnormal, the smallest normal, the largest finite magnitudes | identical | identical |
+
+Both differences follow from IEEE-754 rather than from anything
+TensorForge chose: `0.0 + (-0.0)` is `+0.0` under round-to-nearest, and
+an arithmetic operation on a signaling NaN raises invalid and delivers
+the quieted NaN. NaN **payloads** were never at risk here — with one NaN
+operand and one zero, x86-64's `ADDSD` returns that operand's NaN, so
+the pre-H5 path already preserved every payload it was given. **H2's
+matmul NaN-payload carve-out does not generalize to copies and must not
+be read as if it did**: it exists because two NaN operands meet in an
+accumulation and the FPU picks one. A copy performs no arithmetic, so
+nothing picks.
+
+**The contract H5 states, and the reason it is the narrow one:**
+
+> A **value transfer** — `_native_copy` and every call site above —
+> reproduces its source's IEEE-754 bits exactly. An **operation** —
+> including `zeros + x`, matmul, and every other kernel — follows IEEE
+> arithmetic and its results are values, not copies.
+
+That is the narrowest rule that makes the four value-copy paths in
+§16.5.1 agree, and it changes no operation's arithmetic anywhere.
+
+**Backward compatibility, checked rather than asserted.** `-0.0 == +0.0`
+is true, `np.array_equal` treats them as equal, and no TensorForge
+operation branches on the sign of a zero except `reciprocal` and `sqrt`,
+neither of which the optimizers apply to a possibly-zero quantity
+(Adam's `reciprocal` takes `sqrt(v_hat) + eps ≥ eps > 0`). Signaling
+NaNs cannot be *produced* by any TensorForge operation at all — every
+arithmetic path quiets them — so one can only enter through
+`from_array` with a hand-built bit pattern. The whole 5,517-test pre-H5
+suite passes unchanged apart from the guardrails that pinned the old
+composition by name (§16.5.7), including every committed loss
+trajectory, every checkpoint round trip, and every exact-resume proof.
+
+### 16.5.4 The traversal, and why it needed C++
+
+Swapping the composition alone would have **regressed** the most common
+case. `zeros.add(core)` on a contiguous source takes the flat
+`tf_core_add_contiguous` pointer loop, while `tf_core_contiguous_copy`
+always walked the generic odometer — the only unary export without the
+contiguous fast path every other one has. Measured before the fix, a
+naive swap cost **0.48×** at 16,384 elements.
+
+So `tf_core_contiguous_copy` now picks its traversal from the layout
+metadata it already receives, exactly as H2's matmul picks its kernel:
+
+- `tf::copy_prefers_contiguous(shape, strides, ndim)` — declared in
+  `cpp/include/tf_copy_internal.h`, hidden-visibility C++ in
+  `namespace tf`, **not** part of the ABI. Total, pure, allocation-free,
+  and a function of metadata alone: never of a pointer value, an
+  alignment, a clock, an environment variable, or a CPU-feature probe.
+- The test is exact equality against the row-major strides implied by
+  the shape, computed right to left — **the same definition
+  `NativeTensorView` uses in `backends/cpp.py`**, so the two layers
+  agree by construction. `ndim == 0` is contiguous. The offset is
+  deliberately not consulted: it only moves where the flat loop starts,
+  and the wrapper has already bounds-checked the whole reachable span.
+- True → `core_unary_contiguous` with `op_identity`. False → the
+  retained `core_unary` odometer, unchanged, which is the only traversal
+  that can address a transposed, narrowed, or negatively strided view at
+  all. A false answer is a fallback, never an error.
+
+**No numerical carve-out is needed, and this is the difference from H2.**
+Both traversals evaluate `dst[out] = src[pos]` over the same logical
+elements in the same row-major destination order and differ only in how
+`pos` is computed. The operation is the identity map: no arithmetic is
+performed on the value, so there is no accumulation order to preserve,
+no operand position for an FPU to select a NaN from, and nothing that
+can quiet a signaling NaN or normalize a signed zero. The two paths are
+bit-identical for every representable double **by construction**, and
+that is proved directly at the C++ level by `test_contiguous_copy.cpp`.
+
+There is no copy-mode selector, overlap-mode flag, traversal tracer,
+environment variable, or public dispatch control, and none may be added.
+
+### 16.5.5 H1, aliasing, identity, and atomicity
+
+**H1 full-write.** The gather's destination is allocated uninitialized,
+and both traversals write every one of the destination's `numel`
+elements exactly once — the flat loop directly, the odometer once per
+logical element. Proved by deterministic poison injected **exclusively
+by test infrastructure, around the allocator**, over every layout family
+and with two patterns (a quiet NaN and a large finite value), plus a
+negative control that shows the detector really can fail. No
+poison-control mechanism exists in the shipped runtime.
+
+**Aliasing and overlap.** Nothing became less safe, because nothing
+became in-place. Every call site still **stages** an independent
+materialization and only then adopts it, so source and destination
+storage are never written through at the same time. The overlapping
+arrangements the runtime can actually construct — `copy_value_(self)`,
+a source that is a view of the destination's own storage, a square
+parameter's own transpose (where every destination element is read from
+a *different* source element), sibling views, and duplicate parameters
+across optimizers — are each tested and each produce the correct result.
+No `memcpy` is used anywhere, and no staged transaction was converted
+into an unsafe in-place transfer.
+
+**Identity, storage, and versions.** Unchanged in every particular.
+`copy_value_` still replaces the parameter's owned storage under a
+preserved Python identity, keeps `grad` by identity and value, keeps
+`requires_grad` and every registration, and increments the value version
+by exactly one. `load_state_dict` still runs through the F1 transaction,
+still preserves buffer and parameter identity, and still moves each
+matched parameter's version exactly once. Loading optimizer or generator
+state still moves no parameter version.
+
+**Gradients.** H5 changed how a gradient *contribution* is materialized,
+never the accumulation rule: the first contribution is adopted by
+identity and later ones are summed with the native `add` kernel.
+Additive accumulation was not turned into assignment anywhere.
+
+**Failure atomicity.** The helper's signature and module-level position
+are unchanged, so every existing failure-injection seam still works, and
+the H4 seam that named the commit copy by its first allocation moved
+from `("zeros", 1)` to `("contiguous_copy", 1)` — the same instant in
+the same transaction, with every assertion identical. A failure at any
+stage still leaves value, core, storage identity, gradient, version, and
+live native storage exactly as they were.
+
+### 16.5.6 Measured results, reported honestly
+
+Method: alternating pre/post **subprocess** rounds with a retained
+pre-H5 composition, medians of per-round medians, correctness gated
+before timing. Control cases whose compiled code H5 did not touch bound
+this machine's noise at **0.96×–1.05×**. Separately, the C++ traversal
+change was isolated by building a **pre-H5 library** and driving both
+libraries through identical `ctypes` calls on identical data, with the
+outputs proved bit-identical before either was timed.
+
+**The traversal, in isolation (raw kernel, two libraries):**
+
+| Source | pre-H5 | H5 | ratio |
+|---|---|---|---|
+| contiguous, 1 element | 7.10 µs | 5.50 µs | 1.29× |
+| contiguous, 1,024 | 10.40 µs | 6.40 µs | 1.62× |
+| contiguous, 16,384 | 41.10 µs | 12.50 µs | 3.29× |
+| contiguous, 128×128 | 36.60 µs | 14.80 µs | 2.47× |
+| contiguous, 256×256 | 139.40 µs | 25.40 µs | 5.49× |
+| contiguous, 512×512 | 562.70 µs | 101.80 µs | 5.53× |
+| contiguous, 4-D NCHW (8,16,32,32) | 273.50 µs | 49.50 µs | 5.53× |
+| contiguous, offset (axis-0 narrow) | 373.80 µs | 68.40 µs | 5.46× |
+| **transposed 512×512** | 616.20 µs | 653.10 µs | **0.94×** |
+| **last-axis narrow 512×500** | 536.30 µs | 527.20 µs | **1.02×** |
+
+The last two rows are the design's own control: they take the
+*unchanged* odometer, so they must be neutral, and they are.
+
+That table is **one run**. A repeat against a freshly rebuilt Release
+library reproduced its shape rather than its digits — 1.04× at one
+element, 1.36× at 1,024, 2.99× at 16,384, 2.85× at 128×128, 5.14× at
+256×256, 5.22× at 512×512, 5.70× on 4-D NCHW, 5.08× on the offset view,
+and **1.01× / 0.97×** on the two odometer controls. The durable
+statement is therefore the range, "**2.5×–5.5× on contiguous sources
+from 16 K elements up, neutral on strided ones**", and not any single
+figure in the table.
+
+This change also speeds up every **pre-existing** `contiguous_copy` caller —
+`NativeParameter` construction, `detach()`, `NativeFlatten`, and the
+Policy-B copy-then-compute paths — which is a side benefit H5 did not
+set out to buy.
+
+**End to end (alternating rounds, whole milestone):**
+
+| Case | ratio | note |
+|---|---|---|
+| `copy_value_` (512, 512) | 2.14× | |
+| `copy_value_` (128, 128) | 1.26× | |
+| copy, 512×512 contiguous | 2.17× | |
+| copy, 512×512 transposed | 1.65× | odometer both sides; the win is the removed allocation and zero-fill |
+| copy, axis-0 narrow (384, 512) | 2.05× | |
+| copy, last-axis narrow (512, 500) | 1.79× | |
+| optimizer `state_dict()` | 2.40× | |
+| optimizer `load_state_dict()` | 1.69× | |
+| module `load_state_dict()` | 1.37× | |
+| module `state_dict()` | 1.23× | |
+| `NativeSGD.step()` (512, 512) | 1.31× | |
+| `NativeSGD.step()` (128, 128) | 1.15× | |
+| **`NativeAdam.step()`** | **0.98×–1.06×** | **neutral** — one of ~17 buffers; the arithmetic dominates |
+| **MLP / normalized / CNN training step** | **0.95×–1.07×** | **neutral**, inside or adjacent to the control band |
+| **BatchNorm running update** | **0.98×** | **neutral** |
+| **copies below ~16K elements** | **0.93×–1.01×** | **neutral** |
+
+Two methodology findings are published rather than buried.
+
+1. **Low repetition counts lie**, again. At 7 alternating rounds the
+   small-copy cases read 0.78×–0.94× and looked like a real regression;
+   at 21 rounds the same cases read 0.93×–1.01×, inside the control
+   band. This is the same lesson H3 recorded, and no
+   default-repetition figure is quoted as H5 evidence.
+2. **A 512 KB allocator cliff produces the largest single ratio, and it
+   is not a loop-speed result.** Sweeping one contiguous copy by size:
+
+   | Buffer | pre-H5 | H5 | ratio |
+   |---|---|---|---|
+   | 128 KB | 14.9 µs | 15.3 µs | 0.97× |
+   | 256 KB | 22.9 µs | 23.6 µs | 0.97× |
+   | 384 KB | 29.4 µs | 31.3 µs | 0.94× |
+   | 512 KB | 304.1 µs | 38.4 µs | **7.92×** |
+   | 640 KB | 386.3 µs | 36.9 µs | **10.47×** |
+   | 768 KB | 444.0 µs | 211.2 µs | 2.10× |
+   | 1 MB | 497.9 µs | 238.0 µs | 2.09× |
+   | 2 MB | 992.1 µs | 464.8 µs | 2.13× |
+
+   At and above ~512 KB this machine's allocator hands blocks off to a
+   more expensive path. The pre-H5 composition makes **two** such
+   allocations and zero-fills one, so it crosses that threshold at half
+   the size and pays it twice. The 7.9×–10.5× band is a real,
+   reproducible property of the two compositions **on this allocator**,
+   not a portable claim; the durable statements are the ~2.1× at 1–2 MB
+   and the neutrality below 384 KB.
+
+**One cost is recorded as a finding for a later milestone rather than
+fixed here.** A `contiguous_copy` call converts two `int64` layout
+arrays at the `ctypes` boundary, and `np.ctypeslib.ndpointer.from_param`
+costs **~1.1 µs per array, 2.2 µs per call** — measured directly. That
+is why the gather does not *also* win below ~16K elements, where it does
+strictly less work. Removing it means changing the ctypes argument
+declarations of six strided kernels and giving up a boundary check on
+arrays the runtime builds itself; that is H3's subject, not H5's, and
+§9's "no validation is removed" rule stands.
+
+### 16.5.7 Allocation and memory traffic
+
+Counted by wrapping `NativeStorage.__init__` and `close()` — the one
+constructor every allocation path runs through, zeroed and uninitialized
+alike.
+
+| Operation | allocations | total bytes | peak live bytes |
+|---|---|---|---|
+| `NativeAdam.step()` (128, 128) | 25 → **24** | 2,228,288 → **2,097,216** | 655,424 → 655,424 |
+| `NativeAdam.step()` (256, 256) | 25 → **24** | 8,912,960 → **8,388,672** | 2,621,504 → 2,621,504 |
+| `NativeAdam.step()`, 4-parameter MLP | 76 → **72** | 13,421,632 → **12,632,128** | 3,419,136 → **3,158,016** |
+| `NativeSGD.step()` (128, 128) | 5 → **4** | 524,296 → **393,224** | 393,216 → **262,152** |
+| `copy_value_` (512, 512) | 2 → **1** | 4,194,304 → **2,097,152** | 4,194,304 → **2,097,152** |
+| module `state_dict()`, Linear(128, 256) | 4 → **2** | 528,384 → **264,192** | 524,288 → **264,192** |
+| module `load_state_dict()`, Linear(128, 256) | 4 → **2** | 528,384 → **264,192** | 524,288 → **264,192** |
+| optimizer `state_dict()`, Linear(128, 256) | 16 → **8** | 2,113,536 → **1,056,768** | 788,480 → **528,384** |
+
+Per parameter, `NativeAdam.step()` went **17 → 16** allocations (H4 took
+it 27 → 17), and the zero-fill pass over one whole parameter is gone
+from every committed update. **Memory moved with time, never against
+it**: no row's peak rose, and the pure-transfer rows halved. Adam's peak
+is unchanged because its commit copy is the last thing in the step, when
+the staged temporaries have already been released — the saving there is
+in total traffic, not in the high-water mark.
+
+### 16.5.8 Guardrails that moved, and why
+
+H5 changed behavior four existing tests pinned by name. Each was updated
+to assert the **new** correct behavior with the same rigor; none was
+loosened or deleted.
+
+| Guardrail | Change | Why |
+|---|---|---|
+| `test_the_staged_expression_issues_exactly_the_pre_h4_operations` | Trailing `"add"` removed; a new assertion pins the commit at exactly **one** `contiguous_copy` and **zero** arithmetic kernels | The trailing `add` *was* the value copy spelled as arithmetic. The arithmetic that computes the update is byte-for-byte the sequence it has been since before H4 — which is what the test exists to pin. |
+| `test_staging_releases_temporaries_before_the_expression_completes` | Lower bound 17 → **16** parameter-sized buffers, plus a new upper bound `< 17` | The bound moved **down**, because one parameter-sized allocation and one zero-fill pass were removed. The new upper bound makes the removal itself a tested property. |
+| Adam and SGD failure-injection parametrizations | `("zeros", 1)` → `("contiguous_copy", 1)` | The same instant in the same transaction — the first parameter's commit copy — reached through the seam that now begins it. Nothing else in a step calls `contiguous_copy`, so index 1 still names it exactly. |
+| `test_h0_adds_no_kernel_or_abi_declaration` | Records `tf_copy_internal.h` and `test_contiguous_copy.cpp`; CTests 13 → **14** | The milestone-by-milestone C++ inventory, doing its job. Both additions are hidden-visibility C++ and test scaffolding; the export count it defers to is still 52. |
+| `test_h0_touches_no_production_numerical_source` | `copy_value_(` removed from the harness's banned list, with a new check that it appears only inside the one case that measures it | It is not an internal: it is the native line's single documented controlled-mutation primitive, on the public surface, and it is H5's subject. The checkpoint entry points stay banned for the unchanged reason that file I/O is outside this harness. |
+
+The `_committed` helper in the H4 suite, which reproduces what
+`copy_value_` installs, moved to the gather with it — otherwise the
+reference would silently describe a composition the runtime no longer
+runs.
+
+### 16.5.9 Harness cases added
+
+Two, following H3's precedent, taking the harness from 26 to **28**:
+
+- **`row_major_materialization`** (`materialization`) — the same
+  `contiguous_copy` export on a **row-major** source. Paired with the
+  existing `contiguous_materialization`, which uses a transposed source
+  and keeps the odometer, it separates H5's two traversals rather than
+  averaging them. Reference: `numpy.ndarray.copy`, deliberately **not**
+  `numpy.ascontiguousarray`, which returns an already-contiguous array
+  without copying and would time nothing. Its gate asserts raw bit
+  identity.
+- **`parameter_value_commit`** (`state_operations`) —
+  `NativeParameter.copy_value_`. `native_only`, publishing **no ratio**:
+  the stable line mutates a `Parameter` by rebinding `.data`, which
+  rebinds a NumPy array rather than staging an independent value and
+  replacing owned storage under a preserved identity and a moving
+  version. Timing them against each other would compare two different
+  operations. The correctness gate is real — bit identity with the
+  source, `returns self`, exactly one version increment,
+  `requires_grad` preserved, source unmutated.
+
+No result file is written, no timing is asserted, and no CI job runs
+either.
+
+---
+
+## 16.6 Remaining ladder detail
+
+**The ladder was reordered at H5** (§16.5.0). Reduction execution, drafted
+as H5, is now H6; the conditional slots after it shift accordingly.
+
+### H6 — Reduction execution
 
 Give the accumulate kernels the contiguous fast path the elementwise
-family got at v1.14.
+family got at v1.14 — and which H5 has now also given the copy gather,
+leaving reductions as the last strided-only family in the runtime.
 
 - **Accumulation order is preserved**: a contiguous fast path that walks
   the same logical order is bit-identical, and that is the requirement.
   A pairwise or blocked summation is a §7.3 order change and is **not**
-  in H5's scope.
+  in H6's scope.
 - The odometer is retained per §8.2/§8.3 — it is what implements strided
   reads and, dually, broadcasting.
+- **H5 raised this milestone's expected value and narrowed its shape.**
+  The H5 traversal measured **2.5×–5.5×** for a flat sweep over the same
+  logical elements the odometer already visited, on an operation whose
+  per-element work is a single load and store. A reduction's per-element
+  work is a load and an add, so the same structural saving applies; the
+  reduction's own H1 note in `backends/cpp.py` already identifies its
+  zeroed destination as intentional and not the target. H6 should reuse
+  H5's dispatch shape exactly — one metadata predicate, hidden
+  visibility, inside the existing export, no new symbol — because that
+  shape is now proved twice (H2, H5).
+- H5 also surfaced the cost H6 must **not** try to fix: the ~2.2 µs
+  `ndpointer` conversion per strided call (§16.5.6). That is a boundary
+  cost shared by six kernels and belongs to a dispatch milestone, not to
+  a reduction one.
 
-### H6 — Composed-module cost *(conditional)*
+### H7 — Composed-module cost *(conditional)*
 
 Reduce the allocation and dispatch count in the normalization modules
 and the composed convolution bias gradient.
 
-**Conditional, and likely to be narrowed:** if H1, H3, and H5 land, most
+**Conditional, and likely to be narrowed:** if H1, H3, and H6 land, most
 of B6's cost is removed by them, since a normalization forward is 11–27
 allocations of exactly the kind H1 makes cheaper and exactly the
 operations H3 and H5 make cheaper. H6 proceeds only if a re-measured
@@ -3055,37 +3483,39 @@ training step improved **1.51×** at H3 — the largest end-to-end gain of
 the milestone — and its ratio against the stable line fell from 6.76× to
 5.28×. That is consistent with the prediction above: much of B6 was
 per-call overhead, and it is now gone. What remains unmeasured is how
-much of the residual 5.28× H5 removes, since a normalization forward is
-dominated by `mean` and broadcast `subtract`. **H6 should not be entered
-before H5 is measured**, and on current evidence it is more likely to be
+much of the residual 5.28× H6 removes, since a normalization forward is
+dominated by `mean` and broadcast `subtract`. **H7 should not be entered
+before H6 is measured**, and on current evidence it is more likely to be
 dropped than to ship. **It must not introduce a normalization kernel**: F2–F4's
 achievement is that both families are compositions with no C++ at all,
 and trading that for speed would be a semantic regression, not an
 optimization.
 
-### H7 — Elementwise and materialization traversal *(conditional)*
+### H8 — Elementwise and materialization traversal *(conditional)*
 
 Stride collapsing and materialization cost, if §3.2's hypothesis
-survives measurement after H1 and H3. Presently the weakest-evidenced
-numbered milestone, and the most likely to be dropped.
+survives measurement after H1 and H3. **Narrowed by H5**, which already
+gave materialization its flat traversal and measured 2.5×–5.5× for it, so
+what remains here is stride collapsing alone. Presently the
+weakest-evidenced numbered milestone, and the most likely to be dropped.
 
-### H8 — SIMD, threading, or optional BLAS *(conditional, presumed rejected)*
+### H9 — SIMD, threading, or optional BLAS *(conditional, presumed rejected)*
 
 Entered only under §11, §12, or §13 respectively. On current evidence
-**none of the three qualifies**, and the honest expectation is that H8
+**none of the three qualifies**, and the honest expectation is that H9
 ships as a *documented rejection with measurements* rather than as code.
 That is a legitimate outcome for this milestone.
 
-### H9 — Re-measurement, hardening, and sanitizer validation
+### H10 — Re-measurement, hardening, and sanitizer validation
 
 The full H0 harness re-run and compared against the H0 baseline;
 cross-cutting integration tests; adversarial failure-atomicity and
-ownership matrices over whatever H1–H8 changed; Windows Release and
+ownership matrices over whatever H1–H9 changed; Windows Release and
 Debug builds with the full CTest suite; the Clang ASan/UBSan matrix with
 instrumentation proved; LeakSanitizer returning live storage exactly to
 baseline.
 
-### H10 — Phase closure
+### H11 — Phase closure
 
 Documentation reconciliation across every status surface, durable
 semantic closure guardrails, and the support matrix updated. No new
