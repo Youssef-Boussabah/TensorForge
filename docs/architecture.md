@@ -344,9 +344,8 @@ explicit layer at a time:
   `("float32", "cuda", "amp")` — a claim scoped to the **experimental
   native float64 CPU** line, never to the stable framework, which keeps
   its own separate `Dropout`.
-- **Native CPU performance (Phase H) has begun; H0, H1, H2, H3, H4, H5,
-  and H6
-  are complete.**
+- **Native CPU performance (Phase H) is complete (H0–H10).**
+  Phase H is **complete**: milestones H0 through H10 have all landed, and it is the latest *completed* phase. H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
   H0 is architecture, profiling, and baseline work and **shipped no
   optimization**: the contract in
   [native_cpu_performance_design.md](native_cpu_performance_design.md),

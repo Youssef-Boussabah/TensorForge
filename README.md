@@ -313,14 +313,13 @@ Phase A (native CPU runtime),
 Phase B (native autograd), Phase C (the native training stack),
 Phase D (the native CNN stack), Phase E (native classification and
 stable math), and Phase F (native normalization and stateful buffers)
-are all complete, and so is Phase G (native RNG and Dropout), the latest
-completed native phase. **Phase H — native CPU performance and runtime
-efficiency — is the current phase; it has begun, with H0, H1, H2, H3, and
-H4 complete**, which
-is architecture, profiling, and baseline work only: it shipped the design
-contract, the unified measurement harness, and its tests, and **no
-performance optimization, numerical capability, dtype, device, export,
-registry value, or checkpoint version came with it**. Phase C shipped
+are all complete, and so is Phase G (native RNG and Dropout). **Phase H —
+native CPU performance and runtime efficiency — is complete (H0–H10)**,
+and is the latest completed phase:
+every shipped training workload is **1.50×–3.89× faster than it was at
+the H0 baseline**, with bit-identical results, and **no numerical
+capability, dtype, device, export, registry value, or checkpoint version
+moved at any milestone**. Phase C shipped
 parameters, modules, state dictionaries,
 Linear/ReLU/Sequential, MSE loss, parameter versioning with stale-graph
 safety, `sqrt`/`reciprocal` optimizer primitives, SGD and adaptive Adam,
@@ -540,8 +539,8 @@ Closing Phase F closes that phase, not the project: the native line is
 still experimental, still float64/CPU only, and still not
 production-ready.
 
-**Phase G — Native RNG and Dropout — is complete, and is the latest
-*completed* phase.** All eleven milestones, G0 through G10, have landed. **G0**
+**Phase G — Native RNG and Dropout — is complete.** All eleven milestones,
+G0 through G10, have landed. **G0**
 locked the architecture
 contract in
 [docs/native_rng_dropout_design.md](docs/native_rng_dropout_design.md) —
@@ -803,9 +802,23 @@ concurrent *training* is not claimed thread-safe either: the
 serializability guarantee covers the participating state transactions, not
 an optimizer `step()` racing a forward.
 
-**Phase H — Native CPU Performance and Runtime Efficiency — is the
-current phase; it has begun, and milestones H0, H1, H2, H3, H4, H5,
-H6, H7, and H8 are complete.** H0 is an
+**Phase H — Native CPU Performance and Runtime Efficiency — is complete
+(H0–H10), and is the latest *completed* phase.** H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
+
+Reported as honestly as the wins: the controls held (the unchanged
+raw-buffer matmul 0.99×, NumPy 1.03×, storage allocation 0.98×, Dropout
+1.00×), and **`to_numpy` at 0.95× is the one reproducible regression** —
+its compiled traversal is byte-identical source measuring 0.975×–1.008×,
+so what changed is that H3's and H7's much cheaper wrapper no longer
+hides it. Remaining limitations are stated rather than smoothed over: the
+gap to a tuned multi-threaded BLAS is 3.6×–9.3× and widens with size;
+convolution is entirely scalar; a small operation still costs a few
+microseconds, because **60 % of that is the owning allocation and 19 % is
+building the result's Python ownership objects, against 12 % for the
+ctypes crossing** — an architectural floor, not a defect. Every number is
+a local characterization of one machine, asserted by no test.
+
+H0 is an
 architecture, profiling, and baseline milestone: it locked the contract
 in
 [docs/native_cpu_performance_design.md](docs/native_cpu_performance_design.md),
@@ -1476,14 +1489,17 @@ real absence rather than a blind detector. No public API, capability,
 dtype, device, registry value, checkpoint field, or checkpoint version
 moved, and no C ABI symbol was added.
 
-The proposed H8–H11 ladder is
-explicitly conditional on that evidence: a milestone whose premise the
-measurements do not support is narrowed, reordered, or dropped, and
-allocation pooling, SIMD, threading, and BLAS are all currently
-**rejected on evidence**, with the criteria that would reopen each one
-recorded rather than an answer invented. Every number in that document is
-a local characterization of one machine, reported with its spread, and
-asserted by no test — there is no CI timing threshold anywhere in this
+The ladder ran **H0–H10 and ended there**, revised on evidence three
+times: reordered at H5, a milestone **dropped** at H7 when the
+measurement did not support its premise, and a slot **reassigned** at H9.
+Allocation pooling, SIMD, threading/OpenMP, and BLAS were **all finally
+rejected at H10, with measurements** — elementwise, matmul, and reduction
+are already auto-vectorized, a CNN step's native calls have a 1.20 µs
+median, and a BLAS matmul is not bit-identical, which would break every
+exact-resume proof. The criteria that would reopen each are recorded
+rather than an answer invented. Every number in that document is a local
+characterization of one machine, reported with its spread, and asserted
+by no test — there is no CI timing threshold anywhere in this
 repository.
 
 **Milestone H7 — native Python/C ABI boundary efficiency — shipped next**,

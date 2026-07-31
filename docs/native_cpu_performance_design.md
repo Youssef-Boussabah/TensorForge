@@ -1035,6 +1035,14 @@ answer.
 
 ## 11. SIMD decision criteria
 
+> **Final decision (H10): rejected.** The gate below was run at H10 with a
+> compiler vectorization report and an instruction-level disassembly.
+> Criterion 2 is **not met** for elementwise, matmul, or reduction — all
+> three are already auto-vectorized — and the one family that is scalar
+> (convolution) offers a measured 1.05×–1.4× via a *compiler hint*, not
+> intrinsics. See **§16.11.7** for the evidence, the numbers, and the
+> recorded reopening trigger.
+
 **Rejected for now, on evidence.** §3.1/B2 showed the matmul gap is an
 access-pattern gap, and **H2 confirmed it by shipping the fix**:
 reordering the loops recovered 4.1–4.7× at the profile shape with
@@ -1067,6 +1075,11 @@ SIMD enters Phase-H scope only if **all** of:
 
 ## 12. Threading decision criteria
 
+> **Final decision (H10): rejected.** Criterion 2 is now *partially* met —
+> a CNN step's 198 native calls include **two** above 1 ms, 47.8 % of its
+> native time — which is new information relative to H0. Criteria 3–7 are
+> not met, and the amortized ceiling is about 1.4×. See **§16.11.7**.
+
 **Rejected for now, on evidence.** Nothing in §3.1 is threading-
 evidenced, and the three largest measured costs (eager zero-fill, matmul
 access pattern, Python-side per-call metadata) are all single-threaded
@@ -1096,6 +1109,12 @@ Threading enters Phase-H scope only if **all** of:
 ---
 
 ## 13. Optional BLAS decision criteria
+
+> **Final decision (H10): rejected.** The post-H2 gap was re-measured at
+> **3.6× (64³) to 9.3× (384³)**, and the numerical difference re-confirmed
+> at **3.553e-15** for 64×64 — reproducing this section's predicted
+> ≈3.6e-15 exactly — rising to 6.4e-14 at 512³. A non-bit-identical matmul
+> would break every exact-resume proof in the project. See **§16.11.7**.
 
 **Rejected for now, on evidence, and likely permanently as a default.**
 
@@ -1142,8 +1161,10 @@ Every Phase-H milestone must, before it ships:
 - keep the C ABI narrow: hidden default visibility, `TF_EXPORT` only on
   functions Python actually declares;
 - keep the full native CTest suite green in **both** configurations
-  (currently 13 tests: the 11 H0 inherited, plus H1's storage-allocation
-  contract test and H2's matmul path/dispatch test);
+  (**17** at phase close: the 11 H0 inherited, plus H1's
+  storage-allocation contract test, H2's matmul path/dispatch test, H5's
+  contiguous-copy traversal test, H6's sum-reduction test, H8's
+  elementwise-traversal test, and H9's Conv2d-execution test);
 - assume nothing about alignment, endianness, or `long` width beyond
   what C++17 and the existing `int64_t`/`double` contract guarantee.
 
@@ -1203,10 +1224,11 @@ milestone re-runs the H0 harness before and after and reports both.
 | **H6** | **Reduction execution: a metadata-chosen block traversal for the accumulate kernel** | B5, B7 (measured; the traversal was **95 %** of a reduction) | **complete** — see 16.6. No exported symbol added; 2.6×–6.4× on 2-D and **8.6×–10.9×** on 3-D/4-D reductions, **every training step neutral**; the reduction-specific NaN rule is §16.6.8 and is *not* H2's |
 | ~~H7~~ | ~~Composed-module cost: normalization and the composed convolution bias gradient~~ | B6, B7 | **dropped on evidence** — see §16.7.0. H6 measured normalization mostly neutral (§16.6.11), which answered the question this slot existed to ask |
 | **H7** | **Python/C ABI boundary efficiency: the trusted layout binding** | B3, and the ~2.1 µs-per-array `ndpointer` conversion H3, H5, and H6 each left behind (measured directly, §16.7.2) | **complete** — see 16.7. No exported symbol added; the checked binding is retained wherever a caller-facing array crosses, and the **first Phase-H milestone to move every training step** |
-| H8 | Elementwise and materialization traversal | B9 + §3.2 stride-collapsing hypothesis | conditional, **narrowed by H5**, which already gave materialization its flat traversal |
-| H9 | SIMD, threading, or optional BLAS — **only** under §11/§12/§13 | none yet | conditional, presumed rejected |
-| H10 | Re-measurement, hardening, and the full sanitizer matrix | — | planned |
-| H11 | Phase closure | — | planned |
+| **H8** | **Elementwise traversal and composed allocation** | B9 + §3.2 stride-collapsing hypothesis | **complete** — see 16.8. The proposal was **confirmed and widened**: collapsing alone measured 1.94×, but collapsing *and* de-virtualizing together measured 10.7×, because only their combination lets the compiler vectorize. It also absorbed the composed-normalization allocation work the dropped H7 left conditional, as **Track B** — a memory result, honestly reported as timing-neutral. `exp`/`log` deliberately excluded |
+| ~~H9~~ | ~~SIMD, threading, or optional BLAS — **only** under §11/§12/§13~~ | none | **slot reassigned** — see §16.9.0 and §16.10. None of the three qualified, and a larger, safer result was available in the same slot, so the acceleration decision moved to **H10's** gate |
+| **H9** | **Conv2d execution efficiency** | H6/H7/H8 left the CNN step the one workload Phase H had never moved, and `tf_core_conv2d_*` was the last large compute family still running its unmodified Phase-D implementation | **complete** — see 16.9. No exported symbol added; 2.0×–8.4× at the kernel and **1.86×** on a CNN training step — the **first Phase-H milestone to move one**. The Conv2d numerical contract is §16.9.4 and is measured, not inherited from H2/H6 |
+| **H10** | **Integration, re-measurement, the acceleration decision, and closure** | — | **complete** — see 16.11. The H0-versus-final comparison, the SIMD/threading/BLAS decision gate resolved as three documented rejections with measurements, the two remaining candidates assessed and **not** implemented, the full validation matrix, and phase closure |
+| ~~H11~~ | ~~Phase closure~~ | — | **not needed** — H10 carried closure itself, so the ladder ends at H10. §16.11.9 records why |
 
 ### H0 — Architecture, profiling, and baseline **(complete)**
 
@@ -5713,6 +5735,10 @@ measurably cheaper at the boundary (§16.7.9), so what is left in B6 is
 increasingly the allocations and the passes over memory rather than the
 crossing. That is H8's subject, and it stays conditional.
 
+*(That paragraph is preserved as it was written at H7. **H8 then entered
+that scope and shipped it** — as Track B, a memory result honestly reported
+as timing-neutral — so it is no longer conditional; see §16.8.5.)*
+
 ### H8 — Elementwise and materialization traversal *(shipped; see §16.8)*
 
 The proposal, preserved as written: "Stride collapsing and materialization
@@ -5751,20 +5777,510 @@ measured 2–8× at the kernel and up to 1.86× on a CNN training step
 acceleration decision moved to H10's decision gate, where it is a decision
 rather than an implementation.
 
-### H10 — Integration, re-measurement, the acceleration decision, and closure
+### H10 — Integration, re-measurement, the acceleration decision, and closure *(shipped; see §16.11)*
 
-The full H0 harness re-run and compared against the H0 baseline;
-cross-cutting integration tests; adversarial failure-atomicity and
-ownership matrices over whatever H1–H9 changed; Windows Release and
-Debug builds with the full CTest suite; the Clang ASan/UBSan matrix with
-instrumentation proved; LeakSanitizer returning live storage exactly to
-baseline. It also carries the **acceleration decision gate** inherited
-from the reassigned H9 slot — SIMD, threading, and optional BLAS, each
-either entered under its own §11/§12/§13 criterion or **published as a
-documented rejection with measurements**. And it carries phase closure:
-documentation reconciliation across every status surface, durable semantic
-closure guardrails, and the support matrix updated. No new numerical
-capability.
+The proposal, preserved as written: "The full H0 harness re-run and
+compared against the H0 baseline; cross-cutting integration tests;
+adversarial failure-atomicity and ownership matrices over whatever H1–H9
+changed; Windows Release and Debug builds with the full CTest suite; the
+Clang ASan/UBSan matrix with instrumentation proved; LeakSanitizer
+returning live storage exactly to baseline. It also carries the
+**acceleration decision gate** inherited from the reassigned H9 slot —
+SIMD, threading, and optional BLAS, each either entered under its own
+§11/§12/§13 criterion or **published as a documented rejection with
+measurements**. And it carries phase closure: documentation reconciliation
+across every status surface, durable semantic closure guardrails, and the
+support matrix updated. No new numerical capability."
+
+All of it was carried out, and §16.11 is the record.
+
+---
+
+## 16.11 H10 — integration, re-measurement, the decision gate, and closure, as shipped
+
+**Status: complete. Phase H is closed.** H10 added **no** numerical
+capability, no C++, no C ABI symbol, no ctypes declaration, no Core
+method, no autograd operation, no module, no export, no schema field, no
+checkpoint version, no benchmark case, and no production numerical file
+change. It measured, decided, validated, and reconciled.
+
+### 16.11.1 Baseline integrity
+
+The comparison is against the **real H0 production state**, reconstructed
+and proved rather than approximated.
+
+H0 (`2b530c0`) shipped the harness and changed no production code, so the
+production baseline is its parent, `c9d89e1` — the pre-H0 merge. Every
+file under `src/` and `cpp/` was restored to its `c9d89e1` blob in a tree
+outside the repository, and the reconstruction was **verified file by
+file**: all **80** tracked files matched their `c9d89e1` content exactly
+(modulo the line-ending normalization git applies on this platform), with
+no file missing and no file extra. The H0 library was then built from that
+tree with the same CMake generator, the same Release configuration, and
+the same compiler as the shipped library, and written **into that tree**,
+never into the repository.
+
+Both sides are proved distinct at run time rather than assumed. Every
+probe process records the resolved `tensorforge/__init__.py`, the resolved
+`backends/cpp.py`, the resolved shared library path, its byte length, and
+a SHA-256 prefix; the comparison **refuses to report** if the two sides
+share a library hash or a `cpp.py` path. Measured: H0 is a 58,880-byte
+library (`da47aaeb…`) beside the final 87,552-byte library
+(`71ecb59d…`), each loaded from its own tree.
+
+The export inventories confirm the phase's own claim independently:
+**H0 exported 51 `tf_*` symbols and the final library exports 52**, the
+difference being exactly `tf_storage_create_uninitialized` (H1), with
+**nothing removed**.
+
+### 16.11.2 Method
+
+Alternating rounds in **separate subprocesses**, order swapped every round
+so machine drift cancels rather than accumulating into one side; a fixed
+warm-up per case; one call per timed sample; every sample retained; setup
+and cleanup outside the timer; temporaries closed explicitly rather than
+left to the collector. The reported figure is the **median of the
+per-round medians**, so a cold first sample inside one round cannot move
+the result.
+
+**Correctness is compared before any timing is interpreted.** Each case
+produces a SHA-256 digest of its result's raw IEEE-754 bytes, and a case
+whose two sides disagree is reported as a mismatch rather than as a
+speed-up. Across **52 cases and three independent full runs** — 11 rounds,
+then 15, then 15 after a probe correction — there were **zero checksum
+mismatches**. Every H0-versus-final number below is therefore a comparison
+of two implementations that produced bit-identical results on this data.
+
+**A defect in the measurement instrument was found and corrected rather
+than published.** Two probe cases (`to_numpy` and view construction) leaked
+one native core per repetition, so allocator pressure grew inside the timed
+region. Both were fixed and re-measured; the correction moved view
+construction from an apparent 1.06×–1.12× to **2.00×** and left `to_numpy`
+near-neutral. The uncorrected figures are not quoted anywhere.
+
+### 16.11.3 Results: kernels and the Core layer
+
+15 alternating rounds, 15 repetitions each, 225 samples per side per case.
+
+| Case | H0 | final | H0 → final |
+|---|---|---|---|
+| `matmul` (256³) | 13 222.6 µs | 2 804.8 µs | **4.71×** |
+| `matmul` (64³) | 91.8 µs | 46.2 µs | 1.99× |
+| `conv2d_forward` (8,16,32,32)→32 k3 | 42 836.9 µs | 11 887.0 µs | **3.60×** |
+| `conv2d_input_backward` | 51 205.3 µs | 11 034.0 µs | **4.64×** |
+| `conv2d_weight_backward` | 42 989.3 µs | 16 620.7 µs | 2.59× |
+| `sum(axis=1)` NCHW (32,16,16,16) | 261.7 µs | 51.7 µs | **5.06×** |
+| `sum(axis=0)` (256,256) | 106.9 µs | 23.2 µs | **4.61×** |
+| `sum()` full (512,512) | 547.0 µs | 144.7 µs | 3.78× |
+| `contiguous_copy` (512,512) | 897.2 µs | 351.4 µs | 2.55× |
+| `contiguous_copy` transposed (256,256) | 245.8 µs | 141.3 µs | 1.74× |
+| `relu` transposed (256,256) | 198.3 µs | 67.8 µs | 2.92× |
+| `relu` contiguous (256,256) | 159.6 µs | 107.9 µs | 1.48× |
+| `multiply` row-broadcast (256,256)×(256,) | 184.9 µs | 79.6 µs | 2.32× |
+| `add` scalar-broadcast (256,256)+(1,1) | 265.7 µs | 112.9 µs | 2.35× |
+| `multiply` NCHW-stat (32,16,16,16)×(1,16,1,1) | 522.0 µs | 213.7 µs | 2.44× |
+| `add` contiguous (256,256) | 166.5 µs | 111.3 µs | 1.50× |
+| `shape_info` (rank 4) | 5.1 µs | 1.2 µs | **4.25×** |
+| view construction (rank 4) | 8.2 µs | 4.1 µs | 2.00× |
+| `add` on (1,1) — the dispatch floor | 8.4 µs | 6.0 µs | 1.40× |
+| storage allocation + release (512,512) | 446.2 µs | 457.0 µs | 0.98× |
+| `to_numpy` (256,256) | 136.2 µs | 143.8 µs | **0.95×** |
+
+### 16.11.4 Results: NativeTensor, modules, optimizers, training
+
+| Case | H0 | final | H0 → final |
+|---|---|---|---|
+| `NativeLinear(256,256)` forward on (128,256) | 6 506.4 µs | 1 359.9 µs | **4.78×** |
+| `NativeConv2d(16,32,3)` forward | 40 982.1 µs | 12 122.9 µs | 3.38× |
+| `NativeConv2d` forward + backward | 136 847.6 µs | 41 295.3 µs | 3.31× |
+| `NativeBatchNorm2d(16)` eval, NCHW | 3 031.9 µs | 1 375.6 µs | 2.20× |
+| `NativeBatchNorm1d(256)` eval | 760.5 µs | 354.6 µs | 2.14× |
+| `NativeLayerNorm(256)` forward | 947.5 µs | 451.2 µs | 2.10× |
+| `NativeBatchNorm2d` training forward | 4 404.2 µs | 2 106.8 µs | 2.09× |
+| `NativeBatchNorm1d` training forward | 1 246.2 µs | 629.6 µs | 1.98× |
+| `NativeDropout(0.5)` forward | 233.2 µs | 232.4 µs | 1.00× |
+| `NativeTensor.sum(axis=0)` with graph | 123.2 µs | 28.7 µs | **4.29×** |
+| `NativeTensor.multiply` broadcast, with graph | 263.3 µs | 120.8 µs | 2.18× |
+| `backward()` over a (128,128) matmul sum | 3 341.9 µs | 1 246.1 µs | 2.68× |
+| `backward()` over `mean()` of (256,256) | 325.1 µs | 161.1 µs | 2.02× |
+| `NativeAdam.step()` #6, (128,128) MLP | 3 208.6 µs | 820.7 µs | **3.91×** |
+| `NativeAdam.step()` #1, (128,128) MLP | 3 116.8 µs | 902.0 µs | **3.46×** |
+| `NativeAdam.step()` on a (512,512) parameter | 16 006.7 µs | 8 316.1 µs | 1.92× |
+| `NativeSGD.step()` | 361.0 µs | 171.0 µs | 2.11× |
+| `NativeAdam.state_dict()` | 786.5 µs | 444.4 µs | 1.77× |
+| `NativeAdam.load_state_dict()` | 600.0 µs | 400.9 µs | 1.50× |
+| **MLP training step (256-256-64, batch 128)** | 28 704.3 µs | 7 372.8 µs | **3.89×** |
+| **CNN + Dropout training step** | 15 346.4 µs | 6 314.5 µs | **2.43×** |
+| **CNN training step (8,3,32,32)** | 14 873.3 µs | 6 628.4 µs | **2.24×** |
+| **CNN + BatchNorm2d training step** | 27 190.6 µs | 12 216.2 µs | **2.23×** |
+| **MLP training step (8-16-4, batch 16)** | 2 086.1 µs | 973.8 µs | **2.14×** |
+| **CNN classification step (cross-entropy)** | 2 278.9 µs | 1 116.7 µs | **2.04×** |
+| **normalized MLP training step** | 7 396.4 µs | 3 939.9 µs | **1.88×** |
+| **checkpoint load + resumed training step** | 4 473.8 µs | 2 991.2 µs | **1.50×** |
+
+**Every training workload the project ships is between 1.5× and 3.9×
+faster than it was at H0, with bit-identical results.** That is the one
+sentence Phase H earned.
+
+### 16.11.5 Controls, regressions, neutral results, and noise
+
+Published as prominently as the wins, because they are what makes the wins
+readable.
+
+- **`cpp.matmul` raw-buffer kernel, 256³: 0.99×.** Phase H never touched
+  the raw kernels, so this is the strongest control available, and it
+  holds.
+- **NumPy `add` on (256,256): 1.03×.** No TensorForge code runs; the
+  measurement itself is unbiased.
+- **Native storage allocation + release (512,512): 0.98×.** The default
+  allocator is still zero-initializing, exactly as H1 left it.
+- **`NativeDropout` forward: 1.00×.** The G2 kernel was not a Phase-H
+  subject.
+- **`to_numpy` (256,256): 0.95× — the one reproducible regression, and it
+  is attributed.** `tf_storage_materialize`'s C++ body is **byte-identical**
+  between the two trees, so nothing about the traversal changed. A focused
+  21-round probe separated the layers by driving the bare foreign call with
+  pre-built ctypes arguments: the **compiled call alone measures 0.975×–1.008×
+  at every size** (inside the code-layout band this project has documented
+  since H6), while the **whole Python call is 2.15× faster at 16×16, 1.48×
+  at 64×64 and 1.24× at 128×128**, falling to 1.03× at 256×256 and 0.98× at
+  512×512. So H3 and H7 made the wrapper much cheaper and the traversal —
+  which they did not touch — comes to dominate. Materialization was never a
+  Phase-H target: H5 gave `contiguous_copy` its flat traversal, but
+  `tf_storage_materialize` writes into a caller-owned NumPy buffer at the
+  host boundary and kept the odometer. **This is a genuine remaining
+  limitation**, recorded in §16.11.10 rather than smoothed over.
+- **The low-round lesson repeated itself, again.** At 15 catalogue rounds
+  `to_numpy` read 0.92×; at 21 focused rounds with the probe defect fixed it
+  read 0.95×–1.03× depending on cache state. No low-round figure is quoted
+  as H10 evidence, exactly as H3, H5, H6, and H9 each recorded.
+
+### 16.11.6 Allocation and memory
+
+Measured on the same workloads, by wrapping `NativeStorage` construction
+and release in test scaffolding.
+
+**No measured allocation count, peak live-storage count, or peak byte
+figure rose anywhere.** 36 of 52 cases are byte-identical — every raw
+kernel and Core case among them, confirming that the kernel milestones
+moved time without moving memory — and 16 fell:
+
+| Workload | allocations | peak live | peak bytes |
+|---|---|---|---|
+| `NativeAdam.step()`, (128,128) MLP | 108 → **72** | 34 → 22 | 1 966 160 → **792 576** |
+| `NativeAdam.step()`, (512,512) parameter | 54 → **40** | 28 → 16 | 31 457 360 → **10 485 824** |
+| `NativeAdam.state_dict()` | 16 → **8** | 9 → 8 | 1 706 496 → 1 315 840 |
+| `NativeSGD.step()` | 20 → **13** | 9 → 8 | 461 312 → 396 288 |
+| `NativeBatchNorm1d` training forward | 27 → **23** | 26 → **17** | 1 343 528 → 1 329 176 |
+| `NativeBatchNorm2d` training forward | 32 → **28** | 31 → **22** | 6 363 176 → 6 362 264 |
+| MLP training step (large) | 132 → **96** | 48 → 36 | 9 898 584 → **4 665 864** |
+| CNN training step | 139 → **102** | 49 → 37 | 6 204 056 → 5 391 696 |
+| normalized MLP training step | 340 → **256** | 88 → 76 | 2 005 736 → 1 700 512 |
+| CNN classification step | 131 → **94** | 46 → 34 | unchanged |
+| checkpoint load + resumed step | 192 → **132** | 54 → 48 | 397 656 → 233 800 |
+
+There is still **no memory pool, scratch workspace, arena, persistent
+cache of native storage, or im2col buffer anywhere.**
+
+### 16.11.7 The acceleration decision gate
+
+H0 reserved a conditional slot for SIMD, threading/OpenMP, and optional
+BLAS under §11–§13. H9 did not enter it and moved the decision here. It is
+made now, on measurement, and **all three are rejected**.
+
+#### SIMD — **rejected**
+
+*Evidence examined.* A full Release build with MSVC `/Qvec-report:2`, plus
+`dumpbin /DISASM` instruction censuses of the shipped objects, plus a
+standalone four-spelling microbenchmark of the one loop the report
+identified.
+
+The disassembly is the decisive part, because it answers §11 criterion 2
+directly rather than by inference:
+
+| object | packed-double instructions | scalar-double | AVX (`ymm`) |
+|---|---|---|---|
+| `elementwise.obj` | **24** | 99 | 0 |
+| `matmul.obj` | **16** | 50 | 0 |
+| `reduction.obj` | **4** | 12 | 0 |
+| `conv2d.obj` | **0** | 80 | 0 |
+
+So **criterion 2 is not met for three of the four optimized families**:
+H2's row sweep, H6's contiguous-block accumulate, and H8's templated
+traversals are **already auto-vectorized**, which is exactly what H8's
+10.7× measurement predicted. Hand-written intrinsics there would duplicate
+the compiler's work while adding a portability and maintenance burden.
+
+**Criterion 2 *is* met for convolution**, which is entirely scalar — so
+that one case was measured rather than dismissed. The shipped inner loop
+is `dst[t] += src[t] * w_value`; four spellings were compiled and timed
+(as shipped; with `__restrict`; with `#pragma loop(ivdep)`; and a manual
+2-wide unroll), and **all four produced bit-identical checksums**. The
+available gain: 1.16×/1.30× at span 6, 1.03×/1.15× at span 14,
+1.39×/1.07× at span 30, 1.09×/1.11× at span 62, 1.22×/1.23× at span 254 —
+and the **manual unroll was 2.0×–2.5× slower** above span 14, i.e. hand
+work actively defeated the compiler.
+
+*Expected benefit.* 1.05×–1.4× on one inner loop of one family,
+inconsistent between spellings, in an isolation the compiler sees more
+clearly than it sees the real nest — and it is a **compiler hint, not
+SIMD**. The genuine SIMD question, widening to 4-wide doubles, needs
+`/arch:AVX2`, which **criterion 6 forbids as a default**; every object
+above shows `ymm` = 0, so the shipped build is SSE2 baseline by design.
+
+*Correctness risk.* Low for this specific loop (elementwise across
+distinct destinations, proved bit-identical), but non-trivial in general:
+criterion 5 requires the full §7.3 procedure for anything that touches a
+reduction, and a vector-lane split of an accumulation changes order.
+
+*Portability and maintenance cost.* `#pragma loop(ivdep)` is MSVC-only;
+intrinsics would need a guarded path plus the retained scalar reference on
+two toolchains, permanently.
+
+*Decision.* **Rejected.** No intrinsic, no `/arch` flag, no guarded vector
+path.
+
+*Future trigger.* Reconsider only if a convolution-heavy workload becomes
+the dominant TensorForge use case **and** the `__restrict` annotation is
+measured **in situ**, end to end, at a gain outside the machine's control
+band. That annotation is a real, measured, bit-identical, non-intrinsic
+opportunity and is recorded here as future scope; H10 did not take it,
+because a closure milestone does not ship new optimization.
+
+#### Threading / OpenMP — **rejected**
+
+*Evidence examined.* Every native call in one CNN training step was
+individually timed by wrapping the declared entry points.
+
+Measured: **198 native calls**, 5 623 µs of native time, **median call
+1.20 µs**, longest 1 496 µs. By threshold: 23 calls ≥ 10 µs (94.4 % of
+native time), 8 calls ≥ 100 µs (83.1 %), and **only 2 calls ≥ 1 ms**
+(47.8 %). Those two are `conv2d_weight_backward` (1 496 µs, 26.6 %) and
+`conv2d_forward` (1 192 µs, 21.2 %).
+
+*Expected benefit.* This is **new information relative to H0**, which said
+nothing was threading-evidenced: criterion 2 is now *partially* met, since
+two calls per step are large enough to amortize a thread wake. But the
+ceiling is small — perfect scaling of those two calls on four cores takes
+the step from 6.6 ms to roughly 4.6 ms, about **1.4×** — while the other
+196 calls, at a 1.2 µs median, are far below any pool's overhead.
+
+*Correctness risk.* Criterion 3 is the hard one. The weight gradient
+accumulates into shared destinations, so a naive split reassociates —
+precisely what every Phase-H numerical contract forbids. A deterministic
+fixed partition over output channels *could* preserve order, so this is
+not impossible, but it is a real obligation rather than a detail, and
+every bit-exact resume proof in the project depends on it.
+
+*Portability and maintenance cost.* Criterion 5 requires the thread count
+to default to 1, so **the default build gains nothing** and every
+committed measurement, every example, and CI would still run
+single-threaded. Criterion 6 requires a ThreadSanitizer matrix that does
+not exist today. Criterion 4 requires proving no conflict with the
+process-wide state-replacement lock order or the generator reservation
+protocol. Criterion 7 excludes OpenMP outright, since its behavior would
+depend on `OMP_NUM_THREADS`.
+
+*Decision.* **Rejected.** No threads, no pool, no OpenMP, no thread-count
+API.
+
+*Future trigger.* Reconsider only if convolution-dominated workloads at
+much larger batch sizes become the project's centre of gravity, a
+deterministic fixed-partition combine is designed first, and a
+ThreadSanitizer matrix is added to the standing validation set.
+
+#### BLAS — **rejected, and the §13 measurement re-confirmed**
+
+*Evidence examined.* The post-H2 matmul gap to NumPy's multi-threaded
+OpenBLAS, re-measured on this machine, with the numerical difference
+measured rather than assumed:
+
+| size | native | NumPy (OpenBLAS) | gap | max abs difference |
+|---|---|---|---|---|
+| 64³ | 52.0 µs | 14.5 µs | 3.59× | 3.553e-15 |
+| 128³ | 347.1 µs | 96.4 µs | 3.60× | 8.882e-15 |
+| 256³ | 2 820.4 µs | 544.9 µs | 5.18× | 3.197e-14 |
+| 384³ | 10 136.0 µs | 1 087.6 µs | 9.32× | 4.263e-14 |
+| 512³ | 22 618.2 µs | 2 538.2 µs | 8.91× | 6.395e-14 |
+
+*Expected benefit.* Real and growing with size — the gap widens from 3.6×
+to about 9×, because OpenBLAS adds cache blocking, AVX, and threading that
+H2 deliberately did not.
+
+*Correctness risk.* **Decisive.** The measured difference is 3.6e-15 at
+64³ — reproducing §13's predicted ≈3.6e-15 exactly — rising to 6.4e-14 at
+512³. A BLAS matmul is **not bit-identical** to the scalar path, so
+adopting it as the default would break every bit-exact checkpoint-resume
+proof in this project at once.
+
+*Portability and maintenance cost.* It is a required dependency on every
+platform the project validates on, against a stated stack of Python +
+NumPy + pytest with an optional C++17 compiler and nothing else.
+
+*Decision.* **Rejected**, and §13's three reasons all still hold: it
+answers the wrong question (H2 recovered 4.7× from loop order alone), it
+contradicts the project's from-scratch premise, and it is a dependency.
+
+*Future trigger.* Only ever as a **strictly optional**, default-off CMake
+option with the hand-written kernel retained as the default and the
+reference path, the numerical difference documented under §7.3, and every
+bit-exact resume proof still running against the default build. It would
+be an appendix to a milestone, never a milestone.
+
+### 16.11.8 The two remaining candidates, assessed and not implemented
+
+#### `tf_core_narrow_backward` — **measured, and not worth implementing**
+
+Frequency was established before cost, because the odometer being slower
+than a flat walk is not in question — whether it *runs* is.
+
+Instrumented over four real workloads — an MLP training step, a
+CNN + BatchNorm2d step, a CNN classification step with cross-entropy, and
+a normalized + Dropout step — `narrow_backward` was called **0 times** in
+every one. It is the adjoint of `narrow`, and **no shipped module, loss,
+metric, or optimizer uses `narrow` in a training path**; it appears only
+in a demo example, two benchmark setup helpers, and tests.
+
+Cost, for completeness: 0.92–0.95 ns per destination element at
+(256,256), 2.95 ns at (64,64), 2.96 ns on a 4-D scatter — against
+`contiguous_copy` at 0.25 ns/element on the same 65 536 elements. So a
+flat path might be worth roughly 3–4× **on an export that executes zero
+times per training step**.
+
+**Decision: not implemented.** Whole-workload value is zero by
+measurement, and H6 deliberately left this export alone to avoid becoming
+a scatter milestone. Doing it in a closure milestone would be a hidden
+H11. The trigger for reconsidering is a real workload that uses `narrow`
+in its forward path.
+
+#### The small-operation fixed boundary floor — **decomposed, and architecturally closed**
+
+The remaining ~6–8 µs below roughly a thousand elements was decomposed
+into named stages by batched timing (per-call timing cannot resolve it —
+`perf_counter_ns` quantizes at about 100 ns here), on a (4,4) `add`:
+
+| stage | cost | share of the Core call |
+|---|---|---|
+| whole `NativeTensorCore.add` + close | 6.119 µs | 100 % |
+| **output allocation** (`_uninitialized` + close) | **3.699 µs** | **60.5 %** |
+| result `NativeTensorView` construction | 1.145 µs | 18.7 % |
+| bare `tf_core_add_contiguous` foreign call | 0.720 µs | 11.8 % |
+| broadcast shape validation | 0.428 µs | 7.0 % |
+| `errcheck` hook | 0.128 µs | 2.1 % |
+| H3/H7 cached layout pointer pair | 0.064 µs | 1.0 % |
+| `NativeTensor` layer above the Core | +0.811 µs | — |
+| autograd graph construction | +1.497 µs | — |
+
+The finding that decides it: **the floor is allocation and object
+construction, not the boundary.** Allocation plus result wrapping is
+**79 %** of a small Core call; the ctypes crossing is 11.8 % and the
+`errcheck` hook 2.1 % — H7 already took the per-array conversion from
+about 2.1 µs to the 0.064 µs cached pair, and there is no second H7 to be
+had. Validation is 7 %, and removing it would trade a documented safety
+property for a fraction of a microsecond.
+
+Every remaining lever is one this design already forbids: a memory pool or
+persistent scratch to avoid the allocation (§10), or moving the wrapper
+objects into C via pybind11 (§17 non-goal), or public batching/fusion
+(§17), or a C++-side graph (§17).
+
+**Decision: not implemented, and recorded as the architectural floor it
+is.** A small native operation costs a few microseconds because it
+allocates an owning buffer and builds real Python ownership objects around
+it. That is the price of the ownership model, not a defect in it, and
+changing it means changing the binding or execution architecture — a
+future phase's decision, not a closure milestone's.
+
+### 16.11.9 Why the ladder ends at H10
+
+H0 drafted **H11** as a separate phase-closure milestone. It was not
+entered, and the reason is recorded rather than left as a dangling row.
+
+The ladder was reordered at H5, revised at H7, and extended at H9, which
+left H10 carrying integration, re-measurement, the acceleration gate, *and*
+closure — the whole of what H0 had split across two slots. Splitting them
+again would have created a milestone whose only content was "write down
+that the previous milestone finished". Every §18 closure requirement is
+satisfied by H10's own work, so **the ladder runs H0–H10 and ends there.**
+H11 does not exist and is not "planned".
+
+### 16.11.10 Remaining limitations, stated plainly
+
+- **`to_numpy` / `tf_storage_materialize` is the one path Phase H did not
+  improve** (0.95×–1.03×, compiled traversal 0.975×–1.008× on byte-identical
+  source). It still walks the generic odometer at the host boundary.
+- **The matmul gap to a tuned multi-threaded BLAS is 3.6×–9.3×** and
+  widens with size. H2 closed a large part of it single-threaded and
+  bit-identically; the rest needs blocking, AVX, and threads, all of which
+  are rejected above.
+- **Convolution is entirely scalar** (0 packed-double instructions), and a
+  measured 1.05×–1.4× compiler-hint opportunity on its inner loop is left
+  unclaimed by design.
+- **Small operations cost a few microseconds** and always will under this
+  ownership and binding architecture (§16.11.8).
+- **`tf_core_narrow_backward` still walks the odometer**, deliberately.
+- Every number in this document is a **local characterization of one
+  machine**, reported with its spread, asserted by no test.
+
+### 16.11.11 Validation matrix, as run
+
+| Check | Result |
+|---|---|
+| Windows Release, out-of-source, outside the repository | **zero** project compiler, linker, and CMake warnings |
+| Windows Release CTests | **17/17** |
+| Windows Debug, out-of-source, library written outside the repository | **zero** warnings; the active runtime stayed the Release DLL (hash unchanged) |
+| Windows Debug CTests | **17/17** |
+| Exported production symbols — source, Windows DLL, Linux `.so`, sanitized `.so` | **52**, agreeing on all four |
+| Windows full pytest | **6 412 passed, 0 failed, 0 skipped** (6 358 before H10, plus this milestone's 54 closure guardrails) |
+| Native backend smoke | pass |
+| Phase-H harness `--smoke`, `--json` | 41 cases, all gates pass, schema parses, **no result file written** |
+| Stable import isolation | `tensorforge`/`nn`/`optim` import without loading `backends.cpp` |
+| Stable + native examples | all 11 run; all four exact-resume examples reproduce exactly |
+| Linux/WSL CI-equivalent (`uv sync --group cpp`, build, smoke, quick benchmark, pytest) | **6 412 passed, 0 failed, 0 skipped** — the same count as Windows |
+| Clang 18.1.3 ASan/UBSan build | zero warnings; instrumentation **proved**: 24 `__asan*` + 12 `__ubsan*` dynamic symbols beside 52 `tf_*`; the library **refuses to load** without the sanitizer runtime |
+| Sanitized native CTests (`detect_leaks=1`) | **17/17** |
+| Sanitized Python suite | **6 412 passed**, **0 ASan errors, 0 UBSan diagnostics** |
+| Sanitized examples and benchmark gates | four exact-resume examples reproduce; all 41 correctness gates pass |
+| Sanitizer **negative control** | test-only two-entry metadata with `ndim = 3` produces `heap-buffer-overflow`, `READ of size 8`, `0 bytes after 16-byte region`, in `tf::reduce_prefers_contiguous_blocks` (`reduction.cpp:36`) — so zero diagnostics is a real absence, not a blind detector |
+| Second attempted control, on H9's conv2d | **the export's own span validation rejected it first** (`input span exceeds its storage`) — a positive finding about the ABI guard: convolution geometry is fully checkable at the boundary, which is exactly why the *rank/length* control above has to target metadata the ABI cannot check |
+| LeakSanitizer lifecycle | native live storage returns **exactly to baseline (0)** at **20** checkpoints: every H1–H9 optimized path, every retained generic fallback, both conv2d geometries, retained/repeated/abandoned graphs, all four graph-owned saved-resource families in one graph, optimizer + normalization train/eval + checkpoint resume, and injected allocation failures |
+| LeakSanitizer exit report | 770 966 bytes in 694 allocations, containing **no TensorForge frame** — only CPython (`_PyObject_Malloc`) and NumPy (`PyUFunc_*`, `NpyString_*`) — with **no suppression file** |
+
+Two measurement-script defects were found and fixed during this work, and
+both are recorded because they are instructive rather than embarrassing:
+the leaking probe cases of §16.11.2, and a lifecycle script that reported
+"leaks" which were really graph intermediates still reachable from a live
+Python handle. The second is the ownership contract behaving exactly as
+documented — an abandoned graph's intermediates are released when the
+handle dies, with `__del__` as the fallback — and the corrected script
+proves it.
+
+### 16.11.12 What H10 changed
+
+- `CLAUDE.md` — compacted from **158 222** to **29 814** characters
+  (**81 %** smaller), restructured into thirteen sections of current
+  operating rules and durable invariants, with an explicit pointer to the
+  authoritative document for every historical question. Every rule that
+  was still current is retained directly, replaced by a clearer
+  equivalent, or moved to a named document; what was removed was the
+  duplicated milestone history `docs/` already owns.
+- `src/tensorforge/experimental/__init__.py` — **docstring only**: the
+  package is a documented status surface, and leaving it silent on a
+  completed phase is exactly the drift the guardrails exist to catch. No
+  code, no export, no behavior.
+- This document — §16's ladder table (H8/H9 marked complete, the
+  reassigned H9 and the unneeded H11 struck through), §14's CTest count
+  (13 → **17**), and this section.
+- The other status surfaces — Phase H marked complete consistently.
+- `tests/test_docs.py`, `tests/test_native_copy_transfer.py` — CLAUDE.md
+  removed from the *milestone-detail* surface tuples and held to the
+  durable rules instead.
+- `tests/test_native_phase_h_closure.py` — new durable closure guardrails.
+
+**No production file changed.** No C++, no C ABI symbol, no ctypes
+declaration, no Core method, no autograd operation, no module, no export,
+no registry value, no dtype, no device, no checkpoint field, no checkpoint
+version, and no benchmark case.
 
 ---
 
@@ -5793,6 +6309,10 @@ Explicitly **not** in Phase H, at any milestone:
 ---
 
 ## 18. Phase-H closure requirements
+
+> **Phase-H status: complete.** All ten requirements below were satisfied
+> at H10; **§16.11** records the evidence for each, and §16.11.11 is the
+> validation matrix as run.
 
 Phase H is complete only when all of:
 

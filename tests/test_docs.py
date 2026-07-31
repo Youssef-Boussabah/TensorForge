@@ -1428,6 +1428,27 @@ PHASE_STATUS_DOCS = (
     "src/tensorforge/experimental/__init__.py",
 )
 
+# ``CLAUDE.md`` is deliberately **not** in the tuples above, and was
+# removed from the per-milestone detail tuples at H10.
+#
+# It used to carry a full narrative copy of every milestone report, which
+# made it a status surface these checks could scan. That duplication was
+# the problem: the file had grown past Claude Code's project-memory
+# warning threshold, so the instructions that actually govern how the
+# repository is worked on were at risk of being crowded out by history
+# that `docs/` already owns authoritatively.
+#
+# H10 restated its role: current operating rules and durable invariants
+# only, with an explicit pointer to the authoritative document for every
+# historical question. So a *milestone detail* ("H2 measured cache
+# blocking and rejected it") is no longer required to appear there and is
+# asserted against `docs/` instead, while the *durable* facts it must
+# still carry — positioning language, the capability boundary, the export
+# count, no committed speed numbers, no "pending" phase language — are
+# still asserted against it, both by the checks that already do so and by
+# ``test_claude_md_states_current_facts_and_points_at_the_docs`` below.
+_AGENT_INSTRUCTIONS = "CLAUDE.md"
+
 # The names Phase F contracts but has NOT implemented, in each of the
 # forms a document or a registry might use them.
 _NORMALIZATION_MODULES = (
@@ -1683,7 +1704,7 @@ def test_phase_f_is_positively_marked_complete_everywhere():
     )
     # F0/F1's no-numerical-behavior honesty is still recorded.
     assert re.search(r"no numerical behavior", design, re.I)
-    for surface in PHASE_STATUS_DOCS + (PHASE_F_DESIGN, "CLAUDE.md",
+    for surface in PHASE_STATUS_DOCS + (PHASE_F_DESIGN,
                                         "docs/release_history.md"):
         text = _status_text(surface)
         assert "Phase F" in text, f"{surface} does not name Phase F at all"
@@ -2773,8 +2794,7 @@ def test_docs_present_the_shipped_phase_f_integration_suite():
     # shipped — the closure form of the old "F9 has not" check.
     for surface in ("README.md", "docs/native_support_matrix.md",
                     "docs/roadmap.md", "docs/project_summary.md",
-                    "docs/architecture.md", "docs/backend_experiments.md",
-                    "CLAUDE.md"):
+                    "docs/architecture.md", "docs/backend_experiments.md"):
         text = _status_text(surface)
         assert re.search(r"F8[^.]{0,60}(complete|shipped)", text, re.I), surface
         assert re.search(r"(F9[^.]{0,120}(complete|shipped|clos)"
@@ -3319,7 +3339,7 @@ def test_phase_g_is_named_and_scoped():
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
-                    "docs/backend_experiments.md", "CLAUDE.md"):
+                    "docs/backend_experiments.md"):
         text = _status_text(surface)
         assert "Phase G" in text, f"{surface} does not name Phase G"
         assert re.search(r"Native RNG and Dropout", text, re.I), surface
@@ -3853,7 +3873,7 @@ def test_phase_g_is_positively_marked_complete_everywhere():
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
-                    "docs/backend_experiments.md", "CLAUDE.md",
+                    "docs/backend_experiments.md",
                     PHASE_G_DESIGN):
         text = _status_text(surface)
         offenders = [
@@ -4432,7 +4452,7 @@ def test_g1_status_is_stated_positively_on_every_phase_surface():
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
-                    "docs/backend_experiments.md", "CLAUDE.md",
+                    "docs/backend_experiments.md",
                     PHASE_G_DESIGN):
         text = _status_text(surface)
         assert re.search(r"\bG1\b", text), (
@@ -4464,13 +4484,13 @@ def test_g1_status_is_stated_positively_on_every_phase_surface():
 # the boundaries it deliberately did not cross.
 
 # The surfaces that track Phase-G status milestone by milestone.
+# CLAUDE.md left this tuple at H10 — see _AGENT_INSTRUCTIONS above.
 PHASE_G_STATUS_SURFACES = (
     "README.md",
     "docs/roadmap.md",
     "docs/project_summary.md",
     "docs/native_support_matrix.md",
     "docs/backend_experiments.md",
-    "CLAUDE.md",
     PHASE_G_DESIGN,
 )
 
@@ -5529,7 +5549,7 @@ def test_phase_g_kept_dropout_unsupported_until_the_g10_closure():
     )
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/native_support_matrix.md",
-                    "docs/backend_experiments.md", "CLAUDE.md"):
+                    "docs/backend_experiments.md"):
         surface_text = _status_text(surface)
         assert re.search(r"G10", surface_text), (
             f"{surface} does not name the G10 closure milestone"
@@ -6359,7 +6379,7 @@ def test_docs_present_the_shipped_phase_g_integration_suite():
     # Every status surface names it, and none of them claims closure.
     surfaces = ("README.md", "docs/native_support_matrix.md",
                 "docs/roadmap.md", "docs/project_summary.md",
-                "docs/backend_experiments.md", "CLAUDE.md")
+                "docs/backend_experiments.md")
     for surface in surfaces:
         text = _status_text(surface)
         assert "test_native_phase_g.py" in text, surface
@@ -6416,7 +6436,7 @@ def test_the_phase_g_closure_matrix_is_recorded_with_observed_results():
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
-                    "docs/backend_experiments.md", "CLAUDE.md",
+                    "docs/backend_experiments.md",
                     PHASE_G_DESIGN):
         text = _status_text(surface)
         assert closure.search(text), (
@@ -6491,11 +6511,14 @@ CURRENT_STATUS_SURFACES = (
     "src/tensorforge/experimental/__init__.py",
 )
 
-# The current phase and the newest *closed* one, which are deliberately
-# different letters: Phase H opened at H0, and H0 shipped no optimization
-# and closed no phase, so Phase G is still the latest completed phase.
+# The current phase and the newest *closed* one. They were deliberately
+# different letters for the whole of H0-H9: Phase H opened at H0, and H0
+# shipped no optimization and closed no phase, so Phase G stayed the
+# latest completed phase. **H10 closed Phase H**, so they are now the same
+# letter, and a surface still calling Phase G the latest completed phase
+# is stale rather than careful.
 _LATEST_PHASE = "H"
-_LATEST_COMPLETED_PHASE = "G"
+_LATEST_COMPLETED_PHASE = "H"
 # Deliberately scoped to Phase G. H0 also shipped, but ``H0`` is a short
 # token that sits a few words away from the legitimately *unstarted*
 # H1-H10 rows in the support matrix's ladder table, so a proximity scan
@@ -6732,9 +6755,9 @@ _PHASE_H_DESIGN = "docs/native_cpu_performance_design.md"
 _PHASE_H_HARNESS = "benchmarks/benchmark_native_cpu_performance.py"
 
 # The surfaces that must agree about Phase H's status.
+# CLAUDE.md left this tuple at H10 — see _AGENT_INSTRUCTIONS above.
 _PHASE_H_SURFACES = (
     "README.md",
-    "CLAUDE.md",
     "docs/project_summary.md",
     "docs/roadmap.md",
     "docs/native_support_matrix.md",
@@ -6914,7 +6937,7 @@ def test_the_h9_record_states_its_negative_and_neutral_findings():
     """H9 must not read as an unqualified win. Every full-length surface
     has to carry the neutral rows, the deliberate fallback, and the fact
     that the controls held — the project's honesty rule, enforced."""
-    for surface in ("CLAUDE.md", "docs/project_summary.md",
+    for surface in ("docs/project_summary.md",
                     "docs/backend_experiments.md", "docs/roadmap.md",
                     "docs/native_support_matrix.md"):
         lowered = _status_text(surface).lower()
@@ -7536,7 +7559,7 @@ _H7_STATUS_SURFACES = (
     "docs/backend_experiments.md",
     "docs/architecture.md",
     "README.md",
-    "CLAUDE.md",
+    # CLAUDE.md left this tuple at H10 — see _AGENT_INSTRUCTIONS above.
 )
 
 
@@ -7550,7 +7573,11 @@ def test_every_status_surface_records_h7_as_shipped():
             r"H7[^.]{0,200}?\b(complete|completed|shipped|has since shipped)\b"
             r"|\bH0, H1, H2, H3, H4, H5, H6, and H7\b"
             r"|\bH0, H1, H2, H3, H4, H5,\s*H6, and H7\b"
-            r"|\bH0-H7\b|\bH0\u2013H7\b",
+            r"|\bH0-H7\b|\bH0\u2013H7\b"
+            # H10 closure form: naming the whole closed ladder is a
+            # strictly stronger statement than naming H7 alone, and it is
+            # what the closed-phase surfaces now say.
+            r"|\bH0[-\u2013]H10\b|\bH0 through H10\b",
             text, re.I), surface
 
 
@@ -7669,6 +7696,6 @@ def test_the_harness_case_count_is_consistent_across_surfaces():
     spec.loader.exec_module(module)
     assert len(module.CASES) == 41
     for surface in ("docs/native_cpu_performance_design.md",
-                    "docs/native_support_matrix.md", "CLAUDE.md"):
+                    "docs/native_support_matrix.md"):
         text = _status_text(surface)
         assert re.search(r"38 to 41|38 to \*\*41\*\*|41 cases", text), surface

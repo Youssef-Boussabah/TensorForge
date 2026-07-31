@@ -2326,10 +2326,9 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase H — native CPU performance and runtime efficiency (H0, phase begun)
+### Phase H — native CPU performance and runtime efficiency (H0–H10, phase complete)
 
-**Phase H is the current phase; it has begun, and milestones H0, H1, H2,
-H3, H4, H5, H6, H7, and H8 are complete.** This section records H0; the
+**Phase H is **complete**: milestones H0 through H10 have all landed, and it is the latest *completed* phase. H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.** This section records H0; the
 sections for the shipped optimization milestones follow.
 The last sentence of the Phase-G entry above — "the kernels still
 deliberately naive" — is what this phase exists to address, and H0 is the

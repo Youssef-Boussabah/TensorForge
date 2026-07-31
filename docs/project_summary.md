@@ -120,9 +120,9 @@ cases, no speed assertion anywhere), **F8 shipped the cross-cutting
 integration and semantic guardrails** (`tests/test_native_phase_f.py`),
 and **F9 closed the phase** under Release and Debug builds with Clang
 ASan/UBSan and LeakSanitizer — validation and documentation only, adding
-no numerical capability. **Phase G (native RNG and Dropout) is complete
-and is the latest *completed* phase: milestones G0 through G10 have all
-landed.** G0, the architecture
+no numerical capability. **Phase G (native RNG and Dropout) is complete:
+milestones G0 through G10 have all landed.** (The latest *completed*
+phase is now Phase H — native CPU performance — recorded below.) G0, the architecture
 contract in [native_rng_dropout_design.md](native_rng_dropout_design.md),
 locks Python-managed generator state, stateless native
 random kernels, inverted Dropout with a graph-owned multiplier mask, one
@@ -536,8 +536,9 @@ ordinary concurrent training is not claimed thread-safe: the
 serializability guarantee covers the participating state transactions
 only.
 **Phase H — native CPU performance and runtime efficiency — is the
-current phase; it has begun, and milestones H0, H1, H2, H3, H4, H5, H6,
-H7, and H8 are complete.** H0 is an
+latest *completed* phase.** Phase H is **complete**: milestones H0 through H10 have all landed, and it is the latest *completed* phase. H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
+
+Reported as honestly as the wins. The controls held — the unchanged raw-buffer matmul at 0.99×, NumPy at 1.03×, storage allocation at 0.98×, and Dropout at 1.00× — and **`to_numpy` at 0.95× is the one reproducible regression**, attributed rather than smoothed over: its compiled traversal is byte-identical source measuring 0.975×–1.008×, so what changed is that H3's and H7's much cheaper wrapper no longer hides it. The remaining limitations are stated plainly: the gap to a tuned multi-threaded BLAS is **3.6×–9.3×** and widens with size; convolution is entirely scalar (0 packed-double instructions); `tf_core_narrow_backward` still walks the odometer, deliberately, because it executes **0 times** in every shipped training workload; and a small operation still costs a few microseconds because **60 % of that is the owning allocation and 19 % is building the result's Python ownership objects, against 12 % for the ctypes crossing** — an architectural floor rather than a defect. Every number is a local characterization of one machine, reported with its spread, and asserted by no test. H0 is an
 architecture, profiling, and baseline milestone and **nothing was made
 faster**: it shipped the contract in
 [native_cpu_performance_design.md](native_cpu_performance_design.md), the
@@ -1643,12 +1644,7 @@ real absence rather than a blind detector. No public API, capability,
 dtype, device, registry value, checkpoint field, or checkpoint version
 moved, and no C ABI symbol was added.
 
-The proposed H8–H11 ladder is explicitly **conditional** on that evidence,
-and a memory pool, scratch allocation, SIMD, threading, and BLAS are all
-currently rejected on it, with the criteria that would reopen each
-recorded rather than an answer invented. Every number is a local
-characterization of one machine, reported with its spread, and asserted
-by no test.
+The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 Beyond Phase H
 (**not started**): more activations/math, data

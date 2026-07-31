@@ -33,9 +33,32 @@ example; LayerNorm as the batch-independent normalization; optional
 RNG state in checkpoints for bit-exact dropout resume; and a
 release-readiness pass over docs and guardrail tests.
 
+**Where things stand after H10.** The Python line is complete at v3.0, and
+the experimental native line has completed **Phases A through H** — the
+last of them, native CPU performance and runtime efficiency, closed at
+milestone H10. Each phase's record is in its own design document; the
+sections above are the narrative.
+
 ## Practical next steps
 
-The Python line is done; what remains is expansion on its own terms:
+**No next phase is defined, and none is invented here.** What the existing
+documents already name as future work, in no committed order, is: data
+loaders, native integer tensors, further dtypes or devices, and CUDA
+experiments. Each would be a *capability* phase with its own design
+contract, and each is deliberately outside everything shipped so far.
+
+Two things Phase H recorded are worth carrying forward as *inputs* to
+whichever comes next, rather than as work items in themselves:
+
+- the small-operation cost floor is **allocation and Python object
+  construction**, not the ctypes boundary (design §16.11.8), so any future
+  attempt to move it is a binding- or execution-architecture decision;
+- SIMD, threading/OpenMP, and BLAS are rejected **with measurements and
+  with explicit reopening triggers** (design §11–§13 and §16.11.7), so
+  reconsidering one means meeting its criterion, not relitigating it.
+
+The rest of this section is the historical record of how the project got
+here; what remains is expansion on its own terms:
 
 - **Advanced branches** — the C++ backend experiment now has
   elementwise kernels, naive and cache-tiled 2-D matmuls, an
@@ -1418,9 +1441,8 @@ The Python line is done; what remains is expansion on its own terms:
     schedulers, new optimizers, CPU performance tuning, and any stable
     framework change.
   - **Phase H — Native CPU Performance and Runtime Efficiency — is the
-    current phase; it has begun, and milestones H0, H1, H2, H3, H4, H5,
-    H6, H7, and H8
-    are complete.** Its
+    latest *completed* phase.**
+    Phase H is **complete**: milestones H0 through H10 have all landed, and it is the latest *completed* phase. H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, the convolution kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**. Its
     architecture contract is
     [native_cpu_performance_design.md](native_cpu_performance_design.md).
     **H0 is architecture, profiling, and baseline work: nothing was made
@@ -2483,14 +2505,7 @@ The Python line is done; what remains is expansion on its own terms:
     public API, capability, dtype, device, registry value, checkpoint field,
     or checkpoint version moved.
 
-    The proposed **H10–H11 ladder is explicitly conditional**:
-    a milestone whose premise the measurement does not confirm is
-    narrowed, reordered, or dropped, and a memory pool, scratch
-    allocation, SIMD, threading, and BLAS are all currently **rejected on
-    evidence**, with the criteria that would reopen each recorded rather
-    than an answer invented. H10 (re-measurement, hardening, and the
-    full sanitizer matrix) and H11 (phase closure) are **not
-    started**.
+    The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
     Deliberately outside Phase H: CUDA, float32/float16/bfloat16,
     casting, dtype promotion, AMP, Tensor Cores, pybind11, C++ autograd,
     implicit dispatch, Transformers, attention, embeddings, integer

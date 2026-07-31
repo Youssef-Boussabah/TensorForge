@@ -1682,7 +1682,7 @@ def test_the_h5_surfaces_state_the_value_transfer_rule():
     documenting the semantic change."""
     for surface in ("docs/native_cpu_performance_design.md",
                     "docs/backend_experiments.md",
-                    "docs/project_summary.md", "README.md", "CLAUDE.md"):
+                    "docs/project_summary.md", "README.md"):
         text = _flat(surface).lower()
         # It says the addition normalized negative zero...
         assert "-0.0" in text or "negative zero" in text, surface
@@ -1691,6 +1691,18 @@ def test_the_h5_surfaces_state_the_value_transfer_rule():
         # ...and it names the count, so "some patterns changed" is not
         # allowed to replace "exactly three".
         assert "exactly three" in text or "exactly **three**" in text, surface
+
+    # CLAUDE.md is held to the *durable rule* rather than to H5's
+    # historical count (H10; see ``_AGENT_INSTRUCTIONS`` in test_docs.py).
+    # Which eighteen IEEE-754 patterns were swept and which three moved is
+    # a milestone record, and the four surfaces above still carry it. What
+    # the agent instructions must carry is the contract that survived: a
+    # value transfer preserves its source's bits, negative zero and
+    # signaling NaN included, and an *operation* does not.
+    instructions = _flat("CLAUDE.md").lower()
+    assert "-0.0" in instructions or "negative zero" in instructions
+    assert "signaling nan" in instructions
+    assert "value transfer" in instructions
 
 
 def test_no_h5_surface_generalizes_h2s_nan_payload_carve_out_to_copies():

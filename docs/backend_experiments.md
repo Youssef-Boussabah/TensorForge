@@ -73,8 +73,9 @@ stable/native dispatch and no change to the stable framework or the
 version-1 checkpoint format.
 
 **Phase F — Native Normalization and Stateful Buffers — is *complete*
-(F0–F9)**. Phase G is the latest *completed* phase and Phase H is the current one; both are recorded further
-below. Milestone **F0** is complete: it
+(F0–F9)**. Phase G is complete (G0–G10), and **Phase H — Native CPU Performance
+and Runtime Efficiency — is complete (H0–H10) and is the latest
+*completed* phase**; both are recorded further below. Milestone **F0** is complete: it
 locks the architecture contract in
 [native_normalization_design.md](native_normalization_design.md) —
 `NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d`
@@ -245,8 +246,9 @@ baseline. F9 is **validation and documentation only** — no numerical
 capability, no C++, no CTest, no ABI or ctypes surface, no example, no
 benchmark, and no production behavior changed.
 
-**The latest completed phase is Phase G — Native RNG and Dropout — and it is
-complete; milestones G0 through G10 have all landed.** G0 is the architecture
+**Phase G — Native RNG and Dropout — is complete; milestones G0 through
+G10 have all landed.** (The latest *completed* phase is now Phase H —
+native CPU performance — recorded further below.) G0 is the architecture
 contract, [native_rng_dropout_design.md](native_rng_dropout_design.md),
 and it adds **no numerical behavior**. It locks: random state is
 **Python-managed** while native random kernels stay **stateless** and
@@ -3839,7 +3841,7 @@ training run with exact checkpoint resume, an honest characterization
 benchmark, and phase closure under Release/Debug builds and Clang
 ASan/UBSan/LeakSanitizer. **Phase F — Native Normalization and Stateful
 Buffers — is complete (F0–F9)**, and **Phase G — Native RNG and
-Dropout — is the latest *completed* phase (G0–G10)**: an explicit
+Dropout — is complete (G0–G10)**: an explicit
 `NativeGenerator`, a stateless deterministic Dropout-forward Core, the
 differentiable `NativeTensor.dropout`, the `NativeDropout` module,
 checkpoint format version 2 with generator state and alias topology, an
@@ -3924,9 +3926,9 @@ Dropout and a native RNG sit **beyond** Phase F. They belong to Phase G,
 which has since closed.
 
 **Phase H — native CPU performance and runtime efficiency — is the
-current phase; it has begun, and milestones H0, H1, H2, H3, H4, H5, and
-H6 are
-complete.** Its contract is
+latest *completed* phase.** Phase H is **complete**: milestones H0 through H10 have all landed, and it is the latest *completed* phase. H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
+
+Reported as honestly as the wins. The controls held — the unchanged raw-buffer matmul at 0.99×, NumPy at 1.03×, storage allocation at 0.98×, and Dropout at 1.00× — and **`to_numpy` at 0.95× is the one reproducible regression**, attributed rather than smoothed over: its compiled traversal is byte-identical source measuring 0.975×–1.008×, so what changed is that H3's and H7's much cheaper wrapper no longer hides it. The remaining limitations are stated plainly: the gap to a tuned multi-threaded BLAS is **3.6×–9.3×** and widens with size; convolution is entirely scalar (0 packed-double instructions); `tf_core_narrow_backward` still walks the odometer, deliberately, because it executes **0 times** in every shipped training workload; and a small operation still costs a few microseconds because **60 % of that is the owning allocation and 19 % is building the result's Python ownership objects, against 12 % for the ctypes crossing** — an architectural floor rather than a defect. Every number is a local characterization of one machine, reported with its spread, and asserted by no test. Its contract is
 [native_cpu_performance_design.md](native_cpu_performance_design.md).
 H0 is architecture, profiling, and baseline work; **nothing was made
 faster**. It shipped that contract, the unified measurement harness
@@ -5149,10 +5151,12 @@ allocations (775,248 bytes in 694 allocations) contain **no TensorForge
 frame** — every named frame is CPython, libc, NumPy, or the ASan runtime —
 and **no suppression file was added**.
 
-The proposed H2–H8 ladder is explicitly conditional on
+The proposed H2–H8 ladder was, at this point, explicitly conditional on
 that evidence, and a memory pool, scratch allocation, SIMD, threading,
-and BLAS are all currently rejected on it, each with the criteria that
-would reopen it recorded rather than an answer invented. Every number is
+and BLAS were all rejected on it, each with the criteria that
+would reopen it recorded rather than an answer invented. *(The ladder went
+on to run H0–H10 and end there, and all of those rejections were made
+final at H10 with fresh measurements.)* Every number is
 a local characterization of one machine, reported with its spread, and
 asserted by no test — there is no CI timing threshold anywhere in this
 repository.
