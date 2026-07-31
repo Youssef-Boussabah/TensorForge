@@ -58,27 +58,54 @@ The contract (all tested in tests/test_native_adam.py):
   skipped), validates every active gradient (an open ``NativeTensor``
   of exactly the parameter's shape/dtype/device), and stages — per
   active entry, entirely at the autograd-unaware core level, with
-  Python scalar exponentiation only for the bias-correction
-  coefficients::
+  Python scalar arithmetic only for the bias-correction coefficients::
 
       t      = previous_step + 1
       m_new  = beta1 * m + (1 - beta1) * g
       v_new  = beta2 * v + (1 - beta2) * (g * g)
-      m_hat  = m_new * reciprocal(1 - beta1 ** t)
-      v_hat  = v_new * reciprocal(1 - beta2 ** t)
+      m_hat  = m_new * (1 / (1 - beta1 ** t))
+      v_hat  = v_new * (1 / (1 - beta2 ** t))
       update = lr * m_hat * reciprocal(sqrt(v_hat) + eps)
       parameter_new = parameter - update
 
   No graph node, no NumPy, no division operation; ``eps > 0``
-  guarantees a positive denominator even when ``v_hat`` is zero. Any
+  guarantees a positive denominator even when ``v_hat`` is zero. The two
+  bias-correction reciprocals are evaluated in Python (Phase H,
+  milestone H4) rather than by allocating a one-element tensor and
+  running the native ``reciprocal`` on it. That is an **exact
+  substitution, not a reassociation**: the kernel *is* ``1.0 / x`` on
+  the same IEEE-754 binary64 value, and IEEE-754 division is correctly
+  rounded, so both spellings produce the same bits — the results are
+  bit-identical to the pre-H4 composition, which the test suite retains
+  and executes natively as its reference. Any
   phase-1 failure closes every staged temporary and changes no value,
   version, moment, counter, or gradient — the same optimizer recovers
   on a later valid step. Phase 2 commits each active entry in stored
   order: ``copy_value_(parameter_new)`` (version +1), install the
   staged ``m_new``/``v_new`` as the new optimizer-owned state, commit
   the step count, then close the replaced old moment buffers; the
-  staged ``parameter_new`` never persists and is always closed. Two
-  narrow, honest limitations, documented rather than papered over
+  staged ``parameter_new`` never persists and is always closed.
+
+  Two efficiency properties of the staging phase, both invisible to the
+  contract above (Phase H, milestone H4). The scalar coefficients
+  ``beta1``, ``1 - beta1``, ``beta2``, ``1 - beta2``, ``eps``, and
+  ``lr`` are the same value for every parameter in a step, so they are
+  built **once per step** in a private ``_StepConstants`` holder rather
+  than once per parameter, with the two bias-correction terms cached per
+  *step counter* (steady-state training shares one ``t``; a parameter
+  that skipped earlier steps legitimately gets its own). The holder
+  allocates nothing until the first entry asks for a coefficient — a
+  step with no active parameter allocates nothing at all — is released
+  before the commit begins, and is **never stored on the optimizer**, so
+  no scalar survives a step, enters ``state_dict()``, reaches a
+  checkpoint, or has to be released by ``close()``. And each staged
+  temporary is released at the point its last consumer has run rather
+  than at the end of the expression, which cuts the live transient
+  buffers during staging from roughly seventeen parameter-sized ones to
+  at most four. Neither changes a value, an operation, or an operation
+  order.
+
+  Two narrow, honest limitations, documented rather than papered over
   with private rollback: an asynchronous interruption (e.g.
   KeyboardInterrupt) landing **between two commits** leaves earlier
   entries advanced and later ones not (each committed entry stays
@@ -139,6 +166,128 @@ _STATE_KEYS = (
     "format_version", "optimizer", "lr", "betas", "eps",
     "parameters", "step_counts", "m", "v",
 )
+
+
+def _released(core):
+    """Close ``core`` and return ``None`` (Phase H, milestone H4).
+
+    The eager-release idiom ``_stage_entry`` stages with: a temporary is
+    released at the point its last consumer has run, and its local is set
+    to ``None`` so the exception cleanup below cannot close it a second
+    time and the reader can see at a glance which values are still live.
+    """
+    core.close()
+    return None
+
+
+class _StepConstants:
+    """The scalar operands one ``NativeAdam.step()`` needs, built at most
+    once per step instead of once per parameter (Phase H, milestone H4).
+
+    Every coefficient in the Adam update is a broadcast one-element native
+    core, and six of them — ``beta1``, ``1 - beta1``, ``beta2``,
+    ``1 - beta2``, ``eps``, and ``lr`` — are **identical for every
+    parameter in a step**. Before H4 each was rebuilt per parameter, which
+    made the scalar allocation count scale with the parameter count for no
+    numerical reason. This holder builds each one lazily on first use and
+    hands the *same* read-only core to every later parameter of the same
+    dtype/device.
+
+    The two bias-correction reciprocals depend on the per-parameter step
+    counter ``t``, so they are cached per ``t`` rather than per step: in
+    steady-state training every parameter shares one ``t`` and one pair is
+    built, while a parameter that skipped earlier steps legitimately gets
+    its own.
+
+    **Lifetime.** The holder is created and released inside a single
+    ``step()`` call and is never stored on the optimizer, so no scalar
+    survives a step, enters ``state_dict()``, reaches a checkpoint, or has
+    to be released by ``close()``. Nothing here is shared between
+    optimizer instances, between threads, or between steps.
+
+    **Hyperparameters are captured once, at the start of the step.** They
+    cannot change during a step — the optimizer exposes them read-only and
+    only ``load_state_dict`` replaces them — so every step still observes
+    exactly the values it began with, and a value changed between steps is
+    picked up by the next step's holder.
+
+    **Failure.** A failed allocation closes everything that call built,
+    caches nothing for that key, and propagates; ``close()`` then releases
+    every scalar the holder did complete, exactly once.
+    """
+
+    __slots__ = ("_lr", "_beta1", "_beta2", "_eps", "_invariants",
+                 "_corrections")
+
+    def __init__(self, lr, betas, eps):
+        self._lr = lr
+        self._beta1, self._beta2 = betas
+        self._eps = eps
+        self._invariants = {}    # (dtype, device) -> six scalar cores
+        self._corrections = {}   # (dtype, device, t) -> two scalar cores
+
+    @staticmethod
+    def _build(values, dtype, device):
+        """The scalar cores for ``values``, or nothing at all: a failure
+        part-way closes what it built before propagating."""
+        cores = []
+        try:
+            for value in values:
+                cores.append(cpp.NativeTensorCore.full(
+                    (), value, dtype=dtype, device=device
+                ))
+        except BaseException:
+            for core in cores:
+                core.close()
+            raise
+        return tuple(cores)
+
+    def invariants(self, dtype, device):
+        """``(beta1, 1 - beta1, beta2, 1 - beta2, eps, lr)`` as broadcast
+        scalar cores for this dtype/device — built on first use, shared by
+        every later parameter, and owned by this holder."""
+        key = (dtype, device)
+        cores = self._invariants.get(key)
+        if cores is None:
+            cores = self._build(
+                (self._beta1, 1.0 - self._beta1,
+                 self._beta2, 1.0 - self._beta2,
+                 self._eps, self._lr),
+                dtype, device,
+            )
+            self._invariants[key] = cores
+        return cores
+
+    def corrections(self, dtype, device, t):
+        """The two bias-correction **reciprocals** for step ``t``,
+        ``1 / (1 - beta ** t)``, as broadcast scalar cores.
+
+        H4 evaluates the reciprocal in Python rather than allocating
+        ``1 - beta ** t`` and calling the native ``reciprocal`` on it. That
+        is an exact substitution, not a reassociation: the native kernel
+        *is* ``1.0 / x`` on the same IEEE-754 binary64 value (see
+        ``op_reciprocal`` in ``cpp/src/elementwise.cpp``), and IEEE-754
+        division is correctly rounded, so there is exactly one possible
+        result and both spellings produce it bit for bit. The saving is one
+        allocation and one kernel call per coefficient per parameter."""
+        key = (dtype, device, t)
+        cores = self._corrections.get(key)
+        if cores is None:
+            cores = self._build(
+                (1.0 / (1.0 - self._beta1 ** t),
+                 1.0 / (1.0 - self._beta2 ** t)),
+                dtype, device,
+            )
+            self._corrections[key] = cores
+        return cores
+
+    def close(self):
+        """Release every scalar built during this step, exactly once."""
+        for cache in (self._invariants, self._corrections):
+            for cores in cache.values():
+                for core in cores:
+                    core.close()
+            cache.clear()
 
 
 def _validated_positive_real(value, name):
@@ -446,16 +595,29 @@ class NativeAdam:
         # core level — the autograd-unaware layer, so no graph can
         # exist. A failure here releases everything staged so far and
         # has mutated nothing.
+        #
+        # H4: the step's scalar coefficients are built at most once for
+        # the whole step rather than once per parameter, in a holder that
+        # is created here, allocates nothing until the first entry asks
+        # for a coefficient (so a step with no active parameter allocates
+        # nothing at all), and is released before the commit begins. It is
+        # never stored on the optimizer, so it cannot outlive the step.
+        constants = _StepConstants(self._lr, self._betas, self._eps)
         staged = []
         try:
-            for index, parameter, grad in active:
-                staged.append(self._stage_entry(index, parameter, grad))
-        except BaseException:
-            for _, _, m_new, v_new, parameter_new, _ in staged:
-                m_new.close()
-                v_new.close()
-                parameter_new.close()
-            raise
+            try:
+                for index, parameter, grad in active:
+                    staged.append(
+                        self._stage_entry(index, parameter, grad, constants)
+                    )
+            except BaseException:
+                for _, _, m_new, v_new, parameter_new, _ in staged:
+                    m_new.close()
+                    v_new.close()
+                    parameter_new.close()
+                raise
+        finally:
+            constants.close()
 
         # Phase 2: commit each active entry in stored order — the
         # parameter through the one sanctioned mutation path (version
@@ -484,100 +646,117 @@ class NativeAdam:
                 if self._v[index] is not v_new:
                     v_new.close()
 
-    def _stage_entry(self, index, parameter, grad):
+    def _stage_entry(self, index, parameter, grad, constants=None):
         """Stage one active entry's next values, entirely at the
         NativeTensorCore level: fresh owning ``m_new``/``v_new``/
         ``parameter_new`` tensors (independent of every parameter,
         gradient, and existing state buffer) plus the next step count.
         Transient cores are closed on every path; on failure the
         partially built m_new/v_new are closed too and nothing has
-        been mutated."""
+        been mutated.
+
+        ``constants`` is the step's shared ``_StepConstants`` holder
+        (Phase H, milestone H4). It is optional so this method stays
+        correct called on its own: with ``None`` it builds a private
+        holder for this one entry and releases it before returning, which
+        is exactly the pre-H4 behavior of one scalar set per parameter.
+        The holder is never stored on the optimizer either way.
+
+        The arithmetic is unchanged from the shipped composition, operand
+        for operand and operation for operation. What changed is *when*
+        each temporary is released: a value is closed at the point its
+        last consumer has run, rather than every temporary being held
+        until the whole expression is complete. That cuts the live
+        temporary count during staging from roughly seventeen
+        parameter-sized buffers to at most four, and changes no result."""
         parameter_core = parameter._require_open()
         grad_core = grad._require_open()
         m_core = self._m[index]._require_open()
         v_core = self._v[index]._require_open()
-        beta1, beta2 = self._betas
         next_step = self._steps[index] + 1
         dtype, device = parameter_core.dtype, parameter_core.device
 
-        def scalar(value):
-            # A broadcast scalar core — the same composition NativeSGD
-            # and the engine's own backward math use.
-            return cpp.NativeTensorCore.full((), value, dtype=dtype,
-                                             device=device)
+        private = None
+        if constants is None:
+            private = constants = _StepConstants(
+                self._lr, self._betas, self._eps
+            )
 
         m_new_core = None
         v_new_core = None
-        transients = []
+        parameter_new_core = None
+        # Every temporary the expression owns. Each is released — and its
+        # local set to None — as soon as its last consumer has run, so the
+        # cleanup below closes only what is genuinely still live and can
+        # never close anything twice.
+        decayed_m = fresh_m = decayed_v = grad_squared = fresh_v = None
+        m_hat = v_hat = root = denominator = inverse_denominator = None
+        scaled_m_hat = update = None
         try:
+            beta1_scalar, beta1_complement, beta2_scalar, \
+                beta2_complement, eps_scalar, lr_scalar = \
+                constants.invariants(dtype, device)
+
             # m_new = beta1 * m + (1 - beta1) * g
-            beta1_scalar = scalar(beta1)
-            transients.append(beta1_scalar)
             decayed_m = m_core.multiply(beta1_scalar)
-            transients.append(decayed_m)
-            beta1_complement = scalar(1.0 - beta1)
-            transients.append(beta1_complement)
             fresh_m = grad_core.multiply(beta1_complement)
-            transients.append(fresh_m)
             m_new_core = decayed_m.add(fresh_m)
+            decayed_m = _released(decayed_m)
+            fresh_m = _released(fresh_m)
 
             # v_new = beta2 * v + (1 - beta2) * (g * g)
-            beta2_scalar = scalar(beta2)
-            transients.append(beta2_scalar)
             decayed_v = v_core.multiply(beta2_scalar)
-            transients.append(decayed_v)
             grad_squared = grad_core.multiply(grad_core)
-            transients.append(grad_squared)
-            beta2_complement = scalar(1.0 - beta2)
-            transients.append(beta2_complement)
             fresh_v = grad_squared.multiply(beta2_complement)
-            transients.append(fresh_v)
+            grad_squared = _released(grad_squared)
             v_new_core = decayed_v.add(fresh_v)
+            decayed_v = _released(decayed_v)
+            fresh_v = _released(fresh_v)
 
-            # Bias correction: the coefficients 1 - beta ** t are the
-            # one place Python scalar exponentiation is used; their
-            # reciprocals are taken natively (no division operation).
-            correction1 = scalar(1.0 - beta1 ** next_step)
-            transients.append(correction1)
-            inverse_correction1 = correction1.reciprocal()
-            transients.append(inverse_correction1)
+            # Bias correction. The coefficients are the one place Python
+            # scalar arithmetic is used, and H4 evaluates the reciprocal
+            # there too — an exact substitution for the native
+            # `reciprocal` (see _StepConstants.corrections), not a
+            # reassociation of the tensor expression.
+            inverse_correction1, inverse_correction2 = \
+                constants.corrections(dtype, device, next_step)
             m_hat = m_new_core.multiply(inverse_correction1)
-            transients.append(m_hat)
-
-            correction2 = scalar(1.0 - beta2 ** next_step)
-            transients.append(correction2)
-            inverse_correction2 = correction2.reciprocal()
-            transients.append(inverse_correction2)
             v_hat = v_new_core.multiply(inverse_correction2)
-            transients.append(v_hat)
 
             # update = lr * m_hat * reciprocal(sqrt(v_hat) + eps);
             # eps > 0 keeps the denominator positive even at v_hat = 0.
             root = v_hat.sqrt()
-            transients.append(root)
-            eps_scalar = scalar(self._eps)
-            transients.append(eps_scalar)
+            v_hat = _released(v_hat)
             denominator = root.add(eps_scalar)
-            transients.append(denominator)
+            root = _released(root)
             inverse_denominator = denominator.reciprocal()
-            transients.append(inverse_denominator)
-            lr_scalar = scalar(self._lr)
-            transients.append(lr_scalar)
+            denominator = _released(denominator)
             scaled_m_hat = m_hat.multiply(lr_scalar)
-            transients.append(scaled_m_hat)
+            m_hat = _released(m_hat)
             update = scaled_m_hat.multiply(inverse_denominator)
-            transients.append(update)
+            scaled_m_hat = _released(scaled_m_hat)
+            inverse_denominator = _released(inverse_denominator)
 
             parameter_new_core = parameter_core.subtract(update)
+            update = _released(update)
         except BaseException:
             if m_new_core is not None:
                 m_new_core.close()
             if v_new_core is not None:
                 v_new_core.close()
+            if parameter_new_core is not None:
+                parameter_new_core.close()
             raise
         finally:
-            for core in transients:
-                core.close()
+            for core in (
+                decayed_m, fresh_m, decayed_v, grad_squared, fresh_v,
+                m_hat, v_hat, root, denominator, inverse_denominator,
+                scaled_m_hat, update,
+            ):
+                if core is not None:
+                    core.close()
+            if private is not None:
+                private.close()
 
         return (
             index,

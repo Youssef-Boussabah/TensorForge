@@ -1861,11 +1861,15 @@ def test_boundary_c_an_optimizer_staging_failure_commits_nothing(
     real_stage = NativeAdam._stage_entry
     calls = {"n": 0}
 
-    def failing_stage(self, index, parameter, grad):
+    # ``*rest`` carries the step's shared scalar-constant holder, which
+    # H4 passes to every entry; forwarding it unexamined keeps this
+    # injection about *when* staging fails, not about the staging
+    # signature.
+    def failing_stage(self, index, parameter, grad, *rest):
         calls["n"] += 1
         if calls["n"] == 3:          # after some entries are already staged
             raise _Boom("injected optimizer staging failure")
-        return real_stage(self, index, parameter, grad)
+        return real_stage(self, index, parameter, grad, *rest)
 
     patcher = _injected(NativeAdam, "_stage_entry", failing_stage)
     with pytest.raises(_Boom, match="injected optimizer staging failure"):

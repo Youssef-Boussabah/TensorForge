@@ -526,7 +526,13 @@ def test_native_log_softmax_axis_validation_precedes_allocation(monkeypatch):
     def _fail(*args, **kwargs):
         raise AssertionError("allocation happened before axis validation")
 
-    monkeypatch.setattr(cpp.NativeTensorCore, "zeros", staticmethod(_fail))
+    monkeypatch.setattr(cpp.NativeTensorCore, "zeros",
+                        staticmethod(_fail))
+    # H1: the enabled output-allocation sites construct through
+    # _uninitialized, so the same probe must watch both
+    # constructors for this test to still observe the real path.
+    monkeypatch.setattr(cpp.NativeTensorCore, "_uninitialized",
+                        staticmethod(_fail))
     monkeypatch.setattr(cpp.NativeTensorCore, "contiguous_copy", _fail)
     with pytest.raises(ValueError, match="out of bounds"):
         core.log_softmax(5)
@@ -685,6 +691,11 @@ def test_native_log_softmax_output_is_closed_if_the_kernel_fails(monkeypatch):
         raise RuntimeError("simulated native log_softmax failure")
 
     monkeypatch.setattr(cpp.NativeTensorCore, "zeros",
+                        staticmethod(_recording_zeros))
+    # H1: the enabled output-allocation sites construct through
+    # _uninitialized, so the same probe must watch both
+    # constructors for this test to still observe the real path.
+    monkeypatch.setattr(cpp.NativeTensorCore, "_uninitialized",
                         staticmethod(_recording_zeros))
     monkeypatch.setattr(library, "tf_core_log_softmax_forward",
                         _failing_kernel)

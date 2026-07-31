@@ -687,8 +687,11 @@ def test_native_log_abi_rejects_invalid_calls():
     destination = cpp.NativeTensorCore.from_array(np.full(4, 7777.5))
     src_handle = source.storage._require_open()
     dst_handle = destination.storage._require_open()
-    shape = np.asarray([4], dtype=np.int64)
-    good_strides = np.asarray([1], dtype=np.int64)
+    # Deliberately malformed layout metadata, built through H7's trusted
+    # carrier — the ABI's own validation is what is under test here, and it
+    # is unchanged.
+    shape = cpp._layout_vector([4])
+    good_strides = cpp._layout_vector([1])
 
     with pytest.raises(ValueError, match="span exceeds its storage"):
         library.tf_core_log_contiguous(src_handle, dst_handle, 4, 1)
@@ -696,10 +699,10 @@ def test_native_log_abi_rejects_invalid_calls():
         library.tf_core_log_contiguous(src_handle, dst_handle, 8, 0)
     with pytest.raises(ValueError, match="span exceeds its storage"):
         library.tf_core_log(src_handle, dst_handle, shape,
-                            np.asarray([2], dtype=np.int64), 0, 1)
+                            cpp._layout_vector([2]), 0, 1)
     with pytest.raises(ValueError, match="non-positive dimension"):
         library.tf_core_log(src_handle, dst_handle,
-                            np.asarray([0], dtype=np.int64), good_strides, 0, 1)
+                            cpp._layout_vector([0]), good_strides, 0, 1)
     with pytest.raises(ValueError, match="negative offset"):
         library.tf_core_log(src_handle, dst_handle, shape, good_strides, -1, 1)
     # The destination was never written by any rejected call.

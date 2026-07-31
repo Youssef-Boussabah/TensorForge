@@ -559,12 +559,15 @@ def test_native_exp_abi_rejects_invalid_spans():
         library.tf_core_exp_contiguous(src_handle, dst_handle, 4, 1)
     with pytest.raises(ValueError, match="span exceeds its storage"):
         library.tf_core_exp_contiguous(src_handle, dst_handle, 8, 0)
-    shape = np.asarray([4], dtype=np.int64)
-    strides = np.asarray([2], dtype=np.int64)
+    # Deliberately malformed layout metadata, built through H7's trusted
+    # carrier — the ABI's own validation is what is under test here, and it
+    # is unchanged.
+    shape = cpp._layout_vector([4])
+    strides = cpp._layout_vector([2])
     with pytest.raises(ValueError, match="span exceeds its storage"):
         library.tf_core_exp(src_handle, dst_handle, shape, strides, 0, 1)
-    bad_shape = np.asarray([0], dtype=np.int64)
-    good_strides = np.asarray([1], dtype=np.int64)
+    bad_shape = cpp._layout_vector([0])
+    good_strides = cpp._layout_vector([1])
     with pytest.raises(ValueError, match="non-positive dimension"):
         library.tf_core_exp(src_handle, dst_handle, bad_shape, good_strides,
                             0, 1)

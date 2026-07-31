@@ -46,7 +46,15 @@ The contract (all tested in tests/test_native_sgd.py):
   engine's own backward math uses, so no graph node, parent, or
   backward callback can possibly be created, no NumPy touches the
   update, and the staged values are fresh owning tensors independent
-  of every parameter. Any phase-1 failure releases all staged
+  of every parameter. The broadcast ``lr`` scalar is the same value for
+  every parameter in a step, so it is built **once per step** rather
+  than once per parameter (Phase H, milestone H4) — lazily, so a step
+  with no active parameter still allocates nothing, and released before
+  the commit begins, so the optimizer still owns no native storage
+  between steps and ``NativeSGD`` still keeps no tensor state. That is
+  an allocation change only: the same operands, the same operations, in
+  the same order, and bit-identical results.
+  Any phase-1 failure releases all staged
   temporaries and changes no value, version, or gradient. Phase 2
   commits each staged value through ``NativeParameter.copy_value_()``
   in stored order — parameter identity, registration, aliases,
@@ -239,28 +247,48 @@ class NativeSGD:
         # are fresh owning tensors independent of every parameter and
         # gradient. A failure here releases everything staged so far
         # and has mutated nothing.
+        #
+        # H4: the ``lr`` scalar is identical for every parameter in a
+        # step, so it is built at most once per step (lazily, per
+        # dtype/device, so a step with no active parameter still allocates
+        # nothing) instead of once per parameter. It is a read-only
+        # broadcast operand, it is released before the commit begins, and
+        # it is never stored on the optimizer — SGD keeps no tensor state,
+        # and H4 did not give it any. The learning rate is read once here,
+        # which is the value the whole step observes; it cannot change
+        # mid-step, and a value changed between steps is picked up by the
+        # next step.
+        learning_rate = self._lr
+        scales = {}   # (dtype, device) -> the shared lr scalar core
         staged = []
         try:
-            for parameter, grad in active:
-                parameter_core = parameter._require_open()
-                grad_core = grad._require_open()
-                scale = cpp.NativeTensorCore.full(
-                    (), self._lr,
-                    dtype=grad_core.dtype, device=grad_core.device,
-                )
-                try:
+            try:
+                for parameter, grad in active:
+                    parameter_core = parameter._require_open()
+                    grad_core = grad._require_open()
+                    key = (grad_core.dtype, grad_core.device)
+                    scale = scales.get(key)
+                    if scale is None:
+                        scale = cpp.NativeTensorCore.full(
+                            (), learning_rate,
+                            dtype=key[0], device=key[1],
+                        )
+                        scales[key] = scale
                     scaled = grad_core.multiply(scale)  # lr * grad
-                finally:
-                    scale.close()
-                try:
-                    updated = parameter_core.subtract(scaled)
-                finally:
-                    scaled.close()
-                staged.append((parameter, NativeTensor._from_core(updated)))
-        except BaseException:
-            for _, update in staged:
-                update.close()
-            raise
+                    try:
+                        updated = parameter_core.subtract(scaled)
+                    finally:
+                        scaled.close()
+                    staged.append(
+                        (parameter, NativeTensor._from_core(updated))
+                    )
+            except BaseException:
+                for _, update in staged:
+                    update.close()
+                raise
+        finally:
+            for scale in scales.values():
+                scale.close()
 
         # Phase 2: commit in stored order through the one sanctioned
         # mutation path — identity, gradients, requires_grad, and

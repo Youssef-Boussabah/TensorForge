@@ -432,9 +432,13 @@ def test_batchnorm1d_gates_cover_running_state_and_mode_behavior():
     evaluation = records["batchnorm1d_eval_forward"]["correctness"]
     for expected in ("numpy_formula_parity", "no_running_state_mutation",
                      "graph_holds_snapshots_not_buffers",
-                     "snapshots_own_their_storage", "stable_parity"):
+                     "snapshots_own_their_storage",
+                     "adopted_resource_inventory_is_exact", "stable_parity"):
         assert expected in evaluation["checks"], expected
-    assert evaluation["adopted_snapshot_count"] >= 2
+    assert evaluation["adopted_snapshot_count"] == 2
+    # The (N, C) layout applies its rank-1 affine parameters directly, so
+    # the graph never borrows an activation view and owns no affine source.
+    assert evaluation["adopted_affine_source_count"] == 0
     backward = records["batchnorm1d_backward"]["correctness"]
     for expected in ("reference_parity", "no_buffer_gradients",
                      "backward_does_not_advance_state", "graph_released"):
@@ -459,9 +463,15 @@ def test_batchnorm2d_gates_are_real_despite_having_no_timed_reference():
     evaluation = records["batchnorm2d_eval_forward"]["correctness"]
     for expected in ("numpy_formula_parity", "no_running_state_mutation",
                      "graph_holds_snapshots_not_buffers",
+                     "adopted_resource_inventory_is_exact",
                      "owning_contiguous_output"):
         assert expected in evaluation["checks"], expected
     assert "stable_parity" not in evaluation["checks"]
+    # NCHW moves the *activation* channels-last for the affine step, so a
+    # graph built only from the affine parameters owns exactly one extra
+    # resource: the tensor whose storage that borrowing operand needs.
+    assert evaluation["adopted_snapshot_count"] == 2
+    assert evaluation["adopted_affine_source_count"] == 1
     backward = records["batchnorm2d_backward"]["correctness"]
     for expected in ("reference_parity", "no_buffer_gradients",
                      "backward_does_not_advance_state", "graph_released"):
@@ -563,9 +573,11 @@ def test_a_wrong_batchnorm_running_update_aborts_before_timing(monkeypatch):
         timed.append(args)
         return original_measure(*args, **kwargs)
 
-    def wrong_blend(self, current, statistic, like, track):
+    def wrong_blend(self, current, statistic, keep_old, take_new, track):
         # A finite, correctly shaped, but wrong replacement value: the
-        # batch statistic with no momentum blending at all.
+        # batch statistic with no momentum blending at all. (The signature
+        # tracks the H8 shared-coefficient pair; the injected error is
+        # exactly what it always was.)
         detached = track(statistic.detach())
         return track(detached.reshape((self.num_features,)))
 

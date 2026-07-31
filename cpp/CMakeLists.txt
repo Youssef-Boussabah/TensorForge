@@ -355,4 +355,152 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME dropout_forward COMMAND test_dropout_forward)
+
+  # Storage creation contract (Phase H, H1): links the storage source
+  # directly plus error.cpp, which owns the thread-local error slot the
+  # guarded exports feed and the pre-existing allocation fault-injection
+  # hook. It drives the *exported* layer only — tf_storage_create,
+  # tf_storage_create_uninitialized, and their shared validation,
+  # allocation-failure, error, ownership, destruction, and live-handle
+  # behavior — and runs every shared check against **both** constructors
+  # so the two cannot drift apart. Whether a given kernel writes every
+  # destination element is a per-kernel property proved from Python,
+  # where the poison wraps the private allocation helper around a real
+  # Core operation; no poison-control export exists in this library.
+  add_executable(test_storage_allocation
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_storage_allocation.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_storage_allocation PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_storage_allocation PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_storage_allocation PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_storage_allocation PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME storage_allocation COMMAND test_storage_allocation)
+
+  # Matmul loop order and dispatch (Phase H, H2): links the matmul source
+  # directly, plus storage.cpp (the exported-wrapper check drives real
+  # tf::Storage handles) and error.cpp (matmul.cpp carries the guarded
+  # tf_core_matmul export, which references the thread-local error slot).
+  # Like the D8/D9 pooling targets it drives *both* layers — the internal
+  # tf::matmul_generic_strided / tf::matmul_row_sweep kernels and the
+  # tf::matmul_prefers_row_sweep predicate, which the shared library does
+  # not export and which are reachable only by compiling the source in.
+  # That is what proves which path a layout takes without adding any
+  # "which kernel ran" control to the shipped ABI.
+  add_executable(test_matmul
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_matmul PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_matmul PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_matmul PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_matmul PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME matmul COMMAND test_matmul)
+
+  # Strided-to-contiguous gather and its H5 traversal dispatch: compiles
+  # elementwise.cpp directly so it can reach the hidden
+  # tf::copy_prefers_contiguous predicate alongside the exported
+  # tf_core_contiguous_copy wrapper it lives inside. storage.cpp supplies
+  # the Storage handles the ABI takes, and error.cpp the thread-local
+  # error slot the guarded wrapper records into.
+  add_executable(test_contiguous_copy
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_contiguous_copy.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_contiguous_copy PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_contiguous_copy PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_contiguous_copy PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_contiguous_copy PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME contiguous_copy COMMAND test_contiguous_copy)
+
+  # Sum reduction and its H6 traversal dispatch: compiles reduction.cpp
+  # directly so it can reach the hidden tf::reduce_prefers_contiguous_blocks
+  # predicate and BOTH hidden traversals alongside the exported tf_core_sum
+  # wrapper they live inside. storage.cpp supplies the Storage handles the
+  # ABI takes, and error.cpp the thread-local error slot the guarded wrapper
+  # records into.
+  add_executable(test_sum_reduction
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_sum_reduction.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reduction.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_sum_reduction PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_sum_reduction PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_sum_reduction PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_sum_reduction PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME sum_reduction COMMAND test_sum_reduction)
+
+  # Elementwise traversal and its H8 collapsed plan: compiles elementwise.cpp
+  # directly so it can reach the hidden tf::build_unary_plan /
+  # tf::build_binary_plan builders and the templated traversals alongside the
+  # exported wrappers they live inside. storage.cpp supplies the Storage
+  # handles the ABI takes, and error.cpp the thread-local error slot the
+  # guarded wrappers record into.
+  add_executable(test_elementwise_traversal
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_elementwise_traversal.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_elementwise_traversal PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_elementwise_traversal PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_elementwise_traversal PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_elementwise_traversal PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME elementwise_traversal COMMAND test_elementwise_traversal)
+
+  # Conv2d compute paths and their H9 dispatch: compiles conv2d.cpp directly
+  # so it can reach the hidden tf::conv2d_*_prefers_* predicates and BOTH
+  # compute paths per direction — the retained Phase-D generic loops and the
+  # H9 optimized traversals — none of which the shared library exports. That
+  # is what proves which path a geometry takes, and that the two agree bit
+  # for bit, without adding any dispatch control to the shipped ABI.
+  # error.cpp is compiled in for the same reason as the D2/D4/D5 targets:
+  # conv2d.cpp carries the guarded exported wrappers, which reference the
+  # thread-local error slot.
+  add_executable(test_conv2d_execution
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_conv2d_execution.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_conv2d_execution PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_conv2d_execution PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_conv2d_execution PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_conv2d_execution PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME conv2d_execution COMMAND test_conv2d_execution)
 endif()

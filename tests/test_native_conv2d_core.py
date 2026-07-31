@@ -756,8 +756,13 @@ def test_temporary_copies_closed_when_output_alloc_fails(monkeypatch):
         raise MemoryError("simulated output allocation failure")
 
     monkeypatch.setattr(cpp.NativeTensorCore, "contiguous_copy", tracking_copy)
-    monkeypatch.setattr(cpp.NativeTensorCore, "zeros", staticmethod(boom))
-
+    monkeypatch.setattr(cpp.NativeTensorCore, "zeros",
+                        staticmethod(boom))
+    # H1: the enabled output-allocation sites construct through
+    # _uninitialized, so the same probe must watch both
+    # constructors for this test to still observe the real path.
+    monkeypatch.setattr(cpp.NativeTensorCore, "_uninitialized",
+                        staticmethod(boom))
     x = np.random.default_rng(8).standard_normal((1, 2, 4, 4))
     w = np.random.default_rng(9).standard_normal((2, 2, 2, 2))
     base_x, xv = _noncontiguous_like(x)

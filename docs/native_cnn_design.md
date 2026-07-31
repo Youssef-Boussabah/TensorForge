@@ -2102,3 +2102,64 @@ training + exact checkpoint-resume proof, with the phase's deliberate
 exclusions still marked unsupported. The next native phase (**Phase E**)
 has not started; nothing in this document should be read as a claim about
 it.
+
+---
+
+## 20. Post-Phase-D: how Conv2d executes after Phase H, milestone H9
+
+**Everything above still describes the contract.** H9 changed *how* the
+three convolution kernels walk memory and **nothing else** — no C ABI
+symbol, no signature, no supported option, no layout rule, no error, no
+allocation policy, and no autograd behaviour. It is recorded here because
+§14's description of `conv2d.cpp` is otherwise incomplete, not because any
+statement above became false.
+
+Each of `tf_core_conv2d_forward`, `tf_core_conv2d_input_backward`, and
+`tf_core_conv2d_weight_backward` now dispatches, inside the **unchanged**
+export, between two compute paths:
+
+- `tf::conv2d_forward_generic`, `tf::conv2d_input_backward_generic`, and
+  `tf::conv2d_weight_backward_generic` — **the D2/D4/D5 direct loops,
+  retained verbatim.** They are the shipped generic reference paths,
+  reachable through ordinary production dispatch for every geometry that
+  fails a predicate, and the oracle every optimized result is compared
+  against. The `n, o, i, j` outer / `c, p, q` inner nest and the
+  deterministic `c → p → q` order described in §6 and §7 are exactly these
+  functions.
+- `tf::conv2d_forward_row_sweep`, `tf::conv2d_input_backward_gather`, and
+  `tf::conv2d_weight_backward_gather` — the H9 traversals, which replace
+  the short kernel-tap inner loop with a sweep along one contiguous
+  spatial row.
+
+The choice is made by three hidden predicates from the integer geometry
+the export already receives:
+`min(input_width, output_width) >= 4` for all three, plus **unit stride in
+both axes** for the input gradient. They are total, pure, allocation-free,
+and functions of that geometry alone — never a pointer value, an
+alignment, a clock, an environment variable, or a CPU-feature probe — and
+**a false answer selects the generic path and is never an error**. There
+is no path selector, block-size setter, dispatch tracer, or "which path
+ran" query anywhere in the ABI or the Python layer.
+
+**Policy B is untouched and load-bearing.** The C ABI still takes
+contiguous storage only, and the Core layer still materializes any
+non-contiguous operand into a private copy closed as soon as the call
+returns. H9 is a *geometry* optimization, not a layout one, and it
+broadened layout support by nothing.
+
+**§6's and §7's accumulation orders are preserved exactly**, per
+destination, on both paths — separately proved for all three directions in
+`docs/native_cpu_performance_design.md` §16.9.5. The bias is still added
+exactly once per output element as the accumulator's seed; padded taps are
+still skipped rather than materialized; and the two gradients still define
+their whole destination span. What changed is only *how* the same taps are
+enumerated.
+
+`cpp/tests/test_conv2d_execution.cpp` (CTest #17) compiles `conv2d.cpp` in
+so it can drive the predicates and **both** paths per direction directly,
+and proves them bit-identical across the geometry matrix, the signed-zero
+matrix, and the NaN matrix. The full H9 record — attribution, candidates,
+rejected alternatives, the numerical contract, the H1 proof, and the
+measurements — is in
+[native_cpu_performance_design.md](native_cpu_performance_design.md)
+§16.9.

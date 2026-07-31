@@ -581,7 +581,13 @@ def test_temporary_copy_released_when_allocation_fails(monkeypatch,
         raise MemoryError("simulated grad_input allocation failure")
 
     monkeypatch.setattr(cpp.NativeTensorCore, "contiguous_copy", tracking_copy)
-    monkeypatch.setattr(cpp.NativeTensorCore, "zeros", staticmethod(boom))
+    monkeypatch.setattr(cpp.NativeTensorCore, "zeros",
+                        staticmethod(boom))
+    # H1: the enabled output-allocation sites construct through
+    # _uninitialized, so the same probe must watch both
+    # constructors for this test to still observe the real path.
+    monkeypatch.setattr(cpp.NativeTensorCore, "_uninitialized",
+                        staticmethod(boom))
     upstream = np.random.default_rng(3).standard_normal((1, 1, 2, 2))
     owner = _core(np.ascontiguousarray(upstream.transpose(0, 1, 3, 2)))
     view = owner.transpose(0, 1, 3, 2)

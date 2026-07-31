@@ -483,6 +483,112 @@ _MAX_EXACT_WINNER_PLANE = 2 ** 53
 
 _lib = None  # loaded lazily by _require_library()
 
+# ---------------------------------------------------------------------------
+# The two argument bindings for arrays crossing the C ABI (Phase H, H7)
+#
+# Every array position in this module's declarations falls into exactly one
+# of two categories, and they are bound differently on purpose. Applying one
+# blanket policy to both would either leave a real check off a caller-facing
+# path or pay a per-call validation cost for an invariant that was already
+# established, once, at an immutable construction boundary.
+#
+# **CHECKED** — ``_CHECKED_F64_ARRAY`` / ``_CHECKED_I64_ARRAY``.
+# ``numpy.ctypeslib.ndpointer`` re-verifies, at every call, that the argument
+# is a NumPy array, that its dtype matches exactly (byte order included), and
+# that it is C-contiguous. That is exactly right where the array is *data* —
+# a buffer a caller supplied, or one native code writes into and hands back:
+#
+#   * the seven raw public kernels (``elementwise_add`` … ``matmul_tiled``),
+#     which any caller may reach with any object at all;
+#   * ``tf_storage_copy_from`` / ``tf_storage_copy_to`` and the float64
+#     destination of ``tf_storage_materialize`` — the explicit host
+#     conversion boundary;
+#   * the int64 **class labels** of the two cross-entropy exports. Those are
+#     int64 like the layout metadata below, and they are deliberately *not*
+#     bound as trusted: a label array's required length is the logits'
+#     ``batch_size``, which comes from a *different* object than the array
+#     does, so a dtype and layout check at the boundary is still doing work
+#     the construction site cannot do by itself. There is one such array per
+#     cross-entropy call, so the check costs nothing that matters.
+#
+# **TRUSTED** — ``_LAYOUT_POINTER``.
+# The strided C ABI's ``shape`` / ``strides`` / write-stride positions are
+# *layout metadata this module built for itself* from a tuple it had already
+# validated. Exactly two producers exist and no other object can reach these
+# positions:
+#
+#   * ``NativeTensorView._native_layout_pointers()`` — the per-view pair,
+#     derived from the H3 read-only NumPy layout arrays that remain the
+#     owning buffers;
+#   * ``_layout_vector(values)`` — a fresh, exactly ``len(values)`` long
+#     ``c_int64`` vector for the operation-local metadata (broadcast strides,
+#     reduction write-strides, ``narrow_backward``'s output strides).
+#
+# Both establish, **by construction**, every property ``ndpointer`` would
+# re-check and one it never checked at all:
+#
+#   | property        | how it is established                              |
+#   |-----------------|----------------------------------------------------|
+#   | element type    | the pointer/vector *is* ``c_int64``; ctypes rejects |
+#   |                 | every other type at the call (a NumPy array, a      |
+#   |                 | differently typed pointer, bytes, a list, an int)   |
+#   | contiguity      | a ``c_int64`` vector and a NumPy ``int64`` array    |
+#   |                 | are contiguous by construction                      |
+#   | byte order      | native by construction — neither carrier has a      |
+#   |                 | byte-order concept to get wrong                     |
+#   | **length**      | ``len(values)``, or the rank of the immutable view  |
+#   |                 | the arrays were built from — **the one invariant    |
+#   |                 | ``ndpointer`` never checked**, because the ABI takes |
+#   |                 | a pointer and an ``ndim`` and cannot see the        |
+#   |                 | Python object's length                              |
+#   | owner lifetime  | ``ndarray.ctypes.data_as`` stores the array on the  |
+#   |                 | pointer (``ptr._arr``), so the buffer cannot be     |
+#   |                 | freed while the pointer exists; a fresh vector owns |
+#   |                 | its own buffer                                      |
+#
+# The one value ``POINTER(c_int64)`` accepts that ``ndpointer`` rejected is
+# ``None`` (a null pointer). No production path can produce it: both
+# producers are total, and neither can return ``None`` for any constructible
+# layout — including rank 0, where both yield a valid zero-length buffer the
+# kernels never dereference. ``tests/test_native_abi_boundary.py`` proves
+# that, and proves the rank/length agreement these positions depend on.
+# ---------------------------------------------------------------------------
+
+# The checked bindings, exactly as they have always been declared. Building
+# them at module scope rather than inside ``_load_library`` keeps the two
+# policies visible side by side and costs nothing: ``ndpointer`` memoizes its
+# generated classes, and neither of these touches the compiled library, so
+# importing this module still loads nothing.
+_CHECKED_F64_ARRAY = np.ctypeslib.ndpointer(
+    dtype=np.float64, flags="C_CONTIGUOUS"
+)
+_CHECKED_I64_ARRAY = np.ctypeslib.ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")
+
+# Layout metadata is always a pointer to int64. Declared once, used by every
+# trusted position, so no call site can pick a different (or weaker) type.
+_LAYOUT_POINTER = ctypes.POINTER(ctypes.c_int64)
+
+
+def _layout_vector(values):
+    """A fresh ``c_int64`` vector holding ``values``, for the operation-local
+    layout metadata the strided C ABI takes (Phase H, milestone H7).
+
+    ``values`` is a sequence of exact Python ints this module derived from an
+    already-validated layout — broadcast strides, a reduction's write-strides,
+    or ``narrow_backward``'s output strides. Each is a property of *one
+    operation* rather than of any tensor, so there is nothing to cache: the
+    vector is built, passed, and dropped inside a single call.
+
+    The result carries its own length (``len(vector) == len(values)``), owns
+    the buffer the kernel reads, and is a live local of the calling frame for
+    the whole native call — so no pointer here can outlive its storage. It
+    replaces a ``numpy.asarray(values, dtype=numpy.int64)`` that then had to
+    be re-validated by ``ndpointer`` at every call; building the vector
+    directly is both cheaper and stricter, because a ``c_int64`` vector
+    cannot have the wrong element type or the wrong length.
+    """
+    return (ctypes.c_int64 * len(values))(*values)
+
 
 def normalize_dtype(dtype=None):
     """Validate and canonicalize a native dtype tag.
@@ -545,7 +651,12 @@ def _load_library():
             f"The experimental C++ backend library exists but failed to "
             f"load ({error}). Try rebuilding it.\n" + build_instructions()
         ) from error
-    f64_array = np.ctypeslib.ndpointer(dtype=np.float64, flags="C_CONTIGUOUS")
+    # The checked binding for caller-facing float64 data buffers, and the
+    # trusted binding for this module's own int64 layout metadata. See the
+    # contract above ``_LAYOUT_POINTER`` for which positions get which, and
+    # why one blanket policy would be wrong.
+    f64_array = _CHECKED_F64_ARRAY
+    layout = _LAYOUT_POINTER
     for name in _BINARY_KERNELS:
         kernel = getattr(library, name)
         kernel.argtypes = [f64_array, f64_array, f64_array, ctypes.c_int64]
@@ -564,6 +675,12 @@ def _load_library():
     library.tf_matmul_tiled.restype = None
     library.tf_storage_create.argtypes = [ctypes.c_int64]
     library.tf_storage_create.restype = ctypes.c_void_p
+    # Phase H (H1): the uninitialized sibling of tf_storage_create. Same
+    # signature, same validation, same failure contract; it differs only
+    # in leaving the buffer's initial contents indeterminate. Internal
+    # backend detail — no public "empty" API is built on it.
+    library.tf_storage_create_uninitialized.argtypes = [ctypes.c_int64]
+    library.tf_storage_create_uninitialized.restype = ctypes.c_void_p
     library.tf_storage_destroy.argtypes = [ctypes.c_void_p]
     library.tf_storage_destroy.restype = None
     library.tf_storage_size.argtypes = [ctypes.c_void_p]
@@ -574,9 +691,15 @@ def _load_library():
     library.tf_storage_copy_from.restype = None
     library.tf_storage_copy_to.argtypes = [ctypes.c_void_p, f64_array]
     library.tf_storage_copy_to.restype = None
-    i64_array = np.ctypeslib.ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")
+    # The class-label binding: int64 like the layout metadata, but bound
+    # CHECKED, because a label array's required length comes from the logits
+    # rather than from the array itself (see the contract above).
+    i64_array = _CHECKED_I64_ARRAY
+    # The float64 destination stays checked — it is a real NumPy buffer this
+    # call writes into and returns — while the shape/stride pair becomes the
+    # trusted layout binding, exactly as for every other strided export.
     library.tf_storage_materialize.argtypes = [
-        ctypes.c_void_p, f64_array, i64_array, i64_array,
+        ctypes.c_void_p, f64_array, layout, layout,
         ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_storage_materialize.restype = None
@@ -591,7 +714,7 @@ def _load_library():
                  "tf_core_exp", "tf_core_log", "tf_core_contiguous_copy"):
         kernel = getattr(library, name)
         kernel.argtypes = [
-            ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array,
+            ctypes.c_void_p, ctypes.c_void_p, layout, layout,
             ctypes.c_int64, ctypes.c_int64,
         ]
         kernel.restype = None
@@ -604,7 +727,7 @@ def _load_library():
         kernel = getattr(library, name)
         kernel.argtypes = [
             ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p,
-            i64_array, i64_array, i64_array,
+            layout, layout, layout,
             ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
         ]
         kernel.restype = None
@@ -638,8 +761,24 @@ def _load_library():
     # input into a fresh contiguous output using per-input-axis output
     # write-strides (0 on reduced axes); tf_storage_scale does mean's
     # in-place 1/count scaling.
+    #
+    # Phase H, milestone H6 gave tf_core_sum a second *traversal* behind
+    # this **unchanged** declaration — a flat block walk for row-major
+    # sources whose reduced axes form one contiguous run, chosen inside the
+    # kernel from these same arguments. The signature, the argument
+    # meanings, the accumulate-into contract, and the required
+    # zero-initialized destination are all exactly what they were, and no
+    # symbol was added; see cpp/include/tf_reduction_internal.h.
+    # tf_core_narrow_backward, the scatter dual below, was deliberately
+    # left on the generic odometer.
+    #
+    # Phase H, milestone H7 rebound the three int64 positions from the
+    # checked ``ndpointer`` to the trusted ``_LAYOUT_POINTER``. The two
+    # source arrays come from the reducing tensor's own immutable per-view
+    # cache and the write-strides from ``_layout_vector``; the argument
+    # meanings, the order, and the kernel are untouched.
     library.tf_core_sum.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array, i64_array,
+        ctypes.c_void_p, ctypes.c_void_p, layout, layout, layout,
         ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_core_sum.restype = None
@@ -649,7 +788,7 @@ def _load_library():
     # zero output of the parent shape. Same odometer as tf_core_sum plus a
     # base output offset (start * row-major stride of the narrowed axis).
     library.tf_core_narrow_backward.argtypes = [
-        ctypes.c_void_p, ctypes.c_void_p, i64_array, i64_array, i64_array,
+        ctypes.c_void_p, ctypes.c_void_p, layout, layout, layout,
         ctypes.c_int64, ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_core_narrow_backward.restype = None
@@ -815,6 +954,11 @@ _STATUS_EXCEPTIONS = {
 # earlier call could be misread as their own failure.
 _CHECKED_KERNELS = (
     "tf_storage_create",
+    # Phase H (H1). The uninitialized constructor reports failure exactly
+    # like the zero-initializing one — a null handle with the thread-local
+    # error set — so it takes the identical errcheck hook rather than a
+    # second, divergent failure convention.
+    "tf_storage_create_uninitialized",
     "tf_storage_materialize",
     "tf_core_relu", "tf_core_relu_contiguous",
     "tf_core_sqrt", "tf_core_sqrt_contiguous",
@@ -943,6 +1087,25 @@ def _arm_alloc_failure(nth=1):
     _require_library().tf_test_arm_alloc_failure(int(nth))
 
 
+# Deliberately absent: any poison-control helper (Phase H, H1).
+#
+# H1's "every destination element is written" proof uses a deterministic
+# poison, but that poison belongs to the *test infrastructure*, not to
+# this runtime. The suite wraps ``NativeStorage._uninitialized``, lets
+# the real uninitialized constructor allocate, fills the returned storage
+# through the ordinary ``fill`` primitive, and hands that same storage to
+# the real operation — so the pattern is in place before the real kernel
+# runs, with nothing in the shipped library or this module able to alter
+# an allocation's contents. There is no ``_set_uninitialized_poison``, no
+# ``_uninitialized_poison`` context manager, no environment variable, and
+# no global mode here, and none may be added: a switch that can change
+# what production allocations contain is not a debugging convenience
+# worth shipping, however carefully it is disarmed by default. The
+# corresponding C ABI hook does not exist either — see
+# tests/test_native_storage_allocation.py, which asserts its absence
+# against the loaded library's real export table.
+
+
 def list_kernels():
     """The experimental kernels this backend provides, in stable order."""
     return KERNELS
@@ -1008,7 +1171,21 @@ class NativeStorage:
     RuntimeError, and closing twice is safe.
     """
 
-    def __init__(self, size, dtype=None, device="cpu"):
+    def __init__(self, size, dtype=None, device="cpu", *,
+                 _zero_initialize=True):
+        """Allocate ``size`` float64 elements, **zero-initialized**.
+
+        The zero-initializing default did not change in Phase H: every
+        existing caller behaves exactly as before.
+
+        ``_zero_initialize`` is a private, keyword-only escape hatch used
+        by the ``_uninitialized`` classmethod below and by nothing else.
+        It lives on ``__init__`` rather than on a separate construction
+        path on purpose: both allocation kinds must pass through the one
+        constructor so that **every** live-storage accounting hook in the
+        test suite — each of which wraps ``NativeStorage.__init__`` — sees
+        an uninitialized allocation exactly as it sees a zeroed one.
+        """
         self._handle = None  # so a failed __init__ still __del__s safely
         if not isinstance(size, (int, np.integer)) or isinstance(size, bool) or size <= 0:
             raise ValueError(f"size must be a positive int, got {size!r}")
@@ -1017,7 +1194,9 @@ class NativeStorage:
         dtype = normalize_dtype(dtype)
         device = normalize_device(device)
         lib = _require_library()
-        handle = lib.tf_storage_create(int(size))
+        create = (lib.tf_storage_create if _zero_initialize
+                  else lib.tf_storage_create_uninitialized)
+        handle = create(int(size))
         if not handle:
             raise MemoryError(f"could not allocate native storage of size {size}")
         self._lib = lib
@@ -1027,17 +1206,56 @@ class NativeStorage:
         self._device = device
 
     @classmethod
+    def _uninitialized(cls, size, dtype=None, device="cpu"):
+        """Allocate ``size`` float64 elements whose **initial contents are
+        indeterminate** (Phase H, milestone H1).
+
+        Identical to ``NativeStorage(size, ...)`` in every observable
+        respect — argument validation, dtype/device normalization,
+        allocation-failure handling, the ``MemoryError`` it raises, the
+        handle it owns, ``close()`` semantics, exactly-once destruction,
+        and live-storage accounting (it runs through the same
+        ``__init__``) — except that the buffer is not written before it is
+        returned.
+
+        **Private on purpose.** This is an internal backend detail, not a
+        public ``empty`` constructor: the only legitimate caller is a Core
+        operation whose kernel has been *proved* to write every
+        destination element before reading any of it. That audit is a
+        table in ``docs/native_cpu_performance_design.md``, and every row
+        of it is backed by a poison test. A caller that cannot point at
+        its row uses ``NativeStorage(...)``.
+
+        This is also the **one seam the poison tests wrap**: they replace
+        this classmethod with a wrapper that calls it, fills the returned
+        storage with a recognizable pattern, and returns that same
+        storage — so the poison is in place before the real kernel runs
+        without the runtime itself owning any poison control.
+        """
+        return cls(size, dtype=dtype, device=device, _zero_initialize=False)
+
+    @classmethod
     def from_array(cls, values, dtype=None, device="cpu"):
         """Create storage sized to ``values`` and copy them in.
 
         The input is always converted to contiguous float64 and flattened
         (the only element type the kernels compute); ``dtype``/``device``
         record the metadata and default to ``"float64"``/``"cpu"``.
+
+        H1: the allocation is uninitialized because ``copy_from`` writes
+        **every** element (``tf_storage_copy_from`` loops over the whole
+        ``storage->size``) and the size is taken from the same array, so
+        no element can survive unwritten. A failed copy closes the
+        storage rather than returning a partly written buffer.
         """
         array = np.ascontiguousarray(values, dtype=np.float64).ravel()
         # empty input fails size validation; dtype/device validated too
-        storage = cls(int(array.size), dtype=dtype, device=device)
-        storage.copy_from(array)
+        storage = cls._uninitialized(int(array.size), dtype=dtype, device=device)
+        try:
+            storage.copy_from(array)
+        except BaseException:
+            storage.close()
+            raise
         return storage
 
     @property
@@ -1133,13 +1351,57 @@ class NativeTensorView:
                 f"storage must be a NativeStorage, got {type(storage).__name__}"
             )
         storage._require_open()  # a closed storage cannot back a view
-        info = shape_info(shape, strides=strides, offset=offset)
+        dims, stride_tuple, offset_value, count, contiguous = _normalized_layout(
+            shape, strides=strides, offset=offset
+        )
+        self._bind(storage, dims, stride_tuple, offset_value, count, contiguous)
 
+    @classmethod
+    def _from_validated(cls, storage, dims, strides, offset):
+        """Private: a view over layout metadata this module already
+        normalized (Phase H, milestone H3).
+
+        ``dims`` and ``strides`` must be tuples of exact ``int`` that came
+        from ``_as_shape`` or from a live view's own ``shape``/``strides``,
+        and ``offset`` must be an exact ``int``. Under that precondition
+        the normalization the public constructor performs is a no-op — it
+        would re-check a tuple this module produced one construction
+        earlier — so it is skipped, and **nothing else is**.
+
+        The element count and the contiguity flag are deliberately
+        *derived here* rather than accepted as arguments: a caller that
+        cannot pass them cannot pass an inconsistent pair, which is why
+        this is a separate constructor rather than a ``validated=True``
+        flag on the public one. The storage's open state and the full
+        reachable-offset bounds check are performed exactly as the public
+        constructor performs them, because neither is a property of the
+        metadata alone — a derived layout can still be handed a storage
+        that has since been closed, and bounds depend on the storage size.
+        """
+        view = cls.__new__(cls)
+        storage._require_open()  # a closed storage cannot back a view
+        view._bind(
+            storage, dims, strides, offset,
+            _numel_checked(dims),
+            strides == _row_major_strides_checked(dims),
+        )
+        return view
+
+    def _bind(self, storage, dims, strides, offset, count, contiguous):
+        """Bounds-check ``dims``/``strides``/``offset`` against ``storage``
+        and bind this view's immutable layout.
+
+        Shared by both constructors so the reachable-offset check and the
+        field assignment can never drift apart between them. Every field
+        assigned here is assigned exactly once in a view's lifetime and is
+        never reassigned — not by any operation, and not by ``close()``,
+        which is what makes ``_native_layout``'s cache safe.
+        """
         # Bounds: each dimension contributes between 0 and
         # (dim - 1) * stride to the offset — negative strides make the
         # low end move. The whole reachable range must fit in storage.
-        low = high = info["offset"]
-        for dim, stride in zip(info["shape"], info["strides"]):
+        low = high = offset
+        for dim, stride in zip(dims, strides):
             contribution = (dim - 1) * stride
             if contribution >= 0:
                 high += contribution
@@ -1152,11 +1414,110 @@ class NativeTensorView:
             )
 
         self._storage = storage
-        self._shape = info["shape"]
-        self._strides = info["strides"]
-        self._offset = info["offset"]
-        self._numel = info["numel"]
-        self._contiguous = info["contiguous"]
+        self._shape = dims
+        self._strides = strides
+        self._offset = offset
+        self._numel = count
+        self._contiguous = contiguous
+        # Lazily built by _native_layout(); see its docstring for why this
+        # memoization cannot go stale and why it is not built eagerly.
+        self._layout_cache = None
+        # Lazily built by _native_layout_pointers() (Phase H, H7): the
+        # ``c_int64`` pointers into the arrays above, which is what the
+        # strided C ABI actually takes. Same immutability argument, same
+        # reason it cannot go stale — it is derived from the same layout
+        # that is assigned exactly once, here, and never reassigned.
+        self._layout_pointer_cache = None
+
+    def _native_layout(self):
+        """This view's ``(shape, strides)`` as the ``int64`` arrays the
+        strided C ABI takes — built at most once per view (Phase H, H3).
+
+        **Why this cannot go stale.** The arrays are a pure function of
+        ``self._shape`` and ``self._strides``, and a view's layout is
+        immutable: both are assigned exactly once, in ``_bind``, and no
+        code path anywhere reassigns them. A view never changes shape —
+        reshaping, transposing, and narrowing all produce *new* views over
+        the same storage — so there is no mutation for an invalidation
+        design to guard against. This is memoization of a pure function of
+        immutable state, not a cache with a coherence problem.
+
+        **Why the arrays are read-only.** They describe this view's
+        metadata, and handing a mutable alias of them to a kernel caller
+        would let that caller silently change what every subsequent native
+        call believes this view's layout to be. ``writeable = False`` makes
+        that a raised ``ValueError`` instead. The C ABI only ever *reads*
+        shape and stride arrays, so nothing legitimate is lost, and a
+        read-only C-contiguous ``int64`` array still satisfies the
+        ``ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")`` argtype.
+
+        **Why it is lazy.** The contiguous fast-path kernels take a flat
+        element count and an offset, not shape/stride arrays, so the
+        dominant training path never calls this at all. Building the pair
+        eagerly in ``_bind`` would put two NumPy objects on every view
+        — including the many short-lived ones a training step allocates —
+        to serve calls most of them never make.
+
+        The arrays hold plain integers copied out of the layout tuples.
+        They contain no native pointer and no reference to the storage, so
+        they cannot keep native memory alive.
+        """
+        arrays = self._layout_cache
+        if arrays is None:
+            shape_array = np.asarray(self._shape, dtype=np.int64)
+            strides_array = np.asarray(self._strides, dtype=np.int64)
+            shape_array.flags.writeable = False
+            strides_array.flags.writeable = False
+            arrays = (shape_array, strides_array)
+            self._layout_cache = arrays
+        return arrays
+
+    def _native_layout_pointers(self):
+        """This view's ``(shape, strides)`` as the **typed int64 pointers**
+        the strided C ABI takes — built at most once per view (Phase H, H7).
+
+        H3 gave every view an immutable, read-only ``int64`` NumPy pair and
+        stopped rebuilding it. What it could not remove is what happens to
+        that pair at each *call*: bound as ``ndpointer``, every position was
+        re-verified (is it an ndarray, is its dtype exactly int64, is it
+        C-contiguous) and then converted to a pointer, once per argument,
+        once per call, forever. This memoizes the conversion the same way H3
+        memoized the construction, and for the same reason: it is a pure
+        function of state that is assigned exactly once and never reassigned.
+
+        **The NumPy arrays remain the owning buffers, and remain read-only.**
+        Nothing is copied and no second description of this view's layout is
+        created — a duplicate could in principle disagree with the first,
+        while a pointer *into* the one array cannot. ``ndarray.ctypes.data_as``
+        stores the array on the pointer it returns (``ptr._arr``), so the
+        buffer is reachable for as long as the pointer is and cannot be freed
+        underneath a native call. ``ctypes.POINTER(...).from_address(...)``
+        would be measurably cheaper to build and is **deliberately not used**:
+        it produces a pointer with no reference to its owner, which is exactly
+        the dangling-capable object this contract forbids.
+
+        **The rank comes from the same object as the pointers.** Each array
+        was built from ``self._shape`` / ``self._strides``, so its length *is*
+        ``self.ndim``; a caller that takes the pointers from here and the rank
+        from ``self.ndim`` is reading one immutable layout twice, not
+        combining two. That is the invariant the C ABI depends on and the one
+        ``ndpointer`` never checked — it sees a pointer and an ``ndim`` and
+        has no access to the Python object's length.
+
+        Lazy for H3's reason: the contiguous fast-path kernels take a flat
+        count and an offset, so the dominant training path never calls this.
+        Building it eagerly would put four objects on every short-lived view
+        to serve calls most of them never make.
+        """
+        pointers = self._layout_pointer_cache
+        if pointers is None:
+            shape_array, strides_array = self._native_layout()
+            pointers = (
+                shape_array.ctypes.data_as(_LAYOUT_POINTER),
+                strides_array.ctypes.data_as(_LAYOUT_POINTER),
+            )
+            self._layout_pointer_cache = pointers
+        return pointers
 
     @classmethod
     def from_array(cls, values):
@@ -1199,11 +1560,15 @@ class NativeTensorView:
         the native materialization kernel."""
         handle = self._storage._require_open()
         out = np.empty(self._numel, dtype=np.float64)
+        # ``out`` stays a checked ndpointer argument — it is real data this
+        # call writes into and returns. The layout pair is trusted, and both
+        # pointers and the rank below come from this one view (H7).
+        shape_pointer, strides_pointer = self._native_layout_pointers()
         self._storage._lib.tf_storage_materialize(
             handle,
             out,
-            np.asarray(self._shape, dtype=np.int64),
-            np.asarray(self._strides, dtype=np.int64),
+            shape_pointer,
+            strides_pointer,
             self._offset,
             len(self._shape),
         )
@@ -1227,11 +1592,12 @@ class NativeTensorView:
             self._numel, dtype=self._storage.dtype, device=self._storage.device
         )
         try:
+            shape_pointer, strides_pointer = self._native_layout_pointers()
             storage._lib.tf_core_contiguous_copy(
                 self._storage._require_open(),
                 storage._require_open(),
-                np.asarray(self._shape, dtype=np.int64),
-                np.asarray(self._strides, dtype=np.int64),
+                shape_pointer,
+                strides_pointer,
                 self._offset,
                 len(self._shape),
             )
@@ -1245,6 +1611,20 @@ class NativeTensorView:
             f"NativeTensorView(shape={self._shape}, strides={self._strides}, "
             f"offset={self._offset}, contiguous={self._contiguous})"
         )
+
+
+def _contiguous_view(storage, dims):
+    """A row-major contiguous view of ``dims`` at offset 0 over ``storage``.
+
+    The shape of every freshly allocated tensor core (Phase H, H3).
+    ``dims`` must already be validated — every caller has just passed it
+    through ``_as_shape`` and sized the storage from it — so the strides
+    follow from the shape and the bounds check inside ``_from_validated``
+    is the one that matters.
+    """
+    return NativeTensorView._from_validated(
+        storage, dims, _row_major_strides_checked(dims), 0
+    )
 
 
 class NativeTensorCore:
@@ -1295,7 +1675,7 @@ class NativeTensorCore:
         array = np.ascontiguousarray(values, dtype=np.float64)
         # empty input fails here; dtype/device validated in the storage
         storage = NativeStorage.from_array(array, dtype=dtype, device=device)
-        return cls(storage, NativeTensorView(storage, array.shape))
+        return cls(storage, _contiguous_view(storage, _as_shape(array.shape)))
 
     @classmethod
     def zeros(cls, shape, dtype="float64", device="cpu"):
@@ -1303,17 +1683,54 @@ class NativeTensorCore:
         (native storage is zero-initialized, so no fill pass runs).
         ``dtype``/``device`` default to ``"float64"``/``"cpu"``;
         unsupported values are rejected."""
-        count = numel(shape)  # validates shape by the v0.7 rules
-        storage = NativeStorage(count, dtype=dtype, device=device)
-        return cls(storage, NativeTensorView(storage, shape))
+        dims = _as_shape(shape)  # validates shape by the v0.7 rules
+        storage = NativeStorage(
+            _numel_checked(dims), dtype=dtype, device=device
+        )
+        return cls(storage, _contiguous_view(storage, dims))
+
+    @classmethod
+    def _uninitialized(cls, shape, dtype="float64", device="cpu"):
+        """A row-major contiguous tensor of ``shape`` whose element values
+        are **indeterminate** (Phase H, milestone H1).
+
+        The private counterpart of ``zeros``: identical shape validation,
+        identical storage ownership, identical ``close()`` semantics — it
+        simply skips the zero-fill pass, which is a full extra write over
+        the output.
+
+        **Only for a destination a kernel completely overwrites.** Every
+        call site is listed, with its proof and its poison test, in the
+        H1 audit table in ``docs/native_cpu_performance_design.md``. This
+        is not a public ``empty`` constructor and nothing in
+        ``tensorforge.experimental`` or the stable framework exposes it;
+        an operation that accumulates into its output, scatters into it,
+        or leaves any element untouched must keep using ``zeros``.
+        """
+        dims = _as_shape(shape)  # validates shape by the v0.7 rules
+        storage = NativeStorage._uninitialized(
+            _numel_checked(dims), dtype=dtype, device=device
+        )
+        return cls(storage, _contiguous_view(storage, dims))
 
     @classmethod
     def full(cls, shape, value, dtype="float64", device="cpu"):
         """A row-major contiguous tensor of ``shape`` filled with
         ``value`` (anything float() accepts). ``dtype``/``device`` default
-        to ``"float64"``/``"cpu"``; unsupported values are rejected."""
-        tensor = cls.zeros(shape, dtype=dtype, device=device)
-        tensor._storage.fill(float(value))
+        to ``"float64"``/``"cpu"``; unsupported values are rejected.
+
+        H1: allocated uninitialized because ``tf_storage_fill`` writes
+        every element of the storage, so the zero-fill would be
+        immediately and completely overwritten. ``float(value)`` is
+        evaluated **before** the allocation, so a bad value allocates
+        nothing; a failed fill closes the tensor."""
+        fill_value = float(value)  # reject a bad value before allocating
+        tensor = cls._uninitialized(shape, dtype=dtype, device=device)
+        try:
+            tensor._storage.fill(fill_value)
+        except BaseException:
+            tensor.close()
+            raise
         return tensor
 
     # -- metadata (readable even after close) --------------------------
@@ -1398,15 +1815,16 @@ class NativeTensorCore:
         the freshly allocated output before propagating, so no partially
         initialized core escapes."""
         self._require_open()
-        out = NativeTensorCore.zeros(
+        # H1 uninitialized — contiguous_copy: core_unary identity assigns every one of the numel elements.
+        out = NativeTensorCore._uninitialized(
             self.shape, dtype=self.dtype, device=self.device
         )
         try:
-            shape_arr, strides_arr = self._layout_arrays()
+            shape_ptr, strides_ptr = self._layout_pointers()
             self._storage._lib.tf_core_contiguous_copy(
                 self._storage._require_open(),
                 out._storage._require_open(),
-                shape_arr, strides_arr, self.offset, self.ndim,
+                shape_ptr, strides_ptr, self.offset, self.ndim,
             )
         except BaseException:
             out.close()
@@ -1416,10 +1834,25 @@ class NativeTensorCore:
     # -- native compute (arithmetic happens in C++ over storage) ---------
 
     def _layout_arrays(self):
-        return (
-            np.asarray(self.shape, dtype=np.int64),
-            np.asarray(self.strides, dtype=np.int64),
-        )
+        """This core's ``(shape, strides)`` int64 arrays for the strided
+        C ABI, delegated to its view's per-view cache (Phase H, H3).
+
+        The arrays are **read-only**: every caller only reads them, and
+        marking them so is what makes returning the cached pair instead of a
+        fresh one incapable of exposing shared mutable state. They are the
+        buffers the kernels read; ``_layout_pointers`` below is how a kernel
+        addresses them."""
+        return self._view._native_layout()
+
+    def _layout_pointers(self):
+        """This core's ``(shape, strides)`` as the typed int64 pointers the
+        strided C ABI takes, delegated to its view's per-view cache
+        (Phase H, H7).
+
+        The pointers address the very arrays ``_layout_arrays`` returns and
+        keep them alive, so the rank to pass alongside them is this core's
+        own ``ndim`` — one immutable layout, read twice, never two."""
+        return self._view._native_layout_pointers()
 
     def relu(self):
         """max(x, 0) elementwise, computed by the native kernel reading
@@ -1429,46 +1862,69 @@ class NativeTensorCore:
         A contiguous input takes the flat fast-path kernel (a plain
         pointer loop); a strided view takes the generic odometer kernel.
         Both produce bit-for-bit identical results — the fast path is
-        purely a traversal choice."""
+        purely a traversal choice.
+
+        H1: the output is allocated **uninitialized**. Both kernels write
+        `dst[i]` for every `i` in `[0, numel)` — the flat loop directly,
+        the odometer once per logical element — and the destination holds
+        exactly `numel` elements, so no element survives unwritten. A
+        failed kernel closes the output rather than returning it."""
         self._require_open()
-        out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
-        if self.contiguous:
-            self._storage._lib.tf_core_relu_contiguous(
+        out = NativeTensorCore._uninitialized(
+            self.shape, dtype=self.dtype, device=self.device
+        )
+        try:
+            if self.contiguous:
+                self._storage._lib.tf_core_relu_contiguous(
+                    self._storage._require_open(),
+                    out._storage._require_open(),
+                    self.numel, self.offset,
+                )
+                return out
+            shape_ptr, strides_ptr = self._layout_pointers()
+            self._storage._lib.tf_core_relu(
                 self._storage._require_open(),
                 out._storage._require_open(),
-                self.numel, self.offset,
+                shape_ptr, strides_ptr, self.offset, self.ndim,
             )
             return out
-        shape_arr, strides_arr = self._layout_arrays()
-        self._storage._lib.tf_core_relu(
-            self._storage._require_open(),
-            out._storage._require_open(),
-            shape_arr, strides_arr, self.offset, self.ndim,
-        )
-        return out
+        except BaseException:
+            out.close()
+            raise
 
     def _unary_compute(self, odometer_name, contiguous_name):
         """Shared plumbing for the unary compute ops (v3.11): require
         open, allocate the fresh contiguous output, then dispatch to
         the contiguous fast-path kernel or the generic odometer kernel
         by this tensor's contiguity — exactly relu's strategy, and the
-        two paths are bit-for-bit identical."""
+        two paths are bit-for-bit identical.
+
+        H1: the output is allocated **uninitialized**, on the same proof
+        as ``relu`` — every one of these kernels assigns each of the
+        destination's ``numel`` elements exactly once. A failed kernel
+        closes the output."""
         self._require_open()
-        out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
-        if self.contiguous:
-            getattr(self._storage._lib, contiguous_name)(
+        out = NativeTensorCore._uninitialized(
+            self.shape, dtype=self.dtype, device=self.device
+        )
+        try:
+            if self.contiguous:
+                getattr(self._storage._lib, contiguous_name)(
+                    self._storage._require_open(),
+                    out._storage._require_open(),
+                    self.numel, self.offset,
+                )
+                return out
+            shape_ptr, strides_ptr = self._layout_pointers()
+            getattr(self._storage._lib, odometer_name)(
                 self._storage._require_open(),
                 out._storage._require_open(),
-                self.numel, self.offset,
+                shape_ptr, strides_ptr, self.offset, self.ndim,
             )
             return out
-        shape_arr, strides_arr = self._layout_arrays()
-        getattr(self._storage._lib, odometer_name)(
-            self._storage._require_open(),
-            out._storage._require_open(),
-            shape_arr, strides_arr, self.offset, self.ndim,
-        )
-        return out
+        except BaseException:
+            out.close()
+            raise
 
     def sqrt(self):
         """Elementwise square root, computed by the native kernel
@@ -1601,7 +2057,7 @@ class NativeTensorCore:
         # Validate/normalize the axis first — nothing is allocated if this
         # raises. _normalize_axis rejects bool/non-int/out-of-range and
         # every axis on a rank-0 shape.
-        normalized = _normalize_axis(axis, self.shape)
+        normalized = _normalize_axis_checked(axis, self.shape)
         shape = self.shape
         # Python ints are arbitrary precision, so these products cannot
         # overflow here; the C ABI re-proves them in int64 anyway.
@@ -1618,7 +2074,8 @@ class NativeTensorCore:
             source = (
                 self if self.contiguous else self._contiguous_temp(temporaries)
             )
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — softmax/log_softmax: pass 2 assigns every (outer, k, inner) destination slot.
+            out = NativeTensorCore._uninitialized(
                 shape, dtype=self.dtype, device=self.device
             )
             try:
@@ -1753,10 +2210,12 @@ class NativeTensorCore:
             # probability block. If the second allocation fails the first
             # is closed below, so a failed forward leaves nothing
             # half-built and returns no result object.
-            loss = NativeTensorCore.zeros(
+            # H1 uninitialized — cross_entropy loss: the kernel assigns the single scalar element.
+            loss = NativeTensorCore._uninitialized(
                 (), dtype=self.dtype, device=self.device
             )
-            probabilities = NativeTensorCore.zeros(
+            # H1 uninitialized — cross_entropy probabilities: pass 2 assigns every (batch, class) element.
+            probabilities = NativeTensorCore._uninitialized(
                 (batch_size, num_classes), dtype=self.dtype, device=self.device
             )
             self._storage._lib.tf_core_cross_entropy_forward(
@@ -1862,7 +2321,8 @@ class NativeTensorCore:
 
         out = None
         try:
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — cross_entropy backward: assigns every (batch, class) gradient element.
+            out = NativeTensorCore._uninitialized(
                 (batch_size, num_classes), dtype=self.dtype, device=self.device
             )
             self._storage._lib.tf_core_cross_entropy_backward(
@@ -1904,16 +2364,29 @@ class NativeTensorCore:
                 f"relu_backward requires the upstream gradient shape to "
                 f"match the input shape, got {upstream.shape} and {self.shape}"
             )
-        out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
-        shape_arr, x_strides = self._layout_arrays()
-        u_strides = np.asarray(upstream.strides, dtype=np.int64)
-        self._storage._lib.tf_core_relu_backward(
-            self._storage._require_open(),
-            upstream._storage._require_open(),
-            out._storage._require_open(),
-            shape_arr, x_strides, u_strides,
-            self.offset, upstream.offset, self.ndim,
+        # H1: uninitialized — the binary odometer assigns every one of the
+        # destination's numel elements exactly once. A failed kernel
+        # closes the output.
+        out = NativeTensorCore._uninitialized(
+            self.shape, dtype=self.dtype, device=self.device
         )
+        try:
+            shape_ptr, x_strides = self._layout_pointers()
+            # Same shape, so only the upstream's *strides* differ; take
+            # them from its own view cache rather than rebuilding. The rank
+            # passed below is this tensor's, and the shapes were just proved
+            # equal, so every pointer describes exactly ``self.ndim`` axes.
+            u_strides = upstream._layout_pointers()[1]
+            self._storage._lib.tf_core_relu_backward(
+                self._storage._require_open(),
+                upstream._storage._require_open(),
+                out._storage._require_open(),
+                shape_ptr, x_strides, u_strides,
+                self.offset, upstream.offset, self.ndim,
+            )
+        except BaseException:
+            out.close()
+            raise
         return out
 
     def _require_matching_metadata(self, other, op_name):
@@ -1952,7 +2425,16 @@ class NativeTensorCore:
 
         Paths A and B are bit-for-bit unchanged from before; only when the
         shapes actually differ does broadcasting engage. The output is
-        always freshly allocated row-major contiguous storage."""
+        always freshly allocated row-major contiguous storage.
+
+        H1: every one of the three paths allocates its output
+        **uninitialized**. All three write ``dst[i]`` for every ``i`` in
+        ``[0, prod(out_shape))`` — the flat loop directly, the odometer
+        once per logical output position — and the destination holds
+        exactly that many elements. Broadcasting changes only how the
+        *operands* are read (a zero stride re-reads one element); it does
+        not skip an output position, so the coverage proof is the same.
+        A failed kernel closes the output."""
         self._require_open()
         if not isinstance(other, NativeTensorCore):
             raise TypeError(
@@ -1965,48 +2447,70 @@ class NativeTensorCore:
 
         # Same-shape paths (A and B) — the exact-shape behavior, unchanged.
         if self.shape == other.shape:
-            out = NativeTensorCore.zeros(self.shape, dtype=self.dtype, device=self.device)
-            if self.contiguous and other.contiguous:
-                getattr(lib, kernel_name + "_contiguous")(
+            out = NativeTensorCore._uninitialized(
+                self.shape, dtype=self.dtype, device=self.device
+            )
+            try:
+                if self.contiguous and other.contiguous:
+                    getattr(lib, kernel_name + "_contiguous")(
+                        self._storage._require_open(),
+                        other._storage._require_open(),
+                        out._storage._require_open(),
+                        self.numel, self.offset, other.offset,
+                    )
+                    return out
+                shape_ptr, a_strides = self._layout_pointers()
+                # Path B is the same-shape case, so the shared shape array
+                # is this operand's; only the other operand's strides are
+                # needed, and they come from its own view cache. The shapes
+                # were just compared equal, so all three pointers describe
+                # exactly the ``self.ndim`` axes passed below.
+                b_strides = other._layout_pointers()[1]
+                getattr(lib, kernel_name)(
                     self._storage._require_open(),
                     other._storage._require_open(),
                     out._storage._require_open(),
-                    self.numel, self.offset, other.offset,
+                    shape_ptr, a_strides, b_strides,
+                    self.offset, other.offset, self.ndim,
                 )
                 return out
-            shape_arr, a_strides = self._layout_arrays()
-            b_strides = np.asarray(other.strides, dtype=np.int64)
-            getattr(lib, kernel_name)(
-                self._storage._require_open(),
-                other._storage._require_open(),
-                out._storage._require_open(),
-                shape_arr, a_strides, b_strides,
-                self.offset, other.offset, self.ndim,
-            )
-            return out
+            except BaseException:
+                out.close()
+                raise
 
         # Broadcasting path (C) — differing shapes. broadcast_shapes
         # raises (naming both shapes) if they are incompatible, before
         # any output is allocated.
-        out_shape = broadcast_shapes(self.shape, other.shape)
-        out = NativeTensorCore.zeros(out_shape, dtype=self.dtype, device=self.device)
-        out_ndim = len(out_shape)
-        shape_arr = np.asarray(out_shape, dtype=np.int64)
-        a_strides = np.asarray(
-            _broadcast_strides(self.shape, self.strides, out_shape),
-            dtype=np.int64,
+        out_shape = _broadcast_shapes_checked(self.shape, other.shape)
+        out = NativeTensorCore._uninitialized(
+            out_shape, dtype=self.dtype, device=self.device
         )
-        b_strides = np.asarray(
-            _broadcast_strides(other.shape, other.strides, out_shape),
-            dtype=np.int64,
-        )
-        getattr(lib, kernel_name)(
-            self._storage._require_open(),
-            other._storage._require_open(),
-            out._storage._require_open(),
-            shape_arr, a_strides, b_strides,
-            self.offset, other.offset, out_ndim,
-        )
+        try:
+            out_ndim = len(out_shape)
+            # All three descriptions belong to *this broadcast*, not to
+            # either tensor, so none of them is cacheable anywhere: they are
+            # built here, passed, and dropped (H7). ``_broadcast_strides``
+            # returns one entry per output axis, so every vector below is
+            # exactly ``out_ndim`` long by construction — the rank passed to
+            # the kernel and the length of what it addresses are the same
+            # number, read from the same ``out_shape``.
+            shape_vector = _layout_vector(out_shape)
+            a_strides = _layout_vector(
+                _broadcast_strides(self.shape, self.strides, out_shape)
+            )
+            b_strides = _layout_vector(
+                _broadcast_strides(other.shape, other.strides, out_shape)
+            )
+            getattr(lib, kernel_name)(
+                self._storage._require_open(),
+                other._storage._require_open(),
+                out._storage._require_open(),
+                shape_vector, a_strides, b_strides,
+                self.offset, other.offset, out_ndim,
+            )
+        except BaseException:
+            out.close()
+            raise
         return out
 
     def add(self, other):
@@ -2031,7 +2535,23 @@ class NativeTensorCore:
         non-contiguous view (transposed, narrowed) — the kernel
         addresses each source through its own strides, so nothing is
         materialized first. Returns a new (m, p) row-major contiguous
-        NativeTensorCore. The naive triple loop; no broadcasting.
+        NativeTensorCore. No broadcasting.
+
+        Phase H (H2): the native side ships **two** compute paths and
+        picks between them inside ``tf_core_matmul``, from the stride
+        metadata this method already passes down. A right operand whose
+        column stride is 1 (any row-major operand, including the
+        contiguous weight a Linear layer holds), with ``n >= 1`` and at
+        least 8 columns, takes an ``i``-``k``-``j`` row sweep whose inner
+        loop walks memory sequentially; everything else — a transposed
+        right operand, a narrow result, an empty inner dimension — takes
+        the generic ``i``-``j``-``k`` triple loop, which is the retained
+        reference path and the case that loop order already suits. The
+        choice is deterministic, allocates nothing, and cannot fail; a
+        failed precondition is a fallback, never an error. There is no
+        selector, environment variable, or public control over it, and
+        the two paths are proved to agree bit for bit (see
+        docs/native_cpu_performance_design.md §16.2).
         """
         self._require_open()
         if not isinstance(other, NativeTensorCore):
@@ -2056,16 +2576,32 @@ class NativeTensorCore:
             )
         m, n = self.shape
         p = other.shape[1]
-        out = NativeTensorCore.zeros((m, p), dtype=self.dtype, device=self.device)
-        self._storage._lib.tf_core_matmul(
-            self._storage._require_open(),
-            other._storage._require_open(),
-            out._storage._require_open(),
-            m, n, p,
-            self.strides[0], self.strides[1],
-            other.strides[0], other.strides[1],
-            self.offset, other.offset,
+        # H1: uninitialized, and H2 kept it that way through both paths.
+        # The generic path accumulates each dot product into a *local*
+        # `sum` register and assigns `dst[i * p + j] = sum` for every
+        # (i, j), so it never reads the destination at all. The H2 row
+        # sweep does accumulate in the destination, but its k == 0 pass
+        # *assigns* every element of every row it is about to work on
+        # before any accumulation reads one — which is why its dispatch
+        # predicate requires `n >= 1`. Either way no output value can
+        # depend on what the buffer held beforehand, which the poison
+        # tests prove on both paths. A failed kernel closes the output.
+        out = NativeTensorCore._uninitialized(
+            (m, p), dtype=self.dtype, device=self.device
         )
+        try:
+            self._storage._lib.tf_core_matmul(
+                self._storage._require_open(),
+                other._storage._require_open(),
+                out._storage._require_open(),
+                m, n, p,
+                self.strides[0], self.strides[1],
+                other.strides[0], other.strides[1],
+                self.offset, other.offset,
+            )
+        except BaseException:
+            out.close()
+            raise
         return out
 
     # -- reductions (v1.19) ---------------------------------------------
@@ -2079,23 +2615,69 @@ class NativeTensorCore:
 
         Deterministic row-major accumulation order over the input; float
         sums are order-sensitive, so results match NumPy to a tolerance,
-        not bit-for-bit (see docs/native_reductions_design.md)."""
+        not bit-for-bit (see docs/native_reductions_design.md).
+
+        H6: the kernel now chooses between two traversals from the layout
+        metadata this method already passes it — a flat block traversal
+        when the source is row-major and the reduced axes form one
+        contiguous run, the retained generic odometer otherwise. Both
+        accumulate the same values into each destination cell in the same
+        ascending order, so the choice is invisible here: the output shape,
+        the write strides, the validation, and the ownership contract are
+        exactly what they were, and there is no path selector to pass."""
         self._require_open()
-        out_shape = reduce_shape(self.shape, axis, keepdims)  # validates axis/keepdims
+        # self.shape is already validated; axis and keepdims are the
+        # caller-supplied half and are still fully validated here.
+        out_shape = _reduce_shape_checked(self.shape, axis, keepdims)
+        # H1 REJECTED, and H6 CONFIRMED that rejection rather than revisiting
+        # it — this output must stay zero-initialized. tf_core_sum
+        # accumulates (`dst[out_pos] += src[in_pos]`) on *both* of its H6
+        # traversals, so the zero is the additive identity the reduction
+        # starts from, not a redundant write: every reduced axis folds many
+        # inputs into one destination cell, and that cell is *read* on every
+        # accumulation after the first. Giving this an uninitialized buffer
+        # would return garbage. The block traversal's local accumulator is
+        # seeded from the destination for exactly this reason, which is also
+        # what keeps the export's accumulate-into semantics identical on the
+        # two paths. H6 measured the zero-fill it would have removed: a
+        # reduction's output is the *reduced* shape, so a (256, 256) axis-0
+        # reduction zero-fills 2 KB while reading 512 KB — the fill is under
+        # half a percent of the work, against a traversal that was 95 % of
+        # it (docs/native_cpu_performance_design.md §16.6.6).
         out = NativeTensorCore.zeros(out_shape, dtype=self.dtype, device=self.device)
-        if axis is None:
-            reduced = set(range(self.ndim))
-        else:
-            reduced = {_normalize_axis(axis, self.shape)}
-        out_strides = _reduce_out_strides(self.shape, reduced, bool(keepdims), out_shape)
-        self._storage._lib.tf_core_sum(
-            self._storage._require_open(),
-            out._storage._require_open(),
-            np.asarray(self.shape, dtype=np.int64),
-            np.asarray(self.strides, dtype=np.int64),
-            np.asarray(out_strides, dtype=np.int64),
-            self.offset, self.ndim,
-        )
+        # Everything after the allocation runs inside the same cleanup
+        # boundary every other allocating Core op uses (compare
+        # contiguous_copy): a failure in the write-stride construction, the
+        # layout arrays, or the native call releases the freshly allocated
+        # output before propagating, so no partially accumulated core
+        # escapes and the release is explicit rather than left to a
+        # refcount or the collector.
+        try:
+            if axis is None:
+                reduced = set(range(self.ndim))
+            else:
+                reduced = {_normalize_axis_checked(axis, self.shape)}
+            out_strides = _reduce_out_strides(
+                self.shape, reduced, bool(keepdims), out_shape
+            )
+            # This tensor's own layout comes from its view's cache; the
+            # write-strides are a property of *this reduction*, not of any
+            # tensor, so they stay an operation-local vector. Both carriers
+            # hold one entry per **input** axis — ``_reduce_out_strides``
+            # returns ``len(in_shape)`` of them by construction — which is
+            # the ``self.ndim`` passed below.
+            shape_ptr, strides_ptr = self._layout_pointers()
+            self._storage._lib.tf_core_sum(
+                self._storage._require_open(),
+                out._storage._require_open(),
+                shape_ptr,
+                strides_ptr,
+                _layout_vector(out_strides),
+                self.offset, self.ndim,
+            )
+        except BaseException:
+            out.close()
+            raise
         return out
 
     def mean(self, axis=None, keepdims=False):
@@ -2106,15 +2688,22 @@ class NativeTensorCore:
         NativeTensorCore. No NumPy touches the data; no autograd."""
         self._require_open()
         result = self.sum(axis=axis, keepdims=keepdims)
-        if axis is None:
-            count = self.numel
-        else:
-            count = self.shape[_normalize_axis(axis, self.shape)]
-        # In-place native scale of the freshly summed output — no copy,
-        # no NumPy round trip. count >= 1 always (dims are positive).
-        result._storage._lib.tf_storage_scale(
-            result._storage._require_open(), 1.0 / count
-        )
+        # Same cleanup boundary as ``sum``'s: the summed output is already
+        # allocated, so a failure in the count or in the in-place scale must
+        # release it explicitly rather than leave it to a refcount.
+        try:
+            if axis is None:
+                count = self.numel
+            else:
+                count = self.shape[_normalize_axis_checked(axis, self.shape)]
+            # In-place native scale of the freshly summed output — no copy,
+            # no NumPy round trip. count >= 1 always (dims are positive).
+            result._storage._lib.tf_storage_scale(
+                result._storage._require_open(), 1.0 / count
+            )
+        except BaseException:
+            result.close()
+            raise
         return result
 
     # -- convolution (Phase D, D3: forward-only Core wrapper) ------------
@@ -2228,7 +2817,8 @@ class NativeTensorCore:
                 bias_handle = bias_core._storage._require_open()
                 bias_offset = bias_core.offset
 
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — conv2d forward: assigns output[n, o, i, j] over the full output extent.
+            out = NativeTensorCore._uninitialized(
                 (n, o, out_h, out_w), dtype=self.dtype, device=self.device
             )
             try:
@@ -2318,7 +2908,8 @@ class NativeTensorCore:
                 weight if weight.contiguous
                 else weight._contiguous_temp(temporaries)
             )
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — conv2d input gradient: the kernel zeroes the whole span itself, then accumulates.
+            out = NativeTensorCore._uninitialized(
                 (n, c, h, w), dtype=self.dtype, device=self.device
             )
             try:
@@ -2398,7 +2989,8 @@ class NativeTensorCore:
                 input if input.contiguous
                 else input._contiguous_temp(temporaries)
             )
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — conv2d weight gradient: the kernel zeroes the whole span itself, then accumulates.
+            out = NativeTensorCore._uninitialized(
                 (o, c, kh, kw), dtype=self.dtype, device=self.device
             )
             try:
@@ -2536,10 +3128,12 @@ class NativeTensorCore:
             # Deterministic allocation order: output first, then winners.
             # If the second allocation fails the first is closed below, so
             # a failed forward leaves nothing half-built.
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — maxpool2d values: assigns output[n, c, i, j] over the full output extent.
+            out = NativeTensorCore._uninitialized(
                 (n, c, out_h, out_w), dtype=self.dtype, device=self.device
             )
-            winners = NativeTensorCore.zeros(
+            # H1 uninitialized — maxpool2d winners: assigns winners[n, c, i, j] over the same full extent.
+            winners = NativeTensorCore._uninitialized(
                 (n, c, out_h, out_w), dtype=self.dtype, device=self.device
             )
             self._storage._lib.tf_core_maxpool2d_forward(
@@ -2649,7 +3243,8 @@ class NativeTensorCore:
                 winners if winners.contiguous
                 else winners._contiguous_temp(temporaries)
             )
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — maxpool2d backward: the kernel zeroes the whole span itself, then accumulates.
+            out = NativeTensorCore._uninitialized(
                 (n, c, h, w), dtype=self.dtype, device=self.device
             )
             self._storage._lib.tf_core_maxpool2d_backward(
@@ -2793,10 +3388,12 @@ class NativeTensorCore:
             # Deterministic allocation order: output first, then the mask.
             # If the second allocation fails the first is closed below, so
             # a failed forward leaves nothing half-built.
-            out = NativeTensorCore.zeros(
+            # H1 uninitialized — dropout output: assigns output[i] for every i in [0, count).
+            out = NativeTensorCore._uninitialized(
                 self.shape, dtype=self.dtype, device=self.device
             )
-            mask = NativeTensorCore.zeros(
+            # H1 uninitialized — dropout mask: assigns mask[i] for the same full range.
+            mask = NativeTensorCore._uninitialized(
                 self.shape, dtype=self.dtype, device=self.device
             )
             self._storage._lib.tf_core_dropout_forward(
@@ -2822,9 +3419,19 @@ class NativeTensorCore:
 
     # -- view operations (metadata only: no data is copied) --------------
 
-    def _view_core(self, shape, strides, offset):
-        """A new core borrowing this core's storage with new layout."""
-        view = NativeTensorView(self._storage, shape, strides=strides, offset=offset)
+    def _view_core(self, dims, strides, offset):
+        """A new core borrowing this core's storage with a new layout.
+
+        Every caller derives ``dims``/``strides``/``offset`` from *this*
+        core's already-validated layout — a permutation of it
+        (``transpose``), one axis shortened with the offset advanced
+        (``narrow``), or a freshly ``_as_shape``-validated shape whose
+        element count has been checked to match (``reshape``) — so the
+        metadata arrives normalized and takes the private view
+        constructor. The storage-bounds check still runs in full."""
+        view = NativeTensorView._from_validated(
+            self._storage, dims, strides, offset
+        )
         return NativeTensorCore(self._storage, view, owns_storage=False)
 
     def reshape(self, new_shape):
@@ -2841,13 +3448,16 @@ class NativeTensorCore:
                 "reshape requires a contiguous tensor; call "
                 "contiguous_copy() first"
             )
-        count = numel(new_shape)  # validates the shape by the v0.7 rules
+        dims = _as_shape(new_shape)  # validates the shape by the v0.7 rules
+        count = _numel_checked(dims)
         if count != self.numel:
             raise ValueError(
                 f"cannot reshape {self.shape} ({self.numel} elements) "
                 f"into {tuple(new_shape)} ({count} elements)"
             )
-        return self._view_core(new_shape, None, self.offset)
+        return self._view_core(
+            dims, _row_major_strides_checked(dims), self.offset
+        )
 
     def transpose(self, *axes):
         """A view with permuted axes. Metadata only — no copy.
@@ -2889,6 +3499,13 @@ class NativeTensorCore:
         for name, value in (("dim", dim), ("start", start), ("length", length)):
             if not isinstance(value, (int, np.integer)) or isinstance(value, bool):
                 raise TypeError(f"{name} must be an int, got {value!r}")
+        # Normalize to exact ints immediately after the type check. A NumPy
+        # integer argument is accepted (it always was), and the derived
+        # shape and offset must be plain ints exactly as the shape
+        # normalization used to make them — the private view constructor no
+        # longer re-normalizes, so this is where it happens. The bounds
+        # messages below are unaffected: these values format identically.
+        dim, start, length = int(dim), int(start), int(length)
         if not 0 <= dim < self.ndim:
             raise ValueError(f"dim must be in [0, {self.ndim}), got {dim}")
         if start < 0 or length < 1 or start + length > self.shape[dim]:
@@ -2950,20 +3567,34 @@ class NativeTensorCore:
                     f"compatible with original shape {original} along axis "
                     f"{axis}"
                 )
+        # H1 REJECTED — this output must stay zero-initialized. It is the
+        # clearest *partial-write* case in the runtime: tf_core_narrow_backward
+        # assigns only the narrowed region, and every un-narrowed cell is
+        # supposed to keep the zero the allocation gave it. That zero is
+        # the gradient's value, not an initialization detail, so an
+        # uninitialized buffer would leak heap contents straight into a
+        # gradient. Its poison test pins exactly this.
         out = NativeTensorCore.zeros(original, dtype=self.dtype, device=self.device)
         # The gradient lives at the logical shape, so the output is always a
         # fresh row-major contiguous buffer (offset 0) regardless of the
         # narrowed parent's own layout. Each narrowed axis maps 1:1 to the
         # same output axis, so the write-strides are just the parent's full
         # row-major strides; the base offset skips the leading `start` slabs.
-        out_full = row_major_strides(original)
+        out_full = _row_major_strides_checked(original)
         out_offset = start * out_full[dim]
+        # This gradient's own layout comes from its view's cache; the
+        # output write-strides belong to this scatter, not to a tensor, so
+        # they stay an operation-local vector. ``out_full`` has one entry per
+        # axis of ``original``, whose rank was proved equal to this
+        # gradient's ``self.ndim`` above, so all three carriers describe the
+        # rank passed below.
+        shape_ptr, strides_ptr = self._layout_pointers()
         self._storage._lib.tf_core_narrow_backward(
             self._storage._require_open(),
             out._storage._require_open(),
-            np.asarray(self.shape, dtype=np.int64),
-            np.asarray(self.strides, dtype=np.int64),
-            np.asarray(out_full, dtype=np.int64),
+            shape_ptr,
+            strides_ptr,
+            _layout_vector(out_full),
             self.offset, out_offset, self.ndim,
         )
         return out
@@ -3355,10 +3986,21 @@ def _as_int_tuple(values, name):
         raise TypeError(
             f"{name} must be a sequence of ints, got {values!r}"
         ) from None
+    # Every element is type-checked exactly as before. The `plain` flag only
+    # records whether the rebuild below is *needed*: a tuple that is already
+    # all exact ``int`` is its own normalization, so re-materializing it
+    # through a generator would allocate a second, equal tuple for nothing.
+    # ``type(value) is int`` deliberately excludes ``bool`` and every ``int``
+    # subclass, so those still take the checking branch and are still
+    # converted (or rejected) exactly as they were.
+    plain = True
     for value in items:
+        if type(value) is int:
+            continue
         if not isinstance(value, (int, np.integer)) or isinstance(value, bool):
             raise TypeError(f"{name} must contain only ints, got {value!r}")
-    return tuple(int(value) for value in items)
+        plain = False
+    return items if plain else tuple(int(value) for value in items)
 
 
 def _as_shape(shape):
@@ -3378,13 +4020,30 @@ def _as_offset(offset):
     return int(offset)
 
 
-def row_major_strides(shape):
-    """Element strides for a row-major contiguous layout of ``shape``.
+# ---------------------------------------------------------------------------
+# Checked primitives (Phase H, milestone H3)
+#
+# Each ``_..._checked`` function below computes exactly what its public
+# counterpart computes, but takes metadata **this module has already
+# normalized** — a tuple of exact ``int`` dimensions from ``_as_shape``, or
+# strides/axes derived from one. They perform no validation because there is
+# nothing left to validate: re-running ``_as_int_tuple`` over a tuple this
+# module just produced cannot reject it and cannot change it.
+#
+# They are private and unexported. The public ``row_major_strides`` /
+# ``numel`` / ``reduce_shape`` / ``broadcast_shapes`` remain the validating
+# entry points for anything a caller supplies, with unchanged signatures,
+# unchanged behavior, and unchanged messages — each is now that validation
+# followed by the matching primitive. The rule for using a ``_checked``
+# variant is narrow and mechanical: the argument must be a shape tuple that
+# came out of ``_as_shape`` (or out of a live view's ``shape``/``strides``,
+# which is the same thing one construction earlier). An argument that came
+# from a caller goes through the public function.
+# ---------------------------------------------------------------------------
 
-    The last dimension varies fastest: row_major_strides((2, 3, 4))
-    is (12, 4, 1). The scalar shape () gives ().
-    """
-    dims = _as_shape(shape)
+
+def _row_major_strides_checked(dims):
+    """``row_major_strides`` over already-validated ``dims``."""
     strides = []
     running = 1
     for dim in reversed(dims):
@@ -3393,13 +4052,26 @@ def row_major_strides(shape):
     return tuple(reversed(strides))
 
 
-def numel(shape):
-    """Number of elements in ``shape``; 1 for the scalar shape ()."""
-    dims = _as_shape(shape)
+def _numel_checked(dims):
+    """``numel`` over already-validated ``dims``."""
     count = 1
     for dim in dims:
         count *= dim
     return count
+
+
+def row_major_strides(shape):
+    """Element strides for a row-major contiguous layout of ``shape``.
+
+    The last dimension varies fastest: row_major_strides((2, 3, 4))
+    is (12, 4, 1). The scalar shape () gives ().
+    """
+    return _row_major_strides_checked(_as_shape(shape))
+
+
+def numel(shape):
+    """Number of elements in ``shape``; 1 for the scalar shape ()."""
+    return _numel_checked(_as_shape(shape))
 
 
 def is_contiguous_shape(shape, strides):
@@ -3412,7 +4084,7 @@ def is_contiguous_shape(shape, strides):
             f"shape and strides must have the same length, "
             f"got {len(dims)} and {len(stride_tuple)}"
         )
-    return stride_tuple == row_major_strides(dims)
+    return stride_tuple == _row_major_strides_checked(dims)
 
 
 def flat_offset(indices, strides, offset=0):
@@ -3434,16 +4106,32 @@ def flat_offset(indices, strides, offset=0):
     )
 
 
-def shape_info(shape, strides=None, offset=0):
-    """A small metadata dictionary describing one array layout.
+def _normalized_layout(shape, strides=None, offset=0):
+    """The one validating normalization boundary for a native layout
+    (Phase H, milestone H3).
 
-    With ``strides=None`` the row-major contiguous strides are used
-    (and ``contiguous`` is True by construction). Explicit strides are
-    validated against the shape's length and checked for contiguity.
+    Returns ``(dims, strides, offset, numel, contiguous)`` — the five
+    values every internal consumer of a layout actually wants — having
+    performed **exactly** the checks ``shape_info`` has always performed,
+    in exactly the same order, with exactly the same messages:
+
+    1. the shape (type, then positivity),
+    2. the strides (element type, then length against the shape),
+    3. the offset.
+
+    The shape is normalized **once**. Everything downstream of that — the
+    row-major strides, the element count, the contiguity comparison — is
+    derived from the resulting tuple through the ``_checked`` primitives,
+    because a tuple ``_as_shape`` just returned cannot fail ``_as_shape``
+    again. Before H3 this function's work was spread across ``shape_info``
+    in a form that re-validated the same tuple four times and computed the
+    row-major strides twice; the values it produces are identical.
     """
     dims = _as_shape(shape)
+    contiguous_strides = _row_major_strides_checked(dims)
     if strides is None:
-        stride_tuple = row_major_strides(dims)
+        stride_tuple = contiguous_strides
+        contiguous = True  # by construction, not by comparison
     else:
         stride_tuple = _as_int_tuple(strides, "strides")
         if len(stride_tuple) != len(dims):
@@ -3451,13 +4139,30 @@ def shape_info(shape, strides=None, offset=0):
                 f"shape and strides must have the same length, "
                 f"got {len(dims)} and {len(stride_tuple)}"
             )
+        contiguous = stride_tuple == contiguous_strides
+    # The offset is validated last, as it always was: neither the stride
+    # derivation nor the element count can raise on a validated shape, so
+    # this is still the third and final rejection point.
+    return dims, stride_tuple, _as_offset(offset), _numel_checked(dims), contiguous
+
+
+def shape_info(shape, strides=None, offset=0):
+    """A small metadata dictionary describing one array layout.
+
+    With ``strides=None`` the row-major contiguous strides are used
+    (and ``contiguous`` is True by construction). Explicit strides are
+    validated against the shape's length and checked for contiguity.
+    """
+    dims, stride_tuple, offset_value, count, contiguous = _normalized_layout(
+        shape, strides=strides, offset=offset
+    )
     return {
         "shape": dims,
         "strides": stride_tuple,
         "ndim": len(dims),
-        "numel": numel(dims),
-        "offset": _as_offset(offset),
-        "contiguous": stride_tuple == row_major_strides(dims),
+        "numel": count,
+        "offset": offset_value,
+        "contiguous": contiguous,
     }
 
 
@@ -3480,8 +4185,14 @@ def broadcast_shapes(shape_a, shape_b):
     built. Incompatible shapes raise a ValueError naming both original
     shapes and the conflicting extents.
     """
-    a = _as_shape(shape_a)  # validates positive-int dims (v0.7 rules)
-    b = _as_shape(shape_b)
+    return _broadcast_shapes_checked(
+        _as_shape(shape_a),  # validates positive-int dims (v0.7 rules)
+        _as_shape(shape_b),
+    )
+
+
+def _broadcast_shapes_checked(a, b):
+    """``broadcast_shapes`` over two already-validated shape tuples."""
     rank = max(len(a), len(b))
     pa = (1,) * (rank - len(a)) + a  # left-pad with leading 1s
     pb = (1,) * (rank - len(b)) + b
@@ -3524,7 +4235,13 @@ def _normalize_axis(axis, shape):
     Raises ``TypeError`` for a non-int axis and ``ValueError`` naming both
     the axis and the shape when out of bounds (including any integer axis
     on a scalar). Pure Python — no NumPy, no compiled library."""
-    dims = _as_shape(shape)
+    return _normalize_axis_checked(axis, _as_shape(shape))
+
+
+def _normalize_axis_checked(axis, dims):
+    """``_normalize_axis`` over an already-validated shape tuple. The
+    ``axis`` itself is still fully validated — it is the caller-supplied
+    half of this pair and is never assumed."""
     ndim = len(dims)
     if not isinstance(axis, (int, np.integer)) or isinstance(axis, bool):
         raise TypeError(f"axis must be None or an int, got {axis!r}")
@@ -3558,13 +4275,18 @@ def reduce_shape(shape, axis=None, keepdims=False):
     ``TypeError`` for a non-bool ``keepdims`` or non-int ``axis``, and
     ``ValueError`` naming both axis and shape for an out-of-bounds axis.
     """
-    dims = _as_shape(shape)
+    return _reduce_shape_checked(_as_shape(shape), axis, keepdims)
+
+
+def _reduce_shape_checked(dims, axis=None, keepdims=False):
+    """``reduce_shape`` over an already-validated shape tuple. ``axis``
+    and ``keepdims`` are caller-supplied and still fully validated."""
     if not isinstance(keepdims, bool):
         raise TypeError(f"keepdims must be a bool, got {keepdims!r}")
     ndim = len(dims)
     if axis is None:
         return (1,) * ndim if keepdims else ()
-    normalized = _normalize_axis(axis, dims)
+    normalized = _normalize_axis_checked(axis, dims)
     if keepdims:
         return tuple(1 if d == normalized else dims[d] for d in range(ndim))
     return tuple(dims[d] for d in range(ndim) if d != normalized)
@@ -3579,8 +4301,9 @@ def _reduce_out_strides(in_shape, reduced_axes, keepdims, out_shape):
     keeps the reduced axes (as size 1), so input axis ``d`` maps to
     output axis ``d``; without it, the kept input axes map in order to the
     surviving output axes. Assumes ``out_shape == reduce_shape(in_shape,
-    ...)`` for the same reduction."""
-    out_full = row_major_strides(out_shape)
+    ...)`` for the same reduction, which makes ``out_shape`` already
+    validated."""
+    out_full = _row_major_strides_checked(out_shape)
     result = [0] * len(in_shape)
     if keepdims:
         for d in range(len(in_shape)):

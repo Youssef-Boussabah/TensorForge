@@ -196,8 +196,8 @@ frame and no suppression file — **validation and documentation only, no
 numerical capability, no C++, no CTest, no ABI or ctypes surface, and no
 production behavior changed**. **Phase F is complete.**
 
-**Phase G — Native RNG and Dropout — is complete (G0-G10), and it is the
-latest completed native phase.** Its contract is locked in
+**Phase G — Native RNG and Dropout — is complete (G0-G10).** Its contract
+is locked in
 ``docs/native_rng_dropout_design.md`` (milestone **G0**). **G1** ships
 ``NativeGenerator`` below — explicit, inspectable, serializable random
 *state* — and makes generators a fourth ``NativeModule`` registration
@@ -237,6 +237,33 @@ and reproducibility is exact only for the state actually captured. What
 the native line still does **not** have is further activations/math, a
 generic random-number API, ``Dropout2d``/``Dropout3d``, float32/dtype
 expansion, CUDA, AMP, and data-pipeline abstractions.
+
+**Phase H — Native CPU Performance and Runtime Efficiency — is complete
+(H0-H10), and it is the latest completed native phase.** Its contract is
+``docs/native_cpu_performance_design.md``. Phase H made this line faster
+without making it broader: every optimized kernel path ships behind the
+export Python already declares, chosen by a hidden metadata-or-geometry
+predicate, with the **pre-milestone traversal retained verbatim** as the
+shipped generic reference path and a rejected predicate always a fallback
+rather than an error. Measured against a reconstructed H0 baseline with
+every result proved bit-identical first, **every shipped training
+workload is 1.50x-3.89x faster than it was at H0**, and no allocation
+count or memory peak rose anywhere. Across the whole phase **no
+capability, dtype, device, registry value, public API, checkpoint field,
+or checkpoint version moved**, and exactly one C ABI symbol was added
+(``tf_storage_create_uninitialized``, at H1), taking the library from 51
+to **52** exported ``tf_*`` symbols. **H10** re-measured the phase,
+resolved the acceleration gate as three documented rejections with
+measurements (SIMD, threading/OpenMP, and BLAS — the first because
+elementwise, matmul, and reduction are already auto-vectorized, the last
+because a BLAS matmul is not bit-identical and would break every
+exact-resume proof), assessed ``tf_core_narrow_backward`` and the
+small-operation boundary floor and implemented neither, and ran the full
+Release/Debug/Linux/sanitizer/lifecycle matrix. What Phase H did **not**
+add: SIMD, threading, OpenMP, BLAS, a memory pool, a scratch workspace,
+general fusion, im2col, or any public performance control — no path
+selector, threshold setter, dispatch tracer, profiling counter, or
+environment variable.
 
 ``NativeGenerator`` (Phase G, milestone G1) is the Python half of the
 phase's central split — random state is Python-managed, and the native

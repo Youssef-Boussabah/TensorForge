@@ -1,780 +1,43 @@
 # TensorForge — project instructions
 
-## What this is
+## 1. Project identity and architecture
 
-TensorForge is a from-scratch deep learning framework built in
-Python + NumPy — a serious ML systems project covering PyTorch-style
-framework internals, inspired by Daedalus ML but not a copy. It was
-developed milestone by milestone (v0.1 … v3.0), each one small,
-tested, and readable. The Python framework line is complete as of
-v3.0. The experimental C++ native line is merged into `main` and lives
-in the explicit `tensorforge.backends` / `tensorforge.experimental`
-namespaces rather than on a separate advanced branch. It
-has completed Phases A–G: Phase A — CPU runtime, Phase B — native
-autograd, Phase C — the native training stack, and Phase D — the
-native CNN stack, through Advanced C++ v3.16; Phase E — native
-classification and stable math — is *complete* (E0–E10), its contract
-locked
-in `docs/native_classification_design.md` with milestones E1–E4 (the
-differentiable native `exp`, `log`, and the fused stable `softmax` and
-`log_softmax`), E5 (the fused `cross_entropy` **Core** contract —
-`NativeTensorCore.cross_entropy_forward`/`cross_entropy_backward`), and
-E6 (the differentiable `NativeTensor.cross_entropy(targets,
-reduction="mean")`, one autograd node with graph-owned saved
-probabilities and no logits reread), and E7 (the stateless
-`NativeCrossEntropyLoss` module delegating to that operation, and the
-reporting-only `native_accuracy` — explicit `to_numpy()` + NumPy
-argmax, no graph, in the new `NATIVE_METRICS` inventory), and E8 (the
-deterministic classification training and exact checkpoint-resume proof
-— `examples/native_classification_training.py`: a three-class native
-CNN classifier over raw logits, 40 `NativeAdam(lr=0.05)` steps, loss
-1.159638 → 0.000101, accuracy 0.3333 → 1.0000, interrupted at step 15
-and resumed into a fresh model/optimizer pair that matches exactly;
-example, tests, and docs only — no new capability), and E9 (the honest
-characterization benchmark
-`benchmarks/benchmark_native_classification.py`: seven cases, each
-correctness-gated before timing, each labelled with the reference it
-used, medians with spread after warm-up, `--smoke`/`--json` modes, and
-**no speed assertion or timing threshold anywhere**), and E10 (phase
-closure: `tests/test_native_phase_e.py` cross-cutting integration,
-Release and Debug builds with 10/10 CTests each, Clang ASan/UBSan and
-LeakSanitizer validation, and documentation reconciliation — no new
-numerical capability) all shipped. **Phase F — Native Normalization and
-Stateful Buffers — is *complete* (F0–F9):**
-milestone F0 is complete (the architecture contract in
-`docs/native_normalization_design.md` plus repository reconciliation —
-**no numerical behavior**), F1 is complete (the private atomic
-native-buffer state transaction in
-`src/tensorforge/experimental/_native_state.py`, `load_state_dict`
-refactored onto it, and `persistent_buffers` added to `STATE_SUPPORT` —
-state management and capability reporting only), and F2 is complete
-(`NativeLayerNorm` — the first native normalization module: stateless
-(no buffers, identical in train and eval), differentiable through the
-mean and the population variance, **composed entirely from existing
-native operations** — `mean`/`subtract`/`multiply`/`add`/`sqrt`/
-`reciprocal`, `sqrt(var + eps)`, no Bessel correction — adding no C++
-code, kernel, C ABI symbol, ctypes declaration, `NativeTensorCore`
-method, custom backward, functional helper, or `NativeTensor.layer_norm`
-operation; `weight`/`bias` `NativeParameter`s only when
-`elementwise_affine=True`; `"NativeLayerNorm"` in `NATIVE_MODULES` and
-the exports, and `"layernorm"` removed from `UNSUPPORTED`), and F3 is
-complete (`NativeBatchNorm1d` in
-`src/tensorforge/experimental/native_batchnorm.py` — the **first
-stateful native numerical module**: strictly `(N, C)` batch
-normalization, again composed entirely from existing native operations,
-adding no C++ code, kernel, C ABI symbol, ctypes declaration,
-`NativeTensorCore` method, custom backward, functional helper, or
-`NativeTensor.batch_norm` operation. Training normalizes with this
-batch's **differentiable** population statistics (`sqrt(var + eps)`, no
-Bessel correction, gradients through the mean *and* the variance) and
-advances the persistent native `running_mean`/`running_var` buffers by
-`(1 - momentum)*running + momentum*batch` from the *same* batch
-statistics — computed **graph-free** via `detach()` and committed as one
-**atomic two-buffer transaction** through the F1 primitive, preserving
-both Python identities, closing each replaced core exactly once, and
-moving **no** parameter version. Evaluation reads **independent owning
-graph-free `(1, C)` snapshots** of those buffers, so no registered
-buffer is ever a rereadable graph operand and a later training step, a
-buffer-only `load_state_dict()`, or a buffer-only
-`load_native_checkpoint()` cannot change an earlier eval graph's
-gradient (a *full* checkpoint load also replaces `gamma`/`beta`, so the
-unchanged v3.7 parameter-version guard correctly stales that graph — a
-parameter contract, never a buffer effect); the snapshots ride the existing `graph_resources`
-contract and release exactly once with the graph history. `gamma`/`beta`
-always exist (no `affine=False`, `track_running_stats`, or
-`num_batches_tracked`); state order is `gamma`, `beta`, `running_mean`,
-`running_var`; the checkpoint format stays version 1;
-`"NativeBatchNorm1d"` is in `NATIVE_MODULES` and the exports, while
-`"batchnorm"` stayed in `UNSUPPORTED`), and F4 is complete
-(`NativeBatchNorm2d`, the second public class in the same file — NCHW
-`(N, C, H, W)` batch normalization reducing over **N, H, and W**, so
-each channel gets one population mean and variance over `N * H * W`
-values. It is built on the **same** private `_NativeBatchNorm` and
-declares *only* `_INPUT_NDIM = 4`, `_REDUCTION_AXES = (0, 2, 3)`,
-`_TRAILING_DIMS = 2`, `_LAYOUT`, and `_CHANNELS_LAST = (0, 2, 3, 1)` —
-every method is inherited by function identity. The one shared piece F4
-added is the channelwise affine: rank-1 `gamma`/`beta` broadcast from
-the *trailing* axis, so the **activation** is transposed to
-channels-last for the affine step and back again (then materialized
-contiguous) rather than reshaping the parameters — which keeps `gamma` a
-direct versioned `multiply` operand and preserves the existing
-stale-parameter guard exactly. Statistics are `(1, C, 1, 1)`, running
-buffers stay `(C,)`, the checkpoint format stays version 1, and
-`"NativeBatchNorm2d"` is in `NATIVE_MODULES` and the exports; with both
-shapes live `"batchnorm"` has **left** `UNSUPPORTED`, which now reads
-exactly `("dropout", "float32", "cuda", "amp")`). **That completes the
-numerical normalization *module* surface — not Phase F.** **F5 is
-complete** (the exhaustive state, checkpoint, ownership, and graph-safety
-hardening — a focused `tests/test_native_normalization_state.py` plus
-narrow additions to the generic buffer and checkpoint suites, proving
-§7–§10 of the design by executable test rather than by prose: canonical
-dotted buffer keys, independent state snapshots, strict/non-strict loads,
-exact never-casting metadata validation, mixed parameter/buffer
-transaction atomicity, buffer identity across state and checkpoint loads,
-exact eval-output reproduction, the buffer-only-versus-full stale-graph
-distinction, the save/corrupt-load failure boundaries, eval-graph snapshot
-safety under `retain_graph` and a failed retryable backward, and the
-live-storage baselines; **tests and documentation only — no numerical
-behavior and no new public capability**, with the exports, every
-capability registry, and the version-1 checkpoint format all exactly what
-F4 left, and no production behavior changed). **F6 is complete** (the
-deterministic normalized training and exact checkpoint-resume proof —
-`examples/native_normalization_training.py`: a `NativeNormalizedRegressor`
-(`Linear → BatchNorm1d → ReLU → LayerNorm → Linear`, both normalization
-families in every forward, BatchNorm the only stateful module) trained for
-24 deterministic `NativeAdam` steps with `NativeMSELoss` (98.9% loss
-reduction), with two uninterrupted runs proved bit-identical and an
-interrupted run resumed into a **fresh** model/optimizer pair that
-reproduces the remaining loss suffix, every parameter, the NativeAdam
-state, both BatchNorm `running_mean`/`running_var`, the final
-training-step prediction, and the final **evaluation-mode** output exactly
-— checkpoint format version 1 unchanged, training flags runtime-only;
-**one example and its integration test, adding no capability, operation,
-kernel, schema field, benchmark, or export, and changing no production
-behavior**). **F7 is complete** (the honest benchmark characterization —
-`benchmarks/benchmark_native_normalization.py`, `BENCHMARK_NAME =
-"tensorforge.native_normalization"`, version `"1.0"`: exactly nine cases
-in this order — `layernorm_forward`, `layernorm_backward`,
-`batchnorm1d_training_forward`, `batchnorm1d_eval_forward`,
-`batchnorm1d_backward`, `batchnorm2d_training_forward`,
-`batchnorm2d_eval_forward`, `batchnorm2d_backward`, and
-`normalized_training_step`. Every case runs its correctness gate
-**before** the timing helper is ever reached, so a failed gate publishes
-no timing and the CLI exits nonzero with a clean stdout. Six cases are
-labelled `stable_tensorforge` and run `tensorforge.nn`/`tensorforge.optim`
-on the *same* inputs, epsilon, momentum, affine values, running state,
-initial parameters, and optimizer hyperparameters; the three
-**BatchNorm2d** cases are labelled `native_only` and publish **no** timing
-ratio, because the stable line has no public `BatchNorm2d` — they keep a
-rigorous correctness oracle instead (an explicit NumPy NCHW
-population-statistics formula, an independent channelwise-affine probe,
-eval-mode state neutrality with the registered buffers proved absent from
-the graph, and for the backward the stable `BatchNorm1d` on the
-equivalent `(N*H*W, C)` sample matrix transformed back to NCHW, which is a
-correctness oracle **only** and deliberately not timed). Timing uses
-`time.perf_counter_ns()` with warm-up, one call per sample, every sample
-retained, setup and cleanup outside the timer (graph construction inside
-it for the forward and training-step cases, outside it for the
-backward-only cases), a fresh module per training-mode repetition because
-the forward advances persistent state, and median/min/max/spread
-reporting. `--case`/`--warmup`/`--repetitions`/`--smoke`/`--json` exist,
-the payload is fully JSON-native, **no result file of any kind is
-written**, and **no speed assertion, committed timing number, or CI timing
-threshold exists anywhere**; **measurement only — one harness and its
-test, no capability, operation, kernel, C ABI symbol, ctypes declaration,
-Core method, schema field, example, or export, and no production behavior
-changed**). **F8 is complete** (the cross-cutting integration and
-semantic guardrails — `tests/test_native_phase_f.py`: one test-only
-`NativePhaseFClassifier` (`NativeConv2d(1, 4, 3)` → `NativeBatchNorm2d(4)`
-→ `NativeReLU` → `NativeMaxPool2d(2)` → `NativeFlatten` →
-`NativeLinear(16, 8)` → `NativeBatchNorm1d(8)` → `NativeReLU` →
-`NativeLayerNorm(8)` → `NativeLinear(8, 3)` → **raw logits** →
-`NativeCrossEntropyLoss`) over the E8 fixed twelve-image three-class
-dataset, trained for 12 deterministic `NativeAdam(lr=0.05)` steps,
-interrupted at step 5, checkpointed, and resumed into a **fresh**
-model/optimizer pair that reproduces the loss suffix, every parameter,
-the NativeAdam state, **all four** running-statistic buffers, the final
-training logits, and the final evaluation-mode logits, predictions, and
-accuracy by **exact equality** (format version 1 unchanged, training flag
-runtime-only, identities preserved). It also proves the three
-saved-resource families — BatchNorm eval snapshots, MaxPool2d winners,
-and cross-entropy probabilities — coexisting in one eval graph and
-releasing exactly once with no registered buffer object *or storage*
-reachable from the graph; buffer-only mutation (including a real
-buffer-only `load_native_checkpoint()` over all four registered objects)
-leaving an earlier eval graph's gradients exactly equal to a clean
-control, while a full checkpoint load or a `copy_value_` on a
-normalization affine parameter correctly stales it through the unchanged
-v3.7 **parameter** rule; the Phase-E versioning archetypes (saved-output
-`exp`, live-reread `log`, saved-probability cross-entropy) meeting
-BatchNorm snapshots; shared parameters deduplicating to one slot/one
-update/one version increment; frozen parameters staying registered and
-persisted but skipped; a non-contiguous NCHW input through the whole
-stack in both modes; strict stable/native separation; **honest**
-per-boundary failure atomicity (A: a BatchNorm transaction failure rolls
-*that pair* back while an earlier module's committed transaction
-legitimately stands — transactions are **per module**, and one whole
-training step is *not* globally transactional; B: a post-forward failure
-does not retroactively roll back committed running updates; C: an
-optimizer staging failure commits nothing and leaves the gradients
-retryable; D: a stale-parameter backward keeps the forward's update; E: a
-checkpoint-load commit failure restores everything); error-state
-recovery; a NumPy/conversion tripwire over one complete integrated step;
-live-storage baselines across success **and** failure cycles; and
-semantic capability/export/artifact guardrails derived from real
-registries and files. **Tests and documentation only — no capability,
-operation, kernel, C ABI symbol, ctypes declaration, schema field,
-example, benchmark, or export, and no production behavior changed.**)
-**F9 is complete** (the phase closure: fresh Windows Release **and**
-Debug builds — Visual Studio 17 2022, MSVC 19.44.35228.0, CMake 4.4.0,
-both out-of-source outside the repository — each passing the full
-existing 10-test CTest suite (10/10 in 0.78 s and 0.97 s) with **zero
-project compiler, linker, and CMake warnings**, the Debug library
-written elsewhere so the active runtime stayed the Release DLL; a fresh
-Clang 18.1.3 `-DTF_SANITIZE=address,undefined` build in WSL2 Ubuntu
-24.04.4 with **instrumentation proved** — `nm -D` shows 22 `__asan*` and
-13 `__ubsan*` dynamic symbols beside the 50 exported `tf_*` symbols, and
-the library refuses to load without the sanitizer runtime; **10/10
-sanitized native CTests** with `detect_leaks=1`; **1,968 sanitized
-Python tests** across 32 normalization and dependency suites with zero
-ASan and zero UBSan diagnostics; the F6 example reproducing its exact
-resume and the F7 benchmark passing all nine correctness gates under the
-sanitized library; and a practical LeakSanitizer lifecycle returning
-native live storage **exactly** to baseline (0 → 0), whose remaining
-process-exit allocations (925,710 bytes in 830 allocations) contain **no
-TensorForge frame** — only CPython, libc, NumPy, `_ctypes`, and the ASan
-runtime — with **no suppression file added**; plus documentation
-reconciliation and durable semantic closure guardrails.
-**Documentation and documentation-guardrail tests only — no numerical
-capability, no C++, no CTest, no ABI or ctypes surface, no example, no
-benchmark, and no production numerical file changed.**)
-**Phase F is complete**, and no normalization operation, kernel, C ABI
-symbol, or custom backward exists at all.
-**Phase G — Native RNG and Dropout — is the latest phase and is
-*complete*: milestones G0 (the architecture contract in
-`docs/native_rng_dropout_design.md`), G1 (`NativeGenerator` and module
-generator-state ownership), G2 (the deterministic stateless
-Dropout-forward **Core**), G3 (the differentiable
-`NativeTensor.dropout(p, *, generator)`, with an **explicit** required
-keyword-only `NativeGenerator`), and G4 (the `NativeDropout` module and
-its public export), and G5 (native checkpoint **format version 2** with
-persisted generator state and its alias topology), and G6 (RNG, graph,
-ownership, and checkpoint hardening — **no new capability**), and G7 (the
-deterministic stochastic training example and its exact checkpoint resume
-— also **no new capability**), and G8 (the honest benchmark characterization `benchmarks/benchmark_native_dropout.py` — measurement only, no capability), and G9 (the cross-cutting integration suite `tests/test_native_phase_g.py` — integration evidence only, no capability, no runtime file changed), and G10 (the phase closure — the Windows Release/Debug and Clang ASan/UBSan/LeakSanitizer validation matrix, documentation reconciliation, durable closure guardrails in `tests/test_native_phase_g_closure.py`, and the single registry line that removed `"dropout"` from `UNSUPPORTED`, which now reads exactly `("float32", "cuda", "amp")`; validation, documentation, and that one line — **no C++, CTest, ABI, ctypes, Core method, operation, module, export, schema field, checkpoint version, example, or benchmark changed**) are all complete.** G0 locked Python-managed generator state (an explicit
-64-bit seed plus call counter and an algorithm identifier), stateless
-native random kernels that receive the whole key for one call, inverted
-Dropout with a graph-owned multiplier mask whose backward never rereads
-the input, exactly one generator call consumed per **successful**
-stochastic forward (and none on any failure, in evaluation mode, at
-`p == 0`, or in backward), generator state registered as a fourth
-`NativeModule` category, and native checkpoint **version 2** with a
-locked version-1 compatibility rule. G0 is **design, documentation, and
-guardrails only** — no `NativeGenerator`, kernel, C ABI symbol, ctypes
-declaration, Core method, operation, module, export, or registry change
-exists, `UNSUPPORTED` still reads `("dropout", "float32", "cuda",
-"amp")`, and G0 left the checkpoint format at version 1. G0 also locks a
-lock-protected, token-validated generator reservation protocol (no two
-callers can ever receive the same call index, and state replacement is
-refused while a reservation is live), a checkpoint-version-2 generator
-section that records the **alias topology** — every registered generator
-path and its canonical target, so shared-versus-independent identity is
-restored, not just the states — and **whole-checkpoint** transaction
-atomicity, where any ordinary synchronous commit failure rolls back
-parameters, buffers, optimizer state, and generator state together and
-external process/interpreter death is the only documented exception.
-G4 implements and exports `NativeDropout` but **does not** move the
-capability boundary: `"dropout"` stayed in `UNSUPPORTED` through G9 and
-left it at **G10**, after the full closure matrix passed, leaving
-`("float32", "cuda", "amp")`. The format version became 2 at G5 — none
-of this in G0.
-**G1 is complete**: `src/tensorforge/experimental/native_generator.py`
-ships `NativeGenerator` — a **pure-Python value holder** owning no native
-storage and having **no `close()`**, carrying exactly four fields
-(`algorithm` `"tensorforge.splitmix64"`, `algorithm_version` 1, an
-unsigned-64-bit `seed`, and `calls`, the count of *committed* stochastic
-calls) as read-only properties, with `state()` returning an independent
-plain dict and `load_state()`/`reseed()`/`reset()` validating everything
-before assigning anything; exact-`int` discipline (`bool`, NumPy scalars,
-and `int` subclasses rejected); `seed=None` drawing once through
-`secrets.randbits(64)` and nothing else consulting the clock, the process
-id, an address, NumPy's global RNG, or Python's `random`; identity (never
-value) semantics with `copy`, `deepcopy`, and pickle all refused; and the
-private lock-protected token-validated transaction (`_reserve_call` →
-`_commit_call`/`_abandon_call`) where one private `threading.RLock`
-covers reservation, commit, cancellation, and every state read and write,
-at most one reservation is live, a concurrent or reentrant second caller
-fails *before* an index is minted, commit advances exactly once, cancel
-never advances, stale/foreign/duplicate/finished tokens are inert,
-`load_state`/`reseed`/`reset` are refused mid-reservation, and the
-counter is checked under the lock at `2**64 - 1` and never wraps.
-Reservation creation is a **two-phase claim / construct / publish /
-deliver** transaction and the token is built with **no generator lock
-held**: phase 1 rejects an active reservation, an existing claim, and an
-exhausted counter, then publishes *only* an internal construction claim
-(no active reservation, no counter movement, no serial movement); phase 2
-constructs the token owning nothing, and on any failure — including
-`MemoryError` and `KeyboardInterrupt` — a `finally` reacquires the lock,
-verifies the matching claim, clears it, publishes nothing, and re-raises;
-phase 3 reacquires the lock, verifies the claim, publishes the
-reservation, advances the never-reused serial exactly once, and clears
-the claim; phase 4 delivers the token. The four failure positions get
-**different** cleanup, because clearing the claim does *nothing* once a
-reservation is published: a failure between publication and delivery
-would otherwise leave an active reservation whose only token is being
-dropped — uncommittable, uncancellable, and blocking every later
-reservation — so `_release_undelivered` cancels it, matching the token's
-generator, serial, **and** index exactly, leaving `calls` untouched, and
-leaving a newer, foreign, committed, or already-abandoned reservation
-strictly alone. A failed delivery consumes an opaque serial, never a call
-index. It takes only its own generator's lock and does no
-callback-capable work under it, so it cannot touch the global
-multi-generator order. `_deliver_reservation` is the private no-op seam
-that makes that window addressable by tests instead of by real signal
-timing.
-Token construction is the one allocation in the path and allocation can
-run finalization, so it happens outside the lock: **no user code,
-callback, or generator-owned allocation runs while a generator lock is
-held**, which is what makes finalizer or callback reentry unable to
-invert the multi-generator lock order. While the claim stands, another
-reservation, `load_state`, `reseed`, `reset`, and
-`replace_generator_states` all raise `RuntimeError` and mutate nothing
-(inspection still works). The lock stays an `RLock` for two reasons —
-structurally, the multi-generator transaction re-enters through the same
-`_snapshot_state`/`_assign_state` write seam it holds the locks around,
-which a plain `Lock` self-deadlocks on; and residually, CPython can start
-a collection at any container allocation, so a finalizer reaching the
-remaining small allocations under the lock gets a deterministic refusal
-instead of a hang. `load_generator_state_dict` runs the shared
-`replace_generator_states` transaction in `native_generator.py`:
-validate → acquire **every** unique target's lock in one global
-identity-ordered sequence (so two loads over overlapping generators
-arriving through different modules cannot deadlock) → recheck every
-target for a published reservation *or a construction claim* while
-holding them all → snapshot → non-failing integer writes, with the
-rollback completing before any lock is released. No reservation can begin
-on a target between the recheck and the end of the commit, and because
-token construction holds no lock, a transaction reached from a finalizer
-begins owning nothing and takes the same global order.
-`NativeModule` gained `_generators` as a **fourth** registration category
-(reserved name, assignment registration, `register_generator`,
-one-category-per-name eviction in both directions, `__getattr__` /
-`__delattr__` participation, deterministic identity-deduplicated
-cycle-safe `generators()`/`named_generators()`, and the separate
-`generator_state_dict()`/`load_generator_state_dict()` surface), and
-`NativeGenerator` is exported from `tensorforge.experimental` only.
-**G1 generates no random values by itself** — it shipped the state, and
-the derivation, the kernel, and the Core method arrived at G2;
-`state_dict()` is unchanged and still tensor-only; G1 left the
-checkpoint format at version 1 and serialized no generator
-state; and no *numerical* capability-registry value moved (`UNSUPPORTED`
-still reads `("dropout", "float32", "cuda", "amp")`, dtypes/devices
-unchanged). The one registry change G1 does make is reporting-only:
-`STATE_SUPPORT` gained `"generator_state"` between `load_state_dict` and
-`save_native_checkpoint`, a capability name (like `"persistent_buffers"`)
-covering the generator registration and in-memory state surface — it
-does **not** mean generator state is checkpointed, which arrived at G5
-under its own separate name, `"checkpoint_generator_state"`.
-Reservation creation is failure-atomic at every position (a failed
-construction publishes nothing and skips no serial; a failed *delivery*
-cancels the exactly-matching published reservation), and `calls` is a
-*count*, so
-`2**64 - 1` is a reachable value, not a sentinel: reserving at
-`2**64 - 2` succeeds and commits to `2**64 - 1`, reserving at
-`2**64 - 1` is refused, and the counter never wraps.
-**G2 is complete**: the deterministic **stateless Dropout-forward
-Core**. New `cpp/include/tf_random_internal.h` and `cpp/src/random.cpp`
-hold the exact locked `tensorforge.splitmix64` derivation as hidden
-`namespace tf` functions — `splitmix64_mix` (`^= >>30`,
-`* 0xBF58476D1CE4E5B9`, `^= >>27`, `* 0x94D049BB133111EB`, `^= >>31`),
-`dropout_stream_key(seed, call) = mix64(seed + GOLDEN*(call + 1))`,
-`dropout_element_bits(stream, i) = mix64(stream + GOLDEN*(i + 1))`, and
-`dropout_uniform(bits) = (bits >> 11) * 2**-53` with a strict `u < p`
-drop test — plus `dropout_forward_contiguous`, which writes the output
-**and** the private multiplier mask in one pass with `1/(1 - p)` computed
-once per call, so the mask holds exactly `0.0` or that scale. All
-`std::uint64_t` wrapping arithmetic; **no** `<random>`,
-`std::random_device`, `mt19937`, clock, process id, address, allocation
-history, or static/thread-local state anywhere. The self-validating
-guarded export `tf_core_dropout_forward(input, offset, output, mask,
-count, seed, call_index, p)` rejects null handles, a negative offset or
-count, a span exceeding its storage, a non-finite or out-of-range `p`,
-and any aliasing between the input and either destination, writing
-**nothing** to either destination when it rejects. Python gains one
-ctypes declaration (the key as two `c_uint64` arguments),
-`"tf_core_dropout_forward"` in `_CHECKED_KERNELS`, `"dropout_forward"` in
-`TENSOR_CORE_OPS`, and the `NativeTensorCore.dropout_forward(p, *, seed,
-call_index)` / private `_dropout_forward_with_mask` pair — the
-`maxpool2d_forward` / winner-buffer split. Shared validators normalize
-`p` (bool and `numpy.bool_` rejected, `numbers.Real` accepted, `p == 1`,
-`p > 1`, `p < 0`, NaN, and ±inf rejected, `p == 0` accepted) and each key
-half (exact `int` in `[0, 2**64 - 1]`; bool, NumPy scalars, and `int`
-subclasses rejected). **The Core is stateless**: it takes no
-`NativeGenerator` and never reserves, commits, cancels, inspects, or
-mutates one, so a direct Core call leaves a live generator's seed,
-`calls`, and reservation slot bit-identical. Randomness is keyed by the
-**logical** row-major element index — Policy B materializes a
-non-contiguous input first, so a transposed, narrowed, or nonzero-offset
-view receives the same mask as a contiguous tensor of the same logical
-shape. Output and mask are fresh **owning contiguous** cores aliasing
-neither the input nor each other; the input and its metadata are never
-mutated; allocation order is output-then-mask, and any failure — a failed
-allocation, a failed native call, or a failed Python wrapper
-construction — closes everything allocated so live storage returns
-exactly to baseline and no caller can observe one lone result. Committed
-known-answer vectors (`mix64` over six inputs, nine stream keys, the
-element bits, the uniform conversion, and seven full twelve-element
-keep/drop patterns covering seed `0`, a mixed seed, a high-bit seed, the
-all-ones seed, call index `0`, a nonzero call index, the highest index a
-generator can issue (`2**64 - 2`), and two probabilities) are asserted
-**identically** in `cpp/tests/test_dropout_forward.cpp` and
-`tests/test_native_dropout_core.py`; a test-only Python reference of the
-derivation lives in the suite (never in production) and is pinned to
-those vectors before generating any expectation. **G2 ships the Core and
-nothing above it**: no autograd node, no
-graph-owned saved mask, no Dropout backward kernel (that gradient is the
-existing `multiply` over the saved mask), and no `NativeDropout`;
-`UNSUPPORTED` still reads `("dropout", "float32", "cuda", "amp")` and the
-checkpoint format is still version 1. One contract detail is recorded
-rather than glossed: the design's **empty-tensor** row is implemented in
-the kernel and the C ABI (`count == 0` draws and writes nothing), but the
-native tensor representation rejects zero-size dimensions outright, so no
-empty core can be constructed from Python — G2 proves the case at the two
-layers where it is reachable and pins the representation's limit with a
-test.
-**G3 is complete**: the differentiable
-`NativeTensor.dropout(p, *, generator)` in
-`src/tensorforge/experimental/native_tensor.py`, plus exactly one
-registry name — `"dropout"` appended to `AUTOGRAD_OPS`. **G3 changed no
-C++, no C ABI symbol, no ctypes declaration, no `NativeTensorCore`
-method, no module, no export, and no checkpoint-format change**, and
-added no backward kernel: inverted Dropout's gradient is the existing
-native `multiply` over the saved mask. The `generator` is **required and
-keyword-only** — no default, process-global, or module-global stream, no
-implicit per-call generator, and no NumPy or Python `random` fallback —
-and `p` goes through the *same* `_normalize_dropout_probability` the Core
-uses rather than a second rule. The operation owns the design's §5 call
-transaction in this exact order: validate the receiver, the generator,
-and `p`; return `self` (the caller's own object, un-copied) at `p == 0`
-with no reservation, allocation, kernel call, or graph node; otherwise
-reserve **one** call, binding the token and entering the cleanup boundary
-as the very next action; read the key from the **reservation** — the
-token's index, and the seed read while that live reservation makes every
-state replacement raise, so `generator.calls` is never mistaken for the
-reserved index; run the G2 Core **outside** the generator's lock; build
-the graph node, with `_from_op` adopting the mask through the unchanged
-`graph_resources` contract; and `_commit_call` **last**. So one
-successful stochastic forward consumes exactly one call *with or without
-gradients* (`detach()` is the native line's no-grad equivalent — it has
-no no-grad context, because its graph is opt-in), and **every** ordinary
-failure before the commit — invalid `p` or generator, a closed receiver,
-an exhausted counter, a reservation conflict, a Core validation or
-allocation failure, a Python wrapper failure, a backward-closure,
-graph-node, or resource-attachment failure, a no-grad mask-cleanup
-failure, or a delivery failure — releases the result and the mask,
-cancels the reservation, and re-raises, leaving the same unconsumed index
-so the next forward reproduces the committed vector the failed one would
-have. Two private module-level seams make the last positions addressable
-by test rather than only by argument, exactly as G1's
-`_deliver_reservation` does: `_dropout_backward(input_tensor, mask)`
-builds the backward closure, and `_deliver_dropout_result(result)` is the
-deliberate no-op between a fully constructed result and the commit;
-neither is exported or reachable from a public API. The mask is
-**graph-owned** private state — the third member of the family beside
-MaxPool2d's winners and cross-entropy's saved probabilities — released
-exactly once with the graph history, retained under `retain_graph=True`,
-kept alive across a failed retryable backward, freed by an abandoned
-graph's `close()` (`__del__` the fallback), and closed immediately by a
-no-grad forward. Backward reads **only** the upstream gradient and that
-mask: it never rereads the input, never redraws, and never reserves,
-commits, cancels, inspects, or mutates a generator, so the node records
-**no** expected parameter version and a later input mutation, `reseed`,
-`reset`, `load_state`, or `load_generator_state_dict` cannot change an
-existing graph's gradient or raise it a stale-graph error (a *full*
-checkpoint load still stales such a graph through some **other** node's
-parameter rule — a parameter contract, never a Dropout effect).
-Higher-order autograd is not supported, matching the rest of the native
-line.
-**G4 is complete**: `NativeDropout` in
-`src/tensorforge/experimental/native_dropout.py`, its export from
-`tensorforge.experimental`, and exactly one registry name —
-`"NativeDropout"` appended to `NATIVE_MODULES`. **G4 changed no C++, no C
-ABI symbol, no ctypes declaration, no `NativeTensorCore` method, no
-autograd operation, and no checkpoint format.**
-`NativeDropout(p=0.5, seed=None, generator=None)`: `p` goes through the
-*same* `_normalize_dropout_probability` the Core and the operation use
-(never a third rule) and is stored as a plain `float`; `seed` and
-`generator` are **mutually exclusive**, so supplying both raises
-`TypeError` rather than quietly ignoring one; without an explicit
-generator the module **creates and owns** `NativeGenerator(seed)` (one OS
-draw at `seed=None`), and with one it registers **that exact object**,
-never a copy — the default gives every layer an independent stream and an
-explicit generator gives several layers one interleaved stream. All
-validation precedes generator creation and registration, so a rejected
-construction draws no entropy, registers nothing, allocates nothing, and
-leaves a supplied generator bit-identical. **Which construction path ran
-is deliberately not recorded**: the public surface is exactly `p`,
-`generator`, `training`, and the ordinary `NativeModule` methods, with
-**no `owns_generator` attribute** (public or private) — "this module
-created its generator" is true of one moment in the constructor and stops
-being true as soon as that generator is shared with a second module, so
-ownership is read from generator **identity** and the **registered
-topology** (`a.generator is b.generator`, `named_generators()`) rather
-than from a Boolean a caller could also overwrite. The generator is registered
-under the canonical name `"generator"` (readable as `module.generator`)
-as the **fourth** state category: in `generators()`,
-`named_generators()`, and `generator_state_dict()`, deliberately absent
-from `state_dict()` (still `{name: NativeTensor}`), identity-preserved
-across `load_generator_state_dict()`, and never a parameter, buffer, or
-child module. The module owns **no native storage**, and dropping it
-never closes, resets, or mutates its generator. Forward validates the
-input **first** (`TypeError` for a non-`NativeTensor`, `RuntimeError` for
-a closed one — so evaluation is not a way to hand back an invalid
-tensor), then dispatches: **training** is exactly
-`input.dropout(self.p, generator=self.generator)`, so the operation owns
-the whole call transaction and the module can add no failure hole to it;
-**evaluation** returns the **input object itself**, consuming no call and
-allocating nothing, so any number of eval forwards leaves **no gap in the
-stream** and the next training forward takes the next index; and
-**`p == 0`** is identity in both modes, deliberately delegated to the
-operation (design §6.2) rather than duplicated as a second rule.
-`train()`/`eval()` propagate normally, including through
-`NativeSequential`, and never reseed or reset the generator. **G4 shipped
-the module and nothing above it**, and the gap was persistence: at G4 the
-checkpoint format was still version 1 with no generator section, so
-saving a model containing a `NativeDropout` preserved its parameters and
-buffers and **silently omitted the random stream**, while a load left the
-live generator exactly as it found it and **fabricated nothing** — so
-**exact stochastic resume did not exist yet**.
-**G5 is complete**: native checkpoint **format version 2** and exact
-generator restoration —
-`src/tensorforge/experimental/native_checkpoint.py` (the version, the
-`"generators"` section, its validators, and the four-phase load), the new
-private `_native_checkpoint_transaction.py` (the one rollback guard
-spanning the model, optimizer, and generator commits), the private
-locked-read helper `snapshot_generator_states` in `native_generator.py`,
-the private undeduplicated path walk
-`NativeModule._named_generator_paths`, and one reporting-only registry
-name — `"checkpoint_generator_state"` appended to `STATE_SUPPORT`.
-**G5 changed no C++, no C ABI symbol, no ctypes declaration, no
-`NativeTensorCore` method, no autograd operation, no module, no export,
-and added no public entry point**: persistence rides the existing
-`save_native_checkpoint` / `load_native_checkpoint` pair. The format
-**name** is unchanged forever; `_FORMAT_VERSION` is **2** and every new
-save writes 2, whether or not the model has generators (a generator-free
-model writes `"generators": null`, so absence is stated rather than
-inferred). The section is exactly three fields: `keys` (the ordered
-canonical names from the identity-deduplicated `named_generators()`
-walk), `entries` (one `{algorithm, algorithm_version, seed, calls}`
-object per canonical name, mapping exactly `keys` in order, with `seed`
-and `calls` as **canonical decimal strings** — `^(0|[1-9][0-9]*)$`, ≤ 20
-digits, in `[0, 2**64 - 1]` — because a `uint64` above `2**53` is not
-representable in the IEEE double most JSON readers use), and `aliases`
-(the complete **registered path → canonical name** map in full traversal
-order, every canonical name included and self-mapped). Generator state
-adds **no array** to the NPZ payload. A shared generator's state is
-written **once** while its *topology* is written in full, so two paths
-draw from one stream in the archive exactly when their aliases name the
-same canonical entry — sharing is **identity**, never state equality, so
-two generators with the same seed and counter stay two entries. Canonical
-names and both orders are functions of the model alone, so saving the
-same model twice is byte-identical and no caller-supplied mapping order
-can alter the archive. **Loading** compares the archive against a real
-`named_generators()` traversal of the live model, strictly in both
-directions: missing or unexpected canonical keys or registered paths, an
-alias targeting an absent entry, a canonical name absent from `aliases`
-or not self-mapped, a multi-step alias relation, a repeated JSON object
-key (rejected via an `object_pairs_hook`, since Python's `json` silently
-keeps the last), saved-shared versus live-independent and the reverse, a
-canonical name changed by a reordered registration, an algorithm or
-version mismatch, and a malformed or out-of-range seed/counter string all
-raise **in prevalidation, with the model, buffers, optimizer, and
-generators completely untouched**. Generators are restored **in place**
-through `load_state`, so identity and every sharing relationship survive
-and the archive never constructs a `NativeGenerator`; loading generator
-state moves no parameter version and stales no graph. A save **or** a
-load is refused, changing nothing and leaving an existing destination
-byte-intact, while any target generator has a call reservation in flight
-— published *or* holding a construction claim — and every generator's
-state is read in **one** locked snapshot (the same global `id()` lock
-order `replace_generator_states` uses), so the states an archive carries
-were true together. **Version-1 compatibility** is exactly as locked: a
-v1 archive still loads into a model with **no** registered generators,
-and one loaded into a model that **has** them fails naming them,
-fabricating no seed and no counter — not zero, not fresh entropy, not the
-current value; a v2 archive with a non-null generator section loaded into
-a generator-free model fails as an unexpected-generator error; any other
-version fails; the loader accepts `{1, 2}` and dispatches, with no
-"latest wins", no upgrade in place, and no silent rewrite. A load is
-**one transaction over the whole archive**: prevalidation touches
-nothing, staging materializes every staged value *and* an independent
-rollback snapshot of every live target the commit will overwrite, and the
-commit runs model → optimizer → generators through the components' own
-loaders inside **one** rollback guard — so any exception in it, a
-deliverable `KeyboardInterrupt` included, restores all four state
-families, preserves every object identity, moves no parameter version,
-leaves graph-owned Dropout masks from earlier graphs untouched, and
-returns native live storage to baseline. Because every allocation the
-rollback needs happens in staging, the rollback is plain attribute
-assignment and cannot raise; only external process or interpreter death
-is outside the guarantee. **Serializability is the other half (§10.8)**:
-atomic-under-failure is not atomic-with-respect-to-other-threads, and two
-concurrent loads that each succeed could otherwise leave the model from
-one archive beside the optimizer or generators from the other. So every
-participating in-memory state replacement now runs under **one** private
-process-wide `threading.RLock` — `_native_state_lock.state_transaction()`,
-never exported — in the **universal state-replacement lock order**: the
-guard first, then every unique target generator lock in the existing
-global `id()` order, and never the reverse. The participants are the
-checkpoint load commit, `replace_native_state`/`NativeModule.load_state_dict`,
-`replace_generator_states`/`load_generator_state_dict`,
-`NativeSGD.load_state_dict`, `NativeAdam.load_state_dict`, and the
-checkpoint **save snapshot** (held until the complete immutable payload
-and manifest exist, released before the NPZ write). So two concurrent
-loads leave one archive's state followed by the other's, never a mixture,
-and a save describes one coherent serial point rather than model state
-from before a replacement beside optimizer or generator state from after
-it. It is an `RLock`
-because the checkpoint transaction holds it and then calls the
-components' own loaders, which take it again — the alternative would be a
-second, lock-free commit path per component. Both locks are taken
-together by `native_generator.locked_generators`, which also owns the
-under-lock reservation recheck, so the order holds by construction rather
-than by each caller remembering it; even `_ordered_targets` runs inside
-the guard. Generator **reservations** deliberately do *not* take the
-guard — only their own generator's lock — which is what stops the two
-systems inverting: a racing reservation either completes before a
-transaction takes that lock or begins after it releases it, so no state
-is ever replaced underneath a live token. The rollback snapshots are
-captured **inside** the guard, at the real commit boundary, because one
-taken earlier could describe a model another transaction has since
-replaced. What is **not** claimed: ordinary training mutation — an
-optimizer `step()`, a `copy_value_`, a backward — does not take the
-guard, so thread-safe concurrent training snapshots are not offered; the
-claim is exactly that participating operations serialize with respect to
-each other. One consequence is recorded rather than glossed: `NativeAdam.load_state_dict` releases the moment buffers it
-replaces, so a rolled-back load restores the optimizer's moments **by
-value into its current buffer objects** — private optimizer internals
-with no public identity contract — while every publicly identified object
-is the same object afterwards on both paths. The transaction adds **no
-new lock order**: the model and optimizer commits take no locks, and the
-only locks a load ever holds are generator locks, taken inside
-`replace_generator_states` in its existing global order.
-**G5 proved exact generator restoration — state, identity, topology, and
-the next Dropout mask against the G2 Core at the restored call index —
-but not the end-to-end §11 story**: at G5 the interrupted stochastic
-*training* run reproduced into a fresh model/optimizer/generator set
-remained ahead as the **G7** resume, which G7 then demonstrated.
-Reproducibility is
-exact **for the state actually captured**; Python's `random`, NumPy's
-global RNG, data-loader position, and scheduler state are not captured
-and full-program determinism is not claimed. That remaining gap, plus the
-then-unrun closure matrix, is why `UNSUPPORTED`
-read `("dropout", "float32", "cuda", "amp")` at G5 — `"dropout"` was the
-one name deliberately in both an implemented inventory and that tuple,
-because the registry reports what is *closed and validated* while the
-inventories report what *exists*. It left that tuple at the **G10**
-closure, and `UNSUPPORTED` now reads `("float32", "cuda", "amp")`.
-**G6 is complete**: the hardening milestone, which added **no capability,
-operation, module, export, checkpoint field, or checkpoint version** and
-moved no registry value. `tests/test_native_phase_g_hardening.py` executes
-the design's §13 ownership and §14 failure matrices as adversarial tests:
-the reservation transition matrix, with each rejected transition asserting
-five invariants at once (no counter movement, no active-reservation change,
-no construction-claim change, no serial reuse, no native-storage movement)
-and the four reservation-creation failure positions distinguished by
-whether a serial was consumed; the exact `uint64` boundary as §4.6's table,
-row by row, with the final index retryable until committed and repeated
-exhaustion failures freezing every field; forced concurrent interleavings
-under barriers and events with **bounded joins and no sleeps** (no
-duplicate call index, unrelated generators independent, no torn state read,
-a reservation racing a state replacement provably preceding or following it
-in both orders, a construction claim refusing both a save and a load, a
-transaction started from inside token construction refused rather than
-deadlocked, and nested component loaders not self-deadlocking); the
-deterministic Core's **structural** key properties beside its committed
-vectors — the stream key injective in the call index for one seed, the
-element derivation injective within one call, and the cross-seed collision
-a 128-into-64-bit key makes unavoidable (`seed=2**63, call=2**63` equals
-`seed=0, call=0`) pinned as a **characterized consequence** rather than a
-defect, since sharing is identity and the contract never claimed the
-stronger property; the probability extremes and logical-layout
-independence through real transposed and narrowed views; every pre-commit
-position of §5's call transaction times `RuntimeError`, `MemoryError`,
-`KeyboardInterrupt`, and a non-`Exception` `BaseException`, each proving
-the retry reproduces the exact mask the failure would have produced, and
-every post-commit position proving the index spent exactly once with the
-original exception primary; all **four** graph-owned saved-resource
-families (a Dropout mask, MaxPool2d winners, BatchNorm eval snapshots, and
-cross-entropy probabilities) coexisting in one graph and releasing exactly
-once, across branched, chained, shared-generator, independent-generator,
-retained, failed-retryable, and abandoned graphs; a **76-case** checkpoint
-corruption matrix, every case failing before any live change with all four
-state families bit-identical; whole-transaction rollback injected at every
-commit position times the same four exception classes, with object
-identities, parameter versions, unrelated active reservations, and
-pre-load graph masks proved untouched; save-seam destination atomicity at
-all seven positions; and repeated success-and-failure lifecycle loops
-returning native live storage exactly to a measured baseline. **One
-runtime defect was found and fixed** with the narrowest possible change:
-`native_tensor._chain_cleanup_failure` closed a **cycle** in the
-`__context__` chain when a cleanup step failed — a cleanup exception
-raised while the operation's failure is being handled implicitly points
-back at it, so appending it without cutting that link made every ordinary
-"follow `__context__` to the end" reader spin forever (the helper itself
-included). The fix cuts that back-reference and is inert when the cleanup
-failure is already in the chain; the original exception stays primary and
-the cleanup failure stays reachable, and a dedicated regression guard
-fails without the fix. No C++, C ABI symbol, ctypes declaration, Core
-method, autograd operation, module, export, schema field, benchmark, or
-example changed.
-**G7 is complete**: the end-to-end exact stochastic resume, and again **no
-new capability**. `examples/native_dropout_training.py` trains
-`NativeDropoutClassifier` — `NativeLinear(4, 8, seed=0)` →
-`NativeBatchNorm1d(8)` → `NativeReLU` → `NativeDropout(p=0.5,
-seed=20240707)` → `NativeLayerNorm(8)` → `NativeLinear(8, 3, seed=1)` —
-over **raw logits** with `NativeCrossEntropyLoss` and
-`NativeAdam(lr=0.05)`. It is the smallest model carrying **all four**
-TensorForge-owned state families at once (parameters, persistent BatchNorm
-running buffers, a registered `NativeGenerator`, and NativeAdam moments
-with per-parameter step counters), so an incomplete restore diverges
-immediately. The data is twelve four-feature samples over three classes
-computed from an **explicit arithmetic formula** — every value a quarter
-or an eighth, exact in float64 — in three fixed batches of four, on a
-schedule that is a **pure function of the training step** (`step % 3`);
-nothing is shuffled, generated randomly, augmented, loaded, or downloaded,
-and neither NumPy's global RNG nor Python's `random` is touched. **Two
-uninterrupted runs are bit-identical**, and an interrupted run
-checkpointed after 7 *completed* steps (deliberately mid-cycle in the
-schedule), whose model, optimizer, and generator are **released before the
-resume begins** so the archive is the only continuation boundary, reloads
-into a completely fresh set built with a *different* Dropout seed and
-reproduces the uninterrupted run by **exact equality**: the whole loss
-sequence, every parameter, both running statistics, every optimizer moment
-and step counter, the generator's algorithm/version/seed/calls, the final
-training logits, and the final evaluation output. Two **negative controls**
-make that load-bearing: restoring all four families but restarting the
-batch schedule at 0 **diverges**, and restoring everything but re-seeding
-the generator **diverges**. Evaluation is proved **state-neutral** —
-repeated eval passes leave `calls` bit-identical, produce identical
-outputs, restore the caller's mode, and leave a probed run's loss sequence
-exactly equal to an unprobed one's — and a separate **throwaway** reload
-(leaving the resumed run untouched) matches the restored `NativeDropout`'s
-next output against `NativeTensorCore.dropout_forward` at the exact
-restored `(seed, call_index)`, advancing `calls` by exactly one; the
-module's private mask is never exposed. **External loop progress is
-carried explicitly**, as validated JSON metadata (`{"training_step": k,
-"next_batch_index": k % 3, "lr": ...}`), because checkpoint v2 captures
-TensorForge-owned state and **not** data-loader position, batch order,
-shuffle state, epoch counters, scheduler state, Python's `random`, or
-NumPy's global RNG — and `validated_progress` **raises** on a missing
-field, a `bool` where an `int` belongs, an out-of-range step, or a
-`next_batch_index` disagreeing with the schedule, rather than silently
-restarting from step 0. Reproducibility is exact **for the state actually
-captured**; full-program determinism is not claimed. The milestone is one
-example, one test module, and documentation: **no** C++, C ABI symbol,
-ctypes declaration, Core method, autograd operation, module, export,
-schema field, checkpoint version, benchmark, or registry value changed,
-and the example defines **no public training API** — none of its helpers
-is exported.
-Data loaders, native integer tensors, further
-dtypes/devices, CPU optimization, and CUDA experiments are
-future work beyond Phase G.
-Position the project as serious and systems-focused — never
-"educational", "toy", or "mini" — while staying honest: not
-production-ready, not a PyTorch replacement.
+TensorForge is a from-scratch deep learning framework: a serious ML
+systems project covering PyTorch-style framework internals, inspired by
+[daedalus-ml](https://github.com/JohnsonKayati/daedalus-ml) but not a
+copy. Position it as serious and systems-focused — never "educational",
+"toy", or "mini" — while staying honest: **not production-ready, not a
+PyTorch replacement.**
 
-## Tech stack
+Two lines live in one repository:
+
+- **The stable Python framework line** (`tensorforge`, `tensorforge.nn`,
+  `tensorforge.optim`, `tensorforge.data`): Tensor + reverse-mode
+  autograd on NumPy. Complete as of **v3.0**; feature-frozen unless a
+  milestone says otherwise.
+- **The experimental native line** (`tensorforge.backends`,
+  `tensorforge.experimental`, `cpp/`): a C++17 CPU runtime behind a
+  plain C ABI loaded with ctypes, with its own tensor, autograd,
+  modules, optimizers, RNG, and checkpoints. It lives on `main` in those
+  explicit namespaces, not on a separate branch.
+
+Development is milestone by milestone: each one small, tested, readable,
+and documented. Every milestone's full record — design, evidence,
+measurements, rejected alternatives — lives in `docs/`, not here.
+
+### Tech stack
 
 - Python ≥ 3.13, NumPy, pytest — nothing else.
 - Managed with `uv` (`uv run …` for everything).
-- Never introduce PyTorch, TensorFlow, JAX, sklearn, pandas, or
-  matplotlib. NumPy is the only numeric dependency.
+- **Never introduce** PyTorch, TensorFlow, JAX, sklearn, pandas, or
+  matplotlib. NumPy is the only numeric dependency. The C++ backend
+  needs nothing but a C++17 compiler — no BLAS, no oneDNN, no Eigen, no
+  pybind11, no GoogleTest.
 
-## Layout
+### Layout
 
 - `src/tensorforge/tensor.py` — Tensor + reverse-mode autograd. Ops are
-  either primitives (eager NumPy forward + `_backward` closure holding
+  either primitives (eager NumPy forward + a `_backward` closure holding
   the local derivative) or derived (compositions that get gradients for
   free). Gradients accumulate via `_accumulate_grad`, which also
   un-broadcasts.
@@ -784,134 +47,557 @@ production-ready, not a PyTorch replacement.
   `binary_cross_entropy`), metrics (`accuracy`, `binary_accuracy`,
   `evaluate_classifier`, `evaluate_binary_classifier` — the evaluators
   measure with the model temporarily in eval mode and restore it).
-  Modules have train/eval mode: `model.train()` / `model.eval()`
-  recurse through children; Dropout and BatchNorm1d change behavior.
-  Modules can declare non-trainable buffers via `self._buffers =
-  ("attr", ...)` (e.g. BatchNorm running stats); `state_dict()` /
-  `load_state_dict()` cover parameters *and* buffers.
+  `model.train()` / `model.eval()` recurse through children; Dropout and
+  BatchNorm1d change behavior. Modules declare non-trainable buffers via
+  `self._buffers = ("attr", ...)`; `state_dict()` / `load_state_dict()`
+  cover parameters *and* buffers.
 - `src/tensorforge/optim/` — SGD, Adam. Plain classes: `step()` skips
   `None` grads and frozen params, `zero_grad()` sets grads to `None`.
-  Also `StepLR` (multiplies `optimizer.lr` by gamma every step_size
-  epochs) and `clip_grad_norm` / `clip_grad_value` (clip gradients in
-  place before `optimizer.step()`).
+  Also `StepLR` and `clip_grad_norm` / `clip_grad_value` (clip in place
+  before `optimizer.step()`).
 - `src/tensorforge/data.py` — `batches` mini-batch iterator.
-- `examples/` — runnable scripts, each with `train(...)` returning
-  stats and a `main()` that prints, guarded by `__main__`.
-- `tests/` — pytest suite; every feature has tests.
-- `docs/` — project summary, architecture, autograd, training,
-  examples, roadmap, release history, and the native-line design
-  contracts (`native_cnn_design.md` for Phase D,
-  `native_classification_design.md` for Phase E,
-  `native_normalization_design.md` for Phase F — F0–F9 shipped, phase
-  complete —, and `native_rng_dropout_design.md` for Phase G — G0 (the
-  design lock), G1 (`NativeGenerator` and module generator-state
-  ownership), G2 (the stateless `dropout_forward` **Core** kernel and
-  its C ABI), G3 (the differentiable `NativeTensor.dropout`), G4 (the
-  `NativeDropout` module), and G5 (native checkpoint **format version 2**
-  with persisted generator state and its alias topology), and G6 (the
-  RNG/graph/ownership/checkpoint hardening, which added no capability),
-  and G7 (`examples/native_dropout_training.py` and its tests — the
-  deterministic stochastic training and exact-resume proof, which also
-  added no capability), and G8 (`benchmarks/benchmark_native_dropout.py`
-  and its tests — the honest characterization, correctness gated
-  before timing, no speed asserted, no capability), and G9
-  (`tests/test_native_phase_g.py` — the cross-cutting integration
-  suite over one model carrying every registered state family, also
-  no capability), and G10 (`tests/test_native_phase_g_closure.py` and
-  the documentation reconciliation — the Release/Debug/sanitizer
-  validation matrix and the single registry line that removed
-  `"dropout"` from `UNSUPPORTED`) have all shipped — **Phase G is
-  complete**). When a milestone changes the
-  public API or the examples, update the matching docs file (and
-  README links) in the same milestone.
-- `.github/workflows/tests.yml` — minimal CI: install uv, build the
-  experimental C++ backend, hard-failing kernel smoke check, then
-  pytest.
-- `cpp/` + `src/tensorforge/backends/` — the experimental C++ backend
-  (post-v3.0 line; `cpp/src/classification.cpp` holds the Phase-E
-  classification kernels and `cpp/src/random.cpp` the Phase-G stateless
-  SplitMix64 derivation and Dropout-forward kernel). Plain C-ABI kernels
-  loaded via ctypes; built with
-  `uv run python cpp/build.py` (`uv sync --group cpp` first if no
-  compiler). Never imported by the main framework; importing the
-  wrapper is always safe (lazy load) — check `cpp.is_available()` /
-  `cpp.backend_info()`; kernels raise ImportError at call time when
-  unbuilt, and the backend tests skip. `benchmarks/cpp_backend.py`
-  compares kernels against NumPy honestly (no performance assertions
-  anywhere), while `benchmarks/benchmark_native_cnn.py`,
-  `benchmarks/benchmark_native_classification.py`, and
-  `benchmarks/benchmark_native_normalization.py` characterize the Phase-D
-  CNN, Phase-E classification, and Phase-F normalization stacks the same
-  way (correctness gated before timing, honest reference labels, no
-  result file, no speed asserted). `scripts/smoke_cpp_backend.py` is the
-  hard-failing smoke check CI runs after building. Dependency-free C++
-  CTests live in `cpp/tests/` and build only with `-DTF_BUILD_TESTS=ON`;
-  sanitizer validation uses Clang on Linux
-  (`-DTF_SANITIZE=address,undefined`), which MSVC does not support.
+- `src/tensorforge/backends/cpp.py` — the **only** module in the
+  repository that imports `ctypes`: library loading, the C ABI argument
+  bindings, `NativeStorage` / `NativeTensorView` / `NativeTensorCore`,
+  and the capability registries.
+- `src/tensorforge/experimental/` — the native tensor, autograd,
+  modules, losses, metric, optimizers, generator, state transactions,
+  and checkpoints. One concept per file.
+- `cpp/src/` + `cpp/include/` — the C++ kernels, organized by concern
+  (`elementwise`, `matmul`, `reduction`, `conv2d`, `pooling`,
+  `classification`, `random`, `storage`, `error`). `tf_*_internal.h`
+  headers hold hidden-visibility helpers; nothing there is exported.
+- `cpp/tests/` — dependency-free C++ CTests that compile the kernel
+  source directly. Built only with `-DTF_BUILD_TESTS=ON`.
+- `examples/` — runnable scripts, each with `train(...)` returning stats
+  and a `main()` that prints, guarded by `__main__`.
+- `tests/` — the pytest suite; every feature has tests.
+- `benchmarks/` — characterization harnesses (§9).
+- `scripts/smoke_cpp_backend.py` — the hard-failing smoke check CI runs
+  after building.
+- `docs/` — the source of truth for everything historical (§11).
+- `.github/workflows/tests.yml` — CI: install uv, build the C++ backend,
+  hard-failing smoke check, quick benchmark smoke run, then pytest.
 
-## Commands
+---
 
-- Run tests: `uv run pytest`
-- Run examples:
-  - `uv run python examples/train_linear_regression.py`
-  - `uv run python examples/train_xor.py`
-  - `uv run python examples/train_multiclass.py`
-  - `uv run python examples/train_binary_classification.py`
-  - `uv run python examples/train_mlp_with_dropout.py`
-  - `uv run python examples/train_tiny_cnn.py`
-  - `uv run python examples/native_dropout_training.py`
+## 2. Stable / native separation
 
-## Style rules
+**The two lines are strictly separated and must stay that way.**
+
+- The stable framework **never** imports the native backend. Importing
+  `tensorforge` must not load the C++ library, and a test proves it.
+- Importing the wrapper is always safe — the library loads lazily. Check
+  `cpp.is_available()` / `cpp.backend_info()`; kernels raise
+  `ImportError` at call time when unbuilt, and the backend tests skip.
+- `stable_framework_integration` is `False` in `backend_info()` and
+  stays false. There is no automatic backend selection, no implicit
+  dispatch, and no environment variable that changes which line runs.
+- Native modules mirror stable semantics but are separate classes
+  (`NativeLinear`, not a `Linear` backend flag).
+
+---
+
+## 3. Current support boundary
+
+These are the canonical registry values in `backends/cpp.py`. Changing
+any of them is a capability decision, never a side effect:
+
+| Registry | Value |
+|---|---|
+| `SUPPORTED_DTYPES` | `("float64",)` |
+| `SUPPORTED_DEVICES` | `("cpu",)` |
+| `UNSUPPORTED` | `("float32", "cuda", "amp")` |
+| Native checkpoint format | `tensorforge.native_checkpoint`, version **2** |
+| Accepted checkpoint versions | `(1, 2)` |
+| Exported production `tf_*` symbols | **52** |
+
+**Performance work never broadens support.** A milestone that makes
+something faster must leave every row above untouched. The canonical
+capability status lives in `docs/native_support_matrix.md`.
+
+Not supported, and not a bug: float32/float16/bfloat16, casting, dtype
+promotion, AMP, CUDA or any GPU backend, integer tensors, data loaders,
+distributed training, C++-side autograd, attention/Transformers.
+
+---
+
+## 4. Core invariants
+
+Everything in this section holds across every phase and may not be
+weakened by a milestone.
+
+### 4.1 Public API and C ABI discipline
+
+- The public API is locked by tests (`tests/test_public_api.py` for the
+  stable root package; the registries and `experimental.__all__` for the
+  native line). Adding to it is a milestone decision.
+- **Adding a C ABI export is a milestone decision**, not an
+  implementation detail. Optimizations ship *inside* existing exports.
+- Hidden default visibility; `TF_EXPORT` only on functions Python
+  actually declares. The source export inventory and the built library's
+  export table must agree.
+- **No public performance control of any kind exists or may be added**:
+  no kernel/path selector, block-size or threshold setter, traversal or
+  dispatch tracer, benchmark hook, profiling counter, "which path ran"
+  query, or environment-variable dispatch.
+- **No production poison, profiling, or allocation-content control.** A
+  symbol compiled into and exported from the normal runtime is part of
+  the runtime however carefully it is disarmed. (The one pre-existing
+  exception is documented: `tf_test_arm_alloc_failure` /
+  `tf_fault_injection_available`, the deterministic thread-local
+  allocation-failure hook from the Phase-C era. It is inert until armed,
+  changes no buffer *contents*, and is part of the 52. Do not add a
+  second such hook, and do not remove this one without a milestone.)
+
+### 4.2 Optimized-path dispatch
+
+Every optimized kernel path in the native line follows one shape, and a
+new one must too:
+
+1. **One unchanged export.** Both paths live behind the symbol Python
+   already declares.
+2. **The pre-milestone traversal is retained verbatim** as the shipped
+   generic reference path, still reachable through ordinary production
+   dispatch, and is the oracle the optimized result is compared against.
+3. **A hidden-visibility predicate chooses**, and it is total, pure,
+   allocation-free, and a function of **layout or geometry metadata
+   alone** — never of a pointer value, an alignment, a clock, an
+   environment variable, or a CPU-feature probe.
+4. **A false answer is a fallback, never an error.**
+
+Currently shipped predicates: `tf::matmul_prefers_row_sweep`,
+`tf::copy_prefers_contiguous`, `tf::reduce_prefers_contiguous_blocks`,
+`tf::build_unary_plan` / `tf::build_binary_plan`,
+`tf::conv2d_forward_prefers_row_sweep`,
+`tf::conv2d_input_backward_prefers_gather`,
+`tf::conv2d_weight_backward_prefers_gather`.
+
+### 4.3 Deliberately absent
+
+None of these exists anywhere in the repository, and none may be added
+without meeting its own recorded criteria in
+`docs/native_cpu_performance_design.md` §10–§13:
+
+memory pool · scratch workspace or arena · persistent cache of native
+storage · SIMD intrinsics · threading · OpenMP · BLAS · oneDNN · Eigen ·
+im2col · general operator fusion · fast-math · cache blocking.
+
+### 4.4 C ABI error containment
+
+`docs/native_abi_error_contract.md` is the contract. **No exported
+native function may let a C++ exception escape.** Fallible functions
+wrap their body in `TF_GUARD_BEGIN` / `TF_GUARD_END(...)`, which clears
+the calling thread's error slot on entry and, on failure, records a
+`TfStatus` code plus message in thread-local storage and returns a
+benign value instead of unwinding. Functions that cannot fail are
+deliberately unguarded and never touch the slot. Python maps
+`TF_ERROR_ALLOC` → `MemoryError`, `TF_ERROR_INVALID` → `ValueError`,
+`TF_ERROR_RUNTIME` → `RuntimeError`.
+
+Self-validating exports reject null handles, negative sizes, spans
+exceeding their storage, and aliasing between a source and a
+destination — and when they reject, they **write nothing**.
+
+### 4.5 Determinism
+
+- No kernel consults a clock, a process id, an address, allocation
+  history, or static/thread-local state to produce a value.
+- Random values come only from the explicit `NativeGenerator` key
+  (`tensorforge.splitmix64`; seed + call index). No `<random>`, no
+  `std::random_device`, no implicit global stream.
+- Examples use fixed seeds so output is reproducible.
+- **Deterministic training and exact checkpoint resume are proved by
+  test in every phase from C onward, and every one of those proofs must
+  keep passing.** An interrupted run reloaded into a *fresh*
+  model/optimizer/generator set reproduces the loss suffix, every
+  parameter, every buffer, every optimizer moment and step counter, the
+  generator state, and the final training and evaluation outputs by
+  **exact equality**.
+- Reproducibility is exact **for the state TensorForge captures**.
+  Python's `random`, NumPy's global RNG, data-loader position, batch
+  order, and scheduler state are not captured; full-program determinism
+  is not claimed.
+
+---
+
+## 5. Ownership and state
+
+### 5.1 Native storage ownership
+
+- A `NativeTensorCore` owns its `NativeStorage`; a `NativeTensorView`
+  borrows. Views never close their parent's storage; a chained view
+  keeps the whole chain reachable.
+- Every operation allocates a **fresh owning contiguous** output that
+  aliases neither operand.
+- **Cleanup is explicit and never relies on garbage collection.**
+  `close()` is the contract; `__del__` is only a fallback. Any failure
+  — allocation, native call, Python wrapper construction, graph-node
+  construction, resource attachment — closes everything it allocated, so
+  live storage returns exactly to baseline and no caller can observe one
+  lone result.
+
+### 5.2 Graph-owned saved resources
+
+Four families exist: Dropout masks, MaxPool2d winners, BatchNorm eval
+snapshots, and cross-entropy saved probabilities. Each rides the
+`graph_resources` contract: released **exactly once** with the graph
+history, retained under `retain_graph=True`, kept alive across a failed
+retryable backward, freed by an abandoned graph's `close()`, and closed
+immediately by a no-grad forward. A registered buffer is **never** a
+rereadable graph operand — BatchNorm eval reads independent owning
+snapshots instead.
+
+### 5.3 Identity and versioning
+
+- `load_state_dict()`, `load_native_checkpoint()`, and the optimizer
+  loaders **preserve every parameter, buffer, and generator identity**
+  and every sharing relationship. They restore in place.
+- A parameter's version counter moves **once** per committed mutation.
+  Shared parameters deduplicate to one slot, one update, one increment.
+- Loading **buffer** or **generator** state moves no parameter version
+  and stales no graph. A **full** checkpoint load replaces parameters and
+  therefore correctly stales an earlier graph through the parameter rule
+  — a parameter contract, never a buffer or RNG effect.
+- Frozen parameters stay registered and persisted but are skipped by
+  optimizers.
+
+### 5.4 Transactional boundaries
+
+Each of these is atomic under failure, validated before anything is
+published, and leaves identities, versions, and live storage exactly as
+it found them when it fails:
+
+output allocation + wrapper publication · `NativeParameter.copy_value_`
+· optimizer stage/commit (validation is four complete passes before any
+mutation; commit is one `copy_value_` and one version increment per
+updated parameter) · the BatchNorm running-statistics two-buffer
+transaction · `NativeModule.load_state_dict` · optimizer
+`load_state_dict` · whole-checkpoint load · generator-state replacement
+· graph-resource adoption.
+
+Honest scoping, recorded rather than glossed: transactions are **per
+module**; one whole training step is *not* globally transactional.
+Ordinary training mutation does not take the process-wide
+state-replacement lock, so thread-safe concurrent training snapshots are
+not offered — the claim is that *participating* state-replacement
+operations serialize with respect to each other, in the universal lock
+order (the private process-wide guard first, then every unique generator
+lock in global `id()` order, never the reverse).
+
+External process or interpreter death is the only documented exception
+to whole-checkpoint atomicity.
+
+---
+
+## 6. Numerical contracts
+
+**Never publish one universal "bit-identical" claim.** Each operation
+family has its own rule, measured rather than inherited. The full
+statements live in `docs/native_cpu_performance_design.md` §7 and §16;
+the durable summary:
+
+| Family | Contract |
+|---|---|
+| **Value transfer** (`contiguous_copy`, state/checkpoint transfer) | Reproduces its source's bits **exactly** — including `-0.0` and both signs of signaling NaN, and every NaN payload. A transfer performs no arithmetic, so it has no operand roles to choose between. An *operation* that happens to copy (`zeros + x`) follows IEEE arithmetic instead, and therefore does normalize `-0.0` and quiet a signaling NaN. |
+| **Elementwise** (`add`, `subtract`, `multiply`, `relu`, `relu_backward`, `sqrt`, `reciprocal`) | Bit-identical whenever **at most one operand is NaN**. `subtract` is bit-identical everywhere. For `add`/`multiply` with **two** NaN operands the surviving payload is **outside the contract**, asserted in neither direction. |
+| **`exp` / `log`** | Library functions with no correctly-rounded IEEE guarantee. Deliberately **excluded** from the templated traversal, and the cross-platform test contract is a **one-ULP** finite bound, not bit equality. |
+| **matmul** | Accumulation order preserved exactly. Every non-NaN result bit-identical. NaN positions identical and always quiet. NaN **payload** bits deliberately outside the contract. |
+| **Reduction** | Per-output accumulation order preserved exactly, source traversal order not even reordered. Signed zeros proved as raw bit patterns. Bit-identical whenever **at most one NaN** enters an accumulation; payloads outside the contract when two or more meet in one cell. |
+| **Conv2d** (all three directions) | Per-destination accumulation order preserved exactly. Every non-NaN result bit-identical; NaN positions identical; **at most one NaN per destination agrees including payload**; signed zeros bit-identical; signalling NaNs quieted identically. Two-or-more-NaN payloads not contractual. |
+| **Optimizers, normalization, softmax, log-softmax, cross-entropy** | Bit-identical to the composition they replaced. No reassociation, no accumulator-width change, no operand-position change. |
+
+Nothing anywhere reassociates arithmetic, uses FMA, fast-math, an
+intrinsic, `restrict`, a tree/pairwise/parallel reduction, or a
+horizontal vector reduction.
+
+### Output initialization (H1)
+
+Output storage is **zero-initialized by default**. A call site may opt
+in to `tf_storage_create_uninitialized` **only** when the kernel
+provably overwrites every destination element before reading it, and
+only against a per-kernel audit table. `sum`/`mean` and
+`narrow_backward` are explicitly rejected and keep a zeroed destination
+— the first accumulates into its output, the second writes only the
+narrowed region and the untouched zeros *are* the gradient.
+
+Completeness is proved by deterministic **poison** tests injected
+**exclusively by test infrastructure, around the allocator**, always
+with a negative control showing the detector can fail. ASan and UBSan do
+**not** detect uninitialized-*value* reads and MemorySanitizer is not
+available here, so neither is claimed as that proof.
+
+---
+
+## 7. Build and test commands
+
+```bash
+uv run pytest                       # the whole suite; expect zero skips
+uv run python cpp/build.py          # build the native backend (Release)
+uv run python cpp/build.py --debug  # unoptimized, assertions on
+uv sync --group cpp                 # only if you have no C++ compiler
+uv run python scripts/smoke_cpp_backend.py
+```
+
+Examples:
+
+```bash
+uv run python examples/train_linear_regression.py
+uv run python examples/train_xor.py
+uv run python examples/train_multiclass.py
+uv run python examples/train_binary_classification.py
+uv run python examples/train_mlp_with_dropout.py
+uv run python examples/train_tiny_cnn.py
+uv run python examples/native_dropout_training.py
+```
+
+`cpp/build.py` is a thin wrapper around the canonical CMake build
+(`cpp/CMakeLists.txt`), which owns the real compilation architecture.
+When CMake is absent it falls back to one direct compiler invocation
+over the same source list (this is what CI uses). `TF_SANITIZE` and
+`TF_BUILD_TESTS` are the **only** build options; adding a third is a
+milestone decision.
+
+### Windows validation (the primary development platform)
+
+Build **Release and Debug out-of-source, outside the repository**, and
+write the Debug library elsewhere so the active runtime stays the
+Release DLL. Require **zero project compiler, linker, and CMake
+warnings** and the full CTest suite green in each configuration.
+
+```bash
+cmake -S cpp -B <outside-repo>/release -DTF_BUILD_TESTS=ON
+cmake --build <outside-repo>/release --config Release
+ctest --test-dir <outside-repo>/release -C Release
+```
+
+### WSL / Linux validation
+
+Match GitHub Actions: `uv sync --group cpp`, `uv run python
+cpp/build.py`, the smoke check, the quick benchmark, then `uv run
+pytest`. The transcendental (`exp`/`log`) test contract is a one-ULP
+bound precisely because libm differs between MSVC and glibc; do not
+tighten it back to bit equality.
+
+---
+
+## 8. Sanitizer procedure
+
+Every milestone that touches C++ or changes allocation behavior must
+pass this, on Clang under Linux/WSL (MSVC does not support it):
+
+```bash
+cmake -S cpp -B <outside-repo>/asan -DTF_BUILD_TESTS=ON \
+      -DCMAKE_CXX_COMPILER=clang++ -DTF_SANITIZE=address,undefined
+cmake --build <outside-repo>/asan
+nm -D <library> | grep -c __asan     # instrumentation proved present
+nm -D <library> | grep -c __ubsan
+```
+
+Required:
+
+- instrumentation **proved present** (`__asan*` / `__ubsan*` dynamic
+  symbols beside the exported `tf_*` symbols, and the library refusing
+  to load without the sanitizer runtime);
+- the full native CTest suite under that build;
+- the native Python suites under it, with **zero** ASan and **zero**
+  UBSan diagnostics;
+- a **negative control** proving the instrumentation can actually fail —
+  test-only code that hands a kernel malformed metadata and produces a
+  real `heap-buffer-overflow`. Zero diagnostics only means something
+  when the detector is known to work;
+- a LeakSanitizer lifecycle in which native live storage returns
+  **exactly** to baseline, with the remaining process-exit allocations
+  containing **no TensorForge frame** and **no suppression file added**.
+
+---
+
+## 9. Benchmark rules
+
+`benchmarks/cpp_backend.py` compares raw kernels against NumPy;
+`benchmark_native_cnn.py`, `benchmark_native_classification.py`,
+`benchmark_native_normalization.py`, `benchmark_native_dropout.py`, and
+`benchmark_native_cpu_performance.py` characterize their stacks.
+
+Non-negotiable, in every harness:
+
+- **Correctness is gated before timing**, always. A failed gate
+  publishes no timing and the CLI exits nonzero with clean stdout.
+- **No speed is asserted anywhere.** There is no timing threshold, no
+  performance budget, no committed duration, and **no CI job that fails
+  on a number**. Phase H did not add the first one and neither may
+  anything else.
+- **No result file of any kind is written**, in any phase. A committed
+  number becomes a promise the project cannot keep across machines.
+- A case with no honest equivalent is labelled `native_only` and
+  publishes **no ratio at all**. Never fabricate a comparison layer.
+- Setup, cleanup, and any advanced state stay outside the timer;
+  temporaries are closed explicitly rather than left to GC; a case whose
+  call advances persistent state rebuilds or resets it per repetition.
+- Report medians with spread after warm-up; publish regressions,
+  neutral results, and noise as prominently as wins.
+
+**Measurement methodology lessons, learned the hard way and repeatedly:**
+
+- Use **alternating pre/post rounds in separate subprocesses**, and
+  prove every case **bit-identical before either side is timed**.
+- **Low round counts lie.** H3, H5, H6, and H9 each recorded a case that
+  read as a regression at 7–9 rounds and as neutral-or-faster at 21–25.
+  Never quote a low-round figure as evidence.
+- State the machine's **control band** (identical-code cases) and treat
+  any reading inside it as neutral.
+- Whole-translation-unit **code-layout effects are real**: adding code to
+  one `.cpp` can move an unrelated function's timing by several percent
+  on byte-identical source. Publish it; do not chase it.
+- Below roughly 1,000 elements a fixed ~7–12 µs Python-plus-ctypes cost
+  dominates and kernel work is invisible. That is an architectural
+  floor, not a defect.
+
+---
+
+## 10. Public / ABI restrictions when writing code
+
+Do not, without an explicit milestone that says so:
+
+- add or remove an exported `tf_*` symbol, or change the C ABI;
+- add a public API, capability-registry value, dtype, device, checkpoint
+  field, or checkpoint version;
+- add a build option, a required dependency, or a mandatory
+  `-march`/`/arch` flag;
+- introduce anything from §4.3;
+- add a timing assertion, a committed benchmark number, or a result
+  file;
+- weaken a validation, an error type, or an error message in the name of
+  speed;
+- couple the stable line to the native one.
+
+---
+
+## 11. Documentation map (source-of-truth hierarchy)
+
+`CLAUDE.md` holds **current operating rules and durable invariants
+only**. Everything historical — milestone reports, measurements,
+rejected alternatives, evidence — lives in `docs/` and must not be
+duplicated here.
+
+| Question | Authoritative document |
+|---|---|
+| What is supported, right now | `docs/native_support_matrix.md` |
+| Overall architecture | `docs/architecture.md` |
+| Project overview / status | `docs/project_summary.md` |
+| Per-release history | `docs/release_history.md` |
+| What is planned next | `docs/roadmap.md` |
+| The C++ backend, builds, sanitizers | `docs/backend_experiments.md` |
+| C ABI error handling | `docs/native_abi_error_contract.md` |
+| Autograd (stable line) | `docs/autograd.md` |
+| Training / examples | `docs/training.md`, `docs/examples.md` |
+| Optimized/generic dispatch pattern | `docs/dispatch_design.md`, `docs/native_contiguous_fast_path_design.md` |
+| Native tensor wrapper & ownership | `docs/native_tensor_wrapper_design.md` |
+| Broadcasting / reductions | `docs/native_broadcasting_design.md`, `docs/native_reductions_design.md` |
+| dtype/device metadata | `docs/native_dtype_device_metadata_design.md` |
+| Native autograd | `docs/native_autograd_design.md` |
+| **Phase D** — native CNN | `docs/native_cnn_design.md` |
+| **Phase E** — classification & stable math | `docs/native_classification_design.md` |
+| **Phase F** — normalization & stateful buffers | `docs/native_normalization_design.md` |
+| **Phase G** — RNG & Dropout | `docs/native_rng_dropout_design.md` |
+| **Phase H** — CPU performance | `docs/native_cpu_performance_design.md` |
+
+When a milestone changes the public API or the examples, update the
+matching docs file (and README links) **in the same milestone**.
+
+---
+
+## 12. Current project status
+
+- **Stable Python line: complete at v3.0.**
+- **Native line: Phases A–H complete.**
+  - A — CPU runtime; B — native autograd; C — native training stack;
+    D — native CNN; E — classification and stable math; F —
+    normalization and stateful buffers; G — RNG and Dropout.
+  - **H — Native CPU Performance and Runtime Efficiency: complete
+    (H0–H10).** H1 output-allocation contract; H2 matmul memory access;
+    H3 metadata and dispatch; H4 optimizer step; H5 copy and
+    mutation transfer; H6 reduction execution; H7 Python/C ABI boundary;
+    H8 elementwise traversal and normalization allocation; H9 Conv2d
+    execution; H10 integration, remeasurement, the acceleration
+    decision, and closure.
+  - The ladder was **revised on evidence** three times — a reorder (H5),
+    a drop (the original composed-module H7), and a reassignment (the
+    original SIMD/threading/BLAS H9). All three are recorded in the
+    design document rather than rewritten away.
+  - **SIMD, threading/OpenMP, and BLAS were each finally decided at H10
+    and rejected, with measurements.** Their reopening criteria are
+    `docs/native_cpu_performance_design.md` §11–§13.
+  - Phase H changed **no** capability, dtype, device, registry value,
+    public API, checkpoint field, or checkpoint version, and added
+    exactly **one** C ABI symbol across the whole phase
+    (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
+
+Beyond Phase H (future work, not started): data loaders, native integer
+tensors, further dtypes/devices, CUDA experiments. See
+`docs/roadmap.md`; do not invent a phase that document does not define.
+
+---
+
+## 13. Agent operating rules
+
+### Style
 
 - Keep code simple and readable — clarity beats cleverness.
 - Match the existing style: NumPy-only internals, small modules, one
   concept per file.
-- Comments explain math/autograd reasoning, not obvious Python.
-- Losses and metrics stay simple: losses are Tensor expressions or
-  fused ops with custom backward; metrics are plain NumPy returning
-  Python floats, outside autograd.
-- Examples use fixed seeds so output is reproducible, and follow the
-  `train()` + `main()` pattern so tests can import `train`.
+- Comments explain math/autograd/ownership reasoning, not obvious
+  Python.
+- Losses and metrics stay simple: losses are Tensor expressions or fused
+  ops with custom backward; metrics are plain NumPy returning Python
+  floats, outside autograd.
+- Examples use fixed seeds and follow the `train()` + `main()` pattern
+  so tests can import `train`.
 - Tests use `np.allclose` with sensible tolerances (e.g. `atol=1e-6`);
   training tests assert learning without fragile exact-loss values.
+  Bit-level claims use raw IEEE-754 bit patterns, not tolerances.
 
-## Workflow rules for Claude Code
+### Workflow
 
-- Inspect existing code before editing; find where a concept lives and
-  follow its pattern.
-- Keep changes scoped to the requested milestone. No unrelated
-  features, no drive-by refactors, no framework rewrites.
+- **Inspect existing code before editing**; find where a concept lives
+  and follow its pattern.
+- **Keep changes scoped to the requested milestone.** No unrelated
+  features, no drive-by refactors, no framework rewrites. Do not hide
+  extra optimization under "cleanup".
 - If a requested feature already exists, verify it against the spec and
   add tests/documentation instead of reimplementing it.
-- Preserve all previous tests. Never loosen a test just to pass.
-- Run `uv run pytest` (and any requested manual checks) before
-  reporting success; report the actual observed output.
-- Do not use git: no commits, no pushes, no `git` commands. The user
-  handles version control.
+- **Preserve all previous tests. Never loosen a test just to pass.**
+- Run `uv run pytest` (and any requested manual checks) before reporting
+  success, and **report the actual observed output**.
+- A documented rejection backed by measurements is better than an unsafe
+  or weak implementation.
+- **Do not use git for anything that writes**: no commits, pushes,
+  pulls, merges, rebases, resets, branch or checkout operations,
+  stashes, or history edits. Read-only inspection (`git status`,
+  `diff`, `log`, `show`, `rev-parse`, `ls-files`, `branch
+  --show-current`) is fine. The user controls version control.
 - Final responses report: files changed, what was implemented, tests
-  added, the exact pytest result, manual check outputs, and any notes
-  or limitations.
+  added, the exact pytest result, manual check outputs, and any notes or
+  limitations.
 
-## Current notes
+### Machine notes
 
-- This machine has a permissions quirk: directories created by one
-  process often cannot be deleted by a later one. Consequences already
-  handled: pytest's cache is redirected to `.cache/pytest` (pyproject)
-  and `conftest.py` gives each test session a fresh unique basetemp so
-  tmp_path never needs to wipe an old directory. Don't try to delete
+- **Permissions quirk:** directories created by one process often cannot
+  be deleted by a later one. Already handled — pytest's cache is
+  redirected to `.cache/pytest` (pyproject) and `conftest.py` gives each
+  session a fresh unique basetemp. **Do not try to delete**
   `.pytest_cache/`, `.cache/pytest-tmp/`, or `%TEMP%/pytest-of-*`.
 - Two example-test import styles coexist: `tests/test_examples.py`
   inserts `examples/` into `sys.path`; newer tests import
   `examples.<name>` as a namespace package from the repo root.
-- Root package exports: `Tensor`, `Parameter`, `Dropout`,
-  `BatchNorm1d`, `LayerNorm`, `Conv2d`, `MaxPool2d`, `Flatten`,
-  `cross_entropy`,
-  `binary_cross_entropy`, `accuracy`, `binary_accuracy`,
-  `evaluate_classifier`, `evaluate_binary_classifier`, `SGD`, `Adam`,
-  `StepLR`, `clip_grad_norm`, `clip_grad_value`, `batches`,
-  `train_test_split`, `save_parameters`, `load_parameters`,
-  `save_checkpoint`, `load_checkpoint`, `count_parameters`,
-  `model_summary` (locked in by `tests/test_public_api.py`).
-  Checkpoints = weights + optimizer state + optional scheduler state
-  + optional RNG state (`rng_state=True` / `restore_rng_state=True`,
+- Stable root package exports (locked by `tests/test_public_api.py`):
+  `Tensor`, `Parameter`, `Dropout`, `BatchNorm1d`, `LayerNorm`, `Conv2d`,
+  `MaxPool2d`, `Flatten`, `cross_entropy`, `binary_cross_entropy`,
+  `accuracy`, `binary_accuracy`, `evaluate_classifier`,
+  `evaluate_binary_classifier`, `SGD`, `Adam`, `StepLR`,
+  `clip_grad_norm`, `clip_grad_value`, `batches`, `train_test_split`,
+  `save_parameters`, `load_parameters`, `save_checkpoint`,
+  `load_checkpoint`, `count_parameters`, `model_summary`. Stable
+  checkpoints = weights + optimizer state + optional scheduler state +
+  optional RNG state (`rng_state=True` / `restore_rng_state=True`,
   covers unseeded Dropout) + JSON metadata; parameters = weights only.

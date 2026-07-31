@@ -62,6 +62,30 @@ const char* last_error_message() noexcept;
 // path is exercised without exhausting memory.
 bool should_fail_alloc() noexcept;
 
+// A note on how "every destination element is written" is proved for
+// ``tf_storage_create_uninitialized`` (Phase H, milestone H1), because
+// the answer is deliberately **not** in this library.
+//
+// That export leaves its buffer unwritten, and real uninitialized heap
+// memory is a poor oracle: a fresh page from the OS reads back as zeros,
+// so a kernel that forgets to write an element would silently "pass" a
+// naive check. Neither ASan nor UBSan detects a read of an uninitialized
+// *value* either — that is MemorySanitizer's job, and MSan needs a fully
+// instrumented libc and CPython, which this project does not have.
+//
+// The proof therefore uses a deterministic **poison**: an uninitialized
+// buffer is filled with a recognizable pattern (a quiet NaN, or a large
+// nontrivial finite value) and the real kernel is then run over it, so
+// any element the kernel failed to write is left holding the pattern at
+// a locatable index. That poison is applied **entirely by test
+// infrastructure**, which wraps the private Python allocation helper and
+// writes the pattern through the ordinary ``tf_storage_fill`` primitive
+// between the real allocation and the real kernel call. **No
+// poison-control hook, thread-local flag, environment variable, or
+// global mode exists anywhere in this library**, and none may be added:
+// a debugging switch that can alter allocation contents is not something
+// the shipped runtime should expose, however carefully it is disarmed.
+
 // The C++-owned float64 buffer behind an opaque handle. Python holds the
 // handle only, moving data through copy_from/copy_to; every compute
 // translation unit reads and writes ``.data`` through these accessors.

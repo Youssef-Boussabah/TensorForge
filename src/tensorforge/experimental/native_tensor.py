@@ -1956,17 +1956,47 @@ def _versioned_value_reads(op_name, tensors):
 
 
 def _native_copy(core):
-    """A fresh owning row-major contiguous NativeTensorCore with the same
-    values as ``core`` — computed natively (zeros + add reads any strided
-    view through the existing kernels), so no NumPy round trip. Used to
-    materialize borrowing views (reshape/transpose of an upstream
-    gradient) into storage a retained grad can safely own."""
-    zeros = cpp.NativeTensorCore.zeros(
-        core.shape, dtype=core.dtype, device=core.device
-    )
-    result = zeros.add(core)
-    zeros.close()
-    return result
+    """A fresh owning row-major contiguous NativeTensorCore holding
+    ``core``'s value — the native line's one **value-transfer** primitive.
+
+    Every caller wants the same thing: an independent contiguous
+    materialization of some tensor's current value, for any layout
+    (contiguous, transposed, narrowed, offset, rank-0). It is the staging
+    step behind ``NativeParameter.copy_value_``, both ``state_dict()``
+    snapshot paths, both ``load_state_dict()`` staging paths, the
+    BatchNorm running-statistics transaction, and the reshape/transpose/
+    unbroadcast gradient materializations.
+
+    **Phase H, milestone H5 — this is a copy, so it copies.** It delegates
+    to ``NativeTensorCore.contiguous_copy()``: one uninitialized
+    allocation (H1) and one identity gather. Before H5 it was spelled
+    ``zeros(shape) + core`` — two allocations, a full zero-fill pass, and
+    a full elementwise-addition pass — a composition that predates the
+    E3.1 native gather and survived only because nothing had re-examined
+    it. The gather is strictly less work at every size and strictly more
+    faithful:
+
+    - ``0.0 + (-0.0)`` is ``+0.0`` under IEEE-754, so the addition
+      **normalized negative zero away**; a gather preserves it.
+    - An addition **quiets a signaling NaN**; a gather preserves it.
+
+    Both are now preserved, which is what makes this agree with the three
+    value-copy paths that always used the gather — ``NativeParameter``
+    construction, ``detach()``, and the ``to_numpy()``/``from_array``
+    serialization boundary. Nothing else in the 17-pattern IEEE-754 sweep
+    ever differed (see docs/native_cpu_performance_design.md §17.3).
+
+    The result owns its storage, is contiguous at offset 0, aliases
+    neither ``core`` nor anything else, and leaves ``core`` — value,
+    layout, and ownership — untouched. A failed gather closes the fresh
+    allocation before propagating, so no partially written core escapes
+    and live storage returns to baseline. A closed ``core`` raises
+    RuntimeError.
+
+    This helper stays module-level and private: it is the seam the state
+    and optimizer suites monkeypatch to inject a staging failure, and it
+    is not a public mutation API."""
+    return core.contiguous_copy()
 
 
 def _negated(tensor):

@@ -660,16 +660,21 @@ def test_native_adam_staging_failure_changes_nothing_and_recovers(monkeypatch):
     second = _param_with_grad()
     optimizer = NativeAdam([first, second], lr=LR, betas=BETAS, eps=EPS)
     moments = [(optimizer._m[i], optimizer._v[i]) for i in range(2)]
-    real_full = cpp.NativeTensorCore.full
+    # Injected at a *per-parameter* native allocation, so the failure
+    # lands after an earlier entry is already completely staged. Each
+    # entry issues nine multiplies (decayed_m, fresh_m, decayed_v,
+    # grad_squared, fresh_v, m_hat, v_hat, scaled_m_hat, update), so the
+    # tenth is the second entry's first — entry 0 is fully staged.
+    real_multiply = cpp.NativeTensorCore.multiply
     calls = {"n": 0}
 
-    def flaky_full(*args, **kwargs):
+    def flaky_multiply(*args, **kwargs):
         calls["n"] += 1
-        if calls["n"] == 9:  # the second entry's first scalar: entry 1
-            raise MemoryError("forced staging failure")  # is fully staged
-        return real_full(*args, **kwargs)
+        if calls["n"] == 10:
+            raise MemoryError("forced staging failure")
+        return real_multiply(*args, **kwargs)
 
-    monkeypatch.setattr(cpp.NativeTensorCore, "full", flaky_full)
+    monkeypatch.setattr(cpp.NativeTensorCore, "multiply", flaky_multiply)
     with pytest.raises(MemoryError, match="forced staging failure"):
         optimizer.step()
     monkeypatch.undo()

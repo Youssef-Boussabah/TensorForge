@@ -1,5 +1,6 @@
 """Lightweight checks that the docs exist and stay in sync with the repo."""
 
+import inspect
 import re
 from pathlib import Path
 
@@ -26,12 +27,16 @@ DOCS = (
     "native_classification_design.md",
     "native_normalization_design.md",
     "native_rng_dropout_design.md",
+    "native_cpu_performance_design.md",
 )
 
 # The native line's phase ladder, oldest to newest. Phases A-G are all
-# complete; Phase G (native RNG and Dropout) is the latest completed
-# phase, closed at milestone G10. Nothing after G exists.
-NATIVE_PHASE_LADDER = "ABCDEFG"
+# complete; Phase G (native RNG and Dropout) is the latest *completed*
+# phase, closed at milestone G10. Phase H (native CPU performance and
+# runtime efficiency) is the current phase: it has begun at milestone
+# H0, which is architecture, profiling, and baseline work only and
+# shipped no optimization and no capability. Nothing after H exists.
+NATIVE_PHASE_LADDER = "ABCDEFGH"
 
 EXAMPLE_FILES = (
     "train_linear_regression.py",
@@ -1423,6 +1428,27 @@ PHASE_STATUS_DOCS = (
     "src/tensorforge/experimental/__init__.py",
 )
 
+# ``CLAUDE.md`` is deliberately **not** in the tuples above, and was
+# removed from the per-milestone detail tuples at H10.
+#
+# It used to carry a full narrative copy of every milestone report, which
+# made it a status surface these checks could scan. That duplication was
+# the problem: the file had grown past Claude Code's project-memory
+# warning threshold, so the instructions that actually govern how the
+# repository is worked on were at risk of being crowded out by history
+# that `docs/` already owns authoritatively.
+#
+# H10 restated its role: current operating rules and durable invariants
+# only, with an explicit pointer to the authoritative document for every
+# historical question. So a *milestone detail* ("H2 measured cache
+# blocking and rejected it") is no longer required to appear there and is
+# asserted against `docs/` instead, while the *durable* facts it must
+# still carry — positioning language, the capability boundary, the export
+# count, no committed speed numbers, no "pending" phase language — are
+# still asserted against it, both by the checks that already do so and by
+# ``test_claude_md_states_current_facts_and_points_at_the_docs`` below.
+_AGENT_INSTRUCTIONS = "CLAUDE.md"
+
 # The names Phase F contracts but has NOT implemented, in each of the
 # forms a document or a registry might use them.
 _NORMALIZATION_MODULES = (
@@ -1678,7 +1704,7 @@ def test_phase_f_is_positively_marked_complete_everywhere():
     )
     # F0/F1's no-numerical-behavior honesty is still recorded.
     assert re.search(r"no numerical behavior", design, re.I)
-    for surface in PHASE_STATUS_DOCS + (PHASE_F_DESIGN, "CLAUDE.md",
+    for surface in PHASE_STATUS_DOCS + (PHASE_F_DESIGN,
                                         "docs/release_history.md"):
         text = _status_text(surface)
         assert "Phase F" in text, f"{surface} does not name Phase F at all"
@@ -2348,13 +2374,16 @@ def test_status_docs_agree_on_the_phase_sequence():
     Phase G (native RNG and Dropout) opened with milestone G0, so naming
     it is now correct rather than an over-claim — what it may not do is
     claim a Phase-G *capability* exists, which the Phase-G guardrails
-    below check against the live registry. Phase H is still invented."""
+    below check against the live registry. Phase H (native CPU
+    performance) opened with milestone H0 on the same terms: naming it is
+    correct, claiming it delivered a capability is not, and Phase I is
+    still invented."""
     for surface in PHASE_STATUS_DOCS:
         text = _status_text(surface)
         assert "Phase E" in text and "Phase F" in text, surface
-        # Phase G is the newest phase; nothing later may be named.
-        assert "Phase H" not in text, f"{surface} names Phase H"
-    # The phase sequence is A..G with no gaps: the set of phases a
+        # Phase H is the newest phase; nothing later may be named.
+        assert "Phase I" not in text, f"{surface} names Phase I"
+    # The phase sequence is A..H with no gaps: the set of phases a
     # document names must be a contiguous prefix-suffix of that ladder,
     # never a set that skips one. (Ordering *within* a document is not
     # pinned — the support matrix legitimately leads with the newest
@@ -2370,10 +2399,10 @@ def test_status_docs_agree_on_the_phase_sequence():
             f"{surface} skips a phase: names {named}, expected the "
             f"contiguous run {list(span)}"
         )
-        # The newest phase named must be G — no document may stop at F
-        # and thereby imply Phase F is still the current phase.
-        assert named[-1] == "G", (
-            f"{surface} stops at Phase {named[-1]}; Phase G is current"
+        # The newest phase named must be H — no document may stop at G
+        # and thereby imply Phase G is still the current phase.
+        assert named[-1] == "H", (
+            f"{surface} stops at Phase {named[-1]}; Phase H is current"
         )
 
 
@@ -2485,8 +2514,8 @@ def test_both_batchnorm_shapes_share_one_private_implementation():
     assert "_NativeBatchNorm" not in experimental.__all__
 
     shared = ("forward", "_training_forward", "_eval_forward", "_mean_over",
-              "_inverse_std", "_snapshot", "_blend", "_affine",
-              "_commit_running_state", "_validate_forward",
+              "_inverse_std", "_snapshot", "_blend", "_momentum_coefficients",
+              "_affine", "_commit_running_state", "_validate_forward",
               "_registered_running", "__init__", "__repr__")
     source = (REPO_ROOT / "src" / "tensorforge" / "experimental"
               / "native_batchnorm.py").read_text(encoding="utf-8")
@@ -2765,8 +2794,7 @@ def test_docs_present_the_shipped_phase_f_integration_suite():
     # shipped — the closure form of the old "F9 has not" check.
     for surface in ("README.md", "docs/native_support_matrix.md",
                     "docs/roadmap.md", "docs/project_summary.md",
-                    "docs/architecture.md", "docs/backend_experiments.md",
-                    "CLAUDE.md"):
+                    "docs/architecture.md", "docs/backend_experiments.md"):
         text = _status_text(surface)
         assert re.search(r"F8[^.]{0,60}(complete|shipped)", text, re.I), surface
         assert re.search(r"(F9[^.]{0,120}(complete|shipped|clos)"
@@ -2793,8 +2821,12 @@ def test_the_phase_f_closure_claims_no_later_phase():
     started = (r"(is|are|was|were|now|has|have)\s+"
                r"(begun|started|under way|underway|in progress|complete"
                r"|completed|shipped|implemented|supported)")
-    later = (r"(Phase H|CUDA (phase|runtime|"
-             r"backend)|AMP (phase|path)|Tensor Core|CPU optimization phase"
+    # Phase H left this list when milestone H0 opened it: "Phase H has
+    # begun" is now simply true. What it may not claim is a Phase-H
+    # *capability*, which the H0 guardrails check against the live
+    # registry — a stronger check than a phase-name scan.
+    later = (r"(Phase I|CUDA (phase|runtime|"
+             r"backend)|AMP (phase|path)|Tensor Core"
              r"|distributed (phase|training)|float16|bfloat16)")
     # Negated or explicitly-future forms are the honest ones.
     excluded = re.compile(
@@ -3307,7 +3339,7 @@ def test_phase_g_is_named_and_scoped():
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
-                    "docs/backend_experiments.md", "CLAUDE.md"):
+                    "docs/backend_experiments.md"):
         text = _status_text(surface)
         assert "Phase G" in text, f"{surface} does not name Phase G"
         assert re.search(r"Native RNG and Dropout", text, re.I), surface
@@ -3841,7 +3873,7 @@ def test_phase_g_is_positively_marked_complete_everywhere():
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
-                    "docs/backend_experiments.md", "CLAUDE.md",
+                    "docs/backend_experiments.md",
                     PHASE_G_DESIGN):
         text = _status_text(surface)
         offenders = [
@@ -4026,13 +4058,63 @@ _PHASE_G_OVERCLAIMS = (
     # closure itself) really have landed, so claiming any of them is
     # accurate. With the ladder exhausted there is no "later milestone"
     # left inside Phase G to guard against; what replaces that entry is
-    # the boundary *beyond* the phase — no surface may claim a Phase-H,
+    # the boundary *beyond* the phase — no surface may claim a Phase-I,
     # a CUDA/float32/AMP milestone, or any successor phase has begun,
     # because none has.
+    #
+    # ``Phase H`` itself was retired from this entry when milestone H0
+    # opened that phase: naming it is now accurate. What replaces it is
+    # the narrower claim the phase must not let erode.
+    #
+    # Retired one milestone at a time, exactly as the Phase-G entries
+    # above were: H1 (the output-allocation contract), **H2** (the matmul
+    # loop order), **H3** (the metadata and dispatch contract), **H4**
+    # (the optimizer step contract), **H5** (the copy and
+    # mutation-transfer contract), **H6** (the reduction-execution
+    # contract), **H7** (the Python/C ABI boundary contract), and **H8**
+    # (the elementwise-traversal and composed-allocation contract) really
+    # have shipped, so claiming any of them is accurate and the
+    # milestone-number arm now starts at H9.
+    #
+    # H8 is the ladder's worked example of a proposal being **confirmed
+    # and widened**: it entered as the weakest-evidenced numbered
+    # milestone, the one most likely to be dropped, and the measurement
+    # showed both that its premise held and that the composed-
+    # normalization cost the dropped H7 had left as conditional scope was
+    # reachable from the elementwise side (design §16.8.0). It shipped
+    # two tracks and is honest that only one of them moved the clock.
+    #
+    # H7 is also the ladder's worked example of a milestone **dropped on
+    # evidence**: the composed-module milestone that originally held the
+    # H7 slot was not entered, because H6 measured the normalization
+    # modules mostly neutral (design §16.7.0). The slot was refilled with
+    # the boundary work H3, H5, and H6 had each deferred by name. Neither
+    # the drop nor the replacement may be described as if it had always
+    # been the plan, which is why the design keeps the struck-through row
+    # and the original proposal verbatim.
+    # What is
+    # *not* retired, and will not be until §11–§13 of the design are met,
+    # is the family of optimizations Phase H has deliberately rejected on
+    # evidence: no memory pool, scratch workspace, SIMD, threading,
+    # OpenMP, or BLAS exists anywhere in this repository, and H2 in
+    # particular measured cache blocking and rejected it.
+    #
+    # The "one past the end of the ladder" sentinel moved from H11 to H12
+    # when H5 inserted a milestone and pushed reduction execution to H6
+    # (design §16.5.0): the ladder now runs H0–H11, so H11 is the planned
+    # phase-closure milestone and naming it is accurate, while H12 would
+    # again mean a phase that does not exist.
     ("a later phase has begun",
-     r"\bPhase[- ]H\b|\bG11\b"
+     r"\bPhase[- ]I\b|\bG11\b|\bH12\b"
      r"|(CUDA|float32|AMP)[^.]{0,40}\b(phase|milestone)\b[^.]{0,40}"
      r"\b(has|have|is|are)\s+(begun|started|shipped|landed|complete)\b"),
+    ("a Phase-H optimization that does not exist has shipped",
+     r"(memory pool|scratch (?:allocator|workspace)|SIMD|AVX|OpenMP|BLAS"
+     r"|multi-?threading|thread pool)[^.]{0,60}"
+     r"\b(is|are|was|were|has been|have been)\s+"
+     r"(added|shipped|implemented|enabled|introduced|adopted|landed)\b"
+     r"|\bH9\b[^.]{0,60}\b(has|have|is|are)\s+"
+     r"(begun|started|shipped|landed|complete|completed)\b"),
 )
 
 
@@ -4067,6 +4149,15 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert "dropout" not in cpp.UNSUPPORTED
     assert native_checkpoint._FORMAT_VERSION == 2
+    # H4's premise, also from reality: the optimizer really does build its
+    # scalar coefficients once per step through a private holder, and the
+    # staging seam really does accept one, so retiring H4 from the
+    # milestone-number arm above tracks the tree rather than the prose.
+    from tensorforge.experimental import native_adam as _native_adam
+    assert hasattr(_native_adam, "_StepConstants")
+    assert "constants" in inspect.signature(
+        _native_adam.NativeAdam._stage_entry
+    ).parameters
     # The generator really does not produce a value of any kind: G2's
     # derivation lives in C++ behind the Core, never on this object.
     generator = NativeGenerator(1)
@@ -4361,7 +4452,7 @@ def test_g1_status_is_stated_positively_on_every_phase_surface():
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
-                    "docs/backend_experiments.md", "CLAUDE.md",
+                    "docs/backend_experiments.md",
                     PHASE_G_DESIGN):
         text = _status_text(surface)
         assert re.search(r"\bG1\b", text), (
@@ -4393,13 +4484,13 @@ def test_g1_status_is_stated_positively_on_every_phase_surface():
 # the boundaries it deliberately did not cross.
 
 # The surfaces that track Phase-G status milestone by milestone.
+# CLAUDE.md left this tuple at H10 — see _AGENT_INSTRUCTIONS above.
 PHASE_G_STATUS_SURFACES = (
     "README.md",
     "docs/roadmap.md",
     "docs/project_summary.md",
     "docs/native_support_matrix.md",
     "docs/backend_experiments.md",
-    "CLAUDE.md",
     PHASE_G_DESIGN,
 )
 
@@ -5458,7 +5549,7 @@ def test_phase_g_kept_dropout_unsupported_until_the_g10_closure():
     )
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/native_support_matrix.md",
-                    "docs/backend_experiments.md", "CLAUDE.md"):
+                    "docs/backend_experiments.md"):
         surface_text = _status_text(surface)
         assert re.search(r"G10", surface_text), (
             f"{surface} does not name the G10 closure milestone"
@@ -6288,7 +6379,7 @@ def test_docs_present_the_shipped_phase_g_integration_suite():
     # Every status surface names it, and none of them claims closure.
     surfaces = ("README.md", "docs/native_support_matrix.md",
                 "docs/roadmap.md", "docs/project_summary.md",
-                "docs/backend_experiments.md", "CLAUDE.md")
+                "docs/backend_experiments.md")
     for surface in surfaces:
         text = _status_text(surface)
         assert "test_native_phase_g.py" in text, surface
@@ -6345,7 +6436,7 @@ def test_the_phase_g_closure_matrix_is_recorded_with_observed_results():
     for surface in ("README.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
-                    "docs/backend_experiments.md", "CLAUDE.md",
+                    "docs/backend_experiments.md",
                     PHASE_G_DESIGN):
         text = _status_text(surface)
         assert closure.search(text), (
@@ -6420,7 +6511,19 @@ CURRENT_STATUS_SURFACES = (
     "src/tensorforge/experimental/__init__.py",
 )
 
-_LATEST_PHASE = "G"
+# The current phase and the newest *closed* one. They were deliberately
+# different letters for the whole of H0-H9: Phase H opened at H0, and H0
+# shipped no optimization and closed no phase, so Phase G stayed the
+# latest completed phase. **H10 closed Phase H**, so they are now the same
+# letter, and a surface still calling Phase G the latest completed phase
+# is stale rather than careful.
+_LATEST_PHASE = "H"
+_LATEST_COMPLETED_PHASE = "H"
+# Deliberately scoped to Phase G. H0 also shipped, but ``H0`` is a short
+# token that sits a few words away from the legitimately *unstarted*
+# H1-H10 rows in the support matrix's ladder table, so a proximity scan
+# over it would flag honest prose. H0's shipped status is asserted
+# directly instead, in ``test_h0_is_marked_shipped_but_claims_no_speedup``.
 _CLOSED_MILESTONES = ("G7", "G8", "G9", "G10")
 
 # Past-tense and milestone-scoping markers. A span carrying one of these
@@ -6452,22 +6555,35 @@ def test_only_the_newest_phase_is_called_the_latest_phase():
     # Premise, from the live registry: Phase G really did close.
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert "dropout" not in cpp.UNSUPPORTED
+    # ...and from a real file: Phase H really did open.
+    assert (REPO_ROOT / "docs" / "native_cpu_performance_design.md").is_file()
 
+    # Two distinct claims, which now name two different letters and must
+    # not be conflated: Phase H is the latest phase (it opened at H0),
+    # and Phase G is the latest *completed* one (H0 shipped no
+    # optimization and closed nothing).
     forms = (
-        re.compile(r"Phase ([A-G])\b[^.;]{0,60}?\bis the latest\b", re.I),
-        re.compile(r"latest (?:completed )?(?:native )?phase is Phase "
-                   r"([A-G])\b", re.I),
-        re.compile(r"latest (?:completed )?(?:native )?phase[^.;]{0,40}?"
-                   r"\bPhase ([A-G])\b", re.I),
+        (_LATEST_PHASE,
+         re.compile(r"Phase ([A-H])\b[^.;]{0,60}?\bis the latest phase\b",
+                    re.I)),
+        (_LATEST_PHASE,
+         re.compile(r"(?<!completed )latest (?:native )?phase is Phase "
+                    r"([A-H])\b", re.I)),
+        (_LATEST_COMPLETED_PHASE,
+         re.compile(r"latest completed (?:native )?phase is Phase ([A-H])\b",
+                    re.I)),
+        (_LATEST_COMPLETED_PHASE,
+         re.compile(r"Phase ([A-H])\b[^.;]{0,60}?\bis the latest completed\b",
+                    re.I)),
     )
     for surface in CURRENT_STATUS_SURFACES:
         text = _status_text(surface)
-        for pattern in forms:
+        for expected, pattern in forms:
             named = {match.group(1).upper()
                      for match in pattern.finditer(text)}
-            assert named <= {_LATEST_PHASE}, (
-                f"{surface} calls a phase other than {_LATEST_PHASE} the "
-                f"latest phase: {sorted(named)}"
+            assert named <= {expected}, (
+                f"{surface} calls a phase other than {expected} the latest "
+                f"(pattern {pattern.pattern!r}): {sorted(named)}"
             )
 
 
@@ -6623,3 +6739,963 @@ def test_the_current_testing_story_claims_no_expected_skips():
         "the project summary does not say the missing-backend contract is "
         "executed in a child process"
     )
+
+
+# ==========================================================================
+# Phase H, milestone H0 — semantic documentation guardrails
+#
+# H0 opened Phase H with architecture, profiling, and baseline work only.
+# The failure mode this section exists for is a document that reads the
+# opening of a *performance* phase as a performance *claim*. Every guard
+# below is premised on a live registry value or a real file rather than on
+# prose, and each is a handful of assertions rather than a wording rule.
+# ==========================================================================
+
+_PHASE_H_DESIGN = "docs/native_cpu_performance_design.md"
+_PHASE_H_HARNESS = "benchmarks/benchmark_native_cpu_performance.py"
+
+# The surfaces that must agree about Phase H's status.
+# CLAUDE.md left this tuple at H10 — see _AGENT_INSTRUCTIONS above.
+_PHASE_H_SURFACES = (
+    "README.md",
+    "docs/project_summary.md",
+    "docs/roadmap.md",
+    "docs/native_support_matrix.md",
+    "docs/backend_experiments.md",
+    "docs/architecture.md",
+)
+
+
+def test_h0_is_marked_shipped_but_claims_no_speedup():
+    """H0 really shipped — its files exist — and every status surface says
+    so *and* says it optimized nothing."""
+    for path in (_PHASE_H_DESIGN, _PHASE_H_HARNESS,
+                 "tests/test_native_cpu_performance_benchmark.py"):
+        assert (REPO_ROOT / path).is_file(), path
+
+    shipped = re.compile(
+        r"\bH0\b[^.]{0,120}?\b(is|are|was|has|have|shipped|complete"
+        r"|completed|landed|begun|only)\b", re.I,
+    )
+    for surface in _PHASE_H_SURFACES:
+        text = _status_text(surface)
+        assert "Phase H" in text, f"{surface} does not name Phase H"
+        assert shipped.search(text), f"{surface} does not record milestone H0"
+        # ...and each names the design contract, so a reader can find the
+        # evidence rather than take the prose on trust.
+        assert "native_cpu_performance_design" in text, surface
+
+
+def test_no_surface_claims_an_optimization_phase_h_has_not_delivered():
+    """The premise is the tree, not the prose.
+
+    H2 *did* change the production matmul's loop order, so — unlike at H0
+    — a document may now say the native matmul walks memory differently.
+    What none may say is that it is **blocked, vectorized, threaded, or
+    BLAS-backed**: cache blocking was measured and rejected, and SIMD,
+    threading, and BLAS all remain later, still-conditional milestones
+    with no code behind them.
+
+    ``tf_matmul_tiled`` is the trap. It is a *pre-existing* raw-buffer
+    experiment on no production path, so a document may describe it —
+    what none may claim is that production runs it."""
+    from tensorforge.backends import cpp
+
+    # Premise: the production matmul is a plain scalar loop pair with no
+    # intrinsics, threads, or BLAS, and it does not call the tiled kernel.
+    matmul_source = (REPO_ROOT / "cpp" / "src"
+                     / "matmul.cpp").read_text(encoding="utf-8")
+    for banned in ("immintrin", "__m256", "_mm256", "omp parallel",
+                   "cblas_", "std::thread", "#pragma omp"):
+        assert banned not in matmul_source, banned
+    export = matmul_source.split("TF_EXPORT void tf_core_matmul(", 1)[1]
+    export = export.split("\n}\n", 1)[0]     # just that function's body
+    assert "tf_matmul_tiled" not in export
+    assert "tf_matmul(" not in export
+    assert "matmul_generic_strided" in export and "matmul_row_sweep" in export
+    assert cpp.RAW_KERNELS[-1] == "matmul_tiled"   # pre-existing, unchanged
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+
+    claims = re.compile(
+        r"\b(production|native)\s+matmul\b[^.]{0,60}\b(is|are|was|were|now)"
+        r"\s+(vectori[sz]ed|threaded|parallel\w*|BLAS)"
+        r"|\bPhase.H\b[^.]{0,80}\b(uses|adds|added)\b[^.]{0,30}"
+        r"\b(SIMD|BLAS|OpenMP|thread pool|memory pool)\b"
+        r"|\bH0\b[^.]{0,60}\b(sped|speeds|speeded|optimi[sz]ed)\b",
+        re.I,
+    )
+    negations = re.compile(
+        r"\b(not|never|no|none|without|would|will|future|proposed"
+        r"|conditional|rejected|beyond|if)\b", re.I,
+    )
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 70):match.end() + 30]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_phase_h_surfaces_state_the_unchanged_capability_boundary():
+    """H0 moved nothing, and the surfaces that describe it must say which
+    boundary stayed put — checked against the live registry, so the prose
+    cannot drift away from reality."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+
+    # Every surface that carries a Phase-H section says H0 changed no
+    # capability. The subject list is deliberately short: the claim is
+    # what matters, not the wording around it.
+    # Deliberately spans sentence boundaries: every surface makes this
+    # claim, but some make it across two sentences ("nothing was made
+    # faster. ... no capability changed"), which a sentence-scoped window
+    # would miss. The window is bounded so the two halves still have to be
+    # about the same milestone.
+    unchanged = re.compile(
+        r"\bH0\b[\s\S]{0,700}?\b(no|nothing)\b[\s\S]{0,250}?"
+        r"\b(capabilit\w+|optimi[sz]ation|registry|dtype|device"
+        r"|checkpoint)\b",
+        re.I,
+    )
+    for surface in _PHASE_H_SURFACES:
+        text = _status_text(surface)
+        assert unchanged.search(text), (
+            f"{surface} does not state that H0 changed no capability"
+        )
+
+
+def test_the_phase_h_design_keeps_its_conditional_ladder_and_rejections():
+    """H1-H8 are proposals. The design must say so, must carry every
+    section the milestone requires, and must record the four
+    infrastructure questions as *criteria* rather than as answers."""
+    text = _normalized_doc(_PHASE_H_DESIGN)
+
+    # The ladder exists in full and is explicitly conditional.
+    for index in range(11):
+        assert f"H{index}" in text, f"the design does not name milestone H{index}"
+    assert "proposals, not commitments" in text.lower()
+    assert "narrowed, reordered, or dropped" in text.lower()
+
+    # The four infrastructure decisions are recorded as rejected-for-now
+    # with criteria, not as adopted.
+    lowered = text.lower()
+    for subject in ("memory pool", "scratch workspace", "simd", "threading",
+                    "blas"):
+        assert subject in lowered, subject
+    assert "rejected for now" in lowered
+
+    # The required contract sections are present by subject.
+    for subject in ("accumulation order", "determinism",
+                    "generic reference path", "strided fallback",
+                    "failure atomicity", "parameter version",
+                    "sanitizer", "cross-platform", "non-goals",
+                    "closure requirements"):
+        assert subject in lowered, subject
+
+
+def test_every_surface_records_the_h9_conv2d_execution_substance():
+    """H9's load-bearing claims must appear on every status surface, by
+    subject rather than by phrasing.
+
+    Semantic, not textual: each check is a set of alternatives, so a
+    surface may say the same thing in its own words but may not omit it.
+    What must survive on all of them is (a) that convolution now has two
+    compute paths, (b) that the Phase-D loop is *retained* as the generic
+    reference rather than replaced, (c) that the choice is a measured,
+    geometry-only predicate whose failure is a fallback and not an error,
+    (d) that per-destination accumulation order is preserved, and (e) that
+    the ABI did not move."""
+    for surface in _PHASE_H_SURFACES:
+        lowered = _status_text(surface).lower()
+        assert "h9" in lowered, surface
+        assert "conv2d" in lowered or "convolution" in lowered, surface
+        # (b) the generic path is retained and reachable, not deleted.
+        assert ("retained verbatim" in lowered
+                or "retained" in lowered and "generic reference" in lowered), (
+            f"{surface} does not say the Phase-D loop is retained as the "
+            f"generic reference path")
+        # (c) the predicate is measured, geometry-driven, and a fallback.
+        assert ("fallback, never an error" in lowered
+                or "never an error" in lowered), surface
+        assert ("min(input_width, output_width)" in lowered
+                or "swept extent" in lowered), surface
+        # (d) exact per-destination accumulation order.
+        assert "accumulation order" in lowered, surface
+        # (e) the ABI did not move.
+        assert "52" in lowered, surface
+
+
+def test_the_h9_record_states_its_negative_and_neutral_findings():
+    """H9 must not read as an unqualified win. Every full-length surface
+    has to carry the neutral rows, the deliberate fallback, and the fact
+    that the controls held — the project's honesty rule, enforced."""
+    for surface in ("docs/project_summary.md",
+                    "docs/backend_experiments.md", "docs/roadmap.md",
+                    "docs/native_support_matrix.md"):
+        lowered = _status_text(surface).lower()
+        # A small convolution is neutral, and says so.
+        assert "neutral" in lowered, surface
+        # The strided input gradient falls back by design.
+        assert "1.04x" in lowered or "1.04×" in lowered, surface
+        # The controls did not regress, with a stated band.
+        assert "0.97x-1.07x" in lowered or "0.97×–1.07×" in lowered, (
+            f"{surface} does not state the H9 control band")
+        # The rejected candidates are recorded, not silently dropped.
+        assert "im2col" in lowered, surface
+
+
+def test_the_h9_ladder_revision_is_recorded_rather_than_retrofitted():
+    """H0 did not plan a convolution milestone; that slot held
+    SIMD/threading/BLAS. The design must present H9 as an evidence-driven
+    revision, not rewrite the ladder as though convolution had always been
+    H9."""
+    text = _normalized_doc(_PHASE_H_DESIGN).lower()
+    assert "h9 was not in h0's ladder" in text
+    # The reassigned slot is struck through and its subject named.
+    assert "slot reassigned" in text or "reassigned" in text
+    # The acceleration decision is deferred, not deleted.
+    assert "acceleration decision" in text
+    assert "h10" in text
+
+
+def test_the_phase_h_design_records_daedalus_decisions():
+    """Every relevant reference-project idea gets an explicit
+    adopt/adapt/reject decision — not a silent copy and not silence."""
+    text = _normalized_doc(_PHASE_H_DESIGN)
+    lowered = text.lower()
+    assert "daedalus" in lowered
+    for decision in ("adopt", "adapt", "reject"):
+        assert decision in lowered, decision
+    # The ideas the milestone specifically named must each appear.
+    for idea in ("matmul", "avx2", "memory pool", "scratch workspace",
+                 "benchmark", "profil", "conv2d", "cuda", "pybind11"):
+        assert idea in lowered, idea
+
+
+def test_no_ci_job_or_test_asserts_a_phase_h_duration():
+    """The standing repository rule, restated where Phase H could break
+    it: no workflow references the harness and no test times anything."""
+    workflow = (REPO_ROOT / ".github" / "workflows"
+                / "tests.yml").read_text(encoding="utf-8")
+    assert "benchmark_native_cpu_performance" not in workflow
+    # Scoped to the harness itself. Its test module deliberately *names*
+    # these tokens, in the guard that bans them from the harness, so
+    # scanning that file here would flag the guard rather than a defect.
+    text = (REPO_ROOT / _PHASE_H_HARNESS).read_text(encoding="utf-8").lower()
+    for banned in ("timing_threshold", "max_seconds", "min_speedup",
+                   "performance_budget", "assert_faster"):
+        assert banned not in text, banned
+
+
+# ==========================================================================
+# Phase H, milestone H1 — semantic documentation guardrails
+#
+# H1 is the first Phase-H change to production code, which creates two new
+# ways for the documentation to become wrong: claiming more than an
+# allocation change, or claiming a proof the tooling cannot deliver. Every
+# guard below is premised on a live registry value, a real symbol, or a
+# real file rather than on prose.
+# ==========================================================================
+
+
+def test_h1_is_recorded_as_shipped_on_every_status_surface():
+    """H1 really shipped — its symbol exists — and the surfaces say so."""
+    from tensorforge.backends import cpp
+
+    # Premise, from the live backend: the symbol and the private helpers
+    # are real.
+    assert "tf_storage_create_uninitialized" in cpp._CHECKED_KERNELS
+    assert hasattr(cpp.NativeStorage, "_uninitialized")
+    assert hasattr(cpp.NativeTensorCore, "_uninitialized")
+
+    shipped = re.compile(
+        r"\bH1\b[^.]{0,160}?\b(is|are|was|has|have|shipped|complete"
+        r"|completed|landed)\b", re.I,
+    )
+    for surface in _PHASE_H_SURFACES:
+        text = _status_text(surface)
+        assert "H1" in text, f"{surface} does not name milestone H1"
+        assert shipped.search(text), f"{surface} does not record H1 as shipped"
+
+
+def test_no_surface_calls_h1_more_than_an_allocation_change():
+    """H1 changed allocation only. No surface may present it as a kernel,
+    arithmetic, loop-order, pooling, SIMD, threading, or BLAS change —
+    all of which remain later, still-conditional milestones."""
+    from tensorforge.backends import cpp
+
+    # Premise from the tree: the allocator is still one plain
+    # new/delete pair with no pooling, arena, thread, or SIMD machinery —
+    # which is what makes "H1 was an allocation change" true. The matmul
+    # loop order changed at H2, under its own milestone; H1 did not touch
+    # it, and the two exports still share the one creation body.
+    storage_source = (REPO_ROOT / "cpp" / "src"
+                      / "storage.cpp").read_text(encoding="utf-8")
+    assert storage_source.count("create_storage(size, /*zero_initialize=*/") == 2
+    for banned in ("free_list", "memory_pool", "arena", "std::thread",
+                   "immintrin", "omp parallel"):
+        assert banned not in storage_source, banned
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+
+    overclaims = re.compile(
+        r"\bH1\b[^.]{0,90}\b(memory pool|scratch (?:arena|workspace|"
+        r"allocator)|SIMD|BLAS|OpenMP|thread pool)\b"
+        r"|\bH1\b[^.]{0,90}\b(loop order|blocking|tiled|vectori[sz]ed)\b"
+        r"|\bH1\b[^.]{0,90}\bfused\b",
+        re.I,
+    )
+    negations = re.compile(
+        r"\b(no|not|never|none|without|neither|nor|rejected|future"
+        r"|proposed|conditional|beyond|would|will)\b", re.I,
+    )
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in overclaims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 90):match.end() + 40]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_no_surface_claims_a_public_empty_tensor_api():
+    """The uninitialized path is a backend implementation detail. The
+    premise is the real public surface, checked directly."""
+    import tensorforge
+    import tensorforge.experimental as experimental
+
+    for module in (tensorforge, tensorforge.nn, experimental):
+        for name in ("empty", "empty_like", "uninitialized"):
+            assert not hasattr(module, name), f"{module.__name__}.{name}"
+
+    claims = re.compile(
+        r"\b(Tensor|NativeTensor)\.empty\b|\bempty_like\b"
+        r"|\bpublic\b[^.]{0,40}\bempty[- ]tensor\b(?![^.]{0,60}\bno\b)",
+        re.I,
+    )
+    negations = re.compile(r"\b(no|not|never|none|without)\b", re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            # The honest form is "no public empty-tensor API", where the
+            # negation can sit a clause earlier than a 70-character
+            # window reaches.
+            if not negations.search(
+                text[max(0, match.start() - 130):match.end() + 20]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_no_surface_claims_asan_or_ubsan_detects_uninitialized_reads():
+    """The single most tempting wrong claim in this milestone. ASan and
+    UBSan prove memory-boundary and undefined-behavior safety; they do
+    **not** detect a read of an uninitialized value."""
+    wrong = re.compile(
+        r"\b(ASan|AddressSanitizer|UBSan|UndefinedBehaviorSanitizer)\b"
+        r"[^.]{0,80}\b(uninitialized|uninit)\b[^.]{0,40}\b(read|value|"
+        r"detect\w*|prove\w*|catch\w*)\b",
+        re.I,
+    )
+    negations = re.compile(
+        r"\b(no|nothing|not|never|none|neither|nor|without|cannot"
+        r"|does not|do not|rather than)\b", re.I,
+    )
+    surfaces = _PHASE_H_SURFACES + (_PHASE_H_DESIGN,
+                                    "docs/release_history.md")
+    for surface in surfaces:
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in wrong.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 120):match.end() + 60]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_no_surface_claims_a_memorysanitizer_result():
+    """MSan needs a fully instrumented libc and CPython, which this
+    project does not have. No surface may claim an MSan run."""
+    claims = re.compile(
+        r"\b(MemorySanitizer|MSan)\b[^.]{0,60}"
+        r"\b(passed|ran|clean|validated|proves?|confirmed)\b", re.I,
+    )
+    negations = re.compile(
+        r"\b(no|not|never|none|without|cannot|would|needs?|requires?"
+        r"|is not|are not)\b", re.I,
+    )
+    surfaces = _PHASE_H_SURFACES + (_PHASE_H_DESIGN,
+                                    "docs/release_history.md")
+    for surface in surfaces:
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 110):match.end() + 50]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_the_design_records_the_per_kernel_audit_and_both_rejections():
+    """The audit table is the contract. It must name every enabled family
+    and must record the two rejections with their reasons."""
+    text = _normalized_doc(_PHASE_H_DESIGN)
+    lowered = text.lower()
+
+    assert "16.1" in text, "the design has no H1 section"
+    for subject in ("per-kernel audit", "every element written",
+                    "read before first write"):
+        assert subject in lowered, subject
+
+    # The two rejections, by name and by reason.
+    assert "rejected" in lowered
+    assert "additive identity" in lowered
+    assert "narrow_backward" in lowered
+    assert "tf_core_sum" in lowered
+
+    # The enabled families each appear in the table.
+    for enabled in ("contiguous_copy", "relu_backward", "log_softmax",
+                    "cross_entropy_forward", "conv2d_input_backward",
+                    "conv2d_weight_backward", "maxpool2d_backward",
+                    "dropout_forward", "from_array", "matmul"):
+        assert enabled in lowered, enabled
+
+    # ...and the correction to H0's preliminary sketch is recorded rather
+    # than silently applied.
+    assert "12 of 14" in text
+
+
+def test_the_design_records_the_poison_methodology_and_its_limits():
+    text = _normalized_doc(_PHASE_H_DESIGN)
+    lowered = text.lower()
+    for subject in ("poison", "quiet nan", "negative control",
+                    "memorysanitizer"):
+        assert subject in lowered, subject
+    # The three-tool distinction the milestone requires.
+    assert "leaksanitizer" in lowered
+    assert "lifecycle cleanup" in lowered
+    # ...and the honest statement that the detector was proved able to
+    # fail, which is what makes the passing results mean anything.
+    assert "capable of failing" in lowered or "can actually fail" in lowered
+    # ...and where the poison actually lives, which is the whole point:
+    # test infrastructure around the allocator, never the runtime.
+    assert "test infrastructure" in lowered
+    assert "tf_storage_fill" in lowered
+
+
+def test_no_surface_describes_a_runtime_poison_control():
+    """The correction this milestone required, guarded permanently.
+
+    The premise is the live runtime: no poison-control symbol exists in
+    the loaded library or in the backend module. No document may present
+    one as existing — and none may excuse an exported test hook on the
+    grounds that it is disarmed by default. Documents *may* record that
+    such a hook once existed and was removed, so every hit is allowed
+    only when a rejection or removal is stated nearby."""
+    import pytest
+
+    from tensorforge.backends import cpp
+
+    # Premise 1: the Python backend exposes nothing poison-shaped.
+    assert not any("poison" in name.lower() for name in dir(cpp))
+    # Premise 2: neither does the built library, asked through the real
+    # platform loader.
+    if cpp.is_available():
+        library = cpp._require_library()
+        for name in ("tf_test_set_uninitialized_poison",
+                     "tf_set_uninitialized_poison"):
+            with pytest.raises(AttributeError):
+                getattr(library, name)
+
+    claims = re.compile(
+        r"tf_test_set_uninitialized_poison\s*\(|"
+        r"cpp\._set_uninitialized_poison|cpp\._uninitialized_poison|"
+        r"\b(?:disarmed|inert|thread-local|test-only)\b[^.]{0,120}"
+        r"\b(?:acceptable|harmless|safe to (?:ship|export))\b", re.I)
+    rejected = re.compile(
+        r"\b(remov\w+|deleted|no longer|earlier draft|reject\w+|absence"
+        r"|does not exist|no poison|never)\b", re.I)
+
+    surfaces = _PHASE_H_SURFACES + (_PHASE_H_DESIGN,
+                                    "docs/release_history.md")
+    for surface in surfaces:
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not rejected.search(
+                text[max(0, match.start() - 400):match.end() + 200]
+            )
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_every_h1_surface_states_the_final_exported_symbol_count():
+    """H1's ABI footprint is one symbol, and the surfaces that quantify
+    it must say so in the same terms the built library reports."""
+    from tensorforge.backends import cpp
+
+    if cpp.is_available():
+        library = cpp._require_library()
+        assert getattr(library, "tf_storage_create_uninitialized") is not None
+
+    total = re.compile(r"\b52\b[^.]{0,80}exported|exported[^.]{0,80}\b52\b",
+                       re.I)
+    for surface in ("docs/native_cpu_performance_design.md",
+                    "docs/native_support_matrix.md",
+                    "docs/release_history.md",
+                    "docs/architecture.md",
+                    "README.md"):
+        text = _status_text(surface)
+        assert total.search(text), (
+            f"{surface} does not state the 52 exported tf_* symbol total"
+        )
+        assert "tf_storage_create_uninitialized" in text, surface
+
+
+def test_the_design_reports_the_inconclusive_h1_results():
+    """The milestone requires negative and noisy results to be published.
+    The design must not read as an unqualified speedup claim."""
+    text = _normalized_doc(_PHASE_H_DESIGN)
+    lowered = text.lower()
+    assert "inconclusive" in lowered
+    assert "no measurable effect" in lowered
+    # ...and it must say why numpy.zeros is not the comparison.
+    assert "calloc" in lowered
+    assert "lazy zero" in lowered
+
+
+def test_h1_left_the_public_capability_boundary_untouched():
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    # Allocation strategy is not a capability and appears in no inventory.
+    for value in cpp.backend_info().values():
+        if isinstance(value, (tuple, list)):
+            assert not any("uninitialized" in str(item) for item in value)
+
+
+# --------------------------------------------------------------------------
+# Phase H, milestone H2 — the matmul memory-access milestone
+#
+# Semantic guardrails. Each one's premise is read from the tree — the real
+# sources, the real registries, the real export table — so the prose
+# cannot drift away from what shipped, and none of them pins a sentence.
+# --------------------------------------------------------------------------
+
+def test_h2_is_marked_shipped_on_every_phase_h_surface():
+    """H2 really shipped — both kernels, the predicate, and the tests
+    exist — and every status surface records it."""
+    for path in ("cpp/include/tf_matmul_internal.h",
+                 "cpp/tests/test_matmul.cpp",
+                 "tests/test_native_matmul_dispatch.py"):
+        assert (REPO_ROOT / path).is_file(), path
+
+    shipped = re.compile(
+        r"\bH2\b[^.]{0,160}?\b(is|are|was|has|have|shipped|complete"
+        r"|completed|landed)\b", re.I,
+    )
+    for surface in _PHASE_H_SURFACES:
+        text = _status_text(surface)
+        assert "H2" in text, f"{surface} does not name milestone H2"
+        assert shipped.search(text), f"{surface} does not record H2 as shipped"
+
+
+def test_every_surface_that_describes_h2_keeps_the_generic_path_visible():
+    """The retained generic reference path (design section 8.3) is the
+    load-bearing architectural claim of this milestone. A surface that
+    describes H2 without it would be describing a kernel replacement,
+    which is not what shipped."""
+    source = (REPO_ROOT / "cpp" / "src" / "matmul.cpp").read_text(
+        encoding="utf-8")
+    # Premise: both paths really are shipped code.
+    assert "void matmul_generic_strided(" in source
+    assert "void matmul_row_sweep(" in source
+
+    generic = re.compile(
+        r"\bgeneric\b[^.]{0,80}\b(path|kernel|loop|reference)\b"
+        r"|\breference path\b|\bfall(s|ing)? back\b|\bfallback\b", re.I)
+    for surface in _PHASE_H_SURFACES:
+        text = _status_text(surface)
+        if "H2" not in text:
+            continue
+        assert generic.search(text), (
+            f"{surface} describes H2 without mentioning the retained "
+            f"generic path or the fallback"
+        )
+
+
+def test_no_surface_claims_the_production_matmul_is_blocked_or_tiled():
+    """H2 measured cache blocking and **rejected** it. The production
+    kernel carries no tile, and no surface may say otherwise — the
+    pre-existing raw ``tf_matmul_tiled`` is a separate benchmark kernel
+    and may of course be described as one."""
+    source = (REPO_ROOT / "cpp" / "src" / "matmul.cpp").read_text(
+        encoding="utf-8")
+    sweep = source.split("void matmul_row_sweep(", 1)[1].split("\n}\n", 1)[0]
+    # Premise from the tree: the shipped optimized kernel groups *rows*
+    # (MATMUL_ROW_BLOCK) but tiles neither j nor k — its inner loop runs
+    # the full result width, and there is no accumulator tile, no j
+    # sub-loop, and no k sub-loop.
+    assert sweep.count("for (int64_t j = 0; j < p; ++j)") == 2
+    for tile in ("j0", "k0", "BLOCK_J", "BLOCK_K", "acc["):
+        assert tile not in sweep, tile
+
+    claims = re.compile(
+        r"\b(production|native|shipped)\b[^.]{0,60}\bmatmul\b[^.]{0,60}"
+        r"\b(is|are|was|were|now|uses|adopts)\b[^.]{0,30}"
+        r"\b(tiled|blocked|cache[- ]block\w*)\b",
+        re.I,
+    )
+    negations = re.compile(
+        r"\b(not|never|no|none|without|rejected|reject|instead of"
+        r"|rather than|would|will|future|proposed|conditional)\b", re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 90):match.end() + 40])
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_every_surface_describing_h2_records_the_blocking_rejection():
+    """A negative result is only useful if it is published. Any surface
+    that describes H2 must also say blocking was rejected — otherwise a
+    reader reasonably assumes the milestone title was delivered as
+    written."""
+    rejection = re.compile(
+        r"\bblocking\b[^.]{0,110}\breject\w*\b"
+        r"|\breject\w*\b[^.]{0,110}\bblocking\b"
+        r"|\bcache blocking\b[^.]{0,110}\b(measured and rejected"
+        r"|not adopted)\b",
+        re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        if "H2" not in text:
+            continue
+        assert rejection.search(text), (
+            f"{surface} describes H2 without recording that cache blocking "
+            f"was measured and rejected"
+        )
+
+
+def test_no_surface_claims_h2_added_an_export_or_a_dispatch_control():
+    """The premise is the loaded library, not the prose: H2's exported
+    footprint is empty."""
+    from tensorforge.backends import cpp
+
+    library = cpp._require_library()
+    for name in ("matmul_row_sweep", "matmul_generic_strided",
+                 "matmul_prefers_row_sweep", "tf_matmul_set_block_size",
+                 "tf_core_matmul_generic"):
+        try:
+            getattr(library, name)
+        except AttributeError:
+            continue
+        raise AssertionError(f"{name} is exported by the built library")
+    assert getattr(library, "tf_core_matmul") is not None
+
+    claims = re.compile(
+        r"\bH2\b[^.]{0,90}\b(added|adds|introduces|introduced|exports?)\b"
+        r"[^.]{0,50}\b(C ABI symbol|export|selector|environment variable"
+        r"|kernel mode|dispatch control)\b",
+        re.I)
+    negations = re.compile(
+        r"\b(no|not|never|none|without|neither|nor|zero)\b", re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 80):match.end() + 40])
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_no_surface_claims_unqualified_nan_payload_identity():
+    """The honest H2 claim is narrower than bit-identity full stop: when
+    two NaN operands meet, which payload propagates is decided by the
+    compiler's instruction operand ordering, and the two paths can differ
+    there. Any surface that mentions the NaN payload must qualify it
+    rather than promise it."""
+    # Premise: the suites assert the *qualified* rule, under a name that
+    # says so, and never an unconditional equality.
+    suite = (REPO_ROOT / "tests"
+             / "test_native_matmul_dispatch.py").read_text(encoding="utf-8")
+    ctest = (REPO_ROOT / "cpp" / "tests"
+             / "test_matmul.cpp").read_text(encoding="utf-8")
+    for text in (suite, ctest):
+        assert "agrees_under_the_numerical_contract" in text
+        assert "agrees_modulo_nan_payload" not in text
+
+    claims = re.compile(
+        r"\bNaN payloads?\b[^.]{0,60}\b(identical|equal|match\w*|preserved"
+        r"|guaranteed)\b",
+        re.I)
+    negations = re.compile(
+        r"\b(no|not|never|none|may|might|can|unspecified|differ\w*|except"
+        r"|exception|outside)\b", re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        offenders = [
+            match.group(0) for match in claims.finditer(text)
+            if not negations.search(
+                text[max(0, match.start() - 110):match.end() + 40])
+        ]
+        assert offenders == [], (surface, offenders[:3])
+
+
+def test_every_surface_describing_h2_states_the_four_part_contract():
+    """Outcome B's central requirement: no surface may present H2 as
+    unconditionally bit-identical. Each one that describes the milestone
+    has to distinguish what is exact (accumulation order, non-NaN
+    results), what is class-level (NaN positions and quietness), and what
+    is explicitly outside the contract (NaN payload bits)."""
+    # Premise from the tree: the shipped comparator really does allow a
+    # payload difference and really does reject everything else.
+    ctest = (REPO_ROOT / "cpp" / "tests"
+             / "test_matmul.cpp").read_text(encoding="utf-8")
+    body = ctest.split("bool agrees_under_the_numerical_contract(", 1)[1]
+    body = body.split("\n}\n", 1)[0]
+    assert "isnan(left[i]) && std::isnan(right[i])" in body
+    assert "return false" in body
+
+    non_nan = re.compile(
+        r"\bnon-NaN\b|\bnot a NaN\b|\bNaN-free\b|\bfinite\b[^.]{0,40}"
+        r"\bbit[- ]identical\b", re.I)
+    payload_excluded = re.compile(
+        r"\bpayload\b[^.]{0,120}\b(outside|not part of|may differ"
+        r"|deliberately)\b"
+        r"|\b(outside|not part of)\b[^.]{0,120}\bpayload\b", re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        if "H2" not in text:
+            continue
+        assert non_nan.search(text), (
+            f"{surface} describes H2 without scoping bit identity to "
+            f"non-NaN results"
+        )
+        assert payload_excluded.search(text), (
+            f"{surface} describes H2 without saying NaN payload bits are "
+            f"outside the contract"
+        )
+
+
+def test_no_surface_calls_the_payload_difference_harmless_without_the_contract():
+    """The specific rhetorical failure to guard against: writing off the
+    payload difference as "not a behavioral difference" instead of
+    defining what *is* supported."""
+    dismissals = re.compile(
+        r"\b(not|no)\s+(a\s+)?behavio\w*\s+(difference|change)\b"
+        r"|\bharmless\b|\bcosmetic\b|\bpurely cosmetic\b",
+        re.I)
+    for surface in _PHASE_H_SURFACES + (_PHASE_H_DESIGN,):
+        text = _status_text(surface)
+        for match in dismissals.finditer(text):
+            window = text[max(0, match.start() - 250):match.end() + 400]
+            # Only dismissals *about the NaN payload* are in scope; the
+            # same words are ordinary English elsewhere in these files.
+            if not re.search(r"\bNaN\b|\bpayload\b", window, re.I):
+                continue
+            # The one legitimate use is the design's own paragraph saying
+            # this framing would be *wrong*, which then states the actual
+            # contract.
+            assert re.search(r"\bwould be wrong\b", window, re.I), (
+                surface, match.group(0))
+
+
+def test_phase_h_surfaces_still_state_the_unchanged_capability_boundary():
+    """H2 moved nothing either, checked against the live registries rather
+    than against the prose describing them."""
+    from tensorforge.backends import cpp
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    # ...and matmul is still exactly where it was in every inventory.
+    assert "matmul" in cpp.TENSOR_CORE_OPS
+    assert "matmul" in cpp.AUTOGRAD_OPS
+    assert cpp.RAW_KERNELS[-2:] == ("matmul", "matmul_tiled")
+
+
+# ==========================================================================
+# Phase H, milestone H7 — the boundary contract and the ladder revision
+#
+# H7 is the ladder's worked example of a milestone **dropped on evidence**.
+# The documentation risk it carries is specific and unusual: not that a
+# surface over-claims what shipped, but that a surface quietly rewrites
+# history so the revision looks like it was always the plan. These
+# guardrails are semantic — they read normalized prose, not formatting —
+# and they exist so the drop stays visible.
+# ==========================================================================
+
+_H7_STATUS_SURFACES = (
+    "docs/native_cpu_performance_design.md",
+    "docs/native_support_matrix.md",
+    "docs/roadmap.md",
+    "docs/project_summary.md",
+    "docs/release_history.md",
+    "docs/backend_experiments.md",
+    "docs/architecture.md",
+    "README.md",
+    # CLAUDE.md left this tuple at H10 — see _AGENT_INSTRUCTIONS above.
+)
+
+
+def test_every_status_surface_records_h7_as_shipped():
+    """H7 really did ship, so every surface that tracks the Phase-H ladder
+    has to say so — silence on a shipped milestone is its own drift."""
+    for surface in _H7_STATUS_SURFACES:
+        text = _status_text(surface)
+        assert "H7" in text, surface
+        assert re.search(
+            r"H7[^.]{0,200}?\b(complete|completed|shipped|has since shipped)\b"
+            r"|\bH0, H1, H2, H3, H4, H5, H6, and H7\b"
+            r"|\bH0, H1, H2, H3, H4, H5,\s*H6, and H7\b"
+            r"|\bH0-H7\b|\bH0\u2013H7\b"
+            # H10 closure form: naming the whole closed ladder is a
+            # strictly stronger statement than naming H7 alone, and it is
+            # what the closed-phase surfaces now say.
+            r"|\bH0[-\u2013]H10\b|\bH0 through H10\b",
+            text, re.I), surface
+
+
+def test_every_status_surface_records_that_the_old_h7_was_dropped():
+    """The revision must not be hidden. Each surface that describes H7 has
+    to say that the milestone originally in that slot was **dropped on
+    evidence**, not that H7 was always the boundary work."""
+    # Both halves must appear *together*: what was dropped, and that it was
+    # dropped rather than deferred or forgotten. Requiring proximity is what
+    # makes this a real guard — either half alone occurs innocently.
+    dropped = (r"\b(dropped|not\s+entered|was\s+not\s+met|not\s+met"
+               r"|should\s+not\s+be\s+entered)\b")
+    subject = r"composed[- ]module"
+    together = re.compile(
+        subject + r".{0,600}?" + dropped + r"|" + dropped + r".{0,600}?" + subject,
+        re.I | re.S)
+    for surface in _H7_STATUS_SURFACES:
+        text = _status_text(surface)
+        assert re.search(subject, text, re.I), (surface, "names what was dropped")
+        assert re.search(dropped, text, re.I), (surface, "says it was dropped")
+        assert together.search(text), (surface, "states both together")
+
+
+def test_the_design_preserves_the_original_h7_proposal_verbatim():
+    """A dropped milestone's proposal is evidence about the runtime. The
+    design keeps it, struck through in the ladder table and preserved in
+    full below, rather than deleting it."""
+    raw = (REPO_ROOT / "docs"
+           / "native_cpu_performance_design.md").read_text(encoding="utf-8")
+    # The struck-through ladder row, beside the row that replaced it.
+    assert "| ~~H7~~ |" in raw
+    assert "**dropped on evidence**" in raw
+    assert "| **H7** |" in raw
+    # The original proposal, kept.
+    assert "### ~~H7~~ — Composed-module cost" in raw
+    assert "preserved above rather than deleted" in raw
+    # And the successor is not presented as the original plan.
+    text = _status_text("docs/native_cpu_performance_design.md")
+    assert "The ladder was revised here" in text
+
+
+def test_no_surface_claims_h7_touched_the_c_abi_or_a_capability():
+    """H7 is Python-only. No surface may say it added a symbol, changed a
+    kernel, or moved a capability."""
+    for surface in _H7_STATUS_SURFACES:
+        text = _status_text(surface)
+        for pattern, label in (
+            (r"H7[^.]{0,160}\b(added|adds|introduces|introduced)\b"
+             r"[^.]{0,60}\b(C ABI symbol|export|exported symbol|kernel)\b",
+             "H7 added a C ABI symbol or kernel"),
+            (r"H7[^.]{0,160}\b(moved|moves|changed|changes)\b[^.]{0,60}"
+             r"\b(capability|dtype|device|checkpoint version)\b",
+             "H7 moved a capability"),
+        ):
+            offenders = [m.group(0) for m in re.finditer(pattern, text, re.I)
+                         if not re.search(r"\b(no|not|never|nothing)\b",
+                                          m.group(0), re.I)]
+            assert offenders == [], (surface, label, offenders[:2])
+
+
+def test_no_surface_claims_h7_made_large_kernel_work_faster():
+    """The honest negative. H7's gain is per *call*, so matmul and other
+    large kernel-bound work are neutral — three array-free control cases
+    exist to make that checkable, and no surface may claim otherwise."""
+    for surface in _H7_STATUS_SURFACES:
+        text = _status_text(surface)
+        offenders = [
+            m.group(0) for m in re.finditer(
+                r"H7[^.]{0,200}\bmatmul\b[^.]{0,80}"
+                r"\b(faster|speedup|improved|accelerat\w+)\b", text, re.I)
+            # A surface *denying* the claim states the opposite of it, so
+            # a negation close to the match exempts it — the same shape
+            # the Phase-G guards use. The window is deliberately narrow
+            # and the tokens strict, so a disclaimer elsewhere in the
+            # paragraph cannot launder a real claim.
+            if not re.search(
+                r"\b(no|not|never|nothing|neutral|untouched|unaffected)\b",
+                text[max(0, m.start() - 30):m.end()], re.I)
+        ]
+        assert offenders == [], (surface, offenders[:2])
+
+
+def test_the_boundary_binding_categories_are_documented_where_they_live():
+    """The checked/trusted split is a safety contract, so the module that
+    implements it must state it, and the design must record the inventory
+    counts the suite enforces."""
+    from tensorforge.backends import cpp
+
+    module = (REPO_ROOT / "src" / "tensorforge" / "backends"
+              / "cpp.py").read_text(encoding="utf-8")
+    for phrase in ("CHECKED", "TRUSTED", "_LAYOUT_POINTER", "_layout_vector",
+                   "data_as", "from_address"):
+        assert phrase in module, phrase
+    # The reason from_address is refused is recorded, and it is not used.
+    assert "no reference to its owner" in module
+
+    design = _status_text("docs/native_cpu_performance_design.md")
+    assert "32 positions became trusted; 25 stayed checked" in design
+    # The registry the tests enforce agrees with the documented totals.
+    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+
+
+def test_the_harness_case_count_is_consistent_across_surfaces():
+    """H5 took the harness 26 to 28, H6 28 to 31, H7 31 to 34, H8 34 to 38,
+    and H9 38 to 41. A surface quoting a stale count is drift.
+
+    Each milestone's own historical statement stays as it is; what this
+    checks is that every status surface also states the **current** total,
+    so a reader is never told 38 when the harness runs 41."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "_h7_bench", REPO_ROOT / "benchmarks"
+        / "benchmark_native_cpu_performance.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert len(module.CASES) == 41
+    for surface in ("docs/native_cpu_performance_design.md",
+                    "docs/native_support_matrix.md"):
+        text = _status_text(surface)
+        assert re.search(r"38 to 41|38 to \*\*41\*\*|41 cases", text), surface

@@ -101,8 +101,14 @@ def test_every_ladder_row_is_marked_complete():
 
 
 def test_no_surface_claims_a_phase_g_milestone_beyond_g10():
-    """§21.1. G10 is the last milestone. Nothing may claim a G11 (or a
-    Phase H) exists or has begun, because neither does.
+    """§21.1. G10 is the last **Phase-G** milestone. Nothing may claim a
+    G11 exists or has begun, because none does.
+
+    Phase H is a different matter and is deliberately not banned here:
+    it opened later, at milestone H0, and naming it is now accurate. What
+    Phase H may not claim is that it delivered a capability, which the H0
+    guardrails check against the live registry — a stronger check than a
+    phase-name scan, and not this test's subject.
 
     Mentions carrying their own negation — the design's own "no ``G11``
     or later Phase-G milestone is claimed anywhere" — are the honest form
@@ -111,7 +117,7 @@ def test_no_surface_claims_a_phase_g_milestone_beyond_g10():
         r"\b(no|not|never|none|neither|nor|without|absent|beyond|future"
         r"|would|will|if)\b", re.I,
     )
-    subjects = re.compile(r"\bG1[1-9]\b|\bPhase[- ]H\b")
+    subjects = re.compile(r"\bG1[1-9]\b")
     for surface in STATUS_SURFACES + ("docs/native_rng_dropout_design.md",):
         text = _read(surface)
         offenders = [
