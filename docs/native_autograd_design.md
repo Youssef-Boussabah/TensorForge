@@ -3,7 +3,7 @@
 This is a **design document** (written as the Advanced C++ v2.0
 milestone, ahead of any code) for reverse-mode autograd over the native
 runtime — `NativeTensor` / `NativeTensorCore`. It opens **Phase B** of the
-Daedalus-class roadmap, following the completed **Phase A — native CPU
+native roadmap, following the completed **Phase A — native CPU
 runtime** (contiguous fast path, broadcasting, reductions, dtype/device
 metadata; §1).
 
@@ -741,7 +741,7 @@ as Phase A:
   via `to_numpy` and cross-checked), a metadata-aware `repr`, and the
   wrapper/docs overview — the Phase B analog of the v1.11 forward demo.
 - **Then Phase C — Native Training Stack**, and the rest of the
-  Daedalus-class arc: **CUDA runtime** (where `device` gains a second
+  native arc: **CUDA runtime** (where `device` gains a second
   value), **AMP / Tensor Core** (where `dtype` gains float16/bfloat16),
   **Transformer / text** examples, **distributed / DDP**, and a final
   **benchmark / profiling / docs** polish (the final portfolio release).

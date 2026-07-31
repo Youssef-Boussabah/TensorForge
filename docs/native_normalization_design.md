@@ -925,37 +925,35 @@ in §15 for the full record.
 
 ---
 
-## 14. Comparison with the Daedalus design
+## 14. Design alternatives considered
 
-Phase F was designed independently and then compared against the relevant
-Daedalus normalization design, as every phase of this line has been. The
-comparison is recorded honestly: some ideas are worth taking, several are
-actively wrong for this architecture, and none of the implementation is
-copied.
+Normalization admits several plausible architectures, and Phase F chose
+between them deliberately rather than by default. This section records
+the decisions: which candidate designs the phase adopted, which it
+rejected, and — in each case — the TensorForge boundary that settled it.
 
-### Ideas worth taking
+### Designs adopted
 
-| Idea | Why it fits TensorForge |
+| Design | Why it fits TensorForge |
 |---|---|
-| **LayerNorm composed over existing operations** | Exactly the conclusion §3 reaches independently: composition buys an exact backward with no new kernel and no new trust boundary. Convergent, and confirming. |
+| **LayerNorm composed over existing operations** | The conclusion §3 reaches: composition buys an exact backward with no new kernel and no new trust boundary. |
 | **Separate `BatchNorm1d` and `BatchNorm2d` public modules** | Keeps the accepted input rank part of each class's contract instead of hiding it behind rank-polymorphism, so a wrong-rank input is a clear error rather than a silently different reduction. |
 | **A shared private BatchNorm implementation behind those two classes** | The reduction axes and broadcast shape are the only real difference; one implementation means one place for the statistics, the transaction, and the mode split to be right. |
 | **Clear, explicit train/eval behavior** | Matches the stable line's existing mode contract and makes the eval path's statistics source obvious at the call site. |
-| **Stateless RNG-kernel ideas for a future dropout phase** | Recorded as a *future* idea only. Dropout and a native RNG are explicitly outside Phase F (§1), and nothing in this phase depends on them. |
+| **A stateless RNG kernel, for a future dropout phase** | Recorded as a *future* idea only. Dropout and a native RNG are explicitly outside Phase F (§1), and nothing in this phase depends on them. |
 
-### Ideas rejected
+### Designs rejected
 
-| Idea | Why it is rejected here |
+| Design | Why it is rejected here |
 |---|---|
-| **pybind11 architecture** | The native line's whole point is an explicit C ABI reached through ctypes, with no Python headers in C++. Adopting pybind11 for one layer would fracture the ABI contract and the error-status contract with it. |
+| **pybind11 bindings** | The native line's whole point is an explicit C ABI reached through ctypes, with no Python headers in C++. Adopting pybind11 for one layer would fracture the ABI contract and the error-status contract with it. |
 | **C++-managed autograd** | Python owns the graph; the kernels stay graph-unaware. That split is what keeps the C++ side auditable, sanitizable, and free of Python lifetime concerns. |
 | **Host NumPy BatchNorm statistics** | Would silently take the numerics off the native path and break the NumPy tripwire. §2 forbids it: native numerical paths must not silently use NumPy. |
 | **Detached training statistics** | Gives a *different and wrong* gradient. §6.3 requires the training backward to differentiate through the batch mean and variance. |
 | **Host arrays as TensorForge running state** | Running statistics are model state that must ride `state_dict()`, the atomic loader, and the pickle-free checkpoint path. Host arrays would need a parallel serialization route and would break buffer identity. |
 | **Untracked checkpoint-critical RNG attributes** | Any state a resume depends on must be visible to `state_dict()` and the checkpoint, or "exact resume" is not exact. Phase F has no RNG state at all, and this is a reason it stays that way. |
-| **Copying an implementation directly** | Non-negotiable across the whole project: the design is compared, the code is written here. |
 
-### Why TensorForge's design is cleaner for this architecture
+### Why the selected design fits this architecture
 
 - **Native-only BatchNorm numerics** — every value comes from native
   kernels, so the tripwire holds and the numbers mean what the phase

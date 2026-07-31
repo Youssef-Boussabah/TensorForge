@@ -3,11 +3,10 @@
 ## 1. Project identity and architecture
 
 TensorForge is a from-scratch deep learning framework: a serious ML
-systems project covering PyTorch-style framework internals, inspired by
-[daedalus-ml](https://github.com/JohnsonKayati/daedalus-ml) but not a
-copy. Position it as serious and systems-focused — never "educational",
-"toy", or "mini" — while staying honest: **not production-ready, not a
-PyTorch replacement.**
+systems project covering PyTorch-style framework internals. Position it
+as serious and systems-focused — never "educational", "toy", or "mini" —
+while staying honest: **not production-ready, not a PyTorch
+replacement.**
 
 Two lines live in one repository:
 

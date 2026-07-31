@@ -404,7 +404,7 @@ broadcasting backward will eventually need is now available in the
 runtime, though no backward is wired up yet. The broadcasting
 implementation described in this document is unchanged.
 
-## 16. Fit in the Daedalus-class roadmap
+## 16. Fit in the native roadmap
 
 Broadcasting is the second step of **Phase A — native CPU runtime**:
 

@@ -2367,8 +2367,8 @@ optional-BLAS decision criteria; the cross-platform and sanitizer
 requirements; the conditional H0–H11 ladder (H0–H10 as drafted, with H5
 later inserting the copy and mutation-transfer milestone and pushing
 reduction execution to H6); the explicit non-goals; the
-closure requirements; and an adopt/adapt/reject decision for every
-relevant idea taken from the Daedalus reference project.
+closure requirements; and an explicit adopt/adapt/reject decision for
+every candidate performance design the phase considered.
 
 The harness is the first in this repository to measure the runtime *as a
 whole* rather than one phase's surface: 24 cases at H0 across twelve
