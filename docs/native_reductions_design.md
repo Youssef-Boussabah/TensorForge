@@ -402,7 +402,7 @@ hardware-dependent, **no performance assertions anywhere**:
 These rows are a v1.19 concern; this document states the plan so the
 numbers are framed the way A1's (v1.15) and A2's were.
 
-## 15. Fit in the Daedalus-class roadmap
+## 15. Fit in the native roadmap
 
 Reductions are the third step of **Phase A — native CPU runtime**:
 

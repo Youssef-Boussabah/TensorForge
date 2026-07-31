@@ -5,7 +5,7 @@ A two-minute overview for anyone landing on this repository.
 ## What TensorForge is
 
 TensorForge is a from-scratch deep learning framework built in
-Python + NumPy — a serious, Daedalus-inspired ML systems project. It
+Python + NumPy — a serious ML systems project. It
 reimplements the core machinery of a framework like PyTorch —
 automatic differentiation, neural network modules, optimizers,
 checkpointing, CNN support — in small, readable code, plus an

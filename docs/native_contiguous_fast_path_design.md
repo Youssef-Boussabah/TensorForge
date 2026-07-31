@@ -263,7 +263,7 @@ confirm or refute.
   the generic path whenever either operand is non-contiguous — correct,
   if not maximally fast; the hybrid optimization is a later refinement.
 
-## 12. Fit in the Daedalus-class roadmap
+## 12. Fit in the native roadmap
 
 This is the first optimization step of **Phase A — native CPU runtime**,
 which precedes any autograd or device work:

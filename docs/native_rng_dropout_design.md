@@ -168,92 +168,86 @@ closed. `"dropout"` left it at G10 and not before (§19).
 
 ---
 
-## 2. Reference reading: Daedalus ML
+## 2. Design rationale
 
-The comparable design in
-[Daedalus ML](https://github.com/JohnsonKayati/daedalus-ml) was read
-before this contract was written (`python/daedalus/nn/dropout.py`,
-`src/ops/cpu/unary_ops.cpp`, `python/daedalus/nn/module.py`,
-`python/daedalus/checkpoint.py`). **No Daedalus code is copied**; what
-follows is an architectural comparison. Where the two projects disagree,
-TensorForge's existing ownership, failure-atomicity, checkpoint,
-namespace, and stable/native separation contracts win.
+A native RNG and Dropout admit several plausible architectures. This
+section records which ones Phase G selected, which simpler schemes it
+rejected as defective, and which ones do not fit this runtime at all.
+Every decision below is settled by an existing TensorForge contract —
+ownership, failure-atomicity, checkpoint, namespace, or stable/native
+separation.
 
-### 2.1 Ideas taken
+### 2.1 Decisions adopted
 
-- **Stateless kernel, Python-side state.** Daedalus's CPU dropout kernel
-  takes `(tensor, p, seed)` and holds nothing; the Python `Dropout`
-  module owns the seed and a call counter. Phase G adopts exactly this
-  split, and strengthens it: the kernel receives `(seed, call_index)` as
-  two explicit `uint64` values and computes every element's draw from
-  them, so no native object has random state at all.
+- **Stateless kernel, Python-side state.** The kernel holds nothing: it
+  receives `(seed, call_index)` as two explicit `uint64` values and
+  computes every element's draw from them, so no native object has
+  random state at all. The Python generator owns the seed and the call
+  counter.
 - **A SplitMix64-family finalizer as the mixing function.** It is small,
   fully specifiable in integer arithmetic, dependency-free, and easy to
-  pin with known-answer vectors. Phase G uses the same three-step
-  finalizer constants.
-- **Inverted dropout with the scale folded into the mask.** Daedalus
-  writes `1/(1-p)` or `0` into a mask tensor and multiplies. Phase G does
-  the same, which is what lets the backward be a single elementwise
-  multiply against saved state.
+  pin with known-answer vectors — the properties a determinism proof
+  needs.
+- **Inverted dropout with the scale folded into the mask.** The mask
+  holds `1/(1-p)` or `0` and is multiplied through, which is what lets
+  the backward be a single elementwise multiply against saved state.
 - **`p` restricted to `[0, 1)`.** `p == 1` is rejected rather than
   special-cased, so `1/(1-p)` can never divide by zero.
 - **OS entropy only to *create* a seed.** `seed=None` draws once from
-  `secrets`; from then on the seed is an explicit integer. Phase G keeps
-  this and adds the requirement that the drawn seed is immediately
-  inspectable and serializable.
+  `secrets`; from then on the seed is an explicit integer, and the drawn
+  seed is immediately inspectable and serializable.
 
-### 2.2 Ideas that require improvement
+### 2.2 Simpler schemes rejected as defective
 
-- **Key derivation by addition.** Daedalus computes each element's bits
-  from `mix64(seed + i)` and each call's seed from
+- **Key derivation by addition.** The obvious cheap scheme derives each
+  element's bits from `mix64(seed + i)` and each call's seed from
   `seed + counter * GOLDEN`. Two calls whose per-call seeds differ by
-  less than the element count therefore share a suffix of the same
-  underlying stream, so their masks correlate. Phase G derives a
-  **per-call stream key through a full mix**, then derives each element
-  from that key through a second full mix (§4), so call streams are
-  decorrelated by construction.
-- **The counter advances before the kernel runs.** Daedalus calls
-  `_next_seed()` in the argument list, so a kernel that then raises has
-  still consumed a call. Phase G makes the advance a **commit after the
-  output is published** (§5): a failed forward consumes nothing.
-- **Random state is invisible to `state_dict` and checkpoints.**
-  Daedalus's counter is a plain Python attribute and its checkpoint
-  format (version 1) captures no RNG state, so a resumed stochastic run
-  cannot reproduce its masks. Phase G makes generators **registered
-  module state** (§9) and adds a checkpoint section for them (§10), which
-  is the whole reason the format version moves.
-- **Implicit mask lifetime.** Daedalus builds a mask tensor and returns
-  `mul(t, mask)`, leaving the mask alive through ordinary refcounting.
+  less than the element count then share a suffix of the same underlying
+  stream, so their masks correlate. Phase G instead derives a **per-call
+  stream key through a full mix**, then derives each element from that
+  key through a second full mix (§4), so call streams are decorrelated by
+  construction.
+- **Advancing the counter before the kernel runs.** Consuming the call
+  index in the argument list means a kernel that then raises has still
+  burned a call. Phase G makes the advance a **commit after the output is
+  published** (§5): a failed forward consumes nothing.
+- **Random state invisible to `state_dict` and checkpoints.** A counter
+  held as a plain Python attribute, with no checkpoint section for it,
+  leaves a resumed stochastic run unable to reproduce its masks. Phase G
+  makes generators **registered module state** (§9) and adds a checkpoint
+  section for them (§10), which is the whole reason the format version
+  moves.
+- **Implicit mask lifetime.** Building a mask tensor and returning
+  `mul(t, mask)` leaves the mask alive through ordinary refcounting.
   TensorForge releases native storage deterministically, so Phase G makes
   the mask **graph-owned state** released exactly once at the existing
   graph-release points (§8).
-- **An unsynchronized counter.** Daedalus's counter is a bare attribute
-  incremented in place, so two overlapping calls — concurrent or
-  reentrant — can read the same value and silently produce the same mask
-  twice. Phase G puts reservation, commit, cancellation, and every state
-  read and write behind one lock and hands out **opaque single-use
-  tokens** (§3.6), so a duplicated call index is impossible and overlap
-  is a deterministic error rather than a silent collision.
+- **An unsynchronized counter.** A bare attribute incremented in place
+  lets two overlapping calls — concurrent or reentrant — read the same
+  value and silently produce the same mask twice. Phase G puts
+  reservation, commit, cancellation, and every state read and write
+  behind one lock and hands out **opaque single-use tokens** (§3.6), so a
+  duplicated call index is impossible and overlap is a deterministic
+  error rather than a silent collision.
 - **No algorithm identifier, no state validation, no exhaustion rule.**
   Phase G locks an algorithm identifier and version, validates every
   loaded state field, and defines counter exhaustion (§3, §4, §10).
 
-### 2.3 Ideas that do not fit TensorForge
+### 2.3 Designs that do not fit TensorForge
 
 - **A CUDA branch inside the operation.** The native line is CPU-only and
   `device` has exactly one value; a device switch would be dead code and
   an untestable claim.
 - **float32 masks.** The native runtime has one dtype. The mask is
-  float64, and the bits-to-uniform conversion uses 53 bits accordingly,
-  not Daedalus's 24-bit float32 conversion.
+  float64, and the bits-to-uniform conversion uses 53 bits accordingly
+  rather than the 24 bits a float32 conversion would use.
 - **pybind11 bindings and C++-managed autograd.** TensorForge crosses the
   boundary with a plain C ABI and ctypes, and manages the graph in
   Python. The dropout node is a Python-managed node like every other one.
 - **Returning the input tensor from the kernel layer on `p == 0`.**
-  Daedalus's C++ `dropout` returns `t` itself for `p == 0`. In
-  TensorForge that decision belongs to the Python layer, where ownership
-  is tracked; the kernel is never asked a question whose answer is "no
-  work" (§6.2).
+  Short-circuiting inside the kernel by handing back `t` itself belongs
+  in the Python layer instead, where ownership is tracked; the kernel is
+  never asked a question whose answer is "no work" (§6.2).
 - **A `secrets`-seeded module with no way to inspect or set the state.**
   TensorForge exposes the generator as an object with a readable,
   replaceable state, because the checkpoint contract requires it.
@@ -653,8 +647,9 @@ bits(seed, call_index, element)   = mix64(stream + GOLDEN * (element + 1))
 Two full finalizer applications separate the per-call stream from the
 per-element draw, so two different call indices cannot produce
 overlapping element sequences by a simple offset — the defect §2.2
-identifies in the reference design. `call_index + 1` and `element + 1`
-keep the zero case from degenerating to `mix64(seed)` twice.
+identifies in the simpler additive scheme. `call_index + 1` and
+`element + 1` keep the zero case from degenerating to `mix64(seed)`
+twice.
 
 **What this guarantees, exactly** (characterized at G6, pinned by test).
 `GOLDEN` is odd, so multiplication by it is invertible modulo `2**64`, and
@@ -1146,8 +1141,8 @@ The alternative designs were considered and rejected:
 - *A single structured native result object* would add a new
   cross-boundary type for one caller; two cores match the existing
   precedent and need no new ABI concept.
-- *A mask-only kernel plus the existing differentiable `multiply`* (the
-  Daedalus shape) is attractive because it needs no new autograd node —
+- *A mask-only kernel plus the existing differentiable `multiply`* is
+  attractive because it needs no new autograd node —
   but the mask would then be a graph **parent**, freed only by garbage
   collection rather than at the deterministic graph-release points, which
   violates the project's native-lifetime discipline. It is rejected for

@@ -2424,25 +2424,38 @@ def test_every_doc_linked_from_the_readme_exists():
         assert design in referenced, f"docs/{design} is not linked"
 
 
-def test_phase_f_design_records_the_daedalus_comparison():
-    """The phase must record what it took from the comparable Daedalus
-    design and — more importantly — what it deliberately rejected, so the
-    architectural choices are justified rather than inherited."""
-    section = _top_level_section("Daedalus")
+def test_phase_f_design_records_its_normalization_alternatives():
+    """Normalization admits several plausible architectures. The phase
+    must record which it selected *and* which it deliberately rejected,
+    naming the TensorForge boundary that settled each one, so the choices
+    read as justified rather than defaulted into."""
+    section = _top_level_section("Design alternatives considered")
     lowered = section.lower()
-    # Ideas taken.
-    assert "composition" in lowered or "composed" in lowered
-    assert "shared private" in lowered or "shared implementation" in lowered
-    # Ideas rejected — each one names a real architectural boundary.
+    # The selected designs.
+    assert "composition" in lowered or "composed" in lowered, (
+        "the design no longer records composing LayerNorm over existing "
+        "operations"
+    )
+    assert "shared private" in lowered or "shared implementation" in lowered, (
+        "the design no longer records one shared BatchNorm implementation "
+        "behind the two public modules"
+    )
+    # The rejected designs — each names a real architectural boundary.
     for rejected in ("pybind11", "numpy", "detached", "host array"):
         assert rejected in lowered, (
-            f"the Daedalus comparison does not record rejecting {rejected!r}"
+            f"the design no longer records rejecting {rejected!r}"
         )
     assert re.search(r"c\+\+-managed autograd|autograd.{0,20}c\+\+", lowered), (
-        "the comparison no longer rejects C++-managed autograd"
+        "the design no longer rejects C++-managed autograd"
     )
-    assert re.search(r"cop(y|ied|ying)", lowered), (
-        "the comparison no longer states that no implementation is copied"
+    # Rejections must carry their reason, not just a verdict: the two
+    # boundaries that make the NumPy and host-array rows non-negotiable.
+    assert "tripwire" in lowered, (
+        "the NumPy rejection no longer names the native-numerics tripwire"
+    )
+    assert "state_dict" in lowered or "checkpoint" in lowered, (
+        "the host-array rejection no longer names the state/checkpoint "
+        "obligation that motivates it"
     )
 
 
@@ -6966,18 +6979,46 @@ def test_the_h9_ladder_revision_is_recorded_rather_than_retrofitted():
     assert "h10" in text
 
 
-def test_the_phase_h_design_records_daedalus_decisions():
-    """Every relevant reference-project idea gets an explicit
-    adopt/adapt/reject decision — not a silent copy and not silence."""
-    text = _normalized_doc(_PHASE_H_DESIGN)
-    lowered = text.lower()
-    assert "daedalus" in lowered
+def test_the_phase_h_design_decides_every_candidate_explicitly():
+    """A performance phase's rejections matter as much as its wins: each
+    candidate technique must carry an explicit adopt/adapt/reject verdict
+    in one place, so a later reader can tell a deliberate decision from an
+    oversight. Scoped to that section rather than the whole document, so
+    a token appearing incidentally elsewhere cannot satisfy it."""
+    section = _top_level_section("Candidate designs", _PHASE_H_DESIGN)
+    lowered = section.lower()
     for decision in ("adopt", "adapt", "reject"):
-        assert decision in lowered, decision
-    # The ideas the milestone specifically named must each appear.
+        assert decision in lowered, (
+            f"the candidate table records no {decision!r} verdict"
+        )
+    # Every candidate the phase weighed must still be named here.
     for idea in ("matmul", "avx2", "memory pool", "scratch workspace",
-                 "benchmark", "profil", "conv2d", "cuda", "pybind11"):
-        assert idea in lowered, idea
+                 "benchmark", "profil", "conv2d", "cuda", "pybind11",
+                 "googletest", "fus"):
+        assert idea in lowered, f"the candidate table no longer decides {idea!r}"
+    # The §4.3 architectural boundaries this project will not trade away
+    # for speed must be the *stated reason* for their rejections.
+    assert "no gpu path" in lowered or "has no gpu" in lowered, (
+        "the matmul row no longer explains why a naive CPU kernel is not "
+        "enough for a runtime with no GPU fallback"
+    )
+    assert "determinism" in lowered or "deterministic" in lowered, (
+        "the environment-variable-selector rejection no longer rests on "
+        "determinism"
+    )
+    assert "exact-resume" in lowered or "exact resume" in lowered, (
+        "the environment-variable-selector rejection no longer names the "
+        "exact-resume proofs it would invalidate"
+    )
+    assert "ctypes" in lowered, (
+        "the pybind11 rejection no longer names the plain C-ABI + ctypes "
+        "boundary it protects"
+    )
+    # No committed benchmark number, restated where a perf phase could
+    # have talked itself into one.
+    assert "no" in lowered and "result file" in lowered, (
+        "the candidate table no longer rejects a committed result file"
+    )
 
 
 def test_no_ci_job_or_test_asserts_a_phase_h_duration():
@@ -7699,3 +7740,153 @@ def test_the_harness_case_count_is_consistent_across_surfaces():
                     "docs/native_support_matrix.md"):
         text = _status_text(surface)
         assert re.search(r"38 to 41|38 to \*\*41\*\*|41 cases", text), surface
+
+
+# ==========================================================================
+# Repository hygiene — no external source-provenance references
+#
+# TensorForge's documentation stands on its own: it explains this
+# project's own requirements, decisions, and rejected alternatives
+# directly, without naming an outside implementation as a source,
+# comparison target, or inspiration. That is a property of the whole
+# repository, not of one document, so it is enforced by a scan rather
+# than by a per-file assertion.
+#
+# The forbidden terms are assembled from fragments at runtime. Spelling
+# them out here would plant the very strings the scan rejects inside a
+# file the scan reads, and the guardrail would fail on itself.
+# ==========================================================================
+
+# Directory names never scanned: version control, virtual environments,
+# build output, caches, editor state, and compiled artifacts. None holds
+# authored project text, and several hold binaries whose bytes would
+# decode into noise.
+_UNSCANNED_DIRS = frozenset({
+    ".git", ".venv", "venv", ".env", "env", "node_modules", "__pycache__",
+    ".pytest_cache", ".cache", ".mypy_cache", ".ruff_cache", ".tox",
+    "build", "dist", "wheels", "htmlcov", ".idea", ".vscode", ".claude",
+})
+
+# Suffixes of authored project text. Everything else — .dll, .so, .pyd,
+# .lib, .obj, .png, … — is skipped, so no native binary is ever read.
+_SCANNED_SUFFIXES = frozenset({
+    ".md", ".py", ".txt", ".toml", ".cfg", ".ini", ".yml", ".yaml",
+    ".json", ".rst", ".c", ".h", ".cpp", ".hpp", ".cmake", ".in",
+    ".sh", ".ps1", ".bat",
+})
+
+# Authored files the suffix list would otherwise miss. Together with
+# _SCANNED_SUFFIXES this covers every tracked file except ``uv.lock``,
+# which is generated dependency metadata rather than authored text.
+_SCANNED_NAMES = frozenset({
+    "CMakeLists.txt", ".gitignore", "LICENSE", ".python-version", "py.typed",
+})
+
+
+def _forbidden_reference_terms():
+    """The public references that must not reappear, each built by
+    joining fragments so this module never contains one literally.
+
+    Covers the project name, the repository owner, the repository slug,
+    and the repository URL — the four forms the removed text used."""
+    name = "dae" + "dalus"
+    owner = "johnson" + "kayati"
+    slug = name + "-ml"
+    url = "github.com/" + owner + "/" + slug
+    return {
+        "external project name": name,
+        "repository owner": owner,
+        "repository slug": slug,
+        "repository URL": url,
+    }
+
+
+def _scannable_repo_text_files():
+    """Every authored text file in the repository, with the directories
+    above pruned. Yields paths, not contents."""
+    stack = [REPO_ROOT]
+    while stack:
+        current = stack.pop()
+        for entry in current.iterdir():
+            if entry.is_dir():
+                if entry.name not in _UNSCANNED_DIRS:
+                    stack.append(entry)
+            elif (entry.suffix.lower() in _SCANNED_SUFFIXES
+                    or entry.name in _SCANNED_NAMES):
+                yield entry
+
+
+def test_the_repository_scan_actually_reaches_project_text():
+    """A scan that silently walks nothing would pass the guardrail below
+    forever. Pin that it reaches the real documentation and source."""
+    found = {
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in _scannable_repo_text_files()
+    }
+    for required in ("README.md", "CLAUDE.md", "tests/test_docs.py",
+                     "docs/native_cpu_performance_design.md",
+                     "docs/native_rng_dropout_design.md",
+                     "docs/native_normalization_design.md",
+                     "src/tensorforge/backends/cpp.py"):
+        assert required in found, f"the scan does not reach {required}"
+    # And that it prunes rather than walking the whole tree.
+    assert not any(part in _UNSCANNED_DIRS
+                   for name in found for part in name.split("/")), (
+        "the scan descended into a directory it is supposed to prune"
+    )
+
+
+def test_no_external_source_provenance_reference_in_repository_text():
+    """No authored text file may name the external project, its owner,
+    its repository slug, or its URL — in any capitalization.
+
+    TensorForge's design records explain its own decisions; a
+    provenance reference to an outside implementation is what this
+    guards against reintroducing, whether in documentation, a docstring,
+    a comment, or a commit-adjacent text file."""
+    terms = _forbidden_reference_terms()
+    offenders = []
+    for path in _scannable_repo_text_files():
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue  # not authored UTF-8 text; nothing to check
+        lowered = text.lower()
+        for label, term in terms.items():
+            if term in lowered:
+                line = next(
+                    (number for number, content
+                     in enumerate(lowered.splitlines(), start=1)
+                     if term in content),
+                    None,
+                )
+                offenders.append(
+                    f"{path.relative_to(REPO_ROOT).as_posix()}:{line} "
+                    f"contains the {label}"
+                )
+    assert not offenders, (
+        "external source-provenance references are back in tracked text:\n"
+        + "\n".join(sorted(offenders))
+    )
+
+
+def test_the_provenance_guardrail_can_actually_fail():
+    """The negative control. A scan that matched nothing would pass the
+    test above whether or not the repository were clean, so prove the
+    matching logic fires on text that does contain a forbidden term."""
+    terms = _forbidden_reference_terms()
+    assert len(set(terms.values())) == 4, "the forbidden forms collapsed"
+    for label, term in terms.items():
+        assert term, f"the {label} term is empty"
+        # Case-insensitivity is the property under test: the scan lowers
+        # its input, so an upper-case reintroduction must still match.
+        planted = f"See {term.upper()} for details."
+        assert term in planted.lower(), f"the {label} term would be missed"
+    # And that this module itself carries no literal forbidden term —
+    # the reason they are assembled from fragments.
+    own_text = Path(__file__).read_text(encoding="utf-8").lower()
+    for label, term in terms.items():
+        assert term not in own_text, (
+            f"this module spells the {label} out literally, which would "
+            f"make the guardrail fail on itself"
+        )
