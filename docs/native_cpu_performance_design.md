@@ -4589,6 +4589,74 @@ forward 25, a BatchNorm2d 30, and each is still a separate output buffer
 and a separate full traversal. That is elementwise traversal and
 allocation count — **H8's** subject — and it remains conditional.
 
+### 16.7.14 A test-contract correction, made after H9 shipped
+
+**No production code changed, and H7's result is unaffected.** One of
+H7's tests overclaimed, Linux CI caught it, and the contract is corrected
+here rather than quietly loosened.
+
+`tests/test_native_abi_boundary.py::test_every_trusted_operation_matches_
+numpy_bit_for_bit` compared **every** operation crossing a trusted
+position against NumPy as raw IEEE-754 bits, `exp` and `log` included. On
+GitHub Actions (ubuntu-latest, glibc) the `(2, 3, 4, 5)` case failed on
+`exp`; all 6,321 other tests passed. It reproduces on neither developer
+platform, and that is the diagnosis rather than an obstacle to it.
+
+**Why the assertion was wrong.** IEEE-754 defines `+`, `-`, `*`, `/`, and
+`sqrt` to be correctly rounded, so a unique result exists and NumPy is an
+exact oracle for them. It only *recommends* correct rounding for `exp`
+and `log`. TensorForge calls `std::exp`/`std::log` — deliberately: §16.8
+excluded both from H8's templated traversal for exactly this reason — and
+NumPy may use its own kernel. Bit equality between two near-correct
+implementations is a property of the machine, not of this project, and
+H7's guarantee was never about NumPy at all: it was that the *binding*
+changed no arithmetic.
+
+**Measured before choosing anything.** Identical inputs, identical C++
+source, 5,120 `exp` and 5,111 `log` values, with a 60-digit `Decimal`
+reference for the correctly rounded result:
+
+| | Windows / UCRT | Linux / glibc 2.39 |
+|---|---|---|
+| native vs that platform's NumPy | 0 differences | 0 differences |
+| `exp` mis-rounded (of 5,001) | 19 | 5 |
+| `log` mis-rounded (of 5,000) | 5 | 3 |
+| native `exp` differing across the two platforms | **18 of 5,120**, every one exactly **1 ULP** ||
+| native `log` differing across the two platforms | **6 of 5,111**, every one exactly **1 ULP** ||
+
+So both libraries are within one step of the true value, neither is
+correctly rounded everywhere, neither is universally the better one
+(UCRT wins some `log` cases, glibc others), and **within** a platform
+NumPy and `std::exp` are the same code — which is why this can only ever
+fail on a third machine. `log` carries the identical risk and is treated
+identically.
+
+In the failing array the near-tie element is `exp(0.3470383329193902)`,
+whose exact value sits **0.4956 ULP** from the double it rounds to —
+0.0044 ULP from a rounding tie — so `0x3ff6a34fbb7424e9` and
+`0x3ff6a34fbb7424ea` are both defensible answers, 2.22e-16 apart in
+absolute terms and 1.57e-16 relative.
+
+**The corrected contract, split by what the operation actually
+guarantees.** Exact raw-bit equality is *retained unweakened* for the
+IEEE-754-defined operations (`add`, `subtract`, `multiply`, `sqrt`,
+`reciprocal`, `relu`, `contiguous_copy`, `to_numpy`) and for every H5,
+H6, H8, and H9 contract. `exp` and `log` keep exact assertions for
+`±0`, `±inf`, NaN position and quietness, overflow, underflow, and the
+log domain, and get a **1 ULP** budget on ordinary finite results — the
+tightest bound the measurement supports, and one a real defect cannot
+hide behind, because a second test checks the native result against the
+correctly rounded reference **absolutely**, with NumPy not involved.
+
+**And H7's own claim is now proved the right way**: every trusted export
+is driven twice from the same production call site into the same kernel,
+once through the shipped `POINTER(c_int64)` binding and once through a
+test-local reconstruction of the checked `ndpointer` declaration, and the
+results are compared as raw bits. They are **exactly** equal — `exp` and
+`log` included, which is the point. No exported symbol was added (still
+**52**, confirmed on Linux by `nm -D`), no public checked/trusted
+selector exists, and no production file changed.
+
 ---
 
 ## 16.8 H8 — elementwise traversal and composed allocation, as shipped

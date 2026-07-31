@@ -38,6 +38,19 @@ The architecture, and what this file proves about it:
    ``POINTER(...).from_address(...)`` would be cheaper and is deliberately
    not used, precisely because it produces a pointer with no owner.
 
+5. **The binding changed no arithmetic, and that is proved against the
+   other binding.** Section 9 drives every trusted export twice from the
+   same production call site — once through the shipped
+   ``POINTER(c_int64)`` binding and once through a test-local
+   reconstruction of the checked ``ndpointer`` declaration H7 replaced —
+   and compares raw IEEE-754 bits. NumPy appears there only as an
+   *external mathematical oracle*, and only where it is one: exactly for
+   the operations IEEE-754 defines uniquely. ``exp`` and ``log`` are
+   compared against it within a measured one-step budget instead, because
+   bit equality between two different libm implementations is a property
+   of the platform rather than of this project. Section 9's own comment
+   records the measurement that fixes the budget.
+
 What H7 must not have done, also asserted here: weaken any public
 rejection, change any error type or message, expose a raw pointer or a
 native address, add a trusted-call flag or an environment fast path, make
@@ -1118,40 +1131,240 @@ def test_reentrant_calls_through_the_same_binding_are_correct():
 
 
 # ==========================================================================
-# 9. Numerical parity and exact training
+# 9. Numerical parity: one milestone, two contracts
 # ==========================================================================
+#
+# H7's guarantee is that swapping the layout binding **changed no
+# arithmetic**. NumPy is not the right witness for that claim, and using
+# it as one was an overclaim this section now corrects.
+#
+# * For the operations IEEE-754 **specifies** — addition, subtraction,
+#   multiplication, square root, division (so ``reciprocal``), a value
+#   copy, and the kernel's own ``x > 0 ? x : 0`` — the correctly rounded
+#   result is uniquely defined, every conforming implementation produces
+#   it, and NumPy really is an exact oracle. Those keep raw-bit equality,
+#   unchanged and unweakened.
+#
+# * ``exp`` and ``log`` are **not** specified that way. IEEE-754
+#   recommends correct rounding for them and requires nothing, so every
+#   platform ships a different near-correct implementation. TensorForge
+#   calls ``std::exp``/``std::log`` (deliberately: H8 excluded both from
+#   its templated traversal for this reason) while NumPy may use its own
+#   SIMD kernel. Comparing those two bit-for-bit tests the platform, not
+#   TensorForge.
+#
+# Measured, on identical inputs and identical C++ source:
+#
+#   | pair                                        | exp     | log    |
+#   |---------------------------------------------|---------|--------|
+#   | Windows UCRT vs Linux glibc 2.39, 5,000+ in. | 18 diff | 6 diff |
+#   | worst distance in either                     | 1 ULP   | 1 ULP  |
+#   | each implementation vs correctly rounded     | <=1 ULP | <=1 ULP|
+#
+# Neither library is universally the correctly rounded one (UCRT wins
+# some cases, glibc others), and within one platform the two agree
+# perfectly — which is why this only ever fails on a *different* machine
+# from the one a change was written on. So the transcendental contract
+# below is: special values exactly, ordinary finite values within
+# ``TRANSCENDENTAL_ULP`` — plus, as the actual defect guard, an
+# **absolute** accuracy check against a correctly rounded reference that
+# does not involve NumPy at all.
+#
+# The H7 claim itself is proved where it belongs, in
+# ``test_the_trusted_and_checked_bindings_agree_bit_for_bit``: the same
+# kernel, the same call site, the same inputs, the two bindings.
+
+# One representable step. This is the tightest bound the evidence
+# supports and it is not a guess: two independent shipped libm
+# implementations were measured against each other over 10,000+ inputs
+# and never differed by more than one step, and each stayed within one
+# step of the correctly rounded result. A larger bound would start to
+# hide real error; a bound of zero is the platform-dependent claim that
+# failed.
+TRANSCENDENTAL_ULP = 1
+
 
 def _same_bits(a, b):
     return np.array_equal(np.asarray(a, dtype=np.float64).view(np.int64),
                           np.asarray(b, dtype=np.float64).view(np.int64))
 
 
-@needs_native
-@pytest.mark.parametrize("shape", [(3,), (2, 3), (2, 3, 4), (2, 3, 4, 5)])
-def test_every_trusted_operation_matches_numpy_bit_for_bit(shape):
-    """H7 changed no arithmetic. Every operation that now crosses through
-    a trusted position is compared against NumPy as raw IEEE-754 bits,
-    over contiguous and strided operands and the whole special-value
-    matrix."""
+def _monotone(value):
+    """A float64's position on one monotone integer line.
+
+    IEEE-754 orders positive floats by their bit patterns already;
+    negatives run the other way in sign-magnitude, so they are reflected.
+    ``-0.0`` maps onto the same point as ``+0.0``, which is correct for a
+    *numerical* distance: they are the same number. Sign-of-zero is a bit
+    property and is asserted with ``_same_bits`` instead."""
+    bits = int(np.float64(value).view(np.int64))
+    return -(2 ** 63) - bits if bits < 0 else bits
+
+
+def _ulp_distance(a, b):
+    """How many representable float64 steps apart two values are.
+
+    Neighbouring floats are 1 apart, a value is 0 from itself, and the
+    count is exact across the denormal/normal boundary and across zero.
+    NaN is unordered, so it has no distance to anything and is rejected
+    rather than given a meaningless number — NaN is checked by position
+    and quietness instead."""
+    if np.isnan(a) or np.isnan(b):
+        raise ValueError("ULP distance is undefined for NaN")
+    return abs(_monotone(a) - _monotone(b))
+
+
+def _is_quiet_nan(value):
+    """A NaN whose most significant mantissa bit is set (IEEE-754 §6.2.1)."""
+    bits = int(np.float64(value).view(np.int64)) & ((1 << 64) - 1)
+    return np.isnan(value) and bool(bits & (1 << 51))
+
+
+def _assert_within_ulp(produced, expected, limit, label):
+    """The transcendental contract, elementwise. Returns the worst
+    distance seen so a caller can report how much of the budget is real.
+
+    Only *ordinary finite non-zero* results get the tolerance. A NaN must
+    be in the same place on both sides, an infinity must match exactly
+    (sign included), and a zero must match exactly — the distance cannot
+    see a zero's sign, so it would silently accept ``-0.0`` for ``+0.0``
+    and that is precisely the kind of thing this suite exists to catch."""
+    produced = np.asarray(produced, dtype=np.float64)
+    expected = np.asarray(expected, dtype=np.float64)
+    assert produced.shape == expected.shape, label
+    flat_produced, flat_expected = produced.ravel(), expected.ravel()
+    assert np.array_equal(np.isnan(flat_produced), np.isnan(flat_expected)), (
+        f"{label}: NaN positions differ")
+    worst = 0
+    for index in range(flat_produced.size):
+        got, want = flat_produced[index], flat_expected[index]
+        if np.isnan(got):
+            assert _is_quiet_nan(got), f"{label}[{index}]: signalling NaN"
+            continue
+        if np.isinf(got) or np.isinf(want) or got == 0.0 or want == 0.0:
+            assert _same_bits(got, want), (
+                f"{label}[{index}]: {got!r} is not exactly {want!r}")
+            continue
+        distance = _ulp_distance(got, want)
+        assert distance <= limit, (
+            f"{label}[{index}]: {got!r} vs {want!r} is {distance} ULP apart, "
+            f"over the {limit} ULP contract")
+        worst = max(worst, distance)
+    return worst
+
+
+def _reproducer_values(shape):
+    """The exact array the CI failure was reported on: seeded standard
+    normals with the special-value matrix written over the front."""
     rng = np.random.default_rng(20260801)
     values = rng.standard_normal(shape)
     specials = np.array([0.0, -0.0, np.inf, -np.inf, np.nan, 1e308, -1e308,
                          5e-324, 2.2250738585072014e-308])
-    values.ravel()[:min(values.size, specials.size)] = (
-        specials[:min(values.size, specials.size)])
+    count = min(values.size, specials.size)
+    values.ravel()[:count] = specials[:count]
+    return values
+
+
+# -- the ULP helper's own contract -----------------------------------------
+
+@pytest.mark.parametrize("a,b,expected", [
+    pytest.param(1.5, 1.5, 0, id="equal_positive"),
+    pytest.param(-1.5, -1.5, 0, id="equal_negative"),
+    pytest.param(1e308, 1e308, 0, id="equal_huge"),
+    pytest.param(1.0, float(np.nextafter(1.0, np.inf)), 1,
+                 id="neighbouring_positive"),
+    pytest.param(-1.0, float(np.nextafter(-1.0, -np.inf)), 1,
+                 id="neighbouring_negative"),
+    pytest.param(-1.0, float(np.nextafter(-1.0, np.inf)), 1,
+                 id="neighbouring_negative_toward_zero"),
+    pytest.param(0.0, -0.0, 0, id="signed_zeros_are_one_number"),
+    pytest.param(0.0, 5e-324, 1, id="zero_to_smallest_denormal"),
+    pytest.param(-0.0, -5e-324, 1, id="negative_zero_to_smallest_denormal"),
+    pytest.param(5e-324, -5e-324, 2, id="across_zero"),
+    pytest.param(2.225073858507201e-308, 2.2250738585072014e-308, 1,
+                 id="largest_denormal_to_smallest_normal"),
+    pytest.param(np.inf, np.inf, 0, id="equal_infinities"),
+    pytest.param(-np.inf, -np.inf, 0, id="equal_negative_infinities"),
+    pytest.param(np.inf, 1.7976931348623157e308, 1,
+                 id="infinity_is_one_step_past_the_largest_finite"),
+    pytest.param(np.inf, -np.inf, 2 ** 64 - 2 ** 53,
+                 id="opposite_infinities"),
+])
+def test_the_ulp_helper_counts_representable_steps(a, b, expected):
+    """The helper the transcendental contract is expressed in, pinned
+    before anything is asserted with it. Symmetric, exact at the
+    denormal boundary, and unsurprised by zeros or infinities."""
+    assert _ulp_distance(a, b) == expected
+    assert _ulp_distance(b, a) == expected
+
+
+@pytest.mark.parametrize("a,b", [
+    (np.nan, 1.0), (1.0, np.nan), (np.nan, np.nan), (np.nan, np.inf),
+])
+def test_the_ulp_helper_refuses_nan(a, b):
+    """NaN is unordered: there is no honest number of steps to it, so the
+    helper raises rather than returning one. NaN is checked by position
+    and quietness, which is what the operations actually promise."""
+    with pytest.raises(ValueError, match="undefined for NaN"):
+        _ulp_distance(a, b)
+
+
+def test_the_ulp_helper_rejects_a_signed_zero_swap_through_same_bits():
+    """The distance treats ``+0.0`` and ``-0.0`` as one number, so the
+    exactness of a zero is somebody else's job — and that job is done."""
+    assert _ulp_distance(0.0, -0.0) == 0
+    assert not _same_bits(0.0, -0.0)
+    with pytest.raises(AssertionError):
+        _assert_within_ulp(np.array([0.0]), np.array([-0.0]), 1, "zero")
+
+
+def test_the_ulp_assertion_helper_enforces_the_stated_boundary():
+    """One step passes at a one-step budget, two steps do not, and a NaN
+    in the wrong place fails however small the distances are."""
+    one = np.array([1.0])
+    _assert_within_ulp(one, np.array([np.nextafter(1.0, np.inf)]), 1, "one")
+    with pytest.raises(AssertionError, match="2 ULP apart"):
+        _assert_within_ulp(
+            one, np.array([np.nextafter(np.nextafter(1.0, np.inf), np.inf)]),
+            1, "two")
+    with pytest.raises(AssertionError, match="NaN positions differ"):
+        _assert_within_ulp(np.array([np.nan]), one, 1, "nan")
+    with pytest.raises(AssertionError):
+        _assert_within_ulp(np.array([np.inf]), np.array([-np.inf]), 1, "inf")
+
+
+# -- the exact contract, unweakened ----------------------------------------
+
+# The operations IEEE-754 defines exactly, with the reference NumPy must
+# agree with bit for bit on every platform. relu's reference is the
+# kernel's own long-standing rule (`x > 0 ? x : 0`, so a NaN gives 0),
+# not numpy.maximum, which propagates NaN. That difference predates
+# Phase H entirely.
+EXACT_UNARY = (
+    ("sqrt", np.sqrt),
+    ("reciprocal", lambda x: 1.0 / x),
+    ("relu", lambda x: np.where(x > 0.0, x, 0.0)),
+)
+
+
+@needs_native
+@pytest.mark.parametrize("shape", [(3,), (2, 3), (2, 3, 4), (2, 3, 4, 5)])
+def test_every_exact_trusted_operation_matches_numpy_bit_for_bit(shape):
+    """H7 changed no arithmetic. Every operation that crosses a trusted
+    position **and** has a uniquely defined IEEE-754 result is compared
+    against NumPy as raw bits, over contiguous and strided operands and
+    the whole special-value matrix.
+
+    This is the original assertion, kept exactly as strict as it was for
+    every operation it is actually true of. ``exp`` and ``log`` moved to
+    the transcendental contract below; nothing else did."""
+    values = _reproducer_values(shape)
     base = Core.from_array(values)
     transposed = base.T
     scalar = Core.full((), 2.5)
     try:
-        # relu's reference is the kernel's own long-standing rule
-        # (`x > 0 ? x : 0`, so a NaN gives 0), not numpy.maximum, which
-        # propagates NaN. That difference predates Phase H entirely.
         for core, host in ((base, values), (transposed, values.T)):
-            for name, reference in (
-                ("exp", np.exp), ("sqrt", np.sqrt),
-                ("reciprocal", lambda x: 1.0 / x),
-                ("relu", lambda x: np.where(x > 0.0, x, 0.0)),
-            ):
+            for name, reference in EXACT_UNARY:
                 produced = getattr(core, name)()
                 try:
                     with np.errstate(all="ignore"):
@@ -1177,6 +1390,380 @@ def test_every_trusted_operation_matches_numpy_bit_for_bit(shape):
         scalar.close()
         transposed.close()
         base.close()
+
+
+# -- the transcendental contract -------------------------------------------
+
+@needs_native
+@pytest.mark.parametrize("shape", [(3,), (2, 3), (2, 3, 4), (2, 3, 4, 5)])
+@pytest.mark.parametrize("name,reference", [
+    pytest.param("exp", np.exp, id="exp"),
+    pytest.param("log", np.log, id="log"),
+])
+def test_the_transcendental_operations_agree_with_numpy_within_one_ulp(
+    shape, name, reference
+):
+    """``exp`` and ``log`` against NumPy as an external mathematical
+    oracle, over exactly the arrays and layouts the exact contract above
+    uses. Special values are still exact; ordinary finite results are
+    allowed the one representable step two shipped libm implementations
+    were measured to differ by."""
+    values = _reproducer_values(shape)
+    base = Core.from_array(values)
+    transposed = base.T
+    try:
+        for core, host in ((base, values), (transposed, values.T)):
+            produced = getattr(core, name)()
+            try:
+                with np.errstate(all="ignore"):
+                    expected = reference(host)
+                _assert_within_ulp(produced.to_numpy(), expected,
+                                   TRANSCENDENTAL_ULP, f"{name}{shape}")
+            finally:
+                produced.close()
+    finally:
+        transposed.close()
+        base.close()
+
+
+@needs_native
+def test_the_transcendental_special_values_are_exact_not_approximate():
+    """Everything the tolerance must never cover. These are IEEE-754
+    *requirements* on exp and log, not rounding choices, so they are
+    asserted as raw bits — a platform that got one of these wrong would
+    have a real defect, and the ULP budget must not absorb it."""
+    exp_inputs = np.array([0.0, -0.0, np.inf, -np.inf, np.nan,
+                           1000.0, -1000.0, 710.0, -746.0])
+    core = Core.from_array(exp_inputs)
+    try:
+        produced = core.exp()
+        try:
+            out = produced.to_numpy()
+        finally:
+            produced.close()
+    finally:
+        core.close()
+    assert _same_bits(out[0], 1.0)            # exp(+0) == 1 exactly
+    assert _same_bits(out[1], 1.0)            # exp(-0) == 1 exactly
+    assert _same_bits(out[2], np.inf)         # +inf -> +inf
+    assert _same_bits(out[3], 0.0)            # -inf -> +0, sign included
+    assert np.isnan(out[4]) and _is_quiet_nan(out[4])
+    assert _same_bits(out[5], np.inf)         # overflow -> +inf
+    assert _same_bits(out[6], 0.0)            # underflow -> +0
+    assert _same_bits(out[7], np.inf)         # just past the overflow edge
+    assert _same_bits(out[8], 0.0)            # past the underflow edge
+
+    log_inputs = np.array([1.0, 0.0, -0.0, -1.0, -np.inf, np.inf, np.nan])
+    core = Core.from_array(log_inputs)
+    try:
+        produced = core.log()
+        try:
+            out = produced.to_numpy()
+        finally:
+            produced.close()
+    finally:
+        core.close()
+    assert _same_bits(out[0], 0.0)            # log(1) == +0 exactly
+    assert _same_bits(out[1], -np.inf)        # log(+0) == -inf
+    assert _same_bits(out[2], -np.inf)        # log(-0) == -inf
+    assert np.isnan(out[3]) and _is_quiet_nan(out[3])   # domain -> NaN
+    assert np.isnan(out[4]) and _is_quiet_nan(out[4])   # -inf is negative
+    assert _same_bits(out[5], np.inf)         # +inf -> +inf
+    assert np.isnan(out[6]) and _is_quiet_nan(out[6])   # NaN propagates
+
+
+@needs_native
+@pytest.mark.parametrize("name", ["exp", "log"])
+def test_the_transcendental_results_are_correctly_rounded_or_next_to_it(name):
+    """The defect guard, and the reason the ULP budget above cannot hide
+    anything: an **absolute** accuracy check against the correctly
+    rounded result, computed in 60 decimal digits. NumPy is not involved,
+    so this holds identically on every platform and would catch a wrong
+    kernel, a wrong dispatch, or a lost operand — none of which lands
+    within a step of the true value.
+
+    One step, not zero: neither shipped libm this project runs on is
+    correctly rounded everywhere (measured: glibc 2.39 mis-rounds 5 of
+    5,001 exp inputs, Windows UCRT 19 of the same 5,001)."""
+    from decimal import Decimal, getcontext
+    getcontext().prec = 60
+
+    values = _reproducer_values((2, 3, 4, 5)).ravel()
+    if name == "log":
+        values = np.abs(values)
+    core = Core.from_array(values)
+    try:
+        produced = getattr(core, name)()
+        try:
+            out = produced.to_numpy()
+        finally:
+            produced.close()
+    finally:
+        core.close()
+
+    checked, worst = 0, 0
+    for index, x in enumerate(values):
+        if not np.isfinite(x) or not np.isfinite(out[index]):
+            continue
+        if x == 0.0 or out[index] == 0.0:
+            continue
+        exact = Decimal(float(x)).exp() if name == "exp" else Decimal(float(x)).ln()
+        reference = float(exact)
+        distance = _ulp_distance(out[index], reference)
+        assert distance <= TRANSCENDENTAL_ULP, (
+            f"{name}({x!r}) = {out[index]!r} is {distance} ULP from the "
+            f"correctly rounded {reference!r}")
+        worst = max(worst, distance)
+        checked += 1
+    assert checked > 50, f"only {checked} finite {name} results were checked"
+    assert worst <= TRANSCENDENTAL_ULP
+
+
+@needs_native
+def test_the_linux_ci_reproducer_case(monkeypatch):
+    """The exact case GitHub Actions failed on — seed 20260801, shape
+    (2, 3, 4, 5), operation ``exp`` — asserted under the corrected
+    contract, and pinned so the reproducer cannot drift out of the suite.
+
+    The near-tie element is what makes this shape the one that failed:
+    ``exp(0.3470383329193902)`` lands 0.4956 ULP from the double it
+    correctly rounds to, i.e. 0.0044 ULP from an exact rounding tie, so
+    two implementations that are each within a step of the true value can
+    legitimately land on either side of it.
+
+    It also asserts what was *not* involved: no convolution export is
+    reached, so this was never an H9 failure."""
+    library = cpp._require_library()
+    conv_exports = ("tf_core_conv2d_forward", "tf_core_conv2d_input_backward",
+                    "tf_core_conv2d_weight_backward")
+    originals = {name: getattr(library, name) for name in conv_exports}
+
+    def tripwire(name):
+        def call(*args):
+            raise AssertionError(f"{name} was reached by the exp reproducer")
+        return call
+
+    for name in conv_exports:
+        monkeypatch.setattr(library, name, tripwire(name), raising=False)
+
+    values = _reproducer_values((2, 3, 4, 5))
+    assert values.shape == (2, 3, 4, 5) and values.size == 120
+    # The near-tie element, pinned by value and by position.
+    assert values[1, 0, 0, 2] == 0.3470383329193902
+
+    base = Core.from_array(values)
+    transposed = base.T
+    try:
+        for core, host in ((base, values), (transposed, values.T)):
+            produced = core.exp()
+            try:
+                with np.errstate(all="ignore"):
+                    expected = np.exp(host)
+                _assert_within_ulp(produced.to_numpy(), expected,
+                                   TRANSCENDENTAL_ULP, "exp reproducer")
+            finally:
+                produced.close()
+        # The correctly rounded value for the near-tie element, and the
+        # one neighbour a conforming implementation may return instead.
+        produced = base.exp()
+        try:
+            got = produced.to_numpy()[1, 0, 0, 2]
+        finally:
+            produced.close()
+        assert got in (1.4148709604654022, 1.4148709604654024)
+        assert _ulp_distance(1.4148709604654022, 1.4148709604654024) == 1
+    finally:
+        transposed.close()
+        base.close()
+
+    monkeypatch.undo()
+    for name in conv_exports:
+        assert getattr(library, name) is originals[name]
+
+
+# -- the H7 claim itself: two bindings, one kernel -------------------------
+
+def _checked_binding(name):
+    """A second, **test-local** binding of one export that uses the
+    checked ``numpy.ctypeslib.ndpointer`` argument type H7 replaced for
+    layout metadata — the pre-H7 declaration, rebuilt from the live one
+    by swapping exactly that argument type so the two cannot drift apart.
+
+    Built with ``ctypes.CFUNCTYPE`` against the already-loaded library, so
+    it neither reloads anything nor touches the configured production
+    function object. No exported symbol is added, no production selector
+    exists, and nothing here is reachable from any public API."""
+    library = cpp._require_library()
+    original = getattr(library, name)
+    argtypes = [cpp._CHECKED_I64_ARRAY if argtype is cpp._LAYOUT_POINTER
+                else argtype for argtype in original.argtypes]
+    assert cpp._LAYOUT_POINTER in original.argtypes, name
+    assert cpp._CHECKED_I64_ARRAY in argtypes, name
+    return ctypes.CFUNCTYPE(original.restype, *argtypes)((name, library))
+
+
+# Every export with a trusted position, with the index of its ``ndim``
+# argument and the indices of its layout carriers — the same table
+# test_every_production_kernel_call_agrees_on_rank drives.
+TRUSTED_EXPORTS = {
+    "tf_core_relu": (5, (2, 3)), "tf_core_sqrt": (5, (2, 3)),
+    "tf_core_reciprocal": (5, (2, 3)), "tf_core_exp": (5, (2, 3)),
+    "tf_core_log": (5, (2, 3)), "tf_core_contiguous_copy": (5, (2, 3)),
+    "tf_core_add": (8, (3, 4, 5)), "tf_core_subtract": (8, (3, 4, 5)),
+    "tf_core_multiply": (8, (3, 4, 5)),
+    "tf_core_relu_backward": (8, (3, 4, 5)),
+    "tf_core_sum": (6, (2, 3, 4)),
+    "tf_core_narrow_backward": (7, (2, 3, 4)),
+    "tf_storage_materialize": (5, (2, 3)),
+}
+
+
+def _run_the_trusted_workload(core, scalar):
+    """One call of every trusted export, from the production call sites,
+    returning the results keyed by a label."""
+    transposed = core.transpose(2, 1, 0)
+    narrowed = core.narrow(0, 0, 1).contiguous_copy()
+    results = {}
+    try:
+        for name in ("relu", "sqrt", "reciprocal", "exp", "log",
+                     "contiguous_copy"):
+            produced = getattr(transposed, name)()
+            try:
+                results[name] = produced.to_numpy().copy()
+            finally:
+                produced.close()
+        for name in ("add", "subtract", "multiply"):
+            produced = getattr(core, name)(scalar)
+            try:
+                results[name] = produced.to_numpy().copy()
+            finally:
+                produced.close()
+        produced = transposed.relu_backward(transposed)
+        try:
+            results["relu_backward"] = produced.to_numpy().copy()
+        finally:
+            produced.close()
+        for label, produced in (("sum_axis", core.sum(axis=1)),
+                                ("sum_all", core.sum())):
+            try:
+                results[label] = produced.to_numpy().copy()
+            finally:
+                produced.close()
+        produced = narrowed.narrow_backward(0, 1, (3, 3, 4))
+        try:
+            results["narrow_backward"] = produced.to_numpy().copy()
+        finally:
+            produced.close()
+        results["materialize"] = transposed.to_numpy().copy()
+    finally:
+        narrowed.close()
+        transposed.close()
+    return results
+
+
+@needs_native
+def test_the_trusted_and_checked_bindings_agree_bit_for_bit(monkeypatch):
+    """**This is H7's actual guarantee**, and the proof belongs here
+    rather than in a comparison against a second math library.
+
+    Every trusted export is driven twice from the *same* production call
+    site, over the same inputs, into the same kernel — once through the
+    shipped ``POINTER(c_int64)`` binding, and once through a test-local
+    binding that converts each layout carrier back into the NumPy int64
+    array the checked ``ndpointer`` declaration took before H7. Nothing
+    about the C++ differs between the two runs; only the ctypes argument
+    type does. Every result is compared as raw IEEE-754 bits.
+
+    ``exp`` and ``log`` are in this comparison too, and they are **exact**
+    here — which is the point. Their platform dependence is a property of
+    the C library, not of the binding, so the moment both sides call the
+    same ``std::exp`` the bits agree perfectly."""
+    library = cpp._require_library()
+    values = np.arange(-12.0, 12.0).reshape(2, 3, 4) / 3.0
+    core = Core.from_array(values)
+    scalar = Core.full((), 2.5)
+    try:
+        trusted = _run_the_trusted_workload(core, scalar)
+
+        observed = set()
+        for name, (ndim_index, carrier_indices) in TRUSTED_EXPORTS.items():
+            checked = _checked_binding(name)
+
+            def shim(*args, _checked=checked, _n=name, _i=ndim_index,
+                     _c=carrier_indices):
+                rank = args[_i]
+                converted = list(args)
+                for position in _c:
+                    carrier = args[position]
+                    converted[position] = np.asarray(
+                        [carrier[index] for index in range(rank)],
+                        dtype=np.int64)
+                observed.add(_n)
+                return _checked(*converted)
+
+            monkeypatch.setattr(library, name, shim, raising=False)
+
+        checked_results = _run_the_trusted_workload(core, scalar)
+        monkeypatch.undo()
+    finally:
+        scalar.close()
+        core.close()
+
+    # Every trusted export really was driven through the checked binding.
+    assert observed == set(TRUSTED_EXPORTS), sorted(
+        set(TRUSTED_EXPORTS) - observed)
+    assert set(checked_results) == set(trusted)
+    for label, produced in trusted.items():
+        assert _same_bits(produced, checked_results[label]), label
+    # And no native error was raised or left behind by either binding.
+    assert library.tf_last_error_code() == cpp.TF_OK
+
+
+@needs_native
+@pytest.mark.parametrize("name", ["exp", "log"])
+def test_the_two_bindings_agree_on_the_reproducer_case(name, monkeypatch):
+    """The same two-binding comparison, on the exact array CI failed on.
+
+    The bits agree perfectly here while the NumPy comparison needs a one
+    step budget — which is the whole diagnosis in one test: the variable
+    is the math library, never the binding."""
+    library = cpp._require_library()
+    values = _reproducer_values((2, 3, 4, 5))
+    if name == "log":
+        values = np.abs(values)
+    core = Core.from_array(values)
+    transposed = core.T
+    try:
+        produced = getattr(transposed, name)()
+        try:
+            trusted = produced.to_numpy().copy()
+        finally:
+            produced.close()
+
+        export = f"tf_core_{name}"
+        checked = _checked_binding(export)
+
+        def shim(*args):
+            rank = args[5]
+            converted = list(args)
+            for position in (2, 3):
+                converted[position] = np.asarray(
+                    [args[position][index] for index in range(rank)],
+                    dtype=np.int64)
+            return checked(*converted)
+
+        monkeypatch.setattr(library, export, shim, raising=False)
+        produced = getattr(transposed, name)()
+        try:
+            through_checked = produced.to_numpy().copy()
+        finally:
+            produced.close()
+        monkeypatch.undo()
+    finally:
+        transposed.close()
+        core.close()
+    assert _same_bits(trusted, through_checked)
+    assert library.tf_last_error_code() == cpp.TF_OK
 
 
 @needs_native
