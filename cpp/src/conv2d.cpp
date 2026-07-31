@@ -34,11 +34,82 @@ inline int64_t index4d(
     return ((i0 * dim1 + i1) * dim2 + i2) * dim3 + i3;
 }
 
+// -- H9 tap-range helpers ---------------------------------------------------
+//
+// The taps a padded convolution skips are exactly the ones whose source
+// coordinate leaves the real input, and because that coordinate advances by a
+// fixed +1 per kernel step, the *kept* taps always form one contiguous run.
+// These two helpers compute that run's half-open bounds instead of testing
+// each candidate — the generic path's ``continue`` and the optimized paths'
+// loop bounds therefore skip **the identical set of taps in the identical
+// order**, which is what makes the optimized traversals order-preserving
+// rather than merely equivalent.
+//
+// Both take non-negative extents and a stride >= 1, return a half-open range
+// clamped into [0, limit], and return an empty range (lo >= hi) when no
+// position is valid. All arithmetic is signed int64 so an out-of-bounds
+// position is genuinely negative, never an unsigned wrap.
+
+// First index t >= 0 with ``t * stride + offset - pad >= 0``, i.e. the ceiling
+// of (pad - offset) / stride, clamped at 0.
+inline int64_t tap_begin(int64_t offset, int64_t pad, int64_t stride) {
+    const int64_t need = pad - offset;
+    if (need <= 0) {
+        return 0;
+    }
+    return (need + stride - 1) / stride;  // ceil, both operands positive
+}
+
+// One past the last index t with ``t * stride + offset - pad <= size - 1``,
+// clamped into [0, limit]. A negative numerator means no position is valid at
+// all; it is turned into 0 explicitly rather than left to C++ division's
+// truncation-toward-zero, so the empty case is stated rather than implied.
+inline int64_t tap_end(int64_t offset, int64_t pad, int64_t stride,
+                       int64_t size, int64_t limit) {
+    const int64_t room = size - 1 + pad - offset;
+    if (room < 0) {
+        return 0;
+    }
+    const int64_t end = room / stride + 1;
+    return (end < limit) ? end : limit;
+}
+
 }  // namespace
 
 namespace tf {
 
-void conv2d_forward_contiguous(
+// ---------------------------------------------------------------------------
+// H9 dispatch predicates. Total, pure, allocation-free, and functions of the
+// integer geometry alone; a false answer selects the retained generic path and
+// is never an error. See tf_conv2d_internal.h for the measured justification
+// of kConv2dMinSweptExtent.
+// ---------------------------------------------------------------------------
+
+bool conv2d_sweep_extent_is_worthwhile(
+    int64_t input_width, int64_t output_width) noexcept {
+    const int64_t swept =
+        (input_width < output_width) ? input_width : output_width;
+    return swept >= kConv2dMinSweptExtent;
+}
+
+bool conv2d_forward_prefers_row_sweep(
+    int64_t input_width, int64_t output_width) noexcept {
+    return conv2d_sweep_extent_is_worthwhile(input_width, output_width);
+}
+
+bool conv2d_input_backward_prefers_gather(
+    int64_t stride_height, int64_t stride_width,
+    int64_t input_width, int64_t output_width) noexcept {
+    return stride_height == 1 && stride_width == 1 &&
+           conv2d_sweep_extent_is_worthwhile(input_width, output_width);
+}
+
+bool conv2d_weight_backward_prefers_gather(
+    int64_t input_width, int64_t output_width) noexcept {
+    return conv2d_sweep_extent_is_worthwhile(input_width, output_width);
+}
+
+void conv2d_forward_generic(
     const double* input,
     const double* weight,
     const double* bias,
@@ -101,7 +172,7 @@ void conv2d_forward_contiguous(
     }
 }
 
-void conv2d_input_backward_contiguous(
+void conv2d_input_backward_generic(
     const double* grad_output,
     const double* weight,
     double* grad_input,
@@ -168,7 +239,7 @@ void conv2d_input_backward_contiguous(
     }
 }
 
-void conv2d_weight_backward_contiguous(
+void conv2d_weight_backward_generic(
     const double* grad_output,
     const double* input,
     double* grad_weight,
@@ -233,6 +304,403 @@ void conv2d_weight_backward_contiguous(
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// H9 optimized traversals.
+//
+// All three replace a short inner loop over kernel taps with a long inner
+// loop over one contiguous *spatial row*, and all three keep every
+// destination's contribution sequence exactly as the generic path produces
+// it. Nothing is reassociated, no partial sums are combined, no accumulator
+// width changes, and there is no FMA, fast-math, tree/pairwise reduction,
+// SIMD intrinsic, threading, or parallel accumulation anywhere.
+// ---------------------------------------------------------------------------
+
+void conv2d_forward_row_sweep(
+    const double* input,
+    const double* weight,
+    const double* bias,
+    double* output,
+    int64_t batch,
+    int64_t in_channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t out_channels,
+    int64_t kernel_height,
+    int64_t kernel_width,
+    int64_t stride_height,
+    int64_t stride_width,
+    int64_t pad_height,
+    int64_t pad_width,
+    int64_t output_height,
+    int64_t output_width) noexcept {
+    // Loop interchange: the generic path is n, o, i, j | c, p, q with a
+    // register accumulator; this is n, o, i | c, p, q | j accumulating into
+    // the output row. j moves from the innermost-but-three position to the
+    // innermost one, so the inner loop walks a whole output row (and, at unit
+    // stride, a whole input row) instead of kernel_width kernel taps.
+    //
+    // ACCUMULATION-ORDER PROOF. Fix one destination (n, o, i, j). The generic
+    // path seeds it with the bias, then adds the taps in ascending c, then p,
+    // then q, skipping a tap exactly when its source coordinate leaves the
+    // real input. Here the same destination is seeded with the same bias in
+    // the priming loop below, and thereafter c, p, q are *outer* to j — so the
+    // contributions reaching that one destination still arrive in ascending
+    // c, then p, then q. A tap is skipped exactly when j falls outside
+    // [tap_begin, tap_end) for its q, which is precisely the condition
+    // ``0 <= j*stride_width + q - pad_width < input_width`` the generic path
+    // tests. Same seed, same taps, same order — bit-identical by
+    // construction, on every finite value and every special value alike.
+    for (int64_t n = 0; n < batch; ++n) {
+        for (int64_t o = 0; o < out_channels; ++o) {
+            const double bias_o = (bias != nullptr) ? bias[o] : 0.0;
+            for (int64_t i = 0; i < output_height; ++i) {
+                double* out_row = output + index4d(
+                    n, o, i, 0, out_channels, output_height, output_width);
+                // Prime the whole row with the bias seed. This both starts
+                // every accumulation from the generic path's initial value
+                // and writes every element of the row, so the destination is
+                // never read before it is written (H1: the caller may hand
+                // this kernel uninitialized storage).
+                for (int64_t j = 0; j < output_width; ++j) {
+                    out_row[j] = bias_o;
+                }
+                // Kernel rows whose source row lies inside the real input.
+                const int64_t p_begin =
+                    tap_begin(i * stride_height, pad_height, 1);
+                const int64_t p_end = tap_end(
+                    i * stride_height, pad_height, 1, input_height,
+                    kernel_height);
+                for (int64_t c = 0; c < in_channels; ++c) {
+                    for (int64_t p = p_begin; p < p_end; ++p) {
+                        const int64_t ih = i * stride_height + p - pad_height;
+                        const double* in_row = input + index4d(
+                            n, c, ih, 0, in_channels, input_height,
+                            input_width);
+                        const double* w_row = weight + index4d(
+                            o, c, p, 0, in_channels, kernel_height,
+                            kernel_width);
+                        for (int64_t q = 0; q < kernel_width; ++q) {
+                            // Output columns whose source column lies inside
+                            // the real input, for this kernel column.
+                            const int64_t j_begin =
+                                tap_begin(q, pad_width, stride_width);
+                            const int64_t j_end = tap_end(
+                                q, pad_width, stride_width, input_width,
+                                output_width);
+                            if (j_begin >= j_end) {
+                                continue;  // this kernel column is all padding
+                            }
+                            const double w_value = w_row[q];
+                            // Bases taken at the first *valid* position, so no
+                            // pointer is ever formed outside its array even
+                            // when the padding would place one there.
+                            double* dst = out_row + j_begin;
+                            const double* src = in_row
+                                + j_begin * stride_width + q - pad_width;
+                            const int64_t span = j_end - j_begin;
+                            if (stride_width == 1) {
+                                for (int64_t t = 0; t < span; ++t) {
+                                    dst[t] += src[t] * w_value;
+                                }
+                            } else {
+                                for (int64_t t = 0; t < span; ++t) {
+                                    dst[t] += src[t * stride_width] * w_value;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void conv2d_input_backward_gather(
+    const double* grad_output,
+    const double* weight,
+    double* grad_input,
+    int64_t batch,
+    int64_t in_channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t out_channels,
+    int64_t kernel_height,
+    int64_t kernel_width,
+    int64_t stride_height,
+    int64_t stride_width,
+    int64_t pad_height,
+    int64_t pad_width,
+    int64_t output_height,
+    int64_t output_width) noexcept {
+    // The generic path *scatters*: it walks upstream positions and adds into
+    // whichever grad_input cell each tap lands on, so one destination is
+    // revisited from far-apart iterations. This path *gathers*: it walks
+    // grad_input rows and pulls in every contribution that belongs to them,
+    // so a destination row is written by one contiguous inner loop.
+    //
+    // Preconditions beyond the shared ones: unit stride in both axes, which
+    // the dispatch predicate guarantees.
+    //
+    // ACCUMULATION-ORDER PROOF. Fix one destination (n, c, ih, iw). The
+    // generic path visits its contributions in ascending o, then i, then j
+    // (its n, o, i, j loops are outer to the c, p, q taps, and for a fixed
+    // destination each (o, i, j) supplies at most one tap once p and q are
+    // pinned by ih and iw). At unit stride the tap indices satisfy
+    // ``p = ih + pad_height - i`` and ``q = iw + pad_width - j``, so p falls
+    // as i rises and q falls as j rises — the correspondence is one-for-one,
+    // which is exactly what unit stride buys and why a strided geometry
+    // cannot use this path. Walking o ascending, p **descending**, and q
+    // **descending** therefore enumerates the identical contributions in the
+    // identical ascending-o, ascending-i, ascending-j order. Same start value
+    // (+0.0), same taps, same order — bit-identical by construction.
+    //
+    // The stride parameters are deliberately unread: this path exists only
+    // for unit stride, the dispatch predicate is what enforces that, and
+    // silently multiplying by a stride the proof above does not hold for
+    // would be worse than not reading it. They stay in the signature so all
+    // six compute paths share one argument list.
+    (void)stride_height;
+    (void)stride_width;
+    for (int64_t n = 0; n < batch; ++n) {
+        for (int64_t c = 0; c < in_channels; ++c) {
+            for (int64_t ih = 0; ih < input_height; ++ih) {
+                double* grad_row = grad_input + index4d(
+                    n, c, ih, 0, in_channels, input_height, input_width);
+                // Zero this destination row. Every (n, c, ih) is visited, so
+                // the whole grad_input span is written exactly as the generic
+                // path's leading zero-fill writes it, and a cell that receives
+                // no contribution keeps the same +0.0.
+                for (int64_t t = 0; t < input_width; ++t) {
+                    grad_row[t] = 0.0;
+                }
+                for (int64_t o = 0; o < out_channels; ++o) {
+                    for (int64_t p = kernel_height - 1; p >= 0; --p) {
+                        const int64_t i = ih + pad_height - p;
+                        if (i < 0 || i >= output_height) {
+                            continue;  // no upstream row supplies this tap
+                        }
+                        const double* g_row = grad_output + index4d(
+                            n, o, i, 0, out_channels, output_height,
+                            output_width);
+                        const double* w_row = weight + index4d(
+                            o, c, p, 0, in_channels, kernel_height,
+                            kernel_width);
+                        for (int64_t q = kernel_width - 1; q >= 0; --q) {
+                            // j = iw + pad_width - q must lie in [0,
+                            // output_width), so iw runs over one contiguous
+                            // run clamped into [0, input_width).
+                            int64_t lo = q - pad_width;
+                            if (lo < 0) {
+                                lo = 0;
+                            }
+                            int64_t hi = output_width - 1 + q - pad_width;
+                            if (hi > input_width - 1) {
+                                hi = input_width - 1;
+                            }
+                            if (lo > hi) {
+                                continue;
+                            }
+                            const double w_value = w_row[q];
+                            double* dst = grad_row + lo;
+                            const double* src = g_row + (lo + pad_width - q);
+                            const int64_t span = hi - lo + 1;
+                            for (int64_t t = 0; t < span; ++t) {
+                                dst[t] += src[t] * w_value;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void conv2d_weight_backward_gather(
+    const double* grad_output,
+    const double* input,
+    double* grad_weight,
+    int64_t batch,
+    int64_t in_channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t out_channels,
+    int64_t kernel_height,
+    int64_t kernel_width,
+    int64_t stride_height,
+    int64_t stride_width,
+    int64_t pad_height,
+    int64_t pad_width,
+    int64_t output_height,
+    int64_t output_width) noexcept {
+    // The generic path scatters into grad_weight from every upstream
+    // position; this path owns one destination at a time and gathers the
+    // whole sum for it into a register, so the destination is written once
+    // instead of being read-modify-written batch*output_height*output_width
+    // times.
+    //
+    // ACCUMULATION-ORDER PROOF. Fix one destination (o, c, p, q). The generic
+    // path's outer loops are n, o, i, j and its taps c, p, q, so that
+    // destination's contributions arrive in ascending n, then i, then j —
+    // which is exactly this nest's n, i, j order. The generic path skips a
+    // contribution when its source coordinate leaves the real input; here the
+    // same contributions are skipped by the [i_begin, i_end) and [j_begin,
+    // j_end) ranges, which are that same condition solved for i and j. The
+    // register accumulator starts at 0.0, the same value the generic path's
+    // zero-filled destination starts from, and is stored once at the end.
+    // Same start value, same taps, same order — bit-identical by
+    // construction. Because every destination is assigned, this path needs no
+    // separate zero-fill and never reads its destination (H1).
+    for (int64_t o = 0; o < out_channels; ++o) {
+        for (int64_t c = 0; c < in_channels; ++c) {
+            for (int64_t p = 0; p < kernel_height; ++p) {
+                // Upstream rows whose source row lies inside the real input.
+                // Depends only on p, so it is hoisted above the batch loop.
+                const int64_t i_begin = tap_begin(p, pad_height, stride_height);
+                const int64_t i_end = tap_end(
+                    p, pad_height, stride_height, input_height, output_height);
+                for (int64_t q = 0; q < kernel_width; ++q) {
+                    const int64_t j_begin =
+                        tap_begin(q, pad_width, stride_width);
+                    const int64_t j_end = tap_end(
+                        q, pad_width, stride_width, input_width, output_width);
+                    double acc = 0.0;
+                    if (j_begin < j_end) {
+                        const int64_t span = j_end - j_begin;
+                        for (int64_t n = 0; n < batch; ++n) {
+                            for (int64_t i = i_begin; i < i_end; ++i) {
+                                const int64_t ih =
+                                    i * stride_height + p - pad_height;
+                                const double* g_row = grad_output + index4d(
+                                    n, o, i, j_begin, out_channels,
+                                    output_height, output_width);
+                                const double* in_row = input + index4d(
+                                    n, c, ih,
+                                    j_begin * stride_width + q - pad_width,
+                                    in_channels, input_height, input_width);
+                                if (stride_width == 1) {
+                                    for (int64_t t = 0; t < span; ++t) {
+                                        acc += g_row[t] * in_row[t];
+                                    }
+                                } else {
+                                    for (int64_t t = 0; t < span; ++t) {
+                                        acc += g_row[t]
+                                             * in_row[t * stride_width];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    grad_weight[index4d(
+                        o, c, p, q, in_channels, kernel_height,
+                        kernel_width)] = acc;
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Dispatchers. These are the entry points the exported wrappers call; each
+// picks a compute path from the integer geometry it already holds and calls
+// it. No state is consulted or kept, and a rejected predicate is a fallback,
+// never an error.
+// ---------------------------------------------------------------------------
+
+void conv2d_forward_contiguous(
+    const double* input,
+    const double* weight,
+    const double* bias,
+    double* output,
+    int64_t batch,
+    int64_t in_channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t out_channels,
+    int64_t kernel_height,
+    int64_t kernel_width,
+    int64_t stride_height,
+    int64_t stride_width,
+    int64_t pad_height,
+    int64_t pad_width,
+    int64_t output_height,
+    int64_t output_width) noexcept {
+    if (conv2d_forward_prefers_row_sweep(input_width, output_width)) {
+        conv2d_forward_row_sweep(
+            input, weight, bias, output, batch, in_channels, input_height,
+            input_width, out_channels, kernel_height, kernel_width,
+            stride_height, stride_width, pad_height, pad_width, output_height,
+            output_width);
+        return;
+    }
+    conv2d_forward_generic(
+        input, weight, bias, output, batch, in_channels, input_height,
+        input_width, out_channels, kernel_height, kernel_width, stride_height,
+        stride_width, pad_height, pad_width, output_height, output_width);
+}
+
+void conv2d_input_backward_contiguous(
+    const double* grad_output,
+    const double* weight,
+    double* grad_input,
+    int64_t batch,
+    int64_t in_channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t out_channels,
+    int64_t kernel_height,
+    int64_t kernel_width,
+    int64_t stride_height,
+    int64_t stride_width,
+    int64_t pad_height,
+    int64_t pad_width,
+    int64_t output_height,
+    int64_t output_width) noexcept {
+    if (conv2d_input_backward_prefers_gather(
+            stride_height, stride_width, input_width, output_width)) {
+        conv2d_input_backward_gather(
+            grad_output, weight, grad_input, batch, in_channels, input_height,
+            input_width, out_channels, kernel_height, kernel_width,
+            stride_height, stride_width, pad_height, pad_width, output_height,
+            output_width);
+        return;
+    }
+    conv2d_input_backward_generic(
+        grad_output, weight, grad_input, batch, in_channels, input_height,
+        input_width, out_channels, kernel_height, kernel_width, stride_height,
+        stride_width, pad_height, pad_width, output_height, output_width);
+}
+
+void conv2d_weight_backward_contiguous(
+    const double* grad_output,
+    const double* input,
+    double* grad_weight,
+    int64_t batch,
+    int64_t in_channels,
+    int64_t input_height,
+    int64_t input_width,
+    int64_t out_channels,
+    int64_t kernel_height,
+    int64_t kernel_width,
+    int64_t stride_height,
+    int64_t stride_width,
+    int64_t pad_height,
+    int64_t pad_width,
+    int64_t output_height,
+    int64_t output_width) noexcept {
+    if (conv2d_weight_backward_prefers_gather(input_width, output_width)) {
+        conv2d_weight_backward_gather(
+            grad_output, input, grad_weight, batch, in_channels, input_height,
+            input_width, out_channels, kernel_height, kernel_width,
+            stride_height, stride_width, pad_height, pad_width, output_height,
+            output_width);
+        return;
+    }
+    conv2d_weight_backward_generic(
+        grad_output, input, grad_weight, batch, in_channels, input_height,
+        input_width, out_channels, kernel_height, kernel_width, stride_height,
+        stride_width, pad_height, pad_width, output_height, output_width);
 }
 
 }  // namespace tf

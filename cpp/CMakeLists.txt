@@ -478,4 +478,29 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME elementwise_traversal COMMAND test_elementwise_traversal)
+
+  # Conv2d compute paths and their H9 dispatch: compiles conv2d.cpp directly
+  # so it can reach the hidden tf::conv2d_*_prefers_* predicates and BOTH
+  # compute paths per direction — the retained Phase-D generic loops and the
+  # H9 optimized traversals — none of which the shared library exports. That
+  # is what proves which path a geometry takes, and that the two agree bit
+  # for bit, without adding any dispatch control to the shipped ABI.
+  # error.cpp is compiled in for the same reason as the D2/D4/D5 targets:
+  # conv2d.cpp carries the guarded exported wrappers, which reference the
+  # thread-local error slot.
+  add_executable(test_conv2d_execution
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_conv2d_execution.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_conv2d_execution PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_conv2d_execution PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_conv2d_execution PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_conv2d_execution PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME conv2d_execution COMMAND test_conv2d_execution)
 endif()

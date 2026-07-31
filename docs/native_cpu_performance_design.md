@@ -5174,16 +5174,425 @@ with versions `(1, 2)` supported.
 
 ---
 
-## 16.9 Remaining ladder detail
+## 16.9 H9 — Conv2d execution efficiency, as shipped
 
-**The ladder was reordered at H5** (§16.5.0) and **revised again at H7**
-(§16.7.0). Reduction execution, drafted as H5, became H6 and has shipped
-(§16.6); the composed-module milestone drafted as H7 was **dropped on
-evidence** and replaced by the Python/C ABI boundary, which has shipped
-(§16.7). H8 has now shipped too (§16.8), and it is where the composed
-normalization cost was finally addressed — from the elementwise side,
-which is what the evidence supported. The conditional slots after it
-keep their numbers.
+### 16.9.0 Why convolution, and why now
+
+H0's ladder did not name a convolution milestone. This one was chosen
+from the evidence the earlier milestones produced, and the reasoning is
+recorded here rather than retrofitted into the original plan.
+
+Four measurements pointed at it together. H6 made reductions 3.2×–10.9×
+faster and left **every training step neutral**, the CNN step included.
+H7 moved every training step 1.08×–1.32× by fixing the ctypes boundary,
+and the CNN step's 1.30× came entirely from its *many small* calls, not
+from convolution. H8 made elementwise traversal 1.7×–10.6× faster, moved
+the normalization modules 1.21×–1.40× — and the **CNN step stayed neutral
+at 0.99×**, because a convolution step's time is in `tf_core_conv2d_*`,
+which H8 did not touch. And `tf_core_conv2d_*` had not been touched by
+anything: the three kernels were the Phase-D direct loops, unchanged
+since D2–D5, while matmul, copy, reduction, and elementwise had each been
+revisited.
+
+So convolution was the last large compute family still running its
+original correctness-first implementation, and it had become the majority
+of the one workload Phase H had never moved.
+
+### 16.9.1 The pre-H9 architecture, as read from the source
+
+All three kernels shared one shape. The loop nest was
+
+```
+n, o, i, j   (outer)   |   c, p, q   (inner)
+```
+
+with the padded source coordinate recomputed and bounds-tested inside the
+inner loops, and every array access going through a full four-term
+`index4d` multiply chain.
+
+- **Forward** accumulated into a register seeded with the bias, then
+  assigned `output[n,o,i,j]`.
+- **Input gradient** zero-filled the whole `grad_input` span, then
+  *scattered*: `grad_input[n,c,ih,iw] += g * weight[o,c,p,q]`.
+- **Weight gradient** zero-filled the whole `grad_weight` span, then
+  scattered: `grad_weight[o,c,p,q] += g * input[n,c,ih,iw]`.
+
+Three structural costs follow from that shape. The innermost loop runs
+`kernel_width` iterations — typically **3** — so loop overhead is a large
+fraction of the work and nothing vectorizes. The row bound `ih` depends
+only on `(i, p)` yet is recomputed for every input channel. And both
+gradients read-modify-write a destination that far-apart iterations
+revisit.
+
+### 16.9.2 Attribution: the kernel is essentially all of it
+
+Measured first, on the current post-H8 code, by timing the complete Core
+wrapper against the bare foreign call on identical pre-allocated
+storage:
+
+| geometry | forward, full wrapper | raw native call | wrapper share |
+| --- | --- | --- | --- |
+| `(4,1,6,6) → 2`, k2×2 | 11.9 µs | 4.0 µs | 66 % |
+| `(4,1,8,8) → 4`, k3×3 | 18.1 µs | 10.3 µs | 43 % |
+| `(8,3,16,16) → 8`, k3×3 | 449.5 µs | 448.8 µs | **0.2 %** |
+| `(16,8,32,32) → 16`, k3×3 | 21,022 µs | 21,063 µs | **≈ 0 %** |
+| `(8,16,32,32) → 32`, k3×3 | 45,947 µs | 48,146 µs | **≈ 0 %** |
+
+The Python wrapper is a fixed ≈ 8–12 µs. It dominates only the toy
+shapes; for any convolution with real work the compiled traversal is
+**essentially 100 %** of the cost. This is H6's finding, not H3's: the
+target was the C++ loop, and nothing else in H9 would have been worth
+doing.
+
+*Directly measured.* The bias gradient was checked in the same pass and
+is **not** material — it is three chained `sum` reductions that H6
+already made 3.9×–4.1× faster, and it is a `(O,)`-sized result beside two
+full-tensor gradients. **H9 changes nothing about it**, and that is a
+negative result, not an oversight.
+
+### 16.9.3 Candidates measured
+
+A standalone MSVC-Release harness compiled each candidate beside the
+shipped reference and **verified every result bit-identical before timing
+it**. Three survived to a decision:
+
+| candidate | forward | input grad | weight grad |
+| --- | --- | --- | --- |
+| Hoisted bounds + tap ranges, same loop nest | 1.5×–3.7× | — | — |
+| **Row sweep / gather (shipped)** | **3.7×–7.7×** | **4.3×–8.7×** | **3.1×–6.7×** |
+| …at a swept extent of 1 | **0.57×** | **0.72×** | **0.93×** |
+
+The hoisted variant never regresses but caps out around 2×. The sweep and
+gather are worth far more where there is room to sweep and **cost** where
+there is not, which is what produced the predicate rather than a
+threshold chosen for taste:
+
+| swept extent | forward | input grad | weight grad |
+| --- | --- | --- | --- |
+| 1 | 0.57× | 0.72× | 0.93× |
+| 2 | 1.04× | 1.38× | 1.29× |
+| 4 | **1.91×** | **2.40×** | **2.31×** |
+
+Four is the smallest extent at which all three are clearly ahead.
+
+**Rejected, with reasons.** *Im2col + matmul*: rejected outright — it
+changes the accumulation order (the whole point of reusing H2's matmul is
+its own summation order), and it would allocate a
+`C·kh·kw × out_h·out_w` buffer, which for the profile shape is 8× the
+input. Neither cost is acceptable for a milestone whose contract is exact
+order preservation. *A materialized padded input*: rejected — it moves
+cost rather than removing it, and the tap-range helpers give the same
+branch-free inner loop with no allocation at all. *Output-channel
+blocking*: not pursued once the row sweep landed, because the sweep
+already turns the inner loop into a long unit-stride run and blocking `o`
+would reintroduce a tuning constant for a second-order gain. *A third
+"hoisted" path for small extents*: rejected on architecture — it would
+have left the Phase-D reference unreachable, and the shapes it helps cost
+microseconds.
+
+### 16.9.4 What shipped
+
+The dispatch shape H2, H5, H6, and H8 each proved: **one hidden predicate,
+inside the existing export, no new symbol, the pre-milestone traversal
+retained**. `cpp/include/tf_conv2d_internal.h` declares three predicates
+and six compute functions; `cpp/src/conv2d.cpp` defines them and the three
+`*_contiguous` entry points became dispatchers.
+
+- `tf::conv2d_forward_generic`, `tf::conv2d_input_backward_generic`,
+  `tf::conv2d_weight_backward_generic` — **the Phase-D direct loops,
+  retained verbatim** as the shipped generic reference paths, reachable
+  through ordinary production dispatch and the oracle every optimized
+  result is compared against.
+- `tf::conv2d_forward_row_sweep` — the loop nest becomes
+  `n, o, i | c, p, q | j`, accumulating into the output row, which the
+  bias primes.
+- `tf::conv2d_input_backward_gather` — walks `grad_input` rows and gathers
+  what belongs to them, instead of scattering.
+- `tf::conv2d_weight_backward_gather` — owns one destination at a time and
+  sums it into a register, so the destination is written **once** instead
+  of `batch·out_h·out_w` times.
+
+Two file-local helpers, `tap_begin` and `tap_end`, compute the half-open
+run of kernel taps whose source coordinate lies inside the real input.
+**That run is always contiguous**, because the source coordinate advances
+by a fixed step per kernel index — which is exactly why solving for the
+range and testing each candidate skip the identical taps.
+
+**Fast-path preconditions.** One shared rule plus one direction-specific
+one:
+
+```
+min(input_width, output_width) >= 4          (all three)
+stride_height == 1 && stride_width == 1      (input gradient only)
+```
+
+`min(input_width, output_width)` is used because it is the honest bound on
+all three inner loops: the run of output columns is limited by
+`output_width`, and the input columns those map to by `input_width`.
+Keying the input gradient on `input_width` alone **was measured wrong** —
+a 5-wide input with a 1-wide output sweeps a single element and ran
+**0.73×** — and the shared helper exists so the three predicates cannot
+drift apart. The predicates are total, pure, allocation-free, and
+functions of the integer geometry alone: never a pointer value, an
+alignment, a clock, an environment variable, or a CPU-feature probe. **A
+false answer selects the generic path and is never an error.**
+
+**Why the input gradient alone requires unit stride.** For a destination
+`(n,c,ih,iw)` the generic path visits contributions in ascending `o`,
+then `i`, then `j`. At unit stride the tap indices satisfy
+`p = ih + pad_h − i` and `q = iw + pad_w − j`, so `p` falls as `i` rises
+and `q` falls as `j` rises — a one-for-one correspondence. Walking `o`
+ascending with `p` and `q` **descending** therefore enumerates the
+identical contributions in the identical order. At any other stride that
+correspondence needs a divisibility test and the clean inversion is gone,
+so the gather cannot reproduce the reference's order and the geometry
+falls back. **The forward and weight gradient have no such restriction**
+and take their optimized paths at every stride. This asymmetry is
+deliberate and is exactly the shape the milestone permitted.
+
+### 16.9.5 Accumulation-order proofs
+
+**Forward.** Fix `(n,o,i,j)`. The generic path seeds it with the bias and
+adds taps in ascending `c`, `p`, `q`, skipping a tap when its source
+coordinate leaves the input. The sweep primes the same destination with
+the same bias, and `c`, `p`, `q` are *outer* to `j`, so contributions
+still arrive in ascending `c`, `p`, `q`; a tap is skipped exactly when `j`
+falls outside `[tap_begin, tap_end)`, which is the same condition. Same
+seed, same taps, same order.
+
+**Input gradient.** As derived in §16.9.4: ascending `o` with descending
+`p`, `q` is ascending `o`, `i`, `j`. Both start from `+0.0`.
+
+**Weight gradient.** Fix `(o,c,p,q)`. The generic path's outer loops are
+`n, o, i, j`, so that destination's contributions arrive in ascending `n`,
+`i`, `j` — which is precisely the gather's nest. The register accumulator
+starts at `0.0`, the value the zero-filled destination starts from, and is
+stored once.
+
+Nothing is reassociated. No partial sums are combined, no accumulator
+width changes, and there is no FMA, fast-math, tree or pairwise reduction,
+parallel accumulation, SIMD intrinsic, or threading anywhere.
+
+### 16.9.6 The numerical contract, measured rather than inherited
+
+Established against a **pre-H9 library built from identical sources with
+only `conv2d.cpp` restored**, driven through identical `ctypes` calls.
+
+**Contractual.**
+
+1. **Every non-NaN result is bit-identical.** Across every ordered pair of
+   16 IEEE-754 representatives — signed zeros, ±∞, quiet NaNs of both
+   signs, a signalling NaN, two distinct payloads, the smallest subnormal,
+   the smallest normal, the largest finite magnitude — planted in the
+   input, weight, bias, and upstream, over all three directions:
+   **256 pairs × 3 directions, zero non-NaN differences.**
+2. **NaN positions are identical**, in all 768 of those comparisons.
+3. **With at most one NaN reaching a destination the paths agree exactly,
+   payload included** — 480 single-NaN configurations across five
+   geometries (padded, unpadded, stride-2, 1×1, and a fallback geometry):
+   **zero differences.**
+4. **Signed zeros are bit-identical** — 80 sign-pattern configurations
+   across five geometries: zero differences. `−0.0` survives only while
+   every addend is `−0.0`; one `+0.0` makes the sum `+0.0`. Both halves
+   are asserted, on both paths, because the sweep replaces a register
+   accumulator with an accumulate-into-memory sequence and the weight
+   gather replaces an accumulate-into-memory sequence with a register —
+   exactly the rewrites that could have changed a zero's sign.
+5. **Signalling NaN inputs are quieted**, identically on both paths, and
+   every NaN either path produces is quiet.
+
+**Not contractual.** When **two or more** NaNs reach one destination the
+surviving payload may differ, and this is asserted in neither direction:
+20/256 pairs (forward), 20/256 (input gradient), 29/256 (weight gradient)
+— and in every one of those, the only differing cells are cells where both
+paths produced a NaN. This is the same qualification H2 and H6 each
+recorded, for the same reason (which addend x86-64's `ADDSD` leaves in the
+destination register is an instruction-selection decision C++ cannot
+express), and it is **measured here rather than assumed from them**.
+
+### 16.9.7 H1 allocation
+
+Audited per destination, and H1's decisions stand:
+
+| destination | initialization | why |
+| --- | --- | --- |
+| forward output | **uninitialized** | the sweep primes every element of every output row with the bias before accumulating, so the destination is fully written and never read first |
+| input gradient | **uninitialized** | the gather zeroes each `(n,c,ih)` row itself, and every row is visited — exactly as the generic path's leading zero-fill does |
+| weight gradient | **uninitialized** | the gather *assigns* every destination from a register, so it needs no zero-fill and never reads the destination at all |
+
+Proved by poison in two places: the C++ suite hands each optimized path a
+destination pre-filled with a quiet NaN carrying a distinctive payload and
+with a large finite value, and requires bit-identical output to a clean
+run over the whole geometry matrix; and the Python suite injects the same
+two patterns **through the real private allocation seam** for both the
+optimized and the fallback geometries. Both carry a **negative control**
+proving the detector can fail.
+
+### 16.9.8 What did not change
+
+Layout handling is exactly Policy B: the C ABI takes contiguous storage
+only, and the Core layer materializes any non-contiguous operand into a
+private copy closed as soon as the call returns. **H9 is a geometry
+optimization, not a layout one**, and it broadened layout support by
+nothing. Supported input rank, weight rank, NCHW/OIHW layouts, stride and
+padding semantics, the absence of dilation and groups, the output-shape
+formula, every error type and message, and every validation ordering are
+untouched.
+
+Autograd is untouched: the same parent topology, the same conditional
+version tracking, gradients created only for parents that require them,
+no graph-owned saved resources (convolution rereads its parents' values,
+which is why it records expected versions at all), and the same
+`retain_graph`, repeated-backward, accumulation, and cleanup behaviour.
+Nothing became in-place; every kernel still writes only a freshly
+allocated destination.
+
+**Memory did not move, and that is asserted rather than assumed.** The
+same workload measured on both libraries reports **byte-identical**
+allocation counts, peak live storages, and peak bytes: a forward is 1
+allocation / 921,600 peak bytes, an input gradient 1 / 524,288, a weight
+gradient 1 / 9,216, a `NativeConv2d` forward+backward 8 / 3,020,160, and a
+CNN training step 94 allocations / 34 peak live / 604,848 peak bytes —
+identical before and after. There is **no scratch buffer, workspace,
+arena, pool, padded copy, or im2col allocation anywhere**.
+
+### 16.9.9 Measured results
+
+Kernel level, against the pre-H9 library on identical `ctypes` calls, every
+case **proved bit-identical before either side was timed**, 11 alternating
+rounds. The two fallback geometries run identical code on both libraries
+and are therefore the control: they read **1.00×–1.13×**.
+
+| geometry | forward | input grad | weight grad |
+| --- | --- | --- | --- |
+| `(8,16,32,32) → 16`, k1×1 | **6.23×** | **8.37×** | **5.40×** |
+| `(8,16,32,32) → 32`, k3×3 | 3.64× | 5.04× | 2.60× |
+| `(16,8,32,32) → 16`, k3×3 | 3.32× | 5.28× | 2.47× |
+| `(8,8,32,32) → 16`, k3×3, pad 1 | 2.91× | 4.97× | 2.54× |
+| `(8,3,16,16) → 8`, k3×3 | 2.87× | 3.75× | 2.45× |
+| `(3,7,23,29) → 13`, k3×3, pad 1 | 2.61× | 4.57× | 2.77× |
+| `(8,8,32,32) → 16`, k3×3, **stride 2** | 2.41× | *1.04× (falls back)* | 2.41× |
+| `(4,4,24,40) → 8`, k3×5 | 2.30× | 3.76× | 2.22× |
+| `(4,8,32,32) → 16`, k5×5 | 1.97× | 3.84× | 2.09× |
+| `(4,1,8,8) → 4`, k3×3 | 1.08× | 1.31× | 1.88× |
+| ***fallback, swept extent 1 (control)*** | *1.00×* | *1.00×* | *1.11×* |
+| ***fallback, swept extent 3 (control)*** | *1.12×* | *1.13×* | *1.03×* |
+
+End to end, 9 alternating **subprocess** rounds over 23 cases, every
+checksum identical across both libraries before any timing:
+
+| case | ratio |
+| --- | --- |
+| `NativeConv2d` forward+backward, `(8,8,32,32) → 16` pad 1 | **3.13×** |
+| `NativeConv2d` forward+backward, `(8,8,32,32) → 16` | **3.09×** |
+| `NativeConv2d` forward, `(8,8,32,32) → 16` | **2.98×** |
+| `NativeConv2d` forward, no bias | 2.46× |
+| `NativeConv2d` forward, frozen parameters | 2.40× |
+| `NativeConv2d` forward, stride 2 | 2.28× |
+| **CNN training step, `(8,3,32,32) → 16`** | **1.86×** |
+| **CNN training step, `(8,3,16,16) → 8`** | **1.38×** |
+| CNN training step with Dropout | 1.27× |
+| **CNN training step, the shipped example's shape** | **1.13×** |
+| CNN training step with BatchNorm2d | 1.11× |
+
+**Reported just as honestly.** A **small convolution is neutral** —
+`(4,1,8,8) → 4` reads 1.06× forward and 1.20× forward+backward, because
+below roughly a thousand output elements the fixed ≈ 10 µs Python and
+ctypes cost dominates, which is H3's, H5's, H6's, and H8's documented
+boundary finding, unchanged. The **BatchNorm2d and shipped-example CNN
+steps move least** (1.11×, 1.13×), because convolution is a smaller share
+of those steps. And the **strided input gradient is 1.04×** — it falls
+back by design, and that row is the measurement showing the fallback
+really is taken.
+
+**Controls did not regress.** At 21 alternating rounds: matmul 256³
+**0.98×**, MLP training step **0.97×**, `contiguous_copy` 512² **1.01×**,
+reduction **1.07×**, broadcast elementwise **1.07×** — a control band of
+**0.97×–1.07×**. One methodology finding is published rather than buried:
+at 9 rounds the elementwise control read **0.93×** and looked like a
+regression, and at 21 rounds the same case read **1.07×**. That is the
+lesson H3, H5, and H6 each recorded, and no low-round figure is quoted as
+H9 evidence.
+
+### 16.9.10 Validation
+
+Windows **Release** and **Debug**, both out-of-source and the Debug
+library written outside the repository so the active runtime stayed the
+Release DLL: **17/17 CTests each**, zero project compiler, linker, and
+CMake warnings. (The Debug build reports MSB8029 warnings about its
+*output directory*, which is a property of where this build was placed,
+not of the code.)
+
+Clang 18.1.3 `-DTF_SANITIZE=address,undefined` in WSL2 Ubuntu 24.04.4,
+with **instrumentation proved** — `nm -D` shows 22 `__asan*` and 15
+`__ubsan*` dynamic symbols beside the **52** exported `tf_*` symbols,
+independently confirming the export count on a second toolchain, and the
+library refuses to load without the sanitizer runtime. **17/17 sanitized
+CTests**; **445 sanitized convolution, CNN, Phase-D, and H1-allocation
+tests**; and the full sanitized native suite with **zero ASan and zero
+UBSan diagnostics**. The shipped CNN and classification examples reproduce
+their exact checkpoint resumes under the sanitized library, and the
+harness's convolution workload passes all seven correctness gates.
+
+A **sanitizer negative control** makes that absence real rather than
+blind: test-only code handing `tf::conv2d_forward_row_sweep` an input
+buffer one row shorter than its declared geometry produces a
+`heap-buffer-overflow`, `READ of size 8`, `0 bytes after 448-byte region`,
+inside `conv2d_forward_row_sweep` — so ASan demonstrably instruments the
+new traversal.
+
+A LeakSanitizer lifecycle returns native live storage **exactly to
+baseline (0)** at every checkpoint: five rounds of core forward plus both
+gradients over four geometries (optimized *and* fallback), five module
+forward/backward cycles, seven injected-allocation-failure cycles, five
+abandoned graphs, and two complete CNN training runs. The remaining
+process-exit allocations contain **no TensorForge frame** — only CPython,
+libc, NumPy, `_ctypes`, and the ASan runtime — with **no suppression file
+added**.
+
+### 16.9.11 Scope
+
+**No exported C ABI symbol was added; the library still exports exactly
+52 `tf_*` symbols.** No new translation unit. No public control of any
+kind — no path selector, block-size setter, traversal control, dispatch
+tracer, benchmark hook, profiling counter, environment variable, or
+"which path ran" query. No SIMD, threading, OpenMP, BLAS, oneDNN, Eigen,
+memory pool, scratch workspace, im2col, or fast-math. No public API,
+registry value, dtype, device, checkpoint field, or checkpoint version
+moved: `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
+`SUPPORTED_DTYPES` `("float64",)`, `SUPPORTED_DEVICES` `("cpu",)`, and the
+checkpoint format is still `tensorforge.native_checkpoint` version 2 with
+versions `(1, 2)` supported. No convolution option was added: no dilation,
+no groups, no channels-last, no new padding mode.
+
+The harness gained **three** cases, 38 to **41** —
+`conv2d_forward_padded`, `conv2d_forward_strided`, and
+`conv2d_forward_fallback` — following the separate-rather-than-average
+precedent H5, H6, H7, and H8 each set, because unlike those milestones the
+chooser here is the *geometry* rather than the layout. All three are
+`native_only` and publish **no ratio**; the fallback case is the
+convolution family's control, since its compiled path did not change.
+Native CTests 16 to **17**.
+
+---
+
+## 16.10 Remaining ladder detail
+
+**The ladder was reordered at H5** (§16.5.0), **revised again at H7**
+(§16.7.0), and **extended at H9** (§16.9.0). Reduction execution, drafted
+as H5, became H6 and has shipped (§16.6); the composed-module milestone
+drafted as H7 was **dropped on evidence** and replaced by the Python/C ABI
+boundary, which has shipped (§16.7). H8 has now shipped too (§16.8), and it
+is where the composed normalization cost was finally addressed — from the
+elementwise side, which is what the evidence supported.
+
+**H9 was not in H0's ladder at all.** It was chosen because H6, H7, and H8
+together showed convolution had become the majority of the one workload
+Phase H had never moved, while `tf_core_conv2d_*` was the last large
+compute family still running its unmodified Phase-D implementation. §16.9.0
+records that reasoning as the evidence-driven revision it is, rather than
+rewriting the original ladder as though convolution had always been H9. The
+conditional slots after it keep their numbers.
 
 ### ~~H7~~ — Composed-module cost *(dropped on evidence; see §16.7.0)*
 
@@ -5254,27 +5663,40 @@ composed-normalization allocation work the dropped H7 had left as
 conditional scope — as **Track B**, which shipped as a memory result and
 is honestly reported as timing-neutral (§16.8.5).
 
-### H9 — SIMD, threading, or optional BLAS *(conditional, presumed rejected)*
+### ~~H9~~ — SIMD, threading, or optional BLAS *(slot reassigned; the acceleration decision moved to H10)*
 
-Entered only under §11, §12, or §13 respectively. On current evidence
-**none of the three qualifies**, and the honest expectation is that H9
-ships as a *documented rejection with measurements* rather than as code.
-That is a legitimate outcome for this milestone.
+H0 pencilled this slot in as *conditional and presumed rejected*, to be
+entered only under §11, §12, or §13. It was **not** entered, for two
+reasons recorded here rather than quietly dropped.
 
-### H10 — Re-measurement, hardening, and sanitizer validation
+First, none of the three qualified on the evidence, exactly as H0
+predicted — and nothing measured since has reopened any of the criteria.
+
+Second, and decisively, a **larger and safer** result was available in the
+same slot: H6, H7, and H8 had left convolution as the majority of the one
+workload Phase H had never moved, and `tf_core_conv2d_*` was still running
+its unmodified Phase-D implementation. Spending the slot on a traversal
+rewrite that preserves exact accumulation order was worth more than
+spending it on writing down a rejection — and the convolution work
+measured 2–8× at the kernel and up to 1.86× on a CNN training step
+(§16.9.9). So H9 became **Conv2d execution efficiency** (§16.9), and the
+acceleration decision moved to H10's decision gate, where it is a decision
+rather than an implementation.
+
+### H10 — Integration, re-measurement, the acceleration decision, and closure
 
 The full H0 harness re-run and compared against the H0 baseline;
 cross-cutting integration tests; adversarial failure-atomicity and
 ownership matrices over whatever H1–H9 changed; Windows Release and
 Debug builds with the full CTest suite; the Clang ASan/UBSan matrix with
 instrumentation proved; LeakSanitizer returning live storage exactly to
-baseline.
-
-### H11 — Phase closure
-
-Documentation reconciliation across every status surface, durable
-semantic closure guardrails, and the support matrix updated. No new
-numerical capability.
+baseline. It also carries the **acceleration decision gate** inherited
+from the reassigned H9 slot — SIMD, threading, and optional BLAS, each
+either entered under its own §11/§12/§13 criterion or **published as a
+documented rejection with measurements**. And it carries phase closure:
+documentation reconciliation across every status surface, durable semantic
+closure guardrails, and the support matrix updated. No new numerical
+capability.
 
 ---
 

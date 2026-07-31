@@ -1037,6 +1037,36 @@ explicit layer at a time:
   fast-math, or `restrict`. No public API, capability, dtype, device,
   registry value, checkpoint field, or checkpoint version moved.
 
+  **Milestone H9 — native Conv2d execution efficiency — has since shipped**,
+  the fifth Phase-H milestone to change C++ and, like H2/H5/H6/H8, **not the
+  ABI**: still exactly **52** exported `tf_*` symbols. **It was not in H0's
+  ladder** — that slot held SIMD/threading/BLAS, *conditional and presumed
+  rejected*; none qualified, so the acceleration decision moved to H10's
+  decision gate and the slot went to the last large compute family still
+  running its unmodified Phase-D implementation. Measurement decided it:
+  the Python wrapper is a fixed ≈ 8–12 µs — **66 %** of a toy `(4,1,6,6)`
+  convolution but **≈ 0 %** at `(16,8,32,32)` — so the compiled traversal is
+  essentially **100 %** of any real convolution. Each of the three exports
+  now ships two paths behind one unchanged symbol: the **Phase-D direct loop
+  retained verbatim** as the generic reference, and one optimized traversal
+  — a forward row sweep, and gathers for both gradients — chosen by a hidden
+  predicate from the integer geometry alone
+  (`min(input_width, output_width) >= 4`, plus **unit stride** for the input
+  gradient, whose downward kernel walk inverts one-for-one only there). **A
+  false answer is a fallback, never an error**, and **per-destination
+  accumulation order is preserved exactly in all three directions**, each
+  separately proved. Measured against a pre-H9 library on identical `ctypes`
+  calls, bit-identical before timing: kernels **1.97×–8.37×**, `NativeConv2d`
+  forward+backward **3.09×–3.13×**, and **a CNN training step 1.86×** —
+  **the first Phase-H milestone to move one**. Honestly reported: small
+  convolutions are neutral (1.06×), the strided input gradient falls back by
+  design (1.04×), and no control regressed (band **0.97×–1.07×**). Memory is
+  **byte-identical**; there is no scratch, workspace, im2col, or padded copy
+  anywhere. The harness gained three cases, 38 to **41**, and the native
+  CTests 16 to **17**. No public API, capability, dtype, device, registry
+  value, checkpoint field, or checkpoint version moved, and no convolution
+  option was added.
+
 The execution path for a native training step is:
 
 ```

@@ -1935,18 +1935,40 @@ def _conv_shapes(config):
             config["width"], config["out_channels"], config["kernel"])
 
 
-def _numpy_conv2d_forward(images, weight, bias):
+def _conv_geometry(config):
+    """``stride`` and ``padding`` are optional and default to the Phase-D
+    baseline (unit stride, no padding), so the four original convolution
+    cases are unchanged. H9 added cases that set them, because the
+    convolution kernels ship two compute paths and the geometry is what
+    chooses between them."""
+    return config.get("stride", 1), config.get("padding", 0)
+
+
+def _conv_output_extent(size, kernel, stride, pad):
+    return (size + 2 * pad - kernel) // stride + 1
+
+
+def _numpy_conv2d_forward(images, weight, bias, stride=1, padding=0):
     """An explicit NCHW cross-correlation, written as a formula rather
-    than borrowed from either implementation. No padding, unit stride."""
+    than borrowed from either implementation. Symmetric zero padding and a
+    uniform stride, both defaulting to the Phase-D baseline."""
     n, _c, h, w = images.shape
     o, c, kh, kw = weight.shape
-    out_h, out_w = h - kh + 1, w - kw + 1
+    out_h = _conv_output_extent(h, kh, stride, padding)
+    out_w = _conv_output_extent(w, kw, stride, padding)
+    if padding:
+        padded = np.zeros((n, _c, h + 2 * padding, w + 2 * padding),
+                          dtype=np.float64)
+        padded[:, :, padding:padding + h, padding:padding + w] = images
+    else:
+        padded = images
     output = np.empty((n, o, out_h, out_w), dtype=np.float64)
     for i in range(n):
         for j in range(o):
             for y in range(out_h):
                 for x in range(out_w):
-                    window = images[i, :, y:y + kh, x:x + kw]
+                    window = padded[i, :, y * stride:y * stride + kh,
+                                    x * stride:x * stride + kw]
                     output[i, j, y, x] = float(np.sum(window * weight[j]))
     return output + bias.reshape(1, o, 1, 1)
 
@@ -1962,6 +1984,7 @@ def _build_conv2d(config, spec):
     or dominant relative to the three real convolution kernels is exactly
     the kind of thing H0 exists to find out rather than assume."""
     n, c, h, w, o, k = _conv_shapes(config)
+    stride, padding = _conv_geometry(config)
     component = spec["component"]
     images = _values((n, c, h, w), spec["seed"])
     weight = _values((o, c, k, k), spec["seed"] + 1)
@@ -1970,7 +1993,8 @@ def _build_conv2d(config, spec):
     core_images = cpp.NativeTensorCore.from_array(images)
     core_weight = cpp.NativeTensorCore.from_array(weight)
     core_bias = cpp.NativeTensorCore.from_array(bias)
-    out_h, out_w = h - k + 1, w - k + 1
+    out_h = _conv_output_extent(h, k, stride, padding)
+    out_w = _conv_output_extent(w, k, stride, padding)
     upstream = _values((n, o, out_h, out_w), spec["seed"] + 3)
     core_upstream = cpp.NativeTensorCore.from_array(upstream)
     owned = [core_images, core_weight, core_bias, core_upstream]
@@ -1980,27 +2004,31 @@ def _build_conv2d(config, spec):
     tensor_upstream = NativeTensor.from_array(upstream)
     owned.extend([tensor_images, tensor_images_g, tensor_upstream])
 
-    module = NativeConv2d(c, o, k, seed=spec["seed"])
+    module = NativeConv2d(c, o, k, stride=stride, padding=padding,
+                          seed=spec["seed"])
     _install_state(module, weight=weight, bias=bias)
 
     def stable_module():
         from tensorforge.nn import Conv2d
 
-        stable = Conv2d(c, o, k)
+        stable = Conv2d(c, o, k, stride=stride, padding=padding)
         stable.weight.data = weight.copy()
         stable.bias.data = bias.copy()
         return stable
 
     def core_forward(_state=None):
-        return core_images.conv2d_forward(core_weight, core_bias)
+        return core_images.conv2d_forward(core_weight, core_bias,
+                                          stride=stride, padding=padding)
 
     def core_input_backward(_state=None):
         return core_upstream.conv2d_input_backward(
-            core_weight, input_shape=(n, c, h, w))
+            core_weight, input_shape=(n, c, h, w), stride=stride,
+            padding=padding)
 
     def core_weight_backward(_state=None):
         return core_upstream.conv2d_weight_backward(
-            core_images, weight_shape=(o, c, k, k))
+            core_images, weight_shape=(o, c, k, k), stride=stride,
+            padding=padding)
 
     def core_bias_gradient(_state=None):
         return core_upstream.sum(0).sum(1).sum(1)
@@ -2013,7 +2041,8 @@ def _build_conv2d(config, spec):
     }
 
     def check():
-        expected_forward = _numpy_conv2d_forward(images, weight, bias)
+        expected_forward = _numpy_conv2d_forward(
+            images, weight, bias, stride, padding)
         scale = max(1.0, float(np.max(np.abs(expected_forward))))
         metrics = {"component": component}
         checks = ["component_result_shape", "finite", "owning_contiguous_output"]
@@ -2095,6 +2124,13 @@ def _build_conv2d(config, spec):
         checks.append("no_operand_mutation")
         metrics["checks"] = checks
         metrics["output_shape"] = [n, o, out_h, out_w]
+        metrics["stride"] = stride
+        metrics["padding"] = padding
+        # min(input_width, output_width) is the extent the H9 optimized
+        # convolution traversals sweep. It is recorded so a reader can see
+        # which compute path a geometry selects without any dispatch hook
+        # existing anywhere to ask.
+        metrics["swept_extent"] = min(w, out_w)
         return metrics
 
     layers = {TENSOR_CORE: _layer(core_runs[component], cleanup=_close_result)}
@@ -3831,6 +3867,119 @@ CASES = {
                   "dominant next to the three real convolution kernels is "
                   "exactly the kind of question H0 exists to answer with "
                   "measurement rather than assumption."),
+    },
+
+    # -- convolution geometry (Phase H, milestone H9) ------------------------
+    #
+    # The four cases above all run unit stride with no padding, which is one
+    # point in a space H9 made decisive: the convolution kernels now ship two
+    # compute paths behind their unchanged exports, and the *geometry* -- not
+    # the layout -- is what selects between them. These three separate the
+    # dimensions that choice depends on rather than averaging them into the
+    # baseline cases, following the precedent H5, H6, H7, and H8 each set.
+    #
+    # All three are ``native_only`` and publish no ratio. The padded and
+    # strided forwards do have a stable equivalent, but publishing a ratio
+    # for some geometries of one operation and not others invites exactly
+    # the apples-to-oranges reading this harness exists to prevent. Each
+    # keeps a real correctness oracle regardless.
+    "conv2d_forward_padded": {
+        "workload": "convolution",
+        "section": "conv2d forward, padded",
+        "operation": "NCHW cross-correlation forward with symmetric padding",
+        "build": _build_conv2d,
+        "component": "forward",
+        "seed": 20260301,
+        "reference_type": NATIVE_ONLY,
+        "reference_layer": None,
+        "reference_detail": ("no ratio is published: the geometry cases exist "
+                             "to separate padded, strided, and fallback "
+                             "convolution from the unpadded unit-stride "
+                             "baseline case, not to compare the same "
+                             "operation against the stable line twice."),
+        "correctness_reference": ("an explicit NumPy NCHW cross-correlation "
+                                  "formula with symmetric zero padding, and "
+                                  "tensorforge.nn.Conv2d"),
+        "configurations": {
+            "full": {"batch": 8, "in_channels": 3, "height": 16, "width": 16,
+                     "out_channels": 8, "kernel": 3, "padding": 1},
+            "smoke": {"batch": 2, "in_channels": 2, "height": 6, "width": 5,
+                      "out_channels": 3, "kernel": 3, "padding": 1},
+            "profile": {"batch": 16, "in_channels": 8, "height": 32,
+                        "width": 32, "out_channels": 16, "kernel": 3,
+                        "padding": 1},
+        },
+        "repetitions": HEAVY_REPETITIONS,
+        "notes": ("Padding is where a convolution's boundary handling lives. "
+                  "The generic path tests every kernel tap against the real "
+                  "input; the H9 row sweep solves that same condition once "
+                  "for a contiguous run of output columns. Measured beside "
+                  "the unpadded case so the boundary cost is attributed "
+                  "rather than assumed."),
+    },
+    "conv2d_forward_strided": {
+        "workload": "convolution",
+        "section": "conv2d forward, strided",
+        "operation": "NCHW cross-correlation forward at stride 2",
+        "build": _build_conv2d,
+        "component": "forward",
+        "seed": 20260302,
+        "reference_type": NATIVE_ONLY,
+        "reference_layer": None,
+        "reference_detail": ("no ratio is published, for the same reason as "
+                             "the padded geometry case."),
+        "correctness_reference": ("an explicit NumPy NCHW cross-correlation "
+                                  "formula at stride 2, and "
+                                  "tensorforge.nn.Conv2d"),
+        "configurations": {
+            "full": {"batch": 8, "in_channels": 3, "height": 16, "width": 16,
+                     "out_channels": 8, "kernel": 3, "stride": 2},
+            "smoke": {"batch": 2, "in_channels": 2, "height": 6, "width": 5,
+                      "out_channels": 3, "kernel": 3, "stride": 2},
+            "profile": {"batch": 16, "in_channels": 8, "height": 32,
+                        "width": 32, "out_channels": 16, "kernel": 3,
+                        "stride": 2},
+        },
+        "repetitions": HEAVY_REPETITIONS,
+        "notes": ("A non-unit stride breaks the one-for-one correspondence "
+                  "between output and input positions. The forward and the "
+                  "weight gradient still take their H9 traversals here; the "
+                  "input gradient deliberately does not, because its gather "
+                  "reproduces the reference's accumulation order only at "
+                  "unit stride. This case makes that asymmetry measurable "
+                  "instead of merely documented."),
+    },
+    "conv2d_forward_fallback": {
+        "workload": "convolution",
+        "section": "conv2d forward, generic fallback",
+        "operation": ("NCHW cross-correlation forward on a geometry below "
+                      "the H9 swept-extent minimum"),
+        "build": _build_conv2d,
+        "component": "forward",
+        "seed": 20260303,
+        "reference_type": NATIVE_ONLY,
+        "reference_layer": None,
+        "reference_detail": ("no ratio is published, for the same reason as "
+                             "the other two geometry cases."),
+        "correctness_reference": ("an explicit NumPy NCHW cross-correlation "
+                                  "formula and tensorforge.nn.Conv2d"),
+        "configurations": {
+            "full": {"batch": 16, "in_channels": 8, "height": 32, "width": 5,
+                     "out_channels": 16, "kernel": 3},
+            "smoke": {"batch": 2, "in_channels": 2, "height": 6, "width": 5,
+                      "out_channels": 3, "kernel": 3},
+            "profile": {"batch": 32, "in_channels": 8, "height": 64,
+                        "width": 5, "out_channels": 16, "kernel": 3},
+        },
+        "repetitions": HEAVY_REPETITIONS,
+        "notes": ("A deliberately narrow image, so min(input_width, "
+                  "output_width) falls below the swept extent an H9 "
+                  "traversal needs and the retained Phase-D direct loop runs "
+                  "instead. It is the convolution family's control: its "
+                  "compiled path did not change in H9, so it reports what "
+                  "this measurement's own noise looks like. Below that "
+                  "extent the generic loop is genuinely the faster of the "
+                  "two, which is why the predicate exists at all."),
     },
 
     # -- training steps ------------------------------------------------------

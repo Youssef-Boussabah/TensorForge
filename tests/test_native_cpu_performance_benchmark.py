@@ -112,6 +112,19 @@ EXPECTED_CASES = (
     "conv2d_input_backward",
     "conv2d_weight_backward",
     "conv2d_bias_gradient",
+    # Phase H, milestone H9. The convolution kernels now ship two compute
+    # paths behind their unchanged exports, and unlike H5/H6/H8 the chooser
+    # is the *geometry* rather than the layout — so the three dimensions it
+    # depends on are reported separately instead of averaged into the
+    # unpadded unit-stride baseline above: symmetric padding (where the
+    # boundary handling lives), a non-unit stride (where the input gradient
+    # deliberately falls back while the other two do not), and a narrow
+    # image below the swept-extent minimum. The last is the convolution
+    # family's control — its compiled path did not change in H9. All three
+    # are `native_only` and publish no ratio.
+    "conv2d_forward_padded",
+    "conv2d_forward_strided",
+    "conv2d_forward_fallback",
     "mlp_training_step",
     "cnn_classification_training_step",
     "normalized_training_step",
@@ -132,6 +145,13 @@ NO_RATIO_CASES = (
     "conv2d_input_backward",
     "conv2d_weight_backward",
     "conv2d_bias_gradient",
+    # H9: the padded and strided forwards do have a stable equivalent, but
+    # publishing a ratio for some geometries of one operation and not others
+    # invites the apples-to-oranges reading this harness exists to prevent.
+    # Each keeps a real correctness oracle regardless.
+    "conv2d_forward_padded",
+    "conv2d_forward_strided",
+    "conv2d_forward_fallback",
     "cnn_classification_training_step",
     "dropout_training_step",
     "state_dict_snapshot",
@@ -339,10 +359,27 @@ def test_matmul_rectangular_case_really_is_rectangular():
         assert len({config["m"], config["n"], config["p"]}) == 3, variant
 
 
+# The four cases that decompose one convolution into its pieces. H9's three
+# geometry cases are deliberately NOT among them: they re-measure the
+# forward at a different geometry rather than adding a fifth piece, so they
+# neither belong to this decomposition nor share its shape family.
+CONV2D_DECOMPOSITION_CASES = (
+    "conv2d_forward",
+    "conv2d_input_backward",
+    "conv2d_weight_backward",
+    "conv2d_bias_gradient",
+)
+
+CONV2D_GEOMETRY_CASES = (
+    "conv2d_forward_padded",
+    "conv2d_forward_strided",
+    "conv2d_forward_fallback",
+)
+
+
 def test_conv2d_components_cover_all_four_gradient_pieces():
     components = {name: bench.CASES[name]["component"]
-                  for name in bench.CASES
-                  if bench.CASES[name]["workload"] == "convolution"}
+                  for name in CONV2D_DECOMPOSITION_CASES}
     assert set(components.values()) == {
         "forward", "input_backward", "weight_backward", "bias_gradient",
     }
@@ -350,6 +387,53 @@ def test_conv2d_components_cover_all_four_gradient_pieces():
     shapes = {tuple(sorted(bench.CASES[name]["configurations"]["full"].items()))
               for name in components}
     assert len(shapes) == 1
+    # Every convolution case is either a decomposition piece or a geometry
+    # case, so a future addition cannot slip in unclassified.
+    convolution = {name for name in bench.CASES
+                   if bench.CASES[name]["workload"] == "convolution"}
+    assert convolution == set(CONV2D_DECOMPOSITION_CASES) | set(
+        CONV2D_GEOMETRY_CASES)
+
+
+def test_the_h9_geometry_cases_vary_only_the_geometry():
+    """Each geometry case re-measures the *forward*, never a gradient, and
+    publishes no ratio.
+
+    ``padded`` and ``strided`` are shape-matched twins of ``conv2d_forward``
+    — identical extents with exactly one geometry field added — so their
+    numbers sit directly beside the baseline's. ``fallback`` deliberately is
+    not: forcing the swept extent below the H9 minimum needs a narrow image,
+    which removes most of the work, so its channels and batch are scaled to
+    keep a comparable amount. It is the family's control (its compiled path
+    did not change in H9), and a control needs comparable cost, not
+    identical extents."""
+    baseline = bench.CASES["conv2d_forward"]["configurations"]["full"]
+    for name in CONV2D_GEOMETRY_CASES:
+        spec = bench.CASES[name]
+        assert spec["component"] == "forward", name
+        assert spec["workload"] == "convolution", name
+        # No ratio: NO_RATIO_CASES already pins this, restated here so a
+        # geometry case cannot quietly acquire a reference layer.
+        assert spec["reference_layer"] is None, name
+        assert spec["reference_type"] == bench.NATIVE_ONLY, name
+        config = spec["configurations"]["full"]
+        changed = {key for key in set(baseline) | set(config)
+                   if baseline.get(key) != config.get(key)}
+        assert changed, name
+        if name == "conv2d_forward_fallback":
+            # The one property that makes it the fallback case at all.
+            width = config["width"]
+            out_width = width - config["kernel"] + 1
+            assert min(width, out_width) < 4, (name, width, out_width)
+        else:
+            assert changed <= {"padding", "stride"}, (name, changed)
+            # ...and the twin must still take an optimized path, or it
+            # would not be measuring what its name claims.
+            width = config["width"]
+            padding = config.get("padding", 0)
+            stride = config.get("stride", 1)
+            out_width = (width + 2 * padding - config["kernel"]) // stride + 1
+            assert min(width, out_width) >= 4, (name, width, out_width)
 
 
 def test_checkpoint_file_io_is_excluded_and_state_operations_are_separate():
@@ -1342,9 +1426,10 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     # H0 left 11. H1 added the storage-creation contract test; H2 added
     # the matmul path/dispatch test; H5 added the copy path/dispatch
     # test; H6 added the reduction path/dispatch test; H8 added the
-    # elementwise plan/traversal test. None of the five is a new numerical
-    # kernel.
-    assert len(ctests) == 16
+    # elementwise plan/traversal test; H9 added the convolution
+    # path/dispatch test. None of the six is a new numerical kernel.
+    assert len(ctests) == 17
+    assert "test_conv2d_execution.cpp" in ctests
     assert "test_storage_allocation.cpp" in ctests
     assert "test_matmul.cpp" in ctests
     assert "test_contiguous_copy.cpp" in ctests

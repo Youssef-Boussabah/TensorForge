@@ -6878,6 +6878,71 @@ def test_the_phase_h_design_keeps_its_conditional_ladder_and_rejections():
         assert subject in lowered, subject
 
 
+def test_every_surface_records_the_h9_conv2d_execution_substance():
+    """H9's load-bearing claims must appear on every status surface, by
+    subject rather than by phrasing.
+
+    Semantic, not textual: each check is a set of alternatives, so a
+    surface may say the same thing in its own words but may not omit it.
+    What must survive on all of them is (a) that convolution now has two
+    compute paths, (b) that the Phase-D loop is *retained* as the generic
+    reference rather than replaced, (c) that the choice is a measured,
+    geometry-only predicate whose failure is a fallback and not an error,
+    (d) that per-destination accumulation order is preserved, and (e) that
+    the ABI did not move."""
+    for surface in _PHASE_H_SURFACES:
+        lowered = _status_text(surface).lower()
+        assert "h9" in lowered, surface
+        assert "conv2d" in lowered or "convolution" in lowered, surface
+        # (b) the generic path is retained and reachable, not deleted.
+        assert ("retained verbatim" in lowered
+                or "retained" in lowered and "generic reference" in lowered), (
+            f"{surface} does not say the Phase-D loop is retained as the "
+            f"generic reference path")
+        # (c) the predicate is measured, geometry-driven, and a fallback.
+        assert ("fallback, never an error" in lowered
+                or "never an error" in lowered), surface
+        assert ("min(input_width, output_width)" in lowered
+                or "swept extent" in lowered), surface
+        # (d) exact per-destination accumulation order.
+        assert "accumulation order" in lowered, surface
+        # (e) the ABI did not move.
+        assert "52" in lowered, surface
+
+
+def test_the_h9_record_states_its_negative_and_neutral_findings():
+    """H9 must not read as an unqualified win. Every full-length surface
+    has to carry the neutral rows, the deliberate fallback, and the fact
+    that the controls held — the project's honesty rule, enforced."""
+    for surface in ("CLAUDE.md", "docs/project_summary.md",
+                    "docs/backend_experiments.md", "docs/roadmap.md",
+                    "docs/native_support_matrix.md"):
+        lowered = _status_text(surface).lower()
+        # A small convolution is neutral, and says so.
+        assert "neutral" in lowered, surface
+        # The strided input gradient falls back by design.
+        assert "1.04x" in lowered or "1.04×" in lowered, surface
+        # The controls did not regress, with a stated band.
+        assert "0.97x-1.07x" in lowered or "0.97×–1.07×" in lowered, (
+            f"{surface} does not state the H9 control band")
+        # The rejected candidates are recorded, not silently dropped.
+        assert "im2col" in lowered, surface
+
+
+def test_the_h9_ladder_revision_is_recorded_rather_than_retrofitted():
+    """H0 did not plan a convolution milestone; that slot held
+    SIMD/threading/BLAS. The design must present H9 as an evidence-driven
+    revision, not rewrite the ladder as though convolution had always been
+    H9."""
+    text = _normalized_doc(_PHASE_H_DESIGN).lower()
+    assert "h9 was not in h0's ladder" in text
+    # The reassigned slot is struck through and its subject named.
+    assert "slot reassigned" in text or "reassigned" in text
+    # The acceleration decision is deferred, not deleted.
+    assert "acceleration decision" in text
+    assert "h10" in text
+
+
 def test_the_phase_h_design_records_daedalus_decisions():
     """Every relevant reference-project idea gets an explicit
     adopt/adapt/reject decision — not a silent copy and not silence."""
@@ -7589,8 +7654,12 @@ def test_the_boundary_binding_categories_are_documented_where_they_live():
 
 
 def test_the_harness_case_count_is_consistent_across_surfaces():
-    """H5 took the harness 26 to 28, H6 28 to 31, H7 31 to 34, and H8
-    34 to 38. A surface quoting a stale count is drift."""
+    """H5 took the harness 26 to 28, H6 28 to 31, H7 31 to 34, H8 34 to 38,
+    and H9 38 to 41. A surface quoting a stale count is drift.
+
+    Each milestone's own historical statement stays as it is; what this
+    checks is that every status surface also states the **current** total,
+    so a reader is never told 38 when the harness runs 41."""
     import importlib.util
 
     spec = importlib.util.spec_from_file_location(
@@ -7598,8 +7667,8 @@ def test_the_harness_case_count_is_consistent_across_surfaces():
         / "benchmark_native_cpu_performance.py")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    assert len(module.CASES) == 38
+    assert len(module.CASES) == 41
     for surface in ("docs/native_cpu_performance_design.md",
                     "docs/native_support_matrix.md", "CLAUDE.md"):
         text = _status_text(surface)
-        assert re.search(r"34 to 38|34 to \*\*38\*\*|38 cases", text), surface
+        assert re.search(r"38 to 41|38 to \*\*41\*\*|41 cases", text), surface
