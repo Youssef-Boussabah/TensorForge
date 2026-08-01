@@ -112,11 +112,23 @@ any of them is a capability decision, never a side effect:
 | Exported production `tf_*` symbols | **54** (Phase H closed at 52; Phase I milestone I1 added the two typed storage creators, which are the only two the phase adds) |
 
 Since Phase I milestone I1, float32 storage is **allocatable through the C
-ABI** (`tf_storage_create_typed`) and **consumed by nothing**. That is not
-a support claim and does not change a single row above: every operation
-that has not been dtype-generalized rejects a float32 handle with
-`TF_ERROR_INVALID` before touching memory, and `normalize_dtype("float32")`
-still raises. The public registry moves at **I9**, not before.
+ABI** (`tf_storage_create_typed`); since I2 it is also **movable** — host
+ingress and egress, strided materialization, and the storage-to-storage
+identity copy (`tf_core_contiguous_copy`) are dtype-general and
+bit-preserving — and it is **computed on by nothing**. That is not a
+support claim and does not change a single row above: every operation that
+has not been dtype-generalized rejects a float32 handle with
+`TF_ERROR_INVALID` before touching memory (including `tf_storage_fill` and
+`tf_storage_scale`, which assign and multiply rather than transfer), and
+`normalize_dtype("float32")` still raises. The public registry moves at
+**I9**, not before.
+
+One further registry exists and is a **different** statement from
+`SUPPORTED_DTYPES`: `RAW_KERNEL_DTYPES == ("float64",)` (added at I2,
+reported by `backend_info()` as `raw_kernel_dtypes`). The seven handle-free
+raw utility kernels take only `double*` and an element count, so they have
+no dtype to dispatch on and stay float64 permanently. Never report it as
+overall native dtype support, and never read the public promise off it.
 
 **Performance work never broadens support.** A milestone that makes
 something faster must leave every row above untouched. The canonical
@@ -540,11 +552,12 @@ matching docs file (and README links) **in the same milestone**.
     exactly **one** C ABI symbol across the whole phase
     (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
-- **Native line: Phase I at I1** — Native Dtype Generalization and
+- **Native line: Phase I at I2** — Native Dtype Generalization and
   Float32 CPU Support. Contract:
   `docs/native_dtype_float32_design.md`. **I0 (design, contract tests,
-  documentation) and I1 (the dtype model and dtype-tagged storage) are
-  complete; I2–I11 are not started.**
+  documentation), I1 (the dtype model and dtype-tagged storage), and I2
+  (typed transfer, views, and materialization) are complete; I3–I11 are
+  not started.**
   - I1 delivered: the C++ `TfDtype`/`tf::Dtype` model with frozen codes
     `0 = float64` and `1 = float32`, one item-size authority
     (`tf::dtype_item_size` — nothing else may spell a storage width), one
@@ -560,9 +573,39 @@ matching docs file (and README links) **in the same milestone**.
     `tf::storage_f64` as the one typed-access pattern and
     `tf::require_float64` as the one float32 rejection; the untyped
     creators as thin float64 wrappers. CTests moved 17 → 18.
-  - **Public capability did not move**: float64 CPU only, `float32` still
-    in `UNSUPPORTED`, checkpoint version 2 with (1, 2) accepted. Only the
-    export count changed, 52 → **54**.
+  - I2 delivered: the three exports that carry a storage handle **and** a
+    raw host buffer (`tf_storage_copy_from`, `tf_storage_copy_to`,
+    `tf_storage_materialize`) generalized by a **source-level retype** of
+    their host positions from `double*` to `void*` — a declaration change,
+    not an ABI change: same symbols, same argument counts and order, same
+    calling convention, still **54** exports, and a previously compiled
+    caller links and runs identically; the host pointer carries no dtype
+    and the storage tag is authoritative, so C++ dispatches from the tag
+    and Python validates the NumPy dtype before each call through
+    `_host_pointer`, which runs the per-dtype `ndpointer` check the
+    argtypes slot can no longer hold (one slot cannot describe two
+    dtypes). `tf_core_contiguous_copy` — the value-transfer primitive, and
+    the only compute-shaped export I2 touched — became dtype-preserving
+    and dtype-strict, with its three H5/H8 tiers instantiated for both
+    element types from one source. `tf::unary_row`, `tf::unary_plan_walk`,
+    the retained odometer, and `tf::IdentityOp::apply` gained a **deduced**
+    scalar type, so every pre-existing call site compiles unchanged and
+    `T = double` is the pre-I2 code statement for statement. Transfer is
+    bit-preserving at both widths — proved, not asserted, over seventeen
+    IEEE-754 classes per dtype as raw `uint32`/`uint64` patterns; `memcpy`
+    was **not** introduced (§4.3 forbids it) and the transfers stay
+    same-type element assignments. `RAW_KERNEL_DTYPES` added. Internal
+    float32 construction is three private constructors
+    (`NativeStorage._typed`, `NativeStorage._typed_from_array`,
+    `NativeTensorCore._typed_from_array`) plus a keyword-only
+    `_trusted_dtype` on `NativeStorage.__init__`; the private H1
+    allocators inherit that trust because their dtype always comes from a
+    live storage, and `NativeTensorCore.full` calls `normalize_dtype`
+    explicitly so no public constructor inherits it. CTests moved 18 → 19.
+  - **Public capability did not move at I1 or I2**: float64 CPU only,
+    `float32` still in `UNSUPPORTED`, checkpoint version 2 with (1, 2)
+    accepted. Only the export count changed, 52 → **54**, at I1; I2 added
+    none.
   When implementing a Phase-I milestone, the durable rules are:
   - **exactly two** new C ABI exports across the whole phase
     (`tf_storage_create_typed`, `tf_storage_create_uninitialized_typed`,

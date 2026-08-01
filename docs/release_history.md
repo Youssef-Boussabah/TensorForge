@@ -2326,13 +2326,117 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase I — native dtype generalization and float32 CPU support (I0–I1, phase in progress)
+### Phase I — native dtype generalization and float32 CPU support (I0–I2, phase in progress)
 
-**Phase I is the latest phase. Milestones I0 and I1 are complete; I2
+**Phase I is the latest phase. Milestones I0, I1, and I2 are complete; I3
 through I11 are not started.** This is an in-progress entry, not a release
 entry: no version and **no public capability** is claimed. **Phase H
 remains complete and remains the latest *completed* phase**, and it closed
 at 52 exports.
+
+#### I2 — typed array transfer, views, and materialization
+
+**I2 made float32 storage movable, and added no C ABI symbol.** I1 left
+float32 allocatable and consumed by nothing; I2 gives it exactly the
+transfer and materialization foundation the later kernel milestones need,
+and nothing more. What shipped:
+
+- **The three transfer exports became dtype-general**, through a
+  **source-level retype** of their host positions:
+
+  ```c
+  void tf_storage_copy_from(void* handle, const void* src);
+  void tf_storage_copy_to(const void* handle, void* dst);
+  void tf_storage_materialize(const void* handle, void* dst,
+                              const int64_t* shape, const int64_t* strides,
+                              int64_t offset, int64_t ndim);
+  ```
+
+  This is a declaration change and **not an ABI change**: a `double*` and
+  a `void*` occupy the same argument slot on every supported platform,
+  `extern "C"` has no mangling to alter, and the symbol names, argument
+  counts, argument order, and return types are untouched. A previously
+  compiled caller would link and run identically, and the export inventory
+  stayed at **54**. Three distinct things are kept apart deliberately:
+  the C declarations changed, the binary symbol table did not, and the
+  Python ctypes declarations changed to match the C.
+- **The host pointer contract, stated rather than pretended.** The raw
+  host pointer carries no dtype and the ABI cannot recover one from an
+  address, so the **storage handle's immutable dtype tag is
+  authoritative**: C++ dispatches from it, Python validates the NumPy
+  dtype before the call, no implicit conversion happens at the boundary,
+  no host dtype is guessed, and no byte-count or dtype argument was added.
+  A direct foreign caller remains responsible for satisfying the contract,
+  exactly as it already is for the layout arrays it passes.
+- **`tf_core_contiguous_copy` became dtype-preserving and dtype-strict.**
+  It is the runtime's value-transfer primitive (H5) and the one
+  compute-shaped export the milestone touched. Source and destination
+  dtypes must agree; a mixed pair is rejected with `TF_ERROR_INVALID`
+  naming both, before the span validation and long before any element is
+  written. Its three H5/H8 traversal tiers — the flat row-major sweep, the
+  collapsed plan, and the retained generic odometer — are instantiated for
+  both element types from the *same source*, so float64 runs the code
+  Phase H measured, statement for statement.
+- **Bit preservation, proved rather than assumed.** A transfer performs no
+  arithmetic, so it has no operand roles to choose between and nothing to
+  round: `+0.0`, `-0.0`, both infinities, subnormals, quiet NaNs with
+  distinct payloads, and signalling NaNs of both signs all reproduce their
+  source's object representation exactly, at both widths, through host
+  ingress, host egress, strided materialization, chained views, and the
+  identity copy. Asserted over seventeen IEEE-754 classes per dtype as raw
+  `uint32`/`uint64` patterns in both the C++ and the Python suites — never
+  by value, and never by tolerance.
+
+  Scope, stated honestly: that is a measurement on the toolchains
+  validated here (MSVC x64, GCC/Clang x86-64), not a language guarantee.
+  C++ does not promise that copying a signalling NaN leaves it signalling,
+  and an x87 code path would quiet it; TensorForge builds x86-64 with
+  SSE2, where the copy is a register move.
+- **`RAW_KERNEL_DTYPES == ("float64",)`**, introduced beside `RAW_KERNELS`
+  and reported by `backend_info()` as `raw_kernel_dtypes`. The seven
+  handle-free raw utility kernels receive only `const double*`, `double*`,
+  and an element count — no handle, therefore no dtype tag, therefore
+  nothing to dispatch on — so they stay float64 permanently. It is
+  reported separately from `supported_dtypes` because it is a separate
+  fact: this one is a permanent property of seven kernels, the other is a
+  public promise that moves at I9.
+- **A private, narrowly scoped internal construction path**:
+  `NativeStorage._typed`, `NativeStorage._typed_from_array`,
+  `NativeTensorCore._typed_from_array`, and a keyword-only
+  `_trusted_dtype` on `NativeStorage.__init__` that validates against the
+  internal dtype table instead of the public registry. No public
+  constructor gained anything: `normalize_dtype("float32")` still raises,
+  and `NativeStorage`, `NativeTensorCore.zeros`, `.full`, and
+  `.from_array` all still reject `"float32"` with the message they always
+  produced.
+
+**No public capability moved.** `SUPPORTED_DTYPES` still reads
+`("float64",)`, `SUPPORTED_DEVICES` still reads `("cpu",)`, `UNSUPPORTED`
+still reads `("float32", "cuda", "amp")`, the native checkpoint format is
+still version **2** with versions **(1, 2)** accepted, and the library
+still exports **54** symbols. No module, parameter, optimizer, or loss
+constructor gained a dtype argument. `tf_storage_fill` and
+`tf_storage_scale` were deliberately **not** broadened — they assign and
+multiply rather than transfer, and a scalar narrowed into a float32 buffer
+is a decision with its own numerical statement that belongs to a later
+milestone. No example, benchmark, CI workflow, dependency, or build option
+changed.
+
+**One rule was followed against the obvious shortcut.** A byte copy is the
+easy way to make a contiguous transfer representation-preserving, and the
+contract forbids `memcpy` outside the allocation boundary — that rule is
+what lets the whole element-measured layout and bounds-checking apparatus
+carry over unexamined. The transfers are same-type element assignments
+instead, and the bit-preservation claim is a test result rather than an
+appeal to `memcpy`'s semantics.
+
+The native CTest inventory moved **18 → 19** with `test_typed_transfer`,
+which compiles `storage.cpp` and `elementwise.cpp` directly so it reaches
+the hidden `tf::copy_prefers_contiguous` predicate beside the four
+generalized exports, and proves the contract by bit pattern at both dtypes
+over thirteen view layouts — scalar, 1-D, non-unit stride, reversed, 2-D
+contiguous, transposed, narrowed-with-offset, both broadcast (stride-0)
+forms, unit extent, and two rank-3 chains.
 
 #### I1 — internal dtype model and dtype-tagged storage foundation
 

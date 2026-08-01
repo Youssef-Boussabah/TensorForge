@@ -127,10 +127,20 @@ EXPECTED_ARRAY_BINDINGS = {
     "tf_matmul": ("checked", "checked", "checked"),
     "tf_matmul_tiled": ("checked", "checked", "checked"),
     # -- the explicit host conversion boundary -----------------------------
-    "tf_storage_copy_from": ("checked",),
-    "tf_storage_copy_to": ("checked",),
-    # the float64 destination stays checked; the layout pair is trusted
-    "tf_storage_materialize": ("checked", "trusted", "trusted"),
+    #
+    # ``tf_storage_copy_from``, ``tf_storage_copy_to``, and the destination
+    # of ``tf_storage_materialize`` left this table at Phase I milestone I2
+    # and are **not** a gap in it. Their C host positions became ``void*``
+    # (the storage handle's dtype tag says how the bytes are read), and one
+    # ctypes ``argtypes`` slot cannot describe two dtypes — so the binding
+    # moved from the slot to the call site, where the dtype is known. It is
+    # the same ``ndpointer`` check, run per call by ``cpp._host_pointer``
+    # against the storage's own dtype; see
+    # ``test_a_retyped_transfer_position_is_still_checked_per_dtype``.
+    #
+    # ``tf_storage_materialize`` keeps its trusted layout pair here, so the
+    # export is still listed — with one fewer position.
+    "tf_storage_materialize": ("trusted", "trusted"),
     # -- strided unary Core kernels ----------------------------------------
     "tf_core_relu": ("trusted", "trusted"),
     "tf_core_sqrt": ("trusted", "trusted"),
@@ -213,9 +223,17 @@ def test_every_configured_export_declares_its_argument_types():
 
 @needs_native
 def test_the_two_bindings_are_the_only_array_argument_types():
-    """Exactly two array bindings exist. In particular no position uses a
-    bare ``c_void_p``, which would express the ABI less precisely than a
-    typed pointer and would accept an integer address."""
+    """Exactly two array bindings exist, and no *layout* or *kernel-data*
+    position uses a bare ``c_void_p`` — which would express the ABI less
+    precisely than a typed pointer and would accept an integer address.
+
+    The three retyped transfer positions are the deliberate exception
+    (Phase I, milestone I2): their C parameter genuinely **is** ``void*``,
+    because the storage handle's dtype tag is what says how the bytes are
+    read, so ``c_void_p`` is the precise declaration rather than a looser
+    one. Their check did not disappear — it moved to ``_host_pointer``,
+    which runs the per-dtype ``ndpointer`` binding at every call.
+    """
     library = cpp._require_library()
     layout_positions = 0
     checked_positions = 0
@@ -229,7 +247,9 @@ def test_the_two_bindings_are_the_only_array_argument_types():
             elif getattr(argtype, "__name__", "").startswith("ndpointer"):
                 checked_positions += 1
     assert layout_positions == 32
-    assert checked_positions == 25
+    # 25 before I2; the three transfer host positions moved to the call
+    # site, and nothing else changed.
+    assert checked_positions == 22
 
 
 @needs_native
@@ -242,6 +262,58 @@ def test_the_checked_bindings_are_unchanged_ndpointers():
         dtype=np.int64, flags="C_CONTIGUOUS")
     assert cpp._CHECKED_F64_ARRAY._dtype_ == np.dtype(np.float64)
     assert cpp._CHECKED_I64_ARRAY._dtype_ == np.dtype(np.int64)
+    # Phase I, milestone I2: the float32 sibling, built the same way.
+    assert cpp._CHECKED_F32_ARRAY is np.ctypeslib.ndpointer(
+        dtype=np.float32, flags="C_CONTIGUOUS")
+    assert cpp._CHECKED_F32_ARRAY._dtype_ == np.dtype(np.float32)
+    assert cpp._CHECKED_HOST_ARRAYS == {
+        "float64": cpp._CHECKED_F64_ARRAY,
+        "float32": cpp._CHECKED_F32_ARRAY,
+    }
+
+
+@needs_native
+def test_a_retyped_transfer_position_is_still_checked_per_dtype():
+    """The three transfer boundaries declare ``c_void_p`` from I2, and the
+    check that used to sit in that argtypes slot moved to ``_host_pointer``
+    — where it can be chosen from the storage's dtype, which one slot could
+    never express. It is the *same* check, so it still rejects everything
+    it always rejected, and it now also rejects the *other* supported
+    dtype."""
+    library = cpp._require_library()
+    for name in ("tf_storage_copy_from", "tf_storage_copy_to",
+                 "tf_storage_materialize"):
+        argtypes = getattr(library, name).argtypes
+        assert argtypes[1] is ctypes.c_void_p, name
+
+    good = np.zeros(4, dtype=np.float64)
+    # An ndarray of exactly the right dtype, C-contiguous: accepted, and
+    # the pointer keeps its owner alive.
+    pointer = cpp._host_pointer(good, "float64")
+    assert isinstance(pointer, ctypes.c_void_p)
+    assert getattr(pointer, "_arr", None) is not None
+
+    for wrong, why in (
+        (np.zeros(4, dtype=np.float32), "the other supported dtype"),
+        (np.zeros(4, dtype=np.int64), "an integer array"),
+        (np.zeros(4, dtype=">f8"), "a byte-swapped array"),
+        (np.zeros((4, 4))[::2], "a non-contiguous array"),
+        ([0.0, 1.0], "a Python list"),
+        (b"\x00" * 32, "bytes"),
+    ):
+        with pytest.raises(TypeError):
+            cpp._host_pointer(wrong, "float64")
+    # ...and symmetrically for float32 storage: a float64 host buffer is
+    # rejected rather than narrowed.
+    with pytest.raises(TypeError):
+        cpp._host_pointer(np.zeros(4, dtype=np.float64), "float32")
+    assert isinstance(
+        cpp._host_pointer(np.zeros(4, dtype=np.float32), "float32"),
+        ctypes.c_void_p)
+    # An unknown dtype names the ones that exist rather than guessing a
+    # width.
+    with pytest.raises(ValueError):
+        cpp._host_pointer(good, "float16")
 
 
 def test_the_layout_binding_is_a_typed_int64_pointer():
@@ -726,7 +798,12 @@ def test_the_module_holds_no_global_pointer_cache():
     module_level = [name for name in vars(cpp)
                     if not name.startswith("__")
                     and ("cache" in name.lower() or "pointer" in name.lower())]
-    assert module_level == ["_LAYOUT_POINTER"]
+    # ``_LAYOUT_POINTER`` is the trusted int64 binding; ``_host_pointer``
+    # (Phase I, milestone I2) is a *function* that builds a fresh, owner-
+    # attached ``c_void_p`` per call for the three retyped transfer
+    # boundaries. Neither is a cache, and nothing else may join them.
+    assert sorted(module_level) == ["_LAYOUT_POINTER", "_host_pointer"]
+    assert callable(cpp._host_pointer)
 
 
 # ==========================================================================
@@ -2116,14 +2193,22 @@ def test_the_inventory_arithmetic_adds_up():
     bindings, so a future change cannot leave the design's table stale
     without failing here.
 
-    54 exports = 24 with at least one array position + 28 that carry only
-    storage handles and integers + 2 test-only hooks; and 57 array
-    positions = 32 trusted + 25 checked.
+    54 exports = 22 with at least one array position + 30 that carry only
+    storage handles and integers + 2 test-only hooks; and 54 array
+    positions = 32 trusted + 22 checked.
 
     Phase I milestone I1 moved the handle-only column from 26 to 28: its
     two typed creators take an int64 element count and an int32 dtype code
-    and no array at all, so neither the trusted nor the checked array
-    tally moves."""
+    and no array at all, so neither the trusted nor the checked array tally
+    moved.
+
+    Phase I milestone I2 moved it again, 28 to 30, and the checked tally
+    from 25 to 22 — **without adding or removing a single export**.
+    ``tf_storage_copy_from`` and ``tf_storage_copy_to`` now carry no array
+    position at all (a handle and a ``void*``), which is what puts them in
+    the handle-only column, and ``tf_storage_materialize`` keeps its
+    trusted layout pair but lost its checked destination. The three checks
+    did not vanish: they run per call, per dtype, in ``_host_pointer``."""
     library = cpp._require_library()
     with_arrays, handle_only, test_only = 0, 0, 0
     trusted_positions, checked_positions = 0, 0
@@ -2141,11 +2226,12 @@ def test_the_inventory_arithmetic_adds_up():
             test_only += 1
         else:
             handle_only += 1
-    assert (with_arrays, handle_only, test_only) == (24, 28, 2)
+    assert (with_arrays, handle_only, test_only) == (22, 30, 2)
     assert with_arrays + handle_only + test_only == 54
-    assert (trusted_positions, checked_positions) == (32, 25)
-    assert trusted_positions + checked_positions == 57
-    # Thirteen of the 24 array-carrying exports have a trusted position.
+    assert (trusted_positions, checked_positions) == (32, 22)
+    assert trusted_positions + checked_positions == 54
+    # Thirteen of the 22 array-carrying exports have a trusted position —
+    # unchanged by I2, which removed only checked positions.
     trusted_exports = sum(
         1 for name in _configured_names()
         if (f := getattr(library, name, None)) is not None

@@ -56,6 +56,9 @@ def test_backend_info_shape():
         "supported_dtypes",
         "supported_devices",
         "raw_kernels",
+        # Phase I, milestone I2: the raw kernels' own dtype limitation,
+        # reported beside them and separately from ``supported_dtypes``.
+        "raw_kernel_dtypes",
         "kernels",
         "storage_object",
         "tensor_view",

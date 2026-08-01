@@ -471,6 +471,33 @@ if(TF_BUILD_TESTS)
 
   add_test(NAME contiguous_copy COMMAND test_contiguous_copy)
 
+  # Typed array transfer, materialization, and the identity copy (Phase I,
+  # milestone I2). Compiles storage.cpp and elementwise.cpp directly so it
+  # reaches the hidden tf::copy_prefers_contiguous predicate beside the four
+  # exports the milestone generalizes, and error.cpp for the thread-local
+  # slot the guarded wrappers record into.
+  #
+  # Its subject is deliberately narrow and complementary to test_dtype_storage:
+  # that target proves float32 is *allocatable and otherwise rejected*, this
+  # one proves the exact set of boundaries float32 may now cross, at both
+  # dtypes, by raw IEEE-754 bit comparison rather than by tolerance.
+  add_executable(test_typed_transfer
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_typed_transfer.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_typed_transfer PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_typed_transfer PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_typed_transfer PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_typed_transfer PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME typed_transfer COMMAND test_typed_transfer)
+
   # Sum reduction and its H6 traversal dispatch: compiles reduction.cpp
   # directly so it can reach the hidden tf::reduce_prefers_contiguous_blocks
   # predicate and BOTH hidden traversals alongside the exported tf_core_sum

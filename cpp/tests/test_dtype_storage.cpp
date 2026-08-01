@@ -49,10 +49,15 @@ TF_EXPORT void tf_storage_destroy(void* handle);
 TF_EXPORT std::int64_t tf_storage_size(const void* handle);
 TF_EXPORT void tf_storage_fill(void* handle, double value);
 TF_EXPORT void tf_storage_scale(void* handle, double factor);
-TF_EXPORT void tf_storage_copy_from(void* handle, const double* src);
-TF_EXPORT void tf_storage_copy_to(const void* handle, double* dst);
+// The three transfer boundaries carry ``void*`` host positions from Phase
+// I, milestone I2 — a source-level retype of an existing export, not a new
+// symbol and not an ABI change. Declared here exactly as the runtime
+// defines them so this translation unit and storage.cpp cannot disagree
+// about a signature the C ABI itself would never check.
+TF_EXPORT void tf_storage_copy_from(void* handle, const void* src);
+TF_EXPORT void tf_storage_copy_to(const void* handle, void* dst);
 TF_EXPORT void tf_storage_materialize(
-    const void* handle, double* dst,
+    const void* handle, void* dst,
     const std::int64_t* shape, const std::int64_t* strides,
     std::int64_t offset, std::int64_t ndim);
 
@@ -889,12 +894,20 @@ void test_every_still_float64_operation_rejects_float32_storage() {
     const std::int64_t shape[2] = {8, 8};
     const std::int64_t strides[2] = {8, 1};
     const std::int64_t out_strides[2] = {0, 1};
-    std::vector<double> host(64, 0.0);
 
-    // -- storage.cpp: the five float64 storage primitives ------------------
-    // fill / scale / copy_from / copy_to mutate or read the float32 buffer
-    // itself, so the destination they must not touch *is* the float32
-    // storage. Its bytes are checked directly.
+    // -- storage.cpp: the two remaining float64 storage primitives ---------
+    // ``fill`` and ``scale`` mutate the float32 buffer itself, so the
+    // destination they must not touch *is* the float32 storage. Its bytes
+    // are checked directly.
+    //
+    // **What moved at I2, and what deliberately did not.** ``copy_from``,
+    // ``copy_to``, and ``tf_storage_materialize`` were in this list at I1
+    // and are dtype-general now; they are proved at both widths by
+    // test_typed_transfer, and the assertion here advances to their new
+    // truth rather than being deleted. ``fill`` and ``scale`` stayed
+    // behind on purpose: they perform numerical assignment and arithmetic
+    // rather than transfer, and broadening them is a later milestone's
+    // decision, not a free consequence of dispatch being easy to write.
     {
         char message[256];
         std::vector<unsigned char> before(
@@ -907,37 +920,50 @@ void test_every_still_float64_operation_rejects_float32_storage() {
         tf_storage_scale(f32, 2.0);
         check(tf_last_error_code() == TF_ERROR_INVALID,
               "tf_storage_scale: a float32 handle was not rejected");
-        tf_clear_error();
-        tf_storage_copy_from(f32, host.data());
-        check(tf_last_error_code() == TF_ERROR_INVALID,
-              "tf_storage_copy_from: a float32 handle was not rejected");
-        tf_clear_error();
-        tf_storage_copy_to(f32, host.data());
-        check(tf_last_error_code() == TF_ERROR_INVALID,
-              "tf_storage_copy_to: a float32 handle was not rejected");
         std::snprintf(message, sizeof message,
                       "a rejected storage primitive mutated float32 memory");
         check(std::memcmp(before.data(), raw_bytes(f32), 64 * 4) == 0,
               message);
-        // ...and none of them overran the buffer while doing so, which is
-        // the whole reason the check exists: 64 float32 elements are 256
+        // ...and neither overran the buffer while doing so, which is the
+        // whole reason the check exists: 64 float32 elements are 256
         // bytes, and a double* walk of "size" elements would touch 512.
         tf_clear_error();
-        tf_storage_materialize(f32, host.data(), shape, strides, 0, 2);
-        check(tf_last_error_code() == TF_ERROR_INVALID,
-              "tf_storage_materialize: a float32 handle was not rejected");
+
+        // The three transfer boundaries now **accept** this handle. Called
+        // here with a genuine float32 host buffer, they must leave the
+        // error slot clear — which is the precise, current statement of
+        // what I1 recorded as "float32 is consumed by nothing".
+        std::vector<float> host_f32(64, 0.0f);
+        tf_storage_copy_from(f32, host_f32.data());
+        check(tf_last_error_code() == TF_OK,
+              "tf_storage_copy_from: a float32 handle was rejected after I2");
+        tf_storage_copy_to(f32, host_f32.data());
+        check(tf_last_error_code() == TF_OK,
+              "tf_storage_copy_to: a float32 handle was rejected after I2");
+        tf_storage_materialize(f32, host_f32.data(), shape, strides, 0, 2);
+        check(tf_last_error_code() == TF_OK,
+              "tf_storage_materialize: a float32 handle was rejected after I2");
         tf_clear_error();
     }
 
-    // -- elementwise.cpp: unary strided, binary strided, and the copy -----
+    // -- elementwise.cpp: unary strided and binary strided -----------------
     reject_case("tf_core_relu", dst, 64, [&] {
         tf_core_relu(f32, dst, shape, strides, 0, 2);
     });
     reject_case("tf_core_add", dst, 64, [&] {
         tf_core_add(f32, dst, dst, shape, strides, strides, 0, 0, 2);
     });
-    reject_case("tf_core_contiguous_copy", dst, 64, [&] {
+    // ``tf_core_contiguous_copy`` is dtype-general from I2, so this is no
+    // longer a "float64-only operation" rejection — it is the **mixed
+    // dtype** rejection, which is the stronger and more permanent rule: a
+    // float32 source with a float64 destination is an invalid request at
+    // every milestone of the phase, because the runtime never casts.
+    reject_case("tf_core_contiguous_copy (mixed dtype)", dst, 64, [&] {
         tf_core_contiguous_copy(f32, dst, shape, strides, 0, 2);
+    });
+    reject_case("tf_core_contiguous_copy (mixed dtype, reversed)", dst, 64,
+                [&] {
+        tf_core_contiguous_copy(dst, f32, shape, strides, 0, 2);
     });
     // ...and with the float32 storage as the *destination* rather than the
     // source, which is the direction that would corrupt memory.

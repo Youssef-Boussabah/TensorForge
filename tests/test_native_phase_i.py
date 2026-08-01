@@ -220,11 +220,11 @@ def test_the_design_states_its_milestone_status_and_what_is_unshipped():
     status = re.search(r"Phase-I status:(.{0,200})", text, re.I)
     assert status, "the design does not state its milestone status"
     claim = status.group(1)
-    assert re.search(r"\bI0\b.*\bI1\b.*complete", claim, re.I), (
-        f"the status line does not record I0 and I1 as complete: {claim!r}"
+    assert re.search(r"\bI0\b.*\bI1\b.*\bI2\b.*complete", claim, re.I), (
+        f"the status line does not record I0, I1 and I2 as complete: {claim!r}"
     )
-    assert re.search(r"I2\b.*\bI11\b.*not started", claim, re.I), (
-        f"the status line does not record I2-I11 as unstarted: {claim!r}"
+    assert re.search(r"I3\b.*\bI11\b.*not started", claim, re.I), (
+        f"the status line does not record I3-I11 as unstarted: {claim!r}"
     )
     # ...and that I0 itself shipped no behavior, which is a historical
     # fact about I0 and stays true however far the phase progresses. A
@@ -885,18 +885,35 @@ def test_no_dtype_query_or_casting_symbol_was_added():
         assert absent not in exports, absent
 
 
-def test_the_typed_creators_are_declared_and_no_i2_registry_is():
+def test_the_typed_creators_and_the_i2_raw_kernel_registry_are_declared():
     declared = _read("src/tensorforge/backends/cpp.py")
     for planned in PLANNED_NEW_EXPORTS:
         assert planned in declared, (
             f"{planned} is not declared in the ctypes layer; I1 declares it"
         )
-    # ...and the raw-kernel dtype registry is still an I2 deliverable
-    # (design section 7): a contract-only tuple would advertise a
-    # distinction that is not yet observable.
-    assert "RAW_KERNEL_DTYPES" not in declared, (
-        "RAW_KERNEL_DTYPES is an I2 registry; I1 must not introduce it"
-    )
+    # The raw-kernel dtype registry was an I2 deliverable precisely because
+    # a contract-only tuple would have advertised a distinction that was
+    # not yet observable (design section 7.2): before I2 every dtype was
+    # float64, so the tuple would have been indistinguishable from
+    # SUPPORTED_DTYPES. I2 made the distinction real, so the registry lands
+    # here — and it is a *different* fact from the public promise.
+    assert cpp.RAW_KERNEL_DTYPES == ("float64",)
+    assert cpp.backend_info()["raw_kernel_dtypes"] == cpp.RAW_KERNEL_DTYPES
+    # The two tuples happen to be equal today and are **not** the same
+    # statement: this one is a permanent property of seven handle-free
+    # kernels, the other is a public promise that moves at I9. They are
+    # reported as separate keys so neither can be read off the other, and
+    # they are declared separately in the source rather than aliased.
+    assert "RAW_KERNEL_DTYPES = (" in declared
+    info = cpp.backend_info()
+    assert "raw_kernel_dtypes" in info and "supported_dtypes" in info
+    # ...and no raw kernel gained a per-dtype wrapper to go with it.
+    assert not [name for name in cpp.RAW_KERNELS
+                if name.endswith(("_f32", "_f64"))]
+    # Internal representability is wider than both — that gap is the whole
+    # point of the registry existing now rather than at I0.
+    assert set(cpp._DTYPE_CODES) == {"float64", "float32"}
+    assert set(cpp.RAW_KERNEL_DTYPES) < set(cpp._DTYPE_CODES)
 
 
 def test_the_cpp_storage_struct_is_dtype_tagged():
@@ -1345,9 +1362,11 @@ def test_an_injected_allocation_failure_raises_memory_error_at_both_dtypes():
 
 @needs_native
 def test_a_float32_handle_is_rejected_by_operations_that_are_still_float64():
-    """I1 makes float32 allocatable and generalizes no operation, so every
-    kernel must reject a float32 operand rather than walk it as float64 —
-    which would overrun the buffer by exactly a factor of two.
+    """I1 made float32 allocatable and generalized no operation; I2
+    generalized exactly the transfer, materialization, and identity-copy
+    boundaries. Everything else must still reject a float32 operand rather
+    than walk it as float64 — which would overrun the buffer by exactly a
+    factor of two.
 
     The C++ CTest proves this across every compute translation unit; this
     is the Python-visible half, through the errcheck hook.
@@ -1363,14 +1382,18 @@ def test_a_float32_handle_is_rejected_by_operations_that_are_still_float64():
         with pytest.raises(ValueError, match="float32"):
             library.tf_core_relu(f32, handle, shape, strides, 0, 2)
         with pytest.raises(ValueError, match="float32"):
-            library.tf_core_contiguous_copy(f32, handle, shape, strides, 0, 2)
-        with pytest.raises(ValueError, match="float32"):
             library.tf_core_add(f32, handle, handle, shape, strides,
                                 strides, 0, 0, 2)
         # ...and in the destination position, which is the direction that
         # would corrupt memory rather than merely misread it.
         with pytest.raises(ValueError, match="float32"):
             library.tf_core_relu(handle, f32, shape, strides, 0, 2)
+        # ``tf_core_contiguous_copy`` is dtype-general from I2, so it is no
+        # longer rejecting "float32" — it is rejecting a **mixed** pair,
+        # which is the stronger and permanent rule. The assertion advances
+        # to that truth rather than being deleted.
+        with pytest.raises(ValueError, match="same dtype"):
+            library.tf_core_contiguous_copy(f32, handle, shape, strides, 0, 2)
         # The float64 destination was never touched by any of them.
         assert np.array_equal(destination.to_numpy(), np.zeros(64))
     finally:
@@ -1412,7 +1435,10 @@ def test_the_untyped_creators_still_work_and_still_mean_float64():
             # proof of its dtype tag from Python.
             library.tf_storage_fill(handle, 2.5)
             out = np.empty(16, dtype=np.float64)
-            library.tf_storage_copy_to(handle, out)
+            # The host position is a ``void*`` from I2, so the buffer goes
+            # through the same per-dtype checked binding every production
+            # transfer uses.
+            library.tf_storage_copy_to(handle, cpp._host_pointer(out, "float64"))
             assert np.array_equal(out, np.full(16, 2.5))
         finally:
             library.tf_storage_destroy(handle)
@@ -1434,3 +1460,547 @@ def test_no_public_float32_construction_path_exists_anywhere():
     ):
         with pytest.raises((ValueError, TypeError)):
             build()
+
+
+# ---------------------------------------------------------------------------
+# I2: typed array transfer, views, and materialization, as running code
+#
+# Everything below drives the **live** library at both dtypes. float32 is
+# still not a supported TensorForge dtype and no public constructor can
+# produce one, so these reach it through the private typed constructors
+# ``NativeStorage._typed`` / ``._typed_from_array`` and
+# ``NativeTensorCore._typed_from_array`` — the private/typed entry points
+# the rollout rule (design §27.2) requires an intermediate milestone to test
+# through while the public registry stays exactly where it is.
+#
+# Comparison is by **raw IEEE-754 bit pattern**, never by value and never by
+# tolerance. The three cases the transfer contract exists for — negative
+# zero, NaN payloads, and signalling NaNs — are exactly the ones ``==``
+# cannot see or silently launders.
+# ---------------------------------------------------------------------------
+
+# The seventeen representative classes, at each width, built from bits and
+# never from arithmetic. Written out rather than derived so a change to
+# either list is a visible diff.
+F64_BIT_PATTERNS = (
+    0x0000000000000000,  # +0.0
+    0x8000000000000000,  # -0.0                     <- arithmetic normalizes
+    0x3FF0000000000000,  # 1.0
+    0xBFF0000000000000,  # -1.0
+    0x7FF0000000000000,  # +inf
+    0xFFF0000000000000,  # -inf
+    0x7FF8000000000001,  # quiet NaN, payload 1
+    0x7FF800000000000A,  # quiet NaN, payload A
+    0xFFF8000000000001,  # negative quiet NaN
+    0x7FF0000000000001,  # signalling NaN           <- arithmetic quiets
+    0xFFF0000000000001,  # negative signalling NaN
+    0x0000000000000001,  # smallest positive subnormal
+    0x8000000000000001,  # -smallest subnormal
+    0x000FFFFFFFFFFFFF,  # largest subnormal
+    0x0010000000000000,  # smallest positive normal
+    0x7FEFFFFFFFFFFFFF,  # largest finite
+    0xFFEFFFFFFFFFFFFF,  # -largest finite
+)
+F32_BIT_PATTERNS = (
+    0x00000000,  # +0.0
+    0x80000000,  # -0.0                     <- arithmetic normalizes
+    0x3F800000,  # 1.0
+    0xBF800000,  # -1.0
+    0x7F800000,  # +inf
+    0xFF800000,  # -inf
+    0x7FC00001,  # quiet NaN, payload 1
+    0x7FC0000A,  # quiet NaN, payload A
+    0xFFC00001,  # negative quiet NaN
+    0x7F800001,  # signalling NaN           <- arithmetic quiets
+    0xFF800001,  # negative signalling NaN
+    0x00000001,  # smallest positive subnormal
+    0x80000001,  # -smallest subnormal
+    0x007FFFFF,  # largest subnormal
+    0x00800000,  # smallest positive normal
+    0x7F7FFFFF,  # largest finite
+    0xFF7FFFFF,  # -largest finite
+)
+
+_DTYPE_BITS = {
+    "float64": (F64_BIT_PATTERNS, np.uint64, np.float64),
+    "float32": (F32_BIT_PATTERNS, np.uint32, np.float32),
+}
+BOTH_DTYPES = ("float64", "float32")
+
+
+def _patterned(dtype, count):
+    """``count`` host values of ``dtype`` drawn from that width's sweep,
+    cycling.
+
+    Built by reinterpreting an integer array, so no floating operation ever
+    touches them — a signalling NaN produced arithmetically would already be
+    quiet before the test began, and the test would prove nothing.
+    """
+    patterns, unsigned, floating = _DTYPE_BITS[dtype]
+    raw = np.array([patterns[i % len(patterns)] for i in range(count)],
+                   dtype=unsigned)
+    return raw.view(floating)
+
+
+def _bits(array, dtype):
+    """``array``'s raw object representations, as unsigned integers."""
+    _, unsigned, floating = _DTYPE_BITS[dtype]
+    assert array.dtype == np.dtype(floating), (array.dtype, dtype)
+    return np.ascontiguousarray(array).view(unsigned)
+
+
+def _same_bits(got, expected, dtype):
+    return np.array_equal(_bits(got, dtype), _bits(expected, dtype))
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_a_host_round_trip_preserves_every_bit_at_both_dtypes(dtype):
+    """The core I2 claim. A transfer performs no arithmetic, so it has no
+    operand roles to choose between and no rounding to do: every object
+    representation reproduces exactly, including both signed zeros, both
+    infinities, subnormals, quiet NaN payloads, and signalling NaNs."""
+    for count in (1, 2, 17, 18, 1000):
+        source = _patterned(dtype, count)
+        storage = cpp.NativeStorage._typed(count, dtype)
+        try:
+            storage.copy_from(source)
+            assert storage.dtype == dtype
+            assert storage.size == count      # elements, never bytes
+            out = storage.to_numpy()
+            # Egress reproduces the storage dtype exactly — never widened.
+            assert out.dtype == np.dtype(_DTYPE_BITS[dtype][2])
+            assert out.shape == (count,)
+            assert _same_bits(out, source, dtype), (dtype, count)
+            # First, middle, and last named explicitly, so a failure
+            # localizes rather than merely reporting "something differs".
+            for index in (0, count // 2, count - 1):
+                assert (_bits(out, dtype)[index]
+                        == _bits(source, dtype)[index]), (dtype, count, index)
+            # Repeated round trips erode nothing.
+            for _ in range(3):
+                storage.copy_from(out)
+                out = storage.to_numpy()
+            assert _same_bits(out, source, dtype), (dtype, count, "repeated")
+        finally:
+            storage.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_non_contiguous_host_input_is_made_contiguous_without_conversion(dtype):
+    """``copy_from`` may make a host array contiguous — that is the
+    documented host-to-native boundary — but it must not change what the
+    elements *are* while doing so."""
+    floating = _DTYPE_BITS[dtype][2]
+    wide = _patterned(dtype, 34).reshape(17, 2)
+    strided = wide[:, 0]                      # stride 2, non-contiguous
+    assert not strided.flags.c_contiguous
+    storage = cpp.NativeStorage._typed(17, dtype)
+    try:
+        storage.copy_from(strided)
+        out = storage.to_numpy()
+        assert out.dtype == np.dtype(floating)
+        assert _same_bits(out, np.ascontiguousarray(strided), dtype)
+    finally:
+        storage.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_raw_transfer_boundary_rejects_a_wrong_dtype_host_buffer(dtype):
+    """No implicit conversion happens at the C ABI. The wrapper converts,
+    once, on the way in; the boundary itself checks and refuses."""
+    other = "float32" if dtype == "float64" else "float64"
+    storage = cpp.NativeStorage._typed(8, dtype)
+    try:
+        handle = storage._require_open()
+        wrong = np.zeros(8, dtype=_DTYPE_BITS[other][2])
+        with pytest.raises(TypeError):
+            cpp._host_pointer(wrong, dtype)
+        # ...so driving the export with it never happens: the pointer the
+        # call would need is never produced.
+        with pytest.raises(TypeError):
+            storage._lib.tf_storage_copy_from(
+                handle, cpp._host_pointer(wrong, dtype))
+        # The storage is untouched by the refusal.
+        assert _same_bits(storage.to_numpy(),
+                          np.zeros(8, dtype=_DTYPE_BITS[dtype][2]), dtype)
+    finally:
+        storage.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_views_preserve_dtype_storage_identity_and_element_metadata(dtype):
+    """A view has no dtype of its own and never could: it borrows the
+    storage that holds the one authority. Reshape, transpose, ``.T``,
+    narrow, and a chain of them therefore cannot disagree with it, cannot
+    copy, and cannot cast."""
+    core = cpp.NativeTensorCore._typed_from_array(
+        _patterned(dtype, 24).reshape(4, 6), dtype)
+    views = []
+    try:
+        assert core.dtype == dtype
+        assert core.storage.dtype == dtype
+        chained = core.reshape((2, 12)).narrow(1, 2, 6).transpose(1, 0)
+        for view in (core.reshape((2, 12)), core.transpose(1, 0), core.T,
+                     core.narrow(0, 1, 2), core.narrow(1, 3, 3).T, chained):
+            views.append(view)
+            assert view.dtype == dtype
+            # One storage object, shared — no copy, no second dtype field.
+            assert view.storage is core.storage
+            assert view._view._storage is core.storage
+            # Shapes, strides, and offsets stay logical element counts.
+            assert all(isinstance(n, int) for n in view.shape)
+            assert all(isinstance(n, int) for n in view.strides)
+            assert isinstance(view.offset, int)
+            assert view.offset < core.storage.size
+            # The view object itself carries no dtype attribute of its own.
+            assert "_dtype" not in vars(view._view)
+        # Closing one view leaves every other alias live, and none of them
+        # destroys the shared storage.
+        views[0].close()
+        assert views[1].to_numpy().dtype == np.dtype(_DTYPE_BITS[dtype][2])
+        assert core.dtype == dtype
+    finally:
+        for view in views:
+            view.close()
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_view_materialization_is_bit_exact_at_both_dtypes(dtype):
+    """Strided, offset, transposed, narrowed, and chained views all
+    materialize into a host array of the storage's own dtype, with exact
+    bits, in row-major order."""
+    values = _patterned(dtype, 24).reshape(4, 6)
+    core = cpp.NativeTensorCore._typed_from_array(values, dtype)
+    try:
+        cases = (
+            ("identity", core, values),
+            ("reshape", core.reshape((2, 12)), values.reshape(2, 12)),
+            ("transpose", core.T, values.T),
+            ("narrow rows", core.narrow(0, 1, 2), values[1:3]),
+            ("narrow cols", core.narrow(1, 2, 3), values[:, 2:5]),
+            ("chained", core.narrow(0, 1, 3).T.narrow(0, 1, 4),
+             values[1:4].T[1:5]),
+        )
+        for name, view, expected in cases:
+            try:
+                got = view.to_numpy()
+                assert got.dtype == np.dtype(_DTYPE_BITS[dtype][2]), name
+                assert got.shape == np.asarray(expected).shape, name
+                assert _same_bits(got, np.ascontiguousarray(expected),
+                                  dtype), (dtype, name)
+            finally:
+                if view is not core:
+                    view.close()
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_identity_copy_preserves_dtype_and_bits_at_both_dtypes(dtype):
+    """``contiguous_copy`` is the runtime's value-transfer primitive. Its
+    output has the input's dtype, is canonical row-major contiguous, owns
+    fresh storage that aliases nothing, and reproduces the source's bits
+    exactly — on the contiguous fast path and on the strided traversals
+    alike."""
+    values = _patterned(dtype, 24).reshape(4, 6)
+    core = cpp.NativeTensorCore._typed_from_array(values, dtype)
+    try:
+        for name, view, expected in (
+            ("contiguous", core, values),
+            ("transposed", core.T, values.T),
+            ("narrowed", core.narrow(1, 1, 4), values[:, 1:5]),
+            ("reshaped", core.reshape((6, 4)), values.reshape(6, 4)),
+        ):
+            copied = view.contiguous_copy()
+            try:
+                assert copied.dtype == dtype, name
+                assert copied.storage.dtype == dtype, name
+                assert copied.contiguous and copied.offset == 0, name
+                assert copied.storage is not core.storage, name
+                assert _same_bits(copied.to_numpy(),
+                                  np.ascontiguousarray(expected),
+                                  dtype), (dtype, name)
+            finally:
+                copied.close()
+                if view is not core:
+                    view.close()
+        # ...and the source is untouched by any of it.
+        assert _same_bits(core.to_numpy(), values, dtype)
+    finally:
+        core.close()
+
+
+@needs_native
+def test_a_mixed_dtype_identity_copy_is_rejected_before_any_write():
+    """There is no casting and no promotion anywhere in the runtime, so a
+    float32 source with a float64 destination is an invalid request rather
+    than a conversion opportunity — and the refusal happens before a single
+    element is written, in either direction."""
+    library = cpp._require_library()
+    f32 = cpp.NativeStorage._typed(20, "float32")
+    f64 = cpp.NativeStorage(20)
+    try:
+        f64.copy_from(np.arange(20, dtype=np.float64))
+        before64 = f64.to_numpy().copy()
+        before32 = f32.to_numpy().copy()
+        shape = (ctypes.c_int64 * 2)(4, 5)
+        strides = (ctypes.c_int64 * 2)(5, 1)
+        for source, destination in ((f32, f64), (f64, f32)):
+            with pytest.raises(ValueError) as caught:
+                library.tf_core_contiguous_copy(
+                    source._require_open(), destination._require_open(),
+                    shape, strides, 0, 2)
+            message = str(caught.value)
+            assert "float32" in message and "float64" in message
+            assert "same dtype" in message
+        # Neither buffer moved, in either direction.
+        assert _same_bits(f64.to_numpy(), before64, "float64")
+        assert _same_bits(f32.to_numpy(), before32, "float32")
+    finally:
+        f64.close()
+        f32.close()
+
+
+@needs_native
+def test_the_raw_utility_kernels_compute_only_in_float64():
+    """``RAW_KERNEL_DTYPES`` is a claim about running code, so it is checked
+    against the kernels rather than read off the tuple.
+
+    The seven raw kernels are handle-free — they take only ``const
+    double*``, ``double*``, and an element count — so there is no dtype tag
+    to dispatch on and no way to give them one without changing their
+    argument count, which would be a real ABI break. Three separate facts
+    make that concrete, and the distinction between them is the point:
+
+    1. **The C ABI positions are float64 and reject anything else.** Every
+       raw kernel's array arguments are bound with the float64 checked
+       ``ndpointer``, so a float32 buffer never reaches one.
+    2. **The Python wrappers convert rather than compute narrow.** They are
+       the same explicit host-to-native conversion boundary
+       ``from_array`` is, and have been since v0.x: a float32 input is
+       converted to float64 on the way in and the **result is float64**. No
+       float32 arithmetic happens anywhere, at any width, in any of them.
+    3. **No per-dtype raw wrapper or export exists**, and none may be added.
+    """
+    library = cpp._require_library()
+    # 1. The declared boundary is float64, and it refuses a float32 buffer.
+    a32 = np.ones(4, dtype=np.float32)
+    for name in ("tf_elementwise_add", "tf_elementwise_subtract",
+                 "tf_elementwise_multiply", "tf_elementwise_divide",
+                 "tf_relu", "tf_matmul", "tf_matmul_tiled"):
+        for argtype in getattr(library, name).argtypes:
+            if getattr(argtype, "__name__", "").startswith("ndpointer"):
+                assert argtype is cpp._CHECKED_F64_ARRAY, name
+                with pytest.raises(TypeError):
+                    argtype.from_param(a32)
+
+    # 2. The wrappers convert at the host boundary and return float64.
+    a32sq = np.ones((2, 2), dtype=np.float32)
+    for name in cpp.RAW_KERNELS:
+        kernel = getattr(cpp, name)
+        if name == "matmul_tiled":
+            result = kernel(a32sq, a32sq, block_size=2)
+        elif name == "matmul":
+            result = kernel(a32sq, a32sq)
+        elif name == "relu":
+            result = kernel(a32sq)
+        else:
+            result = kernel(a32sq, a32sq)
+        assert result.dtype == np.float64, name
+
+    # 3. No per-dtype raw wrapper or export exists.
+    assert not [name for name in dir(cpp)
+                if name.endswith(("_f32", "_float32"))]
+    assert cpp.RAW_KERNEL_DTYPES == ("float64",)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_typed_storage_lifetime_returns_exactly_to_baseline(dtype):
+    """I1's ownership guardrails, re-run over the paths I2 opened: repeated
+    create / view / materialize / copy / close cycles must leave live native
+    storage exactly where they found it, at both dtypes."""
+    open_ids = set()
+    original_init = cpp.NativeStorage.__init__
+    original_close = cpp.NativeStorage.close
+
+    def tracked_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        open_ids.add(id(self))
+
+    def tracked_close(self):
+        original_close(self)
+        open_ids.discard(id(self))
+
+    cpp.NativeStorage.__init__ = tracked_init
+    cpp.NativeStorage.close = tracked_close
+    try:
+        baseline = len(open_ids)
+        values = _patterned(dtype, 24).reshape(4, 6)
+        for _ in range(50):
+            core = cpp.NativeTensorCore._typed_from_array(values, dtype)
+            view = core.T
+            copied = view.contiguous_copy()
+            assert _same_bits(copied.to_numpy(),
+                              np.ascontiguousarray(values.T), dtype)
+            copied.close()
+            view.close()       # a borrowing view frees no shared storage
+            core.close()
+        assert len(open_ids) == baseline
+    finally:
+        cpp.NativeStorage.__init__ = original_init
+        cpp.NativeStorage.close = original_close
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_a_failed_identity_copy_leaks_nothing_at_either_dtype(dtype):
+    """A failure inside ``contiguous_copy`` closes everything it allocated,
+    so live storage returns exactly to baseline and no caller can observe
+    one lone result."""
+    open_ids = set()
+    original_init = cpp.NativeStorage.__init__
+    original_close = cpp.NativeStorage.close
+
+    def tracked_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        open_ids.add(id(self))
+
+    def tracked_close(self):
+        original_close(self)
+        open_ids.discard(id(self))
+
+    cpp.NativeStorage.__init__ = tracked_init
+    cpp.NativeStorage.close = tracked_close
+    try:
+        core = cpp.NativeTensorCore._typed_from_array(
+            _patterned(dtype, 24).reshape(4, 6), dtype)
+        try:
+            baseline = len(open_ids)
+            # The output allocation itself fails.
+            cpp._arm_alloc_failure(1)
+            try:
+                with pytest.raises(MemoryError):
+                    core.T.contiguous_copy()
+            finally:
+                cpp._arm_alloc_failure(0)
+            assert len(open_ids) == baseline
+            # ...and the very next copy succeeds, so nothing latched.
+            copied = core.contiguous_copy()
+            assert copied.dtype == dtype
+            copied.close()
+            assert len(open_ids) == baseline
+        finally:
+            core.close()
+    finally:
+        cpp.NativeStorage.__init__ = original_init
+        cpp.NativeStorage.close = original_close
+
+
+@needs_native
+def test_i2_moved_no_public_capability_at_all():
+    """The exit gate, as one assertion block: internal float32 transfer
+    exists and public float32 support does not."""
+    import inspect
+
+    import tensorforge.experimental as experimental
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
+    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
+    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    assert cpp.backend_info()["dtype"] == "float64"
+    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+            == I0_CHECKPOINT_VERSIONS)
+    exports = _source_exports()
+    assert len(exports) == I1_EXPORT_COUNT       # still 54; I2 adds none
+    for absent in ("tf_storage_copy_from_typed", "tf_storage_copy_to_typed",
+                   "tf_storage_materialize_typed",
+                   "tf_core_contiguous_copy_f32", "tf_storage_dtype",
+                   "tf_storage_cast"):
+        assert absent not in exports, absent
+    # No module, parameter, optimizer, or loss constructor gained a dtype
+    # argument — that is milestone I7, not this one.
+    for name in experimental.__all__:
+        obj = getattr(experimental, name)
+        if not inspect.isclass(obj):
+            continue
+        try:
+            signature = inspect.signature(obj)
+        except (TypeError, ValueError):  # pragma: no cover
+            continue
+        assert "dtype" not in signature.parameters, name
+
+
+@needs_native
+def test_the_float32_paths_are_exactly_transfer_materialization_and_copy():
+    """The precise statement that replaces I1's "float32 is consumed by
+    nothing": it is consumed by the transfer, materialization, and
+    identity-copy infrastructure, and by nothing else. Arithmetic, in every
+    family, still rejects it — and rejects it as *float64-only*, with both
+    operands at the same dtype, so this is not a mixed-dtype rejection in
+    disguise."""
+    library = cpp._require_library()
+    core = cpp.NativeTensorCore._typed_from_array(
+        _patterned("float32", 16).reshape(4, 4), "float32")
+    other = cpp.NativeTensorCore._typed_from_array(
+        np.ones((4, 4), dtype=np.float32), "float32")
+    output = cpp.NativeStorage._typed(16, "float32")
+    try:
+        # Consumed: transfer in, transfer out, materialize, identity copy.
+        assert core.to_numpy().dtype == np.float32
+        copied = core.T.contiguous_copy()
+        assert copied.dtype == "float32"
+        copied.close()
+
+        shape = (ctypes.c_int64 * 2)(4, 4)
+        strides = (ctypes.c_int64 * 2)(4, 1)
+        a = core.storage._require_open()
+        b = other.storage._require_open()
+        out = output._require_open()
+        for call in (
+            lambda: library.tf_core_relu(a, out, shape, strides, 0, 2),
+            lambda: library.tf_core_sqrt(a, out, shape, strides, 0, 2),
+            lambda: library.tf_core_reciprocal(a, out, shape, strides, 0, 2),
+            lambda: library.tf_core_exp(a, out, shape, strides, 0, 2),
+            lambda: library.tf_core_log(a, out, shape, strides, 0, 2),
+            lambda: library.tf_core_add(a, b, out, shape, strides, strides,
+                                        0, 0, 2),
+            lambda: library.tf_core_subtract(a, b, out, shape, strides,
+                                             strides, 0, 0, 2),
+            lambda: library.tf_core_multiply(a, b, out, shape, strides,
+                                             strides, 0, 0, 2),
+            lambda: library.tf_core_matmul(a, b, out, 4, 4, 4, 4, 1, 4, 1,
+                                           0, 0),
+            lambda: library.tf_core_sum(a, out, shape, strides,
+                                        (ctypes.c_int64 * 2)(0, 1), 0, 2),
+            lambda: library.tf_core_softmax_forward(a, 0, out, 4, 4, 1),
+            lambda: library.tf_core_log_softmax_forward(a, 0, out, 4, 4, 1),
+            lambda: library.tf_core_dropout_forward(a, 0, out, out, 16,
+                                                    1, 0, 0.5),
+        ):
+            with pytest.raises(ValueError, match="float64-only"):
+                call()
+        # ...and the two float64-only storage primitives are deliberately
+        # among them: they assign and multiply rather than transfer, so
+        # broadening them is a later milestone's decision. They are
+        # unhooked (H7), so their rejection is read from the error slot.
+        library.tf_clear_error()
+        library.tf_storage_fill(a, 1.0)
+        assert library.tf_last_error_code() != 0
+        library.tf_clear_error()
+        library.tf_storage_scale(a, 2.0)
+        assert library.tf_last_error_code() != 0
+        library.tf_clear_error()
+    finally:
+        output.close()
+        other.close()
+        core.close()

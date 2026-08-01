@@ -42,8 +42,8 @@ sections above are the narrative.
 ## The current phase — Phase I
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 and I1 are complete; I2 through I11 are not
-started.** Its architecture contract is
+latest phase. Milestones I0, I1, and I2 are complete; I3 through I11 are
+not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
 **I0 was a design-and-reconciliation milestone: it shipped the contract,
@@ -60,17 +60,38 @@ whole phase — no later milestone adds one. The untyped creators remain,
 unchanged, as thin float64 compatibility wrappers over the same shared
 creation body.
 
-**I1 moved no public capability.** The native runtime is still float64 CPU
-only: `float32` is still listed as unsupported, `SUPPORTED_DTYPES` still
-reads `("float64",)`, and the native checkpoint format is still
-`tensorforge.native_checkpoint` version 2 with versions 1 and 2 accepted.
-float32 storage is *allocatable through the C ABI* and no operation
-consumes it — every kernel that has not been generalized rejects a float32
-handle with `TF_ERROR_INVALID` before reading or writing anything, which
-is what keeps a 4-byte-per-element buffer from being walked as `double`.
-That gap between internal capability and public promise is deliberate and
-closes at I9. Nothing about Phase H changed; Phase H remains complete, and
-it closed at 52 exports.
+**I2 made float32 storage movable.** The three exports that carry a
+storage handle *and* a host buffer — `tf_storage_copy_from`,
+`tf_storage_copy_to`, and `tf_storage_materialize` — became dtype-general
+through a **source-level retype** of their host positions from `double*`
+to `void*`: same symbols, same argument slots, same calling convention,
+still 54 exports, and a previously compiled caller would link and run
+identically. `tf_core_contiguous_copy`, the runtime's value-transfer
+primitive, became dtype-preserving and dtype-strict, so a float32 view of
+any layout can be materialized or copied storage-to-storage while a mixed
+float32/float64 pair is rejected before anything is written. Internal
+float32 values now round-trip through the host, through every view
+transformation, and through the identity copy **bit for bit** — signed
+zeros, infinities, subnormals, NaN payloads, and signalling NaNs included,
+proved by raw IEEE-754 bit comparison at both widths. `RAW_KERNEL_DTYPES`
+records the other half of the division: the seven handle-free raw utility
+kernels take only `double*` and an element count, so they have no dtype to
+dispatch on and stay float64.
+
+**Neither I1 nor I2 moved a public capability.** The native runtime is
+still float64 CPU only: `float32` is still listed as unsupported,
+`SUPPORTED_DTYPES` still reads `("float64",)`, and the native checkpoint
+format is still `tensorforge.native_checkpoint` version 2 with versions 1
+and 2 accepted. float32 storage is *allocatable and movable through the C
+ABI* and **nothing computes on it** — every arithmetic, reduction, matmul,
+convolution, pooling, classification, dropout, normalization, optimizer,
+module, and checkpoint path still rejects a float32 handle with
+`TF_ERROR_INVALID` before reading or writing anything, and so do
+`tf_storage_fill` and `tf_storage_scale`, which assign and multiply rather
+than transfer. That is what keeps a 4-byte-per-element buffer from being
+walked as `double`. The gap between internal capability and public promise
+is deliberate and closes at I9. Nothing about Phase H changed; Phase H
+remains complete, and it closed at 52 exports.
 
 What Phase I will deliver, once its milestones land: float32 CPU tensors
 beside the existing float64 ones, dtype-tagged storage, dtype-aware
@@ -94,7 +115,13 @@ than re-deriving them:
   appear only at the allocation boundary, with checked
   `numel × itemsize` arithmetic. *Delivered at I1.*
 - **No casting, no promotion, no mixed-dtype arithmetic.** A mismatch
-  raises before any output is allocated or any state is mutated.
+  raises before any output is allocated or any state is mutated. *First
+  reachable — and tested — at I2, on the identity copy.*
+- **The raw-buffer boundary is divided explicitly.** Every export that
+  receives a storage handle can be dtype-general because the handle
+  carries the dtype; the seven handle-free raw utility kernels cannot, and
+  stay float64 permanently. *Recorded by `RAW_KERNEL_DTYPES` and reported
+  by `backend_info()` at I2.*
 - **float32 accumulates in float32**, with no hidden wider accumulator
   anywhere — that would be mixed precision, which is out of scope.
 - **Checkpoint version 3** is designed but not activated at I0. Versions
@@ -110,7 +137,7 @@ than re-deriving them:
   optimizer state, checkpoint version 3, and the exact-resume proof all
   exist.
 
-The ladder is I0 through I11 — **I0 and I1 landed; I2 is next**: the
+The ladder is I0 through I11 — **I0, I1, and I2 landed; I3 is next**: the
 contract (I0), the dtype model and
 tagged storage (I1), typed transfer and materialization (I2), elementwise
 execution (I3), reductions and matmul (I4), the convolution and pooling

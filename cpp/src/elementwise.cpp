@@ -69,13 +69,21 @@ double op_log(double x) { return std::log(x); }
 
 // Walk one strided source with the standard odometer and write row-major
 // contiguous output.
-void core_unary(
-    const void* src_handle, void* dst_handle,
+//
+// **The retained generic reference path**, now written over an explicit
+// scalar type (Phase I, milestone I2). The loop body, the traversal order,
+// the carry, and the indirect call through ``op`` are exactly what they
+// were — ``T = double`` reproduces the pre-Phase-I kernel statement for
+// statement — and the handle-based wrapper below keeps every existing
+// caller's signature. The parameter exists so the identity map, which is
+// the one operation I2 generalizes, has the *same* retained fallback at
+// both widths rather than a second copy that could drift from this one.
+template <class T>
+void core_unary_typed(
+    const T* src, T* dst,
     const int64_t* shape, const int64_t* strides,
-    int64_t offset, int64_t ndim, UnaryOp op
+    int64_t offset, int64_t ndim, T (*op)(T)
 ) {
-    const double* src = tf::storage_f64(src_handle);
-    double* dst = tf::storage_f64(dst_handle);
     if (ndim == 0) {
         dst[0] = op(src[offset]);
         return;
@@ -98,6 +106,19 @@ void core_unary(
             src_pos -= shape[d] * strides[d];
         }
     }
+}
+
+// The float64 handle wrapper every pre-Phase-I caller uses: signature,
+// behavior, and traversal unchanged. It resolves the two handles through
+// the one float64 accessor and runs the retained odometer above.
+void core_unary(
+    const void* src_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim, UnaryOp op
+) {
+    core_unary_typed<double>(tf::storage_f64(src_handle),
+                             tf::storage_f64(dst_handle),
+                             shape, strides, offset, ndim, op);
 }
 
 // Contiguous fast path: flat, index-free loop. Scalars fall out as
@@ -577,7 +598,12 @@ TF_EXPORT void tf_core_reciprocal_contiguous(
 // identity map; only the traversal matters.
 
 namespace {
-double op_identity(double x) { return x; }
+// Templated for the same reason ``tf::IdentityOp::apply`` is (Phase I,
+// milestone I2): a fixed ``double(double)`` reached with a float operand
+// would convert float -> double -> float, and a conversion quiets a
+// signalling NaN. Deducing the type keeps the identity an identity.
+template <class T>
+T op_identity(T x) { return x; }
 }  // namespace
 
 // Phase H, milestone H5: the traversal predicate. See
@@ -609,12 +635,82 @@ bool copy_prefers_contiguous(const int64_t* shape, const int64_t* strides,
 }
 }  // namespace tf
 
+// The three-tier traversal, over an explicit scalar type (Phase I,
+// milestone I2). ``T = double`` is the pre-I2 body statement for
+// statement — the same predicate, the same plan builder, the same flat
+// row, the same retained odometer, in the same order — so Phase H's
+// measured float64 behavior is preserved rather than re-derived.
+//
+// H5: pick the traversal from the metadata already in hand. A row-major
+// source is swept with the flat pointer loop every other unary op's
+// contiguous path already uses; anything else keeps the generic odometer,
+// which is the retained reference traversal and the only one that can
+// address a transposed, narrowed, or negatively strided view at all. Both
+// write ``dst[out] = src[pos]`` over the same logical elements in the same
+// row-major destination order, so they are bit-identical by construction —
+// the identity map performs no arithmetic, so no signed zero can be
+// normalized and no NaN can be quieted or have its payload chosen on any
+// path.
+//
+// H8 keeps both of H5's tiers and adds a middle one. The row-major tier
+// still runs the flat loop, now with the identity as a compile-time
+// constant of the loop body rather than an indirect call; a source H5's
+// predicate rejects gets the collapsed plan; and a plan the builder rejects
+// still gets the odometer, which remains the only traversal that can
+// address an arbitrary layout. The bit-identity argument is unchanged and
+// covers all three, at **both** dtypes: the identity map performs no
+// arithmetic at all, which is a property of the operation rather than of
+// the element width.
+//
+// The plan builder and the predicate are untouched by dtype: both read
+// ``int64`` layout metadata only, which is exactly why they carry over.
+namespace {
+template <class T>
+void copy_dispatch(
+    const void* src_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
+) {
+    const T* src = tf::storage_typed<T>(src_handle);
+    T* dst = tf::storage_typed<T>(dst_handle);
+    if (tf::copy_prefers_contiguous(shape, strides, ndim)) {
+        int64_t numel = 1;
+        for (int64_t d = 0; d < ndim; ++d) {
+            numel *= shape[d];
+        }
+        tf::unary_row<tf::IdentityOp>(src + offset, dst, numel, 1);
+        return;
+    }
+    tf::ElementwiseUnaryPlan plan;
+    if (tf::build_unary_plan(shape, strides, ndim, plan)) {
+        tf::unary_plan_walk<tf::IdentityOp>(src, dst, plan, offset);
+        return;
+    }
+    core_unary_typed<T>(src, dst, shape, strides, offset, ndim, op_identity<T>);
+}
+}  // namespace
+
+// Phase I, milestone I2: the one handle-based compute export the milestone
+// generalizes, and the only one — every other kernel keeps
+// ``tf::require_float64`` until its own milestone.
+//
+// It is generalized here because it is not really arithmetic: it is the
+// runtime's **value-transfer primitive** (H5), the storage-to-storage twin
+// of ``tf_storage_materialize``, and the thing every Policy-B
+// copy-then-compute path, ``NativeFlatten``, ``NativeParameter``
+// construction, and the differentiable ``contiguous_copy`` are built on.
+// Transfer is what I2 is about.
+//
+// Source and destination dtypes must **agree**: there is no casting and no
+// promotion anywhere in the runtime, so float32 -> float64 is an invalid
+// request rather than a conversion. The rejection is recorded before the
+// span validation runs and long before any element is written, so a
+// rejected call leaves the destination byte-for-byte unchanged.
 TF_EXPORT void tf_core_contiguous_copy(
     const void* src, void* dst,
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    if (!tf::require_float64("tf_core_contiguous_copy", {src, dst})) {
+    if (!tf::require_matching_dtype("tf_core_contiguous_copy", src, dst)) {
         return;
     }
     if (const char* err =
@@ -622,35 +718,19 @@ TF_EXPORT void tf_core_contiguous_copy(
         tf::set_error(TF_ERROR_INVALID, err);
         return;
     }
-    // H5: pick the traversal from the metadata already in hand. A
-    // row-major source is swept with the flat pointer loop every other
-    // unary op's contiguous path already uses; anything else keeps the
-    // generic odometer, which is the retained reference traversal and the
-    // only one that can address a transposed, narrowed, or negatively
-    // strided view at all. Both write ``dst[out] = src[pos]`` over the
-    // same logical elements in the same row-major destination order, so
-    // they are bit-identical by construction — the identity map performs
-    // no arithmetic, so no signed zero can be normalized and no NaN can
-    // be quieted or have its payload chosen on either path.
-    //
-    // H8 keeps both of H5's tiers and adds a middle one. The row-major tier
-    // still runs the flat loop, now with the identity as a compile-time
-    // constant of the loop body rather than an indirect call; a source H5's
-    // predicate rejects gets the collapsed plan; and a plan the builder
-    // rejects still gets the odometer, which remains the only traversal that
-    // can address an arbitrary layout. The bit-identity argument is
-    // unchanged and covers all three: the identity map performs no
-    // arithmetic at all.
-    if (tf::copy_prefers_contiguous(shape, strides, ndim)) {
-        int64_t numel = 1;
-        for (int64_t d = 0; d < ndim; ++d) {
-            numel *= shape[d];
-        }
-        unary_contiguous_dispatch<tf::IdentityOp>(src, dst, numel, offset);
-        return;
+    // The one dispatch: after validation, before any compute, reading the
+    // dtype from the handle the caller already passed. Nothing below this
+    // point branches on dtype — not the predicate, not the plan builder,
+    // not the row kernel, not the odometer carry, and emphatically not any
+    // element.
+    switch (tf::storage_dtype(src)) {
+        case tf::Dtype::Float32:
+            copy_dispatch<float>(src, dst, shape, strides, offset, ndim);
+            return;
+        case tf::Dtype::Float64:
+            break;
     }
-    unary_dispatch<tf::IdentityOp>(src, dst, shape, strides, offset, ndim,
-                                   op_identity);
+    copy_dispatch<double>(src, dst, shape, strides, offset, ndim);
     TF_GUARD_END_VOID()
 }
 

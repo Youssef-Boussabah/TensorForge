@@ -271,6 +271,36 @@ inline const double* storage_f64(const void* handle) noexcept {
     return static_cast<const double*>(as_storage(handle)->data);
 }
 
+// Phase I, milestone I2: the dtype-general sibling of ``storage_f64``.
+//
+// Same contract, same soundness argument, one degree of freedom more: the
+// caller has already established — through ``storage_dtype`` at a single
+// dispatch point — that this storage's tag really is ``T``'s dtype, so the
+// recovered pointer addresses the first element of a genuine ``T[]`` array
+// and indexing it across ``size`` elements is well-defined.
+//
+// It exists so that a dtype-general export has exactly **one** way to
+// reach a typed buffer, just as every float64 kernel has exactly one. An
+// export that has not been generalized keeps ``storage_f64`` and
+// ``require_float64``; nothing may cast ``Storage::data`` by hand.
+template <class T>
+inline T* storage_typed(void* handle) noexcept {
+    return static_cast<T*>(as_storage(handle)->data);
+}
+template <class T>
+inline const T* storage_typed(const void* handle) noexcept {
+    return static_cast<const T*>(as_storage(handle)->data);
+}
+
+// The storage's dtype tag — the single authority a dtype-general export
+// dispatches on, read **once** per exported call (design §8.1). There is
+// deliberately no exported ``tf_storage_dtype``: Python knows a storage's
+// dtype because Python asked for it at creation, and a query symbol would
+// be a second authority for a value the wrapper already owns (§6.6).
+inline Dtype storage_dtype(const void* handle) noexcept {
+    return as_storage(handle)->dtype;
+}
+
 // Phase I, milestone I1: the transitional dtype guard.
 //
 // I1 gives storage a dtype tag and gives the ABI a way to allocate
@@ -313,6 +343,43 @@ inline bool require_float64(
             set_error(TF_ERROR_INVALID, message);
             return false;
         }
+    }
+    return true;
+}
+
+// Phase I, milestone I2: the operand-agreement guard for the operations
+// that **are** dtype-general.
+//
+// ``require_float64`` says "this operation has not been generalized"; this
+// one says "this operation has been, and its operands must agree". There
+// is no promotion, no narrowing, no widening, and no cast anywhere in the
+// runtime (design §9), so a float32 source and a float64 destination is an
+// invalid *request* rather than a conversion opportunity.
+//
+// Rejection is TF_ERROR_INVALID naming both dtypes, recorded before the
+// caller touches any destination — a rejecting export writes nothing.
+//
+// Null handles **pass**, for exactly ``require_float64``'s reason: each
+// export keeps its own null validation, with its own message and its own
+// ordering, and this guard must not pre-empt it.
+inline bool require_matching_dtype(
+    const char* operation, const void* first, const void* second
+) noexcept {
+    if (first == nullptr || second == nullptr) {
+        return true;
+    }
+    const Dtype a = as_storage(first)->dtype;
+    const Dtype b = as_storage(second)->dtype;
+    if (a != b) {
+        // Bounded stack buffer: recording a rejection must not itself
+        // allocate, and snprintf truncates rather than overflowing.
+        char message[192];
+        std::snprintf(message, sizeof message,
+                      "%s: operands must have the same dtype; got %s and %s "
+                      "(the native runtime performs no casting or promotion)",
+                      operation, dtype_name(a), dtype_name(b));
+        set_error(TF_ERROR_INVALID, message);
+        return false;
     }
     return true;
 }

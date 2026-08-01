@@ -254,13 +254,53 @@ def test_both_paths_reject_the_same_invalid_sizes(bad):
 @needs_native
 @pytest.mark.parametrize("dtype,device", [("float32", "cpu"),
                                           ("float64", "cuda")])
-def test_both_paths_reject_the_same_unsupported_metadata(dtype, device):
-    """Validation precedes allocation on both paths, so a rejected
-    request allocates nothing."""
+def test_the_public_path_rejects_unsupported_metadata(dtype, device):
+    """Validation precedes allocation, so a rejected request allocates
+    nothing. This is the **public** constructor, and it is the one that
+    carries the promise: ``"float32"`` is not a supported TensorForge dtype
+    and does not become one until milestone I9."""
     with pytest.raises(ValueError):
         cpp.NativeStorage(8, dtype=dtype, device=device)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype,device", [("float16", "cpu"),
+                                          ("float64", "cuda")])
+def test_the_private_allocator_still_rejects_what_the_runtime_cannot_represent(
+        dtype, device):
+    """``NativeStorage._uninitialized`` validates its dtype against the
+    **internal** table from Phase I milestone I2 rather than the public
+    registry, so that an operation's freshly allocated output can match its
+    operand's dtype without asking permission the operand already has.
+
+    That is a narrower relaxation than it sounds, and this pins the
+    boundary: a dtype the runtime cannot physically represent is still
+    rejected, an unsupported *device* is still rejected, and validation
+    still precedes allocation. Only ``"float32"`` — which storage really can
+    be, and which only the private typed constructors can request — moved,
+    and it moved into a private path, not a public one.
+    """
     with pytest.raises(ValueError):
         cpp.NativeStorage._uninitialized(8, dtype=dtype, device=device)
+
+
+@needs_native
+def test_the_private_allocator_accepts_float32_and_the_public_one_does_not():
+    """The exact I2 truth, stated as behavior rather than inferred from a
+    registry: float32 storage is internally allocatable and publicly
+    unsupported, at the same moment, on purpose."""
+    with pytest.raises(ValueError):
+        cpp.NativeStorage(8, dtype="float32")
+    with pytest.raises(ValueError):
+        cpp.NativeStorage.from_array([1.0, 2.0], dtype="float32")
+    with pytest.raises(ValueError):
+        cpp.normalize_dtype("float32")
+    storage = cpp.NativeStorage._uninitialized(8, dtype="float32")
+    try:
+        assert storage.dtype == "float32"
+        assert storage.size == 8          # elements, not bytes
+    finally:
+        storage.close()
 
 
 @needs_native

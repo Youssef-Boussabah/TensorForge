@@ -1433,11 +1433,14 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     # Phase I milestone I1 added the dtype/storage contract test, which is
     # likewise not a numerical kernel — it drives the dtype model, the two
     # typed creators, and the rejection of a float32 handle by every
-    # operation that has not been generalized yet.
-    assert len(ctests) == 18
-    assert "test_dtype_storage.cpp" in ctests
-    assert len([name for name in ctests
-                if name != "test_dtype_storage.cpp"]) == 17
+    # operation that has not been generalized yet. I2 added the typed
+    # transfer test, which is not a numerical kernel either — it drives the
+    # three retyped transfer boundaries, materialization, and the identity
+    # copy at both dtypes, by raw IEEE-754 bit comparison.
+    assert len(ctests) == 19
+    phase_i = {"test_dtype_storage.cpp", "test_typed_transfer.cpp"}
+    assert phase_i <= set(ctests)
+    assert len([name for name in ctests if name not in phase_i]) == 17
     assert "test_conv2d_execution.cpp" in ctests
     assert "test_storage_allocation.cpp" in ctests
     assert "test_matmul.cpp" in ctests

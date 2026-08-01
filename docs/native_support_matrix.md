@@ -902,9 +902,9 @@ proposed optimizations. Every number behind those statements is a local
 characterization of one machine, is reported with its spread, and is
 asserted by no test.
 
-## Phase I — native dtype generalization and float32 CPU support, **I0 and I1 complete**
+## Phase I — native dtype generalization and float32 CPU support, **I0, I1, and I2 complete**
 
-**Phase I is the latest phase. Milestones I0 and I1 are complete; I2
+**Phase I is the latest phase. Milestones I0, I1, and I2 are complete; I3
 through I11 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
@@ -935,23 +935,60 @@ all**.
   thin float64 compatibility wrappers over the same shared body;
 - the native CTest inventory moved **17 → 18** (`test_dtype_storage`).
 
-**What I1 did *not* change is the whole of the rest of this matrix.** The
-native runtime is still **publicly float64 CPU only**: `SUPPORTED_DTYPES`
-reads `("float64",)`, `SUPPORTED_DEVICES` reads `("cpu",)`, `UNSUPPORTED`
-reads `("float32", "cuda", "amp")`, and the native checkpoint format is
-`tensorforge.native_checkpoint` version **2** with versions **(1, 2)**
-accepted. `float32` therefore stays in the **Unsupported or future**
-section above, and it stays there until milestone **I9**.
+**I2** made that foundation movable, and added **no export**. What it
+changed:
 
-The honest statement of what float32 *is* after I1: **allocatable through
-the C ABI, and consumed by nothing.** No transfer, view, kernel, autograd
-node, module, optimizer, or checkpoint accepts it. Every operation that
-has not been generalized rejects a float32 handle with `TF_ERROR_INVALID`
-before reading or writing a single element — necessarily so, because
-walking a 4-byte-per-element buffer through a `double*` would overrun it
-by exactly a factor of two. Internal allocation capability is not public
-support, and the two are deliberately kept apart until the whole stack
-exists.
+- the three exports that carry a storage handle *and* a raw host buffer —
+  `tf_storage_copy_from`, `tf_storage_copy_to`, `tf_storage_materialize` —
+  are **dtype-general**, through a **source-level retype** of their host
+  positions from `double*` to `void*`. Same symbols, same argument counts
+  and order, same calling convention, same return types: a previously
+  compiled caller would link and run identically, and the export inventory
+  did not move;
+- `tf_core_contiguous_copy` — the runtime's **value-transfer primitive**
+  (H5) and the one compute-shaped export I2 touched — is
+  dtype-preserving and dtype-strict. Source and destination dtypes must
+  agree; a mixed pair is rejected before a single element is written,
+  because the runtime never casts. Its three H5/H8 traversal tiers are
+  instantiated for both element types from the *same source*, so float64
+  runs the code Phase H measured;
+- **transfer is bit-preserving at both widths**: `+0.0`/`-0.0`, both
+  infinities, subnormals, quiet NaNs with distinct payloads, and
+  signalling NaNs of both signs all reproduce their source's object
+  representation exactly. Proved over seventeen IEEE-754 classes per dtype
+  as raw `uint32`/`uint64` patterns, in C++ and in Python, never by value
+  and never by tolerance;
+- `RAW_KERNEL_DTYPES == ("float64",)` records the other half of the ABI's
+  division and is reported by `backend_info()` as `raw_kernel_dtypes`,
+  beside — and deliberately distinct from — `supported_dtypes`;
+- the native CTest inventory moved **18 → 19** (`test_typed_transfer`).
+
+**What I1 and I2 did *not* change is the whole of the rest of this
+matrix.** The native runtime is still **publicly float64 CPU only**:
+`SUPPORTED_DTYPES` reads `("float64",)`, `SUPPORTED_DEVICES` reads
+`("cpu",)`, `UNSUPPORTED` reads `("float32", "cuda", "amp")`, and the
+native checkpoint format is `tensorforge.native_checkpoint` version **2**
+with versions **(1, 2)** accepted. `float32` therefore stays in the
+**Unsupported or future** section above, and it stays there until
+milestone **I9**.
+
+The honest statement of what float32 *is* after I2: **allocatable and
+movable through the C ABI, and computed on by nothing.** It can be copied
+in from a host buffer, copied out, viewed through any layout the metadata
+contract permits, materialized, and copied storage-to-storage — all
+bit-exactly. Nothing else accepts it: no arithmetic, no reduction, no
+matmul, no convolution, no pooling, no classification, no Dropout, no
+autograd node, no module, no optimizer, and no checkpoint. Every operation
+that has not been generalized rejects a float32 handle with
+`TF_ERROR_INVALID` before reading or writing a single element —
+necessarily so, because walking a 4-byte-per-element buffer through a
+`double*` would overrun it by exactly a factor of two.
+`tf_storage_fill` and `tf_storage_scale` are deliberately among the
+rejecting set: they assign and multiply rather than transfer, and
+broadening them is a later milestone's decision rather than a free
+consequence of the dispatch being easy to write. Internal allocation and
+transfer capability is not public support, and the two are deliberately
+kept apart until the whole stack exists.
 
 What the phase will deliver, when its milestones land: float32 CPU
 tensors beside the existing float64 ones, dtype-tagged storage,
@@ -983,11 +1020,16 @@ any later milestone may do:
   (`elementwise_add`/`subtract`/`multiply`/`divide`, `relu`, `matmul`,
   `matmul_tiled`) have no handle and therefore no dtype to dispatch on;
   they stay float64 permanently, declared by a `RAW_KERNEL_DTYPES`
-  registry introduced at milestone I2. No native float32 training path
-  goes through them.
+  registry. **Delivered at I2.** No native float32 training path goes
+  through them.
 - **No casting, no promotion, and no mixed-dtype arithmetic**, at any
   layer, rejected before any output is allocated or any state is
   mutated. There is no `astype`, no `to()`, and no `map_location`.
+  **First reachable and tested at I2**, on the identity copy.
+- **Value transfer is bit-preserving at both widths**, because a transfer
+  performs no arithmetic and so has no operand roles to choose between and
+  nothing to round. **Delivered at I2**, for host ingress, host egress,
+  strided materialization, and the storage-to-storage identity copy.
 - **float32 accumulates in float32.** No hidden float64 accumulator is
   introduced anywhere — that would be mixed precision, which is out of
   scope along with AMP, float16, bfloat16, integer tensors, CUDA, data
@@ -1004,7 +1046,7 @@ any later milestone may do:
   characterized on its own and — as in every phase before it — no timing
   assertion, no committed benchmark number, and no result file.
 
-The ladder is I0–I11 — **I0 and I1 landed; I2 is next**: the contract
+The ladder is I0–I11 — **I0, I1, and I2 landed; I3 is next**: the contract
 (I0), the internal dtype model and
 tagged storage (I1), typed transfer, views, and materialization (I2),
 elementwise and broadcast execution (I3), reductions, matmul, and core

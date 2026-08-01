@@ -918,7 +918,13 @@ def test_no_environment_variable_or_dispatch_hook_exists_in_the_sources():
     statics = re.findall(r"\bstatic\b[^;{]*", header_code)
     assert statics, "the scan found no static at all — is it still valid?"
     for occurrence in statics:
-        assert occurrence.startswith("static inline double apply("), occurrence
+        # Every functor's ``apply`` is either the ``double`` form the H8
+        # operations use or the scalar-type-deduced form the identity map
+        # gained at Phase I milestone I2 (so that a float operand stays a
+        # float instead of round-tripping through double). Both are pure
+        # static member functions of a stateless struct; neither is state.
+        assert occurrence.startswith(("static inline double apply(",
+                                      "static inline T apply(")), occurrence
 
 
 def test_the_python_backend_gained_no_dispatch_or_profiling_surface():

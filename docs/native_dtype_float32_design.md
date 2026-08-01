@@ -11,22 +11,35 @@ change, no kernel, no C ABI symbol, no ctypes declaration, no
 optimizer, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-I status: I0 and I1 complete. I2 through I11 are not started.**
-The native runtime is **publicly** float64 CPU only today and stays that
-way until milestone I9. `SUPPORTED_DTYPES` still reads `("float64",)`,
-`UNSUPPORTED` still reads `("float32", "cuda", "amp")`, and the native
-checkpoint format is still `tensorforge.native_checkpoint` version **2**
-with versions **(1, 2)** accepted.
+**Phase-I status: I0, I1, and I2 complete. I3 through I11 are not
+started.** The native runtime is **publicly** float64 CPU only today and
+stays that way until milestone I9. `SUPPORTED_DTYPES` still reads
+`("float64",)`, `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
+and the native checkpoint format is still
+`tensorforge.native_checkpoint` version **2** with versions **(1, 2)**
+accepted.
 
 What I1 changed, and only this: the library now exports **54** production
 `tf_*` symbols — the 52 Phase H closed with, plus the two typed storage
 creators of §6.2, which are the only two symbols the whole phase adds.
-Storage is dtype-tagged (§4.1), the C++ dtype model of §3 exists, and
-float32 storage is **allocatable through the C ABI**. No operation
-consumes it: every kernel that has not been generalized rejects a float32
-handle with `TF_ERROR_INVALID` before touching memory. Internal
-allocation capability is not public support — that distinction is §27.1's,
-and the registry moves at I9.
+Storage is dtype-tagged (§4.1) and the C++ dtype model of §3 exists, so
+float32 storage is **allocatable through the C ABI**.
+
+What I2 changed, and only this: float32 storage is now **movable**. The
+three transfer exports of §7.3 became dtype-general through a source-level
+retype of their host positions (no new symbol, no ABI change, still 54),
+`tf_core_contiguous_copy` — the runtime's value-transfer primitive — became
+dtype-preserving and dtype-strict, and `RAW_KERNEL_DTYPES` records that the
+seven handle-free raw kernels stay float64. Internal float32 values can be
+copied in, copied out, viewed, materialized through any layout, and copied
+storage-to-storage, **bit for bit**. Nothing computes on them: every
+arithmetic, reduction, matmul, conv2d, pooling, classification, dropout,
+normalization, optimizer, module, and checkpoint path still rejects a
+float32 handle with `TF_ERROR_INVALID` before touching memory, and so do
+`tf_storage_fill` and `tf_storage_scale`.
+
+Internal allocation and transfer capability is not public support — that
+distinction is §27.1's, and the registry moves at I9.
 
 **Phase H remains complete (H0–H10) and is the latest *completed*
 phase.** Nothing in Phase I revisits, reverses, or re-measures a Phase-H
@@ -932,15 +945,33 @@ RAW_KERNEL_DTYPES = ("float64",)
 introduced in `src/tensorforge/backends/cpp.py` beside `RAW_KERNELS`, and
 reported by `backend_info()` as `"raw_kernel_dtypes"`.
 
-**Where and when it is introduced: milestone I2, not I0.** I0 declares no
-registry, because a contract-only tuple would advertise a distinction
-that is not yet observable — every dtype is float64 today, so the tuple
-would be indistinguishable from `SUPPORTED_DTYPES` and would carry no
-information. I2 is the milestone that establishes the typed transfer
-boundary and therefore the first milestone at which "this path is
-float64-only and that one is not" is a true statement about the running
-code. Adding it is a deliberate capability-registry change and is called
-out as such in the I2 exit gate.
+**Where and when it is introduced: milestone I2, not I0 — and it landed
+there.** I0 declared no registry, because a contract-only tuple would
+advertise a distinction that was not yet observable: every dtype was
+float64, so the tuple would have been indistinguishable from
+`SUPPORTED_DTYPES` and would have carried no information. I2 established
+the typed transfer boundary and is therefore the first milestone at which
+"this path is float64-only and that one is not" is a true statement about
+the running code. Adding it was a deliberate capability-registry change,
+called out as such in the I2 exit gate.
+
+As delivered, the limitation is proved as three separate facts rather than
+asserted as one tuple, because they are genuinely different claims:
+
+1. **The C ABI positions are float64 and reject anything else.** Every raw
+   kernel's array arguments keep the float64 checked `ndpointer` binding,
+   so a float32 buffer cannot reach one.
+2. **The Python wrappers convert rather than compute narrow.** They are the
+   same explicit host-to-native conversion boundary `from_array` is, and
+   have been since v0.x: a float32 input is converted to float64 on the way
+   in and the result is **float64**. No float32 arithmetic happens at any
+   width in any of them.
+3. **No per-dtype raw wrapper or export exists**, and none may be added.
+
+`backend_info()` reports `raw_kernel_dtypes` beside `supported_dtypes` so
+neither can be read off the other. The two tuples are equal today and are
+not the same statement: this one is a permanent property of seven
+handle-free kernels, the other is a public promise that moves at I9.
 
 ### 7.3 The three transfer exports become dtype-general
 
@@ -967,13 +998,47 @@ here rather than discovered later, and no test pins a C parameter
 spelling.
 
 On the Python side the checked binding is chosen from the storage's
-dtype: `_CHECKED_F64_ARRAY` today, joined by a `_CHECKED_F32_ARRAY` at
-I2. The choice is made from **data** — the storage tag — never from an
+dtype: `_CHECKED_F64_ARRAY`, joined by a `_CHECKED_F32_ARRAY` at I2. The
+choice is made from **data** — the storage tag — never from an
 environment variable, a global, or a call-site flag, so it is not a
-dispatch control. The `ndpointer` check keeps doing exactly what it does
-today: verifying at every call that the caller-facing buffer really is a
+dispatch control. The `ndpointer` check keeps doing exactly what it always
+did: verifying at every call that the caller-facing buffer really is a
 NumPy array of exactly the expected dtype, byte order included, and
 C-contiguous.
+
+**Where that check lives, as delivered at I2, and why it moved.** A ctypes
+`argtypes` slot holds exactly one type, and these three positions must
+accept either dtype depending on a *runtime* value — so the binding could
+not stay in the slot. The declaration became `ctypes.c_void_p`, which is
+the precise expression of the C parameter rather than a looser one, and
+the per-dtype binding moved one layer out to `cpp._host_pointer(array,
+dtype)`, which is called at every transfer site:
+
+- it runs `ndpointer.from_param` — literally the function ctypes would have
+  run had the binding stayed in the slot, so there is **one**
+  implementation of the check and it cannot drift from a second one;
+- it selects that binding from `_CHECKED_HOST_ARRAYS[storage.dtype]`, so
+  the choice is still made from data and from nothing else;
+- a wrong buffer raises `TypeError` and the native call is never made;
+- it returns `ndarray.ctypes.data_as(c_void_p)`, which attaches the owning
+  array to the pointer, so the buffer cannot be freed while the pointer
+  exists — the same lifetime property the trusted layout pointers rely on,
+  and the reason `POINTER(...).from_address(...)` is not used.
+
+The observable consequence, recorded so the ABI inventory tests are not
+mistaken for a regression: the checked-array-position tally falls from 25
+to 22 and the handle-only export column rises from 28 to 30, while the
+export count stays at 54 and no check is lost.
+
+**The host pointer carries no dtype, and cannot be made to.** The ABI
+receives an address and nothing else, so it is structurally incapable of
+proving that the buffer behind it holds the element type the storage does.
+That is stated rather than checked in C: the storage handle's immutable tag
+is authoritative, C++ dispatches from it, Python validates the NumPy dtype
+before the call, and a **direct foreign caller remains responsible for
+satisfying the contract** — exactly as it already is for the layout arrays
+it passes. No byte-count argument and no dtype argument were added, and no
+host dtype is ever guessed.
 
 The two `const int64_t* targets` positions of the cross-entropy exports
 are **unchanged**: class labels are host metadata, not tensor data, and
@@ -2437,6 +2502,113 @@ has to cover each one's own validation front end.
 - **Exit gate:** both dtypes move data in and out bit-exactly; full suite
   green.
 - **Commit message:** `Add typed native array transfer boundaries`
+
+#### I2 as delivered
+
+Landed as specified, with six implementation decisions recorded here
+because the contract left each judgement open.
+
+1. **The identity copy was generalized; nothing else that computes was.**
+   `tf_core_contiguous_copy` is the one handle-based compute-shaped export
+   I2 touched, and it was touched because it is not really arithmetic: it
+   is the runtime's **value-transfer primitive** (H5), the
+   storage-to-storage twin of `tf_storage_materialize`, and what every
+   Policy-B copy-then-compute path, `NativeFlatten`, `NativeParameter`
+   construction, and the differentiable `contiguous_copy` are built on.
+   Every other `tf_core_*` export keeps `tf::require_float64`.
+
+   `tf_storage_fill` and `tf_storage_scale` were **deliberately left
+   behind**, and the temptation to take them was real — the dispatch is two
+   lines. They perform numerical assignment and arithmetic on the buffer,
+   and a scalar narrowed once into a float32 buffer (§7.4) is a decision
+   with its own numerical statement that is not this milestone's to make.
+
+2. **Templates, not a twin.** The H8 unary traversals (`tf::unary_row`,
+   `tf::unary_plan_walk`) and the retained generic odometer (`core_unary`)
+   gained a scalar type parameter that is **deduced from their pointer
+   arguments**, so every pre-Phase-I call site compiles unchanged and
+   `T = double` is the pre-I2 code statement for statement. The alternative
+   — a structurally identical float32 twin of the three-tier copy dispatch
+   — was rejected as exactly the duplicated kernel §8.2 forbids: two
+   traversals that must stay identical forever, with nothing structural
+   keeping them so.
+
+   Only `tf::IdentityOp::apply` became a member template. That is
+   load-bearing rather than tidy: a fixed `double apply(double)` reached
+   with a float operand would convert float → double → float around the
+   "copy", and while that round trip is exact for every finite value and
+   every quiet NaN payload, it **quiets a signalling NaN** — breaking the
+   value-transfer contract in precisely the case the contract exists for.
+   The other functors stay `double`-only until I3.
+
+3. **`memcpy` was not introduced, and the transfers stay element
+   assignments.** A byte copy is the obvious way to make a contiguous
+   transfer representation-preserving, and §4.3 forbids it: byte arithmetic
+   outside the allocation boundary is what this phase keeps out of the
+   kernels, and it is what lets the whole layout and bounds-checking
+   apparatus carry over unexamined. The contract's own argument is used
+   instead — a same-type assignment performs no arithmetic, so it has no
+   operand roles to choose between and nothing to round (§10.3) — and it is
+   **proved by test rather than asserted**, at both widths, over seventeen
+   IEEE-754 classes per dtype including both signed zeros, both
+   infinities, subnormals, quiet NaN payloads, and signalling NaNs of both
+   signs, compared as raw `uint32`/`uint64` bit patterns and never by value.
+
+   Scope, stated honestly: that proof is a measurement on the toolchains
+   validated here (MSVC x64, GCC/Clang x86-64), not a language guarantee.
+   C++ does not promise that copying a signalling NaN leaves it signalling;
+   an x87 code path would quiet it. TensorForge builds x86-64 with SSE2,
+   where the copy is a register move, and the CTest and the Python suite
+   both fail loudly if that ever stops being true.
+
+4. **The per-dtype `ndpointer` check moved from the argtypes slot to the
+   call site**, because one slot cannot describe two dtypes and the choice
+   must be made from a runtime value. It is the same check, run by the same
+   function, selected from the storage's tag — see §7.3 for the full
+   reasoning and for the inventory numbers it moves.
+
+5. **Internal float32 construction is three private constructors and one
+   private flag**, not a public bypass: `NativeStorage._typed`,
+   `NativeStorage._typed_from_array`, `NativeTensorCore._typed_from_array`,
+   and a keyword-only `_trusted_dtype` on `NativeStorage.__init__` that
+   validates against `_DTYPE_CODES` instead of `SUPPORTED_DTYPES`. The
+   private H1 allocators (`NativeStorage._uninitialized` and
+   `NativeTensorCore._uninitialized`) inherit that trust, because every one
+   of their call sites passes `dtype=<operand>.dtype` — a canonical tag read
+   off a storage that was validated when it was created — and an
+   operation's freshly allocated output must be able to match its operand's
+   dtype without asking permission the operand already has.
+
+   One consequence had to be repaired rather than accepted:
+   `NativeTensorCore.full` is a **public** constructor that reaches the
+   private allocator, and `tf_storage_fill` is float64-only *and unhooked*,
+   so an unvalidated `dtype="float32"` would have allocated storage, been
+   silently rejected by an export that records into the error slot without
+   raising, and returned an uninitialized tensor. `full` therefore calls
+   `normalize_dtype` explicitly, restoring exactly the rejection it always
+   had. Public behavior is unchanged at every constructor.
+
+6. **`copy_from` keeps converting; the C ABI never does.** The two are
+   different boundaries and I2 keeps them different.
+   `NativeStorage.copy_from` and `from_array` are the explicit
+   host-to-native conversion boundary (§9.4) and have converted since v0.8;
+   they now convert to *the storage's* dtype instead of unconditionally to
+   float64, and the dtype is still never inferred from the input. The raw
+   transfer boundary beneath them converts nothing: a host buffer whose
+   element type disagrees with the storage is rejected with `TypeError`
+   before the native call is made.
+
+The CTest inventory moved **18 → 19** with `test_typed_transfer`, which
+compiles `storage.cpp` and `elementwise.cpp` directly so it reaches
+`tf::copy_prefers_contiguous` beside the four generalized exports, and
+proves the contract by bit pattern at both dtypes over thirteen view
+layouts — scalar, 1-D, non-unit stride, reversed, 2-D contiguous,
+transposed, narrowed-with-offset, both broadcast (stride-0) forms, unit
+extent, and two rank-3 chains.
+
+Public capability did not move: float64 CPU only, `float32` still in
+`UNSUPPORTED`, checkpoint version 2 with (1, 2) accepted, and **54**
+exports — I2 added none.
 
 ### I3 — Elementwise, broadcast, and unary dtype execution
 

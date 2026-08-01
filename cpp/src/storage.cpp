@@ -366,23 +366,32 @@ TF_EXPORT int64_t tf_storage_size(const void* handle) {
 // ---------------------------------------------------------------------------
 // The float64 storage primitives.
 //
-// I1 does not generalize any of these — that is I2 (transfer) and later —
-// so each rejects a float32 handle before reading or writing a single
-// element. Without the check, a float32 buffer walked as ``double`` would
-// be overrun by exactly a factor of two.
+// ``fill`` and ``scale`` are still float64-only after I2, and deliberately
+// so. I2 generalizes **transfer**; these two perform numerical assignment
+// and arithmetic on the buffer, which belongs to the milestone that
+// generalizes arithmetic. Neither is broadened merely because the dispatch
+// would be easy to write — a scalar narrowed once into a float32 buffer
+// (design §7.4) is a decision with its own numerical statement, and it is
+// not this milestone's to make. Each therefore rejects a float32 handle
+// before reading or writing a single element; without the check, a float32
+// buffer walked as ``double`` would be overrun by exactly a factor of two.
 //
-// The four unguarded ones below (fill, scale, copy_from, copy_to) keep
-// their existing error-contract classification: they do **not** clear the
-// thread-local slot on entry and they do **not** carry the Python
-// errcheck hook. That is deliberate. H7 kept them hookless precisely so
-// they cost one native call rather than two, and no production Python
-// path can reach them with a float32 handle — the Python wrapper cannot
-// construct float32 storage while the public registry still rejects the
-// dtype. A direct C ABI caller, which is the only way to get one, reads
-// the rejection through ``tf_last_error_code`` in the ordinary way for an
-// unhooked export. A failed call here leaves TF_ERROR_INVALID in the slot;
-// the next guarded call clears it on entry, so it can never be
-// misattributed to a later checked call.
+// Both keep their existing error-contract classification: they do **not**
+// clear the thread-local slot on entry and they do **not** carry the
+// Python errcheck hook. That is deliberate. H7 kept them hookless
+// precisely so they cost one native call rather than two, and no
+// production Python path can reach them with a float32 handle — the public
+// registry still rejects the dtype, and the private typed constructors
+// route float32 only into the transfer, materialization, and identity-copy
+// paths I2 actually generalized. A direct C ABI caller, which is the other
+// way to get one, reads the rejection through ``tf_last_error_code`` in the
+// ordinary way for an unhooked export. A failed call here leaves
+// TF_ERROR_INVALID in the slot; the next guarded call clears it on entry,
+// so it can never be misattributed to a later checked call.
+//
+// ``copy_from`` and ``copy_to`` were in this group at I1 and have left it:
+// they are dtype-general from I2 on, and they set no error at all again —
+// which is what an unhooked export should do.
 // ---------------------------------------------------------------------------
 
 TF_EXPORT void tf_storage_fill(void* handle, double value) {
@@ -410,45 +419,92 @@ TF_EXPORT void tf_storage_scale(void* handle, double factor) {
     }
 }
 
-TF_EXPORT void tf_storage_copy_from(void* handle, const double* src) {
-    if (!tf::require_float64("tf_storage_copy_from", {handle})) {
-        return;
-    }
-    Storage* storage = as_storage(handle);
-    double* data = tf::storage_f64(handle);
-    for (int64_t i = 0; i < storage->size; ++i) {
-        data[i] = src[i];
-    }
-}
+// ---------------------------------------------------------------------------
+// Phase I, milestone I2: the three dtype-general transfer boundaries.
+//
+// These are the only exported functions that carry a storage handle **and**
+// a raw host buffer, and I2 is the milestone that makes them work at both
+// dtypes. The change to each declaration is a source-level retype of the
+// host position from ``double*`` to ``void*`` and nothing else: same
+// symbol, same argument count, same order, same return type, same calling
+// convention, and — since a ``double*`` and a ``void*`` occupy the same
+// argument slot on every supported platform and ``extern "C"`` has no
+// mangling to change — the same binary interface. The export inventory
+// does not grow; the phase still adds exactly the two typed creators.
+//
+// **The host pointer carries no dtype, and cannot be made to.** The ABI
+// receives an address and nothing else, so it is structurally incapable of
+// proving that the buffer behind it really holds the element type the
+// storage does. The contract is therefore explicit rather than checked
+// here: the **storage handle's immutable dtype tag is authoritative**, and
+// the caller must supply a contiguous host buffer of exactly that element
+// type — ``float`` for float32 storage, ``double`` for float64 storage.
+// The Python wrapper enforces it before every call with a per-dtype
+// ``numpy.ctypeslib.ndpointer`` check (element type, byte order, and
+// C-contiguity), which is the layer that *can* see the buffer's type. A
+// direct foreign caller is responsible for satisfying the same contract,
+// exactly as it already is for the layout arrays it passes.
+//
+// Nothing is converted, widened, narrowed, or guessed at this boundary; no
+// byte-count or dtype argument was added; the logical ``size`` stays an
+// element count; and each function dispatches **once**, on the storage's
+// tag, into a template. Below that dispatch there is no dtype branch at
+// all — in particular none per element.
+//
+// **Every transfer is an assignment between two objects of the same type**,
+// so it performs no arithmetic and has no operand roles to choose between.
+// That is the whole reason value transfer is bit-preserving at both widths
+// (design §10.3): positive and negative zero, both infinities, subnormals,
+// quiet NaNs with any payload, and signalling NaNs all reproduce their
+// source's object representation exactly. A same-type assignment is the
+// mechanism the runtime has used for float64 since v0.8 and the one Phase
+// H's copy contract rests on; ``memcpy`` is deliberately **not**
+// introduced (design §4.3), because byte arithmetic outside the allocation
+// boundary is precisely what this phase keeps out of the kernels.
+// ---------------------------------------------------------------------------
 
-TF_EXPORT void tf_storage_copy_to(const void* handle, double* dst) {
-    if (!tf::require_float64("tf_storage_copy_to", {handle})) {
-        return;
-    }
+namespace {
+
+// Host -> storage. ``size`` elements of ``T``, in order, by assignment.
+template <class T>
+void copy_from_typed(void* handle, const void* src) {
     const Storage* storage = as_storage(handle);
-    const double* data = tf::storage_f64(handle);
+    T* data = tf::storage_typed<T>(handle);
+    const T* source = static_cast<const T*>(src);
     for (int64_t i = 0; i < storage->size; ++i) {
-        dst[i] = data[i];
+        data[i] = source[i];
     }
 }
 
-// Materialize a strided view of the storage into a contiguous output
-// buffer — the canonical tensor-runtime loop. The logical indices are
+// Storage -> host. The mirror image, same element count, same order.
+template <class T>
+void copy_to_typed(const void* handle, void* dst) {
+    const Storage* storage = as_storage(handle);
+    const T* data = tf::storage_typed<T>(handle);
+    T* destination = static_cast<T*>(dst);
+    for (int64_t i = 0; i < storage->size; ++i) {
+        destination[i] = data[i];
+    }
+}
+
+// Strided storage -> contiguous host. The canonical tensor-runtime loop,
+// unchanged in every respect but the element type: the logical indices are
 // walked like an odometer (last dimension fastest, i.e. row-major output
-// order) while the source position is updated incrementally: stepping
+// order) while the source position is updated incrementally — stepping
 // dimension d moves by strides[d], and when a dimension wraps its full
-// extent is subtracted before the next dimension steps. Bounds are
+// extent is subtracted before the next dimension steps.
+//
+// Shape, strides, and offset remain **logical element** counts at both
+// dtypes; no byte offset is computed anywhere in this walk. Bounds are
 // validated on the Python side before this is called.
-TF_EXPORT void tf_storage_materialize(
-    const void* handle, double* dst,
+template <class T>
+void materialize_typed(
+    const void* handle, void* dst_raw,
     const int64_t* shape, const int64_t* strides,
     int64_t offset, int64_t ndim
 ) {
-    TF_GUARD_BEGIN
-    if (!tf::require_float64("tf_storage_materialize", {handle})) {
-        return;
-    }
-    const double* src = tf::storage_f64(handle);
+    const T* src = tf::storage_typed<T>(handle);
+    T* dst = static_cast<T*>(dst_raw);
     if (ndim == 0) {  // scalar view: one element at the offset
         dst[0] = src[offset];
         return;
@@ -471,5 +527,46 @@ TF_EXPORT void tf_storage_materialize(
             src_pos -= shape[d] * strides[d];
         }
     }
+}
+
+}  // namespace
+
+TF_EXPORT void tf_storage_copy_from(void* handle, const void* src) {
+    switch (tf::storage_dtype(handle)) {  // ONE dispatch, per call
+        case Dtype::Float32:
+            copy_from_typed<float>(handle, src);
+            return;
+        case Dtype::Float64:
+            break;
+    }
+    copy_from_typed<double>(handle, src);
+}
+
+TF_EXPORT void tf_storage_copy_to(const void* handle, void* dst) {
+    switch (tf::storage_dtype(handle)) {  // ONE dispatch, per call
+        case Dtype::Float32:
+            copy_to_typed<float>(handle, dst);
+            return;
+        case Dtype::Float64:
+            break;
+    }
+    copy_to_typed<double>(handle, dst);
+}
+
+TF_EXPORT void tf_storage_materialize(
+    const void* handle, void* dst,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    switch (tf::storage_dtype(handle)) {  // ONE dispatch, outside the walk
+        case Dtype::Float32:
+            materialize_typed<float>(handle, dst, shape, strides, offset,
+                                     ndim);
+            return;
+        case Dtype::Float64:
+            break;
+    }
+    materialize_typed<double>(handle, dst, shape, strides, offset, ndim);
     TF_GUARD_END_VOID()
 }

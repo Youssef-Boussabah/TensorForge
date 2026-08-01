@@ -1066,7 +1066,7 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **Native dtype generalization and float32 CPU support (Phase I) is
-  under way: milestones I0 and I1 are complete, I2–I11 are not
+  under way: milestones I0, I1, and I2 are complete, I3–I11 are not
   started.** Phase I is the latest phase; Phase H is unaffected and
   remains complete, having closed at 52 exports. **I0 was the
   architecture contract
@@ -1080,11 +1080,22 @@ explicit layer at a time:
   after creation so the kernels' pointer arithmetic is valid under C++17,
   and the two typed creation exports — taking the
   library to **54** `tf_*` symbols, which is the count for the whole
-  phase. **No public capability moved**: still float64 CPU only, still
+  phase. **I2 delivered the typed transfer boundary and added no
+  export**: the three exports carrying a storage handle *and* a raw host
+  buffer (`tf_storage_copy_from`, `tf_storage_copy_to`,
+  `tf_storage_materialize`) became dtype-general through a source-level
+  retype of their host positions to `void*` — same symbols, same slots,
+  same calling convention — and `tf_core_contiguous_copy`, the
+  value-transfer primitive, became dtype-preserving and dtype-strict over
+  its unchanged three-tier traversal. Transfer is bit-preserving at both
+  widths, and `RAW_KERNEL_DTYPES` records that the seven handle-free raw
+  utility kernels stay float64. Native CTests moved 17 → 18 → **19**.
+  **No public capability moved**: still float64 CPU only, still
   checkpoint version 2 with versions 1 and 2 accepted, and `float32` is
-  still listed in `UNSUPPORTED`. float32 storage is allocatable through
-  the C ABI and consumed by nothing — every operation not yet generalized
-  rejects a float32 handle before touching memory. The architectural fact
+  still listed in `UNSUPPORTED`. float32 storage is allocatable and
+  movable through the C ABI and computed on by nothing — every operation
+  not yet generalized rejects a float32 handle before touching memory.
+  The architectural fact
   the contract rests on is visible in the layering
   above: **42 of Phase H's 52 exports already address their operands
   through opaque handles**, so putting a dtype tag on the storage behind
@@ -1095,10 +1106,11 @@ explicit layer at a time:
   exports. Storage is now the single dtype authority, so every view over
   a buffer agrees by construction and no view operation casts; shapes,
   strides, and offsets stay in logical elements, with bytes appearing only
-  at the allocation boundary; each exported call will dispatch **once**
+  at the allocation boundary; each exported call dispatches **once**
   into a templated `float`/`double` kernel, with nothing below that
-  branching on dtype (I3 onward — I1 generalized no kernel, and every
-  float64 kernel still takes `double*` unchanged); casting, promotion,
+  branching on dtype (delivered at I2 for the four transfer-shaped
+  exports; I3 onward for the arithmetic, which still takes `double*`
+  unchanged); casting, promotion,
   and mixed-dtype arithmetic do not exist and
   are rejected before any allocation or mutation; float32 accumulates in
   float32; checkpoint **version 3** is designed but not activated, with

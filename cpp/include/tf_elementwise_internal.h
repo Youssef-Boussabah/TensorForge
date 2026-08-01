@@ -198,7 +198,7 @@ bool build_binary_plan(const std::int64_t* shape,
 // ---------------------------------------------------------------------------
 // The traversals.
 //
-// ``Op`` is a stateless struct with a ``static double apply(...)``, so the
+// ``Op`` is a stateless struct with a ``static`` ``apply(...)``, so the
 // operation is a compile-time constant of the loop body and the whole call
 // inlines. One instantiation per operation; the operation is never a runtime
 // value here.
@@ -208,10 +208,23 @@ bool build_binary_plan(const std::int64_t* shape,
 // ``s[0]`` are what the compiler can reason about while ``s[i * stride]``
 // with a runtime stride is not. The final branch is the fully general one and
 // is correct for every stride, negative strides included.
+//
+// **The unary traversals carry a scalar type parameter (Phase I, milestone
+// I2).** ``T`` is deduced from the pointer arguments, so every pre-Phase-I
+// call site — all of which pass ``double*`` — instantiates ``T = double``
+// and compiles unchanged, character for character. The parameter exists so
+// the **identity map** can be walked over ``float`` by
+// ``tf_core_contiguous_copy``, which is the one compute-shaped export I2
+// generalizes; the binary traversals below stay ``double`` because no
+// binary operation is dtype-general until I3.
+//
+// One traversal, two instantiations, is the whole point: the dtypes take
+// the *same source*, so they cannot drift apart, and float64 keeps running
+// the code Phase H measured.
 // ---------------------------------------------------------------------------
 
-template <class Op>
-inline void unary_row(const double* src, double* dst, std::int64_t n,
+template <class Op, class T>
+inline void unary_row(const T* src, T* dst, std::int64_t n,
                       std::int64_t stride) {
     if (stride == 1) {
         for (std::int64_t i = 0; i < n; ++i) dst[i] = Op::apply(src[i]);
@@ -259,8 +272,8 @@ inline void binary_row(const double* a, const double* b, double* dst,
 // element per logical position, which is the same order and the same count
 // the odometer produces — so H1's "every destination element is written
 // exactly once" proof carries over unchanged.
-template <class Op>
-inline void unary_plan_walk(const double* src, double* dst,
+template <class Op, class T>
+inline void unary_plan_walk(const T* src, T* dst,
                             const ElementwiseUnaryPlan& plan,
                             std::int64_t offset) {
     src += offset;
@@ -356,6 +369,22 @@ struct ReluBackwardOp {
 struct ReluOp { static inline double apply(double x) { return x > 0.0 ? x : 0.0; } };
 struct SqrtOp { static inline double apply(double x) { return std::sqrt(x); } };
 struct ReciprocalOp { static inline double apply(double x) { return 1.0 / x; } };
-struct IdentityOp { static inline double apply(double x) { return x; } };
+// The identity map is the one functor with a **templated** ``apply``
+// (Phase I, milestone I2), because it is the one this milestone
+// instantiates at a second width. The template is load-bearing rather than
+// stylistic: a fixed ``double apply(double)`` reached with a ``float``
+// operand would convert float -> double -> float around the "copy", and a
+// conversion is not a copy. It is exact for every finite value and every
+// quiet NaN payload, but it **quiets a signalling NaN** and so would break
+// the value-transfer contract (design §10.3) in exactly the case the
+// contract is written for. Deducing ``T`` keeps the assignment an
+// assignment.
+//
+// The remaining functors stay ``double``-only until I3 generalizes the
+// arithmetic kernels; walking them with ``T = double`` is what every
+// pre-Phase-I call site already does.
+struct IdentityOp {
+    template <class T> static inline T apply(T x) { return x; }
+};
 
 }  // namespace tf

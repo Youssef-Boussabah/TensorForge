@@ -78,8 +78,8 @@ and Runtime Efficiency — is complete (H0–H10) and is the latest
 *completed* phase**; both are recorded further below.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 and I1 are complete; I2 through I11 are not
-started.** Its architecture contract is
+latest phase. Milestones I0, I1, and I2 are complete; I3 through I11 are
+not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
 was design, guardrail tests, and documentation reconciliation, and no
 runtime behavior at all.**
@@ -98,14 +98,41 @@ exported, taking the library to **54** `tf_*` symbols. The native CTest
 inventory moved **17 → 18**. The untyped creators remain unchanged as
 thin float64 compatibility wrappers over the same shared body.
 
+**I2 delivered the typed transfer boundary**, and added **no export**.
+The three exports that carry a storage handle *and* a raw host buffer —
+`tf_storage_copy_from`, `tf_storage_copy_to`, `tf_storage_materialize` —
+became dtype-general through a **source-level retype** of their host
+positions from `double*` to `void*`. That is a declaration change and not
+an ABI change: a `double*` and a `void*` occupy the same argument slot on
+every supported platform, `extern "C"` has no mangling to alter, and the
+symbol names, argument counts, argument order, and return types are
+untouched — a previously compiled caller would link and run identically,
+and the built library still exports **54** symbols.
+`tf_core_contiguous_copy`, the storage-to-storage value-transfer
+primitive, became dtype-preserving and dtype-strict over the same three
+H5/H8 traversal tiers, instantiated for both element types from one
+source. `RAW_KERNEL_DTYPES == ("float64",)` was introduced beside
+`RAW_KERNELS` and is reported by `backend_info()`. The native CTest
+inventory moved **18 → 19** (`test_typed_transfer`).
+
+On the Python side the per-dtype `numpy.ctypeslib.ndpointer` check moved
+out of the three argtypes slots — one slot cannot describe two dtypes —
+into `_host_pointer(array, dtype)`, which runs the *same*
+`ndpointer.from_param` at every call, chosen from the storage's own tag,
+and returns an owner-attached `c_void_p`. Nothing is cast, widened, or
+guessed at the boundary; a wrong host buffer raises `TypeError` and the
+native call is never made.
+
 **Everything else on this page is still exactly what Phase H left**:
 float64 CPU only, native checkpoint format version **2** with versions
 **(1, 2)** accepted, `SUPPORTED_DTYPES == ("float64",)`, and
 `UNSUPPORTED == ("float32", "cuda", "amp")`. float32 storage can be
-*allocated* through the C ABI and is *consumed by nothing* — every
-operation that has not been generalized rejects a float32 handle with
-`TF_ERROR_INVALID` before reading or writing anything, since walking a
-4-byte-per-element buffer through a `double*` would overrun it twofold.
+*allocated and moved* through the C ABI and is *computed on by nothing* —
+every operation that has not been generalized rejects a float32 handle
+with `TF_ERROR_INVALID` before reading or writing anything, since walking
+a 4-byte-per-element buffer through a `double*` would overrun it twofold.
+`tf_storage_fill` and `tf_storage_scale` are deliberately still among
+them: they assign and multiply rather than transfer.
 
 The contract's **exactly two** new C ABI symbols for the entire phase
 (`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,

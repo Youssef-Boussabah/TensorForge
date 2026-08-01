@@ -197,11 +197,11 @@ only — no CUDA backend, no float32/float16 or dtype promotion and
 casting, no AMP, no data loaders or native integer tensors, and no
 dispatch into `tensorforge.Tensor`. (Native float32 has an architecture
 contract, [native_dtype_float32_design.md](native_dtype_float32_design.md),
-and as of Phase I milestone I1 a dtype-tagged storage foundation beneath
-it — but no float32 tensor exists: the runtime remains float64 CPU only,
-float32 storage is allocatable through the C ABI and consumed by no
-operation, and casting, promotion, AMP, and integer tensors stay outside
-that phase too.) Its Dropout is one deterministic
+and as of Phase I milestones I1 and I2 a dtype-tagged storage foundation
+and a typed transfer boundary beneath it — but no float32 tensor exists:
+the runtime remains float64 CPU only, float32 storage is allocatable and
+movable through the C ABI and computed on by no operation, and casting,
+promotion, AMP, and integer tensors stay outside that phase too.) Its Dropout is one deterministic
 stream behind an explicit `NativeGenerator`, not a generic random-number
 API, and there is no `Dropout2d`/`Dropout3d`. Native checkpoints persist
 parameters, persistent buffers, optimizer state, and generator state, and
@@ -1653,8 +1653,8 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase I — native dtype generalization and float32 CPU support — is the
-latest phase. Milestones I0 and I1 are complete; I2 through I11 are not
-started.** Its architecture contract is
+latest phase. Milestones I0, I1, and I2 are complete; I3 through I11 are
+not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
 **I0 was design and reconciliation only, and added no runtime behavior**:
@@ -1675,15 +1675,36 @@ whole phase — while the untyped pair remains unchanged as thin float64
 compatibility wrappers over the same shared body. Native CTests moved
 **17 → 18**.
 
+**I2 made that foundation movable.** The three exports that carry a
+storage handle *and* a raw host buffer — `tf_storage_copy_from`,
+`tf_storage_copy_to`, `tf_storage_materialize` — are dtype-general, through
+a **source-level retype** of their host positions from `double*` to
+`void*`: same symbols, same argument slots, same calling convention, no new
+export, and a previously compiled caller would link and run identically.
+`tf_core_contiguous_copy` — the runtime's value-transfer primitive, and the
+one compute-shaped export I2 touched — is dtype-preserving and
+dtype-strict, so a float32 view of any layout materializes or copies
+storage-to-storage while a mixed float32/float64 pair is rejected before
+anything is written. Transfer is **bit-preserving at both widths**: signed
+zeros, both infinities, subnormals, quiet NaN payloads, and signalling
+NaNs all survive, proved over seventeen IEEE-754 classes per dtype as raw
+`uint32`/`uint64` patterns rather than by value. `RAW_KERNEL_DTYPES`
+records the other half of the ABI's division — the seven handle-free raw
+utility kernels take only `double*` and an element count, so they have no
+dtype to dispatch on and stay float64. Native CTests moved **18 → 19**;
+exports stayed at **54**.
+
 **No public capability moved, and none does until I9.** The native runtime
 is still float64 CPU only: `SUPPORTED_DTYPES` still reads `("float64",)`,
 `UNSUPPORTED` still reads `("float32", "cuda", "amp")`, and the native
 checkpoint format is still version 2 with versions 1 and 2 accepted.
-float32 storage is allocatable through the C ABI and consumed by nothing —
-every operation not yet generalized rejects a float32 handle with
-`TF_ERROR_INVALID` before touching memory, because walking a
+float32 storage is allocatable and movable through the C ABI and computed
+on by nothing — every operation not yet generalized rejects a float32
+handle with `TF_ERROR_INVALID` before touching memory, because walking a
 4-byte-per-element buffer through a `double*` would overrun it twofold.
-Phase H is untouched, remains complete, and closed at 52 exports.
+`tf_storage_fill` and `tf_storage_scale` are deliberately among them: they
+assign and multiply rather than transfer. Phase H is untouched, remains
+complete, and closed at 52 exports.
 
 The contract locked the phase before any of it was built, and the first
 three items below are the ones I1 delivered: an internal dtype
