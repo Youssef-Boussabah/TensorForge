@@ -817,6 +817,11 @@ TF_EXPORT void tf_core_conv2d_forward(
     int64_t output_height,
     int64_t output_width) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64(
+            "tf_core_conv2d_forward",
+            {input_handle, weight_handle, bias_handle, output_handle})) {
+        return;
+    }
     // -- required handles (bias is the one nullable handle: null = no bias) --
     if (input_handle == nullptr || weight_handle == nullptr ||
         output_handle == nullptr) {
@@ -895,12 +900,12 @@ TF_EXPORT void tf_core_conv2d_forward(
                           "conv2d_forward: bias span exceeds its storage");
             return;
         }
-        bias = as_storage(bias_handle)->data + bias_offset;
+        bias = tf::storage_f64(bias_handle) + bias_offset;
     }
     // -- validated: run the internal noexcept cross-correlation --
-    const double* input = as_storage(input_handle)->data + input_offset;
-    const double* weight = as_storage(weight_handle)->data + weight_offset;
-    double* output = as_storage(output_handle)->data;
+    const double* input = tf::storage_f64(input_handle) + input_offset;
+    const double* weight = tf::storage_f64(weight_handle) + weight_offset;
+    double* output = tf::storage_f64(output_handle);
     tf::conv2d_forward_contiguous(
         input, weight, bias, output,
         batch, in_channels, input_height, input_width,
@@ -990,6 +995,11 @@ TF_EXPORT void tf_core_conv2d_input_backward(
     int64_t output_height,
     int64_t output_width) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64(
+            "tf_core_conv2d_input_backward",
+            {grad_output_handle, weight_handle, grad_input_handle})) {
+        return;
+    }
     if (grad_output_handle == nullptr || weight_handle == nullptr ||
         grad_input_handle == nullptr) {
         tf::set_error(TF_ERROR_INVALID,
@@ -1034,9 +1044,9 @@ TF_EXPORT void tf_core_conv2d_input_backward(
         return;
     }
     const double* grad_output =
-        as_storage(grad_output_handle)->data + grad_output_offset;
-    const double* weight = as_storage(weight_handle)->data + weight_offset;
-    double* grad_input = as_storage(grad_input_handle)->data;
+        tf::storage_f64(grad_output_handle) + grad_output_offset;
+    const double* weight = tf::storage_f64(weight_handle) + weight_offset;
+    double* grad_input = tf::storage_f64(grad_input_handle);
     tf::conv2d_input_backward_contiguous(
         grad_output, weight, grad_input,
         batch, in_channels, input_height, input_width,
@@ -1066,6 +1076,11 @@ TF_EXPORT void tf_core_conv2d_weight_backward(
     int64_t output_height,
     int64_t output_width) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64(
+            "tf_core_conv2d_weight_backward",
+            {grad_output_handle, input_handle, grad_weight_handle})) {
+        return;
+    }
     if (grad_output_handle == nullptr || input_handle == nullptr ||
         grad_weight_handle == nullptr) {
         tf::set_error(TF_ERROR_INVALID,
@@ -1110,9 +1125,9 @@ TF_EXPORT void tf_core_conv2d_weight_backward(
         return;
     }
     const double* grad_output =
-        as_storage(grad_output_handle)->data + grad_output_offset;
-    const double* input = as_storage(input_handle)->data + input_offset;
-    double* grad_weight = as_storage(grad_weight_handle)->data;
+        tf::storage_f64(grad_output_handle) + grad_output_offset;
+    const double* input = tf::storage_f64(input_handle) + input_offset;
+    double* grad_weight = tf::storage_f64(grad_weight_handle);
     tf::conv2d_weight_backward_contiguous(
         grad_output, input, grad_weight,
         batch, in_channels, input_height, input_width,

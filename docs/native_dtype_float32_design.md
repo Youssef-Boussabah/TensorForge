@@ -11,13 +11,22 @@ change, no kernel, no C ABI symbol, no ctypes declaration, no
 optimizer, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-I status: begun at I0. I1 through I11 are not started.** The
-native runtime is float64 CPU only today and stays that way until the
-milestones below say otherwise. `SUPPORTED_DTYPES` still reads
-`("float64",)`, `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
-the native checkpoint format is still `tensorforge.native_checkpoint`
-version **2** with versions **(1, 2)** accepted, and the library still
-exports exactly **52** production `tf_*` symbols.
+**Phase-I status: I0 and I1 complete. I2 through I11 are not started.**
+The native runtime is **publicly** float64 CPU only today and stays that
+way until milestone I9. `SUPPORTED_DTYPES` still reads `("float64",)`,
+`UNSUPPORTED` still reads `("float32", "cuda", "amp")`, and the native
+checkpoint format is still `tensorforge.native_checkpoint` version **2**
+with versions **(1, 2)** accepted.
+
+What I1 changed, and only this: the library now exports **54** production
+`tf_*` symbols — the 52 Phase H closed with, plus the two typed storage
+creators of §6.2, which are the only two symbols the whole phase adds.
+Storage is dtype-tagged (§4.1), the C++ dtype model of §3 exists, and
+float32 storage is **allocatable through the C ABI**. No operation
+consumes it: every kernel that has not been generalized rejects a float32
+handle with `TF_ERROR_INVALID` before touching memory. Internal
+allocation capability is not public support — that distinction is §27.1's,
+and the registry moves at I9.
 
 **Phase H remains complete (H0–H10) and is the latest *completed*
 phase.** Nothing in Phase I revisits, reverses, or re-measures a Phase-H
@@ -565,27 +574,101 @@ Requirements:
   never an allocation attempt, never a silent wrap, never UB. This is a
   *new* failure mode: today the implicit `new double[count]` sizing has
   no checked equivalent, so I1 adds the check rather than inheriting one.
-- **Correct dtype-aware destruction.** The buffer is allocated and freed
-  as the *same* type. The chosen form is a byte array:
+- **Correct dtype-aware construction and destruction, with C++17 object
+  lifetimes explicitly begun.** This is the part it is easiest to get
+  subtly wrong, so it is specified rather than left to the
+  implementation.
+
+  The kernels do not merely dereference their operands, they **index**
+  them: `data[i]` and `data + i` across the whole allocation. In C++17
+  pointer arithmetic is defined only *within a single array object*
+  ([expr.add]/4), and an object that is not an array element behaves as a
+  one-element array. Two plausible models therefore fail:
+
+  - **`unsigned char[n]` plus a reinterpreting cast.** This begins the
+    lifetime of an array of `unsigned char` and of no `float` or `double`
+    at all, so every typed access is to an object that never existed.
+    C++20 added implicit object creation for exactly this pattern
+    ([intro.object]/10, P0593); C++17 did not, and the project may not
+    rely on a rule it does not build under.
+  - **Raw storage plus a per-element placement-new loop.** This does begin
+    `count` floating-point lifetimes — but as `count` *separate scalar
+    objects*. Adjacent scalars do not become elements of one array merely
+    because their storage is contiguous, so `data[i]` past the first still
+    walks outside its array object.
+
+  The model that actually supports the indexing is the ordinary one: an
+  **array new-expression**, which creates a genuine `float[count]` or
+  `double[count]` object. The element type is a runtime property, so the
+  choice is one dtype dispatch into a templated body, and the array
+  pointer is type-erased into `void*` only **after** the array exists:
 
   ```cpp
-  // allocate
-  auto bytes = static_cast<std::size_t>(size) * dtype_item_size(dtype);
-  std::unique_ptr<unsigned char[]> data(
-      zero_initialize ? new (std::nothrow) unsigned char[bytes]()
-                      : new (std::nothrow) unsigned char[bytes]);
-  // free
-  delete[] static_cast<unsigned char*>(storage->data);
+  template <class T>
+  Storage* create_typed_storage(int64_t size, Dtype dtype,
+                                bool zero_initialize) {
+      static_assert(std::is_trivially_destructible<T>::value, "...");
+      const std::size_t count = static_cast<std::size_t>(size);
+      std::unique_ptr<T[]> data(                      // type-correct RAII
+          zero_initialize ? new (std::nothrow) T[count]()
+                          : new (std::nothrow) T[count]);
+      if (!data) { /* TF_ERROR_ALLOC */ return nullptr; }
+      Storage* storage = new (std::nothrow) Storage{data.get(), size, dtype};
+      if (storage == nullptr) { /* TF_ERROR_ALLOC */ return nullptr; }
+      data.release();
+      return storage;
+  }
+
+  // destruction: one central, dtype-matched switch
+  void destroy_storage_data(Storage* storage) noexcept {
+      switch (storage->dtype) {
+          case Dtype::Float32: delete[] static_cast<float*>(storage->data);
+                               return;
+          case Dtype::Float64: delete[] static_cast<double*>(storage->data);
+                               return;
+      }
+  }
   ```
 
-  This is correct for every dtype with **one** deallocation form, so no
-  `switch` can ever be forgotten in the destructor. `operator new[]`
-  returns memory suitably aligned for any object of fundamental
-  alignment, which covers both `float` and `double` on every supported
-  platform. The zero-initializing form value-initializes **bytes**, and
-  all-zero bytes is `+0.0` in both IEEE-754 binary32 and binary64 — so
-  H1's zero-initialized default is preserved *exactly*, for both dtypes,
-  with no per-dtype fill pass.
+  Properties this form has, each load-bearing:
+
+  - **The kernels' pointer arithmetic becomes valid.** One array object
+    spans the whole allocation, so `data[i]` is defined for every
+    `i` in `[0, size)` — which is the entire reason for the design.
+  - **The dtype tag is the sole authority in both directions.** It
+    selects the typed accessor that recovers `T*` and it selects the
+    matching `delete[]`. The allocation form and the deallocation form
+    cannot disagree, because the same immutable field chooses both.
+  - **Destruction is centralized.** One `switch`, in one function, with
+    no `default:` label — so a future dtype without a deleter is a
+    compile-time warning, and a tag holding neither value would fall
+    through *without* deleting (a leak a sanitizer reports) rather than
+    running a wrong `delete[]` (undefined behavior). Declining to guess
+    is the safer failure.
+  - **Zero-initialization is a value-initialized array.** `new T[n]()`
+    zero-initializes every element, and IEEE-754 zero is **positive**
+    zero at both widths — so H1's zero-initialized default is preserved
+    exactly, for both dtypes, with no per-dtype fill pass. Proved by
+    value *and* by sign bit.
+  - **Uninitialized really is uninitialized.** `new T[n]` default-
+    initializes a scalar array, which writes nothing, so H1's saving is
+    intact.
+  - **Metadata failure is covered by `std::unique_ptr<T[]>`.** It releases
+    through `delete[]` on the exact `T*` that was allocated, so the
+    "array allocated, metadata allocation fails, array leaks" scenario
+    cannot happen and cannot free wrongly.
+  - **Alignment** comes from the array new-expression itself, which
+    allocates suitably for its own element type. Checked at runtime for
+    every creator, dtype, and size.
+  - **No per-element destruction, licensed rather than assumed.** `float`
+    and `double` are trivially destructible, `static_assert`ed beside the
+    allocation, so `delete[]` runs no destructor pass. A dtype needing
+    destruction could not be added without that assertion firing.
+  - **Validation is written once.** Size, checked `numel × itemsize`, and
+    fault injection live in the single non-templated caller, so the two
+    instantiations cannot drift apart on any of it. The byte count is a
+    *validation* rather than a sizing input — the array new-expression
+    computes its own size.
 - **Allocation-failure atomicity**, unchanged: the `unique_ptr` owns the
   buffer until the `Storage` node has successfully adopted it, so the
   "data allocated, then metadata allocation fails, buffer leaks" scenario
@@ -2261,6 +2344,79 @@ rather than rewritten away — the precedent Phase H set three times.
 - **Exit gate:** 54 exports in source and in the built library on every
   platform built; full suite green.
 - **Commit message:** `Add dtype-tagged native storage foundation`
+
+#### I1 as delivered
+
+Landed as specified, with four implementation decisions recorded here —
+three because the contract left the judgement open, and one (item 2)
+because the first implementation got it wrong and the correction is worth
+inheriting rather than rediscovering:
+
+1. **The dtype model is defined inline in `tf_internal.h`** rather than in
+   a new translation unit. The signatures are exactly §3.1's. A new
+   `.cpp` would have had to join all seventeen existing CTest target
+   source lists, and inline definitions make "one authority" structural
+   rather than conventional — there is one definition, in the header every
+   compute unit already includes. `VISIBILITY_INLINES_HIDDEN` keeps them
+   out of the ABI.
+2. **Storage owns a genuine typed array, and it took two corrections to
+   get there.** Both wrong turns are recorded because each is a natural
+   thing to reach for and neither is visibly wrong at the call site.
+
+   The first implementation allocated `unsigned char[bytes]`, held it
+   behind `void*`, and let the typed accessors reinterpret it — which
+   acquires storage but creates no `float` or `double` at all, and is only
+   well defined under C++20's implicit-object-creation rule that C++17
+   does not have.
+
+   The second replaced that with raw `::operator new` plus a per-element
+   placement-new loop. That *does* begin `count` floating-point lifetimes,
+   which fixes the first problem — but as `count` **separate scalar
+   objects**, and the kernels index their operands across the whole
+   allocation. Under [expr.add]/4 pointer arithmetic is defined only
+   within one array object, and adjacent scalars do not become one array
+   because their storage is contiguous, so `data[i]` past the first was
+   still leaving its array object.
+
+   The shipped model is the ordinary one: a real array new-expression
+   (`new T[count]()` / `new T[count]`) chosen by one dtype dispatch into a
+   templated body, owned across the metadata allocation by
+   `std::unique_ptr<T[]>`, type-erased into `void*` only after the array
+   exists, and released by one central dtype-matched `delete[]` switch
+   (§4.1). The immutable dtype tag selects the array type, the typed
+   accessor, and the deleter — so none of the three can disagree.
+3. **Every float64 kernel reaches its buffer through one accessor pair**,
+   `tf::storage_f64`, and the float32 rejection is one shared
+   `tf::require_float64` call at each export boundary — 31 `tf_core_*`
+   exports plus `fill`, `scale`, `copy_from`, `copy_to`, and
+   `materialize`. No compute kernel was templated or otherwise
+   generalized; that is I3 onward. The internal kernels keep their
+   `double*` / `const double*` signatures unchanged.
+4. **The four unguarded storage primitives stay unguarded and unhooked.**
+   `tf_storage_fill`, `tf_storage_scale`, `tf_storage_copy_from`, and
+   `tf_storage_copy_to` reject a float32 handle and record
+   `TF_ERROR_INVALID`, but they do **not** clear the error slot on entry
+   and do **not** join `_CHECKED_KERNELS`. H7 deliberately kept them
+   hookless so they cost one native call rather than two, and no
+   production Python path can reach them with a float32 handle while the
+   public registry rejects the dtype. A direct C ABI caller — the only
+   way to obtain one — reads the rejection through `tf_last_error_code`,
+   which is the ordinary convention for an unhooked export. A failed call
+   leaves the code in the slot and the next guarded call clears it on
+   entry, so it can never be misattributed.
+
+One **new failure mode** arrived exactly as §4.1 predicted: a byte-count
+overflow is now `TF_ERROR_INVALID`, rejected by arithmetic before any
+allocator is asked, where the implicit `new double[count]` sizing it
+replaced could only discover the problem by throwing (`TF_ERROR_ALLOC` or
+`TF_ERROR_RUNTIME`). The C++ storage-allocation CTest was advanced to
+assert **both** modes separately — an overflowing count and a
+representable-but-unsatisfiable one — rather than being loosened to accept
+either.
+
+The CTest inventory moved **17 → 18** with `test_dtype_storage`, which
+links every kernel translation unit because the float32-rejection proof
+has to cover each one's own validation front end.
 
 ### I2 — Typed array transfer, views, and materialization
 

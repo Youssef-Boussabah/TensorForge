@@ -2326,12 +2326,92 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase I — native dtype generalization and float32 CPU support (I0, phase begun)
+### Phase I — native dtype generalization and float32 CPU support (I0–I1, phase in progress)
 
-**Phase I is the latest phase, and it has begun at milestone I0 only.
-Nothing has shipped.** This is a planning entry, not a release entry: no
-version, no capability, and no behavior is claimed. **Phase H remains
-complete and remains the latest *completed* phase.**
+**Phase I is the latest phase. Milestones I0 and I1 are complete; I2
+through I11 are not started.** This is an in-progress entry, not a release
+entry: no version and **no public capability** is claimed. **Phase H
+remains complete and remains the latest *completed* phase**, and it closed
+at 52 exports.
+
+#### I1 — internal dtype model and dtype-tagged storage foundation
+
+**I1 replaced the physically `double`-only storage foundation with a
+dtype-tagged one, and did nothing else.** What shipped:
+
+- **The C++ dtype model** (`cpp/include/tf_internal.h`): the `TfDtype` ABI
+  enum with frozen codes `0 = float64` and `1 = float32`; `tf::Dtype` as
+  the fixed-width internal form; `dtype_from_code` (total, `noexcept`,
+  allocation-free, rejecting every unknown code without writing to its
+  output); `dtype_item_size` as the **single** place an element width is
+  written down; `dtype_name` for messages; and `dtype_checked_bytes` as
+  the one element-to-byte conversion in the runtime. The platform
+  assumptions — `sizeof(double) == 8`, `sizeof(float) == 4`, and IEEE-754
+  conformance for both — are `static_assert`ed rather than assumed.
+- **Dtype-tagged storage**: `{void* data; int64_t size; Dtype dtype;}`.
+  One untyped owned pointer (a union or second typed pointer could
+  disagree with the tag; a `void*` cannot), a logical element count whose
+  meaning and name did not move, and one dtype tag assigned once before
+  the handle is published. The storage owns a **genuine runtime-selected
+  `float[]` or `double[]` array**, created by an ordinary array
+  new-expression behind one dtype dispatch into a templated body, held
+  across the metadata allocation by `std::unique_ptr<T[]>`, and
+  type-erased into `void*` only after the array exists. That is what makes
+  the kernels' `data[i]` and `data + i` valid C++17 pointer arithmetic:
+  they traverse one array object rather than a byte array or a run of
+  separately constructed scalars, neither of which supports indexing
+  across the allocation. Release goes through **one central
+  dtype-matched `delete[]` switch**, so the allocation and deallocation
+  forms cannot disagree and no call site duplicates the choice.
+  Value-initialized arrays (`new T[n]()`) give every zeroed element
+  **positive** zero at both widths, so H1's zero-initialized default is
+  preserved with no per-dtype fill pass; default-initialized arrays
+  (`new T[n]`) write nothing, so H1's uninitialized saving is preserved
+  too. `float` and `double` are trivially destructible —
+  `static_assert`ed beside the allocation — so no per-element destruction
+  pass is needed.
+- **Two new C ABI exports** — `tf_storage_create_typed` and
+  `tf_storage_create_uninitialized_typed` — taking the library from
+  **52 to 54** production `tf_*` symbols. These are the only two the whole
+  phase adds. `tf_storage_create` and `tf_storage_create_uninitialized`
+  are **not** removed, renamed, deprecated, or behaviorally altered: they
+  became thin float64 wrappers over the same shared body, and their
+  first observable failure is still `size <= 0` with the identical
+  message.
+- **Safety for a capability that runs ahead of its support.** float32
+  storage is now allocatable through the C ABI while float32 is still not
+  a supported dtype, so every operation that has not been generalized —
+  31 `tf_core_*` exports plus `fill`, `scale`, `copy_from`, `copy_to`, and
+  `materialize` — rejects a float32 handle with `TF_ERROR_INVALID` before
+  reading or writing anything. Without that check a 4-byte-per-element
+  buffer walked through a `double*` would be overrun by exactly a factor
+  of two. Every float64 kernel now reaches its buffer through one accessor
+  pair (`tf::storage_f64`) and the rejection is one shared helper
+  (`tf::require_float64`), so neither is scattered.
+
+**No public capability moved.** `SUPPORTED_DTYPES` still reads
+`("float64",)`, `SUPPORTED_DEVICES` still reads `("cpu",)`, `UNSUPPORTED`
+still reads `("float32", "cuda", "amp")`, `normalize_dtype("float32")`
+still raises, no public constructor accepts float32, and the native
+checkpoint format is still `tensorforge.native_checkpoint` version **2**
+with versions **(1, 2)** supported. No compute kernel was templated or
+generalized; the internal kernels keep their `double*` signatures
+unchanged. No example, benchmark, CI workflow, dependency, or build option
+changed. The registry moves at **I9**.
+
+**One new failure mode arrived, exactly as the contract predicted.** A
+byte-count overflow is now `TF_ERROR_INVALID`, rejected by checked
+arithmetic before any allocator is asked, where the implicit
+`new double[count]` sizing it replaced could only discover the problem by
+throwing. The C++ storage-allocation CTest was advanced to assert **both**
+modes separately — an overflowing count and a representable-but-
+unsatisfiable one — rather than loosened to accept either.
+
+The native CTest inventory moved **17 → 18** with `test_dtype_storage`,
+which links every kernel translation unit because the float32-rejection
+proof has to cover each one's own validation front end.
+
+#### I0 — repository reconciliation and the architecture contract
 
 **I0 shipped three things and nothing else:** the architecture contract
 `docs/native_dtype_float32_design.md`; the durable Phase-I contract

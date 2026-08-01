@@ -170,6 +170,11 @@ TF_EXPORT void tf_core_dropout_forward(
     std::uint64_t call_index,
     double p) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64(
+            "tf_core_dropout_forward",
+            {input_handle, output_handle, mask_handle})) {
+        return;
+    }
     // -- required handles (none is nullable) --
     if (input_handle == nullptr || output_handle == nullptr ||
         mask_handle == nullptr) {
@@ -224,9 +229,9 @@ TF_EXPORT void tf_core_dropout_forward(
     //    point writes to either destination, so a rejected call leaves
     //    both byte-for-byte unchanged. --
     tf::dropout_forward_contiguous(
-        tf::as_storage(input_handle)->data + input_offset,
-        tf::as_storage(output_handle)->data,
-        tf::as_storage(mask_handle)->data,
+        tf::storage_f64(input_handle) + input_offset,
+        tf::storage_f64(output_handle),
+        tf::storage_f64(mask_handle),
         count, seed, call_index, p);
     TF_GUARD_END_VOID()
 }

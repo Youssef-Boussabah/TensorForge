@@ -470,6 +470,32 @@ UNSUPPORTED = (
 SUPPORTED_DTYPES = ("float64",)
 SUPPORTED_DEVICES = ("cpu",)
 
+# ---------------------------------------------------------------------------
+# The Python half of the native dtype model (Phase I, milestone I1; see
+# docs/native_dtype_float32_design.md §3).
+#
+# Exactly two dtype authorities exist in the repository — the C++ enum in
+# cpp/include/tf_internal.h and these tables — and they agree by
+# construction because the ABI codes are the same integers. There is no
+# third table anywhere: anything that needs a code, a width, or a NumPy
+# type reads it from here.
+#
+# **Private on purpose, and wider than SUPPORTED_DTYPES on purpose.** The
+# runtime can *allocate* float32 storage from I1 onward, but float32 is
+# not a supported TensorForge dtype and does not become one until milestone
+# I9 — so ``"float32"`` appears here (an internal capability) while
+# ``normalize_dtype`` still rejects it (the public promise). That gap is
+# the deliberate pattern Phase G used for ``dropout``, which existed as an
+# operation from G3 and left UNSUPPORTED only at G10. Nothing public reads
+# these tables, no public dtype object is built on them, and there is no
+# exported dtype-query symbol: Python knows a storage's dtype because
+# Python asked for it at creation.
+#
+# The codes are frozen in the same sense the TfStatus codes are.
+_DTYPE_CODES = {"float64": 0, "float32": 1}
+_DTYPE_ITEM_SIZES = {"float64": 8, "float32": 4}
+_DTYPE_NUMPY = {"float64": np.float64, "float32": np.float32}
+
 # Largest element count the native int64 storage/ABI arithmetic addresses.
 _INT64_MAX = 2 ** 63 - 1
 # ...and the low end, for the class labels that cross as int64 metadata.
@@ -681,6 +707,21 @@ def _load_library():
     # backend detail — no public "empty" API is built on it.
     library.tf_storage_create_uninitialized.argtypes = [ctypes.c_int64]
     library.tf_storage_create_uninitialized.restype = ctypes.c_void_p
+    # Phase I (I1): the two typed creators — the **only** two symbols the
+    # whole phase adds (52 -> 54). Same shape as the untyped pair plus an
+    # int32 dtype code, and the identical failure convention: null plus the
+    # thread-local error, read by the same errcheck hook. They are the one
+    # place the ABI has to grow, because construction is the single moment
+    # at which a storage's dtype is not yet knowable from any argument —
+    # every other export reads it from a handle it already receives.
+    #
+    # ``c_int32`` matches the C ABI exactly; the codes come from the one
+    # table above and never from a literal at a call site.
+    for name in ("tf_storage_create_typed",
+                 "tf_storage_create_uninitialized_typed"):
+        kernel = getattr(library, name)
+        kernel.argtypes = [ctypes.c_int64, ctypes.c_int32]
+        kernel.restype = ctypes.c_void_p
     library.tf_storage_destroy.argtypes = [ctypes.c_void_p]
     library.tf_storage_destroy.restype = None
     library.tf_storage_size.argtypes = [ctypes.c_void_p]
@@ -959,6 +1000,13 @@ _CHECKED_KERNELS = (
     # error set — so it takes the identical errcheck hook rather than a
     # second, divergent failure convention.
     "tf_storage_create_uninitialized",
+    # Phase I (I1). The typed creators report failure exactly as the
+    # untyped pair does — a null handle plus the thread-local error — so
+    # they join the same hook. An unknown dtype code, a non-positive size,
+    # and a byte-count overflow all surface as ValueError; a real or
+    # injected allocation failure as MemoryError.
+    "tf_storage_create_typed",
+    "tf_storage_create_uninitialized_typed",
     "tf_storage_materialize",
     "tf_core_relu", "tf_core_relu_contiguous",
     "tf_core_sqrt", "tf_core_sqrt_contiguous",
@@ -1194,9 +1242,21 @@ class NativeStorage:
         dtype = normalize_dtype(dtype)
         device = normalize_device(device)
         lib = _require_library()
-        create = (lib.tf_storage_create if _zero_initialize
-                  else lib.tf_storage_create_uninitialized)
-        handle = create(int(size))
+        # Phase I (I1): allocate through the **typed** creators, uniformly.
+        # One path is easier to prove correct than two, and the dtype the
+        # constructor already validated is the dtype the storage is tagged
+        # with, so the Python tag and the C++ tag cannot disagree.
+        #
+        # ``normalize_dtype`` still admits only ``"float64"``, so the code
+        # this passes is always 0 today and every observable behavior —
+        # zero-initialization, the size rejection, the MemoryError, the
+        # handle, ``close()`` semantics, live-storage accounting — is
+        # byte-for-byte what it was. The untyped exports remain part of the
+        # ABI and keep their own tests; they did not go away because their
+        # primary caller moved.
+        create = (lib.tf_storage_create_typed if _zero_initialize
+                  else lib.tf_storage_create_uninitialized_typed)
+        handle = create(int(size), _DTYPE_CODES[dtype])
         if not handle:
             raise MemoryError(f"could not allocate native storage of size {size}")
         self._lib = lib

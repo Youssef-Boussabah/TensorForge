@@ -383,6 +383,44 @@ if(TF_BUILD_TESTS)
 
   add_test(NAME storage_allocation COMMAND test_storage_allocation)
 
+  # The dtype model and dtype-tagged storage (Phase I, milestone I1).
+  #
+  # This target links **every** kernel translation unit, which none of the
+  # others does, and it needs to: a third of what it proves is that a
+  # float32 handle is rejected by an operation that has not been
+  # dtype-generalized yet, and each compute unit has its own validation
+  # front end. Checking one of them would say nothing about the rest, so
+  # the test drives a representative export from each — elementwise,
+  # matmul, reduction, classification, pooling, conv2d, random — beside the
+  # storage primitives themselves.
+  #
+  # The other two thirds are the dtype model (frozen ABI codes, the one
+  # item-size authority, canonical names, total conversion) and the two
+  # typed creators, including every rejection path and the byte-level proof
+  # that zero-initialized storage is +0.0 at both widths.
+  add_executable(test_dtype_storage
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reduction.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/pooling.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/random.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_storage PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_storage PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_storage PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_storage PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_storage COMMAND test_dtype_storage)
+
   # Matmul loop order and dispatch (Phase H, H2): links the matmul source
   # directly, plus storage.cpp (the exported-wrapper check drives real
   # tf::Storage handles) and error.cpp (matmul.cpp carries the guarded

@@ -1427,8 +1427,17 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     # the matmul path/dispatch test; H5 added the copy path/dispatch
     # test; H6 added the reduction path/dispatch test; H8 added the
     # elementwise plan/traversal test; H9 added the convolution
-    # path/dispatch test. None of the six is a new numerical kernel.
-    assert len(ctests) == 17
+    # path/dispatch test. None of the six is a new numerical kernel, so
+    # Phase H closed with 17.
+    #
+    # Phase I milestone I1 added the dtype/storage contract test, which is
+    # likewise not a numerical kernel — it drives the dtype model, the two
+    # typed creators, and the rejection of a float32 handle by every
+    # operation that has not been generalized yet.
+    assert len(ctests) == 18
+    assert "test_dtype_storage.cpp" in ctests
+    assert len([name for name in ctests
+                if name != "test_dtype_storage.cpp"]) == 17
     assert "test_conv2d_execution.cpp" in ctests
     assert "test_storage_allocation.cpp" in ctests
     assert "test_matmul.cpp" in ctests

@@ -64,6 +64,17 @@ FINAL_UNSUPPORTED = ("float32", "cuda", "amp")
 FINAL_DTYPES = ("float64",)
 FINAL_DEVICES = ("cpu",)
 FINAL_EXPORT_COUNT = 52
+# ...and what the live source holds **now**. Phase H closed at 52; Phase I
+# milestone I1 added the two typed storage creators, taking the current
+# inventory to 54. The two numbers are different facts about different
+# moments and are deliberately kept apart: FINAL_EXPORT_COUNT is Phase H's
+# closure, which is history and does not move again, while
+# CURRENT_EXPORT_COUNT is what the tree exports today.
+PHASE_I_ADDED_EXPORTS = (
+    "tf_storage_create_typed",
+    "tf_storage_create_uninitialized_typed",
+)
+CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(PHASE_I_ADDED_EXPORTS)  # 54
 FINAL_CHECKPOINT_VERSION = 2
 FINAL_CHECKPOINT_VERSIONS = (1, 2)
 FINAL_MILESTONES = tuple(f"H{n}" for n in range(11))
@@ -239,14 +250,26 @@ def _source_exports():
     return names
 
 
-def test_the_source_exports_exactly_the_final_symbol_count():
+def test_the_source_exports_exactly_the_current_symbol_count():
+    """The live inventory is Phase H's closure plus exactly the symbols
+    Phase I has added so far, and nothing else.
+
+    Stated as arithmetic rather than as a bare number so that the two
+    facts stay separable: if a milestone adds an unplanned export, the
+    count fails; if it removes one of Phase H's, the difference fails."""
     exports = _source_exports()
-    assert len(exports) == FINAL_EXPORT_COUNT, sorted(exports)
+    assert len(exports) == CURRENT_EXPORT_COUNT, sorted(exports)
+    for name in PHASE_I_ADDED_EXPORTS:
+        assert name in exports, name
+    assert len(exports - set(PHASE_I_ADDED_EXPORTS)) == FINAL_EXPORT_COUNT
 
 
 def test_the_one_symbol_phase_h_added_is_present_and_is_the_only_new_one():
     """H1's uninitialized allocator is the whole of Phase H's ABI
-    footprint. Its zero-initializing sibling is still the default."""
+    footprint. Its zero-initializing sibling is still the default.
+
+    Phase I did not disturb either: both remain exported, and I1 made them
+    thin float64 compatibility wrappers rather than removing them."""
     exports = _source_exports()
     assert "tf_storage_create_uninitialized" in exports
     assert "tf_storage_create" in exports
@@ -454,6 +477,10 @@ def test_claude_md_states_current_facts_and_points_at_the_docs():
     # The current support boundary, verbatim from the live registry.
     for value in FINAL_DTYPES + FINAL_DEVICES + FINAL_UNSUPPORTED:
         assert value in text, value
+    # Both export counts, because both are current facts of a different
+    # kind: 54 is what the library exports today, and 52 is what Phase H
+    # closed at — the instructions must not let a reader confuse them.
+    assert str(CURRENT_EXPORT_COUNT) in text
     assert str(FINAL_EXPORT_COUNT) in text
     assert re.search(r"version\s*\**\s*2\b", text), "checkpoint version"
 

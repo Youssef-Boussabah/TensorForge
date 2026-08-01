@@ -74,8 +74,8 @@ void core_unary(
     const int64_t* shape, const int64_t* strides,
     int64_t offset, int64_t ndim, UnaryOp op
 ) {
-    const double* src = as_storage(src_handle)->data;
-    double* dst = as_storage(dst_handle)->data;
+    const double* src = tf::storage_f64(src_handle);
+    double* dst = tf::storage_f64(dst_handle);
     if (ndim == 0) {
         dst[0] = op(src[offset]);
         return;
@@ -106,8 +106,8 @@ void core_unary_contiguous(
     const void* src_handle, void* dst_handle,
     int64_t numel, int64_t offset, UnaryOp op
 ) {
-    const double* src = as_storage(src_handle)->data + offset;
-    double* dst = as_storage(dst_handle)->data;
+    const double* src = tf::storage_f64(src_handle) + offset;
+    double* dst = tf::storage_f64(dst_handle);
     for (int64_t i = 0; i < numel; ++i) {
         dst[i] = op(src[i]);
     }
@@ -120,9 +120,9 @@ void core_binary(
     const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
     int64_t a_offset, int64_t b_offset, int64_t ndim, BinaryOp op
 ) {
-    const double* a = as_storage(a_handle)->data;
-    const double* b = as_storage(b_handle)->data;
-    double* dst = as_storage(dst_handle)->data;
+    const double* a = tf::storage_f64(a_handle);
+    const double* b = tf::storage_f64(b_handle);
+    double* dst = tf::storage_f64(dst_handle);
     if (ndim == 0) {
         dst[0] = op(a[a_offset], b[b_offset]);
         return;
@@ -338,8 +338,8 @@ void unary_dispatch(
 ) {
     tf::ElementwiseUnaryPlan plan;
     if (tf::build_unary_plan(shape, strides, ndim, plan)) {
-        tf::unary_plan_walk<Op>(as_storage(src_handle)->data,
-                                as_storage(dst_handle)->data, plan, offset);
+        tf::unary_plan_walk<Op>(tf::storage_f64(src_handle),
+                                tf::storage_f64(dst_handle), plan, offset);
         return;
     }
     core_unary(src_handle, dst_handle, shape, strides, offset, ndim, fallback);
@@ -353,9 +353,9 @@ void binary_dispatch(
 ) {
     tf::ElementwiseBinaryPlan plan;
     if (tf::build_binary_plan(shape, a_strides, b_strides, ndim, plan)) {
-        tf::binary_plan_walk<Op>(as_storage(a_handle)->data,
-                                 as_storage(b_handle)->data,
-                                 as_storage(dst_handle)->data, plan,
+        tf::binary_plan_walk<Op>(tf::storage_f64(a_handle),
+                                 tf::storage_f64(b_handle),
+                                 tf::storage_f64(dst_handle), plan,
                                  a_offset, b_offset);
         return;
     }
@@ -370,8 +370,8 @@ template <class Op>
 void unary_contiguous_dispatch(
     const void* src_handle, void* dst_handle, int64_t numel, int64_t offset
 ) {
-    tf::unary_row<Op>(as_storage(src_handle)->data + offset,
-                      as_storage(dst_handle)->data, numel, 1);
+    tf::unary_row<Op>(tf::storage_f64(src_handle) + offset,
+                      tf::storage_f64(dst_handle), numel, 1);
 }
 
 template <class Op>
@@ -379,9 +379,9 @@ void binary_contiguous_dispatch(
     const void* a_handle, const void* b_handle, void* dst_handle,
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
-    tf::binary_row<Op>(as_storage(a_handle)->data + a_offset,
-                       as_storage(b_handle)->data + b_offset,
-                       as_storage(dst_handle)->data, numel, 1, 1);
+    tf::binary_row<Op>(tf::storage_f64(a_handle) + a_offset,
+                       tf::storage_f64(b_handle) + b_offset,
+                       tf::storage_f64(dst_handle), numel, 1, 1);
 }
 
 }  // namespace
@@ -485,6 +485,9 @@ TF_EXPORT void tf_core_relu(
     int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_relu", {src, dst})) {
+        return;
+    }
     unary_dispatch<tf::ReluOp>(src, dst, shape, strides, offset, ndim,
                                [](double x) { return x > 0.0 ? x : 0.0; });
     TF_GUARD_END_VOID()
@@ -494,6 +497,9 @@ TF_EXPORT void tf_core_relu_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_relu_contiguous", {src, dst})) {
+        return;
+    }
     unary_contiguous_dispatch<tf::ReluOp>(src, dst, numel, offset);
     TF_GUARD_END_VOID()
 }
@@ -505,6 +511,9 @@ TF_EXPORT void tf_core_sqrt(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_sqrt", {src, dst})) {
+        return;
+    }
     unary_dispatch<tf::SqrtOp>(src, dst, shape, strides, offset, ndim, op_sqrt);
     TF_GUARD_END_VOID()
 }
@@ -513,6 +522,9 @@ TF_EXPORT void tf_core_sqrt_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_sqrt_contiguous", {src, dst})) {
+        return;
+    }
     unary_contiguous_dispatch<tf::SqrtOp>(src, dst, numel, offset);
     TF_GUARD_END_VOID()
 }
@@ -522,6 +534,9 @@ TF_EXPORT void tf_core_reciprocal(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_reciprocal", {src, dst})) {
+        return;
+    }
     unary_dispatch<tf::ReciprocalOp>(src, dst, shape, strides, offset, ndim,
                                      op_reciprocal);
     TF_GUARD_END_VOID()
@@ -531,6 +546,9 @@ TF_EXPORT void tf_core_reciprocal_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_reciprocal_contiguous", {src, dst})) {
+        return;
+    }
     unary_contiguous_dispatch<tf::ReciprocalOp>(src, dst, numel, offset);
     TF_GUARD_END_VOID()
 }
@@ -596,6 +614,9 @@ TF_EXPORT void tf_core_contiguous_copy(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_contiguous_copy", {src, dst})) {
+        return;
+    }
     if (const char* err =
             unary_strided_error(src, dst, shape, strides, offset, ndim)) {
         tf::set_error(TF_ERROR_INVALID, err);
@@ -657,6 +678,9 @@ TF_EXPORT void tf_core_exp(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_exp", {src, dst})) {
+        return;
+    }
     if (const char* err =
             unary_strided_error(src, dst, shape, strides, offset, ndim)) {
         tf::set_error(TF_ERROR_INVALID, err);
@@ -670,6 +694,9 @@ TF_EXPORT void tf_core_exp_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_exp_contiguous", {src, dst})) {
+        return;
+    }
     if (const char* err = unary_contiguous_error(src, dst, numel, offset)) {
         tf::set_error(TF_ERROR_INVALID, err);
         return;
@@ -683,6 +710,9 @@ TF_EXPORT void tf_core_log(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_log", {src, dst})) {
+        return;
+    }
     if (const char* err =
             unary_strided_error(src, dst, shape, strides, offset, ndim)) {
         tf::set_error(TF_ERROR_INVALID, err);
@@ -696,6 +726,9 @@ TF_EXPORT void tf_core_log_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_log_contiguous", {src, dst})) {
+        return;
+    }
     if (const char* err = unary_contiguous_error(src, dst, numel, offset)) {
         tf::set_error(TF_ERROR_INVALID, err);
         return;
@@ -712,6 +745,9 @@ TF_EXPORT void tf_core_add(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_add", {a, b, dst})) {
+        return;
+    }
     binary_dispatch<tf::AddOp>(a, b, dst, shape, a_strides, b_strides,
                                a_offset, b_offset, ndim, op_add);
     TF_GUARD_END_VOID()
@@ -723,6 +759,9 @@ TF_EXPORT void tf_core_subtract(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_subtract", {a, b, dst})) {
+        return;
+    }
     binary_dispatch<tf::SubtractOp>(a, b, dst, shape, a_strides, b_strides,
                                     a_offset, b_offset, ndim, op_subtract);
     TF_GUARD_END_VOID()
@@ -734,6 +773,9 @@ TF_EXPORT void tf_core_multiply(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_multiply", {a, b, dst})) {
+        return;
+    }
     binary_dispatch<tf::MultiplyOp>(a, b, dst, shape, a_strides, b_strides,
                                     a_offset, b_offset, ndim, op_multiply);
     TF_GUARD_END_VOID()
@@ -750,6 +792,9 @@ TF_EXPORT void tf_core_relu_backward(
     int64_t x_offset, int64_t u_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_relu_backward", {x, upstream, dst})) {
+        return;
+    }
     binary_dispatch<tf::ReluBackwardOp>(x, upstream, dst, shape, x_strides,
                                         u_strides, x_offset, u_offset, ndim,
                                         op_relu_backward);
@@ -761,6 +806,9 @@ TF_EXPORT void tf_core_add_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_add_contiguous", {a, b, dst})) {
+        return;
+    }
     binary_contiguous_dispatch<tf::AddOp>(a, b, dst, numel, a_offset, b_offset);
     TF_GUARD_END_VOID()
 }
@@ -770,6 +818,9 @@ TF_EXPORT void tf_core_subtract_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_subtract_contiguous", {a, b, dst})) {
+        return;
+    }
     binary_contiguous_dispatch<tf::SubtractOp>(a, b, dst, numel, a_offset,
                                                b_offset);
     TF_GUARD_END_VOID()
@@ -780,6 +831,9 @@ TF_EXPORT void tf_core_multiply_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64("tf_core_multiply_contiguous", {a, b, dst})) {
+        return;
+    }
     binary_contiguous_dispatch<tf::MultiplyOp>(a, b, dst, numel, a_offset,
                                                b_offset);
     TF_GUARD_END_VOID()

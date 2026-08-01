@@ -1308,10 +1308,33 @@ def test_a_training_run_is_bit_identical_between_allocation_paths(monkeypatch):
 # 6. Scope — one C ABI symbol, no public capability, no poison control
 # ==========================================================================
 
-# The exported-symbol inventory H1 must leave behind: the pre-H1 baseline
-# of 51 plus tf_storage_create_uninitialized, and nothing else.
+# The exported-symbol inventory H1 left behind: the pre-H1 baseline of 51
+# plus tf_storage_create_uninitialized, and nothing else.
 BASELINE_TF_EXPORTS = 51
-EXPECTED_TF_EXPORTS = 52
+PHASE_H_TF_EXPORTS = 52
+# ...and what the built library holds now. Phase I milestone I1 added the
+# two typed storage creators — the only two symbols the whole phase adds —
+# so the live count is 54 while Phase H's closure remains 52. Kept as two
+# named constants because they are facts about two different moments.
+PHASE_I_TYPED_CREATORS = (
+    "tf_storage_create_typed",
+    "tf_storage_create_uninitialized_typed",
+)
+EXPECTED_TF_EXPORTS = PHASE_H_TF_EXPORTS + len(PHASE_I_TYPED_CREATORS)  # 54
+
+
+def phase_h_export_names(exported):
+    """``exported`` with the Phase-I additions removed — the export surface
+    as Phase H closed it.
+
+    Every per-milestone Phase-H test module asserts "this milestone added
+    no ABI symbol". That claim is about Phase H, it is still true, and it
+    must stay checkable — but the live library now also carries the two
+    typed creators milestone I1 added, so the claim is measured against
+    this subset rather than against the raw total. Sharing the helper
+    keeps the eight modules that make the claim from drifting apart.
+    """
+    return [name for name in exported if name not in PHASE_I_TYPED_CREATORS]
 
 # Every name that would constitute a runtime poison-control API. None may
 # exist in the shipped library or the installed Python backend.
@@ -1532,7 +1555,16 @@ def test_the_built_library_export_table_has_exactly_the_h1_addition():
     # poison hook by name and must not find one.
     assert not [name for name in exported if "poison" in name.lower()]
     assert len(exported) == EXPECTED_TF_EXPORTS, exported
-    assert len(exported) - 1 == BASELINE_TF_EXPORTS
+    # The two Phase-I creators are present in the built library...
+    for name in PHASE_I_TYPED_CREATORS:
+        assert name in exported, name
+    # ...and removing them leaves exactly Phase H's closure inventory,
+    # which is one symbol above the pre-H1 baseline. Nothing else was
+    # added, and nothing H1 shipped was taken away.
+    without_phase_i = [name for name in exported
+                       if name not in PHASE_I_TYPED_CREATORS]
+    assert len(without_phase_i) == PHASE_H_TF_EXPORTS
+    assert len(without_phase_i) - 1 == BASELINE_TF_EXPORTS
     if image == "pe":
         # A PE export directory lists exactly what the DLL publishes, so
         # the count above really is the whole export surface.

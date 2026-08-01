@@ -414,6 +414,11 @@ TF_EXPORT void tf_core_softmax_forward(
     void* dst_handle,
     int64_t outer, int64_t axis_length, int64_t inner) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64(
+            "tf_core_softmax_forward",
+            {src_handle, dst_handle})) {
+        return;
+    }
     if (reject_forward_arguments("softmax_forward", src_handle, src_offset,
                                  dst_handle, outer, axis_length, inner)) {
         return;
@@ -422,8 +427,8 @@ TF_EXPORT void tf_core_softmax_forward(
     //    point writes to the destination, so a rejected call leaves it
     //    byte-for-byte unchanged. --
     tf::softmax_forward_contiguous(
-        tf::as_storage(src_handle)->data + src_offset,
-        tf::as_storage(dst_handle)->data,
+        tf::storage_f64(src_handle) + src_offset,
+        tf::storage_f64(dst_handle),
         outer, axis_length, inner);
     TF_GUARD_END_VOID()
 }
@@ -433,6 +438,11 @@ TF_EXPORT void tf_core_log_softmax_forward(
     void* dst_handle,
     int64_t outer, int64_t axis_length, int64_t inner) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64(
+            "tf_core_log_softmax_forward",
+            {src_handle, dst_handle})) {
+        return;
+    }
     if (reject_forward_arguments("log_softmax_forward", src_handle, src_offset,
                                  dst_handle, outer, axis_length, inner)) {
         return;
@@ -442,8 +452,8 @@ TF_EXPORT void tf_core_log_softmax_forward(
     //    in the RESULT is a value, not an ABI failure: the error slot the
     //    guard cleared on entry stays TF_OK. --
     tf::log_softmax_forward_contiguous(
-        tf::as_storage(src_handle)->data + src_offset,
-        tf::as_storage(dst_handle)->data,
+        tf::storage_f64(src_handle) + src_offset,
+        tf::storage_f64(dst_handle),
         outer, axis_length, inner);
     TF_GUARD_END_VOID()
 }
@@ -464,6 +474,11 @@ TF_EXPORT void tf_core_cross_entropy_forward(
     void* loss_handle, void* probabilities_handle,
     int64_t batch_size, int64_t num_classes, int64_t reduction_code) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64(
+            "tf_core_cross_entropy_forward",
+            {logits_handle, loss_handle, probabilities_handle})) {
+        return;
+    }
     const char* op = "cross_entropy_forward";
     if (logits_handle == nullptr || loss_handle == nullptr ||
         probabilities_handle == nullptr) {
@@ -511,10 +526,10 @@ TF_EXPORT void tf_core_cross_entropy_forward(
     //    a value, not an ABI failure: the error slot the guard cleared on
     //    entry stays TF_OK. --
     tf::cross_entropy_forward_contiguous(
-        tf::as_storage(logits_handle)->data + logits_offset,
+        tf::storage_f64(logits_handle) + logits_offset,
         targets,
-        tf::as_storage(loss_handle)->data,
-        tf::as_storage(probabilities_handle)->data,
+        tf::storage_f64(loss_handle),
+        tf::storage_f64(probabilities_handle),
         batch_size, num_classes, reduction_code);
     TF_GUARD_END_VOID()
 }
@@ -530,6 +545,11 @@ TF_EXPORT void tf_core_cross_entropy_backward(
     void* grad_logits_handle,
     int64_t batch_size, int64_t num_classes, int64_t reduction_code) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64(
+            "tf_core_cross_entropy_backward",
+            {probabilities_handle, upstream_handle, grad_logits_handle})) {
+        return;
+    }
     const char* op = "cross_entropy_backward";
     if (probabilities_handle == nullptr || upstream_handle == nullptr ||
         grad_logits_handle == nullptr) {
@@ -577,10 +597,10 @@ TF_EXPORT void tf_core_cross_entropy_backward(
     }
     // -- validated: nothing above this point writes to the destination. --
     tf::cross_entropy_backward_contiguous(
-        tf::as_storage(probabilities_handle)->data + probabilities_offset,
+        tf::storage_f64(probabilities_handle) + probabilities_offset,
         targets,
-        tf::as_storage(upstream_handle)->data + upstream_offset,
-        tf::as_storage(grad_logits_handle)->data,
+        tf::storage_f64(upstream_handle) + upstream_offset,
+        tf::storage_f64(grad_logits_handle),
         batch_size, num_classes, reduction_code);
     TF_GUARD_END_VOID()
 }

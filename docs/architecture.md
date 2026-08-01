@@ -1065,30 +1065,41 @@ explicit layer at a time:
   CTests 16 to **17**. No public API, capability, dtype, device, registry
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
-- **Native dtype generalization and float32 CPU support (Phase I) has
-  begun, at milestone I0.** Phase I is the latest phase; Phase H is
-  unaffected and remains complete. **I0 is the architecture contract
+- **Native dtype generalization and float32 CPU support (Phase I) is
+  under way: milestones I0 and I1 are complete, I2–I11 are not
+  started.** Phase I is the latest phase; Phase H is unaffected and
+  remains complete, having closed at 52 exports. **I0 was the
+  architecture contract
   ([native_dtype_float32_design.md](native_dtype_float32_design.md)), its
   guardrail tests, and documentation reconciliation — and no runtime
-  behavior**: no dtype, no storage change, no kernel, no C ABI symbol, no
-  ctypes declaration, no Core method, no operation, no module, no
-  optimizer, no export, no registry value, and no checkpoint-format
-  change. The runtime is still float64 CPU only, still **52** exported
-  `tf_*` symbols, still checkpoint version 2 with versions 1 and 2
-  accepted, and `float32` is still listed in `UNSUPPORTED`. The
-  architectural fact the contract rests on is visible in the layering
-  above: **42 of the 52 exports already address their operands through
-  opaque handles**, so putting a dtype tag on the storage behind those
-  handles reaches every one of them, and only *construction* needs new
-  information — hence **exactly two** planned new symbols
+  behavior.** **I1 delivered the foundation**: the C++ dtype model with
+  frozen ABI codes and a single item-size authority, dtype-tagged storage
+  (one untyped owned buffer, an element count whose meaning did not move,
+  one dtype tag) owning a genuine runtime-selected `float[]` or `double[]`
+  array with checked `numel × itemsize`, type-erased into `void*` only
+  after creation so the kernels' pointer arithmetic is valid under C++17,
+  and the two typed creation exports — taking the
+  library to **54** `tf_*` symbols, which is the count for the whole
+  phase. **No public capability moved**: still float64 CPU only, still
+  checkpoint version 2 with versions 1 and 2 accepted, and `float32` is
+  still listed in `UNSUPPORTED`. float32 storage is allocatable through
+  the C ABI and consumed by nothing — every operation not yet generalized
+  rejects a float32 handle before touching memory. The architectural fact
+  the contract rests on is visible in the layering
+  above: **42 of Phase H's 52 exports already address their operands
+  through opaque handles**, so putting a dtype tag on the storage behind
+  those handles reaches every one of them, and only *construction* needed
+  new information — hence the **exactly two** new symbols
   (`tf_storage_create_typed`, `tf_storage_create_uninitialized_typed`,
   52 → **54**) and an explicit rejection of per-operation float32
-  exports. Storage becomes the single dtype authority, so every view over
+  exports. Storage is now the single dtype authority, so every view over
   a buffer agrees by construction and no view operation casts; shapes,
   strides, and offsets stay in logical elements, with bytes appearing only
-  at the allocation boundary; each exported call dispatches **once** into
-  a templated `float`/`double` kernel and nothing below that branches on
-  dtype; casting, promotion, and mixed-dtype arithmetic do not exist and
+  at the allocation boundary; each exported call will dispatch **once**
+  into a templated `float`/`double` kernel, with nothing below that
+  branching on dtype (I3 onward — I1 generalized no kernel, and every
+  float64 kernel still takes `double*` unchanged); casting, promotion,
+  and mixed-dtype arithmetic do not exist and
   are rejected before any allocation or mutation; float32 accumulates in
   float32; checkpoint **version 3** is designed but not activated, with
   versions 1 and 2 defined as float64-only formats; exact deterministic

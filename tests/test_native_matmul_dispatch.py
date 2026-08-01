@@ -1093,8 +1093,11 @@ def test_optimizer_updates_after_matmul_gradients_are_reproducible(
 # 8. Scope — no new export, no capability move, no dispatch control
 # ==========================================================================
 
-# H2 adds no exported symbol: the count is exactly what H1 left.
-EXPECTED_TF_EXPORTS = 52
+# H2 adds no exported symbol: Phase H's surface is exactly what H1 left.
+# The live library exports two more — Phase I milestone I1's typed storage
+# creators — so the Phase-H claim is checked against the Phase-H subset.
+PHASE_H_TF_EXPORTS = 52
+EXPECTED_TF_EXPORTS = 54
 
 # Names that would constitute a runtime dispatch control. None may exist
 # in the shipped library or the installed Python backend.
@@ -1140,6 +1143,7 @@ def test_h2_added_no_exported_symbol():
         pytest.skip("this image format is not parsed here")
     exported = sorted(name for name in names if name.startswith("tf_"))
     assert len(exported) == EXPECTED_TF_EXPORTS, exported
+    assert len(h1.phase_h_export_names(exported)) == PHASE_H_TF_EXPORTS
     assert "tf_core_matmul" in exported
     assert not [name for name in exported if "row_sweep" in name]
     assert not [name for name in exported

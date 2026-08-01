@@ -2033,13 +2033,19 @@ def _exported_names():
 
 @needs_native
 def test_h6_added_no_exported_symbol():
-    """The ABI is exactly what H1 left: 52 exported ``tf_*`` symbols. H6's
-    traversal choice lives *inside* an existing export."""
+    """H6 added no exported symbol: its traversal choice lives *inside* an
+    existing export, so Phase H's surface is still exactly the 52 symbols
+    H1 left. (The live library exports 54 — Phase I milestone I1 added the
+    two typed storage creators — which is why the Phase-H claim is checked
+    against the Phase-H subset.)"""
+    import test_native_storage_allocation as h1
+
     _image, names = _exported_names()
     if names is None:
         pytest.skip("this image format is not parsed here")
     exported = sorted(name for name in names if name.startswith("tf_"))
-    assert len(exported) == 52, exported
+    assert len(exported) == h1.EXPECTED_TF_EXPORTS, exported
+    assert len(h1.phase_h_export_names(exported)) == h1.PHASE_H_TF_EXPORTS
     assert "tf_core_sum" in exported
     assert "tf_core_narrow_backward" in exported
     # Nothing reduction-dispatch-flavored was added.

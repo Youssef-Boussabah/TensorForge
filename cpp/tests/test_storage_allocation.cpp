@@ -115,7 +115,7 @@ void test_valid_creation_and_size() {
             const tf::Storage* storage = tf::as_storage(handle);
             bool filled = true;
             for (std::int64_t i = 0; i < size; ++i) {
-                filled = filled && storage->data[i] == 3.5;
+                filled = filled && tf::storage_f64(storage)[i] == 3.5;
             }
             describe(v, "is writable through tf_storage_fill", message,
                      sizeof message);
@@ -161,14 +161,44 @@ void test_overflowing_size_is_rejected_or_fails_cleanly() {
                 "hard error, not a null return\n");
 #else
     char message[256];
-    // An allocation this large cannot succeed. Either the allocator
-    // refuses it (null + TF_ERROR_ALLOC) or new[] throws length_error /
-    // bad_alloc, which the guard maps to an error code. What must never
-    // happen is a non-null handle or a silent success.
-    const std::int64_t huge = std::numeric_limits<std::int64_t>::max() / 4;
+    // Two distinct failure modes, kept distinct (Phase I, milestone I1).
+    //
+    // 1. **Byte-count overflow.** ``numel x itemsize`` is now computed with
+    //    checked arithmetic *before* any allocation is attempted, so an
+    //    element count whose byte product is not representable is an
+    //    invalid **request** — TF_ERROR_INVALID — and no allocator is ever
+    //    asked for it. This is a failure mode I1 deliberately added: the
+    //    implicit ``new double[count]`` sizing it replaced had no checked
+    //    equivalent and could only discover the problem by throwing.
+    //    At float64 (8 bytes per element) INT64_MAX/4 overflows.
+    // 2. **Representable but unsatisfiable.** A count whose byte product
+    //    *does* fit but which no allocator can honor still fails the old
+    //    way: null plus TF_ERROR_ALLOC, or new[] throwing length_error /
+    //    bad_alloc, which the guard maps to an error code.
+    //
+    // What must never happen, in either case, is a non-null handle or a
+    // silent success.
+    const std::int64_t overflowing = std::numeric_limits<std::int64_t>::max() / 4;
+    const std::int64_t unsatisfiable = std::numeric_limits<std::int64_t>::max() / 32;
     for (const Variant& v : kVariants) {
         tf_clear_error();
-        void* handle = v.create(huge);
+        void* handle = v.create(overflowing);
+        describe(v, "an overflowing size returns null", message,
+                 sizeof message);
+        check(handle == nullptr, message);
+        describe(v, "an overflowing size sets TF_ERROR_INVALID", message,
+                 sizeof message);
+        check(tf_last_error_code() == TF_ERROR_INVALID, message);
+        describe(v, "an overflowing size names the count and dtype", message,
+                 sizeof message);
+        check(std::strstr(tf_last_error_message(), "float64") != nullptr,
+              message);
+        if (handle != nullptr) {
+            tf_storage_destroy(handle);
+        }
+
+        tf_clear_error();
+        handle = v.create(unsatisfiable);
         describe(v, "an unsatisfiable size returns null", message,
                  sizeof message);
         check(handle == nullptr, message);
@@ -270,7 +300,7 @@ void test_zero_initializing_path_really_zeroes() {
         const tf::Storage* storage = tf::as_storage(handle);
         bool all_zero = true;
         for (std::int64_t i = 0; i < size; ++i) {
-            all_zero = all_zero && storage->data[i] == 0.0;
+            all_zero = all_zero && tf::storage_f64(storage)[i] == 0.0;
         }
         check(all_zero, "tf_storage_create did not zero-initialize");
         tf_storage_destroy(handle);
@@ -291,15 +321,15 @@ void test_uninitialized_storage_is_writable_and_owns_its_buffer() {
     if (first != nullptr && second != nullptr) {
         check(tf_storage_size(first) == 16, "uninitialized creation lost its size");
         check(first != second, "two creations returned the same handle");
-        check(tf::as_storage(first)->data != tf::as_storage(second)->data,
+        check(tf::storage_f64(first) != tf::storage_f64(second),
               "two creations shared one buffer");
         tf_storage_fill(first, 2.0);
         tf_storage_fill(second, 5.0);
-        check(tf::as_storage(first)->data[15] == 2.0,
+        check(tf::storage_f64(first)[15] == 2.0,
               "uninitialized storage was not writable");
         // ...and writing one did not touch the other, so each owns its
         // own allocation rather than aliasing a shared one.
-        check(tf::as_storage(second)->data[15] == 5.0,
+        check(tf::storage_f64(second)[15] == 5.0,
               "one uninitialized buffer aliased another");
     }
     tf_storage_destroy(first);
@@ -331,14 +361,14 @@ void test_the_poison_technique_needs_no_library_support() {
         tf_storage_fill(handle, finite_pattern);
         bool all_poison = true;
         for (std::int64_t i = 0; i < size; ++i) {
-            all_poison = all_poison && storage->data[i] == finite_pattern;
+            all_poison = all_poison && tf::storage_f64(storage)[i] == finite_pattern;
         }
         check(all_poison, "the finite poison did not reach every element");
 
         tf_storage_fill(handle, nan_pattern);
         bool all_nan = true;
         for (std::int64_t i = 0; i < size; ++i) {
-            all_nan = all_nan && std::isnan(storage->data[i]);
+            all_nan = all_nan && std::isnan(tf::storage_f64(storage)[i]);
         }
         check(all_nan, "the NaN poison did not reach every element");
 
@@ -347,7 +377,7 @@ void test_the_poison_technique_needs_no_library_support() {
         tf_storage_fill(handle, 1.5);
         int survivors = 0;
         for (std::int64_t i = 0; i < size; ++i) {
-            if (std::isnan(storage->data[i])) {
+            if (std::isnan(tf::storage_f64(storage)[i])) {
                 ++survivors;
             }
         }
@@ -363,7 +393,7 @@ void test_the_poison_technique_needs_no_library_support() {
         const tf::Storage* storage = tf::as_storage(zeroed);
         bool all_zero = true;
         for (std::int64_t i = 0; i < size; ++i) {
-            all_zero = all_zero && storage->data[i] == 0.0;
+            all_zero = all_zero && tf::storage_f64(storage)[i] == 0.0;
         }
         check(all_zero, "tf_storage_create stopped zero-initializing");
         tf_storage_destroy(zeroed);
@@ -397,13 +427,13 @@ void test_many_live_handles_are_independently_accounted() {
     for (std::size_t i = 0; i < handles.size(); ++i) {
         intact = intact
             && tf_storage_size(handles[i]) == 8
-            && tf::as_storage(handles[i])->data[7]
+            && tf::storage_f64(handles[i])[7]
                    == static_cast<double>(i);
         for (std::size_t j = i + 1; j < handles.size(); ++j) {
             distinct = distinct
                 && handles[i] != handles[j]
-                && tf::as_storage(handles[i])->data
-                       != tf::as_storage(handles[j])->data;
+                && tf::storage_f64(handles[i])
+                       != tf::storage_f64(handles[j]);
         }
     }
     check(distinct, "two live handles shared a handle or a buffer");
@@ -432,8 +462,8 @@ void test_the_two_paths_agree_once_written() {
     if (zeroed != nullptr && uninitialized != nullptr) {
         tf_storage_fill(zeroed, 7.25);
         tf_storage_fill(uninitialized, 7.25);
-        const double* a = tf::as_storage(zeroed)->data;
-        const double* b = tf::as_storage(uninitialized)->data;
+        const double* a = tf::storage_f64(zeroed);
+        const double* b = tf::storage_f64(uninitialized);
         check(std::memcmp(a, b, sizeof(double) * size) == 0,
               "the two paths differ after identical writes");
     }

@@ -295,6 +295,11 @@ TF_EXPORT void tf_core_maxpool2d_forward(
     int64_t output_height,
     int64_t output_width) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64(
+            "tf_core_maxpool2d_forward",
+            {input_handle, output_handle, winners_handle})) {
+        return;
+    }
     // -- required handles (none is nullable for pooling) --
     if (input_handle == nullptr || output_handle == nullptr ||
         winners_handle == nullptr) {
@@ -370,9 +375,9 @@ TF_EXPORT void tf_core_maxpool2d_forward(
         return;
     }
     // -- validated: run the internal noexcept pooling kernel --
-    const double* input = as_storage(input_handle)->data + input_offset;
-    double* output = as_storage(output_handle)->data;
-    double* winners = as_storage(winners_handle)->data;
+    const double* input = tf::storage_f64(input_handle) + input_offset;
+    double* output = tf::storage_f64(output_handle);
+    double* winners = tf::storage_f64(winners_handle);
     tf::maxpool2d_forward_contiguous(
         input, output, winners,
         batch, channels, input_height, input_width,
@@ -417,6 +422,11 @@ TF_EXPORT void tf_core_maxpool2d_backward(
     int64_t output_height,
     int64_t output_width) {
     TF_GUARD_BEGIN
+    if (!tf::require_float64(
+            "tf_core_maxpool2d_backward",
+            {grad_output_handle, winners_handle, grad_input_handle})) {
+        return;
+    }
     if (grad_output_handle == nullptr || winners_handle == nullptr ||
         grad_input_handle == nullptr) {
         tf::set_error(TF_ERROR_INVALID,
@@ -473,8 +483,8 @@ TF_EXPORT void tf_core_maxpool2d_backward(
         return;
     }
     const double* grad_output =
-        as_storage(grad_output_handle)->data + grad_output_offset;
-    const double* winners = as_storage(winners_handle)->data + winners_offset;
+        tf::storage_f64(grad_output_handle) + grad_output_offset;
+    const double* winners = tf::storage_f64(winners_handle) + winners_offset;
     // Winner validation: exactly -1.0, or a finite, non-negative, exactly
     // integral offset no larger than plane - 1. Nothing else is accepted,
     // and nothing is silently rounded. Checked for the whole buffer before
@@ -497,7 +507,7 @@ TF_EXPORT void tf_core_maxpool2d_backward(
             return;
         }
     }
-    double* grad_input = as_storage(grad_input_handle)->data;
+    double* grad_input = tf::storage_f64(grad_input_handle);
     tf::maxpool2d_backward_contiguous(
         grad_output, winners, grad_input,
         batch, channels, input_height, input_width,

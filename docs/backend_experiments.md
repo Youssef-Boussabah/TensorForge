@@ -78,18 +78,39 @@ and Runtime Efficiency — is complete (H0–H10) and is the latest
 *completed* phase**; both are recorded further below.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase, and it has begun at milestone I0**, whose architecture
-contract is
+latest phase. Milestones I0 and I1 are complete; I2 through I11 are not
+started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
-is design, guardrail tests, and documentation reconciliation, and no
-runtime behavior at all.** The native line described on this page is
-still exactly what Phase H left: float64 CPU only, **52** exported
-`tf_*` symbols, native checkpoint format version **2** with versions
+was design, guardrail tests, and documentation reconciliation, and no
+runtime behavior at all.**
+
+**I1 delivered the dtype foundation**, and it is the one thing on this
+page that has moved. The C++ dtype model exists (frozen ABI codes
+`0 = float64` / `1 = float32`, one item-size authority, one
+canonical-name authority, a total validated conversion); native storage
+is dtype-tagged — an untyped owned buffer, a logical element count, and
+one dtype tag — owning a genuine runtime-selected `float[]` or `double[]`
+array with checked `numel × itemsize`, type-erased into `void*` only after
+creation so the kernels' `data[i]` is valid under C++17, and released by
+one central dtype-matched `delete[]` so the allocation and deallocation
+forms cannot disagree at either width; and the two typed creators are
+exported, taking the library to **54** `tf_*` symbols. The native CTest
+inventory moved **17 → 18**. The untyped creators remain unchanged as
+thin float64 compatibility wrappers over the same shared body.
+
+**Everything else on this page is still exactly what Phase H left**:
+float64 CPU only, native checkpoint format version **2** with versions
 **(1, 2)** accepted, `SUPPORTED_DTYPES == ("float64",)`, and
-`UNSUPPORTED == ("float32", "cuda", "amp")`. The contract plans
-**exactly two** new C ABI symbols for the entire phase
+`UNSUPPORTED == ("float32", "cuda", "amp")`. float32 storage can be
+*allocated* through the C ABI and is *consumed by nothing* — every
+operation that has not been generalized rejects a float32 handle with
+`TF_ERROR_INVALID` before reading or writing anything, since walking a
+4-byte-per-element buffer through a `double*` would overrun it twofold.
+
+The contract's **exactly two** new C ABI symbols for the entire phase
 (`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,
-52 → **54**) and explicitly **rejects** per-operation float32 exports,
+52 → **54**) are therefore now spent, and it explicitly **rejects**
+per-operation float32 exports,
 because the dtype will travel with the data on the storage behind the
 opaque handles the compute exports already take. It also locks: storage
 as the single dtype authority with element-measured layout and checked

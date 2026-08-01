@@ -902,27 +902,56 @@ proposed optimizations. Every number behind those statements is a local
 characterization of one machine, is reported with its spread, and is
 asserted by no test.
 
-## Phase I — native dtype generalization and float32 CPU support, **begun at I0**
+## Phase I — native dtype generalization and float32 CPU support, **I0 and I1 complete**
 
-**Phase I is the latest phase, and it has begun at milestone I0.** Its
-architecture contract is
+**Phase I is the latest phase. Milestones I0 and I1 are complete; I2
+through I11 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
-Phase H is unaffected and remains complete.
+Phase H is unaffected and remains complete — it closed at **52** exports.
 
-**Nothing in this matrix has changed because of it.** I0 is a
-design-and-reconciliation milestone: it ships the contract, its guardrail
-tests, and documentation, and **no runtime behavior at all** — no dtype,
-no storage change, no kernel, no C ABI symbol, no ctypes declaration, no
-`NativeTensorCore` method, no `NativeTensor` operation, no module, no
-optimizer, no export, no registry value, and no checkpoint-format change.
-As of I0 the native runtime is still **float64 CPU only**:
-`SUPPORTED_DTYPES` reads `("float64",)`, `SUPPORTED_DEVICES` reads
-`("cpu",)`, `UNSUPPORTED` reads `("float32", "cuda", "amp")`, the library
-exports exactly **52** production `tf_*` symbols, and the native
-checkpoint format is `tensorforge.native_checkpoint` version **2** with
-versions **(1, 2)** accepted. `float32` therefore stays in the
-**Unsupported or future** section above, and it stays there until
-milestone **I9**.
+**I0** was a design-and-reconciliation milestone: it shipped the contract,
+its guardrail tests, and documentation, and **no runtime behavior at
+all**.
+
+**I1** built the dtype foundation. What it changed:
+
+- the C++ dtype model exists — frozen ABI codes (`0 = float64`,
+  `1 = float32`), one item-size authority, one canonical-name authority,
+  and a total validated code conversion that rejects every unknown code
+  without producing a dtype;
+- native storage is **dtype-tagged**: one untyped owned buffer, a logical
+  element count whose meaning did not move, and one dtype tag that is the
+  single authority for how the bytes are read. The storage owns a genuine
+  runtime-selected `float[]` or `double[]` array, created with checked
+  `numel × itemsize` and type-erased into `void*` only after creation, so
+  the kernels' `data[i]` and `data + i` are valid C++17 pointer arithmetic
+  over one array object; the immutable dtype tag selects the typed
+  accessor and the matching central `delete[]`, so the allocation and
+  deallocation forms cannot disagree;
+- the library exports **54** production `tf_*` symbols — the two typed
+  creators `tf_storage_create_typed` and
+  `tf_storage_create_uninitialized_typed`, which are the **only** two
+  symbols the whole phase adds. The untyped creators remain, unchanged, as
+  thin float64 compatibility wrappers over the same shared body;
+- the native CTest inventory moved **17 → 18** (`test_dtype_storage`).
+
+**What I1 did *not* change is the whole of the rest of this matrix.** The
+native runtime is still **publicly float64 CPU only**: `SUPPORTED_DTYPES`
+reads `("float64",)`, `SUPPORTED_DEVICES` reads `("cpu",)`, `UNSUPPORTED`
+reads `("float32", "cuda", "amp")`, and the native checkpoint format is
+`tensorforge.native_checkpoint` version **2** with versions **(1, 2)**
+accepted. `float32` therefore stays in the **Unsupported or future**
+section above, and it stays there until milestone **I9**.
+
+The honest statement of what float32 *is* after I1: **allocatable through
+the C ABI, and consumed by nothing.** No transfer, view, kernel, autograd
+node, module, optimizer, or checkpoint accepts it. Every operation that
+has not been generalized rejects a float32 handle with `TF_ERROR_INVALID`
+before reading or writing a single element — necessarily so, because
+walking a 4-byte-per-element buffer through a `double*` would overrun it
+by exactly a factor of two. Internal allocation capability is not public
+support, and the two are deliberately kept apart until the whole stack
+exists.
 
 What the phase will deliver, when its milestones land: float32 CPU
 tensors beside the existing float64 ones, dtype-tagged storage,
@@ -937,18 +966,18 @@ any later milestone may do:
 
 - **Exactly two new C ABI symbols across the whole phase** —
   `tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,
-  taking the library from 52 to **54** — and no more. Per-operation
-  float32 exports are explicitly **rejected**: 42 of the current 52
-  exports already address their operands through opaque handles, so a
-  dtype tag on the storage reaches them all, and only *construction*
-  needs new information. The existing untyped creators stay, unchanged,
-  as compatibility wrappers.
+  taking the library from 52 to **54** — and no more. **Delivered at
+  I1**; no later milestone adds a symbol. Per-operation float32 exports
+  are explicitly **rejected**: 42 of Phase H's 52 exports already address
+  their operands through opaque handles, so a dtype tag on the storage
+  reaches them all, and only *construction* needs new information. The
+  existing untyped creators stay, unchanged, as compatibility wrappers.
 - **Storage carries the dtype and is its single authority.** Every view
   of one buffer reports the same dtype by construction, and no view
   operation casts or reinterprets. Shapes, strides, offsets, and spans
   stay measured in logical elements; bytes appear only at the allocation
   boundary, with checked `numel × itemsize` arithmetic and one
-  allocation form matched by one deallocation form.
+  allocation form matched by one deallocation form. **Delivered at I1.**
 - **A division between dtype-general handle-based paths and float64-only
   raw-buffer utilities.** The seven handle-free reference kernels
   (`elementwise_add`/`subtract`/`multiply`/`divide`, `relu`, `matmul`,
@@ -975,7 +1004,8 @@ any later milestone may do:
   characterized on its own and — as in every phase before it — no timing
   assertion, no committed benchmark number, and no result file.
 
-The ladder is I0–I11: the contract (I0), the internal dtype model and
+The ladder is I0–I11 — **I0 and I1 landed; I2 is next**: the contract
+(I0), the internal dtype model and
 tagged storage (I1), typed transfer, views, and materialization (I2),
 elementwise and broadcast execution (I3), reductions, matmul, and core
 autograd (I4), the convolution and pooling kernels (I5), stable math and

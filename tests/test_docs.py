@@ -7119,7 +7119,18 @@ def test_no_surface_calls_h1_more_than_an_allocation_change():
     # it, and the two exports still share the one creation body.
     storage_source = (REPO_ROOT / "cpp" / "src"
                       / "storage.cpp").read_text(encoding="utf-8")
-    assert storage_source.count("create_storage(size, /*zero_initialize=*/") == 2
+    # The two untyped exports still delegate to the one shared creation
+    # body, differing only in ``zero_initialize`` — that is what makes "H1
+    # was an allocation change" true, and Phase I milestone I1 preserved
+    # it. I1 gave the body a dtype parameter and added two typed creators
+    # that funnel through the same body, so there are now four callers of
+    # one creation path rather than two of one; the untyped pair passes
+    # ``Dtype::Float64`` and is otherwise unchanged.
+    assert storage_source.count(
+        "create_storage(size, Dtype::Float64, /*zero_initialize=*/") == 2
+    assert storage_source.count(
+        "create_storage_typed(size, dtype_code, /*zero_initialize=*/") == 2
+    assert storage_source.count("void* create_storage(") == 1
     for banned in ("free_list", "memory_pool", "arena", "std::thread",
                    "immintrin", "omp parallel"):
         assert banned not in storage_source, banned

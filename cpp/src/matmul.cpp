@@ -118,9 +118,13 @@ TF_EXPORT void tf_core_matmul(
     int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
-    const double* a = as_storage(a_handle)->data;
-    const double* b = as_storage(b_handle)->data;
-    double* dst = as_storage(dst_handle)->data;
+    if (!tf::require_float64(
+            "tf_core_matmul", {a_handle, b_handle, dst_handle})) {
+        return;
+    }
+    const double* a = tf::storage_f64(a_handle);
+    const double* b = tf::storage_f64(b_handle);
+    double* dst = tf::storage_f64(dst_handle);
     if (tf::matmul_prefers_row_sweep(m, n, p, b_stride1)) {
         tf::matmul_row_sweep(a, b, dst, m, n, p,
                              a_stride0, a_stride1, b_stride0,

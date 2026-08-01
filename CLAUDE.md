@@ -109,7 +109,14 @@ any of them is a capability decision, never a side effect:
 | `UNSUPPORTED` | `("float32", "cuda", "amp")` |
 | Native checkpoint format | `tensorforge.native_checkpoint`, version **2** |
 | Accepted checkpoint versions | `(1, 2)` |
-| Exported production `tf_*` symbols | **52** |
+| Exported production `tf_*` symbols | **54** (Phase H closed at 52; Phase I milestone I1 added the two typed storage creators, which are the only two the phase adds) |
+
+Since Phase I milestone I1, float32 storage is **allocatable through the C
+ABI** (`tf_storage_create_typed`) and **consumed by nothing**. That is not
+a support claim and does not change a single row above: every operation
+that has not been dtype-generalized rejects a float32 handle with
+`TF_ERROR_INVALID` before touching memory, and `normalize_dtype("float32")`
+still raises. The public registry moves at **I9**, not before.
 
 **Performance work never broadens support.** A milestone that makes
 something faster must leave every row above untouched. The canonical
@@ -533,16 +540,34 @@ matching docs file (and README links) **in the same milestone**.
     exactly **one** C ABI symbol across the whole phase
     (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
-- **Native line: Phase I begun at I0** — Native Dtype Generalization and
+- **Native line: Phase I at I1** — Native Dtype Generalization and
   Float32 CPU Support. Contract:
-  `docs/native_dtype_float32_design.md`. **I0 is design, contract tests,
-  and documentation only; I1–I11 are not started.** Every row of §3 above
-  is therefore still current: float64 CPU only, `float32` still
-  unsupported, 52 exports, checkpoint version 2 with (1, 2) accepted.
+  `docs/native_dtype_float32_design.md`. **I0 (design, contract tests,
+  documentation) and I1 (the dtype model and dtype-tagged storage) are
+  complete; I2–I11 are not started.**
+  - I1 delivered: the C++ `TfDtype`/`tf::Dtype` model with frozen codes
+    `0 = float64` and `1 = float32`, one item-size authority
+    (`tf::dtype_item_size` — nothing else may spell a storage width), one
+    canonical-name authority, and a total validated conversion; storage
+    owning a **genuine runtime-selected `float[]` or `double[]` array**
+    behind a type-erased `void*` plus a dtype tag, created with checked
+    `numel × itemsize` and released by one central dtype-matched
+    `delete[]`. The array form is load-bearing, not incidental: the
+    project is C++17, where pointer arithmetic is defined only within one
+    array object, so neither a byte array plus a reinterpret-cast nor
+    separately placement-constructed scalars would legalize the `data[i]`
+    the kernels perform. The two typed creators;
+    `tf::storage_f64` as the one typed-access pattern and
+    `tf::require_float64` as the one float32 rejection; the untyped
+    creators as thin float64 wrappers. CTests moved 17 → 18.
+  - **Public capability did not move**: float64 CPU only, `float32` still
+    in `UNSUPPORTED`, checkpoint version 2 with (1, 2) accepted. Only the
+    export count changed, 52 → **54**.
   When implementing a Phase-I milestone, the durable rules are:
   - **exactly two** new C ABI exports across the whole phase
     (`tf_storage_create_typed`, `tf_storage_create_uninitialized_typed`,
-    52 → 54); per-operation float32 exports are rejected;
+    52 → 54 — **already spent at I1**); per-operation float32 exports are
+    rejected;
   - storage carries the dtype and is its **single** authority; shapes,
     strides, and offsets stay in logical elements; bytes only at the
     allocation boundary, with checked `numel × itemsize`;

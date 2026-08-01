@@ -42,17 +42,35 @@ sections above are the narrative.
 ## The current phase — Phase I
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase, and it has begun at milestone I0.** Its architecture
-contract is
+latest phase. Milestones I0 and I1 are complete; I2 through I11 are not
+started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
-**I0 is a design-and-reconciliation milestone: it ships the contract, its
-guardrail tests, and documentation, and no runtime behavior at all.** The
-native runtime is still float64 CPU only. `float32` is still listed as
-unsupported, `SUPPORTED_DTYPES` still reads `("float64",)`, the library
-still exports exactly 52 `tf_*` symbols, and the native checkpoint format
-is still `tensorforge.native_checkpoint` version 2 with versions 1 and 2
-accepted. Nothing about Phase H changed; Phase H remains complete.
+**I0 was a design-and-reconciliation milestone: it shipped the contract,
+its guardrail tests, and documentation, and no runtime behavior at all.**
+
+**I1 built the foundation the rest of the phase stands on**: the C++ dtype
+model (frozen ABI codes `0 = float64` and `1 = float32`, one item-size
+authority, one canonical-name authority, and a total validated
+conversion), dtype-tagged storage with an untyped owned buffer and checked
+`numel × itemsize` allocation, and the two typed creation exports
+`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`.
+The library now exports **54** `tf_*` symbols, which is the count for the
+whole phase — no later milestone adds one. The untyped creators remain,
+unchanged, as thin float64 compatibility wrappers over the same shared
+creation body.
+
+**I1 moved no public capability.** The native runtime is still float64 CPU
+only: `float32` is still listed as unsupported, `SUPPORTED_DTYPES` still
+reads `("float64",)`, and the native checkpoint format is still
+`tensorforge.native_checkpoint` version 2 with versions 1 and 2 accepted.
+float32 storage is *allocatable through the C ABI* and no operation
+consumes it — every kernel that has not been generalized rejects a float32
+handle with `TF_ERROR_INVALID` before reading or writing anything, which
+is what keeps a 4-byte-per-element buffer from being walked as `double`.
+That gap between internal capability and public promise is deliberate and
+closes at I9. Nothing about Phase H changed; Phase H remains complete, and
+it closed at 52 exports.
 
 What Phase I will deliver, once its milestones land: float32 CPU tensors
 beside the existing float64 ones, dtype-tagged storage, dtype-aware
@@ -66,15 +84,15 @@ than re-deriving them:
 
 - **Exactly two new C ABI symbols for the whole phase** —
   `tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,
-  taking the library from 52 to **54**. Per-operation float32 exports are
-  explicitly **rejected**: handle-based exports already receive their
-  operands as opaque handles, so the dtype travels with the data and one
-  narrow dispatch per call is enough.
+  taking the library from 52 to **54**. *Delivered at I1.*
+  Per-operation float32 exports are explicitly **rejected**: handle-based
+  exports already receive their operands as opaque handles, so the dtype
+  travels with the data and one narrow dispatch per call is enough.
 - **Storage carries the dtype**, and it is the single authority, so every
   view of one buffer agrees and no view operation casts or reinterprets.
   Shapes, strides, and offsets stay measured in logical elements; bytes
   appear only at the allocation boundary, with checked
-  `numel × itemsize` arithmetic.
+  `numel × itemsize` arithmetic. *Delivered at I1.*
 - **No casting, no promotion, no mixed-dtype arithmetic.** A mismatch
   raises before any output is allocated or any state is mutated.
 - **float32 accumulates in float32**, with no hidden wider accumulator
@@ -92,7 +110,8 @@ than re-deriving them:
   optimizer state, checkpoint version 3, and the exact-resume proof all
   exist.
 
-The ladder is I0 through I11: the contract (I0), the dtype model and
+The ladder is I0 through I11 — **I0 and I1 landed; I2 is next**: the
+contract (I0), the dtype model and
 tagged storage (I1), typed transfer and materialization (I2), elementwise
 execution (I3), reductions and matmul (I4), the convolution and pooling
 kernels (I5), stable math and classification (I6), modules, buffers, and

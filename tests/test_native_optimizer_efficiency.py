@@ -1564,7 +1564,13 @@ def test_h4_added_no_c_abi_symbol():
         for match in re.finditer(r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
                                  text, flags=re.S):
             exported.add(match.group(1))
-    assert len(exported) == 52, sorted(exported)
+    # H4's claim is about Phase H, so it is measured against Phase H's own
+    # surface of 52. The two extra symbols in the source are Phase I's
+    # typed storage creators, added at milestone I1.
+    phase_i_creators = {"tf_storage_create_typed",
+                        "tf_storage_create_uninitialized_typed"}
+    assert len(exported) == 54, sorted(exported)
+    assert len(exported - phase_i_creators) == 52, sorted(exported)
     for banned in ("tf_core_adam", "tf_core_sgd", "tf_core_optimizer",
                    "tf_core_scale", "tf_core_axpy", "tf_core_fused"):
         assert not any(name.startswith(banned) for name in exported), banned

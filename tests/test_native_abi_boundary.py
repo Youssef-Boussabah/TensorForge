@@ -1910,14 +1910,20 @@ def test_no_native_address_is_exposed_by_any_public_api():
 
 
 @needs_native
-def test_the_exported_symbol_count_is_unchanged():
-    """H7 added no C ABI symbol; the library still exports exactly 52."""
+def test_the_exported_symbol_count_is_unchanged_apart_from_phase_i():
+    """H7 added no C ABI symbol, and the only symbols added since are the
+    two typed storage creators of Phase I milestone I1 — so the library
+    exports 54: Phase H's 52 plus exactly those two."""
     source_exports = set()
     for path in sorted((REPO_ROOT / "cpp" / "src").glob("*.cpp")):
         source_exports.update(
             re.findall(r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
                        path.read_text(encoding="utf-8")))
-    assert len(source_exports) == 52
+    typed_creators = {"tf_storage_create_typed",
+                      "tf_storage_create_uninitialized_typed"}
+    assert typed_creators <= source_exports
+    assert len(source_exports) == 54
+    assert len(source_exports - typed_creators) == 52
     library = cpp._require_library()
     for name in source_exports:
         assert getattr(library, name, None) is not None, name
@@ -1932,7 +1938,18 @@ def test_h7_changed_no_capability_dtype_device_or_checkpoint_value():
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert len(cpp._CHECKED_KERNELS) == 34
+    # 34 at Phase-H closure, plus the two Phase-I typed creators, which
+    # report failure through the identical hook rather than inventing a
+    # second convention. Nothing else joined: I1 deliberately left the
+    # unguarded storage primitives (fill, scale, copy_from, copy_to)
+    # hookless, so their per-call boundary cost is exactly what H7 left.
+    assert len(cpp._CHECKED_KERNELS) == 36
+    for name in ("tf_storage_create_typed",
+                 "tf_storage_create_uninitialized_typed"):
+        assert name in cpp._CHECKED_KERNELS, name
+    for unhooked in ("tf_storage_fill", "tf_storage_scale",
+                     "tf_storage_copy_from", "tf_storage_copy_to"):
+        assert unhooked not in cpp._CHECKED_KERNELS, unhooked
     from tensorforge.experimental import native_checkpoint
     assert native_checkpoint._FORMAT_VERSION == 2
     assert tuple(sorted(native_checkpoint._SUPPORTED_FORMAT_VERSIONS)) == (1, 2)
@@ -2099,9 +2116,14 @@ def test_the_inventory_arithmetic_adds_up():
     bindings, so a future change cannot leave the design's table stale
     without failing here.
 
-    52 exports = 24 with at least one array position + 26 that carry only
+    54 exports = 24 with at least one array position + 28 that carry only
     storage handles and integers + 2 test-only hooks; and 57 array
-    positions = 32 trusted + 25 checked."""
+    positions = 32 trusted + 25 checked.
+
+    Phase I milestone I1 moved the handle-only column from 26 to 28: its
+    two typed creators take an int64 element count and an int32 dtype code
+    and no array at all, so neither the trusted nor the checked array
+    tally moves."""
     library = cpp._require_library()
     with_arrays, handle_only, test_only = 0, 0, 0
     trusted_positions, checked_positions = 0, 0
@@ -2119,8 +2141,8 @@ def test_the_inventory_arithmetic_adds_up():
             test_only += 1
         else:
             handle_only += 1
-    assert (with_arrays, handle_only, test_only) == (24, 26, 2)
-    assert with_arrays + handle_only + test_only == 52
+    assert (with_arrays, handle_only, test_only) == (24, 28, 2)
+    assert with_arrays + handle_only + test_only == 54
     assert (trusted_positions, checked_positions) == (32, 25)
     assert trusted_positions + checked_positions == 57
     # Thirteen of the 24 array-carrying exports have a trusted position.

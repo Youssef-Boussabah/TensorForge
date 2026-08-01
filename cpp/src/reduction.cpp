@@ -187,8 +187,11 @@ TF_EXPORT void tf_core_sum(
     int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    const double* src = as_storage(src_handle)->data;
-    double* dst = as_storage(dst_handle)->data;
+    if (!tf::require_float64("tf_core_sum", {src_handle, dst_handle})) {
+        return;
+    }
+    const double* src = tf::storage_f64(src_handle);
+    double* dst = tf::storage_f64(dst_handle);
     if (ndim == 0) {  // scalar input: its single element is the whole sum
         dst[0] += src[offset];
         return;
@@ -232,8 +235,12 @@ TF_EXPORT void tf_core_narrow_backward(
     int64_t u_offset, int64_t out_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    const double* upstream = as_storage(upstream_handle)->data;
-    double* dst = as_storage(dst_handle)->data;
+    if (!tf::require_float64(
+            "tf_core_narrow_backward", {upstream_handle, dst_handle})) {
+        return;
+    }
+    const double* upstream = tf::storage_f64(upstream_handle);
+    double* dst = tf::storage_f64(dst_handle);
     if (ndim == 0) {  // scalar upstream: one element at the base offset
         dst[out_offset] = upstream[u_offset];
         return;
