@@ -500,6 +500,7 @@ duplicated here.
 | **Phase F** — normalization & stateful buffers | `docs/native_normalization_design.md` |
 | **Phase G** — RNG & Dropout | `docs/native_rng_dropout_design.md` |
 | **Phase H** — CPU performance | `docs/native_cpu_performance_design.md` |
+| **Phase I** — dtype generalization & float32 | `docs/native_dtype_float32_design.md` |
 
 When a milestone changes the public API or the examples, update the
 matching docs file (and README links) **in the same milestone**.
@@ -532,9 +533,35 @@ matching docs file (and README links) **in the same milestone**.
     exactly **one** C ABI symbol across the whole phase
     (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
-Beyond Phase H (future work, not started): data loaders, native integer
-tensors, further dtypes/devices, CUDA experiments. See
-`docs/roadmap.md`; do not invent a phase that document does not define.
+- **Native line: Phase I begun at I0** — Native Dtype Generalization and
+  Float32 CPU Support. Contract:
+  `docs/native_dtype_float32_design.md`. **I0 is design, contract tests,
+  and documentation only; I1–I11 are not started.** Every row of §3 above
+  is therefore still current: float64 CPU only, `float32` still
+  unsupported, 52 exports, checkpoint version 2 with (1, 2) accepted.
+  When implementing a Phase-I milestone, the durable rules are:
+  - **exactly two** new C ABI exports across the whole phase
+    (`tf_storage_create_typed`, `tf_storage_create_uninitialized_typed`,
+    52 → 54); per-operation float32 exports are rejected;
+  - storage carries the dtype and is its **single** authority; shapes,
+    strides, and offsets stay in logical elements; bytes only at the
+    allocation boundary, with checked `numel × itemsize`;
+  - **one narrow dispatch per exported call** into templated
+    `float`/`double` kernels; no dtype branching below it, no string
+    dispatch, no per-element indirection;
+  - **no casting, no promotion, no mixed-dtype arithmetic**; a mismatch
+    raises before any allocation or mutation;
+  - **float32 accumulates in float32** — no hidden float64 accumulator;
+  - float64 results stay **bit-identical** and Phase-H performance is
+    preserved;
+  - checkpoint **version 3** at I8 (accepted `(1, 2, 3)`; versions 1 and
+    2 are float64-only and never guessed to be float32);
+  - the public registry moves at **I9**, not earlier.
+
+Beyond Phase I (future work, not started): data loaders, native integer
+tensors, further dtypes/devices beyond float32/float64, CUDA experiments.
+See `docs/roadmap.md`; do not invent a phase that document does not
+define.
 
 ---
 

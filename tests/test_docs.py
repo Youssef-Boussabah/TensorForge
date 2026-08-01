@@ -28,15 +28,17 @@ DOCS = (
     "native_normalization_design.md",
     "native_rng_dropout_design.md",
     "native_cpu_performance_design.md",
+    "native_dtype_float32_design.md",
 )
 
-# The native line's phase ladder, oldest to newest. Phases A-G are all
-# complete; Phase G (native RNG and Dropout) is the latest *completed*
-# phase, closed at milestone G10. Phase H (native CPU performance and
-# runtime efficiency) is the current phase: it has begun at milestone
-# H0, which is architecture, profiling, and baseline work only and
-# shipped no optimization and no capability. Nothing after H exists.
-NATIVE_PHASE_LADDER = "ABCDEFGH"
+# The native line's phase ladder, oldest to newest. Phases A-H are all
+# complete; Phase H (native CPU performance and runtime efficiency) is
+# the latest *completed* phase, closed at milestone H10. Phase I (native
+# dtype generalization and float32 CPU support) is the current phase: it
+# has begun at milestone I0, which is architecture-contract and
+# documentation work only and shipped no runtime behavior and no
+# capability. Nothing after I exists.
+NATIVE_PHASE_LADDER = "ABCDEFGHI"
 
 EXAMPLE_FILES = (
     "train_linear_regression.py",
@@ -2375,15 +2377,16 @@ def test_status_docs_agree_on_the_phase_sequence():
     it is now correct rather than an over-claim — what it may not do is
     claim a Phase-G *capability* exists, which the Phase-G guardrails
     below check against the live registry. Phase H (native CPU
-    performance) opened with milestone H0 on the same terms: naming it is
-    correct, claiming it delivered a capability is not, and Phase I is
-    still invented."""
+    performance) opened with milestone H0 on the same terms, and Phase I
+    (native dtype generalization and float32 CPU support) opened with
+    milestone I0 on the same terms again: naming it is correct, claiming
+    it delivered a capability is not, and Phase J is still invented."""
     for surface in PHASE_STATUS_DOCS:
         text = _status_text(surface)
         assert "Phase E" in text and "Phase F" in text, surface
-        # Phase H is the newest phase; nothing later may be named.
-        assert "Phase I" not in text, f"{surface} names Phase I"
-    # The phase sequence is A..H with no gaps: the set of phases a
+        # Phase I is the newest phase; nothing later may be named.
+        assert "Phase J" not in text, f"{surface} names Phase J"
+    # The phase sequence is A..I with no gaps: the set of phases a
     # document names must be a contiguous prefix-suffix of that ladder,
     # never a set that skips one. (Ordering *within* a document is not
     # pinned — the support matrix legitimately leads with the newest
@@ -2399,10 +2402,10 @@ def test_status_docs_agree_on_the_phase_sequence():
             f"{surface} skips a phase: names {named}, expected the "
             f"contiguous run {list(span)}"
         )
-        # The newest phase named must be H — no document may stop at G
-        # and thereby imply Phase G is still the current phase.
-        assert named[-1] == "H", (
-            f"{surface} stops at Phase {named[-1]}; Phase H is current"
+        # The newest phase named must be I — no document may stop at H
+        # and thereby imply Phase H is still the current phase.
+        assert named[-1] == "I", (
+            f"{surface} stops at Phase {named[-1]}; Phase I is current"
         )
 
 
@@ -2834,11 +2837,12 @@ def test_the_phase_f_closure_claims_no_later_phase():
     started = (r"(is|are|was|were|now|has|have)\s+"
                r"(begun|started|under way|underway|in progress|complete"
                r"|completed|shipped|implemented|supported)")
-    # Phase H left this list when milestone H0 opened it: "Phase H has
-    # begun" is now simply true. What it may not claim is a Phase-H
-    # *capability*, which the H0 guardrails check against the live
-    # registry — a stronger check than a phase-name scan.
-    later = (r"(Phase I|CUDA (phase|runtime|"
+    # Phase H left this list when milestone H0 opened it, and Phase I left
+    # it when milestone I0 opened it: "Phase I has begun" is now simply
+    # true. What it may not claim is a Phase-I *capability*, which the I0
+    # guardrails check against the live registry — a stronger check than a
+    # phase-name scan.
+    later = (r"(Phase J|CUDA (phase|runtime|"
              r"backend)|AMP (phase|path)|Tensor Core"
              r"|distributed (phase|training)|float16|bfloat16)")
     # Negated or explicitly-future forms are the honest ones.
@@ -4117,10 +4121,43 @@ _PHASE_G_OVERCLAIMS = (
     # (design §16.5.0): the ladder now runs H0–H11, so H11 is the planned
     # phase-closure milestone and naming it is accurate, while H12 would
     # again mean a phase that does not exist.
+    #
+    # ``Phase I`` was retired from this entry when milestone I0 opened
+    # that phase, on exactly the terms ``Phase H`` was retired when H0
+    # opened Phase H: naming it is now accurate, and what may not be
+    # claimed is a Phase-I *capability*, which the Phase-I guardrails in
+    # tests/test_native_phase_i.py check against the live registry, the
+    # live source, and the built library — a stronger check than a
+    # phase-name scan. ``Phase J`` takes its place as the successor that
+    # does not exist.
+    #
+    # ``float32`` also left the "a phase has begun" arm with it — a
+    # float32 phase really has begun — but it did *not* simply disappear:
+    # it moved to its own entry below, aimed at the narrower and much
+    # more damaging claim that float32 is *supported*. That claim stays
+    # false until milestone I9.
+    #
+    # No ``I12`` sentinel is added beside ``G11``/``H12``, deliberately.
+    # ``_status_text`` strips ``*`` and backticks, so the stride prose
+    # "element (i, j, k) ... lives at flat position `i`*12 + `j`*4 + `k`"
+    # normalizes to a literal "i12" — a false positive that says nothing
+    # about phase claims. The Phase-I ladder bound is enforced precisely
+    # instead, by ``test_the_ladder_claims_no_milestone_beyond_i11`` in
+    # tests/test_native_phase_i.py, which scans the design document
+    # itself rather than normalized prose.
     ("a later phase has begun",
-     r"\bPhase[- ]I\b|\bG11\b|\bH12\b"
-     r"|(CUDA|float32|AMP)[^.]{0,40}\b(phase|milestone)\b[^.]{0,40}"
+     r"\bPhase[- ]J\b|\bG11\b|\bH12\b"
+     r"|(CUDA|AMP)[^.]{0,40}\b(phase|milestone)\b[^.]{0,40}"
      r"\b(has|have|is|are)\s+(begun|started|shipped|landed|complete)\b"),
+    # Phase I opened at I0 with a contract and nothing else. Naming the
+    # phase is accurate; claiming its capability is not, and will not be
+    # until the public support registry moves at I9. Checked against the
+    # live registry in tests/test_native_phase_i.py; this is the prose
+    # half of the same boundary.
+    ("float32 is supported when the registry says it is not",
+     r"float32[^.]{0,60}\b(is|are|now)\s+"
+     r"(supported|implemented|shipped|available|working|usable)\b"
+     r"|\bsupports? float32\b"),
     ("a Phase-H optimization that does not exist has shipped",
      r"(memory pool|scratch (?:allocator|workspace)|SIMD|AVX|OpenMP|BLAS"
      r"|multi-?threading|thread pool)[^.]{0,60}"
@@ -6527,10 +6564,12 @@ CURRENT_STATUS_SURFACES = (
 # The current phase and the newest *closed* one. They were deliberately
 # different letters for the whole of H0-H9: Phase H opened at H0, and H0
 # shipped no optimization and closed no phase, so Phase G stayed the
-# latest completed phase. **H10 closed Phase H**, so they are now the same
-# letter, and a surface still calling Phase G the latest completed phase
-# is stale rather than careful.
-_LATEST_PHASE = "H"
+# latest completed phase. H10 closed Phase H, which made them the same
+# letter — and **Phase I opening at I0 has split them again**, on exactly
+# the same terms: I0 is the architecture contract, its guardrails, and
+# documentation, so it closes nothing and Phase H stays the latest
+# *completed* phase while Phase I is the latest phase.
+_LATEST_PHASE = "I"
 _LATEST_COMPLETED_PHASE = "H"
 # Deliberately scoped to Phase G. H0 also shipped, but ``H0`` is a short
 # token that sits a few words away from the legitimately *unstarted*
@@ -6571,22 +6610,22 @@ def test_only_the_newest_phase_is_called_the_latest_phase():
     # ...and from a real file: Phase H really did open.
     assert (REPO_ROOT / "docs" / "native_cpu_performance_design.md").is_file()
 
-    # Two distinct claims, which now name two different letters and must
-    # not be conflated: Phase H is the latest phase (it opened at H0),
-    # and Phase G is the latest *completed* one (H0 shipped no
-    # optimization and closed nothing).
+    # Two distinct claims, which again name two different letters and must
+    # not be conflated: Phase I is the latest phase (it opened at I0),
+    # and Phase H is the latest *completed* one (I0 shipped no runtime
+    # behavior and closed nothing).
     forms = (
         (_LATEST_PHASE,
-         re.compile(r"Phase ([A-H])\b[^.;]{0,60}?\bis the latest phase\b",
+         re.compile(r"Phase ([A-I])\b[^.;]{0,60}?\bis the latest phase\b",
                     re.I)),
         (_LATEST_PHASE,
          re.compile(r"(?<!completed )latest (?:native )?phase is Phase "
-                    r"([A-H])\b", re.I)),
+                    r"([A-I])\b", re.I)),
         (_LATEST_COMPLETED_PHASE,
-         re.compile(r"latest completed (?:native )?phase is Phase ([A-H])\b",
+         re.compile(r"latest completed (?:native )?phase is Phase ([A-I])\b",
                     re.I)),
         (_LATEST_COMPLETED_PHASE,
-         re.compile(r"Phase ([A-H])\b[^.;]{0,60}?\bis the latest completed\b",
+         re.compile(r"Phase ([A-I])\b[^.;]{0,60}?\bis the latest completed\b",
                     re.I)),
     )
     for surface in CURRENT_STATUS_SURFACES:

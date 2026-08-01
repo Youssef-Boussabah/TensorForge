@@ -902,6 +902,92 @@ proposed optimizations. Every number behind those statements is a local
 characterization of one machine, is reported with its spread, and is
 asserted by no test.
 
+## Phase I — native dtype generalization and float32 CPU support, **begun at I0**
+
+**Phase I is the latest phase, and it has begun at milestone I0.** Its
+architecture contract is
+[native_dtype_float32_design.md](native_dtype_float32_design.md).
+Phase H is unaffected and remains complete.
+
+**Nothing in this matrix has changed because of it.** I0 is a
+design-and-reconciliation milestone: it ships the contract, its guardrail
+tests, and documentation, and **no runtime behavior at all** — no dtype,
+no storage change, no kernel, no C ABI symbol, no ctypes declaration, no
+`NativeTensorCore` method, no `NativeTensor` operation, no module, no
+optimizer, no export, no registry value, and no checkpoint-format change.
+As of I0 the native runtime is still **float64 CPU only**:
+`SUPPORTED_DTYPES` reads `("float64",)`, `SUPPORTED_DEVICES` reads
+`("cpu",)`, `UNSUPPORTED` reads `("float32", "cuda", "amp")`, the library
+exports exactly **52** production `tf_*` symbols, and the native
+checkpoint format is `tensorforge.native_checkpoint` version **2** with
+versions **(1, 2)** accepted. `float32` therefore stays in the
+**Unsupported or future** section above, and it stays there until
+milestone **I9**.
+
+What the phase will deliver, when its milestones land: float32 CPU
+tensors beside the existing float64 ones, dtype-tagged storage,
+dtype-aware handle-based operations, float32 autograd, float32 modules,
+persistent buffers, optimizers and optimizer state, float32 deterministic
+Dropout over an **unchanged** generator algorithm, a dtype-aware
+checkpoint **version 3**, exact deterministic float32 resume, and
+unchanged float64 behavior and performance.
+
+The decisions the contract locks, recorded here because they bound what
+any later milestone may do:
+
+- **Exactly two new C ABI symbols across the whole phase** —
+  `tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,
+  taking the library from 52 to **54** — and no more. Per-operation
+  float32 exports are explicitly **rejected**: 42 of the current 52
+  exports already address their operands through opaque handles, so a
+  dtype tag on the storage reaches them all, and only *construction*
+  needs new information. The existing untyped creators stay, unchanged,
+  as compatibility wrappers.
+- **Storage carries the dtype and is its single authority.** Every view
+  of one buffer reports the same dtype by construction, and no view
+  operation casts or reinterprets. Shapes, strides, offsets, and spans
+  stay measured in logical elements; bytes appear only at the allocation
+  boundary, with checked `numel × itemsize` arithmetic and one
+  allocation form matched by one deallocation form.
+- **A division between dtype-general handle-based paths and float64-only
+  raw-buffer utilities.** The seven handle-free reference kernels
+  (`elementwise_add`/`subtract`/`multiply`/`divide`, `relu`, `matmul`,
+  `matmul_tiled`) have no handle and therefore no dtype to dispatch on;
+  they stay float64 permanently, declared by a `RAW_KERNEL_DTYPES`
+  registry introduced at milestone I2. No native float32 training path
+  goes through them.
+- **No casting, no promotion, and no mixed-dtype arithmetic**, at any
+  layer, rejected before any output is allocated or any state is
+  mutated. There is no `astype`, no `to()`, and no `map_location`.
+- **float32 accumulates in float32.** No hidden float64 accumulator is
+  introduced anywhere — that would be mixed precision, which is out of
+  scope along with AMP, float16, bfloat16, integer tensors, CUDA, data
+  loaders, and distributed execution.
+- **Checkpoint version 3**, designed at I0 and activated at I8, with
+  accepted versions becoming `(1, 2, 3)`. Versions **1 and 2 are
+  float64-only formats** and a v1/v2 payload is **never** guessed to be
+  float32.
+- **Exact deterministic resume proved separately for float32 and
+  float64.** A float32 run is never required to reproduce a float64 one,
+  and no contract, gate, or closure claim rests on agreement between
+  them.
+- **Every Phase-H float64 optimization preserved**, with each dtype
+  characterized on its own and — as in every phase before it — no timing
+  assertion, no committed benchmark number, and no result file.
+
+The ladder is I0–I11: the contract (I0), the internal dtype model and
+tagged storage (I1), typed transfer, views, and materialization (I2),
+elementwise and broadcast execution (I3), reductions, matmul, and core
+autograd (I4), the convolution and pooling kernels (I5), stable math and
+classification (I6), modules, parameters, buffers, and Dropout (I7),
+optimizer state and checkpoint version 3 (I8), public integration and the
+exact-resume proof (I9), cross-cutting hardening and benchmarking (I10),
+and cross-platform validation and closure (I11). **The public support
+registry moves at I9**, after integrated float32 training and the exact
+float32 resume proof both pass — the same discipline that kept `dropout`
+in `UNSUPPORTED` from G3 through G9 while the operation and the module
+both already existed.
+
 ## How to build and verify
 
 The native backend is built with CMake (`cpp/CMakeLists.txt`), wrapped by

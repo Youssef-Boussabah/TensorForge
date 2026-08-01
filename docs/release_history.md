@@ -2326,6 +2326,101 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
+### Phase I — native dtype generalization and float32 CPU support (I0, phase begun)
+
+**Phase I is the latest phase, and it has begun at milestone I0 only.
+Nothing has shipped.** This is a planning entry, not a release entry: no
+version, no capability, and no behavior is claimed. **Phase H remains
+complete and remains the latest *completed* phase.**
+
+**I0 shipped three things and nothing else:** the architecture contract
+`docs/native_dtype_float32_design.md`; the durable Phase-I contract
+guardrails `tests/test_native_phase_i.py` (and the phase-ladder updates
+in `tests/test_docs.py` that opening a phase always requires); and
+documentation reconciliation across the status surfaces.
+
+**No runtime behavior changed.** I0 changed no production Python module,
+no C++ header or source, no C ABI symbol, no ctypes declaration, no
+`NativeTensorCore` method, no `NativeTensor` operation, no module, no
+loss, no metric, no optimizer, no export, no capability registry, no
+dtype, no device, no build file, no CI workflow, no example, and no
+benchmark. `SUPPORTED_DTYPES` still reads `("float64",)`,
+`SUPPORTED_DEVICES` still reads `("cpu",)`, `UNSUPPORTED` still reads
+`("float32", "cuda", "amp")`, the library still exports exactly **52**
+production `tf_*` symbols, and the native checkpoint format is still
+`tensorforge.native_checkpoint` version **2** with versions **(1, 2)**
+supported.
+
+The contract opens by recording the *verified* state of the
+implementation rather than assuming it, and that record is what makes the
+rest of the phase small. The load-bearing finding: **42 of the 52
+exports already address their operands through opaque handles**, and of
+the ten that touch a raw buffer, three carry a handle beside it and seven
+are handle-free float64 reference kernels no training path calls. So a
+dtype tag placed on the storage behind those handles reaches essentially
+the whole compute surface, and the only thing the ABI genuinely lacks is
+a way to say which dtype a *newly constructed* buffer has. Hence
+**exactly two** planned new symbols for the entire phase —
+`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,
+52 → **54** — and an explicit, argued rejection of per-operation float32
+exports, which would roughly double the ABI, relocate the dtype from the
+data to the call site, and break the one-unchanged-export dispatch shape
+every optimized path in the repository already follows.
+
+What else the contract locks: an internal dtype model with frozen ABI
+codes (`0 = float64`, `1 = float32`), one central item-size authority,
+and no public Python dtype object; dtype-tagged storage with an untyped
+data pointer, an unchanged logical element count, checked
+`numel × itemsize` byte arithmetic, and one allocation form matched by
+one deallocation form — with shapes, strides, offsets, and spans staying
+in **logical elements** and bytes appearing only at the allocation
+boundary; storage as the **single** dtype authority, so every view over a
+buffer agrees by construction and no view operation casts or
+reinterprets; one narrow dispatch per exported call into templated
+`float`/`double` kernels, with nothing below it branching on dtype and
+every retained generic reference path instantiated for both; **no
+casting, no promotion, and no mixed-dtype arithmetic**, rejected at every
+named layer before any output is allocated or any state is mutated;
+**float32 accumulating in float32**, with no hidden wider accumulator
+anywhere, because that would be mixed precision; the autograd, module,
+buffer, RNG/Dropout, and optimizer-state dtype invariants, over a
+generator algorithm that does not change; dtype-aware checkpoint
+**version 3**, designed but deliberately not implemented or activated,
+with versions 1 and 2 defined as float64-only formats that are **never**
+guessed to be float32; exact deterministic resume proved **separately**
+for float32 and float64, and explicitly never as agreement between them;
+the preservation of every Phase-H float64 optimization and of the
+project's measurement discipline, with each dtype benchmarked on its own
+and no timing assertion, committed number, or result file; the
+cross-platform, sanitizer, and lifecycle gates; and the exclusion list —
+CUDA, AMP, float16, bfloat16, integer, boolean, and complex tensors,
+casting, promotion, device transfers, `map_location`, implicit dispatch,
+environment-variable selection, data loaders, distributed execution,
+BLAS, Eigen, oneDNN, OpenMP, SIMD, memory pools, and C++-managed
+autograd.
+
+Two decisions in the contract came directly out of reading the code and
+would have been easy to get wrong later. The **MaxPool2d winner buffer
+stays float64 at every tensor dtype**: winners are flat plane offsets
+encoded as floating-point values, exact only while the plane fits the
+mantissa, so following the tensor's dtype would silently cut the largest
+poolable plane from `2**53` to `2**24` elements — a capability regression
+disguised as a dtype feature. And the three host-transfer exports
+(`tf_storage_copy_from`, `tf_storage_copy_to`,
+`tf_storage_materialize`) need only a **source-level retype** of their
+host-buffer parameter from `double*` to `void*`, taking the element type
+from the handle beside it — binary-compatible, adding no symbol, and
+recorded here rather than discovered mid-phase.
+
+The ladder is **I0–I11**, each milestone with its entry condition, scope,
+tests, documentation, invariants, exclusions, and exit gate. The
+recommended structure survived the repository inspection **unchanged**;
+three findings were absorbed into milestones rather than reshaping it,
+and are recorded as such. The public support registry moves at **I9**,
+after integrated float32 training and the exact float32 resume proof both
+pass — the same discipline that kept `dropout` in `UNSUPPORTED` from G3
+through G9 while the operation and the module both already existed.
+
 ### Phase H — native CPU performance and runtime efficiency (H0–H10, phase complete)
 
 **Phase H is **complete**: milestones H0 through H10 have all landed, and it is the latest *completed* phase. H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.** This section records H0; the

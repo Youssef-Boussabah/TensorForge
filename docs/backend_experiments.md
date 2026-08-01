@@ -75,7 +75,37 @@ version-1 checkpoint format.
 **Phase F — Native Normalization and Stateful Buffers — is *complete*
 (F0–F9)**. Phase G is complete (G0–G10), and **Phase H — Native CPU Performance
 and Runtime Efficiency — is complete (H0–H10) and is the latest
-*completed* phase**; both are recorded further below. Milestone **F0** is complete: it
+*completed* phase**; both are recorded further below.
+
+**Phase I — Native Dtype Generalization and Float32 CPU Support — is the
+latest phase, and it has begun at milestone I0**, whose architecture
+contract is
+[native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
+is design, guardrail tests, and documentation reconciliation, and no
+runtime behavior at all.** The native line described on this page is
+still exactly what Phase H left: float64 CPU only, **52** exported
+`tf_*` symbols, native checkpoint format version **2** with versions
+**(1, 2)** accepted, `SUPPORTED_DTYPES == ("float64",)`, and
+`UNSUPPORTED == ("float32", "cuda", "amp")`. The contract plans
+**exactly two** new C ABI symbols for the entire phase
+(`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,
+52 → **54**) and explicitly **rejects** per-operation float32 exports,
+because the dtype will travel with the data on the storage behind the
+opaque handles the compute exports already take. It also locks: storage
+as the single dtype authority with element-measured layout and checked
+byte arithmetic at the one allocation boundary; the split between
+dtype-general handle-based paths and the seven float64-only raw-buffer
+utility kernels; one narrow dispatch per exported call into templated
+`float`/`double` kernels; **no casting, no promotion, no mixed-dtype
+arithmetic**; float32 accumulating in float32 with no hidden wider
+accumulator; checkpoint **version 3** designed but not activated, with
+versions 1 and 2 defined as float64-only formats never guessed to be
+float32; exact deterministic resume proved **separately** per dtype; the
+preservation of every Phase-H float64 optimization and of the project's
+measurement discipline; and the I0–I11 ladder, in which the public
+support registry moves at milestone **I9** and at no earlier one.
+
+Milestone **F0** is complete: it
 locks the architecture contract in
 [native_normalization_design.md](native_normalization_design.md) —
 `NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d`

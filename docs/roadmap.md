@@ -39,13 +39,75 @@ last of them, native CPU performance and runtime efficiency, closed at
 milestone H10. Each phase's record is in its own design document; the
 sections above are the narrative.
 
+## The current phase — Phase I
+
+**Phase I — Native Dtype Generalization and Float32 CPU Support — is the
+latest phase, and it has begun at milestone I0.** Its architecture
+contract is
+[native_dtype_float32_design.md](native_dtype_float32_design.md).
+
+**I0 is a design-and-reconciliation milestone: it ships the contract, its
+guardrail tests, and documentation, and no runtime behavior at all.** The
+native runtime is still float64 CPU only. `float32` is still listed as
+unsupported, `SUPPORTED_DTYPES` still reads `("float64",)`, the library
+still exports exactly 52 `tf_*` symbols, and the native checkpoint format
+is still `tensorforge.native_checkpoint` version 2 with versions 1 and 2
+accepted. Nothing about Phase H changed; Phase H remains complete.
+
+What Phase I will deliver, once its milestones land: float32 CPU tensors
+beside the existing float64 ones, dtype-tagged storage, dtype-aware
+handle-based operations, float32 autograd, modules, buffers, optimizers,
+and optimizer state, float32 deterministic Dropout over an unchanged
+generator, a dtype-aware checkpoint version 3, exact deterministic float32
+resume, and unchanged float64 behavior and performance.
+
+The decisions the contract locks, so later milestones inherit them rather
+than re-deriving them:
+
+- **Exactly two new C ABI symbols for the whole phase** —
+  `tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,
+  taking the library from 52 to **54**. Per-operation float32 exports are
+  explicitly **rejected**: handle-based exports already receive their
+  operands as opaque handles, so the dtype travels with the data and one
+  narrow dispatch per call is enough.
+- **Storage carries the dtype**, and it is the single authority, so every
+  view of one buffer agrees and no view operation casts or reinterprets.
+  Shapes, strides, and offsets stay measured in logical elements; bytes
+  appear only at the allocation boundary, with checked
+  `numel × itemsize` arithmetic.
+- **No casting, no promotion, no mixed-dtype arithmetic.** A mismatch
+  raises before any output is allocated or any state is mutated.
+- **float32 accumulates in float32**, with no hidden wider accumulator
+  anywhere — that would be mixed precision, which is out of scope.
+- **Checkpoint version 3** is designed but not activated at I0. Versions
+  1 and 2 stay readable and are defined as float64-only formats that are
+  never guessed to be float32.
+- **Exact deterministic resume is proved separately for each dtype**, and
+  a float32 run is never required to agree with a float64 one.
+- **Every Phase-H float64 optimization is preserved**, and float32 and
+  float64 are benchmarked separately, with no timing assertion, no
+  committed number, and no result file — as in every phase before it.
+- **The public support registry moves at milestone I9** and at no earlier
+  one: float32 is not declared supported until the whole training stack,
+  optimizer state, checkpoint version 3, and the exact-resume proof all
+  exist.
+
+The ladder is I0 through I11: the contract (I0), the dtype model and
+tagged storage (I1), typed transfer and materialization (I2), elementwise
+execution (I3), reductions and matmul (I4), the convolution and pooling
+kernels (I5), stable math and classification (I6), modules, buffers, and
+Dropout (I7), optimizer state and checkpoint version 3 (I8), the public
+integration and resume proof (I9), hardening and benchmarking (I10), and
+cross-platform validation and closure (I11).
+
 ## Practical next steps
 
-**No next phase is defined, and none is invented here.** What the existing
-documents already name as future work, in no committed order, is: data
-loaders, native integer tensors, further dtypes or devices, and CUDA
-experiments. Each would be a *capability* phase with its own design
-contract, and each is deliberately outside everything shipped so far.
+**Phase I is the defined next work, and it is described in the section
+above.** What the existing documents name as future work *beyond* Phase I,
+in no committed order, is: data loaders, native integer tensors, further
+dtypes or devices beyond the two Phase I delivers, and CUDA experiments.
+Each would be a *capability* phase with its own design contract, and each
+is deliberately outside everything shipped so far.
 
 Two things Phase H recorded are worth carrying forward as *inputs* to
 whichever comes next, rather than as work items in themselves:

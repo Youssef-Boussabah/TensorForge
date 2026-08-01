@@ -1065,6 +1065,36 @@ explicit layer at a time:
   CTests 16 to **17**. No public API, capability, dtype, device, registry
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
+- **Native dtype generalization and float32 CPU support (Phase I) has
+  begun, at milestone I0.** Phase I is the latest phase; Phase H is
+  unaffected and remains complete. **I0 is the architecture contract
+  ([native_dtype_float32_design.md](native_dtype_float32_design.md)), its
+  guardrail tests, and documentation reconciliation — and no runtime
+  behavior**: no dtype, no storage change, no kernel, no C ABI symbol, no
+  ctypes declaration, no Core method, no operation, no module, no
+  optimizer, no export, no registry value, and no checkpoint-format
+  change. The runtime is still float64 CPU only, still **52** exported
+  `tf_*` symbols, still checkpoint version 2 with versions 1 and 2
+  accepted, and `float32` is still listed in `UNSUPPORTED`. The
+  architectural fact the contract rests on is visible in the layering
+  above: **42 of the 52 exports already address their operands through
+  opaque handles**, so putting a dtype tag on the storage behind those
+  handles reaches every one of them, and only *construction* needs new
+  information — hence **exactly two** planned new symbols
+  (`tf_storage_create_typed`, `tf_storage_create_uninitialized_typed`,
+  52 → **54**) and an explicit rejection of per-operation float32
+  exports. Storage becomes the single dtype authority, so every view over
+  a buffer agrees by construction and no view operation casts; shapes,
+  strides, and offsets stay in logical elements, with bytes appearing only
+  at the allocation boundary; each exported call dispatches **once** into
+  a templated `float`/`double` kernel and nothing below that branches on
+  dtype; casting, promotion, and mixed-dtype arithmetic do not exist and
+  are rejected before any allocation or mutation; float32 accumulates in
+  float32; checkpoint **version 3** is designed but not activated, with
+  versions 1 and 2 defined as float64-only formats; exact deterministic
+  resume is proved **separately** per dtype rather than as agreement
+  between them; and the public support registry moves at milestone
+  **I9**, not before.
 
 The execution path for a native training step is:
 

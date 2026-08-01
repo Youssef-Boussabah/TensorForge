@@ -195,7 +195,12 @@ naive loops, and so do their native counterparts (direct nested loops —
 no im2col, BLAS, threading, or SIMD). The native line is float64/cpu
 only — no CUDA backend, no float32/float16 or dtype promotion and
 casting, no AMP, no data loaders or native integer tensors, and no
-dispatch into `tensorforge.Tensor`. Its Dropout is one deterministic
+dispatch into `tensorforge.Tensor`. (Native float32 has an architecture
+contract as of Phase I milestone I0 —
+[native_dtype_float32_design.md](native_dtype_float32_design.md) — but
+it is designed and not built: the runtime remains float64 CPU only, and
+casting, promotion, AMP, and integer tensors stay outside that phase
+too.) Its Dropout is one deterministic
 stream behind an explicit `NativeGenerator`, not a generic random-number
 API, and there is no `Dropout2d`/`Dropout3d`. Native checkpoints persist
 parameters, persistent buffers, optimizer state, and generator state, and
@@ -1646,9 +1651,45 @@ moved, and no C ABI symbol was added.
 
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
-Beyond Phase H
-(**not started**): more activations/math, data
-loaders, then the CUDA
-runtime, dtype/AMP work, and Transformer/text and distributed
-experiments. See [roadmap.md](roadmap.md) and
+**Phase I — native dtype generalization and float32 CPU support — is the
+latest phase, and it has begun at milestone I0.** Its architecture
+contract is
+[native_dtype_float32_design.md](native_dtype_float32_design.md).
+
+**I0 is design and reconciliation only, and adds no runtime behavior**:
+this contract, its guardrail tests, and documentation. The native runtime
+is still float64 CPU only — `SUPPORTED_DTYPES` still reads
+`("float64",)`, `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
+the library still exports exactly 52 `tf_*` symbols, and the native
+checkpoint format is still version 2 with versions 1 and 2 accepted.
+Phase H is untouched and remains complete.
+
+The contract locks the phase before any of it is built: an internal dtype
+model with frozen ABI codes and one central item-size authority;
+dtype-tagged storage whose dtype is the single authority for every view
+over it, with shapes, strides, and offsets still measured in logical
+elements and checked `numel × itemsize` arithmetic at the one allocation
+boundary; **exactly two** new C ABI symbols for the entire phase
+(`tf_storage_create_typed`, `tf_storage_create_uninitialized_typed`,
+52 → **54**), with per-operation float32 exports **rejected** because
+handle-based exports already carry their operands as opaque handles and
+one narrow dispatch per call is enough; templated `float`/`double`
+kernels with no dtype branching below that dispatch; **no casting, no
+promotion, and no mixed-dtype arithmetic**, rejected before any
+allocation or mutation; **float32 accumulating in float32**, with no
+hidden wider accumulator anywhere, because that would be mixed precision
+and mixed precision is out of scope; the autograd, module, buffer,
+RNG/Dropout, and optimizer-state dtype invariants, over an **unchanged**
+generator algorithm; a dtype-aware checkpoint **version 3**, designed but
+not activated, with versions 1 and 2 defined as float64-only formats that
+are never guessed to be float32; exact deterministic resume proved
+**separately** for float32 and float64 and never as agreement between
+them; every Phase-H float64 optimization preserved and each dtype
+benchmarked on its own; and the I0–I11 ladder, in which the public
+support registry changes at **I9** and at no earlier milestone.
+
+Beyond Phase I (**not started**): more activations/math, data loaders,
+native integer tensors, then the CUDA runtime, further dtypes and AMP
+work, and Transformer/text and distributed experiments. See
+[roadmap.md](roadmap.md) and
 [release_history.md](release_history.md) for the full arc.
