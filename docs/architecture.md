@@ -1066,7 +1066,7 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **Native dtype generalization and float32 CPU support (Phase I) is
-  under way: milestones I0, I1, and I2 are complete, I3–I11 are not
+  under way: milestones I0, I1, I2, and I3 are complete, I4–I11 are not
   started.** Phase I is the latest phase; Phase H is unaffected and
   remains complete, having closed at 52 exports. **I0 was the
   architecture contract
@@ -1089,12 +1089,22 @@ explicit layer at a time:
   value-transfer primitive, became dtype-preserving and dtype-strict over
   its unchanged three-tier traversal. Transfer is bit-preserving at both
   widths, and `RAW_KERNEL_DTYPES` records that the seven handle-free raw
-  utility kernels stay float64. Native CTests moved 17 → 18 → **19**.
+  utility kernels stay float64. **I3 delivered dtype-general elementwise
+  execution and added no export**: `add`, `subtract`, `multiply`, `relu`,
+  `relu_backward`, `sqrt`, `reciprocal`, `exp`, and `log` — across their
+  strided and contiguous forms — validate operand agreement, dispatch
+  **once** from the storage tag, and run one instantiation of a templated
+  kernel, with all three Phase-H traversal tiers instantiated for both
+  element types from the same source and NumPy-style broadcasting working
+  at float32 for every layout it already worked at for float64. Native
+  CTests moved 17 → 18 → 19 → **20**.
   **No public capability moved**: still float64 CPU only, still
   checkpoint version 2 with versions 1 and 2 accepted, and `float32` is
-  still listed in `UNSUPPORTED`. float32 storage is allocatable and
-  movable through the C ABI and computed on by nothing — every operation
-  not yet generalized rejects a float32 handle before touching memory.
+  still listed in `UNSUPPORTED`. float32 storage is allocatable, movable,
+  and computed on **only** by that elementwise family — every later
+  numerical family rejects a float32 handle before touching memory, and no
+  public constructor produces a float32 tensor, so float32 autograd,
+  parameters, modules, and training do not exist.
   The architectural fact
   the contract rests on is visible in the layering
   above: **42 of Phase H's 52 exports already address their operands
@@ -1109,7 +1119,8 @@ explicit layer at a time:
   at the allocation boundary; each exported call dispatches **once**
   into a templated `float`/`double` kernel, with nothing below that
   branching on dtype (delivered at I2 for the four transfer-shaped
-  exports; I3 onward for the arithmetic, which still takes `double*`
+  exports and at I3 for the whole elementwise and unary family; I4 onward
+  for reductions, matmul, and the rest, which still take `double*`
   unchanged); casting, promotion,
   and mixed-dtype arithmetic do not exist and
   are rejected before any allocation or mutation; float32 accumulates in

@@ -798,22 +798,39 @@ def test_exp_and_log_keep_the_retained_function_pointer_paths():
     and must not name any templated dispatch helper. They are excluded
     because IEEE-754 does not specify them, so a vectorizing toolchain
     would be free to return different bits — and measured, they had nothing
-    to gain."""
+    to gain.
+
+    Phase I milestone I3 made them dtype-general, which sharpens this rather
+    than relaxing it: they now name the walker at an **explicit** element
+    type (``core_unary<float>`` / ``core_unary<double>``), the exclusion is
+    asserted per dtype, and the header still holds no ``ExpOp``/``LogOp``
+    functor for a later edit to hand to a plan walk.
+    """
     source = (REPO_ROOT / "cpp" / "src" / "elementwise.cpp").read_text(
         encoding="utf-8")
-    for name in ("tf_core_exp", "tf_core_exp_contiguous",
-                 "tf_core_log", "tf_core_log_contiguous"):
+    for name, walker in (("tf_core_exp", "core_unary"),
+                         ("tf_core_exp_contiguous", "core_unary_contiguous"),
+                         ("tf_core_log", "core_unary"),
+                         ("tf_core_log_contiguous", "core_unary_contiguous")):
         body = source.split(f"TF_EXPORT void {name}(", 1)[1]
         body = body.split("\n}\n", 1)[0]
         assert "unary_dispatch<" not in body, name
         assert "unary_contiguous_dispatch<" not in body, name
-        assert ("core_unary(" in body or "core_unary_contiguous(" in body), name
+        assert "unary_by_dtype<" not in body, name
+        assert "unary_contiguous_by_dtype<" not in body, name
+        # Both instantiations go straight into the retained odometer.
+        assert f"{walker}<float>(" in body, name
+        assert f"{walker}<double>(" in body, name
     # ...and the plan machinery never names an exponential or a logarithm.
     header = (REPO_ROOT / "cpp" / "include"
               / "tf_elementwise_internal.h").read_text(encoding="utf-8")
+    functors = header.split("// The operation functors", 1)[1]
     for banned in ("std::exp", "std::log", "ExpOp", "LogOp"):
-        assert banned not in header.split("// The operation functors.", 1)[1], \
-            banned
+        assert banned not in functors, banned
+    # No functor exists for either anywhere in the shared header, so an
+    # operation the plan walkers could reach cannot even be named.
+    for banned in ("ExpOp", "LogOp"):
+        assert banned not in header, banned
 
 
 @needs_native
@@ -944,16 +961,24 @@ def test_the_python_backend_gained_no_dispatch_or_profiling_surface():
 def test_the_native_sources_still_declare_the_retained_generic_walkers():
     """The retained reference path is not merely documented — it is still
     in the file, still spelled with the odometer's counter, and still
-    reachable as the fallback of every dispatch helper."""
+    reachable as the fallback of every dispatch helper.
+
+    Phase I milestone I3 gave each walker an explicit scalar type, so the
+    fallback is now named as ``core_unary<T>`` / ``core_binary<T>``: one
+    source, both instantiations, still the only traversal that can address
+    an arbitrary layout.
+    """
     text = (REPO_ROOT / "cpp" / "src" / "elementwise.cpp").read_text(
         encoding="utf-8")
     for name in ("void core_unary(", "void core_binary(",
-                 "void core_unary_contiguous("):
+                 "void core_unary_contiguous(", "void core_unary_typed(",
+                 "void core_binary_typed("):
         assert name in text, name
     assert "tf::make_counter(ndim)" in text
-    # ...and the two dispatch helpers each end in it.
-    for helper, fallback in (("void unary_dispatch(", "core_unary("),
-                             ("void binary_dispatch(", "core_binary(")):
+    # ...and the two dispatch helpers each end in it, at the element type
+    # their caller dispatched on.
+    for helper, fallback in (("void unary_dispatch(", "core_unary<T>("),
+                             ("void binary_dispatch(", "core_binary<T>(")):
         body = text.split(helper, 1)[1].split("\n}\n", 1)[0]
         assert fallback in body, helper
         assert "build_" in body, helper

@@ -362,26 +362,74 @@ inline bool require_float64(
 // Null handles **pass**, for exactly ``require_float64``'s reason: each
 // export keeps its own null validation, with its own message and its own
 // ordering, and this guard must not pre-empt it.
+//
+// The list form (Phase I, milestone I3) is the same rule over any number of
+// participating handles — a binary kernel's two sources and its
+// destination, say — and is the **one** implementation: the two-handle
+// overload below delegates to it, so a three-operand export and a
+// two-operand one cannot drift apart in what they accept or in what they
+// say when they refuse. Every non-null handle is compared against the first
+// non-null one, so the message always names the disagreeing pair.
+inline bool require_matching_dtype(
+    const char* operation, std::initializer_list<const void*> handles
+) noexcept {
+    const void* reference = nullptr;
+    for (const void* handle : handles) {
+        if (handle == nullptr) {
+            continue;
+        }
+        if (reference == nullptr) {
+            reference = handle;
+            continue;
+        }
+        const Dtype a = as_storage(reference)->dtype;
+        const Dtype b = as_storage(handle)->dtype;
+        if (a != b) {
+            // Bounded stack buffer: recording a rejection must not itself
+            // allocate, and snprintf truncates rather than overflowing.
+            char message[192];
+            std::snprintf(message, sizeof message,
+                          "%s: operands must have the same dtype; got %s and "
+                          "%s (the native runtime performs no casting or "
+                          "promotion)",
+                          operation, dtype_name(a), dtype_name(b));
+            set_error(TF_ERROR_INVALID, message);
+            return false;
+        }
+    }
+    return true;
+}
+
 inline bool require_matching_dtype(
     const char* operation, const void* first, const void* second
 ) noexcept {
-    if (first == nullptr || second == nullptr) {
-        return true;
+    return require_matching_dtype(operation, {first, second});
+}
+
+// Phase I, milestone I3: the dtype a dtype-general export dispatches on,
+// read **once** per exported call from the handles the caller already
+// passed (design §8.1). Total, noexcept, allocation-free, and a function of
+// the storage tags alone — never of a pointer value, an alignment, a clock,
+// an environment variable, or a CPU-feature probe.
+//
+// It is called *after* ``require_matching_dtype``, which has already proved
+// every non-null handle carries the same tag, so the first non-null one is
+// the answer and there is nothing to choose between.
+//
+// Null handles are skipped for exactly ``require_float64``'s reason: each
+// export keeps its own null behavior, and selecting an instantiation must
+// not change where a malformed call fails. An all-null call answers
+// Float64, which is the instantiation such a call already ran before Phase
+// I, so it fails exactly where it always did.
+inline Dtype dispatch_dtype(
+    std::initializer_list<const void*> handles
+) noexcept {
+    for (const void* handle : handles) {
+        if (handle != nullptr) {
+            return as_storage(handle)->dtype;
+        }
     }
-    const Dtype a = as_storage(first)->dtype;
-    const Dtype b = as_storage(second)->dtype;
-    if (a != b) {
-        // Bounded stack buffer: recording a rejection must not itself
-        // allocate, and snprintf truncates rather than overflowing.
-        char message[192];
-        std::snprintf(message, sizeof message,
-                      "%s: operands must have the same dtype; got %s and %s "
-                      "(the native runtime performs no casting or promotion)",
-                      operation, dtype_name(a), dtype_name(b));
-        set_error(TF_ERROR_INVALID, message);
-        return false;
-    }
-    return true;
+    return Dtype::Float64;
 }
 
 // An owned odometer counter: RAII-managed so a walker that throws (or is

@@ -1436,9 +1436,13 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     # operation that has not been generalized yet. I2 added the typed
     # transfer test, which is not a numerical kernel either — it drives the
     # three retyped transfer boundaries, materialization, and the identity
-    # copy at both dtypes, by raw IEEE-754 bit comparison.
-    assert len(ctests) == 19
-    phase_i = {"test_dtype_storage.cpp", "test_typed_transfer.cpp"}
+    # copy at both dtypes, by raw IEEE-754 bit comparison. I3 added the
+    # dtype-elementwise test, which drives the *existing* H8 traversals at a
+    # second element type: no new kernel, no new export, no new traversal —
+    # the same three tiers, instantiated twice.
+    assert len(ctests) == 20
+    phase_i = {"test_dtype_storage.cpp", "test_typed_transfer.cpp",
+               "test_dtype_elementwise.cpp"}
     assert phase_i <= set(ctests)
     assert len([name for name in ctests if name not in phase_i]) == 17
     assert "test_conv2d_execution.cpp" in ctests

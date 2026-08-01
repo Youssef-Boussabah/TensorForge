@@ -322,8 +322,8 @@ every shipped training workload is **1.50×–3.89× faster than it was at
 the H0 baseline**, with bit-identical results, and **no numerical
 capability, dtype, device, export, registry value, or checkpoint version
 moved at any milestone**. **Phase I — native dtype generalization and
-float32 CPU support — is the latest phase; milestones I0, I1, and I2 are
-complete and I3–I11 are not started.** I0 was the design lock and
+float32 CPU support — is the latest phase; milestones I0, I1, I2, and I3
+are complete and I4–I11 are not started.** I0 was the design lock and
 documentation reconciliation, shipping
 [docs/native_dtype_float32_design.md](docs/native_dtype_float32_design.md)
 and its guardrail tests and nothing else. **I1 built the dtype
@@ -338,12 +338,20 @@ dtype-general through a source-level retype of their host positions to
 `tf_core_contiguous_copy` — the value-transfer primitive — became
 dtype-preserving and dtype-strict, so float32 values move in, out, through
 any view layout, and storage-to-storage **bit for bit**, signalling NaNs
-and signed zeros included. **The native runtime is still float64 CPU
-only**: `float32` remains listed as unsupported, it is allocatable and
-movable through the C ABI and computed on by no operation (every kernel
-not yet generalized rejects a float32 handle before touching memory), and
-the native checkpoint format is still version 2 with versions 1 and 2
-accepted. The
+and signed zeros included. **I3 made float32 computable and added no
+export**: `add`, `subtract`, `multiply`, `relu`, `relu_backward`, `sqrt`,
+`reciprocal`, `exp`, and `log` dispatch once from the storage tag into
+templated `float`/`double` kernels, with NumPy-style broadcasting, all
+three Phase-H traversal tiers instantiated for both widths from one source,
+dtype-preserving outputs, and mixed dtype rejected before any allocation.
+**The native runtime is still float64 CPU only**: `float32` remains listed
+as unsupported, it is allocatable, movable, and computed on **only** by
+that elementwise and unary family (reductions, matmul, convolution,
+pooling, classification, Dropout, normalization, optimizers, modules, and
+checkpoints all still reject a float32 handle before touching memory), no
+public constructor produces a float32 tensor so float32 autograd and
+training do not exist, and the native checkpoint format is still version 2
+with versions 1 and 2 accepted. The
 contract's **exactly two** new C ABI symbols for the whole phase
 (52 → **54**) are now spent; it rejects per-operation float32 exports, forbids casting,
 promotion, and mixed-dtype arithmetic, requires float32 to accumulate in

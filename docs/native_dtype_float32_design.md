@@ -11,7 +11,7 @@ change, no kernel, no C ABI symbol, no ctypes declaration, no
 optimizer, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-I status: I0, I1, and I2 complete. I3 through I11 are not
+**Phase-I status: I0, I1, I2, and I3 complete. I4 through I11 are not
 started.** The native runtime is **publicly** float64 CPU only today and
 stays that way until milestone I9. `SUPPORTED_DTYPES` still reads
 `("float64",)`, `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
@@ -32,14 +32,29 @@ retype of their host positions (no new symbol, no ABI change, still 54),
 dtype-preserving and dtype-strict, and `RAW_KERNEL_DTYPES` records that the
 seven handle-free raw kernels stay float64. Internal float32 values can be
 copied in, copied out, viewed, materialized through any layout, and copied
-storage-to-storage, **bit for bit**. Nothing computes on them: every
-arithmetic, reduction, matmul, conv2d, pooling, classification, dropout,
-normalization, optimizer, module, and checkpoint path still rejects a
-float32 handle with `TF_ERROR_INVALID` before touching memory, and so do
-`tf_storage_fill` and `tf_storage_scale`.
+storage-to-storage, **bit for bit**.
 
-Internal allocation and transfer capability is not public support — that
-distinction is §27.1's, and the registry moves at I9.
+What I3 changed, and only this: float32 storage is now **computed on**, by
+the elementwise and unary Core family and by nothing else. `add`,
+`subtract`, `multiply`, `relu`, `relu_backward`, `sqrt`, `reciprocal`,
+`exp`, and `log` — seventeen exports across their strided and contiguous
+forms — dispatch once from the storage tag into templated `float`/`double`
+kernels, with NumPy-style broadcasting, all three Phase-H traversal tiers,
+and dtype-preserving output allocation. Mixed dtype is rejected before any
+allocation or mutation, at both the Python layer and the C ABI. **No export
+was added** (still 54), no capability registry moved, and float64 results
+are unchanged.
+
+Everything numerically downstream still rejects a float32 handle with
+`TF_ERROR_INVALID` before touching memory: reductions, matmul,
+narrow-backward, conv2d, pooling, classification, dropout, normalization,
+optimizers, modules, and checkpoints — and so do `tf_storage_fill` and
+`tf_storage_scale`. Nor does a dtype-general Core primitive make float32
+autograd, parameters, or training exist: no public constructor produces a
+float32 tensor, so no float32 graph can be built at all.
+
+Internal allocation, transfer, and elementwise capability is not public
+support — that distinction is §27.1's, and the registry moves at I9.
 
 **Phase H remains complete (H0–H10) and is the latest *completed*
 phase.** Nothing in Phase I revisits, reverses, or re-measures a Phase-H
@@ -303,7 +318,10 @@ All of them, in every translation unit:
   `ReluOp`, `ReluBackwardOp`, `SqrtOp`, `ReciprocalOp`, `IdentityOp`),
   plus the retained function-pointer odometers taking `double (*)(double,
   double)`. `exp` and `log` are deliberately excluded from the templated
-  traversals and keep the retained paths.
+  traversals and keep the retained paths. (This section is the **I0
+  baseline**, recorded before any implementation: I2 templated the unary
+  traversals and `IdentityOp`, and I3 templated the binary traversals and
+  every remaining functor. See their delivered records in §29.)
 - `matmul.cpp` / `tf_matmul_internal.h` — `matmul_generic_strided` and
   the H2 `matmul_row_sweep`, plus the hidden
   `tf::matmul_prefers_row_sweep` predicate.
@@ -1329,8 +1347,19 @@ milestone may not add an architecture flag that changes this.
   oracle for composed or transcendental work; finite-difference gradient
   checks at float32, with a step size and tolerance chosen for binary32
   and stated in the test rather than inherited from the float64 tests;
-  `exp`/`log` at float32 against a **one-ULP** finite bound, for the same
+  `exp`/`log` at float32 against a small finite ULP bound, for the same
   reason the float64 contract uses one — libm differs between toolchains.
+
+  **As measured at I3, that is two bounds rather than one, and the
+  difference is informative.** Against a float32 reference formed by
+  rounding the binary64 value **once**, TensorForge's float32 `exp`/`log`
+  are within **1** representable step. Against NumPy's *own* float32
+  transcendentals they are within **2** — because NumPy uses a separate
+  SIMD kernel at that width which is itself about two steps from correctly
+  rounded. The wider number is a statement about NumPy and the tighter one
+  about TensorForge, so both are asserted, separately and by name. Neither
+  is a float32-versus-float64 comparison: both references are float32
+  values.
 - **Forbidden as a contract:** comparing a float32 result to a float64
   result at *any* tolerance and calling the agreement a requirement.
   float32 does not have to reproduce float64 and never will in general. A
@@ -2627,6 +2656,121 @@ exports — I2 added none.
 - **Exit gate:** full suite green; H8's float64 measurements re-checked
   as neutral.
 - **Commit message:** `Generalize native elementwise dtype execution`
+
+#### I3 as delivered
+
+Landed as specified, with six implementation decisions recorded here
+because the contract left each judgement open.
+
+1. **The operation functors became the single source of every per-element
+   expression, and the duplicated file-local ops were removed.** Before I3
+   each expression existed twice — as `tf::AddOp::apply` in the header for
+   the templated traversal, and as `op_add` in `elementwise.cpp` for the
+   retained odometer's function pointer — with a comment asserting the two
+   were "the same expression, character for character" and nothing
+   structural holding them so. I3 had to touch both anyway, and duplicating
+   the duplication at a second width would have made four copies of each
+   expression. The odometer now takes `&Op::apply<T>`, so there is one
+   definition, the optimized path and the retained reference path evaluate
+   *literally* the same code, and drift is impossible rather than merely
+   improbable.
+
+   `exp` and `log` are the deliberate exception and got the opposite
+   treatment: they keep plain file-local function templates (`op_exp<T>`,
+   `op_log<T>`) and have **no functor**. That is load-bearing. H8 excluded
+   them from the templated traversals because they are library functions
+   with no correctly-rounded guarantee; with no `ExpOp` type in the shared
+   header, a later edit cannot hand them to a plan walk even by accident.
+   The exclusion moved from a convention to a structural property, and their
+   four exports write their dtype `switch` out longhand for the same reason.
+
+2. **Constants are written `T(...)`, and that is not cosmetic.** `ReluOp`
+   is `x > T(0) ? x : T(0)` and `ReciprocalOp` is `T(1) / x`. At
+   `T = double` these *are* the old literals — `T(0)` is `0.0`, `T(1)` is
+   `1.0` — so float64 is the pre-I3 expression statement for statement. At
+   `T = float` they keep the comparison and the division in binary32 instead
+   of promoting the whole expression around a binary64 literal.
+
+3. **Four dispatch helpers, not fifteen switches.** `unary_by_dtype`,
+   `unary_contiguous_by_dtype`, `binary_by_dtype`, and
+   `binary_contiguous_by_dtype` each hold the **one** `switch` their exports
+   perform, sitting above the traversals and below the exports. Each has no
+   `default:` label, so a future dtype without an instantiation is a
+   compile-time warning rather than a silent misread. The dtype comes from a
+   new `tf::dispatch_dtype`, which skips null handles for exactly
+   `require_float64`'s reason — each export keeps its own null behavior, and
+   choosing an instantiation must not change *where* a malformed call fails.
+
+4. **`require_matching_dtype` gained an initializer-list form and the
+   two-handle version now delegates to it.** A binary export has three
+   participating handles, not two, and calling the pairwise guard twice would
+   have been two messages for one rule. One implementation means a
+   three-operand export and a two-operand one cannot drift apart in what they
+   accept or in what they say when they refuse; the existing two-argument
+   message is byte-identical to what I2 shipped.
+
+5. **No validation was added, and none was moved except the dtype guard.**
+   `relu`/`sqrt`/`reciprocal` and the binary exports still do not
+   self-validate their spans — they predate that convention and E1 tightened
+   only what it added — and I3 deliberately did not "fix" that, because
+   adding validation is a behavior change no milestone assigned it. What did
+   change is ordering: the dtype guard runs **first** in every generalized
+   export, so a call that is both mixed-dtype and out-of-span reports the
+   dtype. That ordering is asserted directly, in both directions: with
+   matching dtypes the pre-existing span error is still what surfaces.
+
+6. **`tf_core_relu_backward` was generalized, and that is not float32
+   autograd.** The contract assigns it to I3, and it belongs there: it is a
+   forward-shaped numerical primitive over `(input, upstream)`, not graph
+   machinery — the Core layer stays autograd-unaware. The C++ primitive is
+   dtype-general; no public float32 backward graph can reach it, because no
+   public constructor produces a float32 tensor at all. That gap is asserted
+   rather than assumed, over `NativeTensor.from_array`/`zeros`/`full` and
+   `NativeParameter`.
+
+Two findings worth inheriting rather than rediscovering:
+
+- **The "float32 is not secretly float64" claim cannot rest on a runtime
+  test alone, and saying so is more honest than inventing one that appears
+  to.** Every operation in the I3 family produces each destination element
+  with a *single* correctly-rounded IEEE operation, and binary64 carries 53
+  bits — comfortably more than the 2p+2 = 50 a double rounding would need to
+  differ — so computing in binary64 and rounding once to binary32 is
+  *provably* indistinguishable from computing in binary32 for `+`, `-`, `*`,
+  `/`, and `sqrt`. A search over 2,000,000 inputs, including the subnormal
+  range where division could in principle double-round, found no witness,
+  which is the theorem showing up rather than a gap in the search. The claim
+  is therefore carried by two things that *are* decidable: the observable
+  result is asserted **bit-identical to the binary32 oracle**, and the
+  absence of a widening intermediate is asserted **structurally** over the
+  source — templated functors with no `double` in them, traversals taking
+  `T*`, no `static_cast<double>` anywhere in the translation unit, no double
+  accumulator. That structural half is what will still be load-bearing at I4,
+  where accumulation makes the difference genuinely observable.
+
+- **The float32 `exp`/`log` bound is two measurements, not one.** Against a
+  float32 reference formed by rounding the binary64 value **once**,
+  TensorForge is within **1** representable step over 200,000 inputs.
+  Against NumPy's *own* float32 transcendentals it is within **2** — because
+  NumPy uses a separate SIMD kernel for float32 that is itself about two
+  steps from correctly rounded. The wider number is a statement about NumPy
+  and the tighter one about TensorForge, so they are recorded and asserted
+  separately rather than collapsed into the looser one. Neither is a
+  comparison of a float32 result to a float64 result, which §10.4 forbids
+  making a contract of: both references are float32 values.
+
+The CTest inventory moved **19 → 20** with `test_dtype_elementwise`, which
+compiles `elementwise.cpp` and `storage.cpp` directly so it reaches the
+hidden plan builders beside the exports. It is complementary to
+`test_elementwise_traversal` rather than a superset: that target keeps H8's
+float64 NaN sweep untouched, while this one drives thirteen view layouts ×
+both dtypes × every operation, proves the three traversal tiers agree by bit
+pattern at each width, and proves mixed dtype is refused in the left, right,
+and destination positions independently with the destination unmoved.
+
+Public capability did not move: float64 CPU only, `float32` still in
+`UNSUPPORTED`, `RAW_KERNEL_DTYPES` still `("float64",)`, checkpoint version
+2 with (1, 2) accepted, and **54** exports — I3 added none.
 
 ### I4 — Reductions, matmul, views, and core autograd
 

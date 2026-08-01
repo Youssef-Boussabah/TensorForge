@@ -115,13 +115,17 @@ Since Phase I milestone I1, float32 storage is **allocatable through the C
 ABI** (`tf_storage_create_typed`); since I2 it is also **movable** — host
 ingress and egress, strided materialization, and the storage-to-storage
 identity copy (`tf_core_contiguous_copy`) are dtype-general and
-bit-preserving — and it is **computed on by nothing**. That is not a
-support claim and does not change a single row above: every operation that
-has not been dtype-generalized rejects a float32 handle with
-`TF_ERROR_INVALID` before touching memory (including `tf_storage_fill` and
-`tf_storage_scale`, which assign and multiply rather than transfer), and
-`normalize_dtype("float32")` still raises. The public registry moves at
-**I9**, not before.
+bit-preserving; and since I3 it is **computed on by the elementwise and
+unary Core family, and by nothing else** (`add`, `subtract`, `multiply`,
+`relu`, `relu_backward`, `sqrt`, `reciprocal`, `exp`, `log`, with
+broadcasting). That is not a support claim and does not change a single row
+above: every operation that has not been dtype-generalized rejects a
+float32 handle with `TF_ERROR_INVALID` before touching memory (including
+`tf_storage_fill` and `tf_storage_scale`, which assign and multiply rather
+than transfer), `normalize_dtype("float32")` still raises, and no public
+constructor produces a float32 tensor — so float32 autograd, parameters,
+modules, optimizers, and training do not exist. The public registry moves
+at **I9**, not before.
 
 One further registry exists and is a **different** statement from
 `SUPPORTED_DTYPES`: `RAW_KERNEL_DTYPES == ("float64",)` (added at I2,
@@ -552,12 +556,13 @@ matching docs file (and README links) **in the same milestone**.
     exactly **one** C ABI symbol across the whole phase
     (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
-- **Native line: Phase I at I2** — Native Dtype Generalization and
+- **Native line: Phase I at I3** — Native Dtype Generalization and
   Float32 CPU Support. Contract:
   `docs/native_dtype_float32_design.md`. **I0 (design, contract tests,
-  documentation), I1 (the dtype model and dtype-tagged storage), and I2
-  (typed transfer, views, and materialization) are complete; I3–I11 are
-  not started.**
+  documentation), I1 (the dtype model and dtype-tagged storage), I2
+  (typed transfer, views, and materialization), and I3 (elementwise,
+  broadcast, and unary dtype execution) are complete; I4–I11 are not
+  started.**
   - I1 delivered: the C++ `TfDtype`/`tf::Dtype` model with frozen codes
     `0 = float64` and `1 = float32`, one item-size authority
     (`tf::dtype_item_size` — nothing else may spell a storage width), one
@@ -602,10 +607,49 @@ matching docs file (and README links) **in the same milestone**.
     allocators inherit that trust because their dtype always comes from a
     live storage, and `NativeTensorCore.full` calls `normalize_dtype`
     explicitly so no public constructor inherits it. CTests moved 18 → 19.
-  - **Public capability did not move at I1 or I2**: float64 CPU only,
-    `float32` still in `UNSUPPORTED`, checkpoint version 2 with (1, 2)
-    accepted. Only the export count changed, 52 → **54**, at I1; I2 added
-    none.
+  - I3 delivered: the elementwise and unary Core family generalized to both
+    dtypes — `add`, `subtract`, `multiply`, `relu`, `relu_backward`,
+    `sqrt`, `reciprocal`, `exp`, `log`, across their strided and contiguous
+    forms (17 exports, **none new**). `tf::require_float64` became
+    `tf::require_matching_dtype` at each of them, and a new
+    `tf::dispatch_dtype` supplies the **one** `switch` per exported call,
+    held by four hidden helpers (`unary_by_dtype`,
+    `unary_contiguous_by_dtype`, `binary_by_dtype`,
+    `binary_contiguous_by_dtype`), none with a `default:` label.
+    `tf::binary_row` and `tf::binary_plan_walk` gained the deduced scalar
+    type their unary twins got at I2, and `core_binary_typed` joined
+    `core_unary_typed` as the retained generic reference path at both
+    widths. **The operation functors became the single source of every
+    per-element expression**: their `apply` is templated, their constants
+    are `T(...)`, and the retained odometers now take `&Op::apply<T>`
+    instead of a hand-matched duplicate — so the optimized and reference
+    paths cannot drift. `exp`/`log` keep H8's exclusion **structurally**:
+    they have no functor in the shared header, only file-local function
+    templates, so nothing can plan-walk them. Outputs preserve the operand
+    dtype through the private I2 typed path; broadcasting works at float32
+    for every layout it already worked at for float64; mixed dtype is
+    rejected in all three operand positions before any allocation, with the
+    dtype guard ordered **before** the span validation. CTests moved
+    19 → 20 (`test_dtype_elementwise`).
+  - **Public capability did not move at I1, I2, or I3**: float64 CPU only,
+    `float32` still in `UNSUPPORTED`, `RAW_KERNEL_DTYPES` still
+    `("float64",)`, checkpoint version 2 with (1, 2) accepted. Only the
+    export count changed, 52 → **54**, at I1; I2 and I3 added none.
+  - **A dtype-general Core kernel is not a public capability.** I3
+    generalized `tf_core_relu_backward` because it is a forward-shaped
+    numerical primitive, not graph machinery. float32 autograd,
+    parameters, modules, optimizers, and training remain absent, and no
+    public constructor produces a float32 tensor at all.
+  - **Recorded so no later milestone relitigates it:** for a *single*
+    correctly-rounded IEEE operation — which is every I3 operation, one per
+    destination element — computing in binary64 and rounding once to
+    binary32 is *provably* indistinguishable from computing in binary32
+    (binary64 carries more than the 2p+2 = 50 bits a double rounding would
+    need). So "float32 is not secretly float64" cannot rest on a runtime
+    test here, and none was invented: it is carried by the result being
+    bit-identical to the binary32 oracle plus a **semantic structural
+    check** over the source. That structural half becomes load-bearing at
+    I4, where accumulation makes the difference genuinely observable.
   When implementing a Phase-I milestone, the durable rules are:
   - **exactly two** new C ABI exports across the whole phase
     (`tf_storage_create_typed`, `tf_storage_create_uninitialized_typed`,

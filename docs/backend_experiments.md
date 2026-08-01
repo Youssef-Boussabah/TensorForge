@@ -78,8 +78,8 @@ and Runtime Efficiency — is complete (H0–H10) and is the latest
 *completed* phase**; both are recorded further below.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0, I1, and I2 are complete; I3 through I11 are
-not started.** Its architecture contract is
+latest phase. Milestones I0, I1, I2, and I3 are complete; I4 through I11
+are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
 was design, guardrail tests, and documentation reconciliation, and no
 runtime behavior at all.**
@@ -123,16 +123,39 @@ and returns an owner-attached `c_void_p`. Nothing is cast, widened, or
 guessed at the boundary; a wrong host buffer raises `TypeError` and the
 native call is never made.
 
+**I3 delivered dtype-general elementwise execution**, and added **no
+export**. `add`, `subtract`, `multiply`, `relu`, `relu_backward`, `sqrt`,
+`reciprocal`, `exp`, and `log` — seventeen exports across their strided and
+contiguous forms, every one the symbol Python already declared — validate
+that their operands agree through `tf::require_matching_dtype`, dispatch
+**once** from the storage tag through `tf::dispatch_dtype`, and run one
+instantiation of a templated kernel. Nothing below that point branches on
+dtype.
+
+The H8 traversal templates gained their scalar parameter (`binary_row`,
+`binary_plan_walk`), the operation functors became the **single** source of
+every per-element expression with a templated `apply` and `T(...)`
+constants, and the retained odometers (`core_unary_typed`,
+`core_binary_typed`) now take `&Op::apply<T>` — so the optimized path and
+the shipped generic reference path evaluate literally the same code at both
+widths instead of two hand-matched copies. `exp` and `log` keep H8's
+exclusion structurally: they have **no functor** in the shared header, only
+file-local function templates, so nothing can plan-walk them by accident.
+The native CTest inventory moved **19 → 20** (`test_dtype_elementwise`).
+
 **Everything else on this page is still exactly what Phase H left**:
 float64 CPU only, native checkpoint format version **2** with versions
 **(1, 2)** accepted, `SUPPORTED_DTYPES == ("float64",)`, and
 `UNSUPPORTED == ("float32", "cuda", "amp")`. float32 storage can be
-*allocated and moved* through the C ABI and is *computed on by nothing* —
-every operation that has not been generalized rejects a float32 handle
+*allocated, moved, and computed on by the elementwise and unary family* —
+and by nothing else. Every later numerical family rejects a float32 handle
 with `TF_ERROR_INVALID` before reading or writing anything, since walking
 a 4-byte-per-element buffer through a `double*` would overrun it twofold.
 `tf_storage_fill` and `tf_storage_scale` are deliberately still among
-them: they assign and multiply rather than transfer.
+them: they assign and multiply rather than transfer. And a dtype-general
+Core kernel is not float32 autograd — no public constructor produces a
+float32 tensor, so no float32 graph, parameter, module, or optimizer
+exists.
 
 The contract's **exactly two** new C ABI symbols for the entire phase
 (`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,

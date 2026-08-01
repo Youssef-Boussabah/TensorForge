@@ -4830,6 +4830,15 @@ anything about the loop body. Each operation is a stateless functor with a
 character for character, as the retained function-pointer op beside it**,
 so the two cannot drift apart.
 
+> *Later note (Phase I, milestone I3).* The measurement, the reasoning, and
+> the traversal are unchanged; only the *spelling* of the functors moved.
+> Each `apply` is now templated on the element type, its constants are
+> written `T(...)`, and the retained odometer takes `&Op::apply<T>` rather
+> than a separately written twin — so "the same expression, character for
+> character" became one definition rather than two kept in step by hand. At
+> `T = double` the emitted expression is exactly what H8 measured. See
+> `native_dtype_float32_design.md` §8.2 and its I3 record.
+
 **Which operations take it, and which deliberately do not.** Only those
 IEEE-754 actually specifies: `add`, `subtract`, `multiply`,
 `relu_backward`, `relu`, `sqrt`, `reciprocal`, and the identity gather

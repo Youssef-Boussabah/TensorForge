@@ -544,6 +544,36 @@ if(TF_BUILD_TESTS)
 
   add_test(NAME elementwise_traversal COMMAND test_elementwise_traversal)
 
+  # Dtype-general elementwise, broadcast, and unary execution (Phase I,
+  # milestone I3). Compiles elementwise.cpp directly so it reaches the hidden
+  # tf::build_unary_plan / tf::build_binary_plan builders and the templated
+  # traversals beside the exports they live inside; storage.cpp supplies the
+  # typed Storage handles, and error.cpp the thread-local slot the guarded
+  # wrappers record into.
+  #
+  # Deliberately complementary rather than a superset: test_elementwise_traversal
+  # keeps H8's float64 NaN sweep, test_dtype_storage proves float32 is
+  # allocatable and otherwise rejected, and test_typed_transfer proves the
+  # boundaries I2 opened. This one proves the set I3 opened — the arithmetic
+  # and unary family at both dtypes, through all three traversal tiers, with
+  # mixed dtype rejected before any destination is touched.
+  add_executable(test_dtype_elementwise
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_elementwise PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_elementwise PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_elementwise PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_elementwise PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_elementwise COMMAND test_dtype_elementwise)
+
   # Conv2d compute paths and their H9 dispatch: compiles conv2d.cpp directly
   # so it can reach the hidden tf::conv2d_*_prefers_* predicates and BOTH
   # compute paths per direction — the retained Phase-D generic loops and the

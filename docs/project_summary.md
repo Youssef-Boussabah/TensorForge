@@ -197,11 +197,13 @@ only — no CUDA backend, no float32/float16 or dtype promotion and
 casting, no AMP, no data loaders or native integer tensors, and no
 dispatch into `tensorforge.Tensor`. (Native float32 has an architecture
 contract, [native_dtype_float32_design.md](native_dtype_float32_design.md),
-and as of Phase I milestones I1 and I2 a dtype-tagged storage foundation
-and a typed transfer boundary beneath it — but no float32 tensor exists:
-the runtime remains float64 CPU only, float32 storage is allocatable and
-movable through the C ABI and computed on by no operation, and casting,
-promotion, AMP, and integer tensors stay outside that phase too.) Its Dropout is one deterministic
+and as of Phase I milestones I1, I2, and I3 a dtype-tagged storage
+foundation, a typed transfer boundary, and dtype-general elementwise
+execution beneath it — but no public float32 tensor exists: the runtime
+remains float64 CPU only, float32 storage is allocatable and movable
+through the C ABI and computed on **only** by the elementwise and unary
+Core family, and casting, promotion, AMP, and integer tensors stay outside
+that phase too.) Its Dropout is one deterministic
 stream behind an explicit `NativeGenerator`, not a generic random-number
 API, and there is no `Dropout2d`/`Dropout3d`. Native checkpoints persist
 parameters, persistent buffers, optimizer state, and generator state, and
@@ -1653,8 +1655,8 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase I — native dtype generalization and float32 CPU support — is the
-latest phase. Milestones I0, I1, and I2 are complete; I3 through I11 are
-not started.** Its architecture contract is
+latest phase. Milestones I0, I1, I2, and I3 are complete; I4 through I11
+are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
 **I0 was design and reconciliation only, and added no runtime behavior**:
@@ -1694,17 +1696,37 @@ utility kernels take only `double*` and an element count, so they have no
 dtype to dispatch on and stay float64. Native CTests moved **18 → 19**;
 exports stayed at **54**.
 
+**I3 made that movable foundation computable, and added no export.** The
+elementwise and unary Core family — `add`, `subtract`, `multiply`, `relu`,
+`relu_backward`, `sqrt`, `reciprocal`, `exp`, and `log`, across their
+strided and contiguous forms — validates that its operands agree,
+dispatches **once** from the storage tag, and runs one instantiation of a
+templated kernel, with nothing below that point branching on dtype. All
+three Phase-H traversal tiers are instantiated for both element types from
+the same source, so float64 runs the code Phase H measured; NumPy-style
+broadcasting works at float32 for every layout it already worked at for
+float64; outputs preserve the operand dtype; and mixed dtype is rejected in
+the left, right, and destination positions independently, before any
+allocation, at the Python layer and again in C++. float32 arithmetic is
+genuinely binary32 — bit-identical to the binary32 oracle for the
+IEEE-specified operations, within a measured ULP bound for `exp` and `log`
+— with no widening intermediate anywhere, asserted structurally as well as
+numerically. Native CTests moved **19 → 20**; exports stayed at **54**.
+
 **No public capability moved, and none does until I9.** The native runtime
 is still float64 CPU only: `SUPPORTED_DTYPES` still reads `("float64",)`,
 `UNSUPPORTED` still reads `("float32", "cuda", "amp")`, and the native
 checkpoint format is still version 2 with versions 1 and 2 accepted.
 float32 storage is allocatable and movable through the C ABI and computed
-on by nothing — every operation not yet generalized rejects a float32
-handle with `TF_ERROR_INVALID` before touching memory, because walking a
-4-byte-per-element buffer through a `double*` would overrun it twofold.
-`tf_storage_fill` and `tf_storage_scale` are deliberately among them: they
-assign and multiply rather than transfer. Phase H is untouched, remains
-complete, and closed at 52 exports.
+on **only** by the I3 elementwise and unary family — every later numerical
+family rejects a float32 handle with `TF_ERROR_INVALID` before touching
+memory, because walking a 4-byte-per-element buffer through a `double*`
+would overrun it twofold. `tf_storage_fill` and `tf_storage_scale` are
+deliberately among them: they assign and multiply rather than transfer.
+Nor is a dtype-general Core kernel float32 autograd: no public constructor
+produces a float32 tensor, so no float32 graph, parameter, module, or
+optimizer exists to reach one. Phase H is untouched, remains complete, and
+closed at 52 exports.
 
 The contract locked the phase before any of it was built, and the first
 three items below are the ones I1 delivered: an internal dtype
