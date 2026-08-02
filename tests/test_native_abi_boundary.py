@@ -2012,8 +2012,8 @@ def test_the_exported_symbol_count_is_unchanged_apart_from_phase_i():
 
 
 def test_h7_changed_no_capability_dtype_device_or_checkpoint_value():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # 34 at Phase-H closure, plus the two Phase-I typed creators, which
     # report failure through the identical hook rather than inventing a

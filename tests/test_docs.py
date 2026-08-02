@@ -424,7 +424,14 @@ def test_phase_d_status_is_consistent_across_docs_and_registry():
     # ("layernorm" left UNSUPPORTED at Phase F milestone F2 and
     # "batchnorm" at F4, once both BatchNorm shapes shipped as composed
     # modules; neither is a Phase-D boundary.)
-    for absent in ("float32", "cuda", "amp"):
+    # ("float32" left UNSUPPORTED at Phase I milestone I9, once
+    # integrated float32 training and the exact float32 resume proof
+    # both passed. It is attributed rather than dropped: it really was
+    # a boundary this phase left in place, and the milestone that moved
+    # it belonged to a later phase.)
+    assert "float32" not in cpp.UNSUPPORTED
+    assert "float32" in cpp.SUPPORTED_DTYPES
+    for absent in ("cuda", "amp"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS and absent not in cpp.NATIVE_MODULES
     # "dropout" is Phase G's, at every layer: G3 added the differentiable
@@ -435,7 +442,7 @@ def test_phase_d_status_is_consistent_across_docs_and_registry():
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "dropout" not in cpp.NATIVE_MODULES
     assert "NativeDropout" in cpp.NATIVE_MODULES
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
 
@@ -1265,7 +1272,14 @@ def test_no_future_phase_is_claimed_by_phase_e_closure():
 
     # ("layernorm" is no longer future work — F2 shipped NativeLayerNorm —
     # and neither is "batchnorm", which F3 and F4 completed.)
-    for future in ("cuda", "amp", "float32"):
+    # ("float32" left UNSUPPORTED at Phase I milestone I9, once
+    # integrated float32 training and the exact float32 resume proof
+    # both passed. It is attributed rather than dropped: it really was
+    # a boundary this phase left in place, and the milestone that moved
+    # it belonged to a later phase.)
+    assert "float32" not in cpp.UNSUPPORTED
+    assert "float32" in cpp.SUPPORTED_DTYPES
+    for future in ("cuda", "amp"):
         assert future in cpp.UNSUPPORTED, future
         assert future not in cpp.AUTOGRAD_OPS and future not in cpp.TENSOR_CORE_OPS
         assert future not in cpp.NATIVE_MODULES
@@ -1277,7 +1291,7 @@ def test_no_future_phase_is_claimed_by_phase_e_closure():
     assert "dropout_forward" in cpp.TENSOR_CORE_OPS   # G2
     assert "dropout" not in cpp.NATIVE_MODULES
     assert "NativeDropout" in cpp.NATIVE_MODULES  # G4
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.backend_info()["stable_framework_integration"] is False
     # ("LayerNorm" left this list at Phase F milestone F2, "BatchNorm" at
@@ -1288,8 +1302,19 @@ def test_no_future_phase_is_claimed_by_phase_e_closure():
     # behind an explicit generator, never a generic random-number API, and
     # "native RNG is supported" is exactly how that distinction erodes. The
     # remaining subjects are still absent from the native line.)
+    #
+    # **"float32" left this list at Phase I milestone I9**, and for the same
+    # reason every other name left it: it stopped being an over-claim
+    # because it stopped being absent. I1-I8 built the capability under a
+    # registry that still called it unsupported, and I9 moved the registry
+    # only after integrated float32 training and the exact float32 resume
+    # proof both passed. A status surface saying "float32 is supported" is
+    # now the accurate sentence, and banning it would force the documents
+    # to under-report the runtime — the mirror of the failure this guards.
+    # float16 and bfloat16 stay banned, which keeps "two dtypes" from
+    # eroding into "any dtype".
     claim = re.compile(
-        r"(CUDA|AMP|float32|float16|bfloat16|GPU|"
+        r"(CUDA|AMP|float16|bfloat16|GPU|"
         r"data loader|dataloader|native RNG|integer tensor)"
         r"[^.]{0,60}(is|are|now)\s+(supported|implemented|shipped|available)",
         re.I,
@@ -1298,6 +1323,21 @@ def test_no_future_phase_is_claimed_by_phase_e_closure():
         text = _status_text(surface)
         match = claim.search(text)
         assert match is None, (surface, match.group(0) if match else "")
+    # The negative control the I9 edit above requires: the parser really
+    # does fire on the sentence it is meant to catch, so "no match" is
+    # evidence rather than an artifact of a regex that stopped matching
+    # anything when a name was removed from it.
+    for detected in ("CUDA is supported", "AMP is now available",
+                     "float16 is implemented", "bfloat16 is shipped",
+                     "the data loader is supported",
+                     "native RNG is supported",
+                     "integer tensors are implemented"):
+        assert claim.search(detected), detected
+    # ...and it must *not* fire on the sentence I9 made true, in either
+    # phrasing, or the documents could not state their own status.
+    for allowed in ("float32 is supported",
+                    "float32 and float64 are supported on the CPU"):
+        assert claim.search(allowed) is None, allowed
 
 
 def test_no_committed_benchmark_timing_promise():
@@ -1334,7 +1374,14 @@ def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():
     assert cpp.backend_info()["stable_framework_integration"] is False
     # ("layernorm" left UNSUPPORTED at F2, "batchnorm" at F4, and
     # "dropout" at the Phase-G closure, G10.)
-    for future in ("cuda", "float32", "amp"):
+    # ("float32" left UNSUPPORTED at Phase I milestone I9, once
+    # integrated float32 training and the exact float32 resume proof
+    # both passed. It is attributed rather than dropped: it really was
+    # a boundary this phase left in place, and the milestone that moved
+    # it belonged to a later phase.)
+    assert "float32" not in cpp.UNSUPPORTED
+    assert "float32" in cpp.SUPPORTED_DTYPES
+    for future in ("cuda", "amp"):
         assert future in cpp.UNSUPPORTED, future
     assert "dropout" not in cpp.UNSUPPORTED
 
@@ -1938,9 +1985,7 @@ def test_phase_f_changes_only_the_normalization_module_inventory():
     # "dropout" was in this tuple when Phase F closed and stayed there
     # through G9; the G10 closure removed it. Neither event is a
     # normalization change, which is what this test is about.
-    assert cpp.UNSUPPORTED == (
-        "float32", "cuda", "amp",
-    )
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
     # The Phase-E operation surface is intact and nothing normalization
     # shaped joined it — none of the three modules added an operation.
     for op in ("exp", "log", "softmax", "log_softmax", "cross_entropy"):
@@ -1949,7 +1994,7 @@ def test_phase_f_changes_only_the_normalization_module_inventory():
         assert absent not in cpp.AUTOGRAD_OPS, absent
         assert absent not in cpp.TENSOR_CORE_OPS, absent
         assert absent not in cpp.RAW_KERNELS, absent
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
 
@@ -2002,7 +2047,7 @@ def test_state_support_reports_the_real_in_memory_state_surface():
     assert "save_native_generator_state" not in public
     assert "load_native_generator_state" not in public
     # Neither generator name is a Dropout capability claim.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
 
 
 def test_f1_added_no_normalization_capability():
@@ -2347,7 +2392,14 @@ def test_dropout_float32_cuda_and_amp_stay_unsupported_through_phase_f():
     Dropout capability, and the one that exists came from a later phase."""
     from tensorforge.backends import cpp
 
-    for future in ("float32", "cuda", "amp"):
+    # ("float32" left UNSUPPORTED at Phase I milestone I9, once
+    # integrated float32 training and the exact float32 resume proof
+    # both passed. It is attributed rather than dropped: it really was
+    # a boundary this phase left in place, and the milestone that moved
+    # it belonged to a later phase.)
+    assert "float32" not in cpp.UNSUPPORTED
+    assert "float32" in cpp.SUPPORTED_DTYPES
+    for future in ("cuda", "amp"):
         assert future in cpp.UNSUPPORTED, future
         assert future not in cpp.NATIVE_MODULES
         assert future not in cpp.AUTOGRAD_OPS
@@ -2489,7 +2541,7 @@ def test_f4_completed_the_normalization_module_surface_not_the_phase():
     # boundary is exactly what it was, in its established order.
     assert "layernorm" not in cpp.UNSUPPORTED
     assert "batchnorm" not in cpp.UNSUPPORTED
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
     assert cpp.backend_info()["unsupported"] == cpp.UNSUPPORTED
     # Nothing normalization-shaped appeared at any numerical layer.
     for name in _NORMALIZATION_OP_NAMES:
@@ -2504,7 +2556,7 @@ def test_f4_completed_the_normalization_module_surface_not_the_phase():
         text = source.read_text(encoding="utf-8")
         assert "batch_norm" not in text and "layer_norm" not in text, source.name
     assert native_checkpoint._FORMAT_VERSION == 3
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # Out-of-scope normalization families never appeared.
     for absent in ("NativeBatchNorm3d", "NativeInstanceNorm2d",
@@ -2582,8 +2634,8 @@ def test_phase_f_closed_without_changing_the_capability_boundary():
     assert "complete" in row.group(1).lower()
     assert "planned" not in row.group(1).lower()
     # The registry is unchanged where F7-F9 would have touched it.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
 
@@ -2654,7 +2706,7 @@ def test_f6_shipped_the_normalized_training_and_resume_proof():
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
     # No normalization operation, kernel, or checkpoint-schema change.
     for name in ("layer_norm", "batch_norm", "layernorm", "batchnorm"):
         assert name not in cpp.TENSOR_CORE_OPS
@@ -2795,7 +2847,7 @@ def test_docs_present_the_shipped_phase_f_integration_suite():
     assert re.search(r"F9[^.]{0,80}\bcomplete\b", design, re.I)
 
     # Nothing changed in the registry, exports, or checkpoint format.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
     assert cpp.NATIVE_MODULES == (
         "NativeModule", "NativeLinear", "NativeReLU", "NativeFlatten",
         "NativeConv2d", "NativeMaxPool2d", "NativeSequential",
@@ -3210,7 +3262,7 @@ def test_capability_commentary_keeps_the_boundary_and_the_closed_phase():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
     assert cpp.backend_info()["unsupported"] == cpp.UNSUPPORTED
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
     assert native_checkpoint._FORMAT_VERSION == 3
@@ -3264,8 +3316,8 @@ def test_the_status_reconciliation_moved_no_capability_surface():
         "save_native_checkpoint", "load_native_checkpoint",
         "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.backend_info()["stable_framework_integration"] is False
     assert native_checkpoint._FORMAT_VERSION == 3
@@ -3577,9 +3629,9 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
     import tensorforge.experimental as experimental
 
     # The capability boundary, in its post-G10 form.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
     assert cpp.backend_info()["unsupported"] == cpp.UNSUPPORTED
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.backend_info()["stable_framework_integration"] is False
 
@@ -4134,8 +4186,10 @@ _PHASE_G_OVERCLAIMS = (
     # ``float32`` also left the "a phase has begun" arm with it — a
     # float32 phase really has begun — but it did *not* simply disappear:
     # it moved to its own entry below, aimed at the narrower and much
-    # more damaging claim that float32 is *supported*. That claim stays
-    # false until milestone I9.
+    # more damaging claim that float32 is *supported*. That claim was
+    # false until milestone I9 and is **true from I9 onward**, so the
+    # entry has now been retired in turn and replaced by the next
+    # boundary — see below.
     #
     # No ``I12`` sentinel is added beside ``G11``/``H12``, deliberately.
     # ``_status_text`` strips ``*`` and backticks, so the stride prose
@@ -4149,15 +4203,41 @@ _PHASE_G_OVERCLAIMS = (
      r"\bPhase[- ]J\b|\bG11\b|\bH12\b"
      r"|(CUDA|AMP)[^.]{0,40}\b(phase|milestone)\b[^.]{0,40}"
      r"\b(has|have|is|are)\s+(begun|started|shipped|landed|complete)\b"),
-    # Phase I opened at I0 with a contract and nothing else. Naming the
-    # phase is accurate; claiming its capability is not, and will not be
-    # until the public support registry moves at I9. Checked against the
-    # live registry in tests/test_native_phase_i.py; this is the prose
-    # half of the same boundary.
-    ("float32 is supported when the registry says it is not",
-     r"float32[^.]{0,60}\b(is|are|now)\s+"
+    # **Retired at I9**, on the same terms as the checkpoint-v2 and
+    # stochastic-resume entries above: "float32 is supported" was the
+    # damaging claim while the registry said otherwise, and milestone I9
+    # made it the accurate one. Banning it now would force every status
+    # surface to under-report the runtime, which is the mirror of the
+    # failure this list exists to catch.
+    #
+    # Two narrower boundaries take its place, because Phase I is **not**
+    # finished and float32 is **not** "any dtype":
+    #
+    #   * the phase is complete — I10 (hardening and benchmarking) and I11
+    #     (cross-platform validation and closure) have not started, so no
+    #     surface may say Phase I is done;
+    #   * a *third* dtype is supported — float16 and bfloat16 remain
+    #     genuinely absent, and "two dtypes" eroding into "any dtype" is
+    #     exactly how a support matrix stops being true.
+    #
+    # Both are checked against the live registry in
+    # tests/test_native_phase_i.py; this is the prose half.
+    # The past-tense arm is deliberately ``completed``/``closed`` rather
+    # than bare ``complete``: a heading like "…float32 CPU support, I0–I9
+    # complete" sits immediately before the sentence "Phase I is the latest
+    # phase", and once ``_status_text`` flattens whitespace the two
+    # normalize to the adjacent words "complete Phase I" — an accurate
+    # statement about *milestones* that a bare ``complete`` arm would read
+    # as a claim about the phase.
+    ("Phase I is complete when I10 and I11 have not started",
+     r"\bPhase[- ]I\b[^.]{0,60}\b(is|are|was|has been)\s+"
+     r"(complete|closed|finished|done)\b"
+     r"|\b(completed|closed|finished)\s+Phase[- ]I\b"),
+    ("a dtype beyond float32 and float64 is supported",
+     r"(float16|bfloat16|float128|int(8|16|32|64) tensors?|complex64)"
+     r"[^.]{0,60}\b(is|are|now)\s+"
      r"(supported|implemented|shipped|available|working|usable)\b"
-     r"|\bsupports? float32\b"),
+     r"|\bsupports? (float16|bfloat16|integer tensors)\b"),
     ("a Phase-H optimization that does not exist has shipped",
      r"(memory pool|scratch (?:allocator|workspace)|SIMD|AVX|OpenMP|BLAS"
      r"|multi-?threading|thread pool)[^.]{0,60}"
@@ -4237,6 +4317,40 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
             assert offenders == [], (
                 f"{surface} claims {label}: {offenders[:3]}"
             )
+
+    # The negative control the I9 edit to this list requires. Retiring an
+    # entry and adding two replacements changes what the scan can catch, so
+    # "no offenders" has to be shown to mean "nothing said it" rather than
+    # "the patterns stopped matching anything". Each sentence below must be
+    # caught by *some* pattern in the list...
+    patterns = [pattern for _, pattern in _PHASE_G_OVERCLAIMS]
+    for detected in (
+        "the saved mask is persisted to the checkpoint",
+        "the checkpoint captures data-loader state and is restored",
+        "Phase J has begun",
+        "Phase I is complete",
+        "we completed Phase I",
+        "float16 is supported",
+        "bfloat16 is now available",
+        "the backend supports integer tensors",
+        "SIMD is enabled",
+    ):
+        assert any(re.search(pattern, detected, re.I)
+                   for pattern in patterns), detected
+    # ...and each sentence below must be caught by **none** of them, because
+    # each is accurate. "float32 is supported" is here rather than above
+    # precisely because milestone I9 made it true.
+    for allowed in (
+        "float32 is supported",
+        "float32 and float64 are supported on the CPU",
+        "the native backend supports float32",
+        "Phase H is complete",
+        "Phase I is the latest phase and is not complete",
+    ):
+        offenders = [pattern for pattern in patterns
+                     if re.search(pattern, allowed, re.I)
+                     and not negations.search(allowed)]
+        assert offenders == [], (allowed, offenders)
 
 
 def test_one_shared_state_transaction_guard_exists_and_is_outermost():
@@ -4567,8 +4681,8 @@ def test_g2_core_inventory_is_exactly_one_operation_and_one_abi_symbol():
     assert dropout_symbols == ["tf_core_dropout_forward"], dropout_symbols
 
     # Everything else Phase F closed with, unchanged.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.RAW_KERNELS == (
         "elementwise_add", "elementwise_subtract", "elementwise_multiply",
@@ -4801,7 +4915,7 @@ def test_g7_did_not_begin_g8_or_any_later_milestone():
         assert not (Path(REPO_ROOT) / absent).exists(), absent
     # G6 is hardening only: it added no export, no inventory entry, and no
     # schema field, so the whole public surface is still exactly G5's.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
     assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     assert native_checkpoint._GENERATOR_SECTION_KEYS == {
         "keys", "entries", "aliases"
@@ -4852,7 +4966,7 @@ def test_g6_is_stated_as_hardening_only_on_every_phase_surface():
     # Premises from the live tree: the suite exists, and nothing moved.
     assert (REPO_ROOT / "tests"
             / "test_native_phase_g_hardening.py").is_file()
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
     assert native_checkpoint._FORMAT_VERSION == 3
 
     for surface in PHASE_G_STATUS_SURFACES:
@@ -4932,8 +5046,8 @@ def test_g7_added_no_capability_and_no_public_training_api():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 3
     assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
@@ -4983,8 +5097,8 @@ def test_g6_claims_no_new_capability_anywhere():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 3
     assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
@@ -5112,8 +5226,8 @@ def test_g4_inventory_is_exactly_one_module():
     assert dropout_autograd_ops == ["dropout"], dropout_autograd_ops
 
     # Everything else exactly as G3 left it.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
@@ -5258,8 +5372,8 @@ def test_g3_inventory_is_exactly_one_autograd_operation():
     assert "multiply" in cpp.TENSOR_CORE_OPS
 
     # Everything else exactly as G2 left it.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.RAW_KERNELS == (
         "elementwise_add", "elementwise_subtract", "elementwise_multiply",
@@ -5520,7 +5634,7 @@ def test_phase_g_kept_dropout_unsupported_until_the_g10_closure():
 
     # Premise, straight from the live registry: the closure has run and
     # the tuple is in its final form.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
 
     text = _status_text(PHASE_G_DESIGN)
     # The opening contract summary — what a reader sees before §1 — must
@@ -6363,7 +6477,7 @@ def test_docs_present_the_shipped_dropout_benchmark():
     # G8 is a benchmark, not a capability: the boundary is where G7 left it.
     from tensorforge.backends import cpp
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
     assert not (REPO_ROOT / "benchmark_results").exists()
     assert not list((REPO_ROOT / "benchmarks").glob("*.json"))
 
@@ -6447,8 +6561,8 @@ def test_docs_present_the_shipped_phase_g_integration_suite():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 3
     assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
@@ -6880,7 +6994,7 @@ def test_no_surface_claims_an_optimization_phase_h_has_not_delivered():
     assert ("matmul_generic_strided" in dispatch
             and "matmul_row_sweep" in dispatch)
     assert cpp.RAW_KERNELS[-1] == "matmul_tiled"   # pre-existing, unchanged
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
 
     claims = re.compile(
         r"\b(production|native)\s+matmul\b[^.]{0,60}\b(is|are|was|were|now)"
@@ -6912,7 +7026,7 @@ def test_phase_h_surfaces_state_the_unchanged_capability_boundary():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 3
     assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
@@ -7148,7 +7262,7 @@ def test_no_surface_calls_h1_more_than_an_allocation_change():
     for banned in ("free_list", "memory_pool", "arena", "std::thread",
                    "immintrin", "omp parallel"):
         assert banned not in storage_source, banned
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
 
     overclaims = re.compile(
         r"\bH1\b[^.]{0,90}\b(memory pool|scratch (?:arena|workspace|"
@@ -7385,8 +7499,8 @@ def test_h1_left_the_public_capability_boundary_untouched():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 3
     assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
@@ -7636,8 +7750,8 @@ def test_phase_h_surfaces_still_state_the_unchanged_capability_boundary():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 3
     assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
@@ -7785,7 +7899,7 @@ def test_the_boundary_binding_categories_are_documented_where_they_live():
     design = _status_text("docs/native_cpu_performance_design.md")
     assert "32 positions became trusted; 25 stayed checked" in design
     # The registry the tests enforce agrees with the documented totals.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
 
 
 def test_the_harness_case_count_is_consistent_across_surfaces():

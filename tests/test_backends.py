@@ -58,6 +58,9 @@ def test_numpy_backend_is_available_and_describes_itself():
     assert info["experimental"] is False
     assert info["dtype"] == "float64"
     # v1.21: the supported dtype/device sets are advertised for discovery.
+    # This backend is **float64 only** and stays that way: Phase I is a
+    # native-line phase, and the NumPy reference backend gained no dtype
+    # from it. Its tuple is deliberately *not* the native backend's.
     assert info["supported_dtypes"] == ("float64",)
     assert info["supported_devices"] == ("cpu",)
 
@@ -145,7 +148,7 @@ def test_native_backend_is_constructible_and_reports_availability():
     assert info["name"] == "cpp"
     # v1.21: metadata contract advertised, built or not (backend_info
     # delegates to cpp.backend_info(), which never touches the library).
-    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_dtypes"] == ("float64", "float32")
     assert info["supported_devices"] == ("cpu",)
 
 
@@ -163,9 +166,18 @@ def test_native_backend_constructors_thread_dtype_device():
         assert isinstance(tensor, cpp.NativeTensorCore)
         assert tensor.dtype == "float64" and tensor.device == "cpu"
         tensor.close()
+    # float32 is threaded through the same way, since Phase I milestone I9.
+    for tensor in (
+        backend.tensor_from_array([1.0, 2.0], dtype="float32", device="cpu"),
+        backend.zeros((2, 2), dtype="float32", device="cpu"),
+        backend.full((3,), 7.0, dtype="float32", device="cpu"),
+    ):
+        assert isinstance(tensor, cpp.NativeTensorCore)
+        assert tensor.dtype == "float32" and tensor.device == "cpu"
+        tensor.close()
     # Unsupported values are rejected clearly.
-    with pytest.raises(ValueError, match="float32"):
-        backend.zeros((2, 2), dtype="float32")
+    with pytest.raises(ValueError, match="float16"):
+        backend.zeros((2, 2), dtype="float16")
     with pytest.raises(ValueError, match="cuda"):
         backend.tensor_from_array([1.0], device="cuda")
 

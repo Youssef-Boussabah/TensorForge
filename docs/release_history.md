@@ -2326,13 +2326,126 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase I — native dtype generalization and float32 CPU support (I0–I8, phase in progress)
+### Phase I — native dtype generalization and float32 CPU support (I0–I9, phase in progress)
 
-**Phase I is the latest phase. Milestones I0 through I8 are complete;
-I9, I10, and I11 are not started.** This is an in-progress entry, not a
-release entry: no version and **no public capability** is claimed. **Phase
+**Phase I is the latest phase. Milestones I0 through I9 are complete;
+I10 and I11 are not started.** This is an in-progress entry, not a release
+entry: **no version is claimed**, and the phase is **not closed**. **Phase
 H remains complete and remains the latest *completed* phase**, and it
 closed at 52 exports.
+
+One public capability *has* moved, at I9 and at no other milestone:
+`SUPPORTED_DTYPES` is `("float64", "float32")` and `UNSUPPORTED` is
+`("cuda", "amp")`. `SUPPORTED_DEVICES`, `RAW_KERNEL_DTYPES`, the export
+count (**54**), and the in-memory optimizer state version (**1**) did not
+move; the checkpoint format moved to version **3** at I8.
+
+#### I9 — public float32 integration and the exact-resume proof
+
+**I9 made float32 public, and it added no C ABI symbol, no CTest, and no
+C++ line.** It is the phase's one and only public registry change, and it
+happened in that order deliberately — proof first, promise second. What
+shipped:
+
+- **The integrated proof, written and passing before the registry moved.**
+  `examples/native_float32_training.py` runs `Conv2d(1→4, 3×3, pad 1) →
+  BatchNorm2d(4) → ReLU → MaxPool2d(2) → Dropout(0.25) → Flatten →
+  Linear(36→8) → BatchNorm1d(8) → ReLU → LayerNorm(8) → Dropout(0.25) →
+  Linear(8→3)` over raw logits into `NativeCrossEntropyLoss`, trained by
+  `NativeAdam(lr=0.05)`, on twelve fixed `1×6×6` images in three fixed
+  batches of four, for 12 steps interrupted after 5. It runs **twice at
+  each dtype** — uninterrupted, and interrupted/checkpointed/resumed into a
+  completely fresh model, optimizer, and generator set built from
+  deliberately different seeds — and compares each dtype **only against
+  itself**.
+- **Two Dropout layers share one registered `NativeGenerator`**, so the
+  model carries a genuine alias topology (`conv_dropout.generator`
+  canonical, `dense_dropout.generator` aliased) rather than a single
+  counter: two generator calls per training forward, one canonical state
+  plus the full alias map written to the version-3 archive, and the map
+  re-validated against a live traversal on load.
+- **Every comparison is over raw IEEE-754 bit patterns** — `uint32` at
+  float32, `uint64` at float64 — with no tolerance, no `allclose`, and no
+  float32-versus-float64 comparison anywhere. The helper that produces
+  them **refuses** an array of the other width, so a match can never
+  quietly mean "matched after a conversion". Proved equal: the resumed loss
+  suffix and the whole loss sequence, every parameter, every persistent
+  buffer, every Adam `m`, `v`, and step counter, the optimizer
+  hyperparameters, the generator's algorithm/version/seed/calls, the alias
+  topology, the final training logits, the final predictions, the final
+  evaluation output, and the validated external-loop metadata.
+- **Gradients are proved *produced*, not restored.** They are not
+  checkpointed, so the first resumed step captures every parameter's
+  gradient after backward and before the optimizer commits — the one moment
+  they exist — and compares it to the same step of the uninterrupted run.
+- **The next Dropout mask matches too.** The same registered Dropout path
+  in both final models is called once with an identical all-ones tensor, so
+  the output *is* the multiplier mask and no private state is exposed: the
+  masks are bit-identical, the pattern is proved non-degenerate (8 dropped,
+  24 kept), each call consumes exactly one generator call, and the shared
+  alias path is proved to observe the same advanced object — restoration of
+  a *sharing relationship*, not of two equal numbers.
+- **All four graph-owned saved-resource families are exercised, and the
+  claim is scoped exactly.** Three ride a *training* graph (both Dropout
+  masks, the MaxPool2d winners, cross-entropy's saved probabilities); the
+  BatchNorm **evaluation snapshots** exist only on an *evaluation* graph,
+  because training-mode BatchNorm normalizes with the batch's own
+  statistics and takes no snapshot. So they are exercised **across** the
+  run rather than coexisting in one graph, and the example says so. The
+  eval graph is proved independent of its buffers by advancing all four
+  underneath it and re-running its backward to a bit-identical control.
+- **Negative controls.** A resume that ignores the validated metadata and
+  restarts the schedule at step 0 diverges — and the control is proved
+  non-vacuous, because `SPLIT_STEP` is deliberately not a multiple of the
+  batch count. A model whose generator was left at the fresh seed draws a
+  different next mask. The two dtypes' loss sequences are proved *unequal*,
+  which is what makes "each compared only against itself" a real
+  separation.
+- **Lifecycle.** Native live storage returns exactly to baseline (`0 / 0`)
+  across both dtypes, both runs each, the mask proof, and the snapshot
+  proof.
+- **Then the registry moved**: `SUPPORTED_DTYPES` `("float64",)` →
+  `("float64", "float32")`, `UNSUPPORTED` `("float32", "cuda", "amp")` →
+  `("cuda", "amp")`. `normalize_dtype("float32")` succeeds; every public
+  constructor (`NativeStorage`, `NativeTensorCore.from_array`/`.zeros`/
+  `.full`, `NativeTensor.from_array`/`.zeros`/`.full`) builds a float32
+  tensor; views, operations, and gradients preserve it; `to_numpy()`
+  returns `np.float32` and never widens. The example's one ingress helper
+  switched to the public constructor and the entire proof was rerun.
+- **What did *not* move, and is asserted in both directions.** float64 is
+  still the default at every constructor, factory, module, and parameter
+  and is still what `None` means; the dtype is still **never inferred**
+  from an input array; there is still no casting, promotion, mixed-dtype
+  arithmetic, `astype`, `to`, `.float()`, `.double()`, `map_location`,
+  global default, or device movement; `SUPPORTED_DEVICES` is still
+  `("cpu",)` and `RAW_KERNEL_DTYPES` still `("float64",)`; float16,
+  bfloat16, integer and complex dtypes are still rejected; and the NumPy
+  reference backend's own `supported_dtypes` is still `("float64",)`,
+  because Phase I is a native-line phase.
+- **`backend_info()`'s flat `"dtype"` key was decided explicitly** rather
+  than left accidentally misleading: it is **kept**, still `"float64"`, and
+  is now documented in code, docstring, and tests as the **default**
+  statement. `supported_dtypes` is the capability row; `raw_kernel_dtypes`
+  is one small permanent limitation; three rows, three questions, and a
+  test asserts the flat key agrees with `normalize_dtype(None)`.
+- **Guardrails were split, not weakened.** 125 current-truth registry
+  assertions across 46 test files moved to the new values. The Phase-G and
+  Phase-H closure records keep their literals as **history** and now assert
+  the live tuple as *their* value minus exactly what a later phase is on
+  record as moving. `test_native_phase_i.py`'s per-milestone exit gates
+  route through one shared helper checking the change was exactly
+  `"float32"`, in one direction, with the default unmoved. The `test_docs`
+  over-claim parser dropped `float32` from its banned list and **gained a
+  negative control** proving it still fires on seven sentences it must
+  catch and does not fire on the one I9 made true.
+- **Scope.** No C++ source or header changed; **54** exports and **24**
+  CTests unchanged; checkpoint still version 3 accepting `(1, 2, 3)`;
+  in-memory optimizer state still version 1; no new module, loss,
+  optimizer, or operation; no dependency or build option; no benchmark
+  implementation change (I10 owns benchmarking and has not started); no
+  timing assertion and no committed number.
+- **Tests:** `tests/test_native_float32_training.py` (147) and
+  `tests/test_native_float32_public.py` (175). Examples 14 → **15**.
 
 #### I7 — modules, parameters, buffers, initialization, and Dropout
 

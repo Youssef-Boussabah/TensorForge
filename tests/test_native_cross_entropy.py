@@ -1720,7 +1720,7 @@ def test_native_cross_entropy_scope_boundaries_hold():
     with pytest.raises(ValueError):
         x.cross_entropy(TARGETS, "none")
     # No integer tensors, no new dtype/device.
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # The stable framework keeps its own cross-entropy, entirely separately.
     logits = tensorforge.Tensor(LOGITS, requires_grad=True)

@@ -670,7 +670,7 @@ def test_native_accuracy_scope_boundaries_hold():
         assert not hasattr(experimental, absent), absent
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     # No integer tensors appeared to support an index-producing reduction.
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     with pytest.raises(ValueError):
         cpp.NativeTensorCore.zeros((2, 2), dtype="int64")
     # The stable framework keeps its own accuracy, entirely separately.

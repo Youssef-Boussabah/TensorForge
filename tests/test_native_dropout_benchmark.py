@@ -1207,8 +1207,8 @@ def test_g8_changes_no_capability_inventory():
     boundary, and ``"dropout"`` stays unsupported until G10."""
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "dropout_forward" in cpp.TENSOR_CORE_OPS

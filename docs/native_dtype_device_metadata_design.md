@@ -9,6 +9,25 @@ constructor arguments — and closing Phase A in code. No kernels changed and
 no compute behavior changed; see the v1.21 note in
 [backend_experiments.md](backend_experiments.md).
 
+> **Reconciliation note (Phase I, milestone I9).** This is the v1.20/v1.21
+> design record and is deliberately left as written: where it says the
+> runtime is float64-only, or gives `"float32"` as an example of a
+> *rejected* dtype, it is describing v1.21 and remains an accurate record
+> of that moment. **The second dtype has since arrived**, which is exactly
+> what this design put a validated tag on storage to allow.
+> `SUPPORTED_DTYPES` is now `("float64", "float32")` and `UNSUPPORTED` is
+> `("cuda", "amp")`, moved at Phase I milestone I9 — see
+> [native_dtype_float32_design.md](native_dtype_float32_design.md) and
+> [native_support_matrix.md](native_support_matrix.md) for current status.
+> The rules this document set out are unchanged and now load-bearing rather
+> than hypothetical: **no implicit promotion**, **no silent conversion**
+> between the two widths, storage as the single dtype authority, and
+> default-preserving constructor arguments that keep float64 the meaning of
+> an omitted `dtype`. Explicit casting is still a future design item and
+> still does not exist. `"float16"`, `"bfloat16"`, `"int64"`, and `"bool"`
+> remain rejected, so this document's rejection examples still hold with a
+> different name substituted.
+
 For where this sits, see [backend_experiments.md](backend_experiments.md)
 (the native runtime), [dispatch_design.md](dispatch_design.md) (the
 dtype/device risks a future Tensor bridge must answer), and the Phase A

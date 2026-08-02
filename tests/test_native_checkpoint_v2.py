@@ -1850,8 +1850,8 @@ def test_the_capability_boundary_is_exactly_what_g5_moved():
     )
     assert cpp.backend_info()["state_support"] == cpp.STATE_SUPPORT
     # Unmoved: everything else.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert "dropout" in cpp.AUTOGRAD_OPS

@@ -971,8 +971,11 @@ def test_storage_default_dtype_device_and_readable_after_close():
 
 
 def test_storage_rejects_unsupported_dtype_and_device():
-    with pytest.raises(ValueError, match="float32"):
-        cpp.NativeStorage(4, dtype="float32")
+    # "float16" stands where "float32" used to: float32 became a supported
+    # dtype at Phase I milestone I9, so it belongs in the acceptance test
+    # below rather than here.
+    with pytest.raises(ValueError, match="float16"):
+        cpp.NativeStorage(4, dtype="float16")
     with pytest.raises(ValueError, match="cuda"):
         cpp.NativeStorage(4, device="cuda")
     with pytest.raises(TypeError, match="dtype"):
@@ -1003,12 +1006,30 @@ def test_core_explicit_dtype_device_args_accept_defaults():
 
 def test_core_rejects_unsupported_dtype_device_before_allocation():
     for ctor in (
-        lambda: cpp.NativeTensorCore.zeros((2, 2), dtype="float32"),
+        lambda: cpp.NativeTensorCore.zeros((2, 2), dtype="float16"),
         lambda: cpp.NativeTensorCore.full((2,), 0.0, device="cuda"),
         lambda: cpp.NativeTensorCore.from_array([1.0], dtype="int64"),
     ):
         with pytest.raises(ValueError):
             ctor()
+
+
+def test_core_accepts_both_supported_dtypes():
+    """The other half of the boundary, since Phase I milestone I9: the two
+    supported widths really are constructible through every public
+    factory, and the storage tag is what reports them."""
+    for dtype in ("float64", "float32"):
+        for ctor in (
+            lambda: cpp.NativeTensorCore.zeros((2, 2), dtype=dtype),
+            lambda: cpp.NativeTensorCore.full((2,), 1.0, dtype=dtype),
+            lambda: cpp.NativeTensorCore.from_array([1.0, 2.0], dtype=dtype),
+        ):
+            tensor = ctor()
+            try:
+                assert tensor.dtype == dtype
+                assert tensor.storage.dtype == dtype
+            finally:
+                tensor.close()
 
 
 def test_core_dtype_device_readable_after_close():
@@ -1079,5 +1100,5 @@ def test_backend_info_reports_supported_dtype_device_sets():
     info = cpp.backend_info()
     assert info["dtype"] == "float64"
     assert info["device"] == "cpu"
-    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_dtypes"] == ("float64", "float32")
     assert info["supported_devices"] == ("cpu",)

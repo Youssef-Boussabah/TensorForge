@@ -502,7 +502,18 @@ in the stable Python framework — that does not make them native.
 - additional native activations/math beyond
   `relu`/`sqrt`/`reciprocal`/`exp`/`log`/`softmax`/`log_softmax`
 - CUDA / GPU execution
-- float32 / float16 / bfloat16, dtype promotion or casting, AMP
+- float16 / bfloat16, dtype promotion or casting, AMP. *(**float32** is
+  no longer listed here: it **is** supported, on the CPU, beside float64,
+  since Phase I milestone **I9**. It stayed in `UNSUPPORTED` for the whole
+  of I0–I8 while the runtime was progressively generalized underneath it —
+  storage at I1, transfer at I2, elementwise at I3, reductions and matmul
+  at I4, the CNN stack at I5, classification at I6, modules and Dropout at
+  I7, optimizers and checkpoint v3 at I8 — and the name moved only at I9,
+  after integrated float32 training and the exact float32 resume proof
+  both passed. **Casting and promotion remain absent**: a tensor's dtype
+  is fixed at construction and the only way to get the other one is to
+  construct it. See
+  [native_dtype_float32_design.md](native_dtype_float32_design.md).)*
 - Transformers / text models
 - distributed training
 - integration or implicit dispatch into the stable `tensorforge.Tensor`
@@ -744,21 +755,26 @@ the phase closed at G10 by moving `"dropout"` out of `UNSUPPORTED`.
 So the native line now has the Core kernel, the differentiable
 `NativeTensor.dropout` operation, the `NativeDropout` module, a checkpoint
 that persists its random stream, a demonstrated exact stochastic resume —
-and, since G10, the **capability** to match: `UNSUPPORTED` reads
-`("float32", "cuda", "amp")`. The gap through G0–G9 was deliberate: the
-registry reports a *closed, validated* capability, and a capability whose
-value is exact reproducibility is not finished until reproducibility has
-been demonstrated under fresh Release and Debug builds, the sanitizers,
-and a checkpoint that can actually persist the stream. All of that has now
-been demonstrated.
+and, since G10, the **capability** to match. `UNSUPPORTED` read
+`("float32", "cuda", "amp")` when Phase G closed — that is the historical
+record of what G10 left, and it is stated as history because a later phase
+legitimately moved one of those names (see below). The gap through G0–G9
+was deliberate: the registry reports a *closed, validated* capability, and
+a capability whose value is exact reproducibility is not finished until
+reproducibility has been demonstrated under fresh Release and Debug builds,
+the sanitizers, and a checkpoint that can actually persist the stream. All
+of that has now been demonstrated.
 
 The claim stays narrow, and is worth stating precisely: **native Dropout
-is supported in TensorForge's experimental native float64 CPU backend.**
-That is not a statement about the stable framework (`tensorforge.nn.Dropout`
-has always been its own separate NumPy implementation), and `float32`,
-`cuda`, and `amp` remain unsupported. There is still no generic
-`rand`/`randn`/Bernoulli/sampling API, no global or process-wide random
-state, and no `Dropout2d`/`Dropout3d`.
+is supported in TensorForge's experimental native CPU backend.** That is
+not a statement about the stable framework (`tensorforge.nn.Dropout` has
+always been its own separate NumPy implementation). `cuda` and `amp` remain
+unsupported. `float32` did **not** remain unsupported — Phase I milestone
+**I9** moved it, on the same discipline Phase G used here, and
+`tf_core_dropout_forward` became dtype-general at I7 with its exact ABI
+shape unchanged and the random derivation untouched. There is still no
+generic `rand`/`randn`/Bernoulli/sampling API, no global or process-wide
+random state, and no `Dropout2d`/`Dropout3d`.
 
 One contract detail is recorded rather than glossed: the design's
 **empty-tensor** row (`count == 0` draws nothing and consumes one call)
@@ -861,11 +877,16 @@ scratch workspace exists anywhere. H0 changed no C++, no C ABI symbol, no
 ctypes declaration, no `NativeTensorCore` method, no autograd operation,
 no module, no loss, no metric, no optimizer, no export, no capability
 registry, no dtype, no device, and no checkpoint format; H1, H2, H3,
-H4, H5, H6, H7, and H8 moved no capability either. `UNSUPPORTED` still reads
-`("float32", "cuda", "amp")`, `SUPPORTED_DTYPES` still reads
-`("float64",)`, `SUPPORTED_DEVICES` still reads `("cpu",)`, and the
-native checkpoint format is still `tensorforge.native_checkpoint`
-version **2** with versions **(1, 2)** supported. That was true through H9; **at H10 the phase closed, so Phase H —
+H4, H5, H6, H7, and H8 moved no capability either. When Phase H closed,
+`UNSUPPORTED` read `("float32", "cuda", "amp")`, `SUPPORTED_DTYPES` read
+`("float64",)`, `SUPPORTED_DEVICES` read `("cpu",)`, and the native
+checkpoint format was `tensorforge.native_checkpoint` version **2** with
+versions **(1, 2)** supported. Those are stated as Phase H's *record*
+rather than as today's values, because Phase I has since moved two of them
+deliberately — the checkpoint to version **3** at I8 and the dtype registry
+to `("float64", "float32")` / `("cuda", "amp")` at I9 — and a closure
+record that silently absorbed later changes would stop being a record.
+`SUPPORTED_DEVICES` has not moved and is still `("cpu",)`. That was true through H9; **at H10 the phase closed, so Phase H —
 Native CPU Performance and Runtime Efficiency — is now the latest
 *completed* phase (H0–H10)**, having moved no capability, dtype, device,
 registry value, export, checkpoint field, or checkpoint version at any
@@ -902,12 +923,44 @@ proposed optimizations. Every number behind those statements is a local
 characterization of one machine, is reported with its spread, and is
 asserted by no test.
 
-## Phase I — native dtype generalization and float32 CPU support, **I0–I8 complete**
+## Phase I — native dtype generalization and float32 CPU support, **I0–I9 complete**
 
-**Phase I is the latest phase. Milestones I0 through I8 are complete;
-I9, I10, and I11 are not started.** Its architecture contract is
+**Phase I is the latest phase. Milestones I0 through I9 are complete;
+I10 and I11 are not started, so the phase is *active*, not closed.** Its
+architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
+
+**Since milestone I9, `float32` and `float64` are both supported native
+CPU dtypes**, and this is the row that supersedes every "float64 only"
+sentence recorded for an earlier phase above:
+
+| Registry | Value |
+|---|---|
+| `SUPPORTED_DTYPES` | `("float64", "float32")` |
+| `SUPPORTED_DEVICES` | `("cpu",)` |
+| `UNSUPPORTED` | `("cuda", "amp")` |
+| `RAW_KERNEL_DTYPES` | `("float64",)` |
+| Native checkpoint format | `tensorforge.native_checkpoint`, version **3** |
+| Accepted checkpoint versions | `(1, 2, 3)` |
+| In-memory optimizer state format | version **1** |
+| Exported production `tf_*` symbols | **54** |
+
+Read those four registry rows as four different statements, because they
+are: `SUPPORTED_DTYPES` is the **capability**; `backend_info()["dtype"]`
+(still `"float64"`) is the **default** an omitted `dtype` selects, at every
+constructor, factory, module, and parameter, and that has not changed and
+will not; `SUPPORTED_DEVICES` did not move, because a dtype milestone
+grants no device; and `RAW_KERNEL_DTYPES` is a permanent limitation of the
+**seven handle-free raw utility kernels**, which take `double*` and an
+element count and therefore have no dtype to dispatch on. Overall float32
+support and raw-kernel float64-only support are separate facts and neither
+may be read off the other.
+
+What is *not* implied: no casting, no promotion, no mixed-dtype arithmetic
+(a mismatch raises before any allocation or mutation), no dtype inference
+from a NumPy array, no global default dtype, no `.float()`/`.double()`/
+`.astype()`/`.to()`, no third dtype, no device, no CUDA, and no AMP.
 
 **I0** was a design-and-reconciliation milestone: it shipped the contract,
 its guardrail tests, and documentation, and **no runtime behavior at
@@ -1182,17 +1235,80 @@ numerical family, and added **no export**. What it changed:
   would have produced an archive this library refuses to read back;
 - the native CTest inventory moved **23 → 24** (`test_dtype_dropout`).
 
-**What I1 through I7 did *not* change is the whole of the rest of this
-matrix.** The native runtime is still **publicly float64 CPU only**:
-`SUPPORTED_DTYPES` reads `("float64",)`, `SUPPORTED_DEVICES` reads
-`("cpu",)`, `UNSUPPORTED` reads `("float32", "cuda", "amp")`, and the
-native checkpoint format is `tensorforge.native_checkpoint` version **2**
-with versions **(1, 2)** accepted. `float32` therefore stays in the
-**Unsupported or future** section above, and it stays there until
-milestone **I9**.
+**I9** made float32 **public**, and it is the phase's one and only public
+capability change. What it changed:
 
-The honest statement of what float32 *is* after I7, in three parts because
-they are three different things:
+- the registry moved, exactly once and exactly this far:
+  `SUPPORTED_DTYPES` `("float64",)` → `("float64", "float32")` and
+  `UNSUPPORTED` `("float32", "cuda", "amp")` → `("cuda", "amp")`.
+  `SUPPORTED_DEVICES`, `RAW_KERNEL_DTYPES`, the export count, the
+  checkpoint version, and the in-memory optimizer state version all stayed
+  where they were;
+- `normalize_dtype("float32")` succeeds, and every **public** constructor
+  builds a float32 tensor: `NativeStorage(...)` and
+  `NativeStorage.from_array`, `NativeTensorCore.from_array` / `.zeros` /
+  `.full`, and `NativeTensor.from_array` / `.zeros` / `.full`. Views,
+  operations, and gradients all preserve the dtype, and `to_numpy()`
+  returns a genuinely `np.float32` array — never widened on the way out;
+- the **ordering was the discipline, and it was followed**: the integrated
+  example and its exact-resume proof were written and passing *first*,
+  through the already-approved private typed route and the six I7 module
+  constructors, with the registry still reading `("float64",)`; the
+  registry moved only afterwards; the example's one ingress helper switched
+  to the public `NativeTensor.from_array(values, dtype=...)`; and the whole
+  proof was rerun. The example contains no `_typed*` call and a test
+  asserts that;
+- `examples/native_float32_training.py` is the executable proof —
+  `Conv2d(1→4, 3×3, pad 1) → BatchNorm2d(4) → ReLU → MaxPool2d(2) →
+  Dropout(p) → Flatten → Linear(36→8) → BatchNorm1d(8) → ReLU →
+  LayerNorm(8) → Dropout(p) → Linear(8→3)`, raw logits into
+  `NativeCrossEntropyLoss`, trained by `NativeAdam` — run uninterrupted and
+  interrupted at **each** dtype and compared **only against itself**;
+- **two Dropout layers share one registered `NativeGenerator`**, so the
+  model carries a real alias topology rather than a lone counter: one
+  canonical path, one alias, two generator calls per training forward, one
+  canonical state plus the full alias map written to the archive and
+  re-validated against a live traversal on load;
+- **every comparison is over raw IEEE-754 bit patterns** — `uint32` at
+  float32, `uint64` at float64 — with no tolerance, no `allclose`, and no
+  float32-versus-float64 comparison anywhere. Proved equal between the
+  uninterrupted and the resumed run: the loss suffix and the whole loss
+  sequence, every parameter, every persistent buffer, every Adam `m`, `v`,
+  and step counter, the optimizer hyperparameters, the generator's
+  algorithm/version/seed/calls, the alias topology, the final training
+  logits, the final predictions, the final evaluation output, and the
+  validated external-loop metadata;
+- **gradients are proved produced, not restored.** They are not
+  checkpointed, so the first resumed step captures them after backward and
+  before the optimizer commits — the one moment they exist — and compares
+  them to the same step of the uninterrupted run;
+- the **next Dropout mask** after the resume is bit-identical, proved
+  non-degenerate (8 dropped, 24 kept), consuming exactly one call in each
+  model, and observed through the shared alias path so the restored
+  *sharing relationship* is what is demonstrated rather than two equal
+  counters;
+- the fourth graph-owned resource family is exercised and **scoped
+  honestly**: three ride a *training* graph (both Dropout masks, the
+  MaxPool2d winners, cross-entropy's saved probabilities) while the
+  BatchNorm evaluation snapshots exist only on an *evaluation* graph, so
+  all four are exercised **across** the run rather than coexisting in one
+  graph — and the eval graph is proved independent of the live buffers by
+  advancing all four underneath it and re-running its backward;
+- native live storage returns **exactly to baseline** (`0 / 0`) across both
+  dtypes, both runs each, the mask proof, and the snapshot proof;
+- `backend_info()`'s flat `"dtype"` key was decided explicitly and
+  **kept**, still `"float64"`, now documented everywhere as the *default*
+  statement rather than a capability one — accurate rather than merely
+  unchanged, and asserted to agree with `normalize_dtype(None)`;
+- **no C++ changed**, no export was added (still **54**), no CTest was
+  added (still **24**), no checkpoint field or version moved, no new
+  module/loss/optimizer/operation appeared, no dependency or build option
+  was added, and no benchmark implementation changed — I10 owns
+  benchmarking and has not started. The NumPy reference backend's own
+  `supported_dtypes` stays `("float64",)`: Phase I is a native-line phase.
+
+The honest statement of what float32 *is* after I9, in four parts because
+they are four different things:
 
 1. **Every numerical family in the native runtime is dtype-general.**
    Storage, transfer, views, elementwise/unary execution, reductions,
@@ -1212,10 +1328,13 @@ they are three different things:
    **version 3** round-trips float32 model values, persistent buffers, and
    Adam moments **bit for bit**, with accepted versions now `(1, 2, 3)`.
    Versions 1 and 2 stay float64-only formats permanently.
-4. **float32 is still not a supported TensorForge dtype.** The exact
-   float32 resume proof has not been run and no public tensor constructor
-   produces a float32 tensor. Those are milestone **I9**, and the registry
-   moves there and nowhere earlier.
+4. **float32 is a supported TensorForge dtype (I9).** The exact float32
+   resume proof has been run — integrated, bitwise, and independently at
+   each dtype — the registry has moved, and every public tensor
+   constructor produces a float32 tensor when asked for one explicitly.
+   **Phase I is still not closed**: I10 (hardening and benchmarking) and
+   I11 (cross-platform validation and closure) have not started, so no
+   surface may call the phase complete.
 
 The capability detail behind (1), unchanged from I6 except for the last
 two clauses. float32 can be
@@ -1239,38 +1358,48 @@ and an internal graph over those operations — convolution, pooling,
 classification, normalization, and Dropout included — differentiates end to
 end with every gradient at the graph's dtype.
 
-What (3) means concretely. **Optimizers, checkpointing, and public float32
-tensor construction remain unsupported.** `NativeAdam` refuses a float32
-parameter when it allocates its moments; `NativeSGD` refuses when `step()`
-materializes its learning-rate scalar — atomically, leaving the parameter's
-value and version untouched. A version-2 checkpoint refuses to *save* a
-float32 model rather than writing a payload it could never read back, and
-refuses to load a float64 archive into a float32 model. `from_array`,
-`zeros`, and `full` all still raise for `"float32"`, at the Core layer and
-at the `NativeTensor` layer, and `normalize_dtype("float32")` still raises.
+What (3) means concretely. `NativeAdam`'s `m` and `v` match their
+parameter in dtype, shape, and device and start at bit-exact `+0.0`; one
+optimizer may hold parameters of **both** widths, with independent
+dtype-consistent state per parameter and the H4 scalar caches keyed on
+`(dtype, device)`, so a mixed collection builds one scalar set per *active
+dtype* rather than one per parameter. Neither optimizer gained a `dtype`
+or a `device` argument, and neither may: they own no dtype they could
+choose, only state that must match a parameter. A version-2 checkpoint
+still refuses to *save* a float32 model rather than writing a payload it
+could never read back, because versions 1 and 2 are float64-only formats
+permanently.
 
-**A float32 module is not a float32 support claim.** The only way to reach
-one is to ask a state-owning constructor for it explicitly; nothing infers
-it, no default produces it, and every existing call site that omits `dtype`
-is byte-identical to a pre-Phase-I run. Internal capability is not public
-support, and the two are deliberately kept apart until the whole stack
-exists — which is what milestone I9 is for.
+**A float32 tensor still has to be asked for.** Nothing infers it, no
+default produces it, and every existing call site that omits `dtype` is
+byte-identical to a pre-Phase-I run: `NativeTensor.from_array(x)` on a
+float32 NumPy array still produces a **float64** tensor. Passing a float64
+array with `dtype="float32"` is the explicit host-to-native conversion
+boundary — one conversion, on the way in — and is **not** a tensor cast:
+no native tensor changes dtype and none can. There is no `astype`, no
+`to`, no `.float()`, no `.double()`, no `result_type`, and no promotion
+table.
 
-The same distinction covers two surfaces I6 inspected and deliberately left
-alone. `NativeCrossEntropyLoss` is a thin delegate to
+Two surfaces I6 inspected and deliberately left alone are worth restating
+now that the registry has moved, because the reasoning still holds.
+`NativeCrossEntropyLoss` is a thin delegate to
 `logits.cross_entropy(...)` and `native_accuracy` is a reporting-only
 helper over `to_numpy()`; neither has a float64 assumption to remove and
-neither gained a dtype argument, so both simply work when handed a private
-float32 graph. **That is the operation being dtype-general, not public
-float32 module support**, and it changes nothing in the row above.
+neither gained a dtype argument, so both simply work at either width.
+**That is the operation being dtype-general, not a second dtype
+authority** — and the same is true of `NativeReLU`, `NativeFlatten`,
+`NativeMaxPool2d`, `NativeSequential`, `NativeDropout`, `NativeMSELoss`,
+and `NativeGenerator`, none of which takes a dtype or may gain one.
 
-What the phase will deliver, when its milestones land: float32 CPU
-tensors beside the existing float64 ones, dtype-tagged storage,
-dtype-aware handle-based operations, float32 autograd, float32 modules,
-persistent buffers, optimizers and optimizer state, float32 deterministic
-Dropout over an **unchanged** generator algorithm, a dtype-aware
-checkpoint **version 3**, exact deterministic float32 resume, and
-unchanged float64 behavior and performance.
+What the phase has delivered so far: float32 CPU tensors beside the
+existing float64 ones, dtype-tagged storage, dtype-aware handle-based
+operations, float32 autograd, float32 modules, persistent buffers,
+optimizers and optimizer state, float32 deterministic Dropout over an
+**unchanged** generator algorithm, a dtype-aware checkpoint **version 3**,
+exact deterministic float32 resume, public float32 support, and unchanged
+float64 behavior and performance. What remains: **I10** (cross-cutting
+hardening and float32/float64 benchmark characterization) and **I11**
+(cross-platform validation and phase closure).
 
 The decisions the contract locks, recorded here because they bound what
 any later milestone may do:
@@ -1323,12 +1452,14 @@ any later milestone may do:
 - **Exact deterministic resume proved separately for float32 and
   float64.** A float32 run is never required to reproduce a float64 one,
   and no contract, gate, or closure claim rests on agreement between
-  them.
+  them. **Delivered at I9**, integrated and in raw IEEE-754 bit patterns,
+  with each dtype compared only against itself.
 - **Every Phase-H float64 optimization preserved**, with each dtype
   characterized on its own and — as in every phase before it — no timing
-  assertion, no committed benchmark number, and no result file.
+  assertion, no committed benchmark number, and no result file. The
+  characterization itself is **I10's**, and I10 has not started.
 
-The ladder is I0–I11 — **I0 through I8 landed; I9 is next**: the
+The ladder is I0–I11 — **I0 through I9 landed; I10 is next**: the
 contract (I0), the internal dtype model and
 tagged storage (I1), typed transfer, views, and materialization (I2),
 elementwise and broadcast execution (I3), reductions, matmul, and core
@@ -1337,10 +1468,10 @@ classification (I6), modules, parameters, buffers, and Dropout (I7),
 optimizer state and checkpoint version 3 (I8), public integration and the
 exact-resume proof (I9), cross-cutting hardening and benchmarking (I10),
 and cross-platform validation and closure (I11). **The public support
-registry moves at I9**, after integrated float32 training and the exact
-float32 resume proof both pass — the same discipline that kept `dropout`
-in `UNSUPPORTED` from G3 through G9 while the operation and the module
-both already existed.
+registry moved at I9** — and at no other milestone — after integrated
+float32 training and the exact float32 resume proof both passed, which is
+the same discipline that kept `dropout` in `UNSUPPORTED` from G3 through
+G9 while the operation and the module both already existed.
 
 ## How to build and verify
 
@@ -1364,6 +1495,7 @@ uv run python examples/native_mlp_training.py          # end-to-end training pro
 uv run python examples/native_checkpoint_resume.py     # save, restore, resume bit-for-bit
 uv run python examples/native_cnn_training.py          # end-to-end CNN training + resume proof
 uv run python examples/native_classification_training.py  # native classification + exact resume
+uv run python examples/native_float32_training.py      # integrated float32 + float64 exact resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke   # CNN characterization
 uv run python benchmarks/benchmark_native_classification.py --smoke        # classification characterization

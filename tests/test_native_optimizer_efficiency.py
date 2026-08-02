@@ -1546,8 +1546,8 @@ def test_h4_kept_the_public_constructor_signatures():
 
 @needs_native
 def test_h4_moved_no_capability_registry_dtype_device_or_format():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     from tensorforge.experimental import native_checkpoint

@@ -1607,8 +1607,8 @@ def test_every_state_capability_maps_to_a_real_api():
 def test_the_remaining_capability_boundary_is_unchanged():
     import tensorforge.experimental as experimental
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     for never in ("NativeBatchNorm3d", "NativeInstanceNorm",
                   "NativeGroupNorm", "NativeRMSNorm", "NativeRNG",
@@ -1644,8 +1644,19 @@ def test_the_remaining_capability_boundary_is_unchanged():
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "dropout" not in cpp.UNSUPPORTED
     assert "dropout" not in cpp.NATIVE_MODULES
-    with pytest.raises((ValueError, TypeError)):
-        NativeTensor.zeros((2, 2), dtype="float32")
+    # ``dtype="float32"`` became legal at Phase I milestone I9 — never a
+    # Phase-F event, and never a normalization change. What this test
+    # actually guards is that a *dtype* is asked for explicitly, per
+    # construction, with no global default and no conversion method; that is
+    # unchanged, and the closed rejection set below still holds.
+    tensor = NativeTensor.zeros((2, 2), dtype="float32")
+    try:
+        assert tensor.dtype == "float32"
+    finally:
+        tensor.close()
+    for never in ("float16", "bfloat16", "int64"):
+        with pytest.raises((ValueError, TypeError)):
+            NativeTensor.zeros((2, 2), dtype=never)
     with pytest.raises((ValueError, TypeError)):
         NativeTensor.zeros((2, 2), device="cuda")
     # Implemented and unsupported names are disjoint. Phase G held one

@@ -78,8 +78,9 @@ and Runtime Efficiency — is complete (H0–H10) and is the latest
 *completed* phase**; both are recorded further below.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I8 are complete; I9, I10, and I11
-are not started.** Its architecture contract is
+latest phase. Milestones I0 through I9 are complete; I10 and I11 are not
+started, so the phase is active rather than closed.** Its architecture
+contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
 was design, guardrail tests, and documentation reconciliation, and no
 runtime behavior at all.**
@@ -263,20 +264,34 @@ Every transactional, identity, aliasing, and rollback guarantee is
 unchanged, and the **in-memory** optimizer state schema stayed at
 version 1.
 
-**Everything else on this page is still exactly what Phase H left**:
-float64 CPU only, `SUPPORTED_DTYPES == ("float64",)`, and
-`UNSUPPORTED == ("float32", "cuda", "amp")`. The native checkpoint format
-is now version **3** with versions **(1, 2, 3)** accepted — a schema move
-design §16.1 assigned to I8, not a capability move. Every *numerical*
-family in the runtime is dtype-general as of I7 — storage, transfer,
-views, elementwise/unary execution, reductions, matmul, Conv2d, MaxPool2d,
-softmax, log-softmax, fused cross-entropy, normalization, Dropout, view
-backward, and Core autograd — the experimental state-owning modules can be
-constructed at float32, and as of I8 their state survives both an
-optimizer step and a checkpoint. What that is **not** is a support claim:
-the exact float32 resume proof has not been run and no public tensor
-constructor produces a float32 tensor. Those are milestone **I9**, and the
-registry moves there.
+**I9 moved the public registry, and it is the phase's one and only public
+capability change**: `SUPPORTED_DTYPES == ("float64", "float32")` and
+`UNSUPPORTED == ("cuda", "amp")`. `SUPPORTED_DEVICES` is unchanged at
+`("cpu",)`, `RAW_KERNEL_DTYPES` is unchanged at `("float64",)` — the seven
+handle-free raw utility kernels take `double*` and an element count and so
+have no dtype to dispatch on — and the native checkpoint format is
+version **3** with versions **(1, 2, 3)** accepted, a schema move design
+§16.1 assigned to I8 rather than a capability move.
+
+Every *numerical* family in the runtime has been dtype-general since I7 —
+storage, transfer, views, elementwise/unary execution, reductions, matmul,
+Conv2d, MaxPool2d, softmax, log-softmax, fused cross-entropy,
+normalization, Dropout, view backward, and Core autograd — the
+state-owning modules take a dtype, and since I8 their state survives both
+an optimizer step and a checkpoint. **I9 turned that into a promise**, and
+only after the evidence: the integrated exact-resume proof
+(`examples/native_float32_training.py`) was written and passing *first*,
+through the private typed route, with the registry still reading
+`("float64",)`; the registry moved next; the example switched to the
+public `NativeTensor.from_array(values, dtype=...)`; and the whole proof
+was rerun. The proof compares an interrupted-and-resumed run to an
+uninterrupted one at **each** dtype, in raw IEEE-754 bit patterns, and
+never compares the two dtypes to each other.
+
+I9 changed **no C++**, added **no export** (still 54) and **no CTest**
+(still 24), moved no checkpoint field or version, and left the in-memory
+optimizer state schema at version 1. Everything else on this page is still
+exactly what Phase H left.
 
 The contract's **exactly two** new C ABI symbols for the entire phase
 (`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,

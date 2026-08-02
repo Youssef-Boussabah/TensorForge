@@ -53,9 +53,22 @@ STATUS_SURFACES = (
     "docs/architecture.md",
 )
 
-# The final boundary, written out once so a drift in either direction is a
-# single obvious diff rather than a scatter of edits.
-FINAL_UNSUPPORTED = ("float32", "cuda", "amp")
+# The boundary **Phase G's closure left**, written out once so a drift in
+# either direction is a single obvious diff rather than a scatter of edits.
+# This is a historical record and does not move again: it is what G10
+# produced, and it is asserted below as a *difference* from the live tuple
+# rather than as the live tuple, because a later phase legitimately moved
+# one of these names.
+G10_UNSUPPORTED = ("float32", "cuda", "amp")
+
+# What ``"float32"`` did after Phase G closed, and where. Phase I milestone
+# I9 moved it into ``SUPPORTED_DTYPES`` once integrated float32 training and
+# the exact float32 resume proof both passed. That is a Phase-I event, and
+# recording it here is what keeps this file's Phase-G claims true instead of
+# quietly rewriting them.
+MOVED_AFTER_PHASE_G = {"float32"}
+CURRENT_UNSUPPORTED = tuple(name for name in G10_UNSUPPORTED
+                            if name not in MOVED_AFTER_PHASE_G)
 
 
 def _read(relative):
@@ -152,24 +165,49 @@ def test_the_design_records_the_closure_and_its_ordering_rule():
 # 2. The final capability boundary
 # ==========================================================================
 
-def test_the_final_unsupported_tuple_is_exact():
-    """§21.2. The single most important assertion in this file: the tuple
-    is exactly what the closure left, in order, with nothing added, and
-    ``dropout`` gone."""
-    assert cpp.UNSUPPORTED == FINAL_UNSUPPORTED
-    assert cpp.backend_info()["unsupported"] == FINAL_UNSUPPORTED
+def test_the_unsupported_tuple_is_phase_gs_minus_what_a_later_phase_moved():
+    """§21.2. The single most important assertion in this file, stated so
+    it stays true as the project continues: the live tuple is exactly what
+    Phase G's closure left **minus the names a later phase legitimately
+    moved**, in order, with nothing added and ``dropout`` gone.
+
+    Written as a difference rather than as a literal because the two
+    claims are different and both matter. "G10 left
+    ``("float32", "cuda", "amp")``" is history and must not be rewritten;
+    "the runtime today lists ``("cuda", "amp")``" is current truth. Pinning
+    only the second would lose the Phase-G record; pinning only the first
+    would have failed the moment I9 landed, which is the failure this
+    split turns into a documented fact."""
+    assert cpp.UNSUPPORTED == CURRENT_UNSUPPORTED
+    assert cpp.backend_info()["unsupported"] == CURRENT_UNSUPPORTED
     assert "dropout" not in cpp.UNSUPPORTED
+    # Nothing was *added* to the boundary after Phase G — every live name
+    # is one G10 already listed.
+    assert set(cpp.UNSUPPORTED) <= set(G10_UNSUPPORTED)
+    assert set(G10_UNSUPPORTED) - set(cpp.UNSUPPORTED) == MOVED_AFTER_PHASE_G
     # Each remaining name is there exactly once and is genuinely absent.
-    for name in FINAL_UNSUPPORTED:
+    for name in CURRENT_UNSUPPORTED:
         assert cpp.UNSUPPORTED.count(name) == 1, name
 
 
-def test_dtype_and_device_support_did_not_move():
-    """§21.2. The closure moved one capability name and nothing else."""
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+def test_phase_g_moved_one_capability_name_and_no_dtype_or_device():
+    """§21.2. **Phase G's** closure moved ``dropout`` and nothing else —
+    in particular it moved no dtype and no device, which is why
+    ``"float32"`` was still listed unsupported when this file was written.
+
+    The dtype registry moved later, at Phase I milestone **I9**, once
+    integrated float32 training and the exact float32 resume proof both
+    passed. Asserting the attribution rather than the old literal is what
+    keeps the Phase-G claim honest: the device set really did not move, and
+    the default really is still float64."""
+    assert "dropout" not in cpp.UNSUPPORTED
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
+    # float64 was Phase G's only dtype and is still the *default*; float32
+    # joined it at I9 and is an addition, never a replacement.
+    assert cpp.SUPPORTED_DTYPES[0] == "float64"
+    assert set(cpp.SUPPORTED_DTYPES) == {"float64", "float32"}
     info = cpp.backend_info()
-    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_dtypes"] == cpp.SUPPORTED_DTYPES
     assert info["supported_devices"] == ("cpu",)
     assert info["dtype"] == "float64"
     assert info["device"] == "cpu"
@@ -194,16 +232,29 @@ def test_no_name_is_both_unsupported_and_implemented():
 
 def test_the_unsupported_capabilities_really_are_unreachable():
     """§21.2, from behavior rather than from the tuple: asking for a
-    listed-unsupported dtype or device is refused."""
+    still-unsupported dtype or device is refused.
+
+    ``"float32"`` is deliberately **not** in this list any more. It was
+    when Phase G closed, and it was reachable-and-refused for exactly the
+    right reason then; Phase I milestone I9 made it real, so listing it
+    here would now assert the opposite of the truth. The names below are
+    the ones that remain genuinely absent, and ``float16``/``bfloat16``
+    keep the "two dtypes, not any dtype" boundary honest."""
     from tensorforge.experimental import NativeTensor
 
     if not cpp.is_available():
         pytest.skip("backend not built")
-    for dtype in ("float32", "float16", "bfloat16"):
+    for dtype in ("float16", "bfloat16", "int64", "complex64"):
         with pytest.raises((ValueError, TypeError)):
             NativeTensor.zeros((2, 2), dtype=dtype)
     with pytest.raises((ValueError, TypeError)):
         NativeTensor.zeros((2, 2), device="cuda")
+    # ...and the one that stopped being unsupported really works now.
+    tensor = NativeTensor.zeros((2, 2), dtype="float32")
+    try:
+        assert tensor.dtype == "float32"
+    finally:
+        tensor.close()
 
 
 # ==========================================================================
@@ -450,14 +501,27 @@ def test_no_extra_dropout_rank_is_claimed_or_present():
 
 
 def test_no_status_surface_overclaims_the_boundary():
-    """§21.7. The three names still in ``UNSUPPORTED`` must not be
-    described as supported anywhere, and no surface may claim the phase
-    made the native line production-ready or universally faster.
+    """§21.7. The names still in ``UNSUPPORTED`` must not be described as
+    supported anywhere, and no surface may claim the phase made the native
+    line production-ready or universally faster.
 
-    Spans carrying their own negation ("float32 is not supported") are the
-    honest form and pass."""
+    Spans carrying their own negation ("float16 is not supported") are the
+    honest form and pass.
+
+    **``float32`` left this scan at Phase I milestone I9**, on exactly the
+    terms ``dropout`` left it at G10: it stopped being an over-claim
+    because it stopped being absent. Phase G's boundary was
+    ``("float32", "cuda", "amp")`` and that record is preserved above in
+    ``G10_UNSUPPORTED``; the live tuple is ``("cuda", "amp")``, so banning
+    "float32 is supported" would now force every status surface to
+    under-report the runtime — the mirror of the failure this guards.
+    ``float16``, ``bfloat16``, CUDA, GPU, AMP, and mixed precision stay,
+    which is what keeps "two dtypes" from eroding into "any dtype"."""
+    assert "float32" not in cpp.UNSUPPORTED, (
+        "float32 is still unsupported, so it belongs in the scan below"
+    )
     claim = re.compile(
-        r"(float32|float16|bfloat16|CUDA|GPU|AMP|mixed precision)"
+        r"(float16|bfloat16|CUDA|GPU|AMP|mixed precision)"
         r"[^.]{0,60}\b(is|are|now)\s+"
         r"(supported|implemented|shipped|available)"
         r"|\b(production[- ]ready|production ready)\b"
@@ -477,6 +541,19 @@ def test_no_status_surface_overclaims_the_boundary():
             )
         ]
         assert offenders == [], (surface, offenders[:3])
+    # The negative control the I9 edit requires: removing a name from a
+    # regex changes what "no offenders" can mean, so the parser is shown to
+    # still fire on the sentences it must catch...
+    for detected in ("CUDA is supported", "float16 is now available",
+                     "bfloat16 is implemented", "AMP is shipped",
+                     "mixed precision is supported",
+                     "the native line is production-ready",
+                     "it is universally faster"):
+        assert claim.search(detected), detected
+    # ...and to stay silent on the one I9 made true.
+    for allowed in ("float32 is supported",
+                    "float32 and float64 are supported on the CPU"):
+        assert claim.search(allowed) is None, allowed
 
 
 def test_the_dropout_claim_is_scoped_to_the_experimental_native_line():

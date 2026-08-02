@@ -1110,7 +1110,7 @@ def test_e8_adds_no_capability_inventory_entry():
     # G3's differentiable "dropout", which is unrelated to this proof.
     assert cpp.AUTOGRAD_OPS[-2] == "cross_entropy"
     assert cpp.AUTOGRAD_OPS[-1] == "dropout"
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # The proof is an integration result, never a named capability.
     for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,

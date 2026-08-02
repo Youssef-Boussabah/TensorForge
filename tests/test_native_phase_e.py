@@ -182,7 +182,7 @@ def test_backend_scope_is_reported_honestly():
     info = cpp.backend_info()
     assert info["available"] is True
     assert info["dtype"] == "float64" and info["device"] == "cpu"
-    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_dtypes"] == ("float64", "float32")
     assert info["supported_devices"] == ("cpu",)
     assert info["native_autograd"] is True
     assert info["stable_framework_integration"] is False
@@ -276,11 +276,19 @@ def test_unsupported_stays_honest_after_closure():
     # ("layernorm" left UNSUPPORTED in Phase F milestone F2 and
     # "batchnorm" in F4, once both BatchNorm shapes shipped as composed
     # modules. Neither was ever a Phase-E boundary.)
-    for absent in ("float32", "cuda", "amp"):
+    # ("float32" left UNSUPPORTED in Phase I milestone I9, once integrated
+    # float32 training and the exact float32 resume proof both passed —
+    # again never a Phase-E event, so it is attributed rather than dropped.)
+    for absent in ("cuda", "amp"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.NATIVE_MODULES
+    assert "float32" not in cpp.UNSUPPORTED
+    assert "float32" in cpp.SUPPORTED_DTYPES
+    for registry in (cpp.AUTOGRAD_OPS, cpp.TENSOR_CORE_OPS,
+                     cpp.NATIVE_MODULES):
+        assert "float32" not in registry
     # "dropout" was an unsupported *capability* Phase E kept, and Phase G
     # moved it — at the **G10** closure, not at G2 or G3, which shipped
     # only a Core wrapper and a differentiable operation underneath it.
@@ -310,7 +318,7 @@ def test_unsupported_stays_honest_after_closure():
                    "tf_core_softmax_backward", "tf_core_log_softmax_backward"):
         assert absent not in cpp._CHECKED_KERNELS, absent
     # No integer dtype and no second device appeared for targets.
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
 
 

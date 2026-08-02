@@ -230,13 +230,16 @@ characterized the stack honestly
 cross-cutting integration suite (``tests/test_native_phase_g.py``), and
 **G10** closed the phase under fresh Windows Release and Debug builds and
 a Clang ASan/UBSan/LeakSanitizer matrix — only then did ``"dropout"``
-leave ``UNSUPPORTED``, which now reads exactly ``("float32", "cuda",
-"amp")``. The claim stays narrow: Dropout is supported in this
-**experimental native float64 CPU** line, never in the stable framework,
-and reproducibility is exact only for the state actually captured. What
-the native line still does **not** have is further activations/math, a
-generic random-number API, ``Dropout2d``/``Dropout3d``, float32/dtype
-expansion, CUDA, AMP, and data-pipeline abstractions.
+leave ``UNSUPPORTED``, which read exactly ``("float32", "cuda", "amp")``
+when Phase G closed. (Phase I milestone I9 has since moved ``"float32"``
+out of it too, on the same discipline, so the tuple now reads ``("cuda",
+"amp")`` — a later event, recorded here rather than folded into Phase G's
+record.) The claim stays narrow: Dropout is supported in this
+**experimental native CPU** line, never in the stable framework, and
+reproducibility is exact only for the state actually captured. What the
+native line still does **not** have is further activations/math, a
+generic random-number API, ``Dropout2d``/``Dropout3d``, dtype expansion
+beyond float32 and float64, CUDA, AMP, and data-pipeline abstractions.
 
 **Phase H — Native CPU Performance and Runtime Efficiency — is complete
 (H0-H10), and it is the latest completed native phase.** Its contract is

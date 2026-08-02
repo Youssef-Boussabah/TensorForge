@@ -1227,8 +1227,8 @@ def test_the_private_checked_primitives_are_not_exported():
 
 
 def test_the_capability_registries_did_not_move():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     info = cpp.backend_info()
     assert info["dtype"] == "float64" and info["device"] == "cpu"

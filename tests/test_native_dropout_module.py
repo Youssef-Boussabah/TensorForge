@@ -1359,8 +1359,8 @@ def test_native_modules_gained_exactly_one_entry():
 def test_the_capability_boundary_did_not_move():
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 3
     assert cpp.STATE_SUPPORT == (
@@ -1409,6 +1409,6 @@ def test_the_boundary_move_belongs_to_g10_not_to_g4():
     from tensorforge.backends import cpp
 
     assert "dropout" not in cpp.UNSUPPORTED
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
     # The module G4 shipped is still exactly one entry, in one inventory.
     assert cpp.NATIVE_MODULES.count("NativeDropout") == 1

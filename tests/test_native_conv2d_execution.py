@@ -1143,8 +1143,8 @@ def test_stable_tensorforge_still_imports_without_loading_the_native_library():
 
 
 def test_the_supported_capability_boundary_did_not_move():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "conv2d" in cpp.AUTOGRAD_OPS
     assert "conv2d_forward" in cpp.TENSOR_CORE_OPS

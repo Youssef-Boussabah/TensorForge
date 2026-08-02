@@ -2468,8 +2468,8 @@ def test_the_capability_inventories_are_exactly_what_g8_left():
     is unchanged, and ``"dropout"`` stays unsupported until G10."""
     from tensorforge.experimental import native_checkpoint as checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_MODULES.count("NativeDropout") == 1
     assert "dropout" in cpp.AUTOGRAD_OPS

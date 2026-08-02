@@ -2509,7 +2509,7 @@ def test_f3_adds_no_operation_core_method_kernel_or_abi_symbol():
     for symbol in ("tf_core_batch_norm", "tf_core_batch_norm_forward",
                    "tf_core_batch_norm_backward"):
         assert symbol not in cpp._CHECKED_KERNELS, symbol
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)

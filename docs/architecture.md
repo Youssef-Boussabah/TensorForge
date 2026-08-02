@@ -1066,9 +1066,14 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **Native dtype generalization and float32 CPU support (Phase I) is
-  under way: milestones I0 through I8 are complete, I9–I11 are not
-  started.** Phase I is the latest phase; Phase H is unaffected and
-  remains complete, having closed at 52 exports. **I0 was the
+  under way: milestones I0 through I9 are complete, I10 and I11 are not
+  started.** Phase I is the latest phase and is **active, not closed**;
+  Phase H is unaffected and remains complete, having closed at 52 exports.
+  **Since I9 the native runtime supports both `float32` and `float64` on
+  the CPU** — `SUPPORTED_DTYPES == ("float64", "float32")`, `UNSUPPORTED
+  == ("cuda", "amp")` — with float64 still the default everywhere, no
+  casting or promotion between the two, and `RAW_KERNEL_DTYPES` still
+  `("float64",)`. **I0 was the
   architecture contract
   ([native_dtype_float32_design.md](native_dtype_float32_design.md)), its
   guardrail tests, and documentation reconciliation — and no runtime
@@ -1127,15 +1132,23 @@ explicit layer at a time:
   `default_rng(seed)` stream in the same order, so a float32 layer with
   seed *S* holds exactly `float32(the float64 draw with seed S)`. Native
   CTests moved 17 → 18 → 19 → 20 → 21 → 22 → 23 → **24**.
-  **No public capability moved**: still declared float64 CPU only, still
-  checkpoint version 2 with versions 1 and 2 accepted, and `float32` is
-  still listed in `UNSUPPORTED`. Every *numerical* family in the runtime
-  is dtype-general as of I7 and the experimental state-owning modules can
-  be constructed at float32 — but no public tensor constructor produces a
-  float32 tensor, both optimizers refuse a float32 parameter, and a
-  version-2 checkpoint refuses to save a float32 model rather than writing
-  an archive it could never read back. float32 optimizer state, checkpoint
-  version 3, and the registry itself are milestones I8 and I9.
+  **I1 through I7 moved no public capability**, deliberately: every
+  *numerical* family in the runtime was dtype-general as of I7 and the
+  state-owning modules could be constructed at float32, while no public
+  tensor constructor produced a float32 tensor. **I8 then made float32
+  state survive a step and a file** — both optimizers execute at float32,
+  Adam's moments carry their parameter's dtype, and the native checkpoint
+  moved to **version 3** with versions `(1, 2, 3)` accepted, versions 1 and
+  2 staying float64-only formats permanently. **I9 moved the public
+  registry**, the phase's one and only public capability change, and only
+  after the integrated exact-resume proof passed:
+  `examples/native_float32_training.py` runs a Conv2d/BatchNorm2d/ReLU/
+  MaxPool2d/Dropout/Flatten/Linear/BatchNorm1d/ReLU/LayerNorm/Dropout/
+  Linear model with `NativeCrossEntropyLoss` and `NativeAdam`, two Dropout
+  layers sharing one registered generator, interrupted and uninterrupted at
+  **each** dtype and compared **only against itself** in raw IEEE-754 bit
+  patterns. I9 changed no C++, added no export and no CTest, and moved no
+  checkpoint field or version.
   The architectural fact
   the contract rests on is visible in the layering
   above: **42 of Phase H's 52 exports already address their operands

@@ -42,9 +42,16 @@ sections above are the narrative.
 ## The current phase — Phase I
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I8 are complete; I9, I10, and I11
-are not started.** Its architecture contract is
+latest phase. Milestones I0 through I9 are complete; I10 and I11 are not
+started, so the phase is active rather than closed.** Its architecture
+contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
+
+**Since I9, `float32` and `float64` are both publicly supported native CPU
+dtypes** — `SUPPORTED_DTYPES == ("float64", "float32")`, `UNSUPPORTED ==
+("cuda", "amp")` — with float64 remaining the default everywhere, no
+casting or promotion between them, and `RAW_KERNEL_DTYPES` still
+`("float64",)` for the seven handle-free raw utility kernels.
 
 **I0 was a design-and-reconciliation milestone: it shipped the contract,
 its guardrail tests, and documentation, and no runtime behavior at all.**
@@ -222,24 +229,49 @@ Every transactional, identity, aliasing, and rollback guarantee is
 unchanged, and the **in-memory** optimizer state schema stayed at
 version 1.
 
-**None of I1 through I8 moved a public capability.** The native runtime is
-still declared float64 CPU only: `float32` is still listed as unsupported
-and `SUPPORTED_DTYPES` still reads `("float64",)`. The checkpoint version
-moved at I8, which is a **schema** change design §16.1 always assigned to
-that milestone rather than a support claim. What remains is exactly what
-milestone I9 owns: the exact float32 resume proof and the registry
-itself. No public tensor constructor produces a float32 tensor, so the only
-way to a float32 model is to ask a module for one explicitly. The gap
-between internal capability and public promise is deliberate and closes at
-I9. Nothing about Phase H changed; Phase H remains complete, and it closed
-at 52 exports.
+**None of I1 through I8 moved a public capability**, deliberately. The
+checkpoint version moved at I8, which is a **schema** change design §16.1
+always assigned to that milestone rather than a support claim. The gap
+between internal capability and public promise was the phase's rollout
+discipline, the same one Phase G used for `dropout`.
 
-What Phase I will deliver, once its milestones land: float32 CPU tensors
-beside the existing float64 ones, dtype-tagged storage, dtype-aware
-handle-based operations, float32 autograd, modules, buffers, optimizers,
-and optimizer state, float32 deterministic Dropout over an unchanged
-generator, a dtype-aware checkpoint version 3, exact deterministic float32
-resume, and unchanged float64 behavior and performance.
+**I9 closed that gap, and it is the phase's one and only public registry
+change.** It moved *after* the proof, not before: the integrated example
+and its exact-resume proof were written and passing first, through the
+already-approved private typed route and the six I7 module constructors,
+with the registry still reading `("float64",)`; only then did
+`SUPPORTED_DTYPES` become `("float64", "float32")` and `UNSUPPORTED` become
+`("cuda", "amp")`; then the example's one ingress helper switched to the
+public `NativeTensor.from_array(values, dtype=...)` and the whole proof was
+rerun.
+
+`examples/native_float32_training.py` is that proof: one deep model —
+`Conv2d → BatchNorm2d → ReLU → MaxPool2d → Dropout → Flatten → Linear →
+BatchNorm1d → ReLU → LayerNorm → Dropout → Linear`, raw logits into
+`NativeCrossEntropyLoss`, trained by `NativeAdam`, with **two Dropout
+layers sharing one registered generator** so the model carries a real alias
+topology — run uninterrupted and interrupted at **each** dtype and compared
+**only against itself**, in raw IEEE-754 bit patterns. Every loss, the
+first resumed step's gradients, every parameter, every buffer, every Adam
+moment and counter, the generator state, the alias topology, the next
+Dropout mask, the final logits, the predictions, and the evaluation output
+match exactly, and native live storage returns to baseline. A float32 run
+is never required to reproduce a float64 one and nothing asserts that it
+does.
+
+I9 changed no C++, added no export (still 54) and no CTest (still 24),
+moved no checkpoint field or version, and added no module, loss, optimizer,
+operation, dependency, or benchmark change. Nothing about Phase H changed;
+Phase H remains complete, and it closed at 52 exports.
+
+What Phase I has delivered: float32 CPU tensors beside the existing float64
+ones, dtype-tagged storage, dtype-aware handle-based operations, float32
+autograd, modules, buffers, optimizers, and optimizer state, float32
+deterministic Dropout over an unchanged generator, a dtype-aware checkpoint
+version 3, exact deterministic float32 resume, public float32 support, and
+unchanged float64 behavior and performance. What remains: **I10**
+(cross-cutting hardening and float32/float64 benchmark characterization)
+and **I11** (cross-platform validation and phase closure).
 
 The decisions the contract locks, so later milestones inherit them rather
 than re-deriving them:
@@ -286,13 +318,14 @@ than re-deriving them:
 - **Every Phase-H float64 optimization is preserved**, and float32 and
   float64 are benchmarked separately, with no timing assertion, no
   committed number, and no result file — as in every phase before it.
-- **The public support registry moves at milestone I9** and at no earlier
-  one: float32 is not declared supported until the whole training stack,
+- **The public support registry moved at milestone I9** and at no other
+  one: float32 was not declared supported until the whole training stack,
   optimizer state, checkpoint version 3, and the exact-resume proof all
-  exist.
+  existed. *Delivered at I9.*
 
-The ladder is I0 through I11 — **I0 through I7 landed; I8 is next**:
-the contract (I0), the dtype model and
+The ladder is I0 through I11 — **I0 through I9 landed; I10 is next**
+(this line lagged a milestone behind after I8 and is repaired here rather
+than rewritten away): the contract (I0), the dtype model and
 tagged storage (I1), typed transfer and materialization (I2), elementwise
 execution (I3), reductions and matmul (I4), the convolution and pooling
 kernels (I5), stable math and classification (I6), modules, buffers, and

@@ -64,6 +64,19 @@ FINAL_UNSUPPORTED = ("float32", "cuda", "amp")
 FINAL_DTYPES = ("float64",)
 FINAL_DEVICES = ("cpu",)
 FINAL_EXPORT_COUNT = 52
+# ...and the same history/today split the export and checkpoint constants
+# below already use, now applied to the dtype registry. Phase H inherited a
+# float64-only boundary and left it exactly as it found it, which is a fact
+# about Phase H and does not move again. Phase I milestone **I9** then moved
+# ``"float32"`` from UNSUPPORTED into SUPPORTED_DTYPES, once integrated
+# float32 training and the exact float32 resume proof both passed. What
+# Phase H must still be able to claim is that *it* broadened nothing — not
+# that nothing has been broadened since.
+PHASE_I_ADDED_DTYPES = ("float32",)
+CURRENT_DTYPES = FINAL_DTYPES + PHASE_I_ADDED_DTYPES          # float64, float32
+CURRENT_UNSUPPORTED = tuple(name for name in FINAL_UNSUPPORTED
+                            if name not in PHASE_I_ADDED_DTYPES)
+CURRENT_DEVICES = FINAL_DEVICES                                # never moved
 # ...and what the live source holds **now**. Phase H closed at 52; Phase I
 # milestone I1 added the two typed storage creators, taking the current
 # inventory to 54. The two numbers are different facts about different
@@ -196,10 +209,33 @@ def test_the_design_records_why_the_ladder_ends_at_h10():
 # performance work broadened nothing
 # ---------------------------------------------------------------------------
 
-def test_the_support_boundary_is_exactly_what_phase_h_inherited():
-    assert cpp.UNSUPPORTED == FINAL_UNSUPPORTED
-    assert cpp.SUPPORTED_DTYPES == FINAL_DTYPES
-    assert cpp.SUPPORTED_DEVICES == FINAL_DEVICES
+def test_phase_h_broadened_no_support_boundary():
+    """Phase H made the float64 runtime faster and broadened nothing.
+
+    Stated the way the export and checkpoint records above are stated: the
+    Phase-H literals are pinned as history, and the live registries are
+    asserted to differ from them by **exactly** what a later phase is on
+    record as having moved. An equality against the Phase-H literals would
+    have made this closure record a veto on every subsequent milestone,
+    which is not what it ever claimed; dropping it would have lost the
+    Phase-H fact entirely."""
+    # Phase H's own record, pinned as literals.
+    assert FINAL_UNSUPPORTED == ("float32", "cuda", "amp")
+    assert FINAL_DTYPES == ("float64",)
+
+    assert cpp.SUPPORTED_DEVICES == FINAL_DEVICES == CURRENT_DEVICES
+    assert cpp.SUPPORTED_DTYPES == CURRENT_DTYPES
+    assert cpp.UNSUPPORTED == CURRENT_UNSUPPORTED
+    # The difference is exactly the one dtype Phase I moved, in both
+    # directions — nothing else joined, and nothing else left.
+    assert (set(cpp.SUPPORTED_DTYPES) - set(FINAL_DTYPES)
+            == set(PHASE_I_ADDED_DTYPES))
+    assert (set(FINAL_UNSUPPORTED) - set(cpp.UNSUPPORTED)
+            == set(PHASE_I_ADDED_DTYPES))
+    assert set(cpp.UNSUPPORTED) <= set(FINAL_UNSUPPORTED)
+    # Phase H's dtype is still the default and still first.
+    assert cpp.SUPPORTED_DTYPES[0] == "float64"
+    assert cpp.backend_info()["dtype"] == "float64"
 
 
 def test_the_checkpoint_format_did_not_move():
@@ -240,10 +276,15 @@ def test_the_checkpoint_format_did_not_move():
 
 
 def test_the_unsupported_capabilities_really_are_unreachable():
-    """The registry claim, checked against behavior rather than trusted."""
+    """The registry claim, checked against behavior rather than trusted.
+
+    ``"float32"`` has moved out of this list — Phase I milestone I9 made it
+    real, so asserting it still raises would assert the opposite of the
+    truth. The names below are the ones that remain genuinely absent, and
+    they keep the "two dtypes, not any dtype" boundary honest."""
     import numpy as np
 
-    for dtype in ("float32", "float16", "int64"):
+    for dtype in ("float16", "bfloat16", "int64", "complex64"):
         with pytest.raises((ValueError, TypeError)):
             cpp.NativeTensorCore.from_array(
                 np.zeros((2, 2), dtype=np.float64), dtype=dtype)

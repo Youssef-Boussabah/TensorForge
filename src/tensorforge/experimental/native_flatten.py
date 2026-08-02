@@ -54,7 +54,9 @@ with clear errors. Nothing is wrapped, cast, or moved implicitly; the
 output stays in the native CPU float64 line. The inherited ``training``
 flag exists and propagates normally but never affects the result.
 
-Fully separate from ``tensorforge.nn.Flatten``; float64/cpu only;
+Fully separate from ``tensorforge.nn.Flatten``; CPU only, at
+either supported dtype (it takes no dtype argument and reshapes
+without touching values);
 experimental and explicit. Conv2d and MaxPool2d remain unimplemented.
 """
 

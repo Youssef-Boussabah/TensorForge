@@ -2135,8 +2135,8 @@ def test_the_operation_exists_without_a_functional_helper_or_new_kernel():
 def test_dropout_stays_unsupported_at_checkpoint_version_two():
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 3
 

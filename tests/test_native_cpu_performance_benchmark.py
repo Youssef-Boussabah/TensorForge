@@ -1342,8 +1342,8 @@ def test_the_design_document_marks_every_number_as_a_local_characterization():
 
 def test_h0_changes_no_capability_registry():
     """H0 was measurement and documentation only."""
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.RAW_KERNELS == (
         "elementwise_add", "elementwise_subtract", "elementwise_multiply",

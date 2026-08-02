@@ -3085,8 +3085,8 @@ def test_the_generator_layer_ships_no_dropout_or_random_operation():
 
 
 def test_g1_moved_no_capability_registry_value():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "NativeGenerator" not in cpp.NATIVE_MODULES
     for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS,

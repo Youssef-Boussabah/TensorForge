@@ -3091,8 +3091,8 @@ def test_g6_moved_no_capability_registry_value():
     G10 closure removed the name — so the durable form of this guard is
     that the removal is attributed there and every other value G6 could
     have touched is still exactly what it was."""
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "dropout" not in cpp.UNSUPPORTED
     assert "dropout" in cpp.AUTOGRAD_OPS

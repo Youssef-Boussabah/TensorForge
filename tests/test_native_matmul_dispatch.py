@@ -1209,8 +1209,8 @@ def test_the_matmul_source_ships_both_paths_and_one_predicate():
 def test_no_capability_registry_moved():
     """H2 is a memory-access change. Nothing about what the native line
     supports moved."""
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "matmul" in cpp.TENSOR_CORE_OPS
     assert "matmul" in cpp.AUTOGRAD_OPS

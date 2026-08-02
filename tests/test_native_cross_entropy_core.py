@@ -1782,7 +1782,7 @@ def test_native_cross_entropy_scope_boundaries_hold():
     for absent in ("NativeNLLLoss", "NativeSoftmax", "NativeLogSoftmax"):
         assert not hasattr(experimental, absent), absent
     # No integer tensors, no new dtype/device.
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     with pytest.raises(ValueError):
         cpp.NativeTensorCore.zeros((2, 2), dtype="int64")

@@ -78,6 +78,16 @@ I0_DTYPES = ("float64",)
 I0_DEVICES = ("cpu",)
 I0_UNSUPPORTED = ("float32", "cuda", "amp")
 I0_EXPORT_COUNT = 52
+# ...and what milestone **I9** moved them to. This is the phase's one and
+# only public registry change (design §27.3), and the same history/today
+# split the checkpoint constants below already use applies here: the I0_*
+# values are what I1-I8 ran against and are history that does not move
+# again, while the I9_* values are what the runtime promises today. The
+# device set is deliberately identical in both — a dtype milestone grants
+# no device.
+I9_DTYPES = ("float64", "float32")
+I9_DEVICES = I0_DEVICES
+I9_UNSUPPORTED = ("cuda", "amp")
 # The checkpoint constants are the one inherited value with a *different*
 # milestone: design §16.1 puts them at **I8**, not I9. They are recorded
 # here as the pre-I8 baseline and asserted against the post-I8 values
@@ -166,6 +176,36 @@ STATUS_SURFACES = (
     "docs/backend_experiments.md",
     "docs/architecture.md",
 )
+
+
+def _assert_the_public_registry_is_i9s():
+    """The live public registry, asserted as **I9's** values.
+
+    Every per-milestone exit gate in this file calls this, and the reason
+    it is a shared helper is the reason it exists at all. Those gates were
+    written as "milestone IN moved no public capability", which they
+    proved by pinning the I0 literals — sound while the registry had not
+    moved, and impossible to keep once it did. A test that runs only
+    against the current tree cannot tell "I3 did not move this" from "I9
+    did", so the honest thing each gate can still assert is that the
+    registry is at the phase's *one* recorded change and no other, with the
+    attribution recorded in prose beside it.
+
+    What is genuinely preserved, and is checked here in both directions:
+    the change is exactly ``"float32"`` moving from ``UNSUPPORTED`` into
+    ``SUPPORTED_DTYPES``; nothing else joined either tuple; the device set
+    never moved; and float64 is still first and still the default."""
+    assert cpp.SUPPORTED_DTYPES == I9_DTYPES
+    assert cpp.SUPPORTED_DEVICES == I9_DEVICES == I0_DEVICES
+    assert cpp.UNSUPPORTED == I9_UNSUPPORTED
+    # Exactly one name moved, and it moved in one direction.
+    assert set(cpp.SUPPORTED_DTYPES) - set(I0_DTYPES) == {"float32"}
+    assert set(I0_UNSUPPORTED) - set(cpp.UNSUPPORTED) == {"float32"}
+    assert set(cpp.UNSUPPORTED) <= set(I0_UNSUPPORTED)
+    # The default did not move with it.
+    assert cpp.SUPPORTED_DTYPES[0] == "float64"
+    assert cpp.normalize_dtype(None) == "float64"
+    assert cpp.backend_info()["dtype"] == "float64"
 
 
 def _read(relative):
@@ -340,11 +380,22 @@ def test_the_design_states_its_milestone_status_and_what_is_unshipped():
             f"the checkpoint format has already moved to version "
             f"{native_checkpoint._FORMAT_VERSION}"
         )
-    # The public registry is I9's, and the same cross-check applies to it.
+    # The public registry is I9's, and the same cross-check applies to it —
+    # in **both** directions, so a status line can neither run ahead of the
+    # registry nor lag behind it.
     if last_complete >= 9:
-        assert "float32" in cpp.SUPPORTED_DTYPES
+        assert "float32" in cpp.SUPPORTED_DTYPES, (
+            f"the status line claims I{last_complete} complete, but "
+            f"SUPPORTED_DTYPES is still {cpp.SUPPORTED_DTYPES}; I9 is the "
+            f"milestone that moves it"
+        )
+        assert "float32" not in cpp.UNSUPPORTED
     else:
-        assert cpp.SUPPORTED_DTYPES == I0_DTYPES
+        assert cpp.SUPPORTED_DTYPES == I0_DTYPES, (
+            f"the status line claims only I{last_complete} complete, but "
+            f"the public dtype registry has already moved to "
+            f"{cpp.SUPPORTED_DTYPES}"
+        )
         assert cpp.UNSUPPORTED == I0_UNSUPPORTED
     # ...and that I0 itself shipped no behavior, which is a historical
     # fact about I0 and stays true however far the phase progresses. A
@@ -352,11 +403,20 @@ def test_the_design_states_its_milestone_status_and_what_is_unshipped():
     assert re.search(r"I0 adds no runtime behavior", text, re.I), (
         "the design does not state that I0 adds no runtime behavior"
     )
-    # The public boundary has not moved, and the design must keep saying
-    # so until I9 — the milestone that is allowed to change it.
-    assert re.search(r"SUPPORTED_DTYPES still reads \(\"float64\",\)", text), (
-        "the design no longer records the unchanged public dtype registry"
-    )
+    # What the design must say about the public boundary depends on which
+    # side of I9 the phase is on, and it must say one of them explicitly —
+    # silence is the drift this catches. Before I9 it records the boundary
+    # as unmoved; from I9 it records the move and the values it moved to.
+    if last_complete >= 9:
+        assert re.search(
+            r"SUPPORTED_DTYPES (?:reads|is|=) ?=? ?\(\"float64\", "
+            r"\"float32\"\)|SUPPORTED_DTYPES = \(\"float64\", \"float32\"\)",
+            text,
+        ), "the design does not record the moved public dtype registry"
+    else:
+        assert re.search(
+            r"SUPPORTED_DTYPES still reads \(\"float64\",\)", text
+        ), "the design no longer records the unchanged public dtype registry"
 
 
 def test_the_design_records_the_current_float64_only_reality():
@@ -921,24 +981,40 @@ def test_the_design_names_i9_as_the_public_support_milestone():
 # ---------------------------------------------------------------------------
 
 def test_the_runtime_registries_are_exactly_what_phase_i_inherited():
-    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
-    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
-    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    _assert_the_public_registry_is_i9s()
 
 
-def test_float32_is_still_genuinely_unreachable():
-    """The registry claim, checked against behavior rather than trusted —
-    a contract document must not have quietly enabled anything."""
+def test_float32_is_genuinely_reachable_and_nothing_beyond_it_is():
+    """The registry claim, checked against behavior rather than trusted.
+
+    Through I8 this asserted the opposite — that float32 was genuinely
+    *un*reachable — because a contract document must not quietly enable
+    anything. **I9 enabled it deliberately**, so the same test now has to
+    prove the promise is real rather than merely written down, and that the
+    boundary moved by exactly one dtype and not to "any dtype"."""
     import numpy as np
 
-    with pytest.raises((ValueError, TypeError)):
-        cpp.NativeTensorCore.from_array(
-            np.zeros((2, 2), dtype=np.float64), dtype="float32")
-    with pytest.raises((ValueError, TypeError)):
-        cpp.NativeTensorCore.zeros((2, 2), dtype="float32")
-    with pytest.raises(ValueError):
-        cpp.normalize_dtype("float32")
+    values = np.zeros((2, 2), dtype=np.float64)
+    for build in (
+        lambda: cpp.NativeTensorCore.from_array(values, dtype="float32"),
+        lambda: cpp.NativeTensorCore.zeros((2, 2), dtype="float32"),
+        lambda: cpp.NativeTensorCore.full((2, 2), 1.0, dtype="float32"),
+        lambda: cpp.NativeStorage(4, dtype="float32"),
+    ):
+        if not cpp.is_available():
+            break
+        built = build()
+        try:
+            assert built.dtype == "float32"
+        finally:
+            built.close()
+    assert cpp.normalize_dtype("float32") == "float32"
+    # ...and the default did not move with it.
     assert cpp.normalize_dtype(None) == "float64"
+    # ...and no third dtype came along for the ride.
+    for absent in ("float16", "bfloat16", "int64", "complex64"):
+        with pytest.raises(ValueError):
+            cpp.normalize_dtype(absent)
 
 
 def test_no_dtype_capability_name_entered_any_registry():
@@ -1282,26 +1358,98 @@ def _changed_since(base):
     return changed
 
 
-def test_i1_changed_no_example_benchmark_ci_or_dependency_file():
-    """The milestone's discipline, expressed as a diff assertion against
-    the merged I0 commit rather than as a promise.
+# The example surface the phase is allowed to add, and the milestone that
+# owns it. Everything else under ``examples/`` is off limits, which is what
+# makes "the phase changed no existing example" checkable rather than
+# promised: a modified float64 example would show up here as surely as an
+# unplanned new one.
+I9_ADDED_EXAMPLES = frozenset({"examples/native_float32_training.py"})
 
-    I1 legitimately changes C++ sources, the CMake build, and the ctypes
-    layer — that is the milestone. What it must *not* touch is the
-    surface that would signal a capability change: an example, a
-    benchmark, the CI workflow, or the dependency set. Phase I adds no
-    dependency and no build option, and benchmark work belongs to I10.
+# The runtime files I9 touches for **documentation only**. Each said
+# "float64/cpu only" in a module docstring — accurate through I8, and wrong
+# the moment the registry moved — so the sentence had to be corrected where
+# a reader actually meets it. None of them gained a line of dtype logic,
+# and ``test_the_i9_documentation_only_files_really_are_documentation_only``
+# checks that rather than trusting this comment.
+I9_DOCUMENTATION_ONLY = frozenset({
+    "src/tensorforge/experimental/__init__.py",
+    "src/tensorforge/experimental/native_relu.py",
+    "src/tensorforge/experimental/native_flatten.py",
+    "src/tensorforge/experimental/native_maxpool2d.py",
+    "src/tensorforge/experimental/native_dropout.py",
+    "src/tensorforge/experimental/native_cross_entropy_loss.py",
+})
+
+
+def test_the_phase_changed_no_benchmark_ci_or_dependency_file():
+    """The phase's discipline, expressed as a cumulative diff assertion
+    against the merged I0 commit rather than as a promise.
+
+    The milestones legitimately change C++ sources, the CMake build, and
+    the Python package — that is the phase. What they must *not* touch is
+    the surface that would signal an unearned capability change or a
+    changed environment: a **benchmark**, the CI workflow, or the
+    dependency set. Phase I adds no dependency and no build option, and
+    benchmark work belongs to **I10**, which has not started.
+
+    Examples are the one qualified case, and the qualification is
+    enumerated rather than waived. I1 through I8 added none — the
+    intermediate milestones were deliberately unable to write one, because
+    no public constructor could produce a float32 tensor. **I9 adds exactly
+    one**, the integrated exact-resume proof its scope calls for, and it is
+    named in ``I9_ADDED_EXAMPLES``. Any other change under ``examples/``,
+    including an edit to an existing float64 example, still fails here.
     """
     forbidden = []
     for path in _changed_since(I0_COMMIT):
-        if path.startswith(("examples/", "benchmarks/", ".github/")):
+        if path.startswith("examples/") and path not in I9_ADDED_EXAMPLES:
+            forbidden.append(path)
+        if path.startswith(("benchmarks/", ".github/")):
             forbidden.append(path)
         if path in ("pyproject.toml", "uv.lock", "conftest.py"):
             forbidden.append(path)
     assert not forbidden, (
-        f"I1 must not touch examples, benchmarks, CI, or dependencies, "
-        f"but these changed: {forbidden}"
+        f"the phase must not touch existing examples, benchmarks, CI, or "
+        f"dependencies, but these changed: {forbidden}"
     )
+    # ...and the one example it may add really is there, so the exemption
+    # cannot outlive the file it was written for.
+    for example in I9_ADDED_EXAMPLES:
+        assert (REPO_ROOT / example).is_file(), example
+
+
+def test_the_i9_documentation_only_files_really_are_documentation_only():
+    """The five runtime files I9 touches for their docstrings, held to the
+    claim rather than trusted with it.
+
+    Each of them said "float64/cpu only" where a reader meets the module,
+    which was accurate through I8 and wrong the moment the registry moved.
+    Correcting a sentence is legitimate; smuggling dtype behavior in beside
+    it is not — and "documentation only" is exactly the kind of claim that
+    is easy to make and easy to break. So the check is structural: none of
+    these files may name a dtype in **code**.
+
+    Parsed rather than grepped, and the docstrings are removed first, so
+    the prose is free to discuss float32 at any length while the executable
+    body stays untouched."""
+    import ast
+
+    for relative in sorted(I9_DOCUMENTATION_ONLY):
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        # Drop every docstring, then look at what is left.
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)) and node.body:
+                first = node.body[0]
+                if (isinstance(first, ast.Expr)
+                        and isinstance(first.value, ast.Constant)
+                        and isinstance(first.value.value, str)):
+                    node.body = node.body[1:] or [ast.Pass()]
+        code = ast.unparse(tree)
+        for banned in ("float32", "float64", "dtype", "normalize_dtype",
+                       "_typed", "SUPPORTED_DTYPES"):
+            assert banned not in code, (relative, banned)
 
 
 def test_the_phase_touched_only_the_python_modules_its_scope_names():
@@ -1326,8 +1474,11 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
     schema does not move (design §15, §16.2): float32 metadata becomes
     reachable through it without a single line changing.
 
-    What stays out is what milestone **I9** owns — the public registry — so
-    public float32 support cannot appear under cover of "optimizer work".
+    **I9 adds the public registry** — which lives in ``cpp.py``, already in
+    the set — plus five files it touches for **documentation only**. Those
+    five are listed separately below and held to a stricter rule than the
+    rest: a test asserts they contain no dtype logic at all, so "docstring
+    only" is checked rather than promised.
     """
     allowed = {
         "src/tensorforge/backends/cpp.py",
@@ -1344,7 +1495,7 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
         # I8: the state-bearing dtype stack.
         "src/tensorforge/experimental/native_sgd.py",
         "src/tensorforge/experimental/native_adam.py",
-    }
+    } | I9_DOCUMENTATION_ONLY
     changed = [path for path in _changed_since(I0_COMMIT)
                if path.startswith("src/")]
     unexpected = [path for path in changed if path not in allowed]
@@ -1452,13 +1603,20 @@ def test_the_python_dtype_tables_agree_with_the_frozen_abi_codes():
         assert np.dtype(cpp._DTYPE_NUMPY[name]).itemsize == size
 
 
-def test_the_dtype_tables_are_private_and_wider_than_the_public_promise():
-    """The internal capability legitimately runs ahead of the public one
-    between I1 and I9 — that is the rollout rule — but the public surface
-    must not leak it."""
+def test_the_dtype_tables_stayed_private_when_the_promise_caught_up():
+    """The internal capability legitimately ran ahead of the public one
+    between I1 and I8 — that was the rollout rule — and **I9 is where the
+    promise caught up**. The tables stay private either way.
+
+    That is the durable half of the original claim. "Wider" was a fact
+    about eight milestones, and it stopped being one when the registry
+    moved; "private, and never a public dtype object" is a fact about the
+    design and does not lapse. The two sets agreeing is asserted here
+    rather than assumed, because a representation table that could hold a
+    dtype the registry does not is exactly the drift this guards."""
     assert "float32" in cpp._DTYPE_CODES
-    assert "float32" not in cpp.SUPPORTED_DTYPES
-    assert "float32" in cpp.UNSUPPORTED
+    assert set(cpp._DTYPE_CODES) == set(cpp.SUPPORTED_DTYPES)
+    assert "float32" not in cpp.UNSUPPORTED
     for name in ("_DTYPE_CODES", "_DTYPE_ITEM_SIZES", "_DTYPE_NUMPY"):
         assert name.startswith("_"), name
     # No public dtype object was introduced anywhere on the module.
@@ -1603,23 +1761,29 @@ def test_a_float32_handle_is_rejected_by_operations_that_are_still_float64():
 
 
 @needs_native
-def test_the_public_wrapper_allocates_only_float64_through_the_typed_path():
+def test_the_public_wrapper_allocates_through_the_typed_path_at_both_widths():
     """``NativeStorage`` routes through the typed creators uniformly, and
     the dtype it passes is the one it validated — so the Python tag and
-    the C++ tag cannot disagree. Every observable behavior is unchanged."""
-    storage = cpp.NativeStorage(8)
-    try:
-        assert storage.dtype == "float64"
-        assert storage.size == 8
-        # The zero-initializing default did not move.
-        assert np.array_equal(storage.to_numpy(), np.zeros(8))
-        assert storage.to_numpy().dtype == np.float64
-    finally:
-        storage.close()
-    # ...and float32 is still refused at the public boundary, before any
-    # native call is made.
+    the C++ tag cannot disagree. Every observable behavior of the float64
+    default is unchanged, which is I1's claim and stays true; since I9 the
+    same one path also serves float32, which is the point of there being
+    one path."""
+    for dtype, numpy_dtype in (("float64", np.float64),
+                               ("float32", np.float32)):
+        storage = cpp.NativeStorage(8, dtype=dtype)
+        try:
+            assert storage.dtype == dtype
+            assert storage.size == 8          # elements, never bytes
+            # The zero-initializing default did not move.
+            assert np.array_equal(storage.to_numpy(),
+                                  np.zeros(8, dtype=numpy_dtype))
+            assert storage.to_numpy().dtype == numpy_dtype
+        finally:
+            storage.close()
+    # ...and an unrepresentable dtype is still refused at the public
+    # boundary, before any native call is made.
     with pytest.raises(ValueError):
-        cpp.NativeStorage(8, dtype="float32")
+        cpp.NativeStorage(8, dtype="float16")
 
 
 @needs_native
@@ -1648,19 +1812,29 @@ def test_the_untyped_creators_still_work_and_still_mean_float64():
             getattr(library, name)(0)
 
 
-def test_no_public_float32_construction_path_exists_anywhere():
-    """The rollout rule, checked behaviorally across every public
-    constructor rather than trusted from the registry."""
+@needs_native
+def test_every_public_construction_path_reaches_float32_since_i9():
+    """The rollout rule's other side, checked behaviorally across every
+    public constructor rather than trusted from the registry.
+
+    Through I8 this listed the same constructors and required each to
+    **raise**; I9 is the milestone that made them work, so it now requires
+    each to produce a genuinely float32 tensor. The list is deliberately
+    unchanged so the two versions cover exactly the same surface."""
     values = np.zeros((2, 2), dtype=np.float64)
     for build in (
         lambda: cpp.NativeStorage(4, dtype="float32"),
         lambda: cpp.NativeStorage.from_array(values, dtype="float32"),
         lambda: cpp.NativeTensorCore.zeros((2, 2), dtype="float32"),
         lambda: cpp.NativeTensorCore.from_array(values, dtype="float32"),
-        lambda: cpp.normalize_dtype("float32"),
     ):
-        with pytest.raises((ValueError, TypeError)):
-            build()
+        built = build()
+        try:
+            assert built.dtype == "float32"
+            assert built.to_numpy().dtype == np.float32
+        finally:
+            built.close()
+    assert cpp.normalize_dtype("float32") == "float32"
 
 
 # ---------------------------------------------------------------------------
@@ -2111,9 +2285,7 @@ def test_i2_moved_no_public_capability_at_all():
     exists and public float32 support does not."""
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
-    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
-    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    _assert_the_public_registry_is_i9s()
     assert cpp.backend_info()["dtype"] == "float64"
     assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
@@ -2300,12 +2472,13 @@ def test_the_float32_paths_are_exactly_the_families_landed_through_i7():
 
         # ...so there is no float64-only numerical export left to name. The
         # rejecting set is empty, asserted as a set rather than as prose.
-        assert cpp.SUPPORTED_DTYPES == I0_DTYPES  # and still not a promise
 
-        # Above the Core layer, exactly the I7 surface moved. A parameter
-        # can be built at float32 now — that is the milestone — while every
-        # **public** tensor constructor still refuses, because the registry
-        # does not move until I9.
+        # Above the Core layer, exactly the I7 surface moved: a parameter
+        # can be built at float32 — that is the milestone. Through I8 every
+        # **public** tensor constructor still refused, because the registry
+        # had not moved; **I9 moved it**, so they succeed now and the two
+        # routes must agree. What I7 owns is the constructor argument, and
+        # that is what is asserted here.
         from tensorforge.experimental import NativeParameter, NativeTensor
         for construct in (
             lambda: NativeTensor.from_array([1.0], dtype="float32"),
@@ -2315,8 +2488,11 @@ def test_the_float32_paths_are_exactly_the_families_landed_through_i7():
             lambda: cpp.NativeTensorCore.zeros((2,), dtype="float32"),
             lambda: cpp.NativeTensorCore.full((2,), 1.0, dtype="float32"),
         ):
-            with pytest.raises((ValueError, TypeError)):
-                construct()
+            built = construct()
+            try:
+                assert built.dtype == "float32"
+            finally:
+                built.close()
         parameter = NativeParameter([1.0], dtype="float32")
         try:
             assert parameter.dtype == "float32"
@@ -2967,18 +3143,21 @@ def test_relu_backward_is_dtype_general_at_the_core_layer(dtype):
 
 
 @needs_native
-def test_no_public_tensor_constructor_produces_float32():
-    """The boundary I3 drew, restated at the line milestone I7 left it on.
+def test_public_tensor_construction_opened_at_i9_and_not_before():
+    """The boundary I3 drew, restated where **I9** moved it to.
 
     A dtype-general Core primitive is a kernel, and I7's state-owning
     constructors are an experimental module surface; **public** float32
-    tensor construction is neither, and it does not open until the registry
-    moves at I9. So a user cannot ask ``NativeTensor`` for float32 through
-    any of its three factories, at any milestone before that one.
+    tensor construction is neither, and it did not open until the registry
+    moved. Through I8 this test required all three ``NativeTensor``
+    factories to refuse; I9 is the milestone that opened them, so it now
+    requires all three to succeed — the same three, so the surface covered
+    is identical and only the expected answer changed.
 
-    ``NativeParameter`` is deliberately *not* in this list any more: it
-    gained ``dtype`` at I7, which is the milestone, and its own guardrail is
-    the closed ``I7_DTYPE_CONSTRUCTORS`` set.
+    ``NativeParameter`` is deliberately *not* in this list: it gained
+    ``dtype`` at I7, which is a different milestone, and its own guardrail
+    is the closed ``I7_DTYPE_CONSTRUCTORS`` set — which I9 did **not**
+    widen, and that is asserted below.
     """
     import tensorforge.experimental as experimental
 
@@ -2988,9 +3167,16 @@ def test_no_public_tensor_constructor_produces_float32():
         lambda: experimental.NativeTensor.zeros((2, 2), dtype="float32"),
         lambda: experimental.NativeTensor.full((2, 2), 1.0, dtype="float32"),
     ):
-        with pytest.raises((ValueError, TypeError)):
-            build()
-    # ...and the dtype-argument surface is exactly the closed I7 set.
+        built = build()
+        try:
+            assert built.dtype == "float32"
+            assert built.to_numpy().dtype == np.float32
+            # A public leaf, not a private one: it is an ordinary tensor.
+            assert built.requires_grad is False
+        finally:
+            built.close()
+    # ...and the dtype-argument surface is still exactly the closed I7 set:
+    # opening the registry gave no *new* class a dtype argument.
     assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
 
 
@@ -3115,16 +3301,12 @@ def test_i3_moved_no_public_capability_at_all():
     execution exists and public float32 support does not."""
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
-    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
-    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    _assert_the_public_registry_is_i9s()
     assert cpp.RAW_KERNEL_DTYPES == ("float64",)
     assert cpp.backend_info()["dtype"] == "float64"
     assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
-    with pytest.raises(ValueError):
-        cpp.normalize_dtype("float32")
     exports = _source_exports()
     assert len(exports) == I1_EXPORT_COUNT       # still 54; I3 adds none
     for absent in ("tf_core_add_f32", "tf_core_relu_f32", "tf_core_add_float32",
@@ -4617,12 +4799,11 @@ def test_the_families_i8_owns_now_execute_at_float32():
     finally:
         parameter.close()
 
-    # The I9 boundary, which has *not* moved: the public registry still
-    # refuses float32 and no public constructor builds one.
-    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
-    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
-    with pytest.raises(ValueError):
-        cpp.normalize_dtype("float32")
+    # The I9 boundary, which moved **after** this milestone and not in
+    # it: the public registry now admits float32. What this milestone
+    # owns is the layer above, asserted directly rather than by the
+    # absence of a public route that no longer is absent.
+    _assert_the_public_registry_is_i9s()
 
 
 @needs_native
@@ -4632,16 +4813,12 @@ def test_i4_moved_no_public_capability_at_all():
     support does not."""
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
-    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
-    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    _assert_the_public_registry_is_i9s()
     assert cpp.RAW_KERNEL_DTYPES == ("float64",)
     assert cpp.backend_info()["dtype"] == "float64"
     assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
-    with pytest.raises(ValueError):
-        cpp.normalize_dtype("float32")
     exports = _source_exports()
     assert len(exports) == I1_EXPORT_COUNT       # still 54; I4 adds none
     for absent in ("tf_core_sum_f32", "tf_core_matmul_f32",
@@ -5660,16 +5837,12 @@ def test_i5_moved_no_public_capability_at_all():
     does not."""
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
-    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
-    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    _assert_the_public_registry_is_i9s()
     assert cpp.RAW_KERNEL_DTYPES == ("float64",)
     assert cpp.backend_info()["dtype"] == "float64"
     assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
-    with pytest.raises(ValueError):
-        cpp.normalize_dtype("float32")
     exports = _source_exports()
     assert len(exports) == I1_EXPORT_COUNT       # still 54; I5 adds none
     for absent in ("tf_core_conv2d_forward_f32", "tf_core_maxpool2d_f32",
@@ -7141,16 +7314,12 @@ def test_i6_moved_no_public_capability_at_all():
     import tensorforge.experimental as experimental
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
-    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
-    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    _assert_the_public_registry_is_i9s()
     assert cpp.RAW_KERNEL_DTYPES == ("float64",)
     assert cpp.backend_info()["dtype"] == "float64"
     assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
-    with pytest.raises(ValueError):
-        cpp.normalize_dtype("float32")
     exports = _source_exports()
     assert len(exports) == I1_EXPORT_COUNT       # still 54; I6 adds none
     for absent in ("tf_core_softmax_forward_f32", "tf_core_softmax_typed",
@@ -7407,11 +7576,19 @@ def test_the_module_dtype_validator_is_a_strict_delegate():
             cpp._normalize_internal_dtype(bad)
         assert type(helper.value) is type(direct.value), bad
         assert str(helper.value) == str(direct.value), bad
-    # It is **not** the public validator, and must not become one before I9:
-    # the public registry still refuses float32 outright.
-    with pytest.raises(ValueError):
-        cpp.normalize_dtype("float32")
-    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
+    # It is **not** the public validator and must not become one, even now
+    # that the two accept the same set. Through I8 the difference was
+    # visible — the public registry refused ``"float32"`` outright — and at
+    # I9 it stopped being visible without stopping being real: they remain
+    # separate functions measured against separate tables, and the delegate
+    # answers "what may a module be constructed at?" rather than "what does
+    # TensorForge support?".
+    assert (_native_dtype.normalize_module_dtype
+            is not cpp.normalize_dtype)
+    assert set(_native_dtype.MODULE_DTYPES) == set(cpp.SUPPORTED_DTYPES)
+    for dtype in _native_dtype.MODULE_DTYPES:
+        assert (_native_dtype.normalize_module_dtype(dtype)
+                == cpp.normalize_dtype(dtype))
     # ...and it is private: absent from the package's public surface.
     import tensorforge.experimental as experimental
     assert "normalize_module_dtype" not in experimental.__all__
@@ -9139,29 +9316,26 @@ def test_i7_moved_no_public_capability_at_all():
     float64-only Core gate opened. What it deliberately did **not** deliver,
     and what the next milestones own:
 
-      * **I8** — float32 optimizer state and checkpoint version 3. Neither
-        exists; both refuse.
-      * **I9** — the public registry. ``SUPPORTED_DTYPES`` is still
-        ``("float64",)``, ``"float32"`` is still in ``UNSUPPORTED``, and no
-        public tensor constructor produces a float32 tensor.
+      * **I8** — float32 optimizer state and checkpoint version 3, which
+        landed there and not here;
+      * **I9** — the public registry, which moved there and not here.
 
-    The gap between the two is the phase's rollout discipline (§27), not an
-    oversight, and stating it precisely is what keeps "float32 is supported"
-    from becoming the summary five milestones early."""
+    The gap between implementation and promise was the phase's rollout
+    discipline (§27), not an oversight, and stating it precisely is what
+    kept "float32 is supported" from becoming the summary five milestones
+    early. Both later milestones have since landed, so what this gate can
+    still assert is that **I7 owns neither of them**: the constructor
+    surface is exactly its six, and the registry and checkpoint constants
+    are the ones I9 and I8 respectively are on record as setting."""
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
-    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
-    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    _assert_the_public_registry_is_i9s()
     assert cpp.RAW_KERNEL_DTYPES == ("float64",)
-    assert cpp.backend_info()["dtype"] == "float64"
-    assert cpp.backend_info()["supported_dtypes"] == I0_DTYPES
+    assert cpp.backend_info()["supported_dtypes"] == I9_DTYPES
     assert cpp.backend_info()["stable_framework_integration"] is False
     assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
-    with pytest.raises(ValueError):
-        cpp.normalize_dtype("float32")
 
     exports = _source_exports()
     assert len(exports) == I1_EXPORT_COUNT       # still 54; I7 adds none

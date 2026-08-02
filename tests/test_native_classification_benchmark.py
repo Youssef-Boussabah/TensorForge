@@ -559,7 +559,7 @@ def test_e9_adds_no_capability_inventory_entry():
     # G3's differentiable "dropout", which is unrelated to this benchmark.
     assert cpp.AUTOGRAD_OPS[-2] == "cross_entropy"
     assert cpp.AUTOGRAD_OPS[-1] == "dropout"
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,
                       cpp.NATIVE_MODULES, cpp.NATIVE_LOSSES,

@@ -252,13 +252,20 @@ def test_both_paths_reject_the_same_invalid_sizes(bad):
 
 
 @needs_native
-@pytest.mark.parametrize("dtype,device", [("float32", "cpu"),
-                                          ("float64", "cuda")])
+@pytest.mark.parametrize("dtype,device", [("float16", "cpu"),
+                                          ("bfloat16", "cpu"),
+                                          ("float64", "cuda"),
+                                          ("float32", "cuda")])
 def test_the_public_path_rejects_unsupported_metadata(dtype, device):
     """Validation precedes allocation, so a rejected request allocates
     nothing. This is the **public** constructor, and it is the one that
-    carries the promise: ``"float32"`` is not a supported TensorForge dtype
-    and does not become one until milestone I9."""
+    carries the promise.
+
+    ``("float32", "cpu")`` was a row here through milestone I8 and is
+    deliberately gone: I9 made float32 a supported TensorForge dtype, so it
+    belongs in the acceptance test below. ``("float32", "cuda")`` replaces
+    it and is the sharper case — a supported dtype does not make an
+    unsupported device reachable."""
     with pytest.raises(ValueError):
         cpp.NativeStorage(8, dtype=dtype, device=device)
 
@@ -285,20 +292,33 @@ def test_the_private_allocator_still_rejects_what_the_runtime_cannot_represent(
 
 
 @needs_native
-def test_the_private_allocator_accepts_float32_and_the_public_one_does_not():
-    """The exact I2 truth, stated as behavior rather than inferred from a
-    registry: float32 storage is internally allocatable and publicly
-    unsupported, at the same moment, on purpose."""
-    with pytest.raises(ValueError):
-        cpp.NativeStorage(8, dtype="float32")
-    with pytest.raises(ValueError):
-        cpp.NativeStorage.from_array([1.0, 2.0], dtype="float32")
-    with pytest.raises(ValueError):
-        cpp.normalize_dtype("float32")
-    storage = cpp.NativeStorage._uninitialized(8, dtype="float32")
+def test_both_allocators_reach_float32_and_agree_about_it():
+    """Through milestone I8 this asserted the exact I2 truth — float32
+    storage internally allocatable and publicly unsupported, at the same
+    moment, on purpose. **I9 ended that split**: the public registry moved,
+    so both paths reach float32 now and the durable claim is that they
+    *agree*.
+
+    That is the property worth pinning either way. When the two disagreed
+    it was by design and the disagreement was the test; now that they
+    concur, a private allocator that produced something a public one could
+    not — a different width, a different size unit, a different tag — would
+    be the drift, and this catches it."""
+    assert cpp.normalize_dtype("float32") == "float32"
+    for storage in (
+        cpp.NativeStorage(8, dtype="float32"),
+        cpp.NativeStorage._uninitialized(8, dtype="float32"),
+        cpp.NativeStorage._typed(8, "float32"),
+    ):
+        try:
+            assert storage.dtype == "float32"
+            assert storage.size == 8          # elements, not bytes
+        finally:
+            storage.close()
+    storage = cpp.NativeStorage.from_array([1.0, 2.0], dtype="float32")
     try:
         assert storage.dtype == "float32"
-        assert storage.size == 8          # elements, not bytes
+        assert storage.to_numpy().dtype == np.float32
     finally:
         storage.close()
 
@@ -1503,8 +1523,8 @@ def test_h1_exposes_no_public_empty_api():
 
 
 def test_h1_changed_no_capability_registry():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "uninitialized" not in cpp.backend_info()
     # Allocation strategy is not a capability, so it appears in no

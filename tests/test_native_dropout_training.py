@@ -1300,8 +1300,8 @@ def test_the_example_states_what_the_checkpoint_does_not_capture():
 
 
 def test_g7_adds_no_capability_or_inventory_entry():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert "dropout" in cpp.AUTOGRAD_OPS
@@ -1326,7 +1326,7 @@ def test_the_boundary_move_belongs_to_g10_not_to_g7():
     for absent in ("benchmark_results",):
         assert not (REPO_ROOT / absent).exists(), absent
     assert "dropout" not in cpp.UNSUPPORTED
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
 
 
 def test_the_example_defines_no_public_training_api():

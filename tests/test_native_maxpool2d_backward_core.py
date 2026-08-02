@@ -627,4 +627,4 @@ def test_backward_exposes_no_public_winner_surface():
     assert not [name for name in public_core if "winner" in name.lower()]
     assert not [name for name in public_core if "indices" in name.lower()]
     # Still float64-only: the winner buffer introduced no index dtype.
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")

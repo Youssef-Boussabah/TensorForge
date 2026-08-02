@@ -2554,7 +2554,7 @@ def test_f4_completes_the_public_normalization_module_surface():
     assert "batchnorm" not in cpp.UNSUPPORTED
     assert "layernorm" not in cpp.UNSUPPORTED
     # ...and the remaining boundary is exactly what it was.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
     # BatchNorm3d was never in scope.
     assert not hasattr(experimental, "NativeBatchNorm3d")
     assert "NativeBatchNorm3d" not in cpp.NATIVE_MODULES
@@ -2572,7 +2572,7 @@ def test_f4_adds_no_operation_core_method_kernel_or_abi_symbol():
     for symbol in ("tf_core_batch_norm", "tf_core_batch_norm_forward",
                    "tf_core_batch_norm_backward", "tf_core_layer_norm"):
         assert symbol not in cpp._CHECKED_KERNELS, symbol
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)

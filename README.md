@@ -180,6 +180,7 @@ uv run python examples/native_cnn_training.py     # end-to-end native CNN traini
 uv run python examples/native_classification_training.py  # native classification + exact resume
 uv run python examples/native_normalization_training.py   # native BatchNorm+LayerNorm training + exact resume
 uv run python examples/native_dropout_training.py         # native Dropout training + exact STOCHASTIC resume
+uv run python examples/native_float32_training.py          # integrated float32 AND float64 exact resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke  # CNN characterization
 uv run python benchmarks/benchmark_native_classification.py --smoke        # classification characterization
@@ -211,6 +212,34 @@ loss.backward()
 optimizer.step()
 optimizer.zero_grad()
 ```
+
+**float32 is supported too**, on the CPU, since Phase I milestone I9. Ask
+for it explicitly — it is never inferred, and float64 stays the default:
+
+```python
+import numpy as np
+from tensorforge.experimental import NativeLinear, NativeSGD, NativeTensor
+
+layer = NativeLinear(3, 2, seed=0, dtype="float32")
+x = NativeTensor.from_array(np.ones((4, 3)), dtype="float32")
+
+output = layer(x)                      # float32 in, float32 out
+loss = output.multiply(output).sum()
+loss.backward()                        # every gradient is float32 too
+
+NativeSGD(layer.parameters(), lr=0.1).step()
+
+assert layer.weight.dtype == "float32"
+assert output.to_numpy().dtype == np.float32
+assert NativeTensor.zeros((2, 2)).dtype == "float64"   # the default did not move
+```
+
+The two widths never mix: there is no casting, no promotion, and no
+`astype`/`.float()`/`.to()`. A float32 tensor meeting a float64 one raises
+before anything is allocated, and the only way to get the other width is
+to construct it. Passing a float64 array with `dtype="float32"` is the
+explicit host-to-native conversion boundary, not a tensor cast — and
+passing a float32 array with no `dtype` still gives you float64.
 
 ## Examples
 
@@ -322,8 +351,9 @@ every shipped training workload is **1.50×–3.89× faster than it was at
 the H0 baseline**, with bit-identical results, and **no numerical
 capability, dtype, device, export, registry value, or checkpoint version
 moved at any milestone**. **Phase I — native dtype generalization and
-float32 CPU support — is the latest phase; milestones I0 through I8
-are complete and I9–I11 are not started.** I0 was the design lock and
+float32 CPU support — is the latest phase; milestones I0 through I9
+are complete and I10 and I11 are not started, so the phase is active
+rather than closed.** I0 was the design lock and
 documentation reconciliation, shipping
 [docs/native_dtype_float32_design.md](docs/native_dtype_float32_design.md)
 and its guardrail tests and nothing else. **I1 built the dtype
@@ -399,22 +429,50 @@ last family out: the export keeps its exact ABI shape, and the **random
 derivation is untouched**, so one `(seed, call_index, element count)` key
 drops exactly the same elements at both widths and only the two multiplier
 values differ — the kept one being the binary64 reciprocal narrowed once.
-**The native runtime is still declared float64 CPU only**: `float32`
-remains listed as unsupported. Every *numerical* family is now
-dtype-general and the experimental state-owning modules can be constructed
-at float32, but no public tensor constructor produces a float32 tensor, no
-optimizer accepts a float32 parameter, and a version-2 checkpoint refuses
-to save a float32 model rather than writing an archive it could never read
-back. Those gaps are milestones I8 and I9, and the registry moves at I9.
-The native checkpoint format is still version 2 with versions 1 and 2
-accepted. The
+**I8 made float32 survive a step and a file, and added no export**: both
+`NativeSGD` and `NativeAdam` execute at float32, Adam's `m` and `v` carry
+their parameter's dtype, one optimizer may hold parameters of both widths
+with independent dtype-consistent state per parameter, and the native
+checkpoint moved to **version 3** — every numeric entry declaring its own
+dtype, versions `(1, 2, 3)` accepted, and float32 model values, buffers,
+and Adam moments round-tripping bit for bit. Versions 1 and 2 stay
+float64-only formats permanently.
+
+**I9 made float32 public — the phase's one and only public registry
+change — and added no export, no CTest, and no C++ line.** It moved after
+the proof, not before: the integrated exact-resume proof was written and
+passing first, through the already-approved private typed route, with the
+registry still reading `("float64",)`; only then did `SUPPORTED_DTYPES`
+become `("float64", "float32")` and `UNSUPPORTED` become `("cuda",
+"amp")`; then the example switched to the public constructor and the whole
+proof was rerun. `examples/native_float32_training.py` is that proof —
+`Conv2d → BatchNorm2d → ReLU → MaxPool2d → Dropout → Flatten → Linear →
+BatchNorm1d → ReLU → LayerNorm → Dropout → Linear` into
+`NativeCrossEntropyLoss` with `NativeAdam`, and **two Dropout layers
+sharing one registered generator** so the model carries a real alias
+topology — run interrupted and uninterrupted at **each** dtype and
+compared **only against itself**, in raw IEEE-754 bit patterns. Every
+loss, the first resumed step's produced gradients, every parameter and
+buffer, every Adam moment and counter, the generator state, the alias
+topology, the next Dropout mask, the final logits, the predictions, and
+the evaluation output all match exactly, and native live storage returns
+to baseline. A float32 run is never required to reproduce a float64 one,
+and nothing asserts that it does.
+
+**So `float32` and `float64` are both supported native CPU dtypes now**,
+with float64 still the default everywhere, no casting or promotion between
+them, no dtype inference from a NumPy array, and `RAW_KERNEL_DTYPES` still
+`("float64",)` for the seven handle-free raw utility kernels — a
+deliberately separate statement from overall dtype support. The
 contract's **exactly two** new C ABI symbols for the whole phase
 (52 → **54**) are now spent; it rejects per-operation float32 exports, forbids casting,
 promotion, and mixed-dtype arithmetic, requires float32 to accumulate in
-float32, designs checkpoint version 3 without activating it, requires
+float32, activated checkpoint version 3 at I8, requires
 exact deterministic resume to be proved separately for each dtype rather
-than as agreement between them, and moves the public support registry at
-milestone **I9** and at no earlier one. Phase C shipped
+than as agreement between them, and moved the public support registry at
+milestone **I9** and at no other one. What remains is **I10**
+(cross-cutting hardening and float32/float64 benchmark characterization)
+and **I11** (cross-platform validation and phase closure). Phase C shipped
 parameters, modules, state dictionaries,
 Linear/ReLU/Sequential, MSE loss, parameter versioning with stale-graph
 safety, `sqrt`/`reciprocal` optimizer primitives, SGD and adaptive Adam,

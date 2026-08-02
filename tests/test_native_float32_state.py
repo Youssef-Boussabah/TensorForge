@@ -1578,20 +1578,42 @@ def test_a_v3_checkpoint_carries_no_cast_and_no_map_location():
 
 
 @needs_native
-def test_i8_added_no_export_and_moved_no_public_registry():
-    """The exit-gate half that must **not** have moved."""
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+def test_i8_added_no_export_and_i9_is_what_moved_the_public_registry():
+    """The exit-gate half I8 must **not** have moved, restated where I9
+    moved it to.
+
+    Through I8 this asserted that the registry was untouched and that no
+    public constructor built a float32 tensor — the whole point of the
+    rollout being that float32 optimizer state and checkpoint v3 could
+    exist without a promise attached. **I9 attached the promise.** So what
+    stays assertable here is the attribution: the registry is at I9's
+    values, the raw-kernel row did not move with it, and the two things I8
+    itself owned — the export count and the optimizer signatures — are
+    exactly as I8 left them."""
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    # The raw-kernel registry is a different statement and did not move
+    # with the public one, at I8 or at I9.
     assert cpp.RAW_KERNEL_DTYPES == ("float64",)
-    with pytest.raises(ValueError):
-        cpp.normalize_dtype("float32")
-    # No public constructor builds a float32 tensor before I9.
+    assert cpp.normalize_dtype("float32") == "float32"
+    assert cpp.normalize_dtype(None) == "float64"
+    # Every public constructor builds a float32 tensor since I9 — and none
+    # of them infers the dtype, which is the rule I8's staging path relied
+    # on and which did not change when the registry moved.
     for factory, args in ((NativeTensor.zeros, ((2,),)),
                           (NativeTensor.full, ((2,), 1.0)),
                           (NativeTensor.from_array, (np.ones(2),))):
-        with pytest.raises(ValueError):
-            factory(*args, dtype="float32")
+        tensor = factory(*args, dtype="float32")
+        try:
+            assert tensor.dtype == "float32"
+        finally:
+            tensor.close()
+        inferred = factory(*args)
+        try:
+            assert inferred.dtype == "float64"
+        finally:
+            inferred.close()
     # Neither optimizer gained a dtype or device argument.
     import inspect
 

@@ -60,7 +60,10 @@ kernel, C ABI export, ctypes symbol, tensor operation, or checkpoint
 change — the native checkpoint format stays version 1.
 
 Fully separate from the stable framework's
-``tensorforge.nn.cross_entropy``; float64/cpu only.
+``tensorforge.nn.cross_entropy``. It takes **no** dtype argument
+and must not gain one: it is a thin delegate that inherits the
+dtype of the logits it is handed, and the fused kernel underneath
+it has been dtype-general since Phase I milestone I6. CPU only.
 """
 
 from ..backends import cpp

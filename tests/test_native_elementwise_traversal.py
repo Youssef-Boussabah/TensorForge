@@ -1537,8 +1537,8 @@ def test_no_fused_normalization_operation_was_added():
 def test_no_capability_dtype_device_or_checkpoint_value_moved():
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT_VERSION == 3
     assert set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2, 3}
