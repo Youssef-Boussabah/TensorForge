@@ -78,7 +78,7 @@ and Runtime Efficiency — is complete (H0–H10) and is the latest
 *completed* phase**; both are recorded further below.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I6 are complete; I7 through I11
+latest phase. Milestones I0 through I7 are complete; I8 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
 was design, guardrail tests, and documentation reconciliation, and no
@@ -208,19 +208,43 @@ accumulation witness, the per-width stability witnesses, the recorded
 spread-beyond-the-finite-range qualification, and the exceptional-value
 sweep.
 
+**I7 delivered dtype-aware state-owning modules and dtype-general Dropout**,
+and added **no export**. Six constructors — `NativeParameter`,
+`NativeLinear`, `NativeConv2d`, `NativeLayerNorm`, `NativeBatchNorm1d`, and
+`NativeBatchNorm2d` — gained a **keyword-only** `dtype` accepting exactly
+`"float64"` and `"float32"` and defaulting to `"float64"`, all six routing
+through one shared private validator so no constructor invents a dtype rule
+of its own. Affine parameters, both BatchNorm running buffers, the
+evaluation snapshots, and every scalar the composed forwards materialize
+(`eps`, `momentum`, `1 - momentum`) are at the module's dtype; the
+two-buffer running-statistics transaction gained one dtype validation and
+nothing else. **Initialization did not move**: the host draw is the same
+`numpy.random.default_rng(seed)` stream in the same order, so a float32
+layer with seed *S* holds exactly `float32(the float64 draw with seed S)`.
+
+Dropout became the last dtype-general family. `tf_core_dropout_forward`
+keeps its exact ABI shape and gained one operand-agreement guard over its
+three handles and one dispatch above a templated kernel; the **random
+derivation is untouched**, so one `(seed, call_index, element count)` key
+drops exactly the same elements at both widths and only the two multiplier
+values differ. The kept multiplier is the binary64 reciprocal narrowed
+once. With it, the last of the five explicit float64-only Python gates came
+out. The native CTest inventory moved **23 → 24** (`test_dtype_dropout`),
+which carries the cross-dtype drop-pattern identity, the narrow-once scale
+witness, and the unchanged validation matrix at both widths.
+
 **Everything else on this page is still exactly what Phase H left**:
 float64 CPU only, native checkpoint format version **2** with versions
 **(1, 2)** accepted, `SUPPORTED_DTYPES == ("float64",)`, and
-`UNSUPPORTED == ("float32", "cuda", "amp")`. float32 is *internally
-supported for storage, transfer, views, elementwise/unary execution,
-reductions, matmul, Conv2d, MaxPool2d, softmax, log-softmax, fused
-cross-entropy, view backward, and private Core autograd* — and for nothing
-else. Normalization and Dropout reject a float32 handle with
-`TF_ERROR_INVALID` before reading or writing anything, since walking a
-4-byte-per-element buffer through a `double*` would overrun it twofold. And
-a private float32 graph is not public float32 autograd — no public
-constructor produces a float32 tensor, so no float32 parameter, module, or
-optimizer exists.
+`UNSUPPORTED == ("float32", "cuda", "amp")`. Every *numerical* family in
+the runtime is dtype-general as of I7 — storage, transfer, views,
+elementwise/unary execution, reductions, matmul, Conv2d, MaxPool2d,
+softmax, log-softmax, fused cross-entropy, normalization, Dropout, view
+backward, and Core autograd — and the experimental state-owning modules can
+be constructed at float32. What that is **not** is a support claim: float32
+optimizers do not exist, checkpoint version 3 does not exist, and no public
+tensor constructor produces a float32 tensor. Those are milestones I8 and
+I9, and the registry moves at I9.
 
 The contract's **exactly two** new C ABI symbols for the entire phase
 (`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,

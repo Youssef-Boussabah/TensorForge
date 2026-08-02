@@ -1488,12 +1488,20 @@ class NativeStorage:
         element type and flattened in C order — and the identical failure
         behavior: a failed copy closes the storage rather than returning a
         partly written buffer.
+
+        H1: the allocation is uninitialized for ``from_array``'s reason —
+        ``copy_from`` writes every element of a storage sized from the same
+        array — and it reaches that allocation through ``_uninitialized``,
+        which is **the** seam the poison tests wrap. Going around it
+        (through ``_typed(..., zero_initialize=False)``, which is the same
+        call) would leave this path un-poisonable, and Phase I, milestone I7
+        put ``NativeParameter`` construction on it.
         """
         canonical = _normalize_internal_dtype(dtype)
         array = np.ascontiguousarray(
             values, dtype=_DTYPE_NUMPY[canonical]).ravel()
-        storage = cls._typed(int(array.size), canonical, device=device,
-                             zero_initialize=False)
+        storage = cls._uninitialized(int(array.size), dtype=canonical,
+                                     device=device)
         try:
             storage.copy_from(array)
         except BaseException:
@@ -3818,17 +3826,26 @@ class NativeTensorCore:
         """The Dropout forward plus its private multiplier mask.
 
         Returns ``(output, mask)``: two fresh **owning** row-major
-        contiguous cores of the input's shape. ``mask`` holds exactly two
-        distinct float64 values — ``0.0`` for a dropped element and the
-        single ``1 / (1 - p)`` computed once for the whole call — so it is
-        a *multiplier* mask, not a boolean one, and a backward is one
-        elementwise multiply against it (design §4.4, §7.5).
+        contiguous cores of the input's shape, **both at the input's own
+        dtype** (Phase I, milestone I7). ``mask`` holds exactly two
+        distinct values — ``0.0`` for a dropped element and the single
+        ``1 / (1 - p)`` computed once in binary64 for the whole call and
+        narrowed once to the element type — so it is a *multiplier* mask,
+        not a boolean one, and a backward is one elementwise multiply
+        against it (design §4.4, §7.5).
+
+        **The keep/drop pattern does not depend on the dtype.** The uniform
+        draw stays binary64 at every width (design §14.2), so one
+        ``(seed, call_index, element count)`` key drops exactly the same
+        elements in a float32 call as in a float64 one; only the two
+        multiplier values differ.
 
         The mask is **internal**: it is never exposed as a public
-        NativeTensor, never given a dtype tag of its own, never traversed
-        as a parameter or buffer, and never serialized. It exists so a
-        later backward can multiply without redrawing; the caller of this
-        private helper owns it and must ``close()`` it.
+        NativeTensor, never given a dtype tag *of its own* (it carries the
+        input's, which is what makes the three handles agree), never
+        traversed as a parameter or buffer, and never serialized. It exists
+        so a later backward can multiply without redrawing; the caller of
+        this private helper owns it and must ``close()`` it.
 
         **Logical-layout independence** is a locked property, not an
         accident. Per **Policy B** (docs/native_cnn_design.md §5) a
@@ -3858,11 +3875,14 @@ class NativeTensorCore:
         today. The empty case is proved at the kernel and ABI layers,
         where it is reachable."""
         self._require_open()
-        if self.dtype != "float64" or self.device != "cpu":
-            raise ValueError(
-                f"dropout_forward requires a float64/cpu input, got "
-                f"{self.dtype}/{self.device}"
-            )
+        # Phase I, milestone I7: the hard float64 gate that stood here since
+        # G2 is gone — and it was the **last** of the five §2.3 gates (I5
+        # opened the two pooling ones, I6 the two cross-entropy ones). The
+        # input dtype now comes from the storage tag, which can only hold an
+        # internally representable dtype, and the C ABI dispatches on it.
+        # Both destinations are allocated at that same dtype below, so the
+        # three handles cannot disagree; the device is "cpu" by construction
+        # for every constructible storage.
         # Both key halves and the probability are validated by the shared
         # helpers, so this surface accepts exactly what the operation and
         # the module will accept (design §6.1).

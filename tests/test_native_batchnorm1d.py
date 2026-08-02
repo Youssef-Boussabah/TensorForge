@@ -319,16 +319,25 @@ def test_rejected_construction_leaves_no_partial_module(live_storages):
 
 @needs_native
 def test_constructor_rejects_extra_arguments():
-    """The public constructor is exactly (num_features, eps, momentum):
-    no affine, track_running_stats, dtype, device, seed, or training."""
+    """The public constructor is exactly ``(num_features, eps, momentum, *,
+    dtype)``: no affine, track_running_stats, device, seed, or training.
+
+    ``dtype`` joined it at Phase I, milestone I7, and only ``dtype`` —
+    ``device`` stays out, because Phase I adds no device and a module that
+    accepted one would be advertising a capability the runtime does not
+    have. The keyword-only marker is part of the contract too: ``dtype`` can
+    never be passed positionally, so the positional shape is unchanged."""
     for kwargs in ({"affine": False}, {"track_running_stats": False},
-                   {"dtype": "float64"}, {"device": "cpu"},
+                   {"device": "cpu"},
                    {"requires_grad": False}, {"seed": 1},
                    {"unbiased": False}, {"axis": 0}, {"training": True}):
         with pytest.raises(TypeError):
             NativeBatchNorm1d(3, **kwargs)
     with pytest.raises(TypeError):
         NativeBatchNorm1d(3, 1e-5, 0.1, 7)
+    # ...and the one that is now accepted.
+    module = NativeBatchNorm1d(3, dtype="float64")
+    assert module.dtype == "float64"
 
 
 # ==========================================================================
@@ -2364,8 +2373,8 @@ def test_constructor_failure_releases_every_earlier_allocation(
     for nth, already_created in ((2, 1), (3, 2), (4, 3)):
         created = []
         real_parameter = native_batchnorm.NativeParameter
-        real_zeros = NativeTensor.zeros
-        real_full = NativeTensor.full
+        real_zeros = NativeTensor._typed_zeros
+        real_full = NativeTensor._typed_full
 
         def spy_parameter(*args, **kwargs):
             parameter = real_parameter(*args, **kwargs)
@@ -2384,10 +2393,10 @@ def test_constructor_failure_releases_every_earlier_allocation(
 
         monkeypatch.setattr(native_batchnorm, "NativeParameter", spy_parameter)
         monkeypatch.setattr(
-            native_batchnorm.NativeTensor, "zeros", staticmethod(spy_zeros)
+            native_batchnorm.NativeTensor, "_typed_zeros", staticmethod(spy_zeros)
         )
         monkeypatch.setattr(
-            native_batchnorm.NativeTensor, "full", staticmethod(spy_full)
+            native_batchnorm.NativeTensor, "_typed_full", staticmethod(spy_full)
         )
         _collect()
         baseline = len(live_storages)
@@ -2428,8 +2437,8 @@ def test_registration_failure_releases_every_earlier_allocation(
 
     created = []
     real_parameter = native_batchnorm.NativeParameter
-    real_zeros = NativeTensor.zeros
-    real_full = NativeTensor.full
+    real_zeros = NativeTensor._typed_zeros
+    real_full = NativeTensor._typed_full
 
     def spy_parameter(*args, **kwargs):
         parameter = real_parameter(*args, **kwargs)
@@ -2449,10 +2458,10 @@ def test_registration_failure_releases_every_earlier_allocation(
     monkeypatch.setattr(NativeModule, "register_buffer", register)
     monkeypatch.setattr(native_batchnorm, "NativeParameter", spy_parameter)
     monkeypatch.setattr(
-        native_batchnorm.NativeTensor, "zeros", staticmethod(spy_zeros)
+        native_batchnorm.NativeTensor, "_typed_zeros", staticmethod(spy_zeros)
     )
     monkeypatch.setattr(
-        native_batchnorm.NativeTensor, "full", staticmethod(spy_full)
+        native_batchnorm.NativeTensor, "_typed_full", staticmethod(spy_full)
     )
     _collect()
     baseline = len(live_storages)

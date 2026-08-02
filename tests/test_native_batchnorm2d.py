@@ -339,13 +339,18 @@ def test_constructor_signature_is_exact():
     import inspect
 
     signature = inspect.signature(NativeBatchNorm2d.__init__)
+    # ``dtype`` joined at Phase I, milestone I7 — keyword-only, so the
+    # positional shape is exactly what F4 defined. ``device`` did not join
+    # it and does not exist anywhere in the phase.
     assert list(signature.parameters) == [
-        "self", "num_features", "eps", "momentum"
+        "self", "num_features", "eps", "momentum", "dtype"
     ]
     assert signature.parameters["eps"].default == 1e-5
     assert signature.parameters["momentum"].default == 0.1
+    assert signature.parameters["dtype"].default is None
+    assert signature.parameters["dtype"].kind is inspect.Parameter.KEYWORD_ONLY
     for kwargs in ({"affine": False}, {"track_running_stats": False},
-                   {"dtype": "float64"}, {"device": "cpu"}, {"seed": 1},
+                   {"device": "cpu"}, {"seed": 1},
                    {"requires_grad": False}, {"axis": 1},
                    {"layout": "NCHW"}, {"channels_last": True},
                    {"unbiased": False}):
@@ -473,8 +478,8 @@ def test_constructor_failure_releases_every_earlier_allocation(
     for nth, already_created in ((2, 1), (3, 2), (4, 3)):
         created = []
         real_parameter = native_batchnorm.NativeParameter
-        real_zeros = NativeTensor.zeros
-        real_full = NativeTensor.full
+        real_zeros = NativeTensor._typed_zeros
+        real_full = NativeTensor._typed_full
 
         def spy_parameter(*args, **kwargs):
             parameter = real_parameter(*args, **kwargs)
@@ -493,10 +498,10 @@ def test_constructor_failure_releases_every_earlier_allocation(
 
         monkeypatch.setattr(native_batchnorm, "NativeParameter", spy_parameter)
         monkeypatch.setattr(
-            native_batchnorm.NativeTensor, "zeros", staticmethod(spy_zeros)
+            native_batchnorm.NativeTensor, "_typed_zeros", staticmethod(spy_zeros)
         )
         monkeypatch.setattr(
-            native_batchnorm.NativeTensor, "full", staticmethod(spy_full)
+            native_batchnorm.NativeTensor, "_typed_full", staticmethod(spy_full)
         )
         _collect()
         baseline = len(live_storages)

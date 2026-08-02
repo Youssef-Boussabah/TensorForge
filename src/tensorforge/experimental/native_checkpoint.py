@@ -498,6 +498,36 @@ def _coherent_snapshot(model, optimizer, metadata, where):
             entries = {}
             for index, key in enumerate(keys):
                 snapshot = model_state[key]
+                # Phase I, milestone I7 — the version-2 boundary, enforced
+                # on the way **out**.
+                #
+                # Format versions 1 and 2 are float64-only formats,
+                # permanently (design §16.5): the loader proves every
+                # archive array is exactly ``np.float64`` and there is no
+                # dtype in the manifest that could say otherwise. Without
+                # this check a float32 parameter would serialize to a
+                # float32 array under a version-2 manifest — a file this
+                # very library refuses to read back. That is worse than a
+                # rejection: it is a silent, unrecoverable checkpoint.
+                #
+                # Rejecting rather than widening or narrowing is the whole
+                # point. Writing float32 as float64 would invent precision
+                # the model does not have; writing it as float32 would
+                # forge a version-2 payload. Dtype-aware serialization is
+                # checkpoint **version 3**, milestone I8, and it is not
+                # started. This runs inside the state-transaction guard,
+                # before the temporary file exists and before any array is
+                # encoded, so a rejected save leaves the model, the
+                # optimizer, the generators, and the filesystem untouched —
+                # and the ``finally`` below still closes every snapshot.
+                if snapshot.dtype != "float64":
+                    raise ValueError(
+                        f"{where}: cannot save {key!r}: it is "
+                        f"{snapshot.dtype}, and native checkpoint format "
+                        f"version {_FORMAT_VERSION} stores float64 only. "
+                        f"Dtype-aware checkpoints are a later milestone; "
+                        f"nothing is cast, widened, or guessed."
+                    )
                 array_name = f"model::{index:06d}"
                 arrays[array_name] = snapshot.to_numpy()
                 entries[key] = {

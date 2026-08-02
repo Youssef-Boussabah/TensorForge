@@ -1450,12 +1450,15 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     # the dtype-classification test on the same terms again: it drives the
     # *existing* E3/E4/E5 fused kernels at a second element type, plus the
     # float32 batch-loss accumulation witness and the recorded
-    # spread-beyond-the-finite-range qualification.
-    assert len(ctests) == 23
+    # spread-beyond-the-finite-range qualification. I7 added the
+    # dtype-Dropout test, last of the family and on the same terms: it
+    # drives the *existing* G2 kernel at a second element type, plus the
+    # cross-dtype drop-pattern identity and the narrow-once scale witness.
+    assert len(ctests) == 24
     phase_i = {"test_dtype_storage.cpp", "test_typed_transfer.cpp",
                "test_dtype_elementwise.cpp",
                "test_dtype_reduction_matmul.cpp", "test_dtype_cnn.cpp",
-               "test_dtype_classification.cpp"}
+               "test_dtype_classification.cpp", "test_dtype_dropout.cpp"}
     assert phase_i <= set(ctests)
     assert len([name for name in ctests if name not in phase_i]) == 17
     assert "test_conv2d_execution.cpp" in ctests

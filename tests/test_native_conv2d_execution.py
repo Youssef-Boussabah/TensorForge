@@ -1093,8 +1093,15 @@ def test_no_environment_variable_changes_convolution_behaviour(monkeypatch):
 
 def test_the_convolution_public_surface_is_unchanged():
     """Signatures, supported options, and the module surface are exactly
-    what Phase D defined: no dilation, no groups, no channels-last, no new
-    keyword."""
+    what Phase D defined: no dilation, no groups, no channels-last, no
+    performance keyword.
+
+    The **operation** and the **Core wrapper** are byte-for-byte the same
+    signatures — dtype travels on the tensors, never as an argument, so
+    neither gained one at any Phase-I milestone. The **module** gained
+    exactly one keyword-only ``dtype`` at milestone I7, because a module is
+    the thing that *creates* state and therefore has to be told what to
+    create it as."""
     import inspect
 
     signature = inspect.signature(NativeTensor.conv2d)
@@ -1106,7 +1113,14 @@ def test_the_convolution_public_surface_is_unchanged():
     module_signature = inspect.signature(NativeConv2d.__init__)
     assert list(module_signature.parameters) == [
         "self", "in_channels", "out_channels", "kernel_size", "stride",
-        "padding", "bias", "seed", "requires_grad"]
+        "padding", "bias", "seed", "requires_grad", "dtype"]
+    assert module_signature.parameters["dtype"].default is None
+    assert (module_signature.parameters["dtype"].kind
+            is inspect.Parameter.KEYWORD_ONLY)
+    assert "dtype" not in signature.parameters
+    assert "dtype" not in core_signature.parameters
+    # Phase I adds no device anywhere.
+    assert "device" not in module_signature.parameters
     for forbidden in ("dilation", "groups", "channels_last", "output_padding",
                       "path", "block_size", "algorithm"):
         assert forbidden not in signature.parameters

@@ -135,24 +135,45 @@ exponentials, the normalizing sum, the log-normalizer, the row loss, the
 contribution) is at the element type, saved probabilities carry the graph
 dtype, private float32 graphs differentiate through all three, and the
 class **targets stay host `int64` metadata at every width** — no integer
-tensor dtype exists or was added.
+tensor dtype exists or was added; and since I7 it **normalizes, drops, and
+is a module dtype** — LayerNorm and both BatchNorm shapes run and
+differentiate at float32 as composition (no kernel, no export), Dropout's
+one export is dtype-general with its exact ABI shape unchanged, and six
+state-owning constructors (`NativeParameter`, `NativeLinear`,
+`NativeConv2d`, `NativeLayerNorm`, `NativeBatchNorm1d`,
+`NativeBatchNorm2d`) take a **keyword-only** `dtype` accepting exactly
+`"float64"`/`"float32"` and defaulting to float64, through one shared
+private validator (`experimental/_native_dtype.normalize_module_dtype`).
 
-That is not a support claim and does not change a single row above: the one
-numerical operation that has not been dtype-generalized — **Dropout** —
-rejects a float32 handle with `TF_ERROR_INVALID` before touching memory;
-`normalize_dtype("float32")` still raises; and no public constructor
-produces a float32 tensor, so float32 parameters, modules, optimizers,
-checkpoints, and training do not exist. The private float32 graphs I4, I5,
-and I6 prove are built through the private typed constructors (`_typed`,
-`_typed_from_array`, `_typed_full`, `zeros(..., _trusted_dtype=True)`,
-`NativeTensor._from_core`), which exist so an intermediate milestone can
-test through them while the public boundary stays exactly where it is. The
-public registry moves at **I9**, not before.
+**With Dropout, no float64-only compute path is left.** All five §2.3
+Python gates are gone (I5 opened two, I6 two, I7 the last), and the only
+remaining `!= "float64"` in `backends/cpp.py` is the MaxPool2d winner
+buffer's permanent §13.3 pin.
+
+That is still not a support claim and does not change a single row above:
+`normalize_dtype("float32")` still raises; no **public** tensor constructor
+produces a float32 tensor (`from_array`, `zeros`, `full` all reject it at
+both layers); `NativeSGD` and `NativeAdam` both refuse a float32 parameter,
+atomically; and a version-2 checkpoint **refuses to save** a float32 model
+rather than writing an archive its own loader would reject. float32
+optimizer state, checkpoint version 3, and the registry itself are
+milestones I8 and I9. The float32 graphs I4–I7 prove are reached through
+the private typed constructors (`_typed`, `_typed_from_array`,
+`_typed_full`, `zeros(..., _trusted_dtype=True)`,
+`NativeTensor._typed_zeros`, `NativeTensor._typed_full`,
+`NativeTensor._from_core`) and through the six named constructors, which
+exist so an intermediate milestone can test through them while the public
+boundary stays exactly where it is. The public registry moves at **I9**,
+not before.
 
 `NativeCrossEntropyLoss` and `native_accuracy` therefore *work* on a
-private float32 graph, and that is the operation being dtype-general rather
-than public float32 module support. Neither has a dtype argument and
-neither may gain one before I7.
+float32 graph, and that is the operation being dtype-general rather than
+public float32 support. Neither has a dtype argument and neither may gain
+one — nor may `NativeReLU`, `NativeFlatten`, `NativeMaxPool2d`,
+`NativeSequential`, `NativeDropout`, `NativeMSELoss`, or `NativeGenerator`.
+They own no dtype-bearing numeric state, so an argument there would be a
+second authority that could disagree with the data. **No `device` argument
+exists anywhere and none may be added.**
 
 One further registry exists and is a **different** statement from
 `SUPPORTED_DTYPES`: `RAW_KERNEL_DTYPES == ("float64",)` (added at I2,
@@ -583,15 +604,16 @@ matching docs file (and README links) **in the same milestone**.
     exactly **one** C ABI symbol across the whole phase
     (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
-- **Native line: Phase I at I6** — Native Dtype Generalization and
+- **Native line: Phase I at I7** — Native Dtype Generalization and
   Float32 CPU Support. Contract:
   `docs/native_dtype_float32_design.md`. **I0 (design, contract tests,
   documentation), I1 (the dtype model and dtype-tagged storage), I2
   (typed transfer, views, and materialization), I3 (elementwise,
   broadcast, and unary dtype execution), I4 (reductions, matmul, views,
-  and core autograd), I5 (CNN and pooling dtype support), and I6 (stable
-  math and classification dtype support) are complete; I7–I11 are not
-  started.**
+  and core autograd), I5 (CNN and pooling dtype support), I6 (stable
+  math and classification dtype support), and I7 (modules, parameters,
+  buffers, initialization, normalization, and Dropout) are complete;
+  I8–I11 are not started.**
   - I1 delivered: the C++ `TfDtype`/`tf::Dtype` model with frozen codes
     `0 = float64` and `1 = float32`, one item-size authority
     (`tf::dtype_item_size` — nothing else may spell a storage width), one
@@ -747,22 +769,62 @@ matching docs file (and README links) **in the same milestone**.
     "fix" this** with a widened intermediate (mixed precision), a clamp, or
     a special case; the qualification is in the contract and asserted in
     both directions by test.
-  - **Public capability did not move at I1, I2, I3, I4, I5, or I6**:
+  - I7 delivered: six state-owning constructors — `NativeParameter`,
+    `NativeLinear`, `NativeConv2d`, `NativeLayerNorm`, `NativeBatchNorm1d`,
+    `NativeBatchNorm2d` — with a **keyword-only** `dtype` accepting exactly
+    `"float64"`/`"float32"`, defaulting to float64, all six routing through
+    one shared private validator
+    (`experimental/_native_dtype.normalize_module_dtype`, a strict delegate
+    over `cpp._normalize_internal_dtype`; it is a separate module so the
+    two normalization files keep their proved "no `ctypes`, no `backends`,
+    no `NativeTensorCore`" property). The set is **closed** and asserted in
+    both directions; no `device` argument was added anywhere.
+    `NativeParameter` converts **host data** once at the ingress boundary
+    and **rejects** a live `NativeTensor` of the other dtype, because there
+    is no tensor cast. **Initialization did not move**: same local
+    `default_rng(seed)` stream, same order, same sizes, bound in binary64,
+    so `weight_f32.bits == float32(weight_f64_draw_for_seed_S).bits` —
+    asserted as bits, with float64 checked against the host stream itself.
+    Affine parameters, both BatchNorm running buffers, the eval snapshots,
+    every temporary, and every materialized scalar (`eps`, `momentum`,
+    `1 - momentum`) are at the module/graph dtype, the scalars through new
+    private `NativeTensor._typed_zeros` / `._typed_full`. The atomic
+    two-buffer transaction gained **one** dtype validation and nothing
+    else; the BatchNorm forward re-proves all four state objects still
+    carry the module dtype before either buffer can move.
+    `tf_core_dropout_forward` became dtype-general with its **exact ABI
+    shape unchanged**, one `tf::require_matching_dtype` over its three
+    handles and one `switch (tf::dispatch_dtype(...))` above one
+    `dropout_forward_dispatch<T>`; the kernel moved into
+    `tf_random_internal.h` as a template. **The random derivation is
+    untouched** — `dropout_uniform` stays binary64 at every width, so one
+    `(seed, call_index, element count)` key drops exactly the same elements
+    at both dtypes (proved against the *same* committed G2 keep vectors),
+    and the kept multiplier is `static_cast<T>(1.0 / (1.0 - p))` computed
+    once in binary64 and narrowed once. Generator algorithm, version,
+    state, locking, and call accounting are unchanged and asserted
+    identical at both widths on every path. `state_dict` validates dtype
+    per entry and never casts; a version-2 checkpoint **refuses to save** a
+    float32 model. **One pre-existing leak fixed**: `NativeLinear.__init__`
+    now closes its weight if the bias allocation fails, as its younger
+    siblings already did. CTests moved 23 → 24 (`test_dtype_dropout`).
+  - **Public capability did not move at I1 through I7**:
     float64 CPU only, `float32` still in `UNSUPPORTED`,
     `RAW_KERNEL_DTYPES` still `("float64",)`, checkpoint version 2 with
     (1, 2) accepted. Only the export count changed, 52 → **54**, at I1;
-    I2 through I6 added none.
+    I2 through I7 added none.
   - **A dtype-general Core kernel is not a public capability, and neither
-    is a private graph.** I3 generalized `tf_core_relu_backward` because it
-    is a forward-shaped numerical primitive, not graph machinery; the
-    float32 `NativeTensor` graphs I4, I5, and I6 prove are reached only
-    through the private typed constructors. `NativeCrossEntropyLoss` and
-    `native_accuracy` were inspected at I6 and **left alone** — the loss is
-    a thin delegate and the metric goes through `to_numpy()`, so both work
-    on a private float32 graph without either gaining a dtype argument.
-    float32 parameters, modules, optimizers, checkpoints, and training
-    remain absent, and no public constructor produces a float32 tensor at
-    all.
+    is a float32 module.** I3 generalized `tf_core_relu_backward` because it
+    is a forward-shaped numerical primitive, not graph machinery.
+    `NativeCrossEntropyLoss` and `native_accuracy` were inspected at I6 and
+    **left alone** — the loss is a thin delegate and the metric goes
+    through `to_numpy()`, so both work on a float32 graph without either
+    gaining a dtype argument. `NativeSequential` was inspected at I7 and
+    left alone too: it takes no dtype, enforces none, and adds no cleanup
+    of its own, so a mismatched child raises **at that child** and a model
+    may hold both widths with no bridge between them. float32 optimizers,
+    float32 checkpoints, and public float32 tensor construction remain
+    absent; both optimizers refuse a float32 parameter atomically.
   - **Recorded so no later milestone relitigates it:** for a *single*
     correctly-rounded IEEE operation — which is every I3 operation, one per
     destination element — computing in binary64 and rounding once to
@@ -783,6 +845,13 @@ matching docs file (and README links) **in the same milestone**.
     is a single correctly-rounded operation per destination, so the
     behavioural witness lives on the batch-loss accumulator and the rest
     rests on the structural check plus a same-dtype bit-identical oracle.
+    **I7's Dropout scale is a third case** and is governed by the
+    narrow-once rule rather than the accumulator rule: it is a scalar
+    computed once per call in binary64 and narrowed once, and at float32
+    that *is* observable — at `p = 0.025` the narrow-once value provably
+    differs from `1.0f / (1.0f - 0.025f)`, so the CTest proves the witness
+    non-vacuous and then asserts the kernel equals the first and differs
+    from the second.
   When implementing a Phase-I milestone, the durable rules are:
   - **exactly two** new C ABI exports across the whole phase
     (`tf_storage_create_typed`, `tf_storage_create_uninitialized_typed`,

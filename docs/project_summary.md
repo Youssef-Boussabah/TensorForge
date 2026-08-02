@@ -1655,7 +1655,7 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase I — native dtype generalization and float32 CPU support — is the
-latest phase. Milestones I0 through I6 are complete; I7 through I11
+latest phase. Milestones I0 through I7 are complete; I8 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
@@ -1791,21 +1791,54 @@ identical thing happens at binary64 past ~1.8e308 — a dynamic-range fact,
 not a float32 defect. The kernels were left alone; the counterexample is
 recorded in the contract and asserted in both directions by test.
 
+**I7 made float32 a module dtype, and added no export.** Six state-owning
+constructors — `NativeParameter`, `NativeLinear`, `NativeConv2d`,
+`NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d` — gained a
+keyword-only `dtype` accepting exactly the two widths and defaulting to
+float64, all six routing through one shared private validator so no
+constructor invents a dtype rule of its own. Affine parameters, both
+BatchNorm running buffers, the graph-safe evaluation snapshots, and every
+scalar a composed normalization forward materializes — `eps`, `momentum`,
+`1 - momentum` — are built at the module's dtype through two new private
+tensor constructors, because a literal float64 constant meeting a float32
+operand would be a mixed-dtype request the runtime refuses. The atomic
+two-buffer running-statistics transaction gained **one** dtype validation
+and nothing else, and the BatchNorm forward re-proves that all four numeric
+state objects still carry the module's dtype before either buffer can move.
+
+**Initialization did not move.** The host draw is the same local
+`numpy.random.default_rng(seed)` stream, in the same order, at the same
+sizes, with the fan-in bound computed once in binary64 — so a float32 layer
+with seed *S* holds exactly `float32(the float64 draw with seed S)`,
+asserted as raw bit patterns. The seed contract therefore stays
+dtype-independent, and changing one layer's dtype provably shifts no other
+layer's initialization.
+
+Dropout was the last dtype-general family, and its **randomness is
+untouched**: the uniform is still the binary64 53-bit conversion at every
+width, so one `(seed, call_index, element count)` key drops exactly the
+same elements at both dtypes — proved at float32 against the *same*
+committed Phase-G keep vectors rather than a second table. Only the two
+multiplier values differ, and the kept one is the binary64 reciprocal
+narrowed once, witnessed at a probability where that provably differs from
+recomputing it in binary32. The generator's algorithm, version, state, and
+reserve → commit/abandon call accounting are unchanged at both widths.
+With Dropout, the last of the five explicit float64-only Python gates came
+out. Native CTests moved **23 → 24**; exports stayed at **54**.
+
 **No public capability moved, and none does until I9.** The native runtime
-is still float64 CPU only: `SUPPORTED_DTYPES` still reads `("float64",)`,
-`UNSUPPORTED` still reads `("float32", "cuda", "amp")`, and the native
-checkpoint format is still version 2 with versions 1 and 2 accepted.
-float32 is internally supported for storage, transfer, views,
-elementwise/unary execution, reductions, matmul, Conv2d, MaxPool2d,
-softmax, log-softmax, fused cross-entropy, view backward, and private Core
-autograd — and for nothing else. Dropout, normalization, modules,
-parameters, optimizers, and checkpoints all still reject a float32 handle
-before touching memory,
-because walking a 4-byte-per-element buffer through a `double*` would
-overrun it twofold. Nor is a private float32 graph public float32
-autograd: no public constructor produces a float32 tensor, so no float32
-parameter, module, or optimizer exists to reach one. Phase H is untouched,
-remains complete, and closed at 52 exports.
+is still declared float64 CPU only: `SUPPORTED_DTYPES` still reads
+`("float64",)`, `UNSUPPORTED` still reads `("float32", "cuda", "amp")`, and
+the native checkpoint format is still version 2 with versions 1 and 2
+accepted — and a float32 model is now *refused* by a version-2 save rather
+than written into an archive the loader would reject, which would have been
+a silent, unrecoverable checkpoint. Every numerical family in the runtime
+is dtype-general as of I7, and the experimental state-owning modules can be
+constructed at float32; what does not exist is float32 optimizer state,
+checkpoint version 3, and any public constructor that produces a float32
+tensor. Both optimizers refuse a float32 parameter, atomically. Those are
+milestones I8 and I9. Phase H is untouched, remains complete, and closed at
+52 exports.
 
 The contract locked the phase before any of it was built, and the first
 three items below are the ones I1 delivered: an internal dtype

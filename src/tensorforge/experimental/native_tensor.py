@@ -267,6 +267,67 @@ class NativeTensor:
         tensor._init_requires_grad(requires_grad)
         return tensor
 
+    @classmethod
+    def _typed_zeros(cls, shape, dtype, device="cpu"):
+        """Private: a row-major contiguous all-zero tensor of ``shape`` at
+        an **internally representable** dtype (Phase I, milestone I7).
+
+        The tensor-level counterpart of the Core's dtype-trusting zeroed
+        constructor — the same shape validation, the same storage
+        ownership, the same zeroed allocation, the same ``close()``
+        semantics — differing from the
+        public ``zeros`` in exactly one respect: the dtype is validated
+        against the internal table rather than the public registry.
+
+        It exists because a **module's** persistent numeric state has to be
+        built at the module's own dtype: BatchNorm's ``running_mean`` is
+        this call. Building it at float64 and then meeting a float32 input
+        would be a mixed-dtype request, which the runtime refuses (design
+        §9); building it through the public ``zeros`` is impossible while
+        float32 is unsupported.
+
+        Private on purpose, and it widens public construction by exactly
+        nothing: ``NativeTensor.zeros(..., dtype="float32")`` raises
+        unchanged. The result is always a gradient-free leaf — a running
+        statistic is never trainable."""
+        tensor = cls._from_core(
+            cpp.NativeTensorCore.zeros(
+                shape, dtype=dtype, device=device, _trusted_dtype=True
+            )
+        )
+        tensor._init_requires_grad(False)
+        return tensor
+
+    @classmethod
+    def _typed_full(cls, shape, fill_value, dtype, device="cpu"):
+        """Private: a row-major contiguous tensor of ``shape`` filled with
+        ``fill_value`` at an **internally representable** dtype (Phase I,
+        milestone I7).
+
+        The tensor-level counterpart of
+        ``cpp.NativeTensorCore._typed_full`` (I4), private for
+        ``_typed_zeros``'s reason and used for the same two things: a
+        module's persistent numeric state at the module's dtype
+        (BatchNorm's ``running_var``), and the **graph-dtype scalar
+        constants** a composed normalization forward materializes — ``eps``,
+        ``momentum``, and ``1 - momentum``. Those are the constants design
+        §11.4 forbids introducing at literal float64 into a float32 graph.
+
+        The scalar itself crosses the ABI as a ``double`` and is narrowed
+        **once**, before the fill loop, inside ``tf_storage_fill`` (design
+        §7.4). Converting a scalar argument is not casting a tensor.
+
+        It widens public construction by exactly nothing:
+        ``NativeTensor.full(..., dtype="float32")`` raises unchanged. The
+        result is always a gradient-free leaf."""
+        tensor = cls._from_core(
+            cpp.NativeTensorCore._typed_full(
+                shape, fill_value, dtype, device=device
+            )
+        )
+        tensor._init_requires_grad(False)
+        return tensor
+
     def _init_requires_grad(self, requires_grad):
         """Validate and set a leaf's ``requires_grad`` flag. Only ``bool``
         is accepted (``int``/``None``/... raise a clear TypeError, so a

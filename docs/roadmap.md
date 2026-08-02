@@ -42,7 +42,7 @@ sections above are the narrative.
 ## The current phase — Phase I
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I6 are complete; I7 through I11
+latest phase. Milestones I0 through I7 are complete; I8 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
@@ -169,17 +169,39 @@ kernels were left alone — no widened intermediate, no clamp, no special
 case — and the counterexample was written into the contract and asserted by
 test in both directions.
 
-**None of I1 through I6 moved a public capability.** The native runtime is
-still float64 CPU only: `float32` is still listed as unsupported,
+**I7 made float32 a module dtype, and closed the last float64-only
+kernel.** Six state-owning constructors — `NativeParameter`,
+`NativeLinear`, `NativeConv2d`, `NativeLayerNorm`, `NativeBatchNorm1d`, and
+`NativeBatchNorm2d` — take a keyword-only `dtype` accepting exactly the two
+widths and defaulting to float64, through one shared validator. Affine
+parameters, both BatchNorm running buffers, the evaluation snapshots, and
+every constant a composed normalization forward materializes are at the
+module's dtype; the atomic two-buffer running-statistics transaction gained
+one dtype validation and nothing else. Initialization is unchanged at both
+widths: the same local `default_rng(seed)` stream in the same order, so a
+float32 layer with seed *S* holds exactly `float32(the float64 draw with
+seed S)` — the seed contract does not become dtype-dependent.
+
+Dropout was the last family out. The kernel is templated, the export keeps
+its exact ABI shape with one operand-agreement guard and one dispatch, and
+**the random derivation is untouched**: the uniform stays binary64 at every
+width, so one `(seed, call_index, element count)` key drops exactly the
+same elements at float32 and float64 and only the two multiplier values
+differ. The kept multiplier is the binary64 reciprocal narrowed once, which
+at float32 is an observable, separately witnessed property. Generator
+state, its algorithm, its version, and the reserve → commit/abandon call
+accounting are all unchanged, at both widths. **I7 added no export.**
+
+**None of I1 through I7 moved a public capability.** The native runtime is
+still declared float64 CPU only: `float32` is still listed as unsupported,
 `SUPPORTED_DTYPES` still reads `("float64",)`, and the native checkpoint
 format is still `tensorforge.native_checkpoint` version 2 with versions 1
-and 2 accepted. What remains numerically downstream still rejects a float32
-handle before reading or writing anything — Dropout, normalization,
-optimizers, modules, and checkpoints. That is what keeps a
-4-byte-per-element buffer from being walked as `double`. Nor is a private
-float32 graph public float32 autograd: no public constructor produces a
-float32 tensor, no `NativeParameter` accepts one, and no module takes a
-dtype argument, so nothing a user can write reaches any of it. The gap
+and 2 accepted — and a float32 model is *refused* by a version-2 save
+rather than written into an archive the loader would reject. What remains
+is exactly what milestones I8 and I9 own: float32 optimizer state,
+checkpoint version 3, the exact float32 resume proof, and the registry
+itself. No public tensor constructor produces a float32 tensor, so the only
+way to a float32 model is to ask a module for one explicitly. The gap
 between internal capability and public promise is deliberate and closes at
 I9. Nothing about Phase H changed; Phase H remains complete, and it closed
 at 52 exports.
@@ -223,7 +245,11 @@ than re-deriving them:
   Conv2d directions on both traversals, and at I6 to the cross-entropy
   batch-loss accumulator — the one place in the classification family where
   the two policies can differ at all, since every other operation there is a
-  single correctly-rounded operation per destination.*
+  single correctly-rounded operation per destination.* *At I7 the same split
+  reached Dropout's kept multiplier, which is a **scalar** rather than an
+  accumulator and is therefore governed by the narrow-once rule instead:
+  computed in binary64 and narrowed once, witnessed at a probability where
+  that provably differs from recomputing it in binary32.*
 - **Checkpoint version 3** is designed but not activated at I0. Versions
   1 and 2 stay readable and are defined as float64-only formats that are
   never guessed to be float32.
@@ -237,7 +263,7 @@ than re-deriving them:
   optimizer state, checkpoint version 3, and the exact-resume proof all
   exist.
 
-The ladder is I0 through I11 — **I0 through I6 landed; I7 is next**:
+The ladder is I0 through I11 — **I0 through I7 landed; I8 is next**:
 the contract (I0), the dtype model and
 tagged storage (I1), typed transfer and materialization (I2), elementwise
 execution (I3), reductions and matmul (I4), the convolution and pooling

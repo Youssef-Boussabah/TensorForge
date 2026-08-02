@@ -695,4 +695,38 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME dtype_classification COMMAND test_dtype_classification)
+
+  # Dtype-general Dropout (Phase I, milestone I7): compiles random.cpp
+  # directly so it reaches the hidden templated dropout_forward_contiguous at
+  # BOTH instantiations beside the exported wrapper it lives inside.
+  # Deliberately complementary rather than a superset: test_dropout_forward
+  # keeps the committed mix64/stream/element-bit known-answer vectors, the
+  # bits-to-uniform conversion, the strict `<` equality-threshold vector, and
+  # the full G2 float64 validation matrix — none of which I7 touched. This
+  # one proves the set I7 opened: the SAME committed keep patterns at
+  # float32, the two widths dropping identical elements for one key, the
+  # kept multiplier proved to be the binary64 reciprocal narrowed once (with
+  # a non-vacuous p = 0.025 witness that distinguishes it from an
+  # all-binary32 recomputation), the exceptional-value sweep at both widths,
+  # mixed dtype refused in each of the three handle positions with both
+  # destinations unmoved, the unchanged validation matrix, and the kernel
+  # holding no state. storage.cpp supplies the typed Storage handles the
+  # export takes; error.cpp the thread-local slot the guarded wrapper
+  # records into.
+  add_executable(test_dtype_dropout
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_dropout.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/random.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_dropout PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_dropout PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_dropout PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_dropout PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_dropout COMMAND test_dtype_dropout)
 endif()

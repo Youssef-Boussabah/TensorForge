@@ -1066,7 +1066,7 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **Native dtype generalization and float32 CPU support (Phase I) is
-  under way: milestones I0 through I4 are complete, I5–I11 are not
+  under way: milestones I0 through I7 are complete, I8–I11 are not
   started.** Phase I is the latest phase; Phase H is unaffected and
   remains complete, having closed at 52 exports. **I0 was the
   architecture contract
@@ -1106,17 +1106,36 @@ explicit layer at a time:
   `tf_storage_scale` and `tf_storage_fill` became dtype-general with their
   scalar narrowed **once, before the loop**; and private float32
   `NativeTensor` graphs now differentiate end to end with every gradient,
-  temporary, and constant at the graph's dtype. Native
-  CTests moved 17 → 18 → 19 → 20 → **21**.
-  **No public capability moved**: still float64 CPU only, still
+  temporary, and constant at the graph's dtype. **I5 delivered the CNN
+  stack, I6 the stable-math and classification stack, and I7 modules,
+  buffers, normalization, and Dropout — none of them adding an export.**
+  I5 generalized all three Conv2d directions and both MaxPool2d
+  directions over H9's unchanged traversals and geometry predicates,
+  keeping the MaxPool2d winner buffer **private float64 at every value
+  dtype** so its `2**53` exact-plane bound does not shrink to float32's
+  `2**24`. I6 generalized softmax, log-softmax, and the fused
+  cross-entropy in both directions, with every value at the element type
+  and the class targets still host `int64` metadata. I7 gave six
+  state-owning constructors a keyword-only `dtype`, put affine parameters,
+  both BatchNorm running buffers, the evaluation snapshots, and every
+  materialized scalar at the module's dtype, added **one** dtype
+  validation to the atomic two-buffer running-statistics transaction, and
+  generalized `tf_core_dropout_forward` with its exact ABI shape unchanged
+  — leaving the random derivation untouched, so one `(seed, call_index,
+  element count)` key drops exactly the same elements at both widths.
+  Initialization did not move at either width: the same local
+  `default_rng(seed)` stream in the same order, so a float32 layer with
+  seed *S* holds exactly `float32(the float64 draw with seed S)`. Native
+  CTests moved 17 → 18 → 19 → 20 → 21 → 22 → 23 → **24**.
+  **No public capability moved**: still declared float64 CPU only, still
   checkpoint version 2 with versions 1 and 2 accepted, and `float32` is
-  still listed in `UNSUPPORTED`. float32 storage is allocatable, movable,
-  and computed on by transfer/copy, the elementwise and unary family,
-  reductions, matmul, view-backward, and the private Core autograd graph —
-  and by nothing else. Convolution, pooling, classification, Dropout, and
-  normalization still reject a float32 handle before touching memory, and
-  no public constructor produces a float32 tensor, so float32 parameters,
-  modules, optimizers, and training do not exist.
+  still listed in `UNSUPPORTED`. Every *numerical* family in the runtime
+  is dtype-general as of I7 and the experimental state-owning modules can
+  be constructed at float32 — but no public tensor constructor produces a
+  float32 tensor, both optimizers refuse a float32 parameter, and a
+  version-2 checkpoint refuses to save a float32 model rather than writing
+  an archive it could never read back. float32 optimizer state, checkpoint
+  version 3, and the registry itself are milestones I8 and I9.
   The architectural fact
   the contract rests on is visible in the layering
   above: **42 of Phase H's 52 exports already address their operands
@@ -1133,8 +1152,8 @@ explicit layer at a time:
   branching on dtype (delivered at I2 for the four transfer-shaped
   exports, at I3 for the whole elementwise and unary family, and at I4 for
   reductions, matmul, the narrow-backward scatter, and the two scalar
-  storage primitives; I5 onward for convolution, pooling, and
-  classification, which still take `double*` unchanged); casting,
+  storage primitives; at I5 for convolution and pooling, at I6 for the
+  classification stack, and at I7 for Dropout — the last one); casting,
   promotion, and mixed-dtype arithmetic do not exist and
   are rejected before any allocation or mutation; **float32 accumulates in
   float32**, structurally from I3 and by measured witness from I4, where

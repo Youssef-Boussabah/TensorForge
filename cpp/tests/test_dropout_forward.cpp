@@ -379,8 +379,15 @@ void test_forward_edge_shapes_and_probabilities() {
     // cannot build a zero-element core today, so this is the layer where
     // the empty case is provable — see the Core method's docstring.)
     double untouched_out = kPoison, untouched_mask = kPoison;
-    tf::dropout_forward_contiguous(nullptr, &untouched_out, &untouched_mask, 0,
-                                   1ULL, 1ULL, 0.5);
+    // The element type is spelled explicitly here and only here: since Phase
+    // I, milestone I7 the kernel is a template deduced from its pointer
+    // arguments, and a bare ``nullptr`` carries no type to deduce from. Every
+    // other call site in this file passes ``double*`` and still deduces
+    // ``T = double``, so this file exercises exactly the float64
+    // instantiation it always did.
+    tf::dropout_forward_contiguous<double>(nullptr, &untouched_out,
+                                           &untouched_mask, 0, 1ULL, 1ULL,
+                                           0.5);
     check_eq(untouched_out, kPoison, "count == 0 writes no output");
     check_eq(untouched_mask, kPoison, "count == 0 writes no mask");
 

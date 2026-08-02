@@ -2224,6 +2224,52 @@ validation run, never against prose.
 
 ---
 
+## 17.1 Forward reference, added with Phase I milestone I7
+
+One later phase generalized these modules to a second element type without
+changing a Phase-F decision, and it is recorded in its own contract rather
+than restated here: **Phase I milestone I7**
+([native_dtype_float32_design.md](native_dtype_float32_design.md) §12, §13,
+and §29) gave `NativeLayerNorm`, `NativeBatchNorm1d`, and
+`NativeBatchNorm2d` a **keyword-only** `dtype` argument accepting exactly
+`"float64"` and `"float32"` and defaulting to `"float64"`.
+
+Everything in this document holds unchanged at both widths. In particular:
+
+- **Normalization is still composition, with no kernel and no export.**
+  §1's central decision — no C++ code, no normalization kernel, no C ABI
+  symbol, no ctypes declaration, no `NativeTensorCore` method, no
+  `NativeTensor.layer_norm`/`.batch_norm` operation, and no hand-written
+  backward — is exactly as written, and is asserted by test at both widths.
+  Neither module imports `ctypes` or `backends`, and neither touches
+  `NativeTensorCore`; the shared dtype validator I7 introduced lives in its
+  own private module precisely so that guarantee did not have to be
+  weakened for a *string* validator.
+- **The §8 running-statistics transaction is structurally untouched.** Its
+  three phases, its commit boundary, its rollback, its exactly-once
+  closing, and its "parameter versions do not move" rule are all as
+  written. I7 adds exactly **one** validation: a replacement must carry the
+  module's dtype, checked before the transaction begins, so a mismatch
+  leaves both buffers' values, identities, and versions exactly as they
+  were.
+- **The §7 mutable-buffer graph-safety rule is unchanged.** Evaluation
+  still reads independent owning graph-free snapshots, which now carry the
+  graph's dtype and ride the same `graph_resources` contract.
+- **The forward's scalars follow the graph.** `eps`, `momentum`, and
+  `1 - momentum` stay Python floats on the module and are materialized per
+  forward as rank-0 native scalars **at the input's dtype** — a literal
+  float64 constant meeting a float32 operand would be a mixed-dtype request
+  the runtime refuses. Each is narrowed once at the fill boundary.
+- **Every float64 value is byte-identical.** A construction that omits
+  `dtype` behaves exactly as it did before Phase I, which is the phase's
+  hardest requirement and is asserted bitwise.
+
+What I7 adds beyond that is one module-coherence check in the forward — all
+four numeric state objects must carry the module's dtype — and the
+input-agreement check of §6.3 becoming reachable for a second reason. It
+adds no capability to this document's inventory: `float32` is still listed
+in `UNSUPPORTED` and the public registry does not move until milestone I9.
+
 ## 18. Phase-F completion statement
 
 **Phase F is complete: F0, F1, F2, F3, F4, F5, F6, F7, F8, and F9 have

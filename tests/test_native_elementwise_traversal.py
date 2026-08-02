@@ -1266,7 +1266,7 @@ def test_a_failed_coefficient_allocation_leaves_the_running_state_intact():
     module.train()
     x = NativeTensor.from_array(
         np.random.default_rng(8).standard_normal((6, 8)))
-    original = native_batchnorm.NativeTensor.full
+    original = native_batchnorm.NativeTensor._typed_full
     calls = {"n": 0}
 
     def failing_full(*args, **kwargs):
@@ -1281,12 +1281,12 @@ def test_a_failed_coefficient_allocation_leaves_the_running_state_intact():
         var_before = module.running_var.to_numpy().copy()
         mean_id = id(module.running_mean)
         var_id = id(module.running_var)
-        native_batchnorm.NativeTensor.full = staticmethod(failing_full)
+        native_batchnorm.NativeTensor._typed_full = staticmethod(failing_full)
         try:
             with pytest.raises(MemoryError, match="injected"):
                 module.forward(x)
         finally:
-            native_batchnorm.NativeTensor.full = original
+            native_batchnorm.NativeTensor._typed_full = original
         assert same_bits(module.running_mean.to_numpy(), mean_before)
         assert same_bits(module.running_var.to_numpy(), var_before)
         assert id(module.running_mean) == mean_id

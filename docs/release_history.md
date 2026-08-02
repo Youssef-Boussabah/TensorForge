@@ -2326,13 +2326,121 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase I — native dtype generalization and float32 CPU support (I0–I6, phase in progress)
+### Phase I — native dtype generalization and float32 CPU support (I0–I7, phase in progress)
 
-**Phase I is the latest phase. Milestones I0 through I6 are complete;
-I7 through I11 are not started.** This is an in-progress entry, not a
+**Phase I is the latest phase. Milestones I0 through I7 are complete;
+I8 through I11 are not started.** This is an in-progress entry, not a
 release entry: no version and **no public capability** is claimed. **Phase
 H remains complete and remains the latest *completed* phase**, and it
 closed at 52 exports.
+
+#### I7 — modules, parameters, buffers, initialization, and Dropout
+
+**I7 made float32 a module dtype, and added no C ABI symbol.** I6 left
+float32 classifying; I7 gives it parameters, modules, persistent buffers,
+normalization, and Dropout — and with Dropout, the last float64-only
+numerical family in the runtime. What shipped:
+
+- **Six state-owning constructors gained a keyword-only `dtype`** —
+  `NativeParameter`, `NativeLinear`, `NativeConv2d`, `NativeLayerNorm`,
+  `NativeBatchNorm1d`, `NativeBatchNorm2d` — accepting exactly
+  `"float64"` and `"float32"`, defaulting to `"float64"`, and all six
+  routing through **one** shared private validator so no constructor
+  invents a dtype rule of its own. Keyword-only at every one, so no
+  positional shape moved and no existing call can be reinterpreted. The
+  set is asserted **closed**: no stateless module, loss, metric,
+  generator, container, or optimizer took one, and no `device` argument
+  was added anywhere.
+- **`NativeParameter` distinguishes host data from a native tensor.** Host
+  data crosses the explicit host-to-native conversion boundary and is
+  converted once, so a float64 array becomes a float32 parameter by exactly
+  one rounding — asserted bitwise against NumPy's own narrowing. A live
+  `NativeTensor` must already carry the requested dtype, because there is
+  no tensor cast in this runtime; a mismatch is refused in both directions
+  before any allocation.
+- **Initialization did not move.** The host draw is the same local
+  `numpy.random.default_rng(seed)` stream, in the same order, at the same
+  sizes, with the fan-in bound computed once in binary64 — so a float32
+  layer with seed *S* holds exactly `float32(the float64 draw with seed
+  S)`, asserted as raw bit patterns for both weight and bias at both
+  `NativeLinear` and `NativeConv2d`. The float64 half is asserted against
+  the host stream itself. Because each constructor owns a *local*
+  generator, changing one layer's dtype shifts no other layer's values.
+- **Normalization is dtype-general as composition, with no new kernel.**
+  Affine parameters, both BatchNorm running buffers, the graph-safe
+  evaluation snapshots, every training and evaluation temporary, and every
+  scalar the forwards materialize — `eps`, `momentum`, `1 - momentum` —
+  are at the module's dtype, the scalars through two new private
+  tensor-level constructors. The Python floats stay Python floats; only
+  their materialization is dtype-aware, and each is narrowed once at the
+  fill boundary. The Phase-F guarantee that neither normalization module
+  imports `ctypes` or `backends` or touches `NativeTensorCore` is
+  unchanged, which is why the shared validator lives in its own private
+  module.
+- **The atomic two-buffer transaction gained one dtype validation.** Its
+  plan/stage/commit/finalize structure and its commit boundary are
+  untouched; a replacement at the wrong width is refused before either live
+  buffer changes, leaving both values, identities, and versions exactly as
+  they were. The BatchNorm forward additionally re-proves that all four
+  numeric state objects still carry the module's dtype, so the reported
+  dtype can never become a stale claim.
+- **Dropout became dtype-general with its exact ABI shape unchanged.**
+  `tf_core_dropout_forward` keeps the same symbol, the same eight
+  arguments, the same order and types, and gained one operand-agreement
+  guard over its three handles plus one dispatch above a templated kernel
+  that moved into `tf_random_internal.h`. There is no dtype branch inside
+  the element loop and no `_f32`/`_f64` symbol.
+- **The random derivation is untouched.** `dropout_uniform` is still the
+  binary64 53-bit conversion at every width, so one
+  `(seed, call_index, element count)` key drops **exactly** the same
+  elements at float32 and float64 — proved at float32 against the *same*
+  committed Phase-G keep vectors rather than a second table, and by direct
+  comparison of the two patterns over 512 elements at five probabilities.
+  Only the two multiplier values differ. The kept one is
+  `static_cast<T>(1.0 / (1.0 - p))`, computed once in binary64 and narrowed
+  once, and at float32 that is *observable*: at p = 0.025 the narrow-once
+  value provably differs from an all-binary32 recomputation, and the kernel
+  is asserted to equal the first and differ from the second.
+- **Generator state, algorithm, version, and call accounting are
+  unchanged**, and the accounting is asserted identical at both widths on
+  every path: one call for a successful stochastic forward, none for a
+  failure, none in evaluation, none at `p == 0`.
+- **The last of the five explicit float64-only Python gates came out**, so
+  no float64-only compute path is left to name.
+- **A version-2 checkpoint refuses a float32 model on the way out**, before
+  the temporary file exists. Versions 1 and 2 are float64-only formats
+  permanently, and the loader already proves every archive array is exactly
+  `np.float64` — so a float32 payload under a version-2 manifest would have
+  been a file this library refuses to read back. Nothing is cast, widened,
+  or guessed; dtype-aware serialization is version 3, at I8.
+- **One pre-existing defect was fixed.** `NativeLinear.__init__` allocated
+  its weight and then its bias with no cleanup between them, so a failed
+  bias allocation abandoned the weight's native storage to garbage
+  collection — a module the caller never receives and can therefore never
+  close. Its younger siblings had had the deterministic cleanup since their
+  own milestones; `NativeLinear` (v3.4) predates the pattern. The test that
+  covers it spies on the parameter constructor rather than counting live
+  storage, because the half-built module is unreachable the instant
+  `__init__` re-raises.
+- The native CTest inventory moved **23 → 24** (`test_dtype_dropout`).
+
+**Two surfaces were inspected and deliberately left alone.**
+`NativeSequential` takes no dtype and enforces none — its locked contract
+is that forward adds no node, copy, or validation of its own, so a
+mismatched child raises at *that child* with both dtypes named, and a model
+may legitimately hold both widths with no bridge between them.
+`NativeGenerator` and `NativeDropout` took no dtype either: generator state
+is dtype-independent and Dropout inherits its width from its input.
+
+**What I7 did not change:** the export count (**54**), `SUPPORTED_DTYPES`
+(`("float64",)`), `SUPPORTED_DEVICES` (`("cpu",)`), `UNSUPPORTED`
+(`("float32", "cuda", "amp")`), `RAW_KERNEL_DTYPES` (`("float64",)`), the
+checkpoint format (version **2**, versions **(1, 2)** accepted), any public
+tensor constructor, or any float64 value — asserted bitwise across
+initialization, LayerNorm, both BatchNorm buffers, and the Phase-G Dropout
+known-answer vector. float32 optimizer state does not exist: `NativeAdam`
+refuses a float32 parameter when it allocates its moments, `NativeSGD` when
+`step()` materializes its learning-rate scalar, and the refusal is atomic.
 
 #### I6 — stable math and classification dtype support
 

@@ -322,8 +322,8 @@ every shipped training workload is **1.50×–3.89× faster than it was at
 the H0 baseline**, with bit-identical results, and **no numerical
 capability, dtype, device, export, registry value, or checkpoint version
 moved at any milestone**. **Phase I — native dtype generalization and
-float32 CPU support — is the latest phase; milestones I0 through I6
-are complete and I7–I11 are not started.** I0 was the design lock and
+float32 CPU support — is the latest phase; milestones I0 through I7
+are complete and I8–I11 are not started.** I0 was the design lock and
 documentation reconciliation, shipping
 [docs/native_dtype_float32_design.md](docs/native_dtype_float32_design.md)
 and its guardrail tests and nothing else. **I1 built the dtype
@@ -384,16 +384,30 @@ width, reachable at binary64 too past ~1.8e308. `softmax` is unaffected and
 still exact; `log_softmax` and `cross_entropy` report `-inf`/`+inf` as
 values, never errors. The counterexample is recorded and tested rather than
 papered over with a widened intermediate.
-**The native runtime is still float64 CPU only**: `float32` remains listed
-as unsupported; it is internally supported for storage, transfer, views,
-elementwise/unary execution, reductions, matmul, Conv2d, MaxPool2d,
-softmax, log-softmax, fused cross-entropy, view backward, and private Core
-autograd — and for nothing else (Dropout, normalization, optimizers,
-modules, and checkpoints all still reject a float32 handle before touching
-memory); no
-public constructor produces a float32 tensor, so float32 parameters,
-modules, and training do not exist; and the native checkpoint format is
-still version 2 with versions 1 and 2 accepted. The
+**I7 made float32 a module dtype, and added no export**: six state-owning
+constructors — `NativeParameter`, `NativeLinear`, `NativeConv2d`,
+`NativeLayerNorm`, `NativeBatchNorm1d`, and `NativeBatchNorm2d` — take a
+keyword-only `dtype` accepting exactly the two widths and defaulting to
+float64, through one shared validator; affine parameters, both BatchNorm
+running buffers, the evaluation snapshots, and every scalar a composed
+normalization forward materializes are at the module's dtype; the atomic
+two-buffer running-statistics transaction gained one dtype validation and
+nothing else; and **initialization did not move** — the same local
+`default_rng(seed)` stream in the same order, so a float32 layer with seed
+*S* holds exactly `float32(the float64 draw with seed S)`. Dropout was the
+last family out: the export keeps its exact ABI shape, and the **random
+derivation is untouched**, so one `(seed, call_index, element count)` key
+drops exactly the same elements at both widths and only the two multiplier
+values differ — the kept one being the binary64 reciprocal narrowed once.
+**The native runtime is still declared float64 CPU only**: `float32`
+remains listed as unsupported. Every *numerical* family is now
+dtype-general and the experimental state-owning modules can be constructed
+at float32, but no public tensor constructor produces a float32 tensor, no
+optimizer accepts a float32 parameter, and a version-2 checkpoint refuses
+to save a float32 model rather than writing an archive it could never read
+back. Those gaps are milestones I8 and I9, and the registry moves at I9.
+The native checkpoint format is still version 2 with versions 1 and 2
+accepted. The
 contract's **exactly two** new C ABI symbols for the whole phase
 (52 → **54**) are now spent; it rejects per-operation float32 exports, forbids casting,
 promotion, and mixed-dtype arithmetic, requires float32 to accumulate in

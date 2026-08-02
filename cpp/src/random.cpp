@@ -1,7 +1,16 @@
 // Stateless native random derivation and the Dropout forward compute
 // kernel (Phase G, milestone G2): the internal "tensorforge.splitmix64"
-// bit path, the inverted-Dropout CPU float64 kernel, and their exported,
+// bit path, the inverted-Dropout CPU kernel, and their exported,
 // exception-guarded C ABI wrapper.
+//
+// Phase I, milestone I7 made the compute dtype-general — one templated
+// kernel in tf_random_internal.h, one ``tf::require_matching_dtype`` over
+// the three participating handles, and one ``switch`` per exported call —
+// **without touching the random derivation at all**. The algorithm
+// identifier, the algorithm version, the finalizer, the key derivation, the
+// element-index derivation, and the 53-bit bits-to-uniform conversion are
+// exactly what G2 locked, so one ``(seed, call_index, element count)`` key
+// drops the same elements at float32 and at float64 (design §14.2).
 //
 // The organizing rule of the phase (docs/native_rng_dropout_design.md §1)
 // is that **random state is Python-managed and native kernels are
@@ -19,7 +28,8 @@
 // multiplier always come from the same decision — the same shape the
 // MaxPool2d forward uses for its winner buffer (§7.4). The mask is
 // internal state: it never becomes a public tensor, never enters a
-// state_dict or a checkpoint, and introduces no new dtype.
+// state_dict or a checkpoint, and introduces no new dtype — it carries the
+// input's, which is the only dtype in the call.
 //
 // There is deliberately **no backward kernel** (§7.5): the gradient of
 // inverted Dropout is ``upstream * mask``, which the existing
@@ -66,36 +76,18 @@ double dropout_uniform(std::uint64_t bits) noexcept {
     // a power of two, so both the conversion and the scaling are exact.
     // 0x1p-53 is the hexadecimal float literal for 2**-53: written this
     // way rather than as a decimal so no parse can round it.
+    //
+    // Phase I, milestone I7: this stays **binary64 at every tensor dtype**
+    // (design §14.2). It is not an oversight and it is not a place to save
+    // a narrowing — deriving a 24-bit uniform for float32 would make the
+    // keep/drop pattern depend on the element type for the same random key.
     return static_cast<double>(bits >> 11) * 0x1p-53;
 }
 
-void dropout_forward_contiguous(
-    const double* input,
-    double* output,
-    double* mask,
-    std::int64_t count,
-    std::uint64_t seed,
-    std::uint64_t call_index,
-    double p) noexcept {
-    // One reciprocal for the whole call, so every kept element carries
-    // the identical multiplier and the mask holds exactly two distinct
-    // values (design §4.4). The wrapper proved 0.0 <= p < 1.0, so the
-    // denominator is strictly positive.
-    const double scale = 1.0 / (1.0 - p);
-    const std::uint64_t stream_key = dropout_stream_key(seed, call_index);
-    for (std::int64_t index = 0; index < count; ++index) {
-        // The element index IS the logical row-major index: the Core
-        // layer materializes a non-contiguous input before calling, so a
-        // transposed view and its contiguous copy receive the same mask.
-        const std::uint64_t bits = dropout_element_bits(
-            stream_key, static_cast<std::uint64_t>(index));
-        // Strict <, matching the design: at p == 0 nothing is dropped.
-        const double multiplier =
-            (dropout_uniform(bits) < p) ? 0.0 : scale;
-        mask[index] = multiplier;
-        output[index] = input[index] * multiplier;
-    }
-}
+// ``dropout_forward_contiguous`` is a template and lives in
+// tf_random_internal.h (Phase I, milestone I7), for the reason recorded
+// there: both instantiations have to be visible to the exported wrapper
+// below and to the CTests that compile this file directly.
 
 }  // namespace tf
 
@@ -126,6 +118,32 @@ void dropout_forward_contiguous(
 
 namespace {
 
+// -- the dtype dispatch arm (Phase I, milestone I7) --------------------
+//
+// One arm, mirroring the I5/I6 conv2d, pooling, and classification arms:
+// recover the typed pointers through the single ``tf::storage_typed<T>``
+// accessor and call the one templated kernel. It exists so the export's
+// ``switch`` stays two short branches and the pointer recovery is written
+// once for the operation rather than once per dtype. It is reached only
+// after ``tf::require_matching_dtype`` has proved the three participating
+// handles agree, which is what makes the recovery sound.
+//
+// ``seed``, ``call_index``, and ``p`` cross it unchanged: the random key is
+// not storage, has no dtype to dispatch on, and nothing is ever inferred
+// from it.
+template <class T>
+void dropout_forward_dispatch(
+    const void* input_handle, std::int64_t input_offset,
+    void* output_handle, void* mask_handle,
+    std::int64_t count, std::uint64_t seed, std::uint64_t call_index,
+    double p) {
+    tf::dropout_forward_contiguous(
+        tf::storage_typed<T>(input_handle) + input_offset,
+        tf::storage_typed<T>(output_handle),
+        tf::storage_typed<T>(mask_handle),
+        count, seed, call_index, p);
+}
+
 // Checked int64 add for non-negative operands: return false on overflow
 // instead of wrapping, so a bogus offset/count pair can never turn into a
 // small (passing) span. File-local, matching the equivalent helpers in
@@ -140,8 +158,9 @@ bool checked_add(std::int64_t a, std::int64_t b, std::int64_t& out) {
 }
 
 // A contiguous operand of ``count`` elements beginning at ``offset`` must
-// fit inside a storage holding ``size`` doubles. ``offset``/``count`` are
-// already known non-negative here.
+// fit inside a storage holding ``size`` elements. ``offset``/``count`` are
+// already known non-negative here. Spans are measured in **logical
+// elements** at every dtype (design §4.3), so this is unchanged by I7.
 bool span_within(std::int64_t offset, std::int64_t count, std::int64_t size) {
     std::int64_t end;
     if (!checked_add(offset, count, end)) {
@@ -170,7 +189,16 @@ TF_EXPORT void tf_core_dropout_forward(
     std::uint64_t call_index,
     double p) {
     TF_GUARD_BEGIN
-    if (!tf::require_float64(
+    // The dtype guard runs first (I7, matching the I3/I4/I5/I6 exports):
+    // the input, the output, and the multiplier mask must all agree, and a
+    // call that is both mixed-dtype and otherwise malformed reports the
+    // dtype. There is no promotion and no narrowing, so a float32 input
+    // with a float64 mask is an invalid request, not a conversion
+    // opportunity — and reading a 4-byte-per-element buffer through a
+    // ``double*`` would overrun it by a factor of two. Nothing below writes
+    // to either destination before the dispatch, so a rejected call leaves
+    // both byte-for-byte unchanged.
+    if (!tf::require_matching_dtype(
             "tf_core_dropout_forward",
             {input_handle, output_handle, mask_handle})) {
         return;
@@ -225,13 +253,20 @@ TF_EXPORT void tf_core_dropout_forward(
         reject("destination storage aliases another operand");
         return;
     }
-    // -- validated: run the internal noexcept kernel. Nothing above this
-    //    point writes to either destination, so a rejected call leaves
-    //    both byte-for-byte unchanged. --
-    tf::dropout_forward_contiguous(
-        tf::storage_f64(input_handle) + input_offset,
-        tf::storage_f64(output_handle),
-        tf::storage_f64(mask_handle),
-        count, seed, call_index, p);
+    // -- validated: one dtype dispatch into the internal noexcept kernel.
+    //    Nothing above this point writes to either destination, so a
+    //    rejected call leaves both byte-for-byte unchanged. --
+    switch (tf::dispatch_dtype({input_handle, output_handle, mask_handle})) {
+        case tf::Dtype::Float32:
+            dropout_forward_dispatch<float>(
+                input_handle, input_offset, output_handle, mask_handle,
+                count, seed, call_index, p);
+            break;
+        case tf::Dtype::Float64:
+            dropout_forward_dispatch<double>(
+                input_handle, input_offset, output_handle, mask_handle,
+                count, seed, call_index, p);
+            break;
+    }
     TF_GUARD_END_VOID()
 }

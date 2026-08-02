@@ -902,10 +902,10 @@ proposed optimizations. Every number behind those statements is a local
 characterization of one machine, is reported with its spread, and is
 asserted by no test.
 
-## Phase I — native dtype generalization and float32 CPU support, **I0–I6 complete**
+## Phase I — native dtype generalization and float32 CPU support, **I0–I7 complete**
 
-**Phase I is the latest phase. Milestones I0 through I6 are complete;
-I7 through I11 are not started.** Its architecture contract is
+**Phase I is the latest phase. Milestones I0 through I7 are complete;
+I8 through I11 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
 
@@ -1134,7 +1134,55 @@ changed:
 - the native CTest inventory moved **22 → 23**
   (`test_dtype_classification`).
 
-**What I1 through I6 did *not* change is the whole of the rest of this
+**I7** made float32 a *module* dtype and generalized the last float64-only
+numerical family, and added **no export**. What it changed:
+
+- six state-owning constructors — `NativeParameter`, `NativeLinear`,
+  `NativeConv2d`, `NativeLayerNorm`, `NativeBatchNorm1d`, and
+  `NativeBatchNorm2d` — take a **keyword-only** `dtype` accepting exactly
+  `"float64"` and `"float32"` and defaulting to `"float64"`, all six
+  routing through **one** shared private validator. The set is closed: no
+  stateless module, loss, metric, generator, container, or optimizer took
+  one, and no `device` argument was added anywhere;
+- affine parameters, both BatchNorm running buffers, the graph-safe
+  evaluation snapshots, every training and evaluation temporary, and every
+  scalar a composed normalization forward materializes (`eps`, `momentum`,
+  `1 - momentum`) are at the module's dtype — the scalars through two new
+  private tensor constructors, because a literal float64 constant meeting a
+  float32 operand would be a mixed-dtype request the runtime refuses;
+- the atomic two-buffer running-statistics transaction gained **one** dtype
+  validation and nothing else, and the BatchNorm forward re-proves that all
+  four numeric state objects still carry the module's dtype before either
+  buffer can move;
+- **initialization did not move at either width**: the same local
+  `numpy.random.default_rng(seed)` stream, in the same order, at the same
+  sizes, with the fan-in bound computed once in binary64, so a float32
+  layer with seed *S* holds exactly `float32(the float64 draw with seed
+  S)` — the seed contract stays dtype-independent;
+- `tf_core_dropout_forward` became dtype-general with its **exact ABI shape
+  unchanged** (same symbol, same eight arguments, same order, same types),
+  one operand-agreement guard over its three handles, and one dispatch into
+  a templated kernel. The **random derivation is untouched**: the uniform
+  is still the binary64 53-bit conversion at every width, so one
+  `(seed, call_index, element count)` key drops exactly the same elements
+  at both dtypes — proved at float32 against the *same* committed Phase-G
+  keep vectors. Only the two multiplier values differ, and the kept one is
+  the binary64 reciprocal narrowed once;
+- the generator's algorithm, version, state, locking, and reserve →
+  commit/abandon call accounting are unchanged, and the accounting is
+  asserted identical at both widths on every path — one call for a
+  successful stochastic forward, none for a failure, none in evaluation,
+  none at `p == 0`;
+- `state_dict()` carries dtype implicitly through its tensors, validates it
+  per entry against the live destination, and never casts; one mismatched
+  entry among many rolls the whole load back;
+- a **version-2 checkpoint refuses a float32 model on the way out**, before
+  the temporary file exists. Versions 1 and 2 are float64-only formats
+  permanently, so writing a float32 payload under a version-2 manifest
+  would have produced an archive this library refuses to read back;
+- the native CTest inventory moved **23 → 24** (`test_dtype_dropout`).
+
+**What I1 through I7 did *not* change is the whole of the rest of this
 matrix.** The native runtime is still **publicly float64 CPU only**:
 `SUPPORTED_DTYPES` reads `("float64",)`, `SUPPORTED_DEVICES` reads
 `("cpu",)`, `UNSUPPORTED` reads `("float32", "cuda", "amp")`, and the
@@ -1143,10 +1191,28 @@ with versions **(1, 2)** accepted. `float32` therefore stays in the
 **Unsupported or future** section above, and it stays there until
 milestone **I9**.
 
-The honest statement of what float32 *is* after I6: **internally supported
-for storage, transfer, views, elementwise/unary execution, reductions,
-matmul, Conv2d, MaxPool2d, softmax, log-softmax, fused cross-entropy, view
-backward, and private Core autograd — and for nothing else.** It can be
+The honest statement of what float32 *is* after I7, in three parts because
+they are three different things:
+
+1. **Every numerical family in the native runtime is dtype-general.**
+   Storage, transfer, views, elementwise/unary execution, reductions,
+   matmul, all three Conv2d directions, both MaxPool2d directions, softmax,
+   log-softmax, fused cross-entropy, LayerNorm, both BatchNorm shapes,
+   Dropout, view backward, and Core autograd. There is no float64-only
+   compute path left to name, which is a real milestone and is stated as
+   one.
+2. **The experimental state-owning modules can be constructed at float32.**
+   Six constructors take a dtype; their parameters, buffers, snapshots,
+   graphs, and gradients are physically float32; and a float32 model
+   forwards, differentiates, normalizes, and drops.
+3. **float32 is still not a supported TensorForge dtype.** float32
+   optimizer state does not exist, checkpoint version 3 does not exist, the
+   exact float32 resume proof has not been run, and no public tensor
+   constructor produces a float32 tensor. Those are milestones I8 and I9,
+   and the registry moves at **I9**.
+
+The capability detail behind (1), unchanged from I6 except for the last
+two clauses. float32 can be
 copied in from a host buffer, copied out, viewed through any layout the
 metadata contract permits, materialized, and copied storage-to-storage, all
 bit-exactly; it can be added, subtracted, multiplied, rectified (forwards
@@ -1159,28 +1225,30 @@ accumulating in binary32, with the pooling winners kept as private float64
 index metadata; it can be softmaxed, log-softmaxed, and reduced to a fused
 cross-entropy loss and its gradient, with the maximum shift and the
 log-sum-exp entirely in binary32 and the class targets still host `int64`
-metadata; and an internal graph over those operations — convolution,
-pooling, and classification included — differentiates end to end with every
-gradient at the graph's dtype.
+metadata; it can be normalized by LayerNorm and by both BatchNorm shapes,
+with the statistics, the epsilon, the momentum coefficients, the running
+updates, and the evaluation snapshots all at binary32; it can be dropped
+with the *same* keep/drop pattern a float64 run of the same key produces;
+and an internal graph over those operations — convolution, pooling,
+classification, normalization, and Dropout included — differentiates end to
+end with every gradient at the graph's dtype.
 
-Normalization, Dropout, modules, parameters, optimizers, checkpointing, and
-public float32 construction remain unsupported: no Dropout, no
-normalization, no module, no parameter, no optimizer, and no checkpoint
-accepts it. Every
-operation that has not been generalized rejects a float32 handle with
-`TF_ERROR_INVALID` before reading or writing a single element — necessarily
-so, because walking a 4-byte-per-element buffer through a `double*` would
-overrun it by exactly a factor of two.
+What (3) means concretely. **Optimizers, checkpointing, and public float32
+tensor construction remain unsupported.** `NativeAdam` refuses a float32
+parameter when it allocates its moments; `NativeSGD` refuses when `step()`
+materializes its learning-rate scalar — atomically, leaving the parameter's
+value and version untouched. A version-2 checkpoint refuses to *save* a
+float32 model rather than writing a payload it could never read back, and
+refuses to load a float64 archive into a float32 model. `from_array`,
+`zeros`, and `full` all still raise for `"float32"`, at the Core layer and
+at the `NativeTensor` layer, and `normalize_dtype("float32")` still raises.
 
-**A private float32 graph is not public float32 autograd, and not float32
-training.** No public constructor produces a float32 tensor — `from_array`,
-`zeros`, and `full` all still raise for it, at the Core layer and at the
-`NativeTensor` layer — no `NativeParameter` accepts one, and no module, loss,
-or optimizer accepts a dtype argument yet, so nothing a user can write
-reaches any of it. The graphs I4, I5, and I6 prove are built through the
-private typed constructors the rollout rule requires an intermediate
-milestone to test through. Internal capability is not public support, and
-the two are deliberately kept apart until the whole stack exists.
+**A float32 module is not a float32 support claim.** The only way to reach
+one is to ask a state-owning constructor for it explicitly; nothing infers
+it, no default produces it, and every existing call site that omits `dtype`
+is byte-identical to a pre-Phase-I run. Internal capability is not public
+support, and the two are deliberately kept apart until the whole stack
+exists — which is what milestone I9 is for.
 
 The same distinction covers two surfaces I6 inspected and deliberately left
 alone. `NativeCrossEntropyLoss` is a thin delegate to

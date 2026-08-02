@@ -103,6 +103,50 @@ FINAL_CHECKPOINT_VERSION = 3
 MILESTONES = tuple(f"I{n}" for n in range(12))
 PUBLIC_SUPPORT_MILESTONE = "I9"
 
+# The exact constructor surface milestone I7 opened (design §12.1): six
+# state-owning classes gained a **keyword-only** ``dtype`` defaulting to
+# ``"float64"``, and nothing else did. Written here as a closed set, because
+# the interesting failure is in both directions — a class that quietly gains
+# one is as much a contract break as a class that loses one. The stateless
+# modules, the losses, the metric, the generator, and the optimizers are
+# deliberately absent: they own no dtype-bearing numeric state of their own,
+# so a dtype argument there would be a second authority that could disagree
+# with the data (the optimizers' state follows their parameters, at I8).
+I7_DTYPE_CONSTRUCTORS = frozenset({
+    "NativeParameter",
+    "NativeLinear",
+    "NativeConv2d",
+    "NativeLayerNorm",
+    "NativeBatchNorm1d",
+    "NativeBatchNorm2d",
+})
+
+
+def _constructors_with_a_dtype_argument():
+    """Every exported ``tensorforge.experimental`` class whose constructor
+    accepts ``dtype``, as a set of names."""
+    import inspect
+
+    import tensorforge.experimental as experimental
+
+    found = set()
+    for name in experimental.__all__:
+        obj = getattr(experimental, name)
+        if not inspect.isclass(obj):
+            continue
+        try:
+            signature = inspect.signature(obj)
+        except (TypeError, ValueError):  # pragma: no cover
+            continue
+        if "dtype" in signature.parameters:
+            found.add(name)
+            # Keyword-only at every one of them, so no positional shape
+            # changed and no existing call site can be reinterpreted.
+            assert (signature.parameters["dtype"].kind
+                    is inspect.Parameter.KEYWORD_ONLY), name
+            assert signature.parameters["dtype"].default is None, name
+    return found
+
 # Surfaces that state *current* status and therefore had to be reconciled
 # when the phase opened. Per-milestone historical records deliberately
 # preserve superseded wording and are not scanned.
@@ -1183,26 +1227,36 @@ def test_i1_changed_no_example_benchmark_ci_or_dependency_file():
     )
 
 
-def test_the_phase_touched_only_the_two_python_modules_its_scope_names():
-    """Within ``src/``, the phase so far is confined to the module that
-    owns the C ABI and the one that owns the native autograd graph.
+def test_the_phase_touched_only_the_python_modules_its_scope_names():
+    """Within ``src/``, the phase is confined to the files its milestones
+    name — and the set grows only when a milestone says it does.
 
-    Through I3 this was a single file: the dtype foundation, the transfer
-    boundaries, and the elementwise execution all live in the ctypes layer,
-    and nothing above it participated. **I4 adds exactly one more**, and
-    the milestone's scope is what names it — core autograd is I4 work, so
-    the gradient dtype invariants of design §11 (a backward's constants
-    built at the graph's dtype, the seed at the output's dtype, the
-    broadcast-back operand at the upstream's) are edits to
-    ``experimental/native_tensor.py`` and can be nowhere else.
+    Through I3 this was a single file, the ctypes layer. I4 added
+    ``native_tensor.py``, because core autograd is I4 work. **I7 adds the
+    state-owning module surface**: the six constructors of design §12.1, the
+    one shared dtype validator they route through, and the two places where
+    dtype-aware state meets an older contract — Dropout's Python wrapper
+    (already in ``cpp.py``) and the version-2 checkpoint boundary, which must
+    *refuse* float32 rather than silently write an unreadable archive.
 
-    Everything else is still out: no parameter, module, optimizer,
-    checkpoint, generator, loss, or stable-line file participates, and the
-    stable framework is not coupled to the native line by any of it.
+    ``native_sequential.py`` is in the set for documentation only: containers
+    take no dtype and enforce none, and saying so is part of the milestone.
+
+    What stays out is what milestone **I8** owns — every optimizer file — so
+    a float32 optimizer cannot appear under cover of "dtype support".
     """
     allowed = {
         "src/tensorforge/backends/cpp.py",
         "src/tensorforge/experimental/native_tensor.py",
+        # I7: the state-owning constructor surface.
+        "src/tensorforge/experimental/_native_dtype.py",
+        "src/tensorforge/experimental/native_parameter.py",
+        "src/tensorforge/experimental/native_linear.py",
+        "src/tensorforge/experimental/native_conv2d.py",
+        "src/tensorforge/experimental/native_layernorm.py",
+        "src/tensorforge/experimental/native_batchnorm.py",
+        "src/tensorforge/experimental/native_sequential.py",
+        "src/tensorforge/experimental/native_checkpoint.py",
     }
     changed = [path for path in _changed_since(I0_COMMIT)
                if path.startswith("src/")]
@@ -1212,14 +1266,18 @@ def test_the_phase_touched_only_the_two_python_modules_its_scope_names():
         f"names: {unexpected}"
     )
     # Stated the other way round as well, so a future milestone that adds a
-    # file cannot satisfy the rule above by accident: the families I5-I8 own
-    # are untouched, by name.
-    for forbidden in ("native_parameter", "native_module", "native_linear",
-                      "native_conv2d", "native_maxpool2d", "native_dropout",
-                      "native_batchnorm", "native_layernorm", "native_sgd",
-                      "native_adam", "native_checkpoint", "native_generator",
-                      "native_cross_entropy_loss", "native_mse_loss"):
+    # file cannot satisfy the rule above by accident: the optimizer family
+    # I8 owns is untouched, by name, and so is the stable line.
+    for forbidden in ("native_sgd", "native_adam", "native_optimizer_state",
+                      "tensorforge/nn/", "tensorforge/optim/",
+                      "tensorforge/tensor.py", "tensorforge/data.py"):
         assert not any(forbidden in path for path in changed), forbidden
+    # ...and the checkpoint file changed only to *refuse* float32: the
+    # format constants are exactly what Phase G left them.
+    from tensorforge.experimental import native_checkpoint
+    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+            == I0_CHECKPOINT_VERSIONS)
 
 
 def test_phase_i_introduced_no_prohibited_external_reference():
@@ -1962,9 +2020,6 @@ def test_a_failed_identity_copy_leaks_nothing_at_either_dtype(dtype):
 def test_i2_moved_no_public_capability_at_all():
     """The exit gate, as one assertion block: internal float32 transfer
     exists and public float32 support does not."""
-    import inspect
-
-    import tensorforge.experimental as experimental
     from tensorforge.experimental import native_checkpoint
 
     assert cpp.SUPPORTED_DTYPES == I0_DTYPES
@@ -1981,42 +2036,34 @@ def test_i2_moved_no_public_capability_at_all():
                    "tf_core_contiguous_copy_f32", "tf_storage_dtype",
                    "tf_storage_cast"):
         assert absent not in exports, absent
-    # No module, parameter, optimizer, or loss constructor gained a dtype
-    # argument — that is milestone I7, not this one.
-    for name in experimental.__all__:
-        obj = getattr(experimental, name)
-        if not inspect.isclass(obj):
-            continue
-        try:
-            signature = inspect.signature(obj)
-        except (TypeError, ValueError):  # pragma: no cover
-            continue
-        assert "dtype" not in signature.parameters, name
+    # I2 itself gave no constructor a dtype argument; the six that have one
+    # are milestone I7's, and they are exactly the six.
+    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
 
 
 @needs_native
-def test_the_float32_paths_are_exactly_the_families_landed_through_i6():
-    """The precise statement that replaces I5's "float32 is computed on by
+def test_the_float32_paths_are_exactly_the_families_landed_through_i7():
+    """The precise statement that replaces I6's "float32 is computed on by
     transfer/copy, elementwise/unary, reductions, matmul, Conv2d, MaxPool2d,
-    and view-backward".
+    the classification stack, and view-backward".
 
-    As of I6, float32 is internally supported for **storage, transfer,
-    views, elementwise/unary execution, reductions, matmul, Conv2d (all
-    three directions), MaxPool2d (both directions), softmax, log-softmax,
-    fused cross-entropy (forward and backward), view backward, and private
-    Core autograd** — and for nothing else. Normalization, Dropout, modules,
-    parameters, optimizers, checkpointing, and public float32 construction
-    remain unsupported, and each remaining numerical family still rejects a
-    float32 operand as *float64-only*, with both operands at the same dtype,
-    so this is not a mixed-dtype rejection in disguise.
+    As of I7 **every numerical family in the native runtime is
+    dtype-general**: storage, transfer, views, elementwise/unary execution,
+    reductions, matmul, all three Conv2d directions, both MaxPool2d
+    directions, softmax, log-softmax, fused cross-entropy, view backward,
+    private Core autograd — and now Dropout, the last one out. There is no
+    remaining float64-only compute path to enumerate, which is a real
+    milestone and is stated as one.
 
-    The family still out is exactly the one I7 owns: Dropout. Above the Core
-    layer nothing moved at all — no parameter, no module, no optimizer, no
-    checkpoint version, and no public constructor that produces a float32
-    tensor.
+    Above the Core layer, I7 opened exactly the state-owning constructors
+    (§12.1) and nothing beyond them: ``NativeParameter`` builds float32
+    state, and the six named modules construct at a dtype. What has **not**
+    moved is the part that would make float32 a promise — the public
+    registry, the public tensor constructors, the optimizers, and the
+    checkpoint format. Those are milestones I8 and I9.
 
-    This is the guardrail that keeps "most float32 works" from ever being
-    the honest summary: the set is enumerated in both directions.
+    This is the guardrail that keeps "float32 works" from ever being the
+    honest summary: the set is enumerated in both directions.
     """
     library = cpp._require_library()
     core = cpp.NativeTensorCore._typed_from_array(
@@ -2145,14 +2192,31 @@ def test_the_float32_paths_are_exactly_the_families_landed_through_i6():
             ce_probabilities.close()
             ce_loss.close()
 
-        # -- not consumed: the one numerical family still float64-only, which
-        # is exactly the one milestone I7 owns.
-        with pytest.raises(ValueError, match="float64-only"):
-            library.tf_core_dropout_forward(a, 0, out, out, 16, 1, 0, 0.5)
-        library.tf_clear_error()
+        # -- consumed, as of I7: Dropout, the last float64-only family.
+        # Output and mask are separate destinations, so the aliasing rule
+        # needs a second float32 block.
+        mask32 = cpp.NativeStorage._typed(16, "float32")
+        try:
+            library.tf_clear_error()
+            library.tf_core_dropout_forward(
+                a, 0, out, mask32._require_open(), 16, 1, 0, 0.5)
+            assert library.tf_last_error_code() == 0
+            assert mask32.to_numpy().dtype == np.float32
+            # Exactly two distinct multipliers, and the kept one is the
+            # binary32 narrowing of the binary64 reciprocal.
+            assert set(np.unique(mask32.to_numpy())) <= {
+                np.float32(0.0), np.float32(1.0 / (1.0 - 0.5))}
+        finally:
+            mask32.close()
 
-        # Nothing above the Core layer moved: no public constructor makes a
-        # float32 tensor, and no parameter does either.
+        # ...so there is no float64-only numerical export left to name. The
+        # rejecting set is empty, asserted as a set rather than as prose.
+        assert cpp.SUPPORTED_DTYPES == I0_DTYPES  # and still not a promise
+
+        # Above the Core layer, exactly the I7 surface moved. A parameter
+        # can be built at float32 now — that is the milestone — while every
+        # **public** tensor constructor still refuses, because the registry
+        # does not move until I9.
         from tensorforge.experimental import NativeParameter, NativeTensor
         for construct in (
             lambda: NativeTensor.from_array([1.0], dtype="float32"),
@@ -2161,10 +2225,14 @@ def test_the_float32_paths_are_exactly_the_families_landed_through_i6():
             lambda: cpp.NativeTensorCore.from_array([1.0], dtype="float32"),
             lambda: cpp.NativeTensorCore.zeros((2,), dtype="float32"),
             lambda: cpp.NativeTensorCore.full((2,), 1.0, dtype="float32"),
-            lambda: NativeParameter([1.0], dtype="float32"),
         ):
             with pytest.raises((ValueError, TypeError)):
                 construct()
+        parameter = NativeParameter([1.0], dtype="float32")
+        try:
+            assert parameter.dtype == "float32"
+        finally:
+            parameter.close()
     finally:
         winners64.close()
         output.close()
@@ -2810,36 +2878,31 @@ def test_relu_backward_is_dtype_general_at_the_core_layer(dtype):
 
 
 @needs_native
-def test_i3_did_not_open_float32_autograd_modules_or_parameters():
-    """The boundary I3 must not cross. A dtype-general Core primitive is a
-    kernel; float32 autograd, parameters, modules, and optimizers are
-    milestones I4 and I7, and none of them may be reachable yet."""
-    import inspect
+def test_no_public_tensor_constructor_produces_float32():
+    """The boundary I3 drew, restated at the line milestone I7 left it on.
 
+    A dtype-general Core primitive is a kernel, and I7's state-owning
+    constructors are an experimental module surface; **public** float32
+    tensor construction is neither, and it does not open until the registry
+    moves at I9. So a user cannot ask ``NativeTensor`` for float32 through
+    any of its three factories, at any milestone before that one.
+
+    ``NativeParameter`` is deliberately *not* in this list any more: it
+    gained ``dtype`` at I7, which is the milestone, and its own guardrail is
+    the closed ``I7_DTYPE_CONSTRUCTORS`` set.
+    """
     import tensorforge.experimental as experimental
 
-    # No public constructor produces a float32 tensor, so no float32 graph
-    # can be built at all.
     values = np.zeros((2, 2), dtype=np.float32)
     for build in (
         lambda: experimental.NativeTensor.from_array(values, dtype="float32"),
         lambda: experimental.NativeTensor.zeros((2, 2), dtype="float32"),
         lambda: experimental.NativeTensor.full((2, 2), 1.0, dtype="float32"),
-        lambda: experimental.NativeParameter(values, dtype="float32"),
     ):
         with pytest.raises((ValueError, TypeError)):
             build()
-    # ...and no module, parameter, optimizer, or loss constructor gained a
-    # dtype argument — that is milestone I7, not this one.
-    for name in experimental.__all__:
-        obj = getattr(experimental, name)
-        if not inspect.isclass(obj):
-            continue
-        try:
-            signature = inspect.signature(obj)
-        except (TypeError, ValueError):  # pragma: no cover
-            continue
-        assert "dtype" not in signature.parameters, name
+    # ...and the dtype-argument surface is exactly the closed I7 set.
+    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
 
 
 def test_the_float32_elementwise_path_holds_no_hidden_float64():
@@ -3864,7 +3927,9 @@ def test_no_backward_constant_is_created_at_a_hard_coded_float64():
     # block above the gate, where a caller's own ``dtype`` is what they
     # normalize.
     assert code.count("cpp.NativeTensorCore.full(") == 1     # NativeTensor.full
-    assert code.count("cpp.NativeTensorCore.zeros(") == 2    # ctor + broadcast
+    # ctor + broadcast-back + the I7 private ``_typed_zeros``, which passes
+    # ``_trusted_dtype=True`` and is therefore counted by the loop above.
+    assert code.count("cpp.NativeTensorCore.zeros(") == 3
     # ...and the typed constant constructor really is what the backwards use.
     assert compute.count("NativeTensorCore._typed_full(") >= 4
 
@@ -4362,48 +4427,36 @@ def test_the_raw_utility_kernels_are_still_float64_only():
 
 
 @needs_native
-def test_the_families_i7_and_i8_own_still_reject_float32():
-    """The other direction of the boundary: no module, parameter, optimizer,
-    or checkpoint path accepts float32, and the one remaining numerical
-    family still refuses a float32 operand as float64-only.
+def test_the_families_i8_owns_still_reject_float32():
+    """The other direction of the boundary, advanced to the I7 line.
 
-    MaxPool2d left this set at I5 and the whole classification stack left it
-    at I6 — their float32 acceptance is proved by the I5 and I6 tests below —
-    so the only rejecting family left is Dropout, which milestone I7 owns."""
-    import inspect
+    MaxPool2d left the rejecting set at I5, the classification stack at I6,
+    and **Dropout at I7** — so there is no float64-only numerical family
+    left, and this test proves the last one crossed rather than pretending
+    the boundary is where it was.
 
-    import tensorforge.experimental as experimental
-    from tensorforge.experimental import native_checkpoint
+    What is still shut is what milestone **I8** owns: optimizer state at a
+    float32 parameter, and the checkpoint format. Both are asserted here as
+    rejections rather than as absences, because "not implemented" is only a
+    safe state if the attempt actually fails."""
+    from tensorforge.experimental import (
+        NativeAdam, NativeParameter, NativeSGD, native_checkpoint,
+    )
 
-    for name in experimental.__all__:
-        obj = getattr(experimental, name)
-        if not inspect.isclass(obj):
-            continue
-        try:
-            signature = inspect.signature(obj)
-        except (TypeError, ValueError):  # pragma: no cover
-            continue
-        assert "dtype" not in signature.parameters, name
+    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
     assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I0_CHECKPOINT_VERSIONS)
-    # The one Core operation I7 owns still refuses a float32 operand as
-    # float64-only ("float64-only in the current runtime" from C++, or the
-    # Python gate's own wording); which layer answers is not the point —
-    # that the operation is unavailable is.
+
     core = cpp.NativeTensorCore._typed_from_array(
         np.ones((1, 1, 4, 4), dtype=np.float32), "float32")
     try:
-        # ...while the I5 families now accept the same operand: the pool
-        # that refused this exact call through I4 runs, at float32, with
-        # the winner buffer released by the public wrapper.
         pooled = core.maxpool2d_forward(kernel_size=2)
         assert pooled.dtype == "float32"
         assert pooled.shape == (1, 1, 2, 2)
         pooled.close()
         flat = core.reshape((4, 4))
         try:
-            # ...and so does the whole I6 classification stack.
             for method in ("softmax", "log_softmax"):
                 out = getattr(flat, method)(axis=-1)
                 assert out.dtype == "float32"
@@ -4412,13 +4465,46 @@ def test_the_families_i7_and_i8_own_still_reject_float32():
             assert result.loss.dtype == "float32"
             assert result.probabilities.dtype == "float32"
             result.close()
-            # Dropout, which milestone I7 owns, still refuses.
-            with pytest.raises(ValueError, match="float64"):
-                flat.dropout_forward(0.5, seed=1, call_index=0)
+            # Dropout accepts it now — the I7 milestone, at the Core layer.
+            dropped = flat.dropout_forward(0.5, seed=1, call_index=0)
+            assert dropped.dtype == "float32"
+            dropped.close()
         finally:
             flat.close()
     finally:
         core.close()
+
+    # The I8 boundary. A float32 parameter is constructible at I7, so the
+    # optimizers are genuinely reachable with one — and both must refuse,
+    # because their per-parameter numeric state (Adam's moments, the shared
+    # per-step scalar both build) would have to be allocated at a dtype the
+    # public registry does not admit. They refuse at different points, which
+    # is recorded rather than smoothed over: Adam allocates its moments in
+    # ``__init__`` and fails there; SGD holds no per-parameter tensor state
+    # and fails when ``step()`` materializes its learning-rate scalar.
+    parameter = NativeParameter(np.ones(4), dtype="float32")
+    try:
+        with pytest.raises(ValueError, match="float32"):
+            NativeAdam([parameter], lr=0.1)
+
+        optimizer = NativeSGD([parameter], lr=0.1)
+        out = parameter.sum()
+        try:
+            out.backward()
+        finally:
+            out.close()
+        assert parameter.grad.dtype == "float32"
+        before = parameter.to_numpy().copy()
+        version = parameter.version
+        with pytest.raises(ValueError, match="float32"):
+            optimizer.step()
+        # ...and the refusal is atomic: the parameter's value and version
+        # are exactly what they were, so a rejected step is a no-op rather
+        # than a half-applied update.
+        assert np.array_equal(parameter.to_numpy(), before)
+        assert parameter.version == version
+    finally:
+        parameter.close()
 
 
 @needs_native
@@ -5441,9 +5527,12 @@ def test_the_python_winner_allocation_is_pinned_to_float64():
     assert '(n, c, out_h, out_w), dtype="float64", device=self.device' \
         in source
     assert 'winners.dtype != "float64"' in source
-    # The two hard float64 gates I5 owned are gone; so, since I6, are the two
-    # cross-entropy ones. Dropout's — milestone I7's — is still standing.
-    assert source.count('!= "float64" or self.device != "cpu"') >= 1
+    # All five §2.3 float64-only Core gates are gone now: I5 opened the two
+    # pooling ones, I6 the two cross-entropy ones, and I7 Dropout's — the
+    # last. The winner pin above is **not** one of them and is why this
+    # assertion sits in this test: it is a deliberate, permanent decision
+    # about index metadata, not a gate waiting to be opened.
+    assert source.count('!= "float64" or self.device != "cpu"') == 0
 
 
 @needs_native
@@ -5471,12 +5560,14 @@ def test_i5_moved_no_public_capability_at_all():
         assert absent not in exports, absent
     assert not [name for name in exports
                 if name.endswith(("_f32", "_f64", "_float32", "_float64"))]
-    # NativeConv2d and NativeMaxPool2d still take no dtype argument and
-    # still initialize at float64 only.
+    # I5 gave no constructor a dtype argument. ``NativeConv2d`` got one at
+    # I7 (it owns parameters); ``NativeMaxPool2d`` never will, because it
+    # owns no numeric state and takes its dtype from the input.
     import inspect
     from tensorforge.experimental import NativeConv2d, NativeMaxPool2d
-    assert "dtype" not in inspect.signature(NativeConv2d).parameters
+    assert "dtype" in inspect.signature(NativeConv2d).parameters
     assert "dtype" not in inspect.signature(NativeMaxPool2d).parameters
+    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
 
 
 # ===========================================================================
@@ -6899,16 +6990,27 @@ def test_cross_entropy_backward_cannot_reach_the_logits():
         .count("logits") == 0
 
 
-def test_the_i6_python_gates_are_gone_and_the_i7_gate_remains():
-    """The two hard float64-only gates I6 owned are removed; Dropout's, which
-    milestone I7 owns, is untouched."""
+def test_every_one_of_the_five_python_float64_gates_is_gone():
+    """Design §2.3 listed five explicit ``dtype != "float64"`` Core gates.
+    I5 opened two (both pooling directions), I6 two more (both cross-entropy
+    directions), and I7 the last one, Dropout's. None is left.
+
+    Asserted by exact wording *and* by count, so a gate cannot be reworded
+    back into existence, and so the count cannot pass while a differently
+    spelled gate stands."""
     source = _read("src/tensorforge/backends/cpp.py")
-    assert "cross_entropy_forward requires float64/cpu logits" not in source
-    assert ("cross_entropy_backward requires a float64/cpu probability"
-            not in source)
-    assert "dropout_forward requires a float64/cpu input" in source
-    # Exactly one of the five §2.3 gates is left, and it is Dropout's.
-    assert source.count('!= "float64" or self.device != "cpu"') == 1
+    for gone in (
+        "cross_entropy_forward requires float64/cpu logits",
+        "cross_entropy_backward requires a float64/cpu probability",
+        "maxpool2d_forward requires a float64/cpu input",
+        "dropout_forward requires a float64/cpu input",
+    ):
+        assert gone not in source, gone
+    assert source.count('!= "float64" or self.device != "cpu"') == 0
+    # The one surviving ``!= "float64"`` in the file is the MaxPool2d winner
+    # buffer's, which is §13.3's permanent pin rather than a §2.3 gate.
+    assert source.count('!= "float64"') == 1
+    assert 'winners.dtype != "float64"' in source
 
 
 @needs_native
@@ -6940,14 +7042,2034 @@ def test_i6_moved_no_public_capability_at_all():
         assert absent not in exports, absent
     assert not [name for name in exports
                 if name.endswith(("_f32", "_f64", "_float32", "_float64"))]
-    # No module, parameter, optimizer, or loss constructor gained a dtype
-    # argument — that is milestone I7, not this one.
+    # I6 itself gave no constructor a dtype argument; the six that have one
+    # are milestone I7's, and they are exactly the six.
+    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+
+
+# ===========================================================================
+# I7: modules, parameters, buffers, initialization, normalization, and
+#     Dropout, as running code
+#
+# Everything below drives the **live** library at both dtypes through the
+# constructors design §12.1 opened. The split that matters, and the reason
+# this section is long rather than one happy-path check per class:
+#
+#   * **Construction** is asserted in both directions — the six named
+#     classes accept exactly two dtypes and default to float64, and nothing
+#     else in ``experimental.__all__`` accepts one at all.
+#   * **Initialization** is asserted as a *relation between dtypes*, not as
+#     a value table: for one seed the float32 weights are exactly the
+#     binary32 narrowing of the float64 weights, which is what makes the
+#     seed contract dtype-independent (design §12.3).
+#   * **float64 regression** is asserted **bitwise** everywhere it is
+#     asserted at all. A milestone that moved a float64 value by one ULP
+#     while adding float32 has broken the phase's hardest requirement, and
+#     an ``allclose`` would not have noticed.
+#   * **float32 correctness** is asserted against **same-dtype** references
+#     (an independent NumPy float32 computation, or float32 finite
+#     differences), never against the float64 result — design §10.4 forbids
+#     making float32-matches-float64 a contract, because it is false by
+#     construction for anything that accumulates.
+#   * **Rejection** is asserted with its post-condition: after a refused
+#     call, live native storage is at baseline, no version moved, no buffer
+#     changed, and no generator call was consumed.
+# ===========================================================================
+
+
+def _module_dtype_state(module):
+    """Every numeric state tensor a module owns, as ``{name: dtype}`` over
+    parameters and buffers together — the thing that must be single-valued
+    at the module's dtype."""
+    found = {}
+    for name, parameter in module.named_parameters():
+        found[name] = parameter.dtype
+    for name, buffer in module.named_buffers():
+        found[name] = buffer.dtype
+    return found
+
+
+def _close_module(module):
+    """Release every native object a module owns. Modules have no
+    ``close()`` — lifetime stays with the tensors — so this is the shape the
+    Phase-F suites use."""
+    for parameter in module.parameters():
+        parameter.close()
+    for buffer in module.buffers():
+        buffer.close()
+
+
+def _release(built):
+    """Release whatever a builder produced — a parameter or a module."""
+    from tensorforge.experimental import NativeParameter
+
+    if isinstance(built, NativeParameter):
+        built.close()
+    else:
+        _close_module(built)
+
+
+def _state_owning_builders():
+    """One builder per class of the closed I7 set, each taking a ``dtype``
+    keyword and nothing else the caller has to know about."""
+    from tensorforge.experimental import (
+        NativeBatchNorm1d, NativeBatchNorm2d, NativeConv2d, NativeLayerNorm,
+        NativeLinear, NativeParameter,
+    )
+
+    return (
+        ("NativeParameter",
+         lambda **kw: NativeParameter(np.arange(6.0).reshape(2, 3), **kw)),
+        ("NativeLinear", lambda **kw: NativeLinear(3, 4, seed=7, **kw)),
+        ("NativeConv2d", lambda **kw: NativeConv2d(2, 3, 2, seed=7, **kw)),
+        ("NativeLayerNorm", lambda **kw: NativeLayerNorm(4, **kw)),
+        ("NativeBatchNorm1d", lambda **kw: NativeBatchNorm1d(4, **kw)),
+        ("NativeBatchNorm2d", lambda **kw: NativeBatchNorm2d(4, **kw)),
+    )
+
+
+_BUILDER_IDS = [name for name, _ in _state_owning_builders()]
+
+
+# ---------------------------------------------------------------------------
+# I7.1 The constructor surface
+# ---------------------------------------------------------------------------
+
+@needs_native
+def test_the_dtype_argument_surface_is_exactly_the_six_named_classes():
+    """Design §12.1's list, asserted as a closed set in both directions and
+    in the exact form it specifies: keyword-only, defaulting to ``None``
+    (which means ``"float64"``).
+
+    The absentees are the point. ``NativeReLU``, ``NativeFlatten``,
+    ``NativeMaxPool2d``, ``NativeSequential``, ``NativeDropout``,
+    ``NativeMSELoss``, ``NativeCrossEntropyLoss``, ``NativeGenerator``, and
+    both optimizers own no dtype-bearing numeric state of their own, so a
+    dtype argument there would be a **second authority** that could disagree
+    with the data flowing through them."""
+    import inspect
+
+    import tensorforge.experimental as experimental
+
+    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    for name in ("NativeReLU", "NativeFlatten", "NativeMaxPool2d",
+                 "NativeSequential", "NativeDropout", "NativeMSELoss",
+                 "NativeCrossEntropyLoss", "NativeGenerator", "NativeSGD",
+                 "NativeAdam"):
+        obj = getattr(experimental, name)
+        assert "dtype" not in inspect.signature(obj).parameters, name
+    # Phase I adds no device, anywhere, at any of them.
     for name in experimental.__all__:
         obj = getattr(experimental, name)
         if not inspect.isclass(obj):
             continue
         try:
             signature = inspect.signature(obj)
-        except (TypeError, ValueError):          # pragma: no cover
+        except (TypeError, ValueError):  # pragma: no cover
             continue
-        assert "dtype" not in signature.parameters, name
+        assert "device" not in signature.parameters, name
+
+
+@needs_native
+@pytest.mark.parametrize("name,build", _state_owning_builders(),
+                         ids=_BUILDER_IDS)
+def test_every_state_owning_constructor_defaults_to_float64(name, build):
+    """The hard compatibility requirement of the phase (design §12.4):
+    omitting ``dtype`` produces float64 state, and explicit
+    ``dtype="float64"`` produces **byte-identical** state — not merely
+    equal, because a constructor that took a different path for the explicit
+    form would be a second implementation waiting to drift."""
+    default = build()
+    explicit = build(dtype="float64")
+    try:
+        assert default.dtype == "float64"
+        assert explicit.dtype == "float64"
+        if hasattr(default, "to_numpy"):        # NativeParameter
+            assert _same_bits(default.to_numpy(), explicit.to_numpy(),
+                              "float64")
+            return
+        assert _module_dtype_state(default) == _module_dtype_state(explicit)
+        state_a = default.state_dict()
+        state_b = explicit.state_dict()
+        try:
+            assert list(state_a) == list(state_b)
+            for key in state_a:
+                assert _same_bits(state_a[key].to_numpy(),
+                                  state_b[key].to_numpy(), "float64"), key
+        finally:
+            for snapshot in list(state_a.values()) + list(state_b.values()):
+                snapshot.close()
+    finally:
+        _release(explicit)
+        _release(default)
+
+
+@needs_native
+@pytest.mark.parametrize("name,build", _state_owning_builders(),
+                         ids=_BUILDER_IDS)
+def test_every_state_owning_constructor_builds_physical_float32(name, build):
+    """``dtype="float32"`` produces state that is physically float32 — the
+    storage tag *and* the host array NumPy sees on the way out, so this is
+    not a label on a float64 buffer."""
+    built = build(dtype="float32")
+    try:
+        assert built.dtype == "float32"
+        if hasattr(built, "to_numpy"):          # NativeParameter
+            assert built.to_numpy().dtype == np.float32
+            return
+        state = _module_dtype_state(built)
+        assert state, name          # every one of these owns some state
+        assert set(state.values()) == {"float32"}, state
+        snapshots = built.state_dict()
+        try:
+            for key, snapshot in snapshots.items():
+                assert snapshot.dtype == "float32", key
+                assert snapshot.to_numpy().dtype == np.float32, key
+        finally:
+            for snapshot in snapshots.values():
+                snapshot.close()
+    finally:
+        _release(built)
+
+
+@needs_native
+@pytest.mark.parametrize("name,build", _state_owning_builders(),
+                         ids=_BUILDER_IDS)
+def test_every_state_owning_constructor_rejects_everything_else(
+    name, build, monkeypatch
+):
+    """The accepted set is exactly two strings plus ``None``. A non-string
+    is a ``TypeError``; any other string is a ``ValueError``. There are no
+    aliases and no case or whitespace tolerance, because a permissive front
+    door is how a dtype silently becomes a NumPy-coupled type object
+    (design §25.1).
+
+    A rejected construction also allocates nothing: the dtype is validated
+    before the first native allocation at every one of the six, so live
+    storage is exactly what it was."""
+    open_ids = _live_storage_ids(monkeypatch)
+    baseline = len(open_ids)
+    for bad in (np.float32, np.dtype("float32"), np.float64, float, 32, 4,
+                True, False, b"float32", ["float32"], ("float32",)):
+        with pytest.raises(TypeError):
+            build(dtype=bad)
+    for bad in ("Float32", "FLOAT32", " float32", "float32 ", "float 32",
+                "f4", "f8", "single", "double", "float", "float16",
+                "bfloat16", "int32", "int64", "complex64", "cuda", "amp",
+                "cpu", ""):
+        with pytest.raises(ValueError):
+            build(dtype=bad)
+    assert len(open_ids) == baseline, (
+        f"{name} allocated native storage for a rejected dtype")
+    # ...and ``None`` is accepted, meaning float64.
+    built = build(dtype=None)
+    try:
+        assert built.dtype == "float64"
+    finally:
+        _release(built)
+
+
+@needs_native
+def test_the_module_dtype_validator_is_a_strict_delegate():
+    """Design §12.2: *no constructor invents its own dtype validation*. The
+    shared helper is a delegate over the internal normalizer, so the module
+    surface and the storage layer cannot disagree about what a dtype is —
+    asserted by comparing both functions' answers, and both functions'
+    exception types and messages, over the same inputs."""
+    from tensorforge.experimental import _native_dtype
+
+    assert _native_dtype.MODULE_DTYPES == ("float64", "float32")
+    for good in (None, "float64", "float32"):
+        assert (_native_dtype.normalize_module_dtype(good)
+                == cpp._normalize_internal_dtype(good))
+    for bad in ("f4", "Float32", "cuda", "", np.float32, 4, True):
+        with pytest.raises(BaseException) as helper:
+            _native_dtype.normalize_module_dtype(bad)
+        with pytest.raises(BaseException) as direct:
+            cpp._normalize_internal_dtype(bad)
+        assert type(helper.value) is type(direct.value), bad
+        assert str(helper.value) == str(direct.value), bad
+    # It is **not** the public validator, and must not become one before I9:
+    # the public registry still refuses float32 outright.
+    with pytest.raises(ValueError):
+        cpp.normalize_dtype("float32")
+    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
+    # ...and it is private: absent from the package's public surface.
+    import tensorforge.experimental as experimental
+    assert "normalize_module_dtype" not in experimental.__all__
+    assert "_native_dtype" not in experimental.__all__
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_module_dtype_property_is_read_only_and_reports_the_state(dtype):
+    """§25.3: modules that own parameters or buffers expose a read-only
+    ``dtype``. It reports the constructed value and is never a setter, so a
+    caller cannot relabel a module's state without changing it."""
+    for name, build in _state_owning_builders():
+        built = build(dtype=dtype)
+        try:
+            assert built.dtype == dtype, name
+            if hasattr(built, "to_numpy"):
+                continue        # NativeParameter's dtype is the storage's
+            with pytest.raises(AttributeError):
+                built.dtype = "float64"
+            # ...and it agrees with every piece of state it owns.
+            assert set(_module_dtype_state(built).values()) == {dtype}, name
+        finally:
+            _release(built)
+
+
+# ---------------------------------------------------------------------------
+# I7.2 NativeParameter
+# ---------------------------------------------------------------------------
+
+@needs_native
+def test_a_float32_parameter_is_the_narrowed_host_array_exactly():
+    """Host data crosses the **explicit host-to-native conversion boundary**
+    (design §9.4), which has always converted whatever it was given. So a
+    float64 host array becomes a float32 parameter by exactly one rounding,
+    asserted by raw bit pattern against NumPy's own narrowing — not by
+    tolerance, because "one rounding" is a bit-level claim.
+
+    A float32 host array stays exactly itself: converting it again would be
+    a second rounding, and there is nothing to round."""
+    from tensorforge.experimental import NativeParameter
+
+    host64 = np.linspace(-3.0, 3.0, 17, dtype=np.float64)
+    narrowed = host64.astype(np.float32)
+    parameter = NativeParameter(host64, dtype="float32")
+    try:
+        assert parameter.dtype == "float32"
+        assert _same_bits(parameter.to_numpy(), narrowed, "float32")
+    finally:
+        parameter.close()
+    host32 = np.linspace(-3.0, 3.0, 17, dtype=np.float32)
+    parameter = NativeParameter(host32, dtype="float32")
+    try:
+        assert _same_bits(parameter.to_numpy(), host32, "float32")
+    finally:
+        parameter.close()
+    # ...and the dtype is never inferred from the array: a float32 array
+    # with no dtype argument still produces a float64 parameter (§9.4).
+    parameter = NativeParameter(host32)
+    try:
+        assert parameter.dtype == "float64"
+        assert _same_bits(parameter.to_numpy(),
+                          host32.astype(np.float64), "float64")
+    finally:
+        parameter.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_a_native_tensor_source_must_already_carry_the_requested_dtype(
+    dtype, monkeypatch
+):
+    """A host array is data; a **native tensor** is a tensor, and there is
+    no tensor cast in this runtime (§9.1/§9.5). So constructing a parameter
+    from a live tensor of the other dtype is an invalid request rather than
+    a conversion opportunity, in both directions — and the rejection
+    allocates nothing."""
+    from tensorforge.experimental import NativeParameter
+
+    other = "float32" if dtype == "float64" else "float64"
+    source = _tensor(np.arange(6.0).reshape(2, 3), dtype)
+    open_ids = _live_storage_ids(monkeypatch)
+    baseline = len(open_ids)
+    try:
+        with pytest.raises(ValueError, match="no casting"):
+            NativeParameter(source, dtype=other)
+        assert len(open_ids) == baseline
+        # ...while the matching request is accepted and takes an
+        # independent owning copy.
+        parameter = NativeParameter(source, dtype=dtype)
+        try:
+            assert parameter.dtype == dtype
+            assert _same_bits(parameter.to_numpy(), source.to_numpy(), dtype)
+            assert parameter._core.storage is not source._core.storage
+        finally:
+            parameter.close()
+    finally:
+        source.close()
+
+
+@needs_native
+def test_a_float32_parameter_accumulates_a_float32_gradient():
+    """Design §11.2: a leaf's gradient has the leaf's dtype. Proved through
+    a real backward rather than by construction, and with the value checked
+    too, so a gradient that were somehow allocated at the right dtype but
+    filled from the wrong graph would still fail."""
+    from tensorforge.experimental import NativeParameter
+
+    parameter = NativeParameter(np.array([2.0, -3.0, 0.5]), dtype="float32")
+    try:
+        squared = parameter.multiply(parameter)
+        total = squared.sum()
+        try:
+            total.backward()
+        finally:
+            total.close()
+            squared.close()
+        assert parameter.grad.dtype == "float32"
+        assert parameter.grad.to_numpy().dtype == np.float32
+        assert _same_bits(parameter.grad.to_numpy(),
+                          np.array([4.0, -6.0, 1.0], dtype=np.float32),
+                          "float32")
+    finally:
+        parameter.close()
+
+
+@needs_native
+def test_float32_parameter_mutation_keeps_identity_version_and_dtype():
+    """``copy_value_`` is the one controlled mutation primitive, and its
+    dtype rule is unchanged by I7: exact agreement, no cast. A refused
+    mutation moves no version and changes no byte; an accepted one moves the
+    version by exactly one and preserves the parameter's identity."""
+    from tensorforge.experimental import NativeParameter
+
+    parameter = NativeParameter(np.array([1.0, 2.0]), dtype="float32")
+    identity = id(parameter)
+    float64_source = _tensor(np.array([9.0, 9.0]), "float64")
+    float32_source = _tensor(np.array([9.0, 9.0]), "float32")
+    try:
+        assert parameter.version == 0
+        before = parameter.to_numpy().copy()
+        with pytest.raises(ValueError, match="dtype/device mismatch"):
+            parameter.copy_value_(float64_source)
+        assert parameter.version == 0
+        assert _same_bits(parameter.to_numpy(), before, "float32")
+        assert id(parameter) == identity
+
+        parameter.copy_value_(float32_source)
+        assert parameter.version == 1
+        assert parameter.dtype == "float32"
+        assert id(parameter) == identity
+        assert _same_bits(parameter.to_numpy(),
+                          np.array([9.0, 9.0], dtype=np.float32), "float32")
+    finally:
+        float32_source.close()
+        float64_source.close()
+        parameter.close()
+
+
+@needs_native
+def test_float32_parameter_construction_failure_leaks_nothing(monkeypatch):
+    """A failed construction leaves live native storage exactly at
+    baseline — the deterministic allocation-failure hook, at the width the
+    milestone added."""
+    if not cpp.fault_injection_available():  # pragma: no cover
+        pytest.skip("the build has no fault-injection hook")
+    from tensorforge.experimental import NativeParameter
+
+    open_ids = _live_storage_ids(monkeypatch)
+    baseline = len(open_ids)
+    cpp._arm_alloc_failure(1)
+    try:
+        with pytest.raises(MemoryError):
+            NativeParameter(np.ones(8), dtype="float32")
+    finally:
+        cpp._arm_alloc_failure(0)
+        cpp._require_library().tf_clear_error()
+    assert len(open_ids) == baseline
+
+
+# ---------------------------------------------------------------------------
+# I7.3 Initialization (design §12.3)
+# ---------------------------------------------------------------------------
+
+def _init_builders():
+    from tensorforge.experimental import NativeConv2d, NativeLinear
+
+    return (
+        ("NativeLinear",
+         lambda seed, dtype: NativeLinear(5, 3, seed=seed, dtype=dtype)),
+        ("NativeConv2d",
+         lambda seed, dtype: NativeConv2d(2, 3, (2, 3), seed=seed,
+                                          dtype=dtype)),
+    )
+
+
+_INIT_IDS = [name for name, _ in _init_builders()]
+
+
+@needs_native
+@pytest.mark.parametrize("name,build", _init_builders(), ids=_INIT_IDS)
+def test_one_seed_gives_the_same_values_at_both_dtypes_to_one_rounding(
+    name, build
+):
+    """The locked relation of design §12.3, stated as an equation and
+    asserted as bits::
+
+        weight_f32.bits == float32(weight_f64_draw_for_the_same_seed).bits
+
+    This is what makes the seed contract dtype-**independent**: the host
+    draw is the same ``numpy.random.default_rng(seed)`` stream, in the same
+    order, at the same sizes, with the bound computed once in binary64. Only
+    the ingress conversion differs. Asking NumPy for a float32 stream
+    instead would have made two dtypes start from unrelated points, and the
+    seed would then have meant something different at each width."""
+    reference = build(11, "float64")
+    narrowed = build(11, "float32")
+    try:
+        for key in ("weight", "bias"):
+            wide = getattr(reference, key).to_numpy()
+            narrow = getattr(narrowed, key).to_numpy()
+            assert narrow.dtype == np.float32, key
+            assert wide.dtype == np.float64, key
+            assert _same_bits(narrow, wide.astype(np.float32), "float32"), key
+    finally:
+        _release(narrowed)
+        _release(reference)
+
+
+@needs_native
+@pytest.mark.parametrize("name,build", _init_builders(), ids=_INIT_IDS)
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_initialization_is_repeatable_and_independent_of_earlier_layers(
+    name, build, dtype
+):
+    """Each constructor owns a **local** generator, so one seed always gives
+    one set of values — whatever was constructed before it, at whatever
+    dtype. Changing a model's dtype therefore cannot shift any other layer's
+    initialization, which is the property that makes a float32 and a
+    float64 model comparable at all."""
+    first = build(3, dtype)
+    noise = build(99, "float32" if dtype == "float64" else "float64")
+    second = build(3, dtype)
+    try:
+        for key in ("weight", "bias"):
+            assert _same_bits(getattr(first, key).to_numpy(),
+                              getattr(second, key).to_numpy(), dtype), key
+    finally:
+        _release(second)
+        _release(noise)
+        _release(first)
+
+
+@needs_native
+@pytest.mark.parametrize("name,build", _init_builders(), ids=_INIT_IDS)
+def test_the_float64_initialization_is_byte_identical_to_the_host_draw(
+    name, build
+):
+    """The float64 half of §12.4, against the host stream itself rather than
+    against another TensorForge run: the values are exactly what
+    ``default_rng(seed).uniform(-bound, bound, size=...)`` produced, in
+    order, so nothing about the dtype work perturbed the draw, the bound, or
+    the draw count."""
+    import math
+
+    module = build(5, "float64")
+    try:
+        if name == "NativeLinear":
+            bound = 1.0 / math.sqrt(5)
+            shapes = ((5, 3), (3,))
+        else:
+            bound = 1.0 / math.sqrt(2 * 2 * 3)
+            shapes = ((3, 2, 2, 3), (3,))
+        rng = np.random.default_rng(5)
+        expected_weight = rng.uniform(-bound, bound, size=shapes[0])
+        expected_bias = rng.uniform(-bound, bound, size=shapes[1])
+        assert _same_bits(module.weight.to_numpy(), expected_weight, "float64")
+        assert _same_bits(module.bias.to_numpy(), expected_bias, "float64")
+    finally:
+        _release(module)
+
+
+# ---------------------------------------------------------------------------
+# I7.4 NativeLinear and NativeConv2d at float32
+# ---------------------------------------------------------------------------
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("bias", [True, False])
+def test_native_linear_forward_and_backward_at_both_dtypes(dtype, bias):
+    """The layer's whole numerical surface at one width, against an
+    independent **same-dtype sequential** oracle compared bit for bit.
+
+    A NumPy ``@`` would not do here: BLAS reassociates, so it would disagree
+    with the kernel at float32 for reasons that have nothing to do with this
+    milestone. The oracle below accumulates in source order at the element
+    type, which is exactly what the contract says the kernel does."""
+    from tensorforge.experimental import NativeLinear
+
+    floating = _DTYPE_BITS[dtype][2]
+    module = NativeLinear(4, 3, bias=bias, seed=17, dtype=dtype)
+    values = _sample(dtype, 8).reshape(2, 4)
+    x = _tensor(values, dtype, requires_grad=True)
+    try:
+        assert module.weight.dtype == dtype
+        if bias:
+            assert module.bias.dtype == dtype
+        else:
+            assert module.bias is None
+        out = module(x)
+        try:
+            assert out.dtype == dtype
+            assert out.shape == (2, 3)
+            expected = _sequential_matmul(
+                values.astype(floating),
+                module.weight.to_numpy(), dtype)
+            if bias:
+                expected = floating(expected + module.bias.to_numpy())
+            assert _same_bits(out.to_numpy(), expected, dtype)
+            out.sum().backward()
+        finally:
+            out.close()
+        assert x.grad.dtype == dtype
+        assert module.weight.grad.dtype == dtype
+        if bias:
+            assert module.bias.grad.dtype == dtype
+            # d(sum)/d(bias) is the batch count, exactly, at either width.
+            assert _same_bits(module.bias.grad.to_numpy(),
+                              np.full(3, 2.0, dtype=floating), dtype)
+    finally:
+        x.close()
+        _release(module)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_native_conv2d_forward_and_backward_at_both_dtypes(dtype):
+    """The module wiring, not the kernel: I5 already proved all three Conv2d
+    directions at both dtypes against independent references, so what is new
+    here is that a *module's* parameters reach them at the module's dtype and
+    that every gradient comes back at it. A non-contiguous input rides the
+    existing Policy-B copy path, which must preserve the dtype too."""
+    from tensorforge.experimental import NativeConv2d
+
+    module = NativeConv2d(2, 3, 2, stride=1, padding=1, seed=5, dtype=dtype)
+    values = _sample(dtype, 2 * 2 * 4 * 4).reshape(2, 2, 4, 4)
+    x = _tensor(values, dtype, requires_grad=True)
+    try:
+        out = module(x)
+        try:
+            assert out.dtype == dtype
+            assert out.shape == (2, 3, 5, 5)
+            out.sum().backward()
+        finally:
+            out.close()
+        assert x.grad.dtype == dtype
+        assert module.weight.grad.dtype == dtype
+        assert module.bias.grad.dtype == dtype
+    finally:
+        x.close()
+        _release(module)
+
+    # Policy B: a transposed (non-contiguous) input keeps the dtype through
+    # the private contiguous copy the kernel needs.
+    module = NativeConv2d(2, 2, 2, seed=5, dtype=dtype)
+    base = _tensor(_sample(dtype, 2 * 2 * 4 * 4).reshape(2, 4, 4, 2), dtype)
+    try:
+        view = base.transpose((0, 3, 1, 2))
+        try:
+            assert not view.contiguous
+            out = module(view)
+            try:
+                assert out.dtype == dtype
+            finally:
+                out.close()
+        finally:
+            view.close()
+    finally:
+        base.close()
+        _release(module)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_a_mismatched_input_is_refused_before_any_graph_or_gradient(
+    dtype, monkeypatch
+):
+    """Design §9.2 and §9.3 at the module layer, for every state-owning
+    module that validates an input dtype.
+
+    The post-condition is the interesting half: after the refusal live
+    native storage is at baseline, no parameter has a gradient, no
+    parameter version moved, and — for BatchNorm — neither running buffer
+    moved. A rejection that had already allocated an output or accumulated
+    half a gradient would be a far worse failure than a wrong answer."""
+    from tensorforge.experimental import (
+        NativeBatchNorm1d, NativeBatchNorm2d, NativeConv2d, NativeLayerNorm,
+        NativeLinear,
+    )
+
+    other = "float32" if dtype == "float64" else "float64"
+    cases = (
+        ("NativeLinear", lambda: NativeLinear(4, 3, seed=1, dtype=dtype),
+         lambda: _sample(other, 8).reshape(2, 4)),
+        ("NativeConv2d", lambda: NativeConv2d(2, 2, 2, seed=1, dtype=dtype),
+         lambda: _sample(other, 2 * 2 * 4 * 4).reshape(2, 2, 4, 4)),
+        ("NativeLayerNorm", lambda: NativeLayerNorm(4, dtype=dtype),
+         lambda: _sample(other, 12).reshape(3, 4)),
+        ("NativeBatchNorm1d", lambda: NativeBatchNorm1d(4, dtype=dtype),
+         lambda: _sample(other, 12).reshape(3, 4)),
+        ("NativeBatchNorm2d", lambda: NativeBatchNorm2d(2, dtype=dtype),
+         lambda: _sample(other, 2 * 2 * 3 * 3).reshape(2, 2, 3, 3)),
+    )
+    for name, build, make_input in cases:
+        module = build()
+        x = _tensor(make_input(), other, requires_grad=True)
+        buffers_before = {
+            key: buffer.to_numpy().copy()
+            for key, buffer in module.named_buffers()
+        }
+        versions = {key: parameter.version
+                    for key, parameter in module.named_parameters()}
+        open_ids = _live_storage_ids(monkeypatch)
+        baseline = len(open_ids)
+        try:
+            with pytest.raises(ValueError) as error:
+                module(x)
+            assert dtype in str(error.value) and other in str(error.value), name
+            assert len(open_ids) == baseline, name
+            assert x.grad is None, name
+            for key, parameter in module.named_parameters():
+                assert parameter.grad is None, (name, key)
+                assert parameter.version == versions[key], (name, key)
+            for key, buffer in module.named_buffers():
+                assert _same_bits(buffer.to_numpy(), buffers_before[key],
+                                  dtype), (name, key)
+        finally:
+            monkeypatch.undo()
+            x.close()
+            _release(module)
+
+
+@needs_native
+def test_internally_inconsistent_module_state_is_refused():
+    """The corruption direction: a module whose *own* state has drifted out
+    of one dtype. Reachable only by substituting a parameter or a buffer by
+    hand, which is exactly what a broken load or a careless caller would
+    do — so the forward proves the invariant rather than assuming it."""
+    from tensorforge.experimental import (
+        NativeBatchNorm1d, NativeLayerNorm, NativeLinear, NativeParameter,
+    )
+
+    # weight/bias disagreeing inside one Linear.
+    module = NativeLinear(3, 2, seed=1, dtype="float32")
+    replacement = NativeParameter(np.zeros(2), dtype="float64")
+    original_bias = module.bias
+    x = _tensor(np.ones((2, 3), dtype=np.float32), "float32")
+    try:
+        module.bias = replacement
+        with pytest.raises(ValueError):
+            module(x)
+    finally:
+        module.bias = original_bias
+        replacement.close()
+        x.close()
+        _release(module)
+
+    # A LayerNorm whose affine weight has drifted.
+    module = NativeLayerNorm(3, dtype="float32")
+    replacement = NativeParameter(np.ones(3), dtype="float64")
+    original_weight = module.weight
+    x = _tensor(np.ones((2, 3), dtype=np.float32), "float32")
+    try:
+        module.weight = replacement
+        with pytest.raises(ValueError):
+            module(x)
+    finally:
+        module.weight = original_weight
+        replacement.close()
+        x.close()
+        _release(module)
+
+    # A BatchNorm whose running_var has drifted from its running_mean: the
+    # module-coherence check fires before anything can be committed.
+    module = NativeBatchNorm1d(3, dtype="float32")
+    stray = _tensor(np.ones(3), "float64")
+    original = module.running_var
+    x = _tensor(np.ones((4, 3), dtype=np.float32), "float32")
+    mean_before = module.running_mean.to_numpy().copy()
+    try:
+        module.register_buffer("running_var", stray, persistent=True)
+        with pytest.raises(ValueError, match="module's dtype"):
+            module(x)
+        assert _same_bits(module.running_mean.to_numpy(), mean_before,
+                          "float32")
+    finally:
+        module.register_buffer("running_var", original, persistent=True)
+        stray.close()
+        x.close()
+        _release(module)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_shared_and_frozen_float32_parameters_keep_their_semantics(dtype):
+    """Nothing about dtype changes the identity rules: a parameter shared
+    between two layers is one object with one gradient, and a frozen one
+    stays registered and persisted while accumulating nothing."""
+    from tensorforge.experimental import NativeLinear, NativeSequential
+
+    floating = _DTYPE_BITS[dtype][2]
+    first = NativeLinear(3, 3, bias=False, seed=2, dtype=dtype)
+    second = NativeLinear(3, 3, bias=False, seed=3, dtype=dtype)
+    second.weight = first.weight        # deliberate sharing
+    model = NativeSequential(first, second)
+    x = _tensor(np.ones((2, 3), dtype=floating), dtype)
+    try:
+        assert len(model.parameters()) == 1
+        out = model(x)
+        try:
+            out.sum().backward()
+        finally:
+            out.close()
+        assert first.weight is second.weight
+        assert first.weight.grad.dtype == dtype
+    finally:
+        x.close()
+        first.weight.close()
+
+    frozen = NativeLinear(3, 2, seed=4, requires_grad=False, dtype=dtype)
+    x = _tensor(np.ones((2, 3), dtype=floating), dtype, requires_grad=True)
+    try:
+        out = frozen(x)
+        try:
+            out.sum().backward()
+        finally:
+            out.close()
+        assert frozen.weight.grad is None
+        assert frozen.bias.grad is None
+        assert x.grad.dtype == dtype
+        assert set(frozen.state_dict()) == {"weight", "bias"}
+        for snapshot in frozen.state_dict().values():
+            assert snapshot.dtype == dtype
+            snapshot.close()
+    finally:
+        x.close()
+        _release(frozen)
+
+
+@needs_native
+def test_native_linear_gradients_pass_float32_finite_differences():
+    """The formula, not the last bits: float32 central differences with the
+    step and tolerances this module already justified for binary32, plus a
+    negative control proving the band can actually reject."""
+    from tensorforge.experimental import NativeLinear
+
+    module = NativeLinear(3, 2, seed=8, dtype="float32")
+    host = np.array([[0.5, -1.25, 2.0], [1.5, 0.75, -0.5]], dtype=np.float32)
+    try:
+        def build(tensor):
+            return module(tensor).multiply(module(tensor)).sum()
+
+        x = _tensor(host, "float32", requires_grad=True)
+        try:
+            out = build(x)
+            try:
+                out.backward()
+            finally:
+                out.close()
+            analytical = x.grad.to_numpy()
+        finally:
+            x.close()
+        numeric = _f32_numeric_gradient(build, host)
+        assert np.allclose(analytical, numeric, rtol=_F32_FD_RTOL,
+                           atol=_F32_FD_ATOL), (analytical, numeric)
+        # Negative control: the band rejects a gradient that is wrong.
+        assert not np.allclose(analytical * np.float32(1.5), numeric,
+                               rtol=_F32_FD_RTOL, atol=_F32_FD_ATOL)
+    finally:
+        _release(module)
+
+
+@needs_native
+def test_a_bias_allocation_failure_leaves_no_live_weight_storage(monkeypatch):
+    """§20's constructor row, at both widths and at every one of the four
+    state-owning modules that allocate more than one object.
+
+    ``NativeLinear`` had never been given the deterministic cleanup its
+    younger siblings have, so a failed bias allocation abandoned the
+    weight's storage to garbage collection. That is a real leak — a module
+    the caller never receives and therefore can never close — and it is
+    fixed here rather than documented."""
+    if not cpp.fault_injection_available():  # pragma: no cover
+        pytest.skip("the build has no fault-injection hook")
+    from tensorforge.experimental import (
+        NativeBatchNorm1d, NativeConv2d, NativeLayerNorm, NativeLinear,
+    )
+
+    from tensorforge.experimental import (
+        native_batchnorm, native_conv2d, native_layernorm, native_linear,
+    )
+
+    builders = (
+        ("NativeLinear", native_linear,
+         lambda dtype: NativeLinear(4, 3, seed=1, dtype=dtype)),
+        ("NativeConv2d", native_conv2d,
+         lambda dtype: NativeConv2d(2, 3, 2, seed=1, dtype=dtype)),
+        ("NativeLayerNorm", native_layernorm,
+         lambda dtype: NativeLayerNorm(4, dtype=dtype)),
+        ("NativeBatchNorm1d", native_batchnorm,
+         lambda dtype: NativeBatchNorm1d(4, dtype=dtype)),
+    )
+    for name, module_namespace, build in builders:
+        for dtype in BOTH_DTYPES:
+            # Spy on the parameter constructor rather than counting live
+            # storage: the half-built module is unreachable the moment
+            # ``__init__`` re-raises, so a garbage-collected cleanup would
+            # make a storage count pass without the constructor having done
+            # anything. What must be true is that the constructor closed it
+            # **itself**, deterministically, before propagating.
+            created = []
+            real = module_namespace.NativeParameter
+
+            def spy(*args, **kwargs):
+                parameter = real(*args, **kwargs)
+                created.append(parameter)
+                return parameter
+
+            monkeypatch.setattr(module_namespace, "NativeParameter", spy)
+            cpp._arm_alloc_failure(2)        # the second allocation fails
+            try:
+                with pytest.raises(MemoryError):
+                    build(dtype)
+            finally:
+                cpp._arm_alloc_failure(0)
+                cpp._require_library().tf_clear_error()
+                monkeypatch.undo()
+            assert len(created) == 1, (name, dtype)
+            assert created[0].closed, (name, dtype)
+
+
+# ---------------------------------------------------------------------------
+# I7.5 Normalization at float32
+#
+# LayerNorm and both BatchNorm shapes are **compositions** of I3/I4
+# operations, so I7 adds no kernel and no export to them; what it adds is
+# that every operand, constant, buffer, and temporary is at the graph's own
+# width. The references below are written at that width, in the layer's own
+# operation order, so the comparison is same-dtype throughout.
+# ---------------------------------------------------------------------------
+
+def _layer_norm_reference(values, weight, bias, eps, axes, floating):
+    """LayerNorm evaluated entirely in ``floating``, in the module's own
+    order: sequential single-axis means, the population variance, epsilon
+    **inside** the root, then the affine step. Every intermediate is
+    narrowed back to the width, so this is not a float64 computation wearing
+    a float32 hat."""
+    def mean_over(array):
+        out = array
+        for axis in axes:
+            out = out.mean(axis=axis, keepdims=True, dtype=floating)
+        return out.astype(floating)
+
+    values = values.astype(floating)
+    mean = mean_over(values)
+    centered = floating(values - mean)
+    variance = mean_over(floating(centered * centered))
+    inverse = floating(floating(1.0) / floating(np.sqrt(
+        floating(variance + floating(eps)))))
+    normalized = floating(centered * inverse)
+    if weight is None:
+        return normalized
+    return floating(floating(normalized * weight) + bias)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("affine", [True, False])
+@pytest.mark.parametrize("normalized_shape", [4, (2, 4)])
+def test_native_layer_norm_at_both_dtypes(dtype, affine, normalized_shape):
+    """Forward and backward at one width, with the output compared against a
+    same-dtype reference under an honest tolerance.
+
+    The tolerance is *not* laziness: the composition runs ``sqrt`` and
+    ``reciprocal``, and NumPy's reduction order is its own, so a bitwise
+    claim here would be a claim about NumPy rather than about TensorForge.
+    What is asserted exactly is what the contract states exactly — the
+    dtype of every output, gradient, and parameter."""
+    from tensorforge.experimental import NativeLayerNorm
+
+    floating = _DTYPE_BITS[dtype][2]
+    module = NativeLayerNorm(normalized_shape, elementwise_affine=affine,
+                             dtype=dtype)
+    shape = (3,) + (normalized_shape if isinstance(normalized_shape, tuple)
+                    else (normalized_shape,))
+    values = _sample(dtype, int(np.prod(shape))).reshape(shape)
+    x = _tensor(values, dtype, requires_grad=True)
+    try:
+        out = module(x)
+        try:
+            assert out.dtype == dtype
+            assert out.shape == shape
+            k = len(shape) - 1 if not isinstance(normalized_shape, tuple) \
+                else len(shape) - len(normalized_shape)
+            axes = tuple(range(k, len(shape)))
+            expected = _layer_norm_reference(
+                values,
+                module.weight.to_numpy() if affine else None,
+                module.bias.to_numpy() if affine else None,
+                module.eps, axes, floating)
+            tolerance = 1e-12 if dtype == "float64" else 2e-6
+            assert np.allclose(out.to_numpy(), expected, rtol=tolerance,
+                               atol=tolerance), (dtype, affine)
+            out.sum().backward()
+        finally:
+            out.close()
+        assert x.grad.dtype == dtype
+        if affine:
+            assert module.weight.grad.dtype == dtype
+            assert module.bias.grad.dtype == dtype
+    finally:
+        x.close()
+        _release(module)
+
+
+@needs_native
+def test_a_non_affine_layer_norm_normalizes_whatever_dtype_it_is_given():
+    """``elementwise_affine=False`` owns no numeric state, so its
+    constructed ``dtype`` is a *report* and never an enforcement — the layer
+    normalizes a float32 input and a float64 input alike, because there is
+    nothing of its own for either to disagree with.
+
+    Enforcing here would invent a second authority over data the module does
+    not own, which is exactly what design §12.1 rejects for the stateless
+    modules."""
+    from tensorforge.experimental import NativeLayerNorm
+
+    module = NativeLayerNorm(4, elementwise_affine=False, dtype="float32")
+    assert module.dtype == "float32"
+    assert module.parameters() == []
+    assert module.state_dict() == {}
+    for dtype in BOTH_DTYPES:
+        floating = _DTYPE_BITS[dtype][2]
+        x = _tensor(np.arange(8.0, dtype=floating).reshape(2, 4), dtype)
+        try:
+            out = module(x)
+            try:
+                assert out.dtype == dtype
+            finally:
+                out.close()
+        finally:
+            x.close()
+
+
+@needs_native
+def test_float32_layer_norm_gradients_pass_float32_finite_differences():
+    """The formula at binary32, with the negative control that proves the
+    band rejects."""
+    from tensorforge.experimental import NativeLayerNorm
+
+    module = NativeLayerNorm(4, dtype="float32")
+    host = np.array([[0.5, -1.25, 2.0, 0.75],
+                     [1.5, 0.25, -0.5, 1.75]], dtype=np.float32)
+    try:
+        def build(tensor):
+            out = module(tensor)
+            return out.multiply(out).sum()
+
+        x = _tensor(host, "float32", requires_grad=True)
+        try:
+            value = build(x)
+            try:
+                value.backward()
+            finally:
+                value.close()
+            analytical = x.grad.to_numpy()
+        finally:
+            x.close()
+        numeric = _f32_numeric_gradient(build, host)
+        assert np.allclose(analytical, numeric, rtol=_F32_FD_RTOL,
+                           atol=_F32_FD_ATOL), (analytical, numeric)
+        assert not np.allclose(analytical + np.float32(0.5), numeric,
+                               rtol=_F32_FD_RTOL, atol=_F32_FD_ATOL)
+    finally:
+        _release(module)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("kind", ["1d", "2d"])
+def test_batch_norm_training_and_evaluation_at_both_dtypes(dtype, kind):
+    """The whole stateful composition at one width: the training statistics,
+    the normalized output, both running updates, and the evaluation path
+    that reads snapshots instead.
+
+    The running update is checked against a same-dtype reference of the
+    documented formula, and the **buffer initialization** is checked
+    exactly — zeros and ones are representable at every width, so there is
+    nothing to round and a tolerance would be hiding something."""
+    from tensorforge.experimental import NativeBatchNorm1d, NativeBatchNorm2d
+
+    floating = _DTYPE_BITS[dtype][2]
+    features = 3
+    if kind == "1d":
+        module = NativeBatchNorm1d(features, dtype=dtype)
+        shape = (5, features)
+        axes = (0,)
+    else:
+        module = NativeBatchNorm2d(features, dtype=dtype)
+        shape = (2, features, 3, 3)
+        axes = (0, 2, 3)
+    values = _sample(dtype, int(np.prod(shape))).reshape(shape)
+    x = _tensor(values, dtype, requires_grad=True)
+    try:
+        # Buffers start at exactly zeros and ones, at the module's dtype.
+        assert module.running_mean.dtype == dtype
+        assert module.running_var.dtype == dtype
+        assert _same_bits(module.running_mean.to_numpy(),
+                          np.zeros(features, dtype=floating), dtype)
+        assert _same_bits(module.running_var.to_numpy(),
+                          np.ones(features, dtype=floating), dtype)
+
+        module.train()
+        out = module(x)
+        try:
+            assert out.dtype == dtype
+            assert out.shape == shape
+            out.sum().backward()
+        finally:
+            out.close()
+        assert x.grad.dtype == dtype
+        assert module.gamma.grad.dtype == dtype
+        assert module.beta.grad.dtype == dtype
+        # ...and both buffers advanced, still at the module's dtype, to
+        # (1 - m) * old + m * batch over the documented axes.
+        wide = values.astype(floating)
+        batch_mean = wide.mean(axis=axes, dtype=floating)
+        batch_var = ((wide - wide.mean(axis=axes, keepdims=True,
+                                       dtype=floating)) ** 2).mean(
+            axis=axes, dtype=floating)
+        momentum = floating(module.momentum)
+        expected_mean = floating(
+            floating(floating(1.0) - momentum) * floating(0.0)
+            + momentum * batch_mean)
+        expected_var = floating(
+            floating(floating(1.0) - momentum) * floating(1.0)
+            + momentum * batch_var)
+        tolerance = 1e-12 if dtype == "float64" else 2e-6
+        assert module.running_mean.dtype == dtype
+        assert module.running_var.dtype == dtype
+        assert np.allclose(module.running_mean.to_numpy(), expected_mean,
+                           rtol=tolerance, atol=tolerance)
+        assert np.allclose(module.running_var.to_numpy(), expected_var,
+                           rtol=tolerance, atol=tolerance)
+
+        # Evaluation reads snapshots, changes nothing, and stays at width.
+        module.eval()
+        frozen_mean = module.running_mean.to_numpy().copy()
+        frozen_var = module.running_var.to_numpy().copy()
+        out = module(x)
+        try:
+            assert out.dtype == dtype
+        finally:
+            out.close()
+        assert _same_bits(module.running_mean.to_numpy(), frozen_mean, dtype)
+        assert _same_bits(module.running_var.to_numpy(), frozen_var, dtype)
+    finally:
+        x.close()
+        _release(module)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_batch_norm_eval_snapshots_are_independent_at_the_graph_dtype(dtype):
+    """§13.1 and §21 together: the evaluation graph holds **independent
+    owning** copies of the running buffers at the graph's dtype, so a later
+    training step cannot reach back into a graph that was already built —
+    and the snapshots are released with the graph history, exactly once."""
+    from tensorforge.experimental import NativeBatchNorm1d
+
+    floating = _DTYPE_BITS[dtype][2]
+    module = NativeBatchNorm1d(3, dtype=dtype)
+    x = _tensor(_sample(dtype, 12).reshape(4, 3), dtype, requires_grad=True)
+    try:
+        module.eval()
+        out = module(x)
+        try:
+            assert out.dtype == dtype
+            before = out.to_numpy().copy()
+            # Mutate the running buffers underneath the built graph.
+            module.train()
+            other = _tensor(_sample(dtype, 12).reshape(4, 3) + 5.0, dtype)
+            try:
+                module(other).close()
+            finally:
+                other.close()
+            # The already-built eval graph is unaffected: its operands are
+            # snapshots, not the live buffers.
+            assert _same_bits(out.to_numpy(), before, dtype)
+            out.sum().backward()
+        finally:
+            out.close()
+        assert x.grad.dtype == dtype
+        assert x.grad.to_numpy().dtype == floating
+    finally:
+        x.close()
+        _release(module)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_two_buffer_transaction_refuses_a_mismatched_replacement(dtype):
+    """§7 of the milestone: the atomic two-buffer running-state transaction
+    gains one dtype validation and nothing else.
+
+    A replacement at the wrong width is refused **before either** live
+    buffer changes, so the two never diverge — the failure mode the
+    transaction exists to prevent, now reachable through dtype as well as
+    through shape."""
+    from tensorforge.experimental import NativeBatchNorm1d
+
+    other = "float32" if dtype == "float64" else "float64"
+    module = NativeBatchNorm1d(3, dtype=dtype)
+    stray = _tensor(np.zeros(3), other)
+    try:
+        mean_before = module.running_mean.to_numpy().copy()
+        var_before = module.running_var.to_numpy().copy()
+        mean_id = id(module.running_mean)
+        var_id = id(module.running_var)
+        good = _tensor(np.full(3, 0.25), dtype)
+        try:
+            with pytest.raises(ValueError):
+                module._commit_running_state(
+                    module.running_mean, module.running_var, stray, good)
+            with pytest.raises(ValueError):
+                module._commit_running_state(
+                    module.running_mean, module.running_var, good, stray)
+        finally:
+            good.close()
+        assert _same_bits(module.running_mean.to_numpy(), mean_before, dtype)
+        assert _same_bits(module.running_var.to_numpy(), var_before, dtype)
+        assert id(module.running_mean) == mean_id
+        assert id(module.running_var) == var_id
+        # ...and the module still works afterwards.
+        x = _tensor(_sample(dtype, 12).reshape(4, 3), dtype)
+        try:
+            module.train()
+            module(x).close()
+        finally:
+            x.close()
+        assert not _same_bits(module.running_mean.to_numpy(), mean_before,
+                              dtype)
+    finally:
+        stray.close()
+        _release(module)
+
+
+@needs_native
+def test_normalization_still_adds_no_kernel_export_or_numpy_compute():
+    """The Phase-F architectural guarantee, re-asserted at the milestone
+    that made normalization dtype-general: it is still **composition**.
+
+    No normalization kernel, no normalization export, no ``NativeTensor``
+    normalization operation, no ctypes import in either module, and no
+    NumPy anywhere but the constructor's host-side data preparation."""
+    import re
+
+    from tensorforge import experimental
+    from tensorforge.experimental import native_tensor
+
+    for name in ("layer_norm", "batch_norm", "normalize", "fused_norm"):
+        assert not hasattr(native_tensor.NativeTensor, name), name
+        assert not hasattr(cpp.NativeTensorCore, name), name
+        assert name not in experimental.__all__, name
+    exports = _source_exports()
+    assert not [name for name in exports if "norm" in name.lower()]
+    assert len(exports) == I1_EXPORT_COUNT
+    for relative in ("src/tensorforge/experimental/native_batchnorm.py",
+                     "src/tensorforge/experimental/native_layernorm.py"):
+        source = _read(relative)
+        for line in re.findall(r"^\s*(?:from|import)\s+\S+.*$", source, re.M):
+            assert "ctypes" not in line, (relative, line)
+            assert "backends" not in line, (relative, line)
+            assert "NativeTensorCore" not in line, (relative, line)
+        assert not re.search(r"\bcpp\.\w", source), relative
+        assert not re.search(r"\bNativeTensorCore\.\w", source), relative
+        # The dtype-aware scalars are built through the tensor-level private
+        # typed constructors, never through the public dtype-gated ones,
+        # which would pin a float32 graph's constants to float64.
+        body = source.split('"""', 2)[-1]
+        assert "NativeTensor.full(" not in body, relative
+        assert "NativeTensor.zeros(" not in body, relative
+
+
+# ---------------------------------------------------------------------------
+# I7.6 State dictionaries
+# ---------------------------------------------------------------------------
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_state_dict_round_trips_at_both_dtypes_without_casting(dtype):
+    """``state_dict()`` stays ``{name: NativeTensor}`` and carries dtype
+    **implicitly**, through the tensors — no top-level manifest is added.
+    The snapshots are independent owning copies, so closing them cannot
+    touch the module and mutating the module cannot change them."""
+    from tensorforge.experimental import NativeBatchNorm1d
+
+    module = NativeBatchNorm1d(3, dtype=dtype)
+    target = NativeBatchNorm1d(3, dtype=dtype)
+    x = _tensor(_sample(dtype, 12).reshape(4, 3), dtype)
+    try:
+        module.train()
+        module(x).close()           # move the buffers off their defaults
+        snapshot = module.state_dict()
+        try:
+            assert list(snapshot) == ["gamma", "beta", "running_mean",
+                                      "running_var"]
+            for key, value in snapshot.items():
+                assert value.dtype == dtype, key
+                assert value.to_numpy().dtype == _DTYPE_BITS[dtype][2], key
+            versions = {k: p.version for k, p in target.named_parameters()}
+            identities = {k: id(t) for k, t in
+                          list(target.named_parameters())
+                          + list(target.named_buffers())}
+            target.load_state_dict(snapshot)
+            for key, value in snapshot.items():
+                live = (dict(target.named_parameters())
+                        | dict(target.named_buffers()))[key]
+                assert live.dtype == dtype, key
+                assert _same_bits(live.to_numpy(), value.to_numpy(), dtype), key
+            # Identities preserved; parameter versions moved exactly once;
+            # buffers carry no version and move none.
+            for key, tensor in (list(target.named_parameters())
+                                + list(target.named_buffers())):
+                assert id(tensor) == identities[key], key
+            for key, parameter in target.named_parameters():
+                assert parameter.version == versions[key] + 1, key
+        finally:
+            for value in snapshot.values():
+                value.close()
+    finally:
+        x.close()
+        _release(target)
+        _release(module)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_cross_dtype_state_loading_is_refused_transactionally(dtype):
+    """§25.4: the loader validates dtype per entry against the live
+    destination and never casts — in **both** directions, and with the whole
+    load rolled back when a single entry disagrees.
+
+    The mixed case is the one that matters: three matching entries and one
+    mismatched one must leave all four destinations exactly as they were.
+    A loader that validated entry by entry as it committed would have
+    written three of them."""
+    from tensorforge.experimental import NativeBatchNorm1d
+
+    other = "float32" if dtype == "float64" else "float64"
+    source = NativeBatchNorm1d(3, dtype=dtype)
+    target = NativeBatchNorm1d(3, dtype=other)
+    x = _tensor(_sample(dtype, 12).reshape(4, 3), dtype)
+    try:
+        source.train()
+        source(x).close()
+        snapshot = source.state_dict()
+        try:
+            before = {k: t.to_numpy().copy() for k, t in
+                      (list(target.named_parameters())
+                       + list(target.named_buffers()))}
+            versions = {k: p.version for k, p in target.named_parameters()}
+            with pytest.raises(ValueError, match="dtype mismatch"):
+                target.load_state_dict(snapshot)
+            for key, tensor in (list(target.named_parameters())
+                                + list(target.named_buffers())):
+                assert _same_bits(tensor.to_numpy(), before[key], other), key
+                assert tensor.dtype == other, key
+            for key, parameter in target.named_parameters():
+                assert parameter.version == versions[key], key
+        finally:
+            for value in snapshot.values():
+                value.close()
+
+        # ...and now the mixed case: one entry of four at the wrong width.
+        same = NativeBatchNorm1d(3, dtype=dtype)
+        try:
+            snapshot = same.state_dict()
+            stray = _tensor(np.zeros(3), other)
+            try:
+                snapshot["running_var"].close()
+                snapshot["running_var"] = stray
+                before = {k: t.to_numpy().copy() for k, t in
+                          (list(source.named_parameters())
+                           + list(source.named_buffers()))}
+                versions = {k: p.version for k, p in source.named_parameters()}
+                with pytest.raises(ValueError, match="dtype mismatch"):
+                    source.load_state_dict(snapshot)
+                for key, tensor in (list(source.named_parameters())
+                                    + list(source.named_buffers())):
+                    assert _same_bits(tensor.to_numpy(), before[key], dtype), key
+                for key, parameter in source.named_parameters():
+                    assert parameter.version == versions[key], key
+            finally:
+                stray.close()
+                for key, value in snapshot.items():
+                    if value is not stray:
+                        value.close()
+        finally:
+            _release(same)
+    finally:
+        x.close()
+        _release(target)
+        _release(source)
+
+
+# ---------------------------------------------------------------------------
+# I7.7 The checkpoint boundary stays at version 2
+# ---------------------------------------------------------------------------
+
+@needs_native
+def test_a_float32_model_cannot_be_written_to_a_version_2_checkpoint(tmp_path):
+    """§16.5: format versions 1 and 2 are float64-only, permanently. The
+    loader already proves every archive array is exactly ``np.float64``, so
+    a float32 payload written under a version-2 manifest would be a file
+    this library refuses to read back — silently unrecoverable.
+
+    So the save **refuses**, before the temporary file exists, and neither
+    casts nor guesses. Dtype-aware serialization is checkpoint version 3,
+    milestone I8, and it is not started."""
+    from tensorforge.experimental import (
+        NativeLinear, load_native_checkpoint, native_checkpoint,
+        save_native_checkpoint,
+    )
+
+    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+            == I0_CHECKPOINT_VERSIONS)
+
+    module = NativeLinear(3, 2, seed=1, dtype="float32")
+    path = tmp_path / "float32.npz"
+    try:
+        with pytest.raises(ValueError) as error:
+            save_native_checkpoint(path, module)
+        message = str(error.value)
+        assert "float32" in message and "float64 only" in message
+        assert not path.exists(), "a refused save left a file behind"
+    finally:
+        _release(module)
+
+    # A float64 model round-trips exactly as before — the boundary refuses
+    # float32 without disturbing anything else.
+    reference = NativeLinear(3, 2, seed=1, dtype="float64")
+    restored = NativeLinear(3, 2, seed=2, dtype="float64")
+    try:
+        save_native_checkpoint(path, reference)
+        load_native_checkpoint(path, restored)
+        for key in ("weight", "bias"):
+            assert _same_bits(getattr(restored, key).to_numpy(),
+                              getattr(reference, key).to_numpy(), "float64")
+    finally:
+        _release(restored)
+        _release(reference)
+
+    # Loading a float64 archive into a float32 model is refused too, and it
+    # is refused **before** anything is replaced.
+    target = NativeLinear(3, 2, seed=3, dtype="float32")
+    try:
+        before = {k: p.to_numpy().copy() for k, p in target.named_parameters()}
+        versions = {k: p.version for k, p in target.named_parameters()}
+        with pytest.raises(ValueError):
+            load_native_checkpoint(path, target)
+        for key, parameter in target.named_parameters():
+            assert _same_bits(parameter.to_numpy(), before[key], "float32")
+            assert parameter.version == versions[key]
+    finally:
+        _release(target)
+
+
+# ---------------------------------------------------------------------------
+# I7.8 Dropout at float32
+#
+# The C++ half is proved by cpp/tests/test_dtype_dropout.cpp, including the
+# committed keep patterns at both widths and the narrow-once scale witness.
+# What is proved here is the Python half: the operation, the module, the
+# graph-owned mask, and — the part no C++ test can see — the generator call
+# accounting, which must be identical at both widths on every path.
+# ---------------------------------------------------------------------------
+
+def _drop_pattern(mask_values):
+    """The keep/drop pattern of a multiplier mask, as a tuple of bools."""
+    return tuple(bool(value != 0) for value in mask_values.ravel())
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_dropout_operation_produces_output_and_mask_at_the_input_dtype(
+    dtype
+):
+    """The Core contract at one width: both destinations are fresh owning
+    contiguous storage at the **input's** dtype, the mask holds exactly two
+    values, and the kept one is the binary64 reciprocal narrowed once."""
+    floating = _DTYPE_BITS[dtype][2]
+    core = _core(_sample(dtype, 24).reshape(4, 6), dtype)
+    try:
+        out, mask = core._dropout_forward_with_mask(0.25, seed=5,
+                                                    call_index=2)
+        try:
+            assert out.dtype == dtype and mask.dtype == dtype
+            assert out.to_numpy().dtype == floating
+            assert mask.to_numpy().dtype == floating
+            assert out.shape == core.shape and mask.shape == core.shape
+            # Independent owning storage, aliasing neither the input nor
+            # each other.
+            assert out.storage is not mask.storage
+            assert out.storage is not core.storage
+            assert mask.storage is not core.storage
+            scale = floating(1.0 / (1.0 - 0.25))
+            values = set(np.unique(mask.to_numpy()).tolist())
+            assert values <= {0.0, float(scale)}, values
+            for value in mask.to_numpy().ravel():
+                assert (_bits(np.array([value], dtype=floating), dtype)[0]
+                        in (_bits(np.array([0.0], dtype=floating), dtype)[0],
+                            _bits(np.array([scale], dtype=floating), dtype)[0]))
+            # output == input * mask, exactly, at the element type.
+            assert _same_bits(out.to_numpy(),
+                              floating(core.to_numpy() * mask.to_numpy()),
+                              dtype)
+        finally:
+            mask.close()
+            out.close()
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("p", [0.1, 0.25, 0.5, 0.75, 0.9])
+def test_one_random_key_drops_the_same_elements_at_both_dtypes(p):
+    """Design §14.2's deliberate property, from Python: the uniform draw
+    stays binary64 at every width, so a float32 Dropout and a float64
+    Dropout with the same ``(seed, call_index, element count)`` key drop
+    **exactly** the same elements.
+
+    Asserted as a direct comparison of the two patterns, not as two
+    independent agreements with a table, and over enough elements that a
+    coincidence is not a plausible explanation."""
+    count = 512
+    patterns = {}
+    for dtype in BOTH_DTYPES:
+        floating = _DTYPE_BITS[dtype][2]
+        core = _core(np.ones(count, dtype=floating), dtype)
+        try:
+            out, mask = core._dropout_forward_with_mask(p, seed=1234,
+                                                        call_index=7)
+            try:
+                patterns[dtype] = _drop_pattern(mask.to_numpy())
+            finally:
+                mask.close()
+                out.close()
+        finally:
+            core.close()
+    assert patterns["float32"] == patterns["float64"]
+    # ...and the pattern is not degenerate, so the equality means something.
+    kept = sum(patterns["float64"])
+    assert 0 < kept < count
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_float32_dropout_graph_backward_multiplies_by_the_saved_mask(
+    dtype
+):
+    """The autograd half: the gradient is ``upstream * mask`` at the graph's
+    dtype, over the private mask the forward saved — never a redraw."""
+    from tensorforge.experimental import NativeGenerator
+
+    floating = _DTYPE_BITS[dtype][2]
+    generator = NativeGenerator(2024)
+    x = _tensor(np.full(64, 2.0, dtype=floating), dtype, requires_grad=True)
+    try:
+        out = x.dropout(0.5, generator=generator)
+        try:
+            assert out.dtype == dtype
+            observed = out.to_numpy()
+            out.sum().backward()
+        finally:
+            out.close()
+        assert x.grad.dtype == dtype
+        # grad == mask, because the upstream seed is ones and the mask is
+        # what the forward divided the kept values by.
+        expected = floating(observed / floating(2.0))
+        assert _same_bits(x.grad.to_numpy(), expected, dtype)
+    finally:
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_dropout_call_accounting_is_identical_at_both_dtypes(dtype):
+    """§16 of the milestone, at both widths and on every path.
+
+    A successful stochastic forward consumes exactly one call; evaluation
+    and ``p == 0`` return the input object itself and consume none; and a
+    **failed** forward consumes none, leaving the same index free for the
+    next one. The generator itself is dtype-free and must stay that way."""
+    import inspect
+
+    from tensorforge.experimental import NativeDropout, NativeGenerator
+
+    floating = _DTYPE_BITS[dtype][2]
+    assert "dtype" not in inspect.signature(NativeGenerator).parameters
+    assert "dtype" not in inspect.signature(NativeDropout).parameters
+
+    generator = NativeGenerator(99)
+    module = NativeDropout(0.5, generator=generator)
+    x = _tensor(np.ones(16, dtype=floating), dtype)
+    try:
+        assert generator.calls == 0
+        module.train()
+        out = module(x)
+        try:
+            assert out.dtype == dtype
+            assert out is not x
+        finally:
+            out.close()
+        assert generator.calls == 1
+
+        # Evaluation: the caller's own object, nothing consumed.
+        module.eval()
+        assert module(x) is x
+        assert generator.calls == 1
+
+        # p == 0: identity, nothing consumed, whatever the mode.
+        identity = NativeDropout(0.0, generator=generator)
+        identity.train()
+        assert identity(x) is x
+        assert generator.calls == 1
+
+        # A failed forward abandons its reservation.
+        module.train()
+        closed = _tensor(np.ones(4, dtype=floating), dtype)
+        closed.close()
+        with pytest.raises(RuntimeError):
+            module(closed)
+        assert generator.calls == 1
+
+        # ...and the next successful forward takes the index the failure
+        # did not spend.
+        out = module(x)
+        try:
+            assert out.dtype == dtype
+        finally:
+            out.close()
+        assert generator.calls == 2
+        assert generator.algorithm == "tensorforge.splitmix64"
+        assert generator.algorithm_version == 1
+    finally:
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_float32_dropout_mask_rides_the_graph_resource_contract(
+    dtype, monkeypatch
+):
+    """§21 at the new width: the saved mask is released **exactly once**
+    with the graph history, retained under ``retain_graph=True``, released
+    immediately by a no-grad forward, released by an abandoned graph's
+    ``close()``, and never exposed anywhere. Live native storage returns to
+    baseline after each shape."""
+    from tensorforge.experimental import NativeGenerator
+
+    floating = _DTYPE_BITS[dtype][2]
+    generator = NativeGenerator(7)
+    open_ids = _live_storage_ids(monkeypatch)
+
+    # 1. no-grad forward: the mask is closed as soon as the forward returns,
+    #    so only the output survives.
+    x = _tensor(np.ones(32, dtype=floating), dtype)
+    baseline = len(open_ids)
+    out = x.dropout(0.5, generator=generator)
+    assert len(open_ids) == baseline + 1        # the output, and nothing else
+    out.close()
+    assert len(open_ids) == baseline
+    x.close()
+
+    # 2. one-shot backward releases the mask exactly once.
+    x = _tensor(np.ones(32, dtype=floating), dtype, requires_grad=True)
+    baseline = len(open_ids)
+    out = x.dropout(0.5, generator=generator)
+    assert len(open_ids) == baseline + 2        # the output and the mask
+    total = out.sum()
+    total.backward()
+    total.close()
+    out.close()
+    x.grad.close()
+    x.close()
+    assert len(open_ids) == baseline - 1        # x itself is closed too
+
+    # 3. retain_graph keeps the mask for a second pass.
+    x = _tensor(np.ones(32, dtype=floating), dtype, requires_grad=True)
+    out = x.dropout(0.5, generator=generator)
+    first = out.sum()
+    first.backward(retain_graph=True)
+    first.close()
+    second = out.sum()
+    second.backward()
+    second.close()
+    out.close()
+    x.grad.close()
+    x.close()
+
+    # 4. an abandoned graph still frees the mask.
+    baseline = len(open_ids)
+    x = _tensor(np.ones(32, dtype=floating), dtype, requires_grad=True)
+    out = x.dropout(0.5, generator=generator)
+    out.close()
+    x.close()
+    assert len(open_ids) == baseline
+
+    # 5. repeated cycles return to exactly the baseline.
+    baseline = len(open_ids)
+    for _ in range(5):
+        x = _tensor(np.ones(32, dtype=floating), dtype, requires_grad=True)
+        out = x.dropout(0.5, generator=generator)
+        total = out.sum()
+        total.backward()
+        total.close()
+        out.close()
+        x.grad.close()
+        x.close()
+    assert len(open_ids) == baseline
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_a_corrupted_dropout_mask_dtype_is_refused_by_the_backward(dtype):
+    """The graph-level mixed-dtype case: a saved mask that has drifted from
+    the graph's dtype must be refused by the backward's multiply rather than
+    walked at the wrong width. Reachable only by substituting the private
+    resource, which is what makes it worth asserting."""
+    from tensorforge.experimental import NativeGenerator
+
+    floating = _DTYPE_BITS[dtype][2]
+    other = "float32" if dtype == "float64" else "float64"
+    generator = NativeGenerator(5)
+    x = _tensor(np.ones(8, dtype=floating), dtype, requires_grad=True)
+    stray = cpp.NativeTensorCore._typed_from_array(
+        np.ones(8, dtype=_DTYPE_BITS[other][2]), other)
+    try:
+        out = x.dropout(0.5, generator=generator)
+        try:
+            # Substitute the mask the backward closure captured.
+            closure = out._backward
+            assert closure is not None
+            saved = out._graph_resources
+            assert len(saved) == 1 and saved[0].dtype == dtype
+            replacement = _dropout_mask_swap(out, stray)
+            total = out.sum()
+            try:
+                with pytest.raises(ValueError, match="matching dtype") as err:
+                    total.backward()
+                assert dtype in str(err.value) and other in str(err.value)
+            finally:
+                total.close()
+            _dropout_mask_swap(out, replacement)
+        finally:
+            out.close()
+    finally:
+        stray.close()
+        x.close()
+
+
+def _dropout_mask_swap(node, replacement):
+    """Swap the private mask a Dropout node's backward closure multiplies
+    against, returning the one it replaced. Test-only surgery: the mask is
+    private graph state with no public accessor, which is exactly why the
+    corrupted case needs it."""
+    cells = node._backward.__closure__
+    for cell in cells:
+        value = cell.cell_contents
+        if isinstance(value, cpp.NativeTensorCore) and not value._closed:
+            cell.cell_contents = replacement
+            return value
+    raise AssertionError("no mask found in the dropout backward closure")
+
+
+# ---------------------------------------------------------------------------
+# I7.9 Containers
+# ---------------------------------------------------------------------------
+
+@needs_native
+def test_a_container_takes_no_dtype_and_raises_at_the_mismatched_child():
+    """§12.2: a container does not force a dtype on its children and does
+    not unify them — that would be promotion. A model may legitimately hold
+    both widths; what it may not do is bridge between them silently.
+
+    The failure is asserted to happen **at the mismatched child**, with both
+    dtypes named, and to leave that child's own state untouched."""
+    import inspect
+
+    from tensorforge.experimental import (
+        NativeLinear, NativeReLU, NativeSequential,
+    )
+
+    assert "dtype" not in inspect.signature(NativeSequential).parameters
+
+    wide = NativeLinear(3, 3, seed=1, dtype="float64")
+    narrow = NativeLinear(3, 2, seed=2, dtype="float32")
+    model = NativeSequential(wide, NativeReLU(), narrow)
+    x64 = _tensor(np.ones((2, 3)), "float64", requires_grad=True)
+    try:
+        versions = {k: p.version for k, p in model.named_parameters()}
+        with pytest.raises(ValueError) as error:
+            model(x64)
+        message = str(error.value)
+        assert "NativeLinear" in message
+        assert "float32" in message and "float64" in message
+        # The failing child mutated nothing, and neither did the earlier
+        # ones: no gradient, no version movement.
+        for key, parameter in model.named_parameters():
+            assert parameter.grad is None, key
+            assert parameter.version == versions[key], key
+        assert x64.grad is None
+
+        # The mirror case: a float32 input meets the float64 first child, so
+        # the very first child raises.
+        x32 = _tensor(np.ones((2, 3), dtype=np.float32), "float32")
+        try:
+            with pytest.raises(ValueError) as first_error:
+                model(x32)
+            assert "float32" in str(first_error.value)
+        finally:
+            x32.close()
+
+        # ...and a consistent model of either width runs.
+        for dtype in BOTH_DTYPES:
+            floating = _DTYPE_BITS[dtype][2]
+            a = NativeLinear(3, 3, seed=1, dtype=dtype)
+            b = NativeLinear(3, 2, seed=2, dtype=dtype)
+            consistent = NativeSequential(a, NativeReLU(), b)
+            x = _tensor(np.ones((2, 3), dtype=floating), dtype)
+            try:
+                consistent.train()
+                assert all(child.training for child in (a, b))
+                consistent.eval()
+                assert not any(child.training for child in (a, b))
+                out = consistent(x)
+                try:
+                    assert out.dtype == dtype
+                finally:
+                    out.close()
+            finally:
+                x.close()
+                _release(a)
+                _release(b)
+    finally:
+        x64.close()
+        _release(narrow)
+        _release(wide)
+
+
+@needs_native
+def test_train_eval_and_generator_registration_are_unchanged_by_dtype():
+    """A dtype-aware model still propagates ``train()``/``eval()`` through
+    every child and still registers its generators as the fourth state
+    category — absent from ``state_dict()``, present in
+    ``named_generators()``, with the shared object's identity preserved."""
+    from tensorforge.experimental import (
+        NativeBatchNorm1d, NativeDropout, NativeGenerator, NativeLinear,
+        NativeSequential,
+    )
+
+    generator = NativeGenerator(3)
+    linear = NativeLinear(4, 4, seed=1, dtype="float32")
+    norm = NativeBatchNorm1d(4, dtype="float32")
+    drop = NativeDropout(0.25, generator=generator)
+    model = NativeSequential(linear, norm, drop)
+    x = _tensor(np.arange(16.0, dtype=np.float32).reshape(4, 4), "float32")
+    try:
+        assert dict(model.named_generators()) == {"2.generator": generator}
+        assert model.generators() == [generator]
+        state = model.state_dict()
+        try:
+            assert all(not key.endswith("generator") for key in state)
+            assert set(value.dtype for value in state.values()) == {"float32"}
+        finally:
+            for value in state.values():
+                value.close()
+
+        model.train()
+        assert linear.training and norm.training and drop.training
+        out = model(x)
+        try:
+            assert out.dtype == "float32"
+        finally:
+            out.close()
+        assert generator.calls == 1
+
+        model.eval()
+        assert not (linear.training or norm.training or drop.training)
+        out = model(x)
+        try:
+            assert out.dtype == "float32"
+        finally:
+            out.close()
+        assert generator.calls == 1     # eval consumes none, at float32 too
+    finally:
+        x.close()
+        _release(norm)
+        _release(linear)
+
+
+# ---------------------------------------------------------------------------
+# I7.10 float64 regression, bitwise
+# ---------------------------------------------------------------------------
+
+@needs_native
+def test_the_float64_module_stack_is_bitwise_what_it_was():
+    """The phase's hardest requirement (design §26): every pre-Phase-I
+    float64 value is **byte-identical**.
+
+    The whole pre-I7 surface is exercised in one place with committed bit
+    patterns rather than left to the older suites alone, so a regression
+    shows up as this test rather than as a puzzling failure three files
+    away. Each expectation below is a value produced by the *shipped* path
+    with no dtype argument anywhere."""
+    from tensorforge.experimental import (
+        NativeBatchNorm1d, NativeDropout, NativeGenerator, NativeLayerNorm,
+        NativeLinear,
+    )
+
+    # Initialization: the host draw, untouched.
+    linear = NativeLinear(4, 3, seed=42)
+    try:
+        import math
+        bound = 1.0 / math.sqrt(4)
+        rng = np.random.default_rng(42)
+        assert _same_bits(linear.weight.to_numpy(),
+                          rng.uniform(-bound, bound, size=(4, 3)), "float64")
+        assert _same_bits(linear.bias.to_numpy(),
+                          rng.uniform(-bound, bound, size=(3,)), "float64")
+    finally:
+        _release(linear)
+
+    # LayerNorm forward: exact zeros and ones on a symmetric input, which
+    # any change to the eps placement or the operand order would move.
+    norm = NativeLayerNorm(4, elementwise_affine=False)
+    x = _tensor(np.array([[1.0, 2.0, 3.0, 4.0]]), "float64")
+    try:
+        out = norm(x)
+        try:
+            values = out.to_numpy()
+            assert values.dtype == np.float64
+            assert _same_bits(values, -values[:, ::-1], "float64")
+        finally:
+            out.close()
+    finally:
+        x.close()
+
+    # BatchNorm buffers: the documented defaults, exactly.
+    bn = NativeBatchNorm1d(3)
+    try:
+        assert _same_bits(bn.running_mean.to_numpy(), np.zeros(3), "float64")
+        assert _same_bits(bn.running_var.to_numpy(), np.ones(3), "float64")
+        bn.train()
+        data = _tensor(np.array([[0.0, 1.0, 2.0],
+                                 [2.0, 3.0, 4.0]]), "float64")
+        try:
+            bn(data).close()
+        finally:
+            data.close()
+        # (1 - 0.1) * 0 + 0.1 * batch_mean, and the population variance.
+        assert _same_bits(bn.running_mean.to_numpy(),
+                          np.array([0.1, 0.2, 0.30000000000000004]),
+                          "float64")
+        assert _same_bits(bn.running_var.to_numpy(),
+                          np.array([1.0, 1.0, 1.0]), "float64")
+    finally:
+        _release(bn)
+
+    # Dropout: the G2 committed vector, through the shipped module.
+    generator = NativeGenerator(0)
+    drop = NativeDropout(0.25, generator=generator)
+    ones = _tensor(np.ones(12), "float64")
+    try:
+        drop.train()
+        out = drop(ones)
+        try:
+            expected = np.where(
+                np.array(list("111110111110")) == "1", 1.0 / 0.75, 0.0)
+            assert _same_bits(out.to_numpy(), expected, "float64")
+        finally:
+            out.close()
+        assert generator.calls == 1
+    finally:
+        ones.close()
+
+
+@needs_native
+def test_i7_moved_no_public_capability_at_all():
+    """The exit gate, as one assertion block.
+
+    What I7 delivered: dtype-aware state-owning constructors, float32
+    parameters, buffers, normalization, and Dropout, and the last
+    float64-only Core gate opened. What it deliberately did **not** deliver,
+    and what the next milestones own:
+
+      * **I8** — float32 optimizer state and checkpoint version 3. Neither
+        exists; both refuse.
+      * **I9** — the public registry. ``SUPPORTED_DTYPES`` is still
+        ``("float64",)``, ``"float32"`` is still in ``UNSUPPORTED``, and no
+        public tensor constructor produces a float32 tensor.
+
+    The gap between the two is the phase's rollout discipline (§27), not an
+    oversight, and stating it precisely is what keeps "float32 is supported"
+    from becoming the summary five milestones early."""
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
+    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
+    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    assert cpp.RAW_KERNEL_DTYPES == ("float64",)
+    assert cpp.backend_info()["dtype"] == "float64"
+    assert cpp.backend_info()["supported_dtypes"] == I0_DTYPES
+    assert cpp.backend_info()["stable_framework_integration"] is False
+    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+            == I0_CHECKPOINT_VERSIONS)
+    with pytest.raises(ValueError):
+        cpp.normalize_dtype("float32")
+
+    exports = _source_exports()
+    assert len(exports) == I1_EXPORT_COUNT       # still 54; I7 adds none
+    for absent in ("tf_core_dropout_forward_f32", "tf_core_dropout_typed",
+                   "tf_core_dropout_backward", "tf_core_layer_norm",
+                   "tf_core_batch_norm", "tf_storage_cast",
+                   "tf_storage_dtype", "tf_parameter_create"):
+        assert absent not in exports, absent
+    assert not [name for name in exports
+                if name.endswith(("_f32", "_f64", "_float32", "_float64"))]
+    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+
+
+@needs_native
+def test_the_dropout_export_kept_its_exact_abi_shape():
+    """§12 of the milestone: the same symbol, the same argument count, the
+    same order, the same types. The dtype travels on the handles, so nothing
+    about the signature had to move — and a previously compiled caller
+    therefore still links and still runs."""
+    import ctypes
+
+    library = cpp._require_library()
+    signature = library.tf_core_dropout_forward.argtypes
+    assert signature == [
+        ctypes.c_void_p, ctypes.c_int64,     # input handle, input offset
+        ctypes.c_void_p,                     # output handle
+        ctypes.c_void_p,                     # mask handle
+        ctypes.c_int64,                      # element count
+        ctypes.c_uint64, ctypes.c_uint64,    # seed, call index
+        ctypes.c_double,                     # p
+    ]
+    assert library.tf_core_dropout_forward.restype is None
+    # The kernel is a template now, but the export is not: exactly one
+    # dispatch, and no per-dtype symbol anywhere.
+    source = _read("cpp/src/random.cpp")
+    assert source.count("TF_EXPORT") == 1
+    assert source.count("tf::dispatch_dtype(") == 1
+    assert "tf::require_matching_dtype(" in source
+    assert "tf::require_float64(" not in source
+    # The random derivation itself is untouched: the uniform is still the
+    # binary64 53-bit conversion, at every width (design §14.2).
+    assert "static_cast<double>(bits >> 11) * 0x1p-53" in source
+    header = _read("cpp/include/tf_random_internal.h")
+    assert "static_cast<T>(1.0 / (1.0 - p))" in header
+    assert "double dropout_uniform(std::uint64_t bits) noexcept;" in header
+    # No dtype branch inside the element loop: the only ``switch`` in the
+    # translation unit is the one dispatch above.
+    assert source.count("switch (") == 1

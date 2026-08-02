@@ -37,12 +37,27 @@ time, so the multi-axis mean is taken as a sequence of single-axis means
 with ``keepdims=True``; because each reduced dimension is retained at
 size 1, the original trailing-axis numbers stay valid across the whole
 sequence (no tuple-axis reduction is added to ``NativeTensor``). The
-``eps`` constant is created natively with the graph-free scalar
-``NativeTensor.full((), eps, ...)`` — no NumPy and no stable-framework
-arithmetic runs in forward or backward.
+``eps`` constant is created natively as a graph-free rank-0 scalar at the
+**graph's own dtype** — no NumPy and no stable-framework arithmetic runs
+in forward or backward.
+
+**Dtype** (Phase I, milestone I7). ``dtype`` is keyword-only, defaults to
+``"float64"``, and accepts exactly ``"float64"`` and ``"float32"``.
+``elementwise_affine=True`` builds ``weight`` and ``bias`` at it, and the
+input must then match exactly. ``elementwise_affine=False`` owns no
+numeric state, so it normalizes whatever dtype it is handed and the
+constructed value is only reported, never enforced — the module cannot be
+a second authority over data it does not own. ``eps`` stays a Python
+``float`` and is materialized as a **graph-dtype** rank-0 native scalar
+per forward, so no float64 constant ever enters a float32 graph. Every
+reduction, the variance, the root, the reciprocal, and the affine step
+therefore run at the graph's own width, with no hidden wider accumulator
+and no NumPy compute (design §10.1). float32 remains **publicly
+unsupported** until milestone I9; omitting ``dtype`` is byte-identical to
+every pre-Phase-I run.
 
 **Construction** — ``NativeLayerNorm(normalized_shape, eps=1e-5,
-elementwise_affine=True)``:
+elementwise_affine=True, *, dtype=None)``:
 
 - ``normalized_shape`` accepts a positive plain ``int`` (normalized to
   ``(value,)``) or a non-empty ``tuple``/``list`` of positive plain
@@ -58,8 +73,8 @@ elementwise_affine=True)``:
 - ``elementwise_affine=True`` creates ``weight`` (ones) and ``bias``
   (zeros) as ``NativeParameter``s of shape ``normalized_shape``,
   registered in that order (weight, then bias); both are independent,
-  owning, contiguous, graph-free float64/cpu leaves at parameter version
-  0. If the bias allocation fails, the already-created weight storage is
+  owning, contiguous, graph-free cpu leaves at the module dtype and at
+  parameter version 0. If the bias allocation fails, the weight storage is
   closed deterministically rather than abandoned to GC.
 - ``elementwise_affine=False`` registers **no parameters**, contributes
   no state keys, and allocates no affine storage; ``weight`` and ``bias``
@@ -83,13 +98,14 @@ of the input's shape, independent of the input's storage and never a
 ``NativeParameter`` or a borrowing view. The module stores no forward
 temporaries; graph lifetime, ``retain_graph``, and one-shot cleanup are
 exactly the existing engine's. Fully separate from
-``tensorforge.nn.LayerNorm``; float64/cpu only.
+``tensorforge.nn.LayerNorm``; cpu only.
 """
 
 import numbers
 
 import numpy as np
 
+from ._native_dtype import normalize_module_dtype
 from .native_module import NativeModule
 from .native_parameter import NativeParameter
 from .native_tensor import NativeTensor
@@ -151,7 +167,8 @@ class NativeLayerNorm(NativeModule):
     running statistics, identical in train and eval mode; backward is
     supplied entirely by the existing native autograd."""
 
-    def __init__(self, normalized_shape, eps=1e-5, elementwise_affine=True):
+    def __init__(self, normalized_shape, eps=1e-5, elementwise_affine=True,
+                 *, dtype=None):
         # Validate every Python argument before any native allocation, so
         # a bad call never creates parameter storage it abandons — the
         # live-storage count is unchanged on rejection.
@@ -167,22 +184,38 @@ class NativeLayerNorm(NativeModule):
                 f"elementwise_affine must be a bool, got "
                 f"{type(elementwise_affine).__name__}"
             )
+        # Phase I, milestone I7 — validated at **both** affine settings, and
+        # deliberately so. A non-affine LayerNorm owns no numeric state and
+        # takes its working dtype from the input, so the argument reports
+        # nothing about storage there; but the I7 constructor surface names
+        # ``NativeLayerNorm`` unconditionally, and a constructor that
+        # silently accepted ``dtype="f4"`` in one configuration and rejected
+        # it in the other would be the worse contract. So the value is
+        # always validated and always reported; what it *governs* is the
+        # affine parameters, which is where a dtype can actually live.
+        dtype = normalize_module_dtype(dtype)
         super().__init__()
         self.normalized_shape = shape
         self.eps = float(eps)
         self.elementwise_affine = elementwise_affine
+        self._dtype = dtype
         if elementwise_affine:
             # weight=ones, bias=zeros — NumPy here is host-side data
             # preparation feeding NativeParameter (the from_array entry
             # boundary), the NativeLinear precedent; no graph is built and
             # no native compute runs. Registration order is weight, bias.
-            self.weight = NativeParameter(np.ones(shape), requires_grad=True)
+            # Both are built at the module's dtype (I7); the host values are
+            # exact small integers, so the ingress conversion is exact at
+            # both widths.
+            self.weight = NativeParameter(np.ones(shape), requires_grad=True,
+                                          dtype=dtype)
             # The weight's native storage is already allocated; if the
             # bias allocation fails (e.g. MemoryError), close the weight
             # deterministically rather than leaking it to eventual GC. The
             # half-built module is then discarded as __init__ re-raises.
             try:
-                self.bias = NativeParameter(np.zeros(shape), requires_grad=True)
+                self.bias = NativeParameter(np.zeros(shape),
+                                            requires_grad=True, dtype=dtype)
             except BaseException:
                 self.weight.close()
                 raise
@@ -192,6 +225,21 @@ class NativeLayerNorm(NativeModule):
             # are empty and no affine storage is allocated.
             self.weight = None
             self.bias = None
+
+    @property
+    def dtype(self):
+        """The dtype this layer was constructed with — read-only,
+        ``"float64"`` by default (Phase I, milestone I7; design §25.3).
+
+        When ``elementwise_affine=True`` it is the dtype of ``weight`` and
+        ``bias``, and therefore the dtype the input must match. When
+        ``elementwise_affine=False`` the layer owns no numeric state at all
+        and normalizes whatever dtype it is given: the property still
+        reports the constructed value, but nothing is validated against it,
+        because inventing a second authority over data the module does not
+        own is exactly what design §12.1 rejects for the stateless
+        modules."""
+        return self._dtype
 
     def forward(self, input):
         """Normalize ``input``'s trailing ``len(normalized_shape)``
@@ -268,10 +316,15 @@ class NativeLayerNorm(NativeModule):
             squared = track(centered.multiply(centered))
             variance = self._mean_over(squared, axes, track)
             # sqrt(var + eps), never sqrt(var) + eps: epsilon is added
-            # inside the root, from a native graph-free scalar (no NumPy).
-            eps_tensor = track(NativeTensor.full(
-                (), self.eps, dtype=input.dtype, device=input.device,
-                requires_grad=False,
+            # inside the root, from a native graph-free scalar (no NumPy)
+            # **at the graph's own dtype** (Phase I, milestone I7). The
+            # private typed constructor is what makes that possible for a
+            # float32 graph: a literal-float64 constant meeting a float32
+            # operand would be a mixed-dtype request, which the runtime
+            # refuses, and design §11.4 forbids introducing one. The Python
+            # ``float`` self.eps is narrowed once, inside tf_storage_fill.
+            eps_tensor = track(NativeTensor._typed_full(
+                (), self.eps, input.dtype, device=input.device,
             ))
             var_plus_eps = track(variance.add(eps_tensor))
             std = track(var_plus_eps.sqrt())

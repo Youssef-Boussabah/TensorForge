@@ -79,8 +79,20 @@ State keys derive from the slot names — a Linear/ReLU/Linear model has
 exactly ``"0.weight"``, ``"0.bias"``, ``"2.weight"``, ``"2.bias"``
 (ReLU contributes none); nested sequences nest: ``"0.0.weight"``.
 
-Fully separate from ``tensorforge.nn.Sequential``; float64/cpu only;
-no losses, optimizers, or training loops yet.
+**Dtype** (Phase I, milestone I7): a container takes **no** ``dtype``
+argument and owns no numeric state, so it neither declares nor enforces
+one — each child was constructed with its own and validates its own input.
+A model may legitimately hold children of different dtypes; there is no
+automatic bridge between them, and a mismatched child raises **at that
+child**, naming both dtypes, rather than casting. Silently unifying them
+would be promotion, which this runtime does not have. Consistent with
+"forward adds no validation of its own", the container also adds no
+cleanup of its own: an exception from child *N* propagates unchanged and
+the unadopted outputs of children 1..N-1 are ordinary unreachable
+temporaries, exactly as they are for a shape mismatch or a closed
+parameter.
+
+Fully separate from ``tensorforge.nn.Sequential``; cpu only.
 """
 
 from .native_module import NativeModule
