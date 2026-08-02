@@ -902,10 +902,10 @@ proposed optimizations. Every number behind those statements is a local
 characterization of one machine, is reported with its spread, and is
 asserted by no test.
 
-## Phase I — native dtype generalization and float32 CPU support, **I0–I3 complete**
+## Phase I — native dtype generalization and float32 CPU support, **I0–I4 complete**
 
-**Phase I is the latest phase. Milestones I0, I1, I2, and I3 are complete;
-I4 through I11 are not started.** Its architecture contract is
+**Phase I is the latest phase. Milestones I0 through I4 are complete;
+I5 through I11 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
 
@@ -995,7 +995,44 @@ What it changed:
   destination byte-for-byte unchanged and allocates nothing;
 - the native CTest inventory moved **19 → 20** (`test_dtype_elementwise`).
 
-**What I1, I2, and I3 did *not* change is the whole of the rest of this
+**I4** extended that to the accumulating families and to the graph built on
+them, and added **no export**. What it changed:
+
+- `sum`, `mean`, `matmul`, and `narrow_backward` are **dtype-general** —
+  three exports, every one of them the symbol Python already declared, each
+  validating that its operands agree and dispatching **once** from the
+  storage tag into a templated kernel;
+- **both traversals of both families are instantiated for both element types
+  from the same source**: H6's contiguous-block factorization and the
+  retained generic odometer, H2's `i`-`k`-`j` row sweep and the retained
+  `i`-`j`-`k` triple loop. Both metadata predicates are untouched — they read
+  `int64` layout only — so the two widths take the *same* path for the same
+  layout and every optimized path keeps its oracle **per dtype**;
+- `tf_storage_scale` and `tf_storage_fill` are dtype-general with their
+  `(handle, double)` signatures **unchanged**: the scalar crosses as the
+  ABI's widest binary floating-point type and is narrowed **once, before the
+  loop**. That is what makes `mean`'s `1/count` deterministic, identical on
+  every platform, and independent of `count`'s magnitude, and it is asserted
+  behaviourally — narrow-then-multiply and multiply-then-narrow differ by one
+  representable step on a chosen witness, and TensorForge must produce the
+  first;
+- **float32 accumulates in float32, and I4 is where that became a measured
+  claim rather than only a structural one.** On `1.0` followed by eight
+  copies of `2**-24`, sequential binary32 stays at exactly `1.0` while
+  binary64-then-narrow lands four ULPs higher; TensorForge is asserted equal
+  to the first and **unequal to the second**, by raw bit pattern, on both
+  reduction traversals and both matmul paths;
+- **private/internal float32 `NativeTensor` graphs run forward and backward**
+  through every Core operation landed so far. Gradients carry the tensor's
+  dtype, backward temporaries carry the graph's, every materialized constant
+  — `0.5`, `-1`, `1/count`, the ones seed, broadcast-back's zeros — is built
+  at the operand's dtype through a private typed constructor, and a
+  mixed-dtype contribution is refused before the accumulation and before any
+  allocation;
+- the native CTest inventory moved **20 → 21**
+  (`test_dtype_reduction_matmul`).
+
+**What I1 through I4 did *not* change is the whole of the rest of this
 matrix.** The native runtime is still **publicly float64 CPU only**:
 `SUPPORTED_DTYPES` reads `("float64",)`, `SUPPORTED_DEVICES` reads
 `("cpu",)`, `UNSUPPORTED` reads `("float32", "cuda", "amp")`, and the
@@ -1004,33 +1041,36 @@ with versions **(1, 2)** accepted. `float32` therefore stays in the
 **Unsupported or future** section above, and it stays there until
 milestone **I9**.
 
-The honest statement of what float32 *is* after I3: **allocatable, movable,
-and computed on by the elementwise and unary Core family — and by nothing
-else.** It can be copied in from a host buffer, copied out, viewed through
-any layout the metadata contract permits, materialized, and copied
-storage-to-storage, all bit-exactly; and it can be added, subtracted,
-multiplied, rectified (forwards and backwards), square-rooted, reciprocated,
-exponentiated, and logged, with broadcasting, at genuine binary32.
+The honest statement of what float32 *is* after I4: **allocatable, movable,
+and computed on by transfer/copy, the elementwise and unary family,
+reductions, matmul, view-backward, and the private Core autograd graph
+composed from them — and by nothing else.** It can be copied in from a host
+buffer, copied out, viewed through any layout the metadata contract permits,
+materialized, and copied storage-to-storage, all bit-exactly; it can be
+added, subtracted, multiplied, rectified (forwards and backwards),
+square-rooted, reciprocated, exponentiated, and logged, with broadcasting, at
+genuine binary32; it can be summed, averaged, matrix-multiplied, and
+scattered back through a narrow, with the accumulation genuinely in binary32;
+and an internal graph over those operations differentiates end to end with
+every gradient at the graph's dtype.
 
-Nothing beyond that accepts it: no reduction, no `mean`, no matmul, no
-narrow-backward, no convolution, no pooling, no softmax, log-softmax, or
-cross-entropy, no Dropout, no normalization, no autograd node, no module, no
+Nothing beyond that accepts it: no convolution, no pooling, no softmax,
+log-softmax, or cross-entropy, no Dropout, no normalization, no module, no
 parameter, no optimizer, and no checkpoint. Every operation that has not been
 generalized rejects a float32 handle with `TF_ERROR_INVALID` before reading
 or writing a single element — necessarily so, because walking a
 4-byte-per-element buffer through a `double*` would overrun it by exactly a
-factor of two. `tf_storage_fill` and `tf_storage_scale` are deliberately
-among the rejecting set: they assign and multiply rather than transfer, and
-broadening them is a later milestone's decision rather than a free
-consequence of the dispatch being easy to write.
+factor of two.
 
-**A dtype-general Core kernel is not float32 autograd, and not float32
-training.** `tf_core_relu_backward` is dtype-general because it is a
-forward-shaped numerical primitive, not graph machinery; no public
-constructor produces a float32 tensor, so no float32 graph can be built at
-all, and no module, parameter, loss, or optimizer accepts a dtype argument
-yet. Internal capability is not public support, and the two are deliberately
-kept apart until the whole stack exists.
+**A private float32 graph is not public float32 autograd, and not float32
+training.** No public constructor produces a float32 tensor — `from_array`,
+`zeros`, and `full` all still raise for it, at the Core layer and at the
+`NativeTensor` layer — no `NativeParameter` accepts one, and no module, loss,
+or optimizer accepts a dtype argument yet, so nothing a user can write
+reaches any of it. The graphs I4 proves are built through the private typed
+constructors the rollout rule requires an intermediate milestone to test
+through. Internal capability is not public support, and the two are
+deliberately kept apart until the whole stack exists.
 
 What the phase will deliver, when its milestones land: float32 CPU
 tensors beside the existing float64 ones, dtype-tagged storage,
@@ -1069,7 +1109,8 @@ any later milestone may do:
   mutated. There is no `astype`, no `to()`, and no `map_location`.
   **First reachable and tested at I2**, on the identity copy; **enforced
   across the whole elementwise family at I3**, in the left, right, and
-  destination positions independently.
+  destination positions independently; **extended at I4** to reductions,
+  matmul, narrow-backward, the backward seed, and gradient accumulation.
 - **Value transfer is bit-preserving at both widths**, because a transfer
   performs no arithmetic and so has no operand roles to choose between and
   nothing to round. **Delivered at I2**, for host ingress, host egress,
@@ -1078,8 +1119,11 @@ any later milestone may do:
   introduced anywhere — that would be mixed precision, which is out of
   scope along with AMP, float16, bfloat16, integer tensors, CUDA, data
   loaders, and distributed execution. **First enforced at I3**, where every
-  operation is a single correctly-rounded operation per output element; the
-  claim becomes numerically observable at I4, when accumulation arrives.
+  operation is a single correctly-rounded operation per output element and
+  the claim could therefore only be carried structurally; **witnessed by
+  test at I4**, where accumulation makes binary32 and binary64-then-narrow
+  genuinely distinguishable, on both reduction traversals and both matmul
+  paths.
 - **Checkpoint version 3**, designed at I0 and activated at I8, with
   accepted versions becoming `(1, 2, 3)`. Versions **1 and 2 are
   float64-only formats** and a v1/v2 payload is **never** guessed to be
@@ -1092,7 +1136,7 @@ any later milestone may do:
   characterized on its own and — as in every phase before it — no timing
   assertion, no committed benchmark number, and no result file.
 
-The ladder is I0–I11 — **I0, I1, I2, and I3 landed; I4 is next**: the
+The ladder is I0–I11 — **I0 through I4 landed; I5 is next**: the
 contract (I0), the internal dtype model and
 tagged storage (I1), typed transfer, views, and materialization (I2),
 elementwise and broadcast execution (I3), reductions, matmul, and core

@@ -1655,7 +1655,7 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase I — native dtype generalization and float32 CPU support — is the
-latest phase. Milestones I0, I1, I2, and I3 are complete; I4 through I11
+latest phase. Milestones I0 through I4 are complete; I5 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
@@ -1713,20 +1713,46 @@ IEEE-specified operations, within a measured ULP bound for `exp` and `log`
 — with no widening intermediate anywhere, asserted structurally as well as
 numerically. Native CTests moved **19 → 20**; exports stayed at **54**.
 
+**I4 generalized the accumulating families and the graph built on them, and
+added no export.** `sum`, `mean`, `matmul`, and `narrow_backward` dispatch
+once from the storage tag into templated kernels; H6's contiguous-block
+factorization, H2's `i`-`k`-`j` row sweep, and the retained generic odometer
+and triple loop beside them are all instantiated for both element types from
+the same source, and both metadata predicates are untouched — so the two
+widths take the same path for the same layout and every optimized path keeps
+its oracle per dtype. `tf_storage_scale` and `tf_storage_fill` became
+dtype-general with their `(handle, double)` signatures unchanged, narrowing
+the scalar **once, before the loop**, which is what makes `mean`'s `1/count`
+platform-independent. Private/internal float32 `NativeTensor` graphs now run
+forward and backward through every Core operation landed so far, with every
+gradient, temporary, and materialized constant at the graph's dtype and
+mixed-dtype accumulation refused before any allocation.
+
+**This is the milestone where "float32 accumulates in float32" stopped being
+a structural claim and became a measured one.** I3's operations each produced
+their result with a single correctly-rounded IEEE operation, for which
+binary64-then-round-once is *provably* indistinguishable from binary32 — so
+no runtime test could separate the two, and I3 recorded that rather than
+inventing one. A sum can: on `1.0` followed by eight copies of `2**-24`,
+sequential binary32 stays at exactly `1.0` while binary64-then-narrow lands
+four ULPs higher, and TensorForge is asserted equal to the first and unequal
+to the second, on both reduction traversals and both matmul paths. Native
+CTests moved **20 → 21**; exports stayed at **54**.
+
 **No public capability moved, and none does until I9.** The native runtime
 is still float64 CPU only: `SUPPORTED_DTYPES` still reads `("float64",)`,
 `UNSUPPORTED` still reads `("float32", "cuda", "amp")`, and the native
 checkpoint format is still version 2 with versions 1 and 2 accepted.
-float32 storage is allocatable and movable through the C ABI and computed
-on **only** by the I3 elementwise and unary family — every later numerical
-family rejects a float32 handle with `TF_ERROR_INVALID` before touching
-memory, because walking a 4-byte-per-element buffer through a `double*`
-would overrun it twofold. `tf_storage_fill` and `tf_storage_scale` are
-deliberately among them: they assign and multiply rather than transfer.
-Nor is a dtype-general Core kernel float32 autograd: no public constructor
-produces a float32 tensor, so no float32 graph, parameter, module, or
-optimizer exists to reach one. Phase H is untouched, remains complete, and
-closed at 52 exports.
+float32 storage is allocatable and movable through the C ABI and computed on
+by transfer/copy, the elementwise and unary family, reductions, matmul,
+view-backward, and the private Core autograd graph — and by nothing else.
+Convolution, pooling, classification, Dropout, normalization, modules,
+parameters, optimizers, and checkpoints all still reject a float32 handle
+before touching memory, because walking a 4-byte-per-element buffer through
+a `double*` would overrun it twofold. Nor is a private float32 graph public
+float32 autograd: no public constructor produces a float32 tensor, so no
+float32 parameter, module, or optimizer exists to reach one. Phase H is
+untouched, remains complete, and closed at 52 exports.
 
 The contract locked the phase before any of it was built, and the first
 three items below are the ones I1 delivered: an internal dtype

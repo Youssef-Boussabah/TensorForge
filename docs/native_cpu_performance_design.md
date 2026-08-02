@@ -1694,6 +1694,15 @@ metadata:
 | `matmul_row_sweep` | The optimized path: `i`–`k`–`j` over `MATMUL_ROW_BLOCK` destination rows at a time. |
 | `matmul_prefers_row_sweep` | The dispatch predicate. |
 
+*(Phase I, milestone I4 made the two kernels templates over the element type
+and moved their definitions from `cpp/src/matmul.cpp` into
+`cpp/include/tf_matmul_internal.h` — the ordinary reason a template must, so
+both instantiations reach the exported wrapper and the CTests that compile
+that file directly. `T = double` is the code below statement for statement,
+the predicate is untouched, and both dtypes take the same path for the same
+layout. The H2 record here stands as written; only the file the definitions
+live in and the spelling of their literals changed.)*
+
 The row sweep, for one group of rows:
 
 ```cpp
@@ -3615,6 +3624,17 @@ the additive identity, not a redundant write.
 New `cpp/include/tf_reduction_internal.h` declares three hidden-visibility
 `namespace tf` functions; `cpp/src/reduction.cpp` implements them and
 `tf_core_sum` dispatches between them.
+
+*(Phase I, milestone I4 made the two traversals templates over the element
+type, so their definitions moved into that same header beside the contract
+they answer to — the ordinary reason a template must, so both instantiations
+reach the exported wrapper and the CTest that compiles `reduction.cpp`
+directly. Loop structure, carry, traversal order, and accumulator are
+unchanged; `T = double` is the pre-I4 code statement for statement, and the
+predicate is untouched because it reads `int64` layout metadata only. The
+counter is still allocated on the wrapper's side of the traversal, so the
+guard and the fault-injection hook keep their meaning at both widths. The H6
+record below stands as written.)*
 
 **1. `tf::sum_generic_strided` — the retained generic reference path**
 (§8.3). The pre-H6 odometer, unchanged in loop structure, arithmetic, and

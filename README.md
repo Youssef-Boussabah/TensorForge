@@ -322,8 +322,8 @@ every shipped training workload is **1.50×–3.89× faster than it was at
 the H0 baseline**, with bit-identical results, and **no numerical
 capability, dtype, device, export, registry value, or checkpoint version
 moved at any milestone**. **Phase I — native dtype generalization and
-float32 CPU support — is the latest phase; milestones I0, I1, I2, and I3
-are complete and I4–I11 are not started.** I0 was the design lock and
+float32 CPU support — is the latest phase; milestones I0 through I4
+are complete and I5–I11 are not started.** I0 was the design lock and
 documentation reconciliation, shipping
 [docs/native_dtype_float32_design.md](docs/native_dtype_float32_design.md)
 and its guardrail tests and nothing else. **I1 built the dtype
@@ -344,14 +344,27 @@ export**: `add`, `subtract`, `multiply`, `relu`, `relu_backward`, `sqrt`,
 templated `float`/`double` kernels, with NumPy-style broadcasting, all
 three Phase-H traversal tiers instantiated for both widths from one source,
 dtype-preserving outputs, and mixed dtype rejected before any allocation.
+**I4 made float32 accumulate, and added no export**: `sum`, `mean`,
+`matmul`, and `narrow_backward` are dtype-general, with H6's
+contiguous-block factorization, H2's `i`-`k`-`j` row sweep, and the retained
+generic paths beside them all instantiated for both widths from one source
+and both metadata predicates untouched; the two scalar storage primitives
+narrow their `double` argument **once, before the loop**; and private
+float32 `NativeTensor` graphs differentiate end to end with every gradient,
+temporary, and constant at the graph's dtype. It is also where "float32
+accumulates in float32" became a *measured* claim rather than a structural
+one — on `1.0` plus eight copies of `2**-24`, binary32 stays at exactly
+`1.0` while binary64-then-narrow lands four ULPs higher, and TensorForge is
+asserted equal to the first and unequal to the second on every shipped path.
 **The native runtime is still float64 CPU only**: `float32` remains listed
-as unsupported, it is allocatable, movable, and computed on **only** by
-that elementwise and unary family (reductions, matmul, convolution,
-pooling, classification, Dropout, normalization, optimizers, modules, and
-checkpoints all still reject a float32 handle before touching memory), no
-public constructor produces a float32 tensor so float32 autograd and
-training do not exist, and the native checkpoint format is still version 2
-with versions 1 and 2 accepted. The
+as unsupported; it is allocatable, movable, and computed on by
+transfer/copy, the elementwise and unary family, reductions, matmul,
+view-backward, and the private Core autograd graph — and by nothing else
+(convolution, pooling, classification, Dropout, normalization, optimizers,
+modules, and checkpoints all still reject a float32 handle before touching
+memory); no public constructor produces a float32 tensor, so float32
+parameters, modules, and training do not exist; and the native checkpoint
+format is still version 2 with versions 1 and 2 accepted. The
 contract's **exactly two** new C ABI symbols for the whole phase
 (52 → **54**) are now spent; it rejects per-operation float32 exports, forbids casting,
 promotion, and mixed-dtype arithmetic, requires float32 to accumulate in

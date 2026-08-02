@@ -1167,21 +1167,42 @@ def test_no_environment_variable_or_dispatch_hook_exists_in_the_sources():
 def test_the_matmul_source_ships_both_paths_and_one_predicate():
     """The retained generic reference path (§8.3) is shipped code, not a
     comment or a test fixture, and the export routes through the
-    predicate."""
+    predicate.
+
+    Phase I, milestone I4 made both paths templates over the element type,
+    so their **definitions** moved into tf_matmul_internal.h — the ordinary
+    reason a template must, and the same place H8's elementwise traversals
+    already live. What the definitions say did not change, and this test
+    checks that too: the two load-bearing single lines are asserted at
+    ``T``, where ``T = double`` reproduces the pre-I4 literals exactly.
+    """
     source = (REPO_ROOT / "cpp" / "src" / "matmul.cpp").read_text(
         encoding="utf-8")
-    assert "void matmul_generic_strided(" in source
-    assert "void matmul_row_sweep(" in source
+    header = (REPO_ROOT / "cpp" / "include" / "tf_matmul_internal.h").read_text(
+        encoding="utf-8")
+    assert "void matmul_generic_strided(" in header
+    assert "void matmul_row_sweep(" in header
     assert "bool matmul_prefers_row_sweep(" in source
-    # The export chooses between them, and calls each exactly once.
+    # One dispatch helper chooses between them, and calls each exactly once.
     assert source.count("tf::matmul_prefers_row_sweep(m, n, p, b_stride1)") == 1
     assert source.count("tf::matmul_row_sweep(") == 1
     assert source.count("tf::matmul_generic_strided(") == 1
     # The k == 0 assigning pass is what makes the H1 uninitialized
-    # destination safe, and the explicit `0.0 +` is what preserves the
+    # destination safe, and the explicit `T(0) +` is what preserves the
     # sign of a zero result. Both are load-bearing single lines.
-    assert "out[j] = 0.0 + a_ik * b_row[j];" in source
-    assert "out[j] += a_ik * b_row[j];" in source
+    assert "out[j] = T(0) + a_ik * b_row[j];" in header
+    assert "out[j] += a_ik * b_row[j];" in header
+    # The accumulator follows the element type at both widths: no `double`
+    # local survives in either kernel, which is what makes "float32
+    # accumulates in float32" (design §10.1) a property of the source
+    # rather than of a comment. Asserted over the *code*, with the comment
+    # lines stripped — the prose above the kernels quotes the pre-I4
+    # spellings on purpose, to record what they became.
+    code = "\n".join(line for line in header.splitlines()
+                     if not line.lstrip().startswith("//"))
+    assert "T sum = T(0);" in code
+    assert "double" not in code, "a binary64 local survived in a typed kernel"
+    assert "float" not in code, "a binary32 local was hard-coded"
 
 
 @needs_native

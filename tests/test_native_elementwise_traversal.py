@@ -435,7 +435,30 @@ def test_unary_special_values_match_numpy_bit_for_bit(op, numpy_op):
 def test_the_declined_rank_five_plan_agrees_with_the_planned_traversals(op):
     """The fallback control at the bit level: 32 NaN-rich values evaluated
     once through a rank-5 reversed view (which the plan builder declines,
-    so the retained odometer runs) and once contiguously."""
+    so the retained odometer runs) and once contiguously.
+
+    The comparison is the one this file already makes for every other
+    ordered-pair sweep, and for the same reason: **bit-exact wherever at
+    most one operand is a NaN**, NaN positions and quietness exact
+    everywhere, ``subtract`` bit-exact with nothing carved out, and — for
+    the commutative ``add``/``multiply`` with **two** NaN operands — the
+    contractual properties rather than payload identity.
+
+    That last clause is part (4) of H8's numerical contract
+    (cpp/include/tf_elementwise_internal.h), which names this exact
+    situation: a *transposed* operand is the one layout whose payload
+    selection still differs, because x86-64's ADDSD/MULSD return the
+    destination operand's NaN and a commutative operation lets the compiler
+    put either addend there. The declined operand here **is** a transposed
+    view, so this test drives precisely the carve-out. Asserting payload
+    identity was therefore stricter than the contract, and it is
+    toolchain-dependent in exactly the way the contract predicts: on this
+    machine's source, ``add`` and ``multiply`` disagree in **one** of the 32
+    positions under ``g++ -O2`` (the CI/no-CMake path) and under
+    ``clang++ -O2``/``-O3``, and in none under ``g++ -O3``, ``g++ -O0``, or
+    MSVC. Both paths return a quiet NaN, in the same position, carrying one
+    of the two operands' payloads — which is all the contract ever claimed.
+    """
     nans = PATTERNS[np.isnan(PATTERNS)]
     values = np.resize(np.concatenate([nans, PATTERNS]), 32)
     partner = np.resize(np.concatenate([PATTERNS, nans]), 32)
@@ -470,7 +493,43 @@ def test_the_declined_rank_five_plan_agrees_with_the_planned_traversals(op):
         flat_left.close()
 
     assert reversed_shape == shape[::-1]
-    assert same_bits(odometer, planned)
+
+    both_nan = (np.isnan(values) & np.isnan(partner)).reshape(shape)
+    quiet = np.uint64(0x0008000000000000)
+
+    # (1) Bit-exact everywhere at most one operand is a NaN — no exceptions,
+    # every other IEEE-754 class included.
+    mismatch = np.flatnonzero((bits(odometer) != bits(planned)) & ~both_nan)
+    assert mismatch.size == 0, (op, [
+        (hex(int(bits(values)[i])), hex(int(bits(partner)[i])),
+         hex(int(bits(odometer).ravel()[i])),
+         hex(int(bits(planned).ravel()[i])))
+        for i in mismatch[:8]])
+
+    # (2) NaN positions are identical and every NaN either path produces is
+    # quiet — a signaling-NaN operand included.
+    assert np.array_equal(np.isnan(odometer), np.isnan(planned))
+    for produced in (odometer, planned):
+        produced_nans = bits(produced)[np.isnan(produced)]
+        assert np.all((produced_nans & quiet) != 0)
+
+    # (3) subtract is not commutative, so the compiler has no operand
+    # freedom and the two-NaN pairs are exact too — asserted, not carved out.
+    if op == "subtract":
+        assert same_bits(odometer, planned)
+        return
+
+    # (4) add/multiply with **two** NaN operands: the surviving payload is
+    # outside the contract and is asserted in neither direction. What is
+    # contractual is that each path returns one of the two operands'
+    # payloads, quieted.
+    candidates = (bits(values).reshape(shape) | quiet,
+                  bits(partner).reshape(shape) | quiet)
+    for produced in (odometer, planned):
+        produced_bits = bits(produced)[both_nan]
+        assert np.all((produced_bits == candidates[0][both_nan])
+                      | (produced_bits == candidates[1][both_nan])), (
+            op, [hex(int(v)) for v in produced_bits[:6]])
 
 
 @needs_native

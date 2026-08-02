@@ -1,6 +1,6 @@
 """Phase-I contract guardrails (native dtype generalization).
 
-Milestones I0, I1, I2, and I3 are complete; I4 through I11 are not started.
+Milestones I0 through I4 are complete; I5 through I11 are not started.
 
 I0 was a design-and-reconciliation milestone: it shipped
 ``docs/native_dtype_float32_design.md``, this module, and documentation,
@@ -9,9 +9,13 @@ phase stands on — the C++ dtype model, dtype-tagged storage, and the two
 typed creation exports that take the library from 52 symbols to 54. I2 made
 float32 *movable*: the three transfer exports and the identity copy became
 dtype-general and bit-preserving. I3 made it *computed on*, by the
-elementwise and unary Core family and by nothing else.
+elementwise and unary Core family. I4 extended that to the reduction,
+matmul, and view-backward families and to the private Core autograd graph
+composed from them — and, because accumulation is where a hidden wider
+accumulator would finally show, added the runtime witness I3 recorded as
+unavailable to it.
 
-None of the three moved a **public** capability: float32 is allocatable,
+None of the four moved a **public** capability: float32 is allocatable,
 transferable, and now arithmetically usable through the C ABI and the
 private typed constructors, and it is still not a supported TensorForge
 dtype.
@@ -22,8 +26,8 @@ point of the module:
 * **What the contract says** — a property of the design document, which
   spans the whole phase and does not move as milestones land.
 * **What the repository is now** — the live registries, the live source,
-  and the built library, at I3.
-* **What is still a promise** — everything I4 onward will do, asserted as
+  and the built library, at I4.
+* **What is still a promise** — everything I5 onward will do, asserted as
   *absent* so a later milestone cannot be mistaken for an earlier one.
 
 These tests therefore protect two different things at once, and the split
@@ -1174,17 +1178,43 @@ def test_i1_changed_no_example_benchmark_ci_or_dependency_file():
     )
 
 
-def test_i1_touched_only_the_backend_module_in_the_python_package():
-    """Within ``src/``, the dtype foundation is confined to the one module
-    that owns the C ABI. No tensor, autograd, module, optimizer,
-    checkpoint, or stable-line file participates in I1, and the stable
-    framework is not coupled to the native line by it."""
+def test_the_phase_touched_only_the_two_python_modules_its_scope_names():
+    """Within ``src/``, the phase so far is confined to the module that
+    owns the C ABI and the one that owns the native autograd graph.
+
+    Through I3 this was a single file: the dtype foundation, the transfer
+    boundaries, and the elementwise execution all live in the ctypes layer,
+    and nothing above it participated. **I4 adds exactly one more**, and
+    the milestone's scope is what names it — core autograd is I4 work, so
+    the gradient dtype invariants of design §11 (a backward's constants
+    built at the graph's dtype, the seed at the output's dtype, the
+    broadcast-back operand at the upstream's) are edits to
+    ``experimental/native_tensor.py`` and can be nowhere else.
+
+    Everything else is still out: no parameter, module, optimizer,
+    checkpoint, generator, loss, or stable-line file participates, and the
+    stable framework is not coupled to the native line by any of it.
+    """
+    allowed = {
+        "src/tensorforge/backends/cpp.py",
+        "src/tensorforge/experimental/native_tensor.py",
+    }
     changed = [path for path in _changed_since(I0_COMMIT)
                if path.startswith("src/")]
-    assert changed == ["src/tensorforge/backends/cpp.py"] or not changed, (
-        f"I1 changed more of the Python package than the ctypes layer: "
-        f"{changed}"
+    unexpected = [path for path in changed if path not in allowed]
+    assert unexpected == [], (
+        f"the phase changed more of the Python package than its scope "
+        f"names: {unexpected}"
     )
+    # Stated the other way round as well, so a future milestone that adds a
+    # file cannot satisfy the rule above by accident: the families I5-I8 own
+    # are untouched, by name.
+    for forbidden in ("native_parameter", "native_module", "native_linear",
+                      "native_conv2d", "native_maxpool2d", "native_dropout",
+                      "native_batchnorm", "native_layernorm", "native_sgd",
+                      "native_adam", "native_checkpoint", "native_generator",
+                      "native_cross_entropy_loss", "native_mse_loss"):
+        assert not any(forbidden in path for path in changed), forbidden
 
 
 def test_phase_i_introduced_no_prohibited_external_reference():
@@ -1960,16 +1990,21 @@ def test_i2_moved_no_public_capability_at_all():
 
 
 @needs_native
-def test_the_float32_paths_are_exactly_the_i3_elementwise_and_unary_family():
-    """The precise statement that replaces I2's "float32 is computed on by
-    nothing".
+def test_the_float32_paths_are_exactly_the_families_landed_through_i4():
+    """The precise statement that replaces I3's "float32 is computed on by
+    exactly the elementwise and unary family".
 
-    It is now computed on by **exactly** the I3 elementwise and unary Core
-    family — add, subtract, multiply, ReLU and its backward, sqrt,
-    reciprocal, exp, log — beside the transfer, materialization, and
-    identity-copy infrastructure I2 opened. Every later numerical family
-    still rejects it, and rejects it as *float64-only*, with both operands
-    at the same dtype, so this is not a mixed-dtype rejection in disguise.
+    As of I4, float32 is computed on by **transfer/copy, the elementwise and
+    unary family, reductions, matmul, view-backward, and the two scalar
+    storage primitives** — and by nothing else. Every later numerical family
+    still rejects it, and rejects it as *float64-only*, with both operands at
+    the same dtype, so this is not a mixed-dtype rejection in disguise.
+
+    The families still out are exactly the ones I5-I8 own: conv2d (all three
+    directions), maxpool (both), softmax, log-softmax, cross-entropy, and
+    Dropout. Above the Core layer nothing moved at all — no parameter, no
+    module, no optimizer, no checkpoint version, and no public constructor
+    that produces a float32 tensor.
 
     This is the guardrail that keeps "some float32 works" from ever being
     the honest summary: the set is enumerated in both directions.
@@ -2017,19 +2052,34 @@ def test_the_float32_paths_are_exactly_the_i3_elementwise_and_unary_family():
             lambda: library.tf_core_multiply_contiguous(a, b, out, 16, 0, 0),
             lambda: library.tf_core_relu_backward(a, b, out, shape, strides,
                                                   strides, 0, 0, 2),
-        ):
-            library.tf_clear_error()
-            call()
-            assert library.tf_last_error_code() == 0
-
-        # -- not consumed: every later numerical family, still float64-only.
-        for call in (
+            # -- consumed, as of I4: reductions, matmul, and the view
+            # backward, plus the two scalar storage primitives the mean
+            # scaling and the backward constants are built from.
             lambda: library.tf_core_matmul(a, b, out, 4, 4, 4, 4, 1, 4, 1,
                                            0, 0),
             lambda: library.tf_core_sum(a, out, shape, strides,
                                         (ctypes.c_int64 * 2)(0, 1), 0, 2),
             lambda: library.tf_core_narrow_backward(a, out, shape, strides,
                                                     strides, 0, 0, 2),
+        ):
+            library.tf_clear_error()
+            call()
+            assert library.tf_last_error_code() == 0
+
+        # ``fill`` and ``scale`` are unhooked (H7) and now cannot fail at
+        # all: with every dtype valid there is nothing left for either to
+        # reject, so each leaves the error slot exactly as it found it.
+        library.tf_clear_error()
+        library.tf_storage_fill(out, 1.5)
+        assert library.tf_last_error_code() == 0
+        library.tf_storage_scale(out, 2.0)
+        assert library.tf_last_error_code() == 0
+        assert np.array_equal(output.to_numpy(),
+                              np.full(16, 3.0, dtype=np.float32))
+        assert output.to_numpy().dtype == np.float32
+
+        # -- not consumed: every later numerical family, still float64-only.
+        for call in (
             lambda: library.tf_core_softmax_forward(a, 0, out, 4, 4, 1),
             lambda: library.tf_core_log_softmax_forward(a, 0, out, 4, 4, 1),
             lambda: library.tf_core_dropout_forward(a, 0, out, out, 16,
@@ -2044,17 +2094,22 @@ def test_the_float32_paths_are_exactly_the_i3_elementwise_and_unary_family():
         ):
             with pytest.raises(ValueError, match="float64-only"):
                 call()
-        # ...and the two float64-only storage primitives are deliberately
-        # among them: they assign and multiply rather than transfer, so
-        # broadening them is a later milestone's decision. They are
-        # unhooked (H7), so their rejection is read from the error slot.
         library.tf_clear_error()
-        library.tf_storage_fill(a, 1.0)
-        assert library.tf_last_error_code() != 0
-        library.tf_clear_error()
-        library.tf_storage_scale(a, 2.0)
-        assert library.tf_last_error_code() != 0
-        library.tf_clear_error()
+
+        # Nothing above the Core layer moved: no public constructor makes a
+        # float32 tensor, and no parameter does either.
+        from tensorforge.experimental import NativeParameter, NativeTensor
+        for construct in (
+            lambda: NativeTensor.from_array([1.0], dtype="float32"),
+            lambda: NativeTensor.zeros((2,), dtype="float32"),
+            lambda: NativeTensor.full((2,), 1.0, dtype="float32"),
+            lambda: cpp.NativeTensorCore.from_array([1.0], dtype="float32"),
+            lambda: cpp.NativeTensorCore.zeros((2,), dtype="float32"),
+            lambda: cpp.NativeTensorCore.full((2,), 1.0, dtype="float32"),
+            lambda: NativeParameter([1.0], dtype="float32"),
+        ):
+            with pytest.raises((ValueError, TypeError)):
+                construct()
     finally:
         output.close()
         other.close()
@@ -2869,5 +2924,1457 @@ def test_i3_moved_no_public_capability_at_all():
                    "tf_storage_cast", "tf_dtype_item_size"):
         assert absent not in exports, absent
     # No per-dtype sibling of any kind crept in.
+    assert not [name for name in exports
+                if name.endswith(("_f32", "_f64", "_float32", "_float64"))]
+
+
+# ===========================================================================
+# I4: reductions, matmul, views, and core autograd, as running code
+#
+# Everything below drives the **live** library at both dtypes. float32 is
+# still not a supported TensorForge dtype and no public constructor can
+# produce one, so these reach it through the private typed constructors the
+# rollout rule (design §27.2) requires an intermediate milestone to test
+# through.
+#
+# The comparison rules are, again, per family and stated rather than
+# inherited:
+#
+#   * a reduction is compared against an **independent sequential oracle at
+#     the same dtype** — never against a float64 result, which §10.4
+#     forbids making a contract of;
+#   * matmul is compared against the same-dtype textbook triple loop, and
+#     H2's four parts are restated for float32 rather than assumed;
+#   * ``narrow_backward`` assigns, so it is compared by raw bit pattern
+#     including the zeros it does not write;
+#   * gradients are compared analytically where a formula supports it and by
+#     finite differences where it does not, with a binary32 step and stated
+#     tolerances.
+# ===========================================================================
+
+
+def _live_storage_ids(monkeypatch):
+    """The ids of every open NativeStorage, so an ownership claim can be
+    proved against a real allocation count rather than trusting collection.
+    The same fixture shape tests/test_native_abi_boundary.py uses."""
+    open_ids = set()
+    original_init = cpp.NativeStorage.__init__
+    original_close = cpp.NativeStorage.close
+
+    def tracked_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        open_ids.add(id(self))
+
+    def tracked_close(self):
+        original_close(self)
+        open_ids.discard(id(self))
+
+    monkeypatch.setattr(cpp.NativeStorage, "__init__", tracked_init)
+    monkeypatch.setattr(cpp.NativeStorage, "close", tracked_close)
+    return open_ids
+
+
+def _tensor(values, dtype, requires_grad=False):
+    """A NativeTensor over ``values`` at ``dtype``.
+
+    float64 goes through the **public** constructor, so half of every test
+    below exercises the shipped path. float32 goes through the private
+    ``_from_core`` over a private typed core — the narrowest mechanism that
+    already exists (it is how every op result is wrapped), with no new
+    public surface, no bypass flag, and no change to what
+    ``NativeTensor.from_array(dtype="float32")`` does, which is still raise.
+    """
+    from tensorforge.experimental import NativeTensor
+
+    array = np.ascontiguousarray(values, dtype=_DTYPE_BITS[dtype][2])
+    if dtype == "float64":
+        return NativeTensor.from_array(array, requires_grad=requires_grad)
+    tensor = NativeTensor._from_core(
+        cpp.NativeTensorCore._typed_from_array(array, dtype))
+    tensor._init_requires_grad(requires_grad)
+    return tensor
+
+
+def _sequential_sum(values, axis, dtype):
+    """The reduction oracle: accumulate in row-major source order, one
+    addition at a time, **at the element dtype**.
+
+    Written with an explicit Python loop over 0-d NumPy scalars rather than
+    ``ndarray.sum``, because NumPy's own reduction is free to pairwise-block
+    its accumulation — which is exactly the reassociation TensorForge
+    promises not to do, so ``np.sum`` is the wrong oracle for a bit-level
+    claim at binary32. This is not a float64 comparison in disguise: every
+    intermediate here is a ``numpy.float32`` (or ``float64``) scalar.
+    """
+    floating = _DTYPE_BITS[dtype][2]
+    values = np.ascontiguousarray(values, dtype=floating)
+    if axis is None:
+        total = floating(0)
+        for value in values.ravel(order="C"):
+            total = floating(total + value)
+        return np.array(total, dtype=floating)
+    axis = axis % values.ndim
+    moved = np.moveaxis(values, axis, -1)
+    out = np.zeros(moved.shape[:-1], dtype=floating)
+    for index in np.ndindex(*moved.shape[:-1]):
+        total = floating(0)
+        for value in moved[index]:
+            total = floating(total + value)
+        out[index] = total
+    return out
+
+
+def _sequential_matmul(a, b, dtype):
+    """The matmul oracle: for each output cell, accumulate over ``k`` in
+    ascending order at the element dtype. ``a @ b`` is **not** usable here —
+    NumPy dispatches to a BLAS GEMM that blocks and reassociates."""
+    floating = _DTYPE_BITS[dtype][2]
+    a = np.ascontiguousarray(a, dtype=floating)
+    b = np.ascontiguousarray(b, dtype=floating)
+    m, n = a.shape
+    p = b.shape[1]
+    out = np.zeros((m, p), dtype=floating)
+    # ``inf * 0`` and ``inf + -inf`` are *values* here, not failures — the
+    # exceptional-value cases below rely on them — so NumPy's warnings are
+    # silenced rather than the inputs being restricted.
+    with np.errstate(all="ignore"):
+        for i in range(m):
+            for j in range(p):
+                total = floating(0)
+                for k in range(n):
+                    total = floating(total + floating(a[i, k] * b[k, j]))
+                out[i, j] = total
+    return out
+
+
+# ---------------------------------------------------------------------------
+# 1. Reductions at both dtypes
+# ---------------------------------------------------------------------------
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("axis,keepdims", [
+    (None, False), (0, False), (0, True), (1, False), (1, True),
+    (-1, False), (-2, True),
+])
+def test_sum_matches_the_same_dtype_sequential_oracle(dtype, axis, keepdims):
+    """Every supported axis form, at both dtypes, against an independent
+    sequential oracle **at the same width** — compared by raw bit pattern,
+    because the accumulation order is the value's definition and a tolerance
+    would not see a reassociation."""
+    values = _sample(dtype, 24).reshape(4, 6)
+    core = _core(values, dtype)
+    try:
+        out = core.sum(axis=axis, keepdims=keepdims)
+        try:
+            assert out.dtype == dtype
+            expected = _sequential_sum(values, axis, dtype)
+            if keepdims and axis is not None:
+                expected = np.expand_dims(expected, axis % values.ndim)
+            assert out.shape == expected.shape
+            assert _same_bits(out.to_numpy(), expected, dtype), (
+                dtype, axis, keepdims)
+        finally:
+            out.close()
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_sum_reads_every_layout_at_both_dtypes(dtype):
+    """The layouts the H6 predicate accepts and the ones it declines, at
+    both widths: contiguous (block traversal), transposed and narrowed (the
+    retained odometer). Each is compared against the sequential oracle for
+    the values that layout actually presents, so the two shipped traversals
+    are both proved rather than only the fast one."""
+    values = _sample(dtype, 24).reshape(4, 6)
+    owner = _core(values, dtype)
+    try:
+        cases = (
+            ("contiguous", owner, values),
+            ("transposed", owner.T, np.ascontiguousarray(values.T)),
+            ("narrowed", owner.narrow(1, 2, 3),
+             np.ascontiguousarray(values[:, 2:5])),
+            ("narrowed rows", owner.narrow(0, 1, 2),
+             np.ascontiguousarray(values[1:3, :])),
+        )
+        for label, view, host in cases:
+            for axis in (None, 0, 1):
+                out = view.sum(axis=axis)
+                try:
+                    assert out.dtype == dtype, label
+                    assert _same_bits(out.to_numpy(),
+                                      _sequential_sum(host, axis, dtype),
+                                      dtype), (label, axis, dtype)
+                finally:
+                    out.close()
+            if view is not owner:
+                view.close()
+    finally:
+        owner.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_sum_of_a_rank_three_source_at_both_dtypes(dtype):
+    values = _sample(dtype, 24).reshape(2, 3, 4)
+    core = _core(values, dtype)
+    try:
+        for axis in (None, 0, 1, 2, -1):
+            for keepdims in (False, True):
+                out = core.sum(axis=axis, keepdims=keepdims)
+                try:
+                    expected = _sequential_sum(values, axis, dtype)
+                    if keepdims:
+                        expected = (expected.reshape((1, 1, 1))
+                                    if axis is None
+                                    else np.expand_dims(expected, axis % 3))
+                    assert out.dtype == dtype
+                    assert out.shape == expected.shape
+                    assert _same_bits(out.to_numpy(), expected, dtype)
+                finally:
+                    out.close()
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_sum_signed_zeros_are_compared_as_raw_bits(dtype):
+    """A run of ``-0.0`` sums to ``+0.0`` at both widths: the destination
+    starts at the additive identity a zeroed buffer holds, and
+    ``+0.0 + -0.0`` is ``+0.0``. Asserted on the bit pattern, because ``==``
+    cannot see a zero's sign."""
+    floating = _DTYPE_BITS[dtype][2]
+    values = np.full((3, 4), floating(-0.0), dtype=floating)
+    core = _core(values, dtype)
+    try:
+        for axis in (None, 0, 1):
+            out = core.sum(axis=axis)
+            try:
+                produced = out.to_numpy()
+                assert np.all(_bits(produced, dtype) == 0), (dtype, axis)
+            finally:
+                out.close()
+    finally:
+        core.close()
+
+
+# ---------------------------------------------------------------------------
+# 2. The float32 accumulation witness — the claim I3 could not make
+# ---------------------------------------------------------------------------
+#
+# I3 recorded, and this milestone inherits, that "float32 is not secretly
+# float64" could not rest on a runtime test *there*: every I3 operation
+# produced each destination element with a single correctly-rounded IEEE
+# operation, and computing in binary64 and rounding once is provably
+# indistinguishable from computing in binary32 for those. A **sum** of three
+# or more values is the first place the difference becomes observable, and
+# I4 is where the structural argument acquires a behavioural partner.
+
+# 1.0 followed by eight copies of 2**-24. In binary32 each addend is exactly
+# half an ULP of 1.0, so round-to-nearest-even leaves the running total at
+# exactly 1.0 forever. In binary64 they accumulate, and the single final
+# narrowing lands four ULPs above. Deterministic, exactly representable, and
+# independent of the toolchain and the machine.
+_F32_ABSORPTION = np.array([1.0] + [2.0 ** -24] * 8, dtype=np.float32)
+
+
+@needs_native
+def test_the_float32_sum_witness_distinguishes_the_accumulation_policies():
+    """The witness is a witness: sequential binary32 and narrowed-binary64
+    genuinely disagree on this vector, so the assertions below cannot pass
+    vacuously."""
+    sequential = np.asarray(_sequential_sum(_F32_ABSORPTION, None, "float32"),
+                            dtype=np.float32)
+    widened = np.asarray(np.float32(np.float64(_F32_ABSORPTION).sum()),
+                         dtype=np.float32)
+    assert int(_bits(sequential, "float32").ravel()[0]) == 0x3F800000
+    assert int(_bits(widened, "float32").ravel()[0]) == 0x3F800004
+    assert not _same_bits(sequential, widened, "float32")
+
+
+@needs_native
+@pytest.mark.parametrize("layout", ("contiguous", "transposed"))
+def test_float32_sum_accumulates_in_float32_not_in_a_widened_accumulator(
+        layout):
+    """TensorForge matches the sequential binary32 answer and **differs from
+    the widened one**, on both shipped traversals.
+
+    ``layout`` is what selects the traversal: a contiguous row-major source
+    takes H6's block walk (whose local accumulator is the one that could
+    most plausibly have been left ``double``), and a transposed view is
+    declined by the predicate and takes the retained odometer. A hidden
+    widening accumulator introduced on only one of them would fail exactly
+    one of these two parametrizations, which is the plausible mistake.
+    """
+    sequential = np.asarray(_sequential_sum(_F32_ABSORPTION, None, "float32"),
+                            dtype=np.float32)
+    widened = np.asarray(np.float32(np.float64(_F32_ABSORPTION).sum()),
+                         dtype=np.float32)
+    if layout == "contiguous":
+        core = _core(_F32_ABSORPTION, "float32")
+        view = core
+    else:
+        # A (9, 1) column read through a transposed view: the same nine
+        # values in the same order, on a layout the predicate declines.
+        core = _core(_F32_ABSORPTION.reshape(1, 9), "float32")
+        view = core.T
+    try:
+        out = view.sum()
+        try:
+            produced = out.to_numpy()
+            assert _same_bits(produced, sequential, "float32"), (
+                f"{layout}: float32 sum did not accumulate in float32")
+            assert not _same_bits(produced, widened, "float32"), (
+                f"{layout}: float32 sum produced the WIDENED result — there "
+                f"is a hidden binary64 accumulator")
+        finally:
+            out.close()
+    finally:
+        if view is not core:
+            view.close()
+        core.close()
+
+
+@needs_native
+def test_float32_matmul_accumulates_in_float32_on_both_paths():
+    """The same witness through matmul's ``k`` accumulator, on both shipped
+    paths: ``p == 1`` is below MATMUL_MIN_COLUMNS and takes the retained
+    generic kernel, ``p == 8`` takes the H2 row sweep."""
+    sequential = np.asarray(_sequential_sum(_F32_ABSORPTION, None, "float32"),
+                            dtype=np.float32)
+    widened = np.asarray(np.float32(np.float64(_F32_ABSORPTION).sum()),
+                         dtype=np.float32)
+    ones = _core(np.ones((1, 9), dtype=np.float32), "float32")
+    try:
+        for p, label in ((1, "generic (p < 8)"), (8, "row sweep (p >= 8)")):
+            column = _core(np.repeat(_F32_ABSORPTION.reshape(9, 1), p, axis=1),
+                           "float32")
+            try:
+                out = ones.matmul(column)
+                try:
+                    produced = out.to_numpy()
+                    for j in range(p):
+                        cell = np.asarray(produced[0, j], dtype=np.float32)
+                        assert _same_bits(cell, sequential, "float32"), label
+                        assert not _same_bits(cell, widened, "float32"), (
+                            f"{label}: the WIDENED result — there is a hidden "
+                            f"binary64 accumulator")
+                finally:
+                    out.close()
+            finally:
+                column.close()
+    finally:
+        ones.close()
+
+
+@needs_native
+def test_the_mean_scale_factor_is_narrowed_once_before_the_loop():
+    """Design §7.4, as a behavioural assertion rather than a comment.
+
+    ``1/count`` is computed once in binary64 and narrowed **once** to the
+    element type before the multiply loop. The distinction that makes this
+    testable: for count == 3 and a sum of 5, ``float(5) * float(1/3)`` is
+    1.6666667461395264 while ``float(double(5) * (1/3))`` is
+    1.6666666269302368 — one representable step apart, so the two orders are
+    separable. TensorForge must produce the first.
+    """
+    factor = 1.0 / 3.0
+    specified = np.asarray(np.float32(5.0) * np.float32(factor),
+                           dtype=np.float32)
+    alternative = np.asarray(np.float32(np.float64(5.0) * factor),
+                             dtype=np.float32)
+    assert not _same_bits(specified, alternative, "float32"), (
+        "the scale witness is not a witness")
+
+    # 1 + 2 + 2 is exactly 5 at binary32, so the mean is exactly the scaling
+    # step and no accumulation rounding is in the way.
+    core = _core(np.array([[1.0, 2.0, 2.0]], dtype=np.float32), "float32")
+    try:
+        out = core.mean(axis=1)
+        try:
+            produced = np.asarray(out.to_numpy()[0], dtype=np.float32)
+            assert _same_bits(produced, specified, "float32"), (
+                "mean did not narrow the scale factor before the loop")
+            assert not _same_bits(produced, alternative, "float32"), (
+                "mean multiplied in binary64 and narrowed afterwards")
+        finally:
+            out.close()
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("axis", (None, 0, 1))
+def test_mean_is_the_sum_scaled_at_the_element_dtype(dtype, axis):
+    """``mean`` is exactly ``sum`` times the once-narrowed reciprocal, at
+    both widths, compared by bit pattern."""
+    floating = _DTYPE_BITS[dtype][2]
+    values = _sample(dtype, 24).reshape(4, 6)
+    core = _core(values, dtype)
+    try:
+        count = values.size if axis is None else values.shape[axis]
+        expected = (_sequential_sum(values, axis, dtype)
+                    * floating(1.0 / count)).astype(floating)
+        out = core.mean(axis=axis)
+        try:
+            assert out.dtype == dtype
+            assert _same_bits(out.to_numpy(), expected, dtype), (dtype, axis)
+        finally:
+            out.close()
+    finally:
+        core.close()
+
+
+# ---------------------------------------------------------------------------
+# 3. Matmul at both dtypes
+# ---------------------------------------------------------------------------
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("m,n,p", [
+    (1, 1, 8), (4, 4, 8), (5, 3, 9), (7, 6, 8), (2, 9, 16),
+    (9, 2, 8), (3, 3, 7), (3, 3, 8), (1, 5, 8), (6, 6, 6),
+])
+def test_matmul_matches_the_same_dtype_sequential_oracle(dtype, m, n, p):
+    """Tall, wide, square, and small shapes, and both sides of the
+    ``p >= 8`` predicate boundary, at both dtypes — compared by raw bit
+    pattern against the same-dtype textbook triple loop.
+
+    ``a @ b`` is deliberately not the oracle: NumPy dispatches matmul to a
+    blocked BLAS GEMM whose accumulation order is not TensorForge's, so it
+    would be the wrong reference for a bit-level claim at either width.
+    """
+    a = _sample(dtype, m * n, seed=41).reshape(m, n)
+    b = _sample(dtype, n * p, seed=42).reshape(n, p)
+    left = _core(a, dtype)
+    right = _core(b, dtype)
+    try:
+        out = left.matmul(right)
+        try:
+            assert out.dtype == dtype
+            assert out.shape == (m, p)
+            assert _same_bits(out.to_numpy(), _sequential_matmul(a, b, dtype),
+                              dtype), (dtype, m, n, p)
+        finally:
+            out.close()
+    finally:
+        right.close()
+        left.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_matmul_reads_non_contiguous_operands_at_both_dtypes(dtype):
+    """A transposed right operand is exactly the case H2's predicate
+    declines, so this drives the retained generic kernel at both widths; a
+    transposed left operand keeps the row sweep. Neither is materialized
+    first — the kernel addresses each source through its own strides."""
+    a = _sample(dtype, 12, seed=51).reshape(3, 4)
+    b = _sample(dtype, 32, seed=52).reshape(8, 4)
+    c = _sample(dtype, 24, seed=53).reshape(3, 8)
+    left = _core(a, dtype)
+    right = _core(b, dtype)
+    wide = _core(c, dtype)
+    try:
+        # (3, 4) @ (4, 8) with b transposed: b_stride1 != 1, generic path.
+        out = left.matmul(right.T)
+        try:
+            assert out.dtype == dtype
+            assert _same_bits(
+                out.to_numpy(),
+                _sequential_matmul(a, np.ascontiguousarray(b.T), dtype),
+                dtype)
+        finally:
+            out.close()
+        # (4, 3) @ (3, 8) with a transposed: b stays row-major, row sweep.
+        out = left.T.matmul(wide)
+        try:
+            assert _same_bits(
+                out.to_numpy(),
+                _sequential_matmul(np.ascontiguousarray(a.T), c, dtype),
+                dtype)
+        finally:
+            out.close()
+    finally:
+        wide.close()
+        right.close()
+        left.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_matmul_signed_zeros_and_infinities_at_both_dtypes(dtype):
+    """H2's contract parts 2 and 3, restated per dtype: signed zeros survive
+    as raw bit patterns, infinities propagate, and every NaN a matmul
+    produces is quiet."""
+    floating = _DTYPE_BITS[dtype][2]
+    quiet = _DTYPE_BITS[dtype][1](
+        0x00400000 if dtype == "float32" else 0x0008000000000000)
+    a = np.array([[-1.0, 0.0], [np.inf, 1.0]], dtype=floating)
+    b = np.array([[0.0] * 8, [-0.0] * 8], dtype=floating)
+    left = _core(a, dtype)
+    right = _core(b, dtype)
+    try:
+        out = left.matmul(right)
+        try:
+            produced = out.to_numpy()
+            expected = _sequential_matmul(a, b, dtype)
+            assert np.array_equal(np.isnan(produced), np.isnan(expected))
+            finite = ~np.isnan(produced)
+            assert np.array_equal(
+                _bits(np.ascontiguousarray(produced[finite]), dtype),
+                _bits(np.ascontiguousarray(expected[finite]), dtype))
+            nans = _bits(produced, dtype)[np.isnan(produced)]
+            assert np.all((nans & quiet) != 0), "a matmul NaN was signalling"
+        finally:
+            out.close()
+    finally:
+        right.close()
+        left.close()
+
+
+# ---------------------------------------------------------------------------
+# 4. narrow_backward at both dtypes
+# ---------------------------------------------------------------------------
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("dim,start,length,original", [
+    (0, 1, 2, (4, 3)), (1, 0, 2, (4, 3)), (1, 1, 2, (4, 3)),
+    (0, 0, 4, (4, 3)),
+])
+def test_narrow_backward_scatters_at_both_dtypes(dtype, dim, start, length,
+                                                 original):
+    """The scatter writes only the narrowed region and leaves every other
+    cell holding the zero the allocation gave it — and that zero *is* the
+    gradient, which is why H1 rejected this destination from the
+    uninitialized path. Compared by raw bit pattern, zeros included."""
+    floating = _DTYPE_BITS[dtype][2]
+    shape = tuple(length if axis == dim else size
+                  for axis, size in enumerate(original))
+    upstream = _sample(dtype, int(np.prod(shape))).reshape(shape)
+    core = _core(upstream, dtype)
+    try:
+        out = core.narrow_backward(dim, start, original)
+        try:
+            assert out.dtype == dtype
+            assert out.shape == original
+            expected = np.zeros(original, dtype=floating)
+            index = [slice(None)] * len(original)
+            index[dim] = slice(start, start + length)
+            expected[tuple(index)] = upstream
+            assert _same_bits(out.to_numpy(), expected, dtype)
+        finally:
+            out.close()
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_narrow_backward_assigns_rather_than_computes(dtype):
+    """It is a transfer into a larger zeroed result, not an operation: a
+    ``-0.0`` in the upstream stays negative and a signalling NaN stays
+    signalling, at both widths. An arithmetic composition would normalize
+    the first and quiet the second."""
+    upstream = _patterned(dtype, 6).reshape(2, 3)
+    core = _core(upstream, dtype)
+    try:
+        out = core.narrow_backward(0, 1, (4, 3))
+        try:
+            produced = out.to_numpy()
+            assert np.array_equal(
+                _bits(np.ascontiguousarray(produced[1:3]), dtype),
+                _bits(upstream, dtype))
+            untouched = np.ascontiguousarray(
+                np.concatenate([produced[0:1], produced[3:4]]))
+            assert np.all(_bits(untouched, dtype) == 0)
+        finally:
+            out.close()
+    finally:
+        core.close()
+
+
+# ---------------------------------------------------------------------------
+# 5. The private float32 autograd graph
+# ---------------------------------------------------------------------------
+
+@needs_native
+def test_the_private_float32_graph_runs_forward_and_backward():
+    """A composition touching every family I4 opened — elementwise,
+    broadcasting, a reduction, and a matmul — differentiated end to end at
+    float32, with every gradient checked analytically."""
+    x = _tensor([[1.0, 2.0], [3.0, 4.0]], "float32", requires_grad=True)
+    w = _tensor([[0.5], [-1.5]], "float32", requires_grad=True)
+    bias = _tensor([[0.25]], "float32", requires_grad=True)
+    try:
+        out = x.matmul(w).add(bias).sum()
+        try:
+            out.backward()
+        finally:
+            out.close()
+        # d/dx (x @ w + bias) summed = each row of w.T
+        assert np.array_equal(x.grad.to_numpy(),
+                              np.array([[0.5, -1.5], [0.5, -1.5]],
+                                       dtype=np.float32))
+        # d/dw = column sums of x
+        assert np.array_equal(w.grad.to_numpy(),
+                              np.array([[4.0], [6.0]], dtype=np.float32))
+        # d/dbias = the number of broadcast positions
+        assert np.array_equal(bias.grad.to_numpy(),
+                              np.array([[2.0]], dtype=np.float32))
+        for tensor in (x, w, bias):
+            assert tensor.grad.dtype == "float32"
+            assert tensor.grad.shape == tensor.shape
+    finally:
+        bias.close()
+        w.close()
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("op", [
+    "add", "subtract", "multiply", "relu", "sqrt", "reciprocal", "exp", "log",
+    "sum", "mean", "matmul", "reshape", "transpose", "T", "narrow",
+    "contiguous_copy", "broadcast",
+])
+def test_every_i4_operation_produces_a_gradient_of_the_graph_dtype(dtype, op):
+    """Invariants 1 and 2 of design §11, over the whole I4 operation set at
+    both widths: a gradient has the dtype of the tensor it is a gradient of,
+    and a leaf's gradient matches the leaf. Nothing in a backward may
+    introduce a tensor of another width — which, since the runtime never
+    casts, would not merely be untidy but would raise at the first
+    accumulation."""
+    floating = _DTYPE_BITS[dtype][2]
+    # Values chosen inside every domain in play at once: strictly positive
+    # (so ``sqrt``/``log`` are differentiable and ``reciprocal`` is finite)
+    # and away from 0 (so ``relu`` is not at its kink).
+    x = _tensor(np.array([[1.5, 2.5], [3.5, 4.5]], dtype=floating), dtype,
+                requires_grad=True)
+    other = _tensor(np.array([[0.5, 1.5], [2.5, 3.5]], dtype=floating), dtype,
+                    requires_grad=True)
+    row = _tensor(np.array([[2.0, 3.0]], dtype=floating), dtype,
+                  requires_grad=True)
+    created = [x, other, row]
+    try:
+        if op in ("add", "subtract", "multiply", "matmul"):
+            result = getattr(x, op)(other)
+        elif op == "broadcast":
+            result = x.multiply(row)          # (2, 2) * (1, 2)
+        elif op == "reshape":
+            result = x.reshape((4,))
+        elif op == "transpose":
+            result = x.transpose(1, 0)
+        elif op == "T":
+            result = x.T
+        elif op == "narrow":
+            result = x.narrow(0, 0, 1)
+        elif op == "contiguous_copy":
+            result = x.contiguous_copy()
+        elif op in ("sum", "mean"):
+            result = getattr(x, op)(axis=0)
+        else:
+            result = getattr(x, op)()
+        created.append(result)
+        assert result.dtype == dtype
+        loss = result.sum()
+        created.append(loss)
+        loss.backward()
+        assert x.grad is not None
+        assert x.grad.dtype == dtype, op
+        assert x.grad.shape == x.shape, op
+        if op in ("add", "subtract", "multiply", "matmul"):
+            assert other.grad.dtype == dtype, op
+            assert other.grad.shape == other.shape, op
+        if op == "broadcast":
+            assert row.grad.dtype == dtype and row.grad.shape == (1, 2)
+    finally:
+        for tensor in reversed(created):
+            tensor.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_reduction_backward_broadcasts_back_at_the_graph_dtype(dtype):
+    """sum and mean backward, over every axis form: the upstream is
+    reshaped to the keepdims-compatible shape and expanded back to the input
+    shape, at the graph's dtype, with the mean case scaled by the
+    once-narrowed reciprocal."""
+    floating = _DTYPE_BITS[dtype][2]
+    values = np.arange(1.0, 13.0, dtype=floating).reshape(3, 4)
+    for reduction in ("sum", "mean"):
+        for axis, keepdims in ((None, False), (0, False), (1, True),
+                               (-1, False)):
+            x = _tensor(values, dtype, requires_grad=True)
+            try:
+                out = getattr(x, reduction)(axis=axis, keepdims=keepdims)
+                try:
+                    if out.numel == 1:
+                        out.backward()
+                    else:
+                        loss = out.sum()
+                        try:
+                            loss.backward()
+                        finally:
+                            loss.close()
+                finally:
+                    out.close()
+                count = (values.size if axis is None
+                         else values.shape[axis % values.ndim])
+                factor = (floating(1.0) if reduction == "sum"
+                          else floating(1.0 / count))
+                expected = np.full(values.shape, factor, dtype=floating)
+                assert x.grad.dtype == dtype
+                assert x.grad.shape == values.shape
+                assert _same_bits(x.grad.to_numpy(), expected, dtype), (
+                    reduction, axis, keepdims, dtype)
+            finally:
+                x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_view_backward_preserves_the_graph_dtype_and_owns_its_storage(dtype):
+    """reshape, transpose, ``.T``, narrow, contiguous_copy, and a chain of
+    them: each backward produces a gradient of the graph dtype, of the
+    input's shape, in **independent owning** storage — reading the leaf
+    after the gradient exists must still give the leaf's own value."""
+    floating = _DTYPE_BITS[dtype][2]
+    values = np.arange(1.0, 13.0, dtype=floating).reshape(3, 4)
+    builders = {
+        "reshape": lambda t: t.reshape((12,)),
+        "transpose": lambda t: t.transpose(1, 0),
+        "T": lambda t: t.T,
+        "narrow": lambda t: t.narrow(1, 1, 2),
+        "contiguous_copy": lambda t: t.contiguous_copy(),
+        "chained": lambda t: t.contiguous_copy().T.narrow(1, 1, 2),
+    }
+    for label, build in builders.items():
+        x = _tensor(values, dtype, requires_grad=True)
+        try:
+            view = build(x)
+            try:
+                loss = view.sum()
+                try:
+                    loss.backward()
+                finally:
+                    loss.close()
+            finally:
+                view.close()
+            assert x.grad is not None, label
+            assert x.grad.dtype == dtype, label
+            assert x.grad.shape == values.shape, label
+            assert x.grad.to_numpy().dtype == np.dtype(floating), label
+            # The gradient owns independent storage: the leaf is unchanged.
+            assert np.array_equal(x.to_numpy(), values), label
+            # d(sum(view))/dx is 1 on every visited element and 0 elsewhere.
+            if label == "narrow":
+                expected = np.zeros_like(values)
+                expected[:, 1:3] = floating(1.0)
+            elif label == "chained":
+                expected = np.zeros_like(values)
+                expected[1:3, :] = floating(1.0)
+            else:
+                expected = np.ones_like(values)
+            assert _same_bits(x.grad.to_numpy(), expected, dtype), label
+        finally:
+            x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_broadcast_backward_is_a_reduction_at_the_graph_dtype(dtype):
+    """The adjoint of broadcasting really sums the stretched axes — it is
+    not a copy — and it does so at the graph's dtype, for leading
+    dimensions, singleton axes, scalars, and higher ranks."""
+    floating = _DTYPE_BITS[dtype][2]
+    cases = (
+        ((2, 3), (1, 3), np.full((1, 3), 2.0)),
+        ((2, 3), (2, 1), np.full((2, 1), 3.0)),
+        ((2, 3), (3,), np.full((3,), 2.0)),
+        ((2, 3), (), np.array(6.0)),
+        ((4, 2, 3), (2, 1), np.full((2, 1), 12.0)),
+    )
+    for big_shape, small_shape, expected in cases:
+        big = _tensor(np.ones(big_shape, dtype=floating), dtype,
+                      requires_grad=True)
+        small = _tensor(np.ones(small_shape, dtype=floating), dtype,
+                        requires_grad=True)
+        try:
+            out = big.add(small)
+            try:
+                loss = out.sum()
+                try:
+                    loss.backward()
+                finally:
+                    loss.close()
+            finally:
+                out.close()
+            assert small.grad.dtype == dtype
+            # The gradient has the *operand's* shape, whatever normalization
+            # the constructor applied to a rank-0 request.
+            assert small.grad.shape == small.shape
+            assert _same_bits(
+                small.grad.to_numpy(),
+                expected.astype(floating).reshape(small.shape), dtype), (
+                big_shape, small_shape, dtype)
+            assert big.grad.dtype == dtype
+            assert big.grad.shape == tuple(big_shape)
+        finally:
+            small.close()
+            big.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_matmul_backward_keeps_every_operand_at_the_graph_dtype(dtype):
+    """``dA = upstream @ B.T`` and ``dB = A.T @ upstream``, unchanged
+    structurally, at both widths — with the transposes still metadata-only
+    views and the accumulation still in the element type."""
+    floating = _DTYPE_BITS[dtype][2]
+    a_host = np.arange(1.0, 7.0, dtype=floating).reshape(2, 3)
+    b_host = np.arange(1.0, 25.0, dtype=floating).reshape(3, 8)
+    upstream_host = np.full((2, 8), 2.0, dtype=floating)
+    a = _tensor(a_host, dtype, requires_grad=True)
+    b = _tensor(b_host, dtype, requires_grad=True)
+    upstream = _tensor(upstream_host, dtype)
+    try:
+        out = a.matmul(b)
+        try:
+            out.backward(gradient=upstream)
+        finally:
+            out.close()
+        assert a.grad.dtype == dtype and b.grad.dtype == dtype
+        assert _same_bits(
+            a.grad.to_numpy(),
+            _sequential_matmul(upstream_host,
+                               np.ascontiguousarray(b_host.T), dtype), dtype)
+        assert _same_bits(
+            b.grad.to_numpy(),
+            _sequential_matmul(np.ascontiguousarray(a_host.T), upstream_host,
+                               dtype), dtype)
+    finally:
+        upstream.close()
+        b.close()
+        a.close()
+
+
+# ---------------------------------------------------------------------------
+# 6. Backward constants are built at the graph dtype
+# ---------------------------------------------------------------------------
+
+@needs_native
+def test_no_backward_constant_is_created_at_a_hard_coded_float64():
+    """Design §11.4, structurally.
+
+    A backward materializes constants — ``0.5`` for sqrt, ``-1`` for
+    reciprocal and for the negation subtract needs, ``1/count`` for mean,
+    the ones seed, the zeros operand broadcast-back expands into. Every one
+    of them must be built at the **operand's** dtype. The public ``full`` /
+    ``zeros`` constructors normalize against the public registry and would
+    therefore raise on a float32 graph, so a backward that used them would
+    be float64-only by construction; the private typed constructors are what
+    the autograd layer reaches for instead.
+
+    Asserted over the source so the rule survives a future edit that adds a
+    constant, not only over the graphs this suite happens to run.
+    """
+    code = _read("src/tensorforge/experimental/native_tensor.py")
+    # The two public dtype-defaulting constructors appear **once each**, and
+    # both inside the public constructor block at the top of the class,
+    # where a caller's own ``dtype`` argument is what they normalize. Every
+    # line after the lifetime gate — all of the compute, every backward
+    # closure, and every module-level gradient helper — has none.
+    compute = code.split("# -- lifetime gate", 1)[1]
+    for banned in ("NativeTensorCore.full(", 'dtype="float64"',
+                   "dtype='float64'"):
+        assert banned not in compute, (
+            f"a backward constant is built through {banned!r}, which pins it "
+            f"to float64")
+    # ``zeros`` survives in the compute half — broadcast-back genuinely
+    # expands into one — but **only** in its dtype-trusting form, which
+    # takes the operand's tag instead of normalizing against the public
+    # registry. Every occurrence is checked, not merely the first.
+    for fragment in compute.split("NativeTensorCore.zeros(")[1:]:
+        assert "_trusted_dtype=True" in fragment.split(")", 1)[0], (
+            "a compute path builds zeros through the public dtype gate, "
+            "which pins it to float64")
+    # The public constructors appear exactly once each, in the constructor
+    # block above the gate, where a caller's own ``dtype`` is what they
+    # normalize.
+    assert code.count("cpp.NativeTensorCore.full(") == 1     # NativeTensor.full
+    assert code.count("cpp.NativeTensorCore.zeros(") == 2    # ctor + broadcast
+    # ...and the typed constant constructor really is what the backwards use.
+    assert compute.count("NativeTensorCore._typed_full(") >= 4
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_backward_seed_has_the_output_dtype(dtype):
+    """Invariant 1 of design §11 at the entry point: the implicit
+    ``d(out)/d(out) = 1`` seed is created at the **output's** dtype. A
+    float64 seed for a float32 output would be rejected by the very first
+    accumulation — so this passing is itself the proof it is not one."""
+    floating = _DTYPE_BITS[dtype][2]
+    x = _tensor(np.array([2.0, 3.0], dtype=floating), dtype,
+                requires_grad=True)
+    try:
+        out = x.sum()
+        try:
+            out.backward()
+        finally:
+            out.close()
+        assert x.grad.dtype == dtype
+        assert np.array_equal(x.grad.to_numpy(), np.ones(2, dtype=floating))
+    finally:
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_subtract_and_sqrt_backward_constants_land_at_the_graph_dtype(dtype):
+    """The two backwards that materialize a *numeric* constant rather than a
+    ones/zeros tensor: subtract's ``-1`` negation and sqrt's ``0.5``. Both
+    must produce a gradient of the graph dtype with the analytically correct
+    value, compared as bits."""
+    floating = _DTYPE_BITS[dtype][2]
+    a = _tensor(np.array([4.0, 9.0], dtype=floating), dtype,
+                requires_grad=True)
+    b = _tensor(np.array([1.0, 2.0], dtype=floating), dtype,
+                requires_grad=True)
+    try:
+        out = a.subtract(b).sum()
+        try:
+            out.backward()
+        finally:
+            out.close()
+        assert b.grad.dtype == dtype
+        assert _same_bits(b.grad.to_numpy(),
+                          np.full(2, -1.0, dtype=floating), dtype)
+    finally:
+        b.close()
+        a.close()
+
+    c = _tensor(np.array([4.0, 16.0], dtype=floating), dtype,
+                requires_grad=True)
+    try:
+        out = c.sqrt().sum()
+        try:
+            out.backward()
+        finally:
+            out.close()
+        assert c.grad.dtype == dtype
+        # d(sqrt(x))/dx = 1/(2*sqrt(x)); at 4 and 16 that is 0.25 and 0.125,
+        # both exact at either width.
+        assert _same_bits(c.grad.to_numpy(),
+                          np.array([0.25, 0.125], dtype=floating), dtype)
+    finally:
+        c.close()
+
+
+# ---------------------------------------------------------------------------
+# 7. Finite differences at float32
+# ---------------------------------------------------------------------------
+#
+# The step and the tolerances are chosen for **binary32** and stated here
+# rather than inherited from the float64 gradient checks, which use a far
+# smaller step and a far tighter bound.
+#
+# Why 2**-11 (about 4.9e-4). A central difference has two competing error
+# terms: truncation, which is O(h**2 * f'''), and cancellation, which is
+# O(eps/h) where eps is the unit roundoff — 2**-24 at binary32 against
+# 2**-53 at binary64. Balancing them puts the optimum near eps**(1/3),
+# which is about 6e-3 for binary32; a slightly smaller step keeps the
+# truncation term comfortably small for the mildly nonlinear functions used
+# here while staying far above the cancellation floor. It is also an exact
+# power of two, so the perturbation itself introduces no rounding error.
+#
+# Why these tolerances. With h = 2**-11 the cancellation term alone is about
+# 2**-24 / 2**-11 = 2**-13, roughly 1.2e-4 scaled by the magnitude of f, so
+# a relative tolerance of 2e-2 with an absolute floor of 2e-3 is a
+# comfortable but non-vacuous band: it fails immediately for a gradient that
+# is wrong by a factor, a sign, or a transposition, which is what an
+# analytical-formula error actually looks like. The exact analytical checks
+# above are what pin the last bits; this is what pins the *formula*. The
+# negative control below proves the band can reject.
+#
+# The values are finite, well conditioned, strictly positive, and far from
+# ReLU's kink and from the singular domains of reciprocal and log.
+
+_F32_FD_STEP = np.float32(2.0 ** -11)
+_F32_FD_RTOL = 2e-2
+_F32_FD_ATOL = 2e-3
+
+
+def _f32_scalar_value(build, host):
+    """Evaluate a float32 graph forward-only and return its scalar value."""
+    tensor = _tensor(host, "float32")
+    try:
+        result = build(tensor)
+        try:
+            return np.float32(result.to_numpy().reshape(()))
+        finally:
+            result.close()
+    finally:
+        tensor.close()
+
+
+def _f32_numeric_gradient(build, host):
+    """Central finite differences of ``build`` at ``host``, computed
+    entirely in **binary32**: every perturbed input is a float32 array and
+    every evaluation runs through the float32 native graph, so this is not a
+    float64 comparison in disguise (design §10.4 forbids making one a
+    contract)."""
+    base = np.ascontiguousarray(host, dtype=np.float32)
+    out = np.zeros_like(base)
+    step = _F32_FD_STEP
+    for index in np.ndindex(*base.shape):
+        plus = base.copy()
+        minus = base.copy()
+        plus[index] = np.float32(plus[index] + step)
+        minus[index] = np.float32(minus[index] - step)
+        out[index] = np.float32(
+            (_f32_scalar_value(build, plus) - _f32_scalar_value(build, minus))
+            / np.float32(2.0 * step))
+    return out
+
+
+@needs_native
+@pytest.mark.parametrize("label,build", [
+    # elementwise + reduction
+    ("multiply-sum", lambda t: t.multiply(t).sum()),
+    # a chain through sqrt and mean
+    ("sqrt-mean", lambda t: t.sqrt().mean()),
+    # reciprocal and log, both strictly inside their domains here
+    ("reciprocal-sum", lambda t: t.reciprocal().sum()),
+    ("log-sum", lambda t: t.log().sum()),
+    # exp, kept at small magnitudes so binary32 does not overflow
+    ("exp-mean", lambda t: t.exp().mean()),
+    # view chains feeding a reduction. Each intermediate is a *borrowing*
+    # view of the leaf, or an owning copy consumed directly — a forward-only
+    # evaluation builds no graph to keep an owning temporary alive, so a
+    # chain that hung a second view off a dropped copy would read released
+    # storage. That is the runtime's existing ownership contract, not
+    # something dtype changed.
+    ("transpose-narrow-sum", lambda t: t.T.narrow(0, 1, 2).sum()),
+    ("contiguous-copy-sum", lambda t: t.T.contiguous_copy().sum()),
+    ("reshape-narrow-sum", lambda t: t.reshape((6,)).narrow(0, 1, 4).sum()),
+    # relu, well away from its kink at every sample point
+    ("relu-multiply-sum", lambda t: t.relu().multiply(t).sum()),
+    # a matmul against the tensor's own transpose, then a mean
+    ("matmul-transpose-mean", lambda t: t.matmul(t.T).mean()),
+    # broadcasting: a (2, 3) tensor against its own column mean
+    ("broadcast-subtract-sum",
+     lambda t: t.subtract(t.mean(axis=1, keepdims=True)).multiply(t).sum()),
+])
+def test_float32_finite_differences_agree_with_the_analytical_gradient(
+        label, build):
+    """The float32 gradients of representative differentiable compositions,
+    checked against central finite differences computed **in binary32** with
+    the step and tolerances stated above."""
+    host = np.array([[0.75, 1.25, 1.75], [2.25, 0.5, 1.5]], dtype=np.float32)
+    x = _tensor(host, "float32", requires_grad=True)
+    try:
+        out = build(x)
+        try:
+            out.backward()
+        finally:
+            out.close()
+        analytical = x.grad.to_numpy().copy()
+        assert x.grad.dtype == "float32"
+        assert analytical.dtype == np.float32
+    finally:
+        x.close()
+
+    numeric = _f32_numeric_gradient(build, host)
+    assert np.allclose(analytical, numeric, rtol=_F32_FD_RTOL,
+                       atol=_F32_FD_ATOL), (
+        f"{label}: analytical {analytical!r} vs numeric {numeric!r}")
+
+
+@needs_native
+def test_the_float32_finite_difference_check_can_actually_fail():
+    """The negative control that makes the test above load-bearing: with a
+    deliberately wrong gradient — the same values reversed along an axis —
+    the same tolerances reject it. A band that accepted everything would
+    prove nothing."""
+    host = np.array([[0.75, 1.25, 1.75], [2.25, 0.5, 1.5]], dtype=np.float32)
+    numeric = _f32_numeric_gradient(lambda t: t.multiply(t).sum(), host)
+    wrong = np.ascontiguousarray(numeric[:, ::-1])
+    assert not np.allclose(wrong, numeric, rtol=_F32_FD_RTOL,
+                           atol=_F32_FD_ATOL)
+
+
+# ---------------------------------------------------------------------------
+# 8. Mixed dtype is rejected before allocation or mutation
+# ---------------------------------------------------------------------------
+
+@needs_native
+@pytest.mark.parametrize("op", ("add", "subtract", "multiply", "matmul"))
+def test_a_mixed_dtype_core_operation_allocates_nothing(op, monkeypatch):
+    """Design §9.3 as a testable property: after a rejected mixed-dtype
+    operation, live native storage is exactly what it was, both operands are
+    unchanged and open, and no output exists."""
+    live = _live_storage_ids(monkeypatch)
+    wide = _core(np.ones((4, 4)), "float64")
+    narrow = _core(np.ones((4, 4), dtype=np.float32), "float32")
+    try:
+        baseline = len(live)
+        for left, right in ((wide, narrow), (narrow, wide)):
+            with pytest.raises(ValueError, match="matching dtype"):
+                getattr(left, op)(right)
+            assert len(live) == baseline, op
+        assert np.array_equal(wide.to_numpy(), np.ones((4, 4)))
+        assert np.array_equal(narrow.to_numpy(),
+                              np.ones((4, 4), dtype=np.float32))
+        assert narrow.dtype == "float32" and wide.dtype == "float64"
+    finally:
+        narrow.close()
+        wide.close()
+
+
+@needs_native
+@pytest.mark.parametrize("call", ("sum", "matmul", "narrow_backward"))
+def test_a_mixed_dtype_call_at_the_abi_leaves_the_destination_unchanged(call):
+    """The C++ half of the same rule, reached directly so a mismatch Python
+    would have caught first still gets proved at the trust boundary: the
+    rejection is TF_ERROR_INVALID, and the destination is byte-for-byte what
+    it was."""
+    library = cpp._require_library()
+    narrow = cpp.NativeStorage._typed(16, "float32")
+    wide = cpp.NativeStorage(16, dtype="float64")
+    try:
+        wide.fill(-7.5)
+        before = wide.to_numpy().copy()
+        shape = (ctypes.c_int64 * 2)(4, 4)
+        strides = (ctypes.c_int64 * 2)(4, 1)
+        writes = (ctypes.c_int64 * 2)(0, 1)
+        a = narrow._require_open()
+        dst = wide._require_open()
+        library.tf_clear_error()
+        with pytest.raises(ValueError, match="same dtype"):
+            if call == "sum":
+                library.tf_core_sum(a, dst, shape, strides, writes, 0, 2)
+            elif call == "matmul":
+                library.tf_core_matmul(a, dst, dst, 4, 4, 4, 4, 1, 4, 1, 0, 0)
+            else:
+                library.tf_core_narrow_backward(a, dst, shape, strides,
+                                                strides, 0, 0, 2)
+        assert _same_bits(wide.to_numpy(), before, "float64")
+        library.tf_clear_error()
+    finally:
+        wide.close()
+        narrow.close()
+
+
+@needs_native
+def test_mixed_dtype_gradient_accumulation_is_rejected_before_it_mutates():
+    """Invariant 5 of design §11: a contribution of the wrong dtype is
+    refused before the accumulation and before any allocation, and the
+    gradient already held is left exactly as it was."""
+    x = _tensor([[1.0, 2.0]], "float32", requires_grad=True)
+    try:
+        first = _tensor([[1.0, 1.0]], "float32")
+        x._accumulate_grad(first)
+        before = x.grad.to_numpy().copy()
+        wrong = _tensor([[1.0, 1.0]], "float64")
+        try:
+            with pytest.raises(ValueError, match="matching dtype"):
+                x._accumulate_grad(wrong)
+        finally:
+            wrong.close()
+        assert x.grad.dtype == "float32"
+        assert np.array_equal(x.grad.to_numpy(), before)
+    finally:
+        x.close()
+
+
+@needs_native
+def test_a_float64_seed_is_refused_for_a_float32_output():
+    """An explicit ``gradient`` of the wrong dtype is rejected by name,
+    before any traversal — the seed is a gradient of the output, so it has
+    the output's dtype by definition."""
+    x = _tensor([[1.0, 2.0]], "float32", requires_grad=True)
+    try:
+        out = x.multiply(x)
+        try:
+            seed = _tensor([[1.0, 1.0]], "float64")
+            try:
+                with pytest.raises(ValueError, match="dtype/device"):
+                    out.backward(gradient=seed)
+            finally:
+                seed.close()
+            assert x.grad is None
+        finally:
+            out.close()
+    finally:
+        x.close()
+
+
+# ---------------------------------------------------------------------------
+# 9. Ownership and lifecycle at float32
+# ---------------------------------------------------------------------------
+
+@needs_native
+def test_repeated_float32_graph_cycles_return_live_storage_to_baseline(
+        monkeypatch):
+    """The ownership claim, proved against a real allocation count rather
+    than trusting collection: twenty-five forward/backward cycles over the
+    I4 operation set leave live native storage exactly where it started."""
+    live = _live_storage_ids(monkeypatch)
+    host = np.array([[1.5, 2.5], [3.5, 4.5]], dtype=np.float32)
+    weights = np.array([[0.5, 1.0], [1.5, 2.0]], dtype=np.float32)
+    baseline = len(live)
+    for _ in range(25):
+        x = _tensor(host, "float32", requires_grad=True)
+        w = _tensor(weights, "float32", requires_grad=True)
+        try:
+            product = x.matmul(w)
+            scaled = product.sqrt()
+            reduced = scaled.mean(axis=0)
+            loss = reduced.sum()
+            loss.backward()
+            assert x.grad.dtype == "float32"
+            for tensor in (loss, reduced, scaled, product):
+                tensor.close()
+            x.grad.close()
+            w.grad.close()
+        finally:
+            w.close()
+            x.close()
+    assert len(live) == baseline
+
+
+@needs_native
+def test_a_failed_float32_backward_closes_every_temporary(monkeypatch):
+    """Invariant 7 of design §11: a backward that fails after allocating
+    float32 temporaries closes every one of them, live native storage
+    returns exactly to baseline, and the retained graph survives so a retry
+    still works."""
+    live = _live_storage_ids(monkeypatch)
+    x = _tensor([[1.0, 2.0], [3.0, 4.0]], "float32", requires_grad=True)
+    w = _tensor([[1.0], [1.0]], "float32", requires_grad=True)
+    try:
+        out = x.matmul(w).sum()
+        try:
+            library = cpp._require_library()
+            original = library.tf_core_matmul
+            baseline = len(live)
+
+            def exploding(*args, **kwargs):
+                raise RuntimeError("injected")
+
+            monkeypatch.setattr(library, "tf_core_matmul", exploding)
+            try:
+                with pytest.raises(RuntimeError, match="injected"):
+                    out.backward(retain_graph=True)
+            finally:
+                monkeypatch.setattr(library, "tf_core_matmul", original)
+            assert len(live) == baseline
+            out.backward()
+            assert x.grad.dtype == "float32"
+            assert w.grad.dtype == "float32"
+        finally:
+            out.close()
+    finally:
+        w.close()
+        x.close()
+
+
+@needs_native
+def test_retain_graph_still_holds_for_a_float32_graph():
+    """``retain_graph=True`` keeps the history for a second pass and the
+    gradients accumulate, at float32 exactly as at float64; the one-shot
+    default still releases."""
+    x = _tensor([[1.0, 2.0]], "float32", requires_grad=True)
+    try:
+        out = x.multiply(x).sum()
+        try:
+            out.backward(retain_graph=True)
+            first = x.grad.to_numpy().copy()
+            out.backward()
+            assert np.array_equal(x.grad.to_numpy(), first * np.float32(2.0))
+            assert x.grad.dtype == "float32"
+            with pytest.raises(RuntimeError):
+                out.backward()
+        finally:
+            out.close()
+    finally:
+        x.close()
+
+
+@needs_native
+def test_a_float32_result_owns_storage_that_aliases_no_operand():
+    """Every operation allocates a fresh owning contiguous output that
+    aliases neither operand — closing the result must leave the source
+    readable and unchanged, at float32 as at float64."""
+    values = np.arange(12.0, dtype=np.float32).reshape(3, 4)
+    core = _core(values, "float32")
+    try:
+        producers = (
+            lambda c: c.sum(axis=0),
+            lambda c: c.mean(axis=1),
+            lambda c: c.matmul(c.T),
+            lambda c: c.narrow(0, 1, 2).narrow_backward(0, 1, (3, 4)),
+        )
+        for produce in producers:
+            out = produce(core)
+            assert out.storage is not core.storage
+            assert out.dtype == "float32"
+            out.close()
+            assert np.array_equal(core.to_numpy(), values)
+    finally:
+        core.close()
+
+
+# ---------------------------------------------------------------------------
+# 10. What I4 did not move
+# ---------------------------------------------------------------------------
+
+@needs_native
+def test_the_generalized_reduction_and_matmul_exports_carry_one_dispatch():
+    """Design §8.1 for the exports I4 generalized: each does its dtype work
+    exactly once, at ABI entry, and nothing beneath branches on dtype."""
+    for relative, names in (
+        ("cpp/src/reduction.cpp", ("tf_core_sum", "tf_core_narrow_backward")),
+        ("cpp/src/matmul.cpp", ("tf_core_matmul",)),
+    ):
+        source = _read(relative)
+        for name in names:
+            body = source.split(f"TF_EXPORT void {name}(", 1)[1]
+            body = body.split("\n}\n", 1)[0]
+            assert "require_matching_dtype" in body, name
+            assert "require_float64" not in body, name
+            assert body.count("switch (tf::dispatch_dtype(") == 1, name
+    # The two scalar primitives dispatch once each, and neither rejects a
+    # dtype any more — there is nothing left for either to reject.
+    storage = _read("cpp/src/storage.cpp")
+    for name in ("tf_storage_fill", "tf_storage_scale"):
+        body = storage.split(f"TF_EXPORT void {name}(", 1)[1]
+        body = body.split("\n}\n", 1)[0]
+        assert body.count("switch (tf::storage_dtype(") == 1, name
+        assert "require_float64" not in body, name
+    # ...and the export count did not move: generalization ships inside the
+    # symbols Python already declares.
+    assert len(_source_exports()) == I1_EXPORT_COUNT
+
+
+@needs_native
+def test_no_accumulator_in_the_generalized_kernels_is_hard_coded():
+    """The structural half of "float32 accumulates in float32", over the two
+    headers I4 templated. Its behavioural partner is the absorption witness
+    above; neither alone would be enough — the witness proves the result,
+    and this proves there is no width in the source that could make the
+    result right on one path and wrong on another."""
+    for relative in ("cpp/include/tf_reduction_internal.h",
+                     "cpp/include/tf_matmul_internal.h"):
+        code = _cpp_code_only(_read(relative))
+        assert "double" not in code, f"{relative}: a binary64 local survived"
+        assert "float" not in code, f"{relative}: a binary32 local was pinned"
+        assert "static_cast<double>" not in code, relative
+        # ...and nothing forbidden by CLAUDE.md §4.3 or design §10.2 appeared
+        # while the kernels were being touched.
+        for banned in ("immintrin", "_mm", "omp", "std::thread", "cblas_",
+                       "std::fma", "restrict"):
+            assert banned not in code, f"{relative}: {banned}"
+
+
+@needs_native
+def test_the_raw_utility_kernels_are_still_float64_only():
+    """``RAW_KERNEL_DTYPES`` did not move at I4 and never will: the seven
+    handle-free kernels take ``double*`` and an element count, so they have
+    no dtype to dispatch on. No raw float32 matmul was added and neither raw
+    matmul signature changed."""
+    assert cpp.RAW_KERNEL_DTYPES == ("float64",)
+    source = _flat(_read("cpp/src/matmul.cpp"))
+    assert _all_of(source,
+                   "TF_EXPORT void tf_matmul( const double* a, "
+                   "const double* b, double* out, int64_t m, int64_t n, "
+                   "int64_t p )",
+                   "TF_EXPORT void tf_matmul_tiled( const double* a, "
+                   "const double* b, double* out, int64_t m, int64_t n, "
+                   "int64_t p, int64_t block )")
+    exports = _source_exports()
+    for absent in ("tf_matmul_f32", "tf_matmul_float32", "tf_relu_f32",
+                   "tf_elementwise_add_f32"):
+        assert absent not in exports, absent
+
+
+@needs_native
+def test_the_families_i5_through_i8_own_still_reject_float32():
+    """The other direction of the I4 boundary: no module, parameter,
+    optimizer, or checkpoint path accepts float32, and the later numerical
+    families still refuse a float32 operand as float64-only."""
+    import inspect
+
+    import tensorforge.experimental as experimental
+    from tensorforge.experimental import native_checkpoint
+
+    for name in experimental.__all__:
+        obj = getattr(experimental, name)
+        if not inspect.isclass(obj):
+            continue
+        try:
+            signature = inspect.signature(obj)
+        except (TypeError, ValueError):  # pragma: no cover
+            continue
+        assert "dtype" not in signature.parameters, name
+    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+            == I0_CHECKPOINT_VERSIONS)
+    # The Core operations I5 and I6 own still refuse a float32 operand. Some
+    # refuse in Python ("requires a float64/cpu input") and some in C++
+    # ("float64-only in the current runtime"); both name float64, and which
+    # layer answers is not the point — that the operation is unavailable is.
+    core = cpp.NativeTensorCore._typed_from_array(
+        np.ones((1, 1, 4, 4), dtype=np.float32), "float32")
+    try:
+        with pytest.raises(ValueError, match="float64"):
+            core.maxpool2d_forward(kernel_size=2)
+        flat = core.reshape((4, 4))
+        try:
+            with pytest.raises(ValueError, match="float64"):
+                flat.softmax(axis=-1)
+            with pytest.raises(ValueError, match="float64"):
+                flat.log_softmax(axis=-1)
+            with pytest.raises(ValueError, match="float64"):
+                flat.cross_entropy_forward([0, 1, 2, 3])
+            with pytest.raises(ValueError, match="float64"):
+                flat.dropout_forward(0.5, seed=1, call_index=0)
+        finally:
+            flat.close()
+    finally:
+        core.close()
+
+
+@needs_native
+def test_i4_moved_no_public_capability_at_all():
+    """The exit gate, as one assertion block: internal float32 reduction,
+    matmul, view-backward, and Core autograd exist, and public float32
+    support does not."""
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
+    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
+    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    assert cpp.RAW_KERNEL_DTYPES == ("float64",)
+    assert cpp.backend_info()["dtype"] == "float64"
+    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+            == I0_CHECKPOINT_VERSIONS)
+    with pytest.raises(ValueError):
+        cpp.normalize_dtype("float32")
+    exports = _source_exports()
+    assert len(exports) == I1_EXPORT_COUNT       # still 54; I4 adds none
+    for absent in ("tf_core_sum_f32", "tf_core_matmul_f32",
+                   "tf_core_narrow_backward_f32", "tf_storage_fill_f32",
+                   "tf_storage_scale_typed", "tf_core_sum_typed",
+                   "tf_storage_dtype", "tf_storage_cast"):
+        assert absent not in exports, absent
     assert not [name for name in exports
                 if name.endswith(("_f32", "_f64", "_float32", "_float64"))]

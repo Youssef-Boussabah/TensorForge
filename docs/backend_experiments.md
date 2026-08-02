@@ -78,7 +78,7 @@ and Runtime Efficiency — is complete (H0–H10) and is the latest
 *completed* phase**; both are recorded further below.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0, I1, I2, and I3 are complete; I4 through I11
+latest phase. Milestones I0 through I4 are complete; I5 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
 was design, guardrail tests, and documentation reconciliation, and no
@@ -143,19 +143,47 @@ exclusion structurally: they have **no functor** in the shared header, only
 file-local function templates, so nothing can plan-walk them by accident.
 The native CTest inventory moved **19 → 20** (`test_dtype_elementwise`).
 
+**I4 delivered dtype-general reductions, matmul, view-backward, and
+private Core autograd**, and added **no export**. `tf_core_sum`,
+`tf_core_matmul`, and `tf_core_narrow_backward` validate operand agreement
+and dispatch **once** from the storage tag, exactly as the I3 family does.
+The four compute paths — H6's `sum_contiguous_blocks` and the retained
+`sum_generic_strided`, H2's `matmul_row_sweep` and the retained
+`matmul_generic_strided` — became templates over the element type and moved
+into `tf_reduction_internal.h` and `tf_matmul_internal.h`, which is where a
+template must live for both instantiations to reach the exported wrapper
+*and* the CTests that compile those files directly. Their loop nests, carry
+chains, `k` orders, and row grouping are unchanged; `double sum = 0.0`
+became `T sum = T(0)` and `0.0 + a_ik * b_row[j]` became
+`T(0) + a_ik * b_row[j]`, which at `T = double` *is* the old literal. Both
+metadata predicates are untouched, because they read `int64` layout only.
+The narrow-backward traversal became `tf::narrow_backward_scatter` on the
+same terms and remains a scatter rather than an identity copy: it writes
+only the narrowed region, and the untouched zeros *are* the gradient.
+
+`tf_storage_scale` and `tf_storage_fill` left the rejecting set at I4 —
+`scale` because it *is* the mean reduction's scaling step, `fill` because it
+is how a backward materializes its constants at the graph's dtype. Both keep
+their `(handle, double)` signatures; the scalar is narrowed **once, before
+the loop**, and neither writes to the error slot any more, which is the
+right end state for an unhooked export now that neither can fail. The native
+CTest inventory moved **20 → 21** (`test_dtype_reduction_matmul`), which
+carries the float32 accumulation witness — the runtime check I3 recorded as
+unavailable to it, and which an accumulation finally makes possible.
+
 **Everything else on this page is still exactly what Phase H left**:
 float64 CPU only, native checkpoint format version **2** with versions
 **(1, 2)** accepted, `SUPPORTED_DTYPES == ("float64",)`, and
 `UNSUPPORTED == ("float32", "cuda", "amp")`. float32 storage can be
-*allocated, moved, and computed on by the elementwise and unary family* —
-and by nothing else. Every later numerical family rejects a float32 handle
-with `TF_ERROR_INVALID` before reading or writing anything, since walking
-a 4-byte-per-element buffer through a `double*` would overrun it twofold.
-`tf_storage_fill` and `tf_storage_scale` are deliberately still among
-them: they assign and multiply rather than transfer. And a dtype-general
-Core kernel is not float32 autograd — no public constructor produces a
-float32 tensor, so no float32 graph, parameter, module, or optimizer
-exists.
+*allocated, moved, and computed on by transfer/copy, the elementwise and
+unary family, reductions, matmul, view-backward, and the private Core
+autograd graph* — and by nothing else. Convolution, pooling,
+classification, and Dropout reject a float32 handle with
+`TF_ERROR_INVALID` before reading or writing anything, since walking a
+4-byte-per-element buffer through a `double*` would overrun it twofold. And
+a private float32 graph is not public float32 autograd — no public
+constructor produces a float32 tensor, so no float32 parameter, module, or
+optimizer exists.
 
 The contract's **exactly two** new C ABI symbols for the entire phase
 (`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,

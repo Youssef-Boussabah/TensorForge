@@ -574,6 +574,38 @@ if(TF_BUILD_TESTS)
 
   add_test(NAME dtype_elementwise COMMAND test_dtype_elementwise)
 
+  # Dtype-general reductions, matmul, and the narrow-backward scatter (Phase
+  # I, milestone I4). Compiles reduction.cpp and matmul.cpp directly so it
+  # reaches the hidden tf::reduce_prefers_contiguous_blocks and
+  # tf::matmul_prefers_row_sweep predicates and BOTH traversals of each
+  # family beside the exports they live inside; storage.cpp supplies the
+  # typed Storage handles and the two scalar primitives, and error.cpp the
+  # thread-local slot the guarded wrappers record into.
+  #
+  # Deliberately complementary rather than a superset: test_sum_reduction
+  # keeps H6's float64 sweep and test_matmul keeps H2's, while this one
+  # proves the set I4 opened — both families at both dtypes, on both
+  # traversals, with the float32 accumulation witness that I3's single
+  # correctly-rounded operations could not support, and mixed dtype refused
+  # in every participating handle position with the destination unmoved.
+  add_executable(test_dtype_reduction_matmul
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_reduction_matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reduction.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_reduction_matmul PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_reduction_matmul PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_reduction_matmul PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_reduction_matmul PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_reduction_matmul COMMAND test_dtype_reduction_matmul)
+
   # Conv2d compute paths and their H9 dispatch: compiles conv2d.cpp directly
   # so it can reach the hidden tf::conv2d_*_prefers_* predicates and BOTH
   # compute paths per direction — the retained Phase-D generic loops and the

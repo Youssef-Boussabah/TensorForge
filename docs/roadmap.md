@@ -42,7 +42,7 @@ sections above are the narrative.
 ## The current phase — Phase I
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0, I1, I2, and I3 are complete; I4 through I11
+latest phase. Milestones I0 through I4 are complete; I5 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
@@ -96,22 +96,48 @@ IEEE-specified operations, and within a measured ULP bound for `exp` and
 `log`, which are library functions with no correctly-rounded guarantee.
 **I3 added no export.**
 
-**None of I1, I2, or I3 moved a public capability.** The native runtime is
+**I4 made float32 reduce, multiply matrices, propagate through views, and
+differentiate.** `sum`, `mean`, `matmul`, and `narrow_backward` are
+dtype-general, with H6's contiguous-block factorization and H2's `i`-`k`-`j`
+row sweep — and the retained generic odometer and triple loop beside them —
+instantiated for both element types from the same source, so every optimized
+path keeps its oracle **per dtype** and float64 runs the code Phase H
+measured. `tf_storage_scale` and `tf_storage_fill` became dtype-general with
+their `(handle, double)` signatures unchanged: the scalar crosses as the
+ABI's widest float and is narrowed **once, before the loop**, which is what
+makes `mean`'s `1/count` deterministic and identical on every platform. On
+top of those, private/internal float32 `NativeTensor` graphs now run forward
+and backward through the whole set of Core operations landed so far —
+elementwise, broadcasting, the views, the reductions, and matmul — with
+every gradient, every backward temporary, and every materialized constant
+carrying the graph's dtype.
+
+**float32 accumulation is genuinely float32, and I4 is where that stopped
+being a structural claim and became a measured one.** Every I3 operation
+produced its result with a single correctly-rounded IEEE operation, for
+which computing in binary64 and rounding once is *provably*
+indistinguishable from computing in binary32 — so no runtime test could
+separate the two, and I3 said so rather than inventing one. A sum is the
+first place the difference is observable: on the vector `1.0` followed by
+eight copies of `2**-24`, sequential binary32 stays at exactly `1.0` while
+binary64-then-narrow lands four ULPs higher, and TensorForge is asserted
+equal to the first and unequal to the second — on both reduction traversals
+and both matmul paths. **I4 added no export.**
+
+**None of I1 through I4 moved a public capability.** The native runtime is
 still float64 CPU only: `float32` is still listed as unsupported,
 `SUPPORTED_DTYPES` still reads `("float64",)`, and the native checkpoint
 format is still `tensorforge.native_checkpoint` version 2 with versions 1
-and 2 accepted. Everything numerically downstream still rejects a float32
-handle with `TF_ERROR_INVALID` before reading or writing anything —
-reductions, `mean`, matmul, narrow-backward, convolution, pooling,
+and 2 accepted. What remains numerically downstream still rejects a float32
+handle before reading or writing anything — convolution, pooling,
 classification, Dropout, normalization, optimizers, modules, and
-checkpoints — and so do `tf_storage_fill` and `tf_storage_scale`, which
-assign and multiply rather than transfer. That is what keeps a
-4-byte-per-element buffer from being walked as `double`. Nor is a
-dtype-general Core kernel float32 autograd: no public constructor produces
-a float32 tensor, so no float32 graph exists to reach one. The gap between
-internal capability and public promise is deliberate and closes at I9.
-Nothing about Phase H changed; Phase H remains complete, and it closed at
-52 exports.
+checkpoints. That is what keeps a 4-byte-per-element buffer from being
+walked as `double`. Nor is a private float32 graph public float32 autograd:
+no public constructor produces a float32 tensor, no `NativeParameter`
+accepts one, and no module takes a dtype argument, so nothing a user can
+write reaches any of it. The gap between internal capability and public
+promise is deliberate and closes at I9. Nothing about Phase H changed; Phase
+H remains complete, and it closed at 52 exports.
 
 What Phase I will deliver, once its milestones land: float32 CPU tensors
 beside the existing float64 ones, dtype-tagged storage, dtype-aware
@@ -137,7 +163,8 @@ than re-deriving them:
 - **No casting, no promotion, no mixed-dtype arithmetic.** A mismatch
   raises before any output is allocated or any state is mutated. *First
   reachable — and tested — at I2, on the identity copy; enforced across the
-  whole elementwise family at I3.*
+  whole elementwise family at I3, and across reductions, matmul,
+  narrow-backward, and gradient accumulation at I4.*
 - **The raw-buffer boundary is divided explicitly.** Every export that
   receives a storage handle can be dtype-general because the handle
   carries the dtype; the seven handle-free raw utility kernels cannot, and
@@ -145,8 +172,9 @@ than re-deriving them:
   by `backend_info()` at I2.*
 - **float32 accumulates in float32**, with no hidden wider accumulator
   anywhere — that would be mixed precision, which is out of scope. *First
-  enforced at I3; numerically observable from I4, when accumulation
-  arrives.*
+  enforced at I3; **witnessed by test at I4**, where accumulation makes the
+  difference between binary32 and binary64-then-narrow observable, on both
+  reduction traversals and both matmul paths.*
 - **Checkpoint version 3** is designed but not activated at I0. Versions
   1 and 2 stay readable and are defined as float64-only formats that are
   never guessed to be float32.
@@ -160,7 +188,7 @@ than re-deriving them:
   optimizer state, checkpoint version 3, and the exact-resume proof all
   exist.
 
-The ladder is I0 through I11 — **I0, I1, I2, and I3 landed; I4 is next**:
+The ladder is I0 through I11 — **I0 through I4 landed; I5 is next**:
 the contract (I0), the dtype model and
 tagged storage (I1), typed transfer and materialization (I2), elementwise
 execution (I3), reductions and matmul (I4), the convolution and pooling

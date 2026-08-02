@@ -2788,6 +2788,155 @@ Public capability did not move: float64 CPU only, `float32` still in
 - **Exit gate:** full suite green.
 - **Commit message:** `Generalize native reductions and matmul dtypes`
 
+#### I4 as delivered
+
+Landed as specified, with six implementation decisions recorded here because
+the contract left each judgement open.
+
+1. **Both traversals of both families became templates, and the definitions
+   moved into the internal headers.** `tf::sum_generic_strided`,
+   `tf::sum_contiguous_blocks`, `tf::matmul_generic_strided`, and
+   `tf::matmul_row_sweep` are now `template <class T>` with `T` **deduced
+   from the pointer arguments**, so every pre-I4 call site — all of which
+   pass `double*` — instantiates `T = double` and is the pre-I4 kernel
+   statement for statement. They moved from the `.cpp` files into
+   `tf_reduction_internal.h` and `tf_matmul_internal.h` for the ordinary
+   reason a template must: both instantiations have to be available to the
+   exported wrapper *and* to the CTests that compile those files directly.
+   Nothing about either loop nest, either carry, either `k` order, or either
+   accumulator changed in the move, and the two predicates —
+   `reduce_prefers_contiguous_blocks` and `matmul_prefers_row_sweep` — are
+   untouched, because they read `int64` layout metadata and have no dtype to
+   read. Both widths therefore take the *same* path for the same layout.
+
+2. **The literals became `T(...)`, and that is where the accumulation policy
+   actually lives.** `double sum = 0.0` became `T sum = T(0)`, `double a_ik`
+   became `T a_ik`, `out[j] = 0.0 + a_ik * b_row[j]` became
+   `out[j] = T(0) + a_ik * b_row[j]`, and the reduction's local accumulator
+   `double accumulator = dst[o]` became `T accumulator = dst[o]`. At
+   `T = double` each *is* the old literal. At `T = float` each keeps the
+   arithmetic in binary32 instead of promoting the whole expression around a
+   binary64 constant — which is the whole of §10.1 at this level. The
+   explicit `T(0) +` is still written out rather than folded away, for H2's
+   original reason: `0 + (-0)` is `+0` while `-0` alone is not, at either
+   width.
+
+   **This is the milestone where that claim became testable.** I3 recorded
+   that "float32 is not secretly float64" could not rest on a runtime test
+   *there*, because each of its operations produced a destination element
+   with a single correctly-rounded IEEE operation, for which computing in
+   binary64 and rounding once is provably indistinguishable from computing
+   in binary32. A sum of three or more values is the first place the
+   difference is observable, and I4 supplies a deterministic **witness**:
+   `1.0` followed by eight copies of `2**-24`. In binary32 each addend is
+   exactly half an ULP of 1.0, so round-to-nearest-even leaves the running
+   total at exactly `1.0` forever (bits `0x3F800000`); accumulated in
+   binary64 and narrowed once it lands four ULPs higher (`0x3F800004`).
+   TensorForge is asserted equal to the first **and unequal to the second**,
+   by raw bit pattern, on both reduction traversals and on both matmul
+   paths, from C++ and from Python. The structural check over the source
+   survives beside it — neither alone would be enough, because the witness
+   proves the result while the structural half proves there is no width in
+   the source that could make one path right and another wrong.
+
+3. **`tf_storage_scale` and `tf_storage_fill` were generalized, and that was
+   not optional.** `scale` *is* the mean reduction's scaling step, so mean at
+   float32 is impossible without it. `fill` is how a backward materializes
+   the constants its formulas need — `-1` for the negation `subtract`'s
+   backward composes, `0.5` for `sqrt`, `-1` for `reciprocal`, `1/count` for
+   `mean`, and the `1.0` seed — and §11.4 forbids introducing a
+   literal-float64 constant into a graph of another dtype. Both keep their
+   `(handle, double)` signatures: the scalar crosses as the widest binary
+   floating-point type the ABI has and is narrowed **once, before the loop**
+   (§7.4). That ordering is asserted behaviourally, not just commented: for
+   `count == 3` and a sum of 5, `float(5) * float(1/3)` and
+   `float(double(5) * (1/3))` differ by one representable step, and
+   TensorForge must produce the first.
+
+   Both also **stopped setting the error slot**, which is the right end state
+   for an unhooked export (H7 kept them hookless deliberately): with every
+   dtype now valid there is nothing left for either to reject.
+
+4. **Public construction did not move, and the mechanism that kept it still
+   is the one I2 established.** Two private hatches carry the whole
+   milestone: `NativeTensorCore._typed_full`, the dtype-preserving
+   counterpart of `full` that every backward constant is built through, and a
+   keyword-only `_trusted_dtype` on `NativeTensorCore.zeros`, which is
+   `NativeStorage.__init__`'s hatch one layer up and exists for the same
+   structural reason — `sum` and `narrow_backward` must allocate a **zeroed**
+   output at their operand's dtype, and they have to reach *the* zeroed
+   constructor rather than growing a second one that could drift from it on
+   validation, ownership, the `MemoryError`, the live-storage accounting, or
+   the failure ordering. `full` is now `_typed_full` behind the unchanged
+   public gate, so `full(..., dtype="float32")` raises exactly as it did, and
+   `zeros`'s default keeps every public caller validated by
+   `normalize_dtype`. **Broadening a lower primitive is not broadening public
+   construction**, and that is asserted over every public constructor and
+   `NativeParameter`.
+
+   Keeping `zeros` as the spelling rather than switching the call sites to
+   `_typed` was a deliberate choice with a concrete payoff: the H1 audit's
+   source pins and the spy seams that observe which constructor a reduction
+   reaches survive **verbatim**, so the "this destination must stay
+   zero-initialized" proof did not have to be re-derived at the same time as
+   the dtype work.
+
+5. **`narrow_backward` stayed a scatter, and the distinction is
+   load-bearing.** Its traversal moved to `tf::narrow_backward_scatter` as a
+   template, but it is still not an identity copy and still not a reduction:
+   it writes only the narrowed region, every un-narrowed cell keeps the zero
+   the allocation gave it, and *that zero is the gradient there* — which is
+   why H1 rejected this destination from the uninitialized path and why I4
+   did not revisit that. Because it assigns rather than computes, it
+   reproduces its source's object representation exactly at both widths;
+   that is asserted with a `-0.0` and a signalling NaN in the upstream, both
+   of which an arithmetic composition would have destroyed.
+
+6. **`_broadcast_back` stayed a genuine expansion.** It was not replaced with
+   a copy: sum/mean backward really does expand an upstream across the axes
+   the forward folded, and its adjoint really is a reduction, proved at both
+   widths over leading dimensions, singleton axes, scalars, and rank 3. The
+   only change is that its zeros operand is built at the **upstream's** dtype
+   — a float64 zero meeting a float32 gradient would be a mixed-dtype add,
+   rejected before any allocation.
+
+Two findings worth inheriting rather than rediscovering:
+
+- **NumPy is the wrong oracle for a bit-level reduction or matmul claim, at
+  either width.** `ndarray.sum` is free to pairwise-block its accumulation
+  and `a @ b` dispatches to a blocked BLAS GEMM; both reassociate, which is
+  exactly what TensorForge promises not to do. The oracles here are
+  therefore written out longhand — an explicit Python loop over 0-d NumPy
+  scalars of the element dtype, and the textbook `i`-`j`-`k` triple loop —
+  and they are what makes bit equality the right contract rather than an
+  over-claim. This is not a float32-versus-float64 comparison in disguise:
+  every intermediate in both oracles is a scalar of the dtype under test.
+
+- **The float32 finite-difference band has to be derived, not inherited.** A
+  central difference trades truncation, `O(h² f''')`, against cancellation,
+  `O(eps/h)` — and `eps` is `2**-24` at binary32 against `2**-53` at
+  binary64, so the float64 step and tolerances are wrong by orders of
+  magnitude. The step is `2**-11`, an exact power of two (so the
+  perturbation introduces no rounding of its own) below the `eps^(1/3)`
+  optimum; the tolerances are `rtol=2e-2`, `atol=2e-3`, which is roughly the
+  cancellation floor with margin. A **negative control** shows the band
+  rejects a deliberately wrong gradient, because a tolerance nobody has
+  tried to break is not evidence. The exact analytical checks beside it are
+  what pin the last bits; the finite differences pin the *formula*.
+
+The CTest inventory moved **20 → 21** with `test_dtype_reduction_matmul`,
+which compiles `reduction.cpp` and `matmul.cpp` directly so it reaches the
+hidden predicates and both traversals of each family beside the exports. It
+is complementary to `test_sum_reduction` and `test_matmul` rather than a
+superset: those keep H6's and H2's float64 sweeps untouched, while this one
+drives both families at both dtypes on both traversals, carries the
+accumulation witness, proves the scalar narrowing, and proves mixed dtype is
+refused in every participating handle position with the destination unmoved.
+
+Public capability did not move: float64 CPU only, `float32` still in
+`UNSUPPORTED`, `RAW_KERNEL_DTYPES` still `("float64",)`, checkpoint version 2
+with (1, 2) accepted, and **54** exports — I4 added none.
+
 ### I5 — CNN and pooling dtype support
 
 - **Entry:** I4 merged.

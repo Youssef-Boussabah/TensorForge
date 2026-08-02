@@ -115,17 +115,27 @@ Since Phase I milestone I1, float32 storage is **allocatable through the C
 ABI** (`tf_storage_create_typed`); since I2 it is also **movable** — host
 ingress and egress, strided materialization, and the storage-to-storage
 identity copy (`tf_core_contiguous_copy`) are dtype-general and
-bit-preserving; and since I3 it is **computed on by the elementwise and
-unary Core family, and by nothing else** (`add`, `subtract`, `multiply`,
-`relu`, `relu_backward`, `sqrt`, `reciprocal`, `exp`, `log`, with
-broadcasting). That is not a support claim and does not change a single row
-above: every operation that has not been dtype-generalized rejects a
-float32 handle with `TF_ERROR_INVALID` before touching memory (including
-`tf_storage_fill` and `tf_storage_scale`, which assign and multiply rather
-than transfer), `normalize_dtype("float32")` still raises, and no public
-constructor produces a float32 tensor — so float32 autograd, parameters,
-modules, optimizers, and training do not exist. The public registry moves
-at **I9**, not before.
+bit-preserving; since I3 it is **computed on** by the elementwise and unary
+Core family (`add`, `subtract`, `multiply`, `relu`, `relu_backward`,
+`sqrt`, `reciprocal`, `exp`, `log`, with broadcasting); and since I4 it
+also **accumulates** — `sum`, `mean`, `matmul`, and `narrow_backward` are
+dtype-general, `tf_storage_scale` and `tf_storage_fill` narrow their
+`double` argument once before the loop, and **private/internal** float32
+`NativeTensor` graphs run forward and backward over that set.
+
+That is not a support claim and does not change a single row above: every
+operation that has not been dtype-generalized — conv2d in all three
+directions, both MaxPool2d directions, softmax, log-softmax,
+cross-entropy, and Dropout — rejects a float32 handle with
+`TF_ERROR_INVALID` before touching memory; `normalize_dtype("float32")`
+still raises; and no public constructor produces a float32 tensor, so
+float32 parameters, modules, optimizers, checkpoints, and training do not
+exist. The private float32 graphs I4 proves are built through the private
+typed constructors (`_typed`, `_typed_from_array`, `_typed_full`,
+`zeros(..., _trusted_dtype=True)`, `NativeTensor._from_core`), which exist
+so an intermediate milestone can test through them while the public
+boundary stays exactly where it is. The public registry moves at **I9**,
+not before.
 
 One further registry exists and is a **different** statement from
 `SUPPORTED_DTYPES`: `RAW_KERNEL_DTYPES == ("float64",)` (added at I2,
@@ -556,13 +566,13 @@ matching docs file (and README links) **in the same milestone**.
     exactly **one** C ABI symbol across the whole phase
     (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
-- **Native line: Phase I at I3** — Native Dtype Generalization and
+- **Native line: Phase I at I4** — Native Dtype Generalization and
   Float32 CPU Support. Contract:
   `docs/native_dtype_float32_design.md`. **I0 (design, contract tests,
   documentation), I1 (the dtype model and dtype-tagged storage), I2
-  (typed transfer, views, and materialization), and I3 (elementwise,
-  broadcast, and unary dtype execution) are complete; I4–I11 are not
-  started.**
+  (typed transfer, views, and materialization), I3 (elementwise,
+  broadcast, and unary dtype execution), and I4 (reductions, matmul,
+  views, and core autograd) are complete; I5–I11 are not started.**
   - I1 delivered: the C++ `TfDtype`/`tf::Dtype` model with frozen codes
     `0 = float64` and `1 = float32`, one item-size authority
     (`tf::dtype_item_size` — nothing else may spell a storage width), one
@@ -631,25 +641,58 @@ matching docs file (and README links) **in the same milestone**.
     rejected in all three operand positions before any allocation, with the
     dtype guard ordered **before** the span validation. CTests moved
     19 → 20 (`test_dtype_elementwise`).
-  - **Public capability did not move at I1, I2, or I3**: float64 CPU only,
-    `float32` still in `UNSUPPORTED`, `RAW_KERNEL_DTYPES` still
+  - I4 delivered: `tf_core_sum`, `tf_core_matmul`, and
+    `tf_core_narrow_backward` generalized to both dtypes (3 exports,
+    **none new**), plus `tf_storage_scale` and `tf_storage_fill`, which
+    left the rejecting set because `scale` *is* the mean reduction's
+    scaling step and `fill` is how a backward materializes its constants.
+    All four compute paths — H6's `sum_contiguous_blocks` and the retained
+    `sum_generic_strided`, H2's `matmul_row_sweep` and the retained
+    `matmul_generic_strided` — became templates over the element type and
+    moved into `tf_reduction_internal.h` / `tf_matmul_internal.h`, which is
+    where a template must live for both instantiations to reach the export
+    *and* the CTests that compile those files directly; the narrow-backward
+    scatter became `tf::narrow_backward_scatter` on the same terms. Loop
+    nests, carries, `k` orders, and row grouping are unchanged;
+    `double sum = 0.0` became `T sum = T(0)` and `0.0 + a_ik * b_row[j]`
+    became `T(0) + a_ik * b_row[j]`. **Both metadata predicates are
+    untouched**, so both widths take the same path for the same layout.
+    The two scalar primitives keep their `(handle, double)` ABI and narrow
+    **once, before the loop** (§7.4), and neither writes to the error slot
+    any more — the right end state for an unhooked export that can no
+    longer fail. Private float32 `NativeTensor` graphs run forward and
+    backward over the whole set, with gradients, temporaries, and every
+    materialized constant at the graph's dtype through
+    `NativeTensorCore._typed_full` and a keyword-only `_trusted_dtype` on
+    `NativeTensorCore.zeros`. CTests moved 20 → 21
+    (`test_dtype_reduction_matmul`).
+  - **Public capability did not move at I1, I2, I3, or I4**: float64 CPU
+    only, `float32` still in `UNSUPPORTED`, `RAW_KERNEL_DTYPES` still
     `("float64",)`, checkpoint version 2 with (1, 2) accepted. Only the
-    export count changed, 52 → **54**, at I1; I2 and I3 added none.
-  - **A dtype-general Core kernel is not a public capability.** I3
-    generalized `tf_core_relu_backward` because it is a forward-shaped
-    numerical primitive, not graph machinery. float32 autograd,
-    parameters, modules, optimizers, and training remain absent, and no
-    public constructor produces a float32 tensor at all.
+    export count changed, 52 → **54**, at I1; I2, I3, and I4 added none.
+  - **A dtype-general Core kernel is not a public capability, and neither
+    is a private graph.** I3 generalized `tf_core_relu_backward` because it
+    is a forward-shaped numerical primitive, not graph machinery; I4's
+    float32 `NativeTensor` graphs are reached only through the private
+    typed constructors. float32 parameters, modules, optimizers,
+    checkpoints, and training remain absent, and no public constructor
+    produces a float32 tensor at all.
   - **Recorded so no later milestone relitigates it:** for a *single*
     correctly-rounded IEEE operation — which is every I3 operation, one per
     destination element — computing in binary64 and rounding once to
     binary32 is *provably* indistinguishable from computing in binary32
     (binary64 carries more than the 2p+2 = 50 bits a double rounding would
-    need). So "float32 is not secretly float64" cannot rest on a runtime
-    test here, and none was invented: it is carried by the result being
+    need). So "float32 is not secretly float64" could not rest on a runtime
+    test *there*, and none was invented: it was carried by the result being
     bit-identical to the binary32 oracle plus a **semantic structural
-    check** over the source. That structural half becomes load-bearing at
-    I4, where accumulation makes the difference genuinely observable.
+    check** over the source. **I4 supplied the behavioural half**, because
+    accumulation finally makes the two policies distinguishable: on `1.0`
+    followed by eight copies of `2**-24`, sequential binary32 stays at
+    exactly `1.0` while binary64-then-narrow lands four ULPs higher, and
+    TensorForge is asserted equal to the first and **unequal** to the
+    second on both reduction traversals and both matmul paths. Keep both
+    halves — the witness proves the result, the structural check proves no
+    width in the source could make one path right and another wrong.
   When implementing a Phase-I milestone, the durable rules are:
   - **exactly two** new C ABI exports across the whole phase
     (`tf_storage_create_typed`, `tf_storage_create_uninitialized_typed`,

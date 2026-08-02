@@ -6855,16 +6855,30 @@ def test_no_surface_claims_an_optimization_phase_h_has_not_delivered():
 
     # Premise: the production matmul is a plain scalar loop pair with no
     # intrinsics, threads, or BLAS, and it does not call the tiled kernel.
+    # (Phase I, milestone I4 made both kernels templates over the element
+    # type, so their definitions live in the internal header and the export
+    # reaches them through one dtype-dispatch helper. Both files are checked;
+    # the claim is unchanged.)
     matmul_source = (REPO_ROOT / "cpp" / "src"
                      / "matmul.cpp").read_text(encoding="utf-8")
+    matmul_header = (REPO_ROOT / "cpp" / "include"
+                     / "tf_matmul_internal.h").read_text(encoding="utf-8")
     for banned in ("immintrin", "__m256", "_mm256", "omp parallel",
                    "cblas_", "std::thread", "#pragma omp"):
         assert banned not in matmul_source, banned
+        assert banned not in matmul_header, banned
     export = matmul_source.split("TF_EXPORT void tf_core_matmul(", 1)[1]
     export = export.split("\n}\n", 1)[0]     # just that function's body
     assert "tf_matmul_tiled" not in export
     assert "tf_matmul(" not in export
-    assert "matmul_generic_strided" in export and "matmul_row_sweep" in export
+    # The export dispatches once on the dtype into the helper, and the
+    # helper is where the two shipped paths are chosen between — so the
+    # route from the export to *both* of them is still visible in this file.
+    assert export.count("matmul_dispatch<") == 2
+    dispatch = matmul_source.split("void matmul_dispatch(", 1)[1]
+    dispatch = dispatch.split("\n}\n", 1)[0]
+    assert ("matmul_generic_strided" in dispatch
+            and "matmul_row_sweep" in dispatch)
     assert cpp.RAW_KERNELS[-1] == "matmul_tiled"   # pre-existing, unchanged
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
 
@@ -7413,11 +7427,14 @@ def test_every_surface_that_describes_h2_keeps_the_generic_path_visible():
     load-bearing architectural claim of this milestone. A surface that
     describes H2 without it would be describing a kernel replacement,
     which is not what shipped."""
-    source = (REPO_ROOT / "cpp" / "src" / "matmul.cpp").read_text(
+    header = (REPO_ROOT / "cpp" / "include" / "tf_matmul_internal.h").read_text(
         encoding="utf-8")
-    # Premise: both paths really are shipped code.
-    assert "void matmul_generic_strided(" in source
-    assert "void matmul_row_sweep(" in source
+    # Premise: both paths really are shipped code. Since I4 they are
+    # templates over the element type, so their definitions live in the
+    # internal header — shipped code either way, and instantiated for both
+    # dtypes, so the optimized path keeps its oracle *per dtype*.
+    assert "void matmul_generic_strided(" in header
+    assert "void matmul_row_sweep(" in header
 
     generic = re.compile(
         r"\bgeneric\b[^.]{0,80}\b(path|kernel|loop|reference)\b"
@@ -7437,9 +7454,9 @@ def test_no_surface_claims_the_production_matmul_is_blocked_or_tiled():
     kernel carries no tile, and no surface may say otherwise — the
     pre-existing raw ``tf_matmul_tiled`` is a separate benchmark kernel
     and may of course be described as one."""
-    source = (REPO_ROOT / "cpp" / "src" / "matmul.cpp").read_text(
+    header = (REPO_ROOT / "cpp" / "include" / "tf_matmul_internal.h").read_text(
         encoding="utf-8")
-    sweep = source.split("void matmul_row_sweep(", 1)[1].split("\n}\n", 1)[0]
+    sweep = header.split("void matmul_row_sweep(", 1)[1].split("\n}\n", 1)[0]
     # Premise from the tree: the shipped optimized kernel groups *rows*
     # (MATMUL_ROW_BLOCK) but tiles neither j nor k — its inner loop runs
     # the full result width, and there is no accumulator tile, no j

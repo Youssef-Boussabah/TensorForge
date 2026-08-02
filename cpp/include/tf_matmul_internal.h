@@ -4,9 +4,9 @@
 // docs/native_cpu_performance_design.md §16.2.
 //
 // Like the Conv2d and pooling compute kernels these are deliberately NOT
-// part of the public C ABI: plain C++ functions in ``namespace tf`` with
-// hidden visibility, holding only contiguous/strided CPU float64
-// arithmetic. They allocate nothing, report no error, and mutate no
+// part of the public C ABI: plain C++ in ``namespace tf`` with
+// hidden visibility, holding only contiguous/strided CPU
+// arithmetic at the element type. They allocate nothing, report no error, and mutate no
 // input. The exported, guarded ``tf_core_matmul`` wrapper lives in
 // cpp/src/matmul.cpp alongside them, and the shape validation and the
 // output allocation live in backends/cpp.py.
@@ -21,6 +21,35 @@
 // their internal kernels) and, from Python, by the fact that the two
 // paths are proved to agree on the same logical operands under the
 // four-part numerical contract stated below.
+//
+// ---------------------------------------------------------------------------
+// Phase I, milestone I4: both kernels carry a scalar type parameter
+// ---------------------------------------------------------------------------
+//
+// ``T`` is **deduced from the pointer arguments**, so every pre-Phase-I call
+// site — all of which pass ``double*`` — instantiates ``T = double`` and is
+// the pre-I4 kernel statement for statement. ``T = float`` is the same source
+// at binary32: the same loop nest, the same ``k`` order, the same row
+// grouping, the same ``MATMUL_ROW_BLOCK``, the same predicate.
+//
+// **The accumulator type is exactly ``T``** (design §10.1): a float32 matmul
+// loads ``float``, multiplies as ``float``, accumulates as ``float``, and
+// stores ``float``. There is no widening accumulator, no FMA, no
+// reassociation, and no fast-math — so the per-output ``k`` order really is
+// the value's definition at both widths, and a float32 result is a genuinely
+// different number from "accumulate in binary64 and round once", which is
+// observable and is witnessed by test rather than argued.
+//
+// The literal ``0.0`` on the row sweep's assigning pass and the generic
+// kernel's ``double sum = 0.0`` became ``T(0)``. At ``T = double`` that *is*
+// the old literal; at ``T = float`` it keeps the addition in binary32 instead
+// of promoting the whole expression around a binary64 zero. It is still
+// written out rather than folded away, for H2's original reason:
+// ``0.0f + (-0.0f)`` is ``+0.0f`` while ``-0.0f`` alone is not.
+//
+// The two definitions moved into this header for the ordinary reason a
+// template must — so both instantiations are available to the exported
+// wrapper in matmul.cpp *and* to the CTests that compile it directly.
 #pragma once
 
 #include <cstdint>
@@ -109,12 +138,27 @@ bool matmul_prefers_row_sweep(int64_t m, int64_t n, int64_t p,
 // product and offset is representable in int64.
 //
 // Allocates nothing and cannot throw (noexcept).
-void matmul_generic_strided(
-    const double* a, const double* b, double* dst,
+template <class T>
+inline void matmul_generic_strided(
+    const T* a, const T* b, T* dst,
     int64_t m, int64_t n, int64_t p,
     int64_t a_stride0, int64_t a_stride1,
     int64_t b_stride0, int64_t b_stride1,
-    int64_t a_offset, int64_t b_offset) noexcept;
+    int64_t a_offset, int64_t b_offset
+) noexcept {
+    for (int64_t i = 0; i < m; ++i) {
+        for (int64_t j = 0; j < p; ++j) {
+            // One local accumulator, in the element type. ``T(0)`` is
+            // ``0.0`` at T = double, so float64 is the pre-I4 expression.
+            T sum = T(0);
+            for (int64_t k = 0; k < n; ++k) {
+                sum += a[a_offset + i * a_stride0 + k * a_stride1]
+                     * b[b_offset + k * b_stride0 + j * b_stride1];
+            }
+            dst[i * p + j] = sum;
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The optimized path: an i-k-j row sweep over MATMUL_ROW_BLOCK
@@ -186,11 +230,47 @@ void matmul_generic_strided(
 // ``matmul_prefers_row_sweep(m, n, p, 1)``. Allocates nothing (the row
 // group is addressed in place; there is no scratch buffer, workspace, or
 // pool) and cannot throw (noexcept).
-void matmul_row_sweep(
-    const double* a, const double* b, double* dst,
+template <class T>
+inline void matmul_row_sweep(
+    const T* a, const T* b, T* dst,
     int64_t m, int64_t n, int64_t p,
     int64_t a_stride0, int64_t a_stride1,
     int64_t b_stride0,
-    int64_t a_offset, int64_t b_offset) noexcept;
+    int64_t a_offset, int64_t b_offset
+) noexcept {
+    for (int64_t i0 = 0; i0 < m; i0 += MATMUL_ROW_BLOCK) {
+        const int64_t rows =
+            (m - i0 < MATMUL_ROW_BLOCK) ? (m - i0) : MATMUL_ROW_BLOCK;
+        // k == 0 — the assigning pass. Every element of every row in the
+        // group is written here, before any accumulation reads it, which
+        // is what makes an uninitialized destination safe (H1). The
+        // explicit `T(0) +` reproduces the generic kernel's
+        // `T sum = T(0); sum += ...` exactly: it is not redundant,
+        // because 0 + (-0) is +0 while -0 alone is not — at either width.
+        {
+            const T* b_row = b + b_offset;
+            for (int64_t r = 0; r < rows; ++r) {
+                T* out = dst + (i0 + r) * p;
+                const T a_ik = a[a_offset + (i0 + r) * a_stride0];
+                for (int64_t j = 0; j < p; ++j) {
+                    out[j] = T(0) + a_ik * b_row[j];
+                }
+            }
+        }
+        // k >= 1 — the accumulating passes, ascending, so every output
+        // takes its products in the generic kernel's order.
+        for (int64_t k = 1; k < n; ++k) {
+            const T* b_row = b + b_offset + k * b_stride0;
+            for (int64_t r = 0; r < rows; ++r) {
+                T* out = dst + (i0 + r) * p;
+                const T a_ik =
+                    a[a_offset + (i0 + r) * a_stride0 + k * a_stride1];
+                for (int64_t j = 0; j < p; ++j) {
+                    out[j] += a_ik * b_row[j];
+                }
+            }
+        }
+    }
+}
 
 }  // namespace tf

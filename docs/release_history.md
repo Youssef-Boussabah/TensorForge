@@ -2326,13 +2326,134 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase I — native dtype generalization and float32 CPU support (I0–I3, phase in progress)
+### Phase I — native dtype generalization and float32 CPU support (I0–I4, phase in progress)
 
-**Phase I is the latest phase. Milestones I0, I1, I2, and I3 are complete;
-I4 through I11 are not started.** This is an in-progress entry, not a
+**Phase I is the latest phase. Milestones I0 through I4 are complete;
+I5 through I11 are not started.** This is an in-progress entry, not a
 release entry: no version and **no public capability** is claimed. **Phase
 H remains complete and remains the latest *completed* phase**, and it
 closed at 52 exports.
+
+#### I4 — reductions, matmul, views, and core autograd
+
+**I4 made float32 accumulate, and added no C ABI symbol.** I3 left float32
+computed on by operations that produce each output with a single
+correctly-rounded operation; I4 gives it the families where values are
+*combined* — and the private graph that composes them — and nothing more.
+What shipped:
+
+- **Three exports became dtype-general** — `tf_core_sum`,
+  `tf_core_matmul`, and `tf_core_narrow_backward` — plus the two scalar
+  storage primitives `tf_storage_scale` and `tf_storage_fill`. Every one is
+  the symbol Python already declared, with its argument list, calling
+  convention, validation order, traversal tiers, and ownership contract
+  intact; `tf::require_float64` became `tf::require_matching_dtype`, and one
+  `switch` per exported call selects the instantiation.
+- **Both traversals of both families, instantiated twice from one source.**
+  H6's `sum_contiguous_blocks` and the retained `sum_generic_strided`, and
+  H2's `matmul_row_sweep` and the retained `matmul_generic_strided`, became
+  templates over the element type and moved into
+  `tf_reduction_internal.h` / `tf_matmul_internal.h` — the ordinary reason a
+  template must, so both instantiations reach the exported wrapper and the
+  CTests that compile those files directly. `T = double` is the pre-I4 code
+  statement for statement, so float64 runs exactly what Phase H measured,
+  and each optimized path keeps its oracle **per dtype**. Both metadata
+  predicates are untouched, because they read `int64` layout only — so both
+  widths take the same path for the same layout.
+- **The accumulator follows the element type.** `double sum = 0.0` became
+  `T sum = T(0)`, `double accumulator = dst[o]` became `T accumulator`, and
+  `out[j] = 0.0 + a_ik * b_row[j]` became `T(0) + a_ik * b_row[j]`. At
+  `T = double` each *is* the old literal; the explicit `T(0) +` is still
+  written out rather than folded away, because `0 + (-0)` is `+0` while
+  `-0` alone is not, at either width.
+- **"float32 accumulates in float32" became a measured claim.** I3 recorded
+  that no runtime test could separate binary32 from binary64-then-round-once
+  for a *single* correctly-rounded operation, and declined to invent one. A
+  sum can separate them: on `1.0` followed by eight copies of `2**-24`,
+  sequential binary32 stays at exactly `1.0` (bits `0x3F800000`) while
+  binary64-then-narrow lands four ULPs higher (`0x3F800004`). TensorForge is
+  asserted equal to the first **and unequal to the second**, by raw bit
+  pattern, on both reduction traversals and both matmul paths, from C++ and
+  from Python. The structural check over the source stands beside it — the
+  witness proves the result, the structure proves no width in the source
+  could make one path right and another wrong.
+- **The mean scalar is narrowed once, before the loop** (design §7.4).
+  `1/count` is computed once in binary64, crosses the unchanged `double` ABI
+  parameter, and is converted to the element type before the multiply loop —
+  so a float32 mean is deterministic, identical on every platform, and
+  independent of `count`'s magnitude. Asserted behaviourally: for
+  `count == 3` and a sum of 5 the two orderings differ by one representable
+  step, and TensorForge must produce the specified one.
+- **`narrow_backward` is still a scatter, not an identity copy.** It writes
+  only the narrowed region and every un-narrowed cell keeps the zero the
+  allocation gave it — and that zero *is* the gradient, which is why H1
+  rejected this destination from the uninitialized path and why I4 did not
+  revisit that. Because it assigns rather than computes, it reproduces its
+  source's bits exactly at both widths, proved with a `-0.0` and a
+  signalling NaN in the upstream.
+- **Private/internal float32 `NativeTensor` graphs run forward and
+  backward** through every Core operation landed so far — elementwise,
+  broadcasting, reshape, transpose, `.T`, narrow, contiguous copy, sum,
+  mean, and matmul. Every gradient carries its tensor's dtype, every
+  backward temporary the graph's, and every materialized constant — `0.5`,
+  `-1`, `1/count`, the ones seed, broadcast-back's zeros — is built at the
+  operand's dtype through a private typed constructor rather than a public
+  one, which is what design §11.4 requires. `_broadcast_back` remains a
+  genuine reduction rather than a copy.
+- **Mixed dtype is rejected before any allocation or mutation**, in every
+  participating handle position independently, and now also for the backward
+  seed and for gradient accumulation. A rejected call allocates nothing,
+  leaves its destination byte-for-byte unchanged, and leaves an
+  already-accumulated gradient exactly as it was.
+- **float32 finite differences, with a step and tolerances derived rather
+  than inherited.** Central differences balance truncation against
+  cancellation, and the unit roundoff is `2**-24` at binary32 against
+  `2**-53` at binary64, so the float64 step is wrong by orders of magnitude.
+  The step is `2**-11` — an exact power of two, so the perturbation itself
+  rounds nothing — with `rtol=2e-2` and `atol=2e-3`, and a **negative
+  control** proves the band rejects a deliberately wrong gradient.
+- **Public construction did not move one inch.** Two private hatches carry
+  the milestone: `NativeTensorCore._typed_full` and a keyword-only
+  `_trusted_dtype` on `NativeTensorCore.zeros` (the hatch
+  `NativeStorage.__init__` has carried since I2, one layer up, and for the
+  same reason — the zeroed allocation must reach *the* constructor rather
+  than growing a second one). `full` is now `_typed_full` behind the
+  unchanged public gate; `zeros`'s default keeps every public caller
+  validated by `normalize_dtype`. Keeping `zeros` as the spelling preserved
+  the H1 audit's source pins and spy seams **verbatim**.
+- **The native CTest inventory moved 20 → 21** with
+  `test_dtype_reduction_matmul`, which drives every axis form and layout
+  family at both dtypes on both traversals, carries the accumulation
+  witness, proves the scalar narrowing, and proves mixed dtype is refused in
+  every participating handle position with the destination unmoved. It is
+  complementary to `test_sum_reduction` and `test_matmul`, whose float64
+  sweeps are untouched.
+
+**What I4 did not change:** the export count (**54**), `SUPPORTED_DTYPES`
+(`("float64",)`), `UNSUPPORTED` (`("float32", "cuda", "amp")`),
+`RAW_KERNEL_DTYPES` (`("float64",)`), the checkpoint format (version **2**,
+versions **(1, 2)** accepted), any public API, any float64 result, and any
+Phase-H traversal, predicate, or allocation policy. Convolution, pooling,
+classification, Dropout, normalization, optimizers, modules, and checkpoints
+all still reject a float32 handle before touching memory, and no public
+constructor produces a float32 tensor — so float32 parameters, modules,
+optimizers, and training still do not exist.
+
+**Recorded as reconciliation rather than as an I4 change:** two
+`test_native_elementwise_traversal` assertions — the rank-five declined-plan
+parity check for `add` and `multiply` — asserted NaN-payload identity in a
+case the committed H8 contract (part 4) explicitly places *outside* the
+bitwise contract. They pass under MSVC and under `g++ -O3`/`-O0`, and fail
+under `g++ -O2` (the CI/no-CMake path) and `clang++ -O2`/`-O3`, which is
+exactly the instruction-selection behaviour that contract describes. The
+disagreement is **one** of 32 positions, at the single index where *both*
+operands are NaN; both paths return a quiet NaN there, carrying one of the
+two operands' payloads, and every other position is bit-identical. The test
+was narrowed to assert those contractual properties instead of payload
+identity, keeping bit equality everywhere at most one operand is NaN and
+keeping `subtract` exact with nothing carved out. **No production code
+changed for this**, and the correction reproduces against the clean
+committed I3 source.
 
 #### I3 — elementwise, broadcast, and unary dtype execution
 

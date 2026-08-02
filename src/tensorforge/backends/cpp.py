@@ -2002,14 +2002,37 @@ class NativeTensorCore:
         return cls(storage, _contiguous_view(storage, _as_shape(array.shape)))
 
     @classmethod
-    def zeros(cls, shape, dtype="float64", device="cpu"):
+    def zeros(cls, shape, dtype="float64", device="cpu", *,
+              _trusted_dtype=False):
         """A row-major contiguous tensor of ``shape``, all zeros
         (native storage is zero-initialized, so no fill pass runs).
         ``dtype``/``device`` default to ``"float64"``/``"cpu"``;
-        unsupported values are rejected."""
+        unsupported values are rejected.
+
+        ``_trusted_dtype`` is a private, keyword-only hatch (Phase I,
+        milestone I4) and is exactly ``NativeStorage.__init__``'s, one
+        layer up and for the same structural reason: the operations that
+        must allocate a **zeroed** output at an operand's own dtype —
+        ``sum`` and ``narrow_backward``, the two the H1 audit rejected
+        from the uninitialized path — have to reach *this* constructor
+        rather than growing a second one that could drift from it on the
+        shape validation, the storage ownership, the contiguous view, the
+        ``MemoryError``, the live-storage accounting, or the failure
+        ordering. When it is set the dtype is validated against the
+        internal table instead of the public registry.
+
+        Setting it is sound wherever it is set, and the argument is
+        ``_uninitialized``'s from I2: the dtype passed is never a caller's
+        request but a canonical tag read off a live storage that was
+        validated when it was created, and a derived allocation must be
+        able to match its operand. It defaults to ``False``, so **every
+        public caller is validated exactly as before** and
+        ``zeros(..., dtype="float32")`` raises unchanged. Broadening a
+        derived allocation is not broadening public construction."""
         dims = _as_shape(shape)  # validates shape by the v0.7 rules
         storage = NativeStorage(
-            _numel_checked(dims), dtype=dtype, device=device
+            _numel_checked(dims), dtype=dtype, device=device,
+            _trusted_dtype=_trusted_dtype,
         )
         return cls(storage, _contiguous_view(storage, dims))
 
@@ -2081,6 +2104,48 @@ class NativeTensorCore:
             raise
 
     @classmethod
+    def _typed_full(cls, shape, value, dtype, device="cpu"):
+        """Private: a row-major contiguous tensor of ``shape`` filled with
+        ``value`` at an **internally representable** dtype (Phase I, I4).
+
+        The dtype-preserving counterpart of ``full``, and the **one**
+        implementation both share — ``full`` is this method behind the
+        public dtype gate. It exists because a backward formula has to
+        materialize its constants at the *graph's* dtype: ``-1`` for a
+        negation, ``1/count`` for mean backward, and any other literal a
+        derivative needs. Building those at float64 and meeting a float32
+        operand would be a mixed-dtype request, which the runtime refuses
+        (design §9); building them through the public ``full`` is
+        impossible while float32 is unsupported. So the constant is built
+        here, from the operand's own tag.
+
+        The scalar itself crosses the ABI as a ``double`` and is narrowed
+        **once**, before the fill loop, inside ``tf_storage_fill`` (design
+        §7.4). Converting a scalar argument is not casting a tensor.
+
+        Private for ``_typed``'s reason, and it does not widen public
+        construction one inch: ``full`` still calls ``normalize_dtype``
+        first, so ``full(..., dtype="float32")`` raises exactly as it did.
+
+        H1: allocated uninitialized because ``tf_storage_fill`` writes every
+        element of the storage, so the zero-fill would be immediately and
+        completely overwritten. It reaches that allocation through
+        ``_uninitialized`` — the seam the poison tests wrap — rather than
+        around it, so the H1 coverage proof for ``full`` is untouched at
+        both widths. ``float(value)`` is evaluated **before** the
+        allocation, so a bad value allocates nothing; a failed fill closes
+        the tensor.
+        """
+        fill_value = float(value)  # reject a bad value before allocating
+        tensor = cls._uninitialized(shape, dtype=dtype, device=device)
+        try:
+            tensor._storage.fill(fill_value)
+        except BaseException:
+            tensor.close()
+            raise
+        return tensor
+
+    @classmethod
     def full(cls, shape, value, dtype="float64", device="cpu"):
         """A row-major contiguous tensor of ``shape`` filled with
         ``value`` (anything float() accepts). ``dtype``/``device`` default
@@ -2091,22 +2156,17 @@ class NativeTensorCore:
         immediately and completely overwritten. ``float(value)`` is
         evaluated **before** the allocation, so a bad value allocates
         nothing; a failed fill closes the tensor."""
-        fill_value = float(value)  # reject a bad value before allocating
-        # Public validation, explicitly, before the private allocator runs
+        # Public validation, explicitly, before the private constructor runs
         # (Phase I, milestone I2). ``_uninitialized`` trusts its dtype so a
         # derived allocation can match its operand's; a **public**
-        # constructor must not inherit that trust, and ``tf_storage_fill``
-        # is float64-only, so an unvalidated float32 request would reach an
-        # unhooked export that rejects without raising. This keeps the
-        # rejection exactly where and what it always was.
-        dtype = normalize_dtype(dtype)
-        tensor = cls._uninitialized(shape, dtype=dtype, device=device)
-        try:
-            tensor._storage.fill(fill_value)
-        except BaseException:
-            tensor.close()
-            raise
-        return tensor
+        # constructor must not inherit that trust. At I2 the reason was also
+        # that ``tf_storage_fill`` was float64-only; I4 generalized that
+        # export, so the gate now rests on the only reason that ever
+        # mattered — float32 is not a supported TensorForge dtype, and no
+        # public constructor may produce one until the registry moves at I9.
+        # Broadening a lower primitive does not broaden public construction.
+        return cls._typed_full(shape, value, normalize_dtype(dtype),
+                               device=device)
 
     # -- metadata (readable even after close) --------------------------
 
@@ -3019,7 +3079,19 @@ class NativeTensorCore:
         # reduction zero-fills 2 KB while reading 512 KB — the fill is under
         # half a percent of the work, against a traversal that was 95 % of
         # it (docs/native_cpu_performance_design.md §16.6.6).
-        out = NativeTensorCore.zeros(out_shape, dtype=self.dtype, device=self.device)
+        #
+        #
+        # Phase I, milestone I4: the **same** zeroed constructor, with the
+        # dtype trusted. ``self.dtype`` is not a caller's request but this
+        # tensor's own canonical tag, read off a storage that was validated
+        # when it was created, and a reduction's output must be able to match
+        # its operand — exactly the trust ``_uninitialized`` has carried
+        # since I2. Nothing else about the allocation changed, so H1's
+        # rejection of the uninitialized path and every seam that observes it
+        # are untouched, and public construction is not broadened one inch:
+        # ``NativeTensorCore.zeros(..., dtype="float32")`` still raises.
+        out = NativeTensorCore.zeros(out_shape, dtype=self.dtype,
+                                     device=self.device, _trusted_dtype=True)
         # Everything after the allocation runs inside the same cleanup
         # boundary every other allocating Core op uses (compare
         # contiguous_copy): a failure in the write-stride construction, the
@@ -3057,10 +3129,22 @@ class NativeTensorCore:
 
     def mean(self, axis=None, keepdims=False):
         """Mean over ``axis`` (``None`` = all elements) natively: the
-        native ``sum`` scaled in place by ``1/count`` in float64, where
-        ``count`` is ``numel`` for ``axis=None`` or ``shape[axis]`` for a
-        single axis. Returns a new owning row-major contiguous
-        NativeTensorCore. No NumPy touches the data; no autograd."""
+        native ``sum`` scaled in place by ``1/count``, where ``count`` is
+        ``numel`` for ``axis=None`` or ``shape[axis]`` for a single axis.
+        Returns a new owning row-major contiguous NativeTensorCore. No
+        NumPy touches the data; no autograd.
+
+        **The scale factor is computed once in binary64 and narrowed once**
+        (design §7.4). ``1.0 / count`` is a correctly-rounded Python float;
+        it crosses the unchanged ``double`` ABI parameter of
+        ``tf_storage_scale``; and the kernel converts it to the storage's
+        element type **before** its loop. So a float32 mean is
+        ``sum`` (accumulated in float32) times ``float(1/count)``, which is
+        deterministic, identical on every platform, and independent of
+        ``count``'s magnitude — where computing ``1.0f / count`` in float32
+        instead would differ by up to one ULP for some counts. The sum
+        itself accumulates in the tensor's own dtype, with no widening
+        intermediate anywhere."""
         self._require_open()
         result = self.sum(axis=axis, keepdims=keepdims)
         # Same cleanup boundary as ``sum``'s: the summed output is already
@@ -3949,7 +4033,12 @@ class NativeTensorCore:
         # the gradient's value, not an initialization detail, so an
         # uninitialized buffer would leak heap contents straight into a
         # gradient. Its poison test pins exactly this.
-        out = NativeTensorCore.zeros(original, dtype=self.dtype, device=self.device)
+        #
+        # I4: the same zeroed constructor with the dtype trusted, for
+        # ``sum``'s reason and with ``sum``'s argument — the dtype is this
+        # gradient's own tag, and the scatter's output must carry it.
+        out = NativeTensorCore.zeros(original, dtype=self.dtype,
+                                     device=self.device, _trusted_dtype=True)
         # The gradient lives at the logical shape, so the output is always a
         # fresh row-major contiguous buffer (offset 0) regardless of the
         # narrowed parent's own layout. Each narrowed axis maps 1:1 to the

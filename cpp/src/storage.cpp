@@ -364,59 +364,93 @@ TF_EXPORT int64_t tf_storage_size(const void* handle) {
 }
 
 // ---------------------------------------------------------------------------
-// The float64 storage primitives.
+// The scalar storage primitives.
 //
-// ``fill`` and ``scale`` are still float64-only after I2, and deliberately
-// so. I2 generalizes **transfer**; these two perform numerical assignment
-// and arithmetic on the buffer, which belongs to the milestone that
-// generalizes arithmetic. Neither is broadened merely because the dispatch
-// would be easy to write — a scalar narrowed once into a float32 buffer
-// (design §7.4) is a decision with its own numerical statement, and it is
-// not this milestone's to make. Each therefore rejects a float32 handle
-// before reading or writing a single element; without the check, a float32
-// buffer walked as ``double`` would be overrun by exactly a factor of two.
+// ``fill`` and ``scale`` were float64-only through I3 and became
+// dtype-general at **I4**, because that is the milestone that needed them:
+// ``scale`` *is* the mean reduction's scaling step (design §7.4), and
+// ``fill`` is how a backward materializes the constants its formulas need —
+// ``-1`` for a negation, ``1/count`` for mean backward — which must be
+// created at the graph's dtype rather than at float64.
+//
+// **The scalar keeps crossing as ``double`` and its conversion is specified**
+// (design §7.4). The ABI signature is unchanged: a scalar is a caller-supplied
+// value in Python's only float type, and it crosses as the widest binary
+// floating-point type the ABI has. The kernel converts it **once, before its
+// loop**, to the storage's element type. Converting a scalar argument is not
+// casting a tensor: the no-cast rule of §9 governs native-tensor-to-native-
+// tensor conversion, which still never happens.
+//
+// Narrowing once and outside the loop is the whole numerical statement. For
+// ``mean`` the factor is ``1/count``, computed once in binary64 (correctly
+// rounded) by the Python layer and narrowed once here, so the result is
+// deterministic, identical on every platform, and independent of ``count``'s
+// magnitude. Computing ``1.0f / count`` in float32 instead would differ by up
+// to one ULP for some counts; the chosen form is written down so no milestone
+// can quietly pick the other. It is also why the conversion may not be left
+// inside the loop, where a compiler would be free to keep the operand in
+// binary64 and make every multiply a mixed-precision one.
 //
 // Both keep their existing error-contract classification: they do **not**
-// clear the thread-local slot on entry and they do **not** carry the
-// Python errcheck hook. That is deliberate. H7 kept them hookless
-// precisely so they cost one native call rather than two, and no
-// production Python path can reach them with a float32 handle — the public
-// registry still rejects the dtype, and the private typed constructors
-// route float32 only into the transfer, materialization, and identity-copy
-// paths I2 actually generalized. A direct C ABI caller, which is the other
-// way to get one, reads the rejection through ``tf_last_error_code`` in the
-// ordinary way for an unhooked export. A failed call here leaves
-// TF_ERROR_INVALID in the slot; the next guarded call clears it on entry,
-// so it can never be misattributed to a later checked call.
-//
-// ``copy_from`` and ``copy_to`` were in this group at I1 and have left it:
-// they are dtype-general from I2 on, and they set no error at all again —
-// which is what an unhooked export should do.
+// clear the thread-local slot on entry and they do **not** carry the Python
+// errcheck hook. H7 kept them hookless precisely so they cost one native call
+// rather than two, and neither can fail: with every dtype now valid there is
+// nothing left for either to reject, so neither writes to the error slot at
+// all — which is what an unhooked export should do, and is exactly where
+// ``copy_from`` and ``copy_to`` arrived at I2.
 // ---------------------------------------------------------------------------
 
-TF_EXPORT void tf_storage_fill(void* handle, double value) {
-    if (!tf::require_float64("tf_storage_fill", {handle})) {
-        return;
-    }
-    Storage* storage = as_storage(handle);
-    double* data = tf::storage_f64(handle);
+namespace {
+
+// Assign one scalar to every element, in the element type.
+template <class T>
+void fill_typed(void* handle, double value) {
+    const Storage* storage = as_storage(handle);
+    T* data = tf::storage_typed<T>(handle);
+    const T v = static_cast<T>(value);  // narrowed ONCE, before the loop
     for (int64_t i = 0; i < storage->size; ++i) {
-        data[i] = value;
+        data[i] = v;
     }
+}
+
+// Multiply every element by one scalar, in place, in the element type. At
+// ``T = double`` the local is the argument and the loop body is the pre-I4
+// ``data[i] *= factor`` statement for statement.
+template <class T>
+void scale_typed(void* handle, double factor) {
+    const Storage* storage = as_storage(handle);
+    T* data = tf::storage_typed<T>(handle);
+    const T f = static_cast<T>(factor);  // narrowed ONCE, before the loop
+    for (int64_t i = 0; i < storage->size; ++i) {
+        data[i] *= f;
+    }
+}
+
+}  // namespace
+
+TF_EXPORT void tf_storage_fill(void* handle, double value) {
+    switch (tf::storage_dtype(handle)) {  // ONE dispatch, per call
+        case Dtype::Float32:
+            fill_typed<float>(handle, value);
+            return;
+        case Dtype::Float64:
+            break;
+    }
+    fill_typed<double>(handle, value);
 }
 
 // Multiply every element by a scalar factor, in place — a small storage
 // primitive alongside fill, used by the mean reduction to scale a freshly
-// summed output by 1/count in float64.
+// summed output by 1/count at the tensor's own dtype.
 TF_EXPORT void tf_storage_scale(void* handle, double factor) {
-    if (!tf::require_float64("tf_storage_scale", {handle})) {
-        return;
+    switch (tf::storage_dtype(handle)) {  // ONE dispatch, per call
+        case Dtype::Float32:
+            scale_typed<float>(handle, factor);
+            return;
+        case Dtype::Float64:
+            break;
     }
-    Storage* storage = as_storage(handle);
-    double* data = tf::storage_f64(handle);
-    for (int64_t i = 0; i < storage->size; ++i) {
-        data[i] *= factor;
-    }
+    scale_typed<double>(handle, factor);
 }
 
 // ---------------------------------------------------------------------------

@@ -24,6 +24,16 @@
 //      compute translation unit, not just one, because each has its own
 //      validation front end and could have been missed independently.
 //
+//      That third claim is a **moving** one by design, and each later
+//      milestone advances it here rather than deleting it: at I2 the three
+//      transfer boundaries left the rejection list, at I3 the elementwise
+//      family did, and at I4 the reduction, matmul, view-backward, and
+//      scalar-storage exports did. What each departure is replaced by is an
+//      assertion of the *new* truth — the export accepts the handle and
+//      reads it at the right width — so the set stays enumerated in both
+//      directions and never silently shrinks. What remains float64-only
+//      after I4 is exactly conv2d, pooling, classification, and Dropout.
+//
 // This binary compiles the whole kernel source set directly and drives the
 // **exported** C ABI, which is where the I1 contract lives.
 
@@ -86,6 +96,11 @@ TF_EXPORT void tf_core_sum(
     const std::int64_t* shape, const std::int64_t* in_strides,
     const std::int64_t* out_strides,
     std::int64_t offset, std::int64_t ndim);
+TF_EXPORT void tf_core_narrow_backward(
+    const void* upstream_handle, void* dst_handle,
+    const std::int64_t* shape, const std::int64_t* u_strides,
+    const std::int64_t* out_strides,
+    std::int64_t u_offset, std::int64_t out_offset, std::int64_t ndim);
 TF_EXPORT void tf_core_softmax_forward(
     const void* src_handle, std::int64_t src_offset, void* dst_handle,
     std::int64_t outer, std::int64_t axis_length, std::int64_t inner);
@@ -895,38 +910,63 @@ void test_every_still_float64_operation_rejects_float32_storage() {
     const std::int64_t strides[2] = {8, 1};
     const std::int64_t out_strides[2] = {0, 1};
 
-    // -- storage.cpp: the two remaining float64 storage primitives ---------
-    // ``fill`` and ``scale`` mutate the float32 buffer itself, so the
-    // destination they must not touch *is* the float32 storage. Its bytes
-    // are checked directly.
+    // -- storage.cpp: the storage primitives, none of them float64-only ----
     //
-    // **What moved at I2, and what deliberately did not.** ``copy_from``,
-    // ``copy_to``, and ``tf_storage_materialize`` were in this list at I1
-    // and are dtype-general now; they are proved at both widths by
-    // test_typed_transfer, and the assertion here advances to their new
-    // truth rather than being deleted. ``fill`` and ``scale`` stayed
-    // behind on purpose: they perform numerical assignment and arithmetic
-    // rather than transfer, and broadening them is a later milestone's
-    // decision, not a free consequence of dispatch being easy to write.
+    // **What moved, and when.** ``copy_from``, ``copy_to``, and
+    // ``tf_storage_materialize`` were in this rejection list at I1 and
+    // became dtype-general at **I2**; ``fill`` and ``scale`` stayed behind
+    // then, deliberately — they perform numerical assignment and arithmetic
+    // rather than transfer, and broadening them was not a free consequence
+    // of dispatch being easy to write — and became dtype-general at **I4**,
+    // which is the milestone that needed them: ``scale`` *is* the mean
+    // reduction's scaling step, and ``fill`` is how a backward materializes
+    // its constants at the graph's dtype. So storage.cpp now has no
+    // float64-only export at all, and the assertion here advances to that
+    // truth rather than being deleted.
+    //
+    // What is checked instead is the property that actually matters, and it
+    // is a stronger one than "the call was refused": the float32 buffer is
+    // written **as float32**, the scalar is narrowed once to the element
+    // type, and the walk stays inside the allocation. 64 float32 elements
+    // are 256 bytes, and a ``double*`` walk of ``size`` elements would touch
+    // 512 — so the bytes immediately after the buffer are read back through
+    // a *second* float32 storage that must be untouched.
     {
-        char message[256];
-        std::vector<unsigned char> before(
-            raw_bytes(f32), raw_bytes(f32) + 64 * 4);
+        void* neighbour = tf_storage_create_typed(64, TF_DTYPE_FLOAT32);
+        check(neighbour != nullptr, "the neighbour storage was not created");
+        std::vector<unsigned char> neighbour_before;
+        if (neighbour != nullptr) {
+            neighbour_before.assign(raw_bytes(neighbour),
+                                    raw_bytes(neighbour) + 64 * 4);
+        }
         tf_clear_error();
         tf_storage_fill(f32, 7.5);
-        check(tf_last_error_code() == TF_ERROR_INVALID,
-              "tf_storage_fill: a float32 handle was not rejected");
-        tf_clear_error();
+        check(tf_last_error_code() == TF_OK,
+              "tf_storage_fill: a float32 handle was rejected after I4");
         tf_storage_scale(f32, 2.0);
-        check(tf_last_error_code() == TF_ERROR_INVALID,
-              "tf_storage_scale: a float32 handle was not rejected");
-        std::snprintf(message, sizeof message,
-                      "a rejected storage primitive mutated float32 memory");
-        check(std::memcmp(before.data(), raw_bytes(f32), 64 * 4) == 0,
-              message);
-        // ...and neither overran the buffer while doing so, which is the
-        // whole reason the check exists: 64 float32 elements are 256
-        // bytes, and a double* walk of "size" elements would touch 512.
+        check(tf_last_error_code() == TF_OK,
+              "tf_storage_scale: a float32 handle was rejected after I4");
+        // 7.5 and 2.0 are exact at both widths, so the expected value is
+        // exact too and the comparison is a bit comparison, not a tolerance.
+        const float* narrow = tf::storage_typed<float>(f32);
+        const float expected = 15.0f;
+        bool all_fifteen = true;
+        for (std::int64_t i = 0; i < 64; ++i) {
+            if (std::memcmp(&narrow[i], &expected, sizeof(float)) != 0) {
+                all_fifteen = false;
+                break;
+            }
+        }
+        check(all_fifteen,
+              "fill+scale did not write 15.0f into every float32 element");
+        check(tf_storage_size(f32) == 64,
+              "a storage primitive moved the logical element count");
+        if (neighbour != nullptr) {
+            check(std::memcmp(neighbour_before.data(), raw_bytes(neighbour),
+                              64 * 4) == 0,
+                  "a storage primitive overran its float32 buffer");
+            tf_storage_destroy(neighbour);
+        }
         tf_clear_error();
 
         // The three transfer boundaries now **accept** this handle. Called
@@ -971,14 +1011,22 @@ void test_every_still_float64_operation_rejects_float32_storage() {
         tf_core_relu(dst, f32, shape, strides, 0, 2);
     });
 
-    // -- matmul.cpp --------------------------------------------------------
-    reject_case("tf_core_matmul", dst, 64, [&] {
+    // -- matmul.cpp and reduction.cpp --------------------------------------
+    // Dtype-general from I4, so — exactly like ``tf_core_contiguous_copy``
+    // above — these are no longer "float64-only operation" rejections but
+    // **mixed dtype** ones, which is the stronger and more permanent rule:
+    // a float32 operand with a float64 destination is an invalid request at
+    // every milestone of the phase, because the runtime never casts. The
+    // rejection is still TF_ERROR_INVALID, still names float32, and still
+    // leaves the destination byte-for-byte unchanged.
+    reject_case("tf_core_matmul (mixed dtype)", dst, 64, [&] {
         tf_core_matmul(f32, dst, dst, 8, 8, 8, 8, 1, 8, 1, 0, 0);
     });
-
-    // -- reduction.cpp -----------------------------------------------------
-    reject_case("tf_core_sum", dst, 64, [&] {
+    reject_case("tf_core_sum (mixed dtype)", dst, 64, [&] {
         tf_core_sum(f32, dst, shape, strides, out_strides, 0, 2);
+    });
+    reject_case("tf_core_narrow_backward (mixed dtype)", dst, 64, [&] {
+        tf_core_narrow_backward(f32, dst, shape, strides, strides, 0, 0, 2);
     });
 
     // -- classification.cpp ------------------------------------------------
