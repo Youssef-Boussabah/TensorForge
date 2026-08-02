@@ -117,21 +117,26 @@ ingress and egress, strided materialization, and the storage-to-storage
 identity copy (`tf_core_contiguous_copy`) are dtype-general and
 bit-preserving; since I3 it is **computed on** by the elementwise and unary
 Core family (`add`, `subtract`, `multiply`, `relu`, `relu_backward`,
-`sqrt`, `reciprocal`, `exp`, `log`, with broadcasting); and since I4 it
+`sqrt`, `reciprocal`, `exp`, `log`, with broadcasting); since I4 it
 also **accumulates** — `sum`, `mean`, `matmul`, and `narrow_backward` are
 dtype-general, `tf_storage_scale` and `tf_storage_fill` narrow their
 `double` argument once before the loop, and **private/internal** float32
-`NativeTensor` graphs run forward and backward over that set.
+`NativeTensor` graphs run forward and backward over that set; and since I5
+it **convolves and pools** — all three Conv2d directions and both
+MaxPool2d directions are dtype-general through H9's unchanged traversals
+and predicates, Conv2d accumulates in the element type, private float32
+graphs differentiate through convolution and pooling, and the MaxPool2d
+winner buffer stays **private float64 at every value dtype** with the
+`2**53` exact-plane bound unchanged.
 
 That is not a support claim and does not change a single row above: every
-operation that has not been dtype-generalized — conv2d in all three
-directions, both MaxPool2d directions, softmax, log-softmax,
+operation that has not been dtype-generalized — softmax, log-softmax,
 cross-entropy, and Dropout — rejects a float32 handle with
 `TF_ERROR_INVALID` before touching memory; `normalize_dtype("float32")`
 still raises; and no public constructor produces a float32 tensor, so
 float32 parameters, modules, optimizers, checkpoints, and training do not
-exist. The private float32 graphs I4 proves are built through the private
-typed constructors (`_typed`, `_typed_from_array`, `_typed_full`,
+exist. The private float32 graphs I4 and I5 prove are built through the
+private typed constructors (`_typed`, `_typed_from_array`, `_typed_full`,
 `zeros(..., _trusted_dtype=True)`, `NativeTensor._from_core`), which exist
 so an intermediate milestone can test through them while the public
 boundary stays exactly where it is. The public registry moves at **I9**,
@@ -566,13 +571,14 @@ matching docs file (and README links) **in the same milestone**.
     exactly **one** C ABI symbol across the whole phase
     (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
-- **Native line: Phase I at I4** — Native Dtype Generalization and
+- **Native line: Phase I at I5** — Native Dtype Generalization and
   Float32 CPU Support. Contract:
   `docs/native_dtype_float32_design.md`. **I0 (design, contract tests,
   documentation), I1 (the dtype model and dtype-tagged storage), I2
   (typed transfer, views, and materialization), I3 (elementwise,
-  broadcast, and unary dtype execution), and I4 (reductions, matmul,
-  views, and core autograd) are complete; I5–I11 are not started.**
+  broadcast, and unary dtype execution), I4 (reductions, matmul, views,
+  and core autograd), and I5 (CNN and pooling dtype support) are
+  complete; I6–I11 are not started.**
   - I1 delivered: the C++ `TfDtype`/`tf::Dtype` model with frozen codes
     `0 = float64` and `1 = float32`, one item-size authority
     (`tf::dtype_item_size` — nothing else may spell a storage width), one
@@ -666,17 +672,40 @@ matching docs file (and README links) **in the same milestone**.
     `NativeTensorCore._typed_full` and a keyword-only `_trusted_dtype` on
     `NativeTensorCore.zeros`. CTests moved 20 → 21
     (`test_dtype_reduction_matmul`).
-  - **Public capability did not move at I1, I2, I3, or I4**: float64 CPU
-    only, `float32` still in `UNSUPPORTED`, `RAW_KERNEL_DTYPES` still
+  - I5 delivered: the five CNN exports — `tf_core_conv2d_forward`,
+    `tf_core_conv2d_input_backward`, `tf_core_conv2d_weight_backward`,
+    `tf_core_maxpool2d_forward`, `tf_core_maxpool2d_backward` — generalized
+    to both dtypes (**none new**). The six Conv2d compute paths (three
+    retained Phase-D generic loops, H9's row sweep and two gathers) and
+    both pooling kernels became templates deduced from their pointer
+    arguments and moved into `tf_conv2d_internal.h` /
+    `tf_pooling_internal.h` on I4's terms; the three geometry predicates
+    are untouched, so both widths take the same traversal for the same
+    geometry, and every H9 accumulation-order proof carried over verbatim.
+    Conv2d accumulates in the element type, witnessed in all three
+    directions on both traversals. **The MaxPool2d winner buffer stays
+    private float64 at every value dtype** (§13.3): Python allocates it
+    with an explicit `dtype="float64"`, the backward validates the tag as
+    exactly float64 beside — never against — the gradient dtype, a
+    file-local `require_winner_float64` re-proves it at the C ABI, and the
+    `2**53` exact-plane bound is unchanged, so a float32 pool over a plane
+    beyond float32's `2**24` exact-integer range still records offsets
+    exactly. The two §2.3 pooling gates became dtype-general acceptance;
+    the cross-entropy and dropout gates stand for I6/I7. Private float32
+    graphs differentiate through convolution and pooling with the winner
+    riding the unchanged `graph_resources` contract. CTests moved 21 → 22
+    (`test_dtype_cnn`).
+  - **Public capability did not move at I1, I2, I3, I4, or I5**: float64
+    CPU only, `float32` still in `UNSUPPORTED`, `RAW_KERNEL_DTYPES` still
     `("float64",)`, checkpoint version 2 with (1, 2) accepted. Only the
-    export count changed, 52 → **54**, at I1; I2, I3, and I4 added none.
+    export count changed, 52 → **54**, at I1; I2 through I5 added none.
   - **A dtype-general Core kernel is not a public capability, and neither
     is a private graph.** I3 generalized `tf_core_relu_backward` because it
-    is a forward-shaped numerical primitive, not graph machinery; I4's
-    float32 `NativeTensor` graphs are reached only through the private
-    typed constructors. float32 parameters, modules, optimizers,
-    checkpoints, and training remain absent, and no public constructor
-    produces a float32 tensor at all.
+    is a forward-shaped numerical primitive, not graph machinery; the
+    float32 `NativeTensor` graphs I4 and I5 prove are reached only through
+    the private typed constructors. float32 parameters, modules,
+    optimizers, checkpoints, and training remain absent, and no public
+    constructor produces a float32 tensor at all.
   - **Recorded so no later milestone relitigates it:** for a *single*
     correctly-rounded IEEE operation — which is every I3 operation, one per
     destination element — computing in binary64 and rounding once to

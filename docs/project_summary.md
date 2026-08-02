@@ -1655,7 +1655,7 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase I — native dtype generalization and float32 CPU support — is the
-latest phase. Milestones I0 through I4 are complete; I5 through I11
+latest phase. Milestones I0 through I5 are complete; I6 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
@@ -1739,20 +1739,38 @@ four ULPs higher, and TensorForge is asserted equal to the first and unequal
 to the second, on both reduction traversals and both matmul paths. Native
 CTests moved **20 → 21**; exports stayed at **54**.
 
+**I5 generalized the CNN stack, and added no export.** All three Conv2d
+directions and both MaxPool2d directions dispatch once from the storage tag
+into templated kernels; H9's row-sweep and gather traversals and the
+retained Phase-D generic loops beside them are instantiated for both
+element types from the same source, with the geometry predicates untouched,
+so the two widths take the same path for the same geometry and every
+optimized path keeps its oracle per dtype. Conv2d accumulates in the
+element type — the binary32-versus-widened witness is proved in all three
+directions, on both traversals of each. MaxPool2d's value path follows the
+input dtype through the identical comparison sequence at both widths, while
+the private **winner buffer stays float64 at every value dtype**, keeping
+the `2**53` exact winner-plane bound instead of shrinking it to float32's
+`2**24` — a float32 pool over a plane beyond `2**24` still records its
+winner offsets exactly. Private float32 graphs differentiate through
+convolution and pooling, with the float64 winner riding the unchanged
+graph-owned saved-state contract. Native CTests moved **21 → 22**; exports
+stayed at **54**.
+
 **No public capability moved, and none does until I9.** The native runtime
 is still float64 CPU only: `SUPPORTED_DTYPES` still reads `("float64",)`,
 `UNSUPPORTED` still reads `("float32", "cuda", "amp")`, and the native
 checkpoint format is still version 2 with versions 1 and 2 accepted.
-float32 storage is allocatable and movable through the C ABI and computed on
-by transfer/copy, the elementwise and unary family, reductions, matmul,
-view-backward, and the private Core autograd graph — and by nothing else.
-Convolution, pooling, classification, Dropout, normalization, modules,
-parameters, optimizers, and checkpoints all still reject a float32 handle
-before touching memory, because walking a 4-byte-per-element buffer through
-a `double*` would overrun it twofold. Nor is a private float32 graph public
-float32 autograd: no public constructor produces a float32 tensor, so no
-float32 parameter, module, or optimizer exists to reach one. Phase H is
-untouched, remains complete, and closed at 52 exports.
+float32 is internally supported for storage, transfer, views,
+elementwise/unary execution, reductions, matmul, Conv2d, MaxPool2d, view
+backward, and private Core autograd — and for nothing else.
+Classification, Dropout, normalization, modules, parameters, optimizers,
+and checkpoints all still reject a float32 handle before touching memory,
+because walking a 4-byte-per-element buffer through a `double*` would
+overrun it twofold. Nor is a private float32 graph public float32
+autograd: no public constructor produces a float32 tensor, so no float32
+parameter, module, or optimizer exists to reach one. Phase H is untouched,
+remains complete, and closed at 52 exports.
 
 The contract locked the phase before any of it was built, and the first
 three items below are the ones I1 delivered: an internal dtype

@@ -11,8 +11,12 @@ change, no kernel, no C ABI symbol, no ctypes declaration, no
 optimizer, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-I status: I0, I1, I2, and I3 complete. I4 through I11 are not
-started.** The native runtime is **publicly** float64 CPU only today and
+**Phase-I status: I0, I1, I2, I3, I4, and I5 complete. I6 through I11 are
+not started.** (Recorded with I5: the I4 commit advanced every other
+status surface but left this paragraph reading "I0-I3 complete" — the §29
+delivered record was already present and correct, and the two-line lag is
+repaired here rather than rewritten away.) The native runtime is
+**publicly** float64 CPU only today and
 stays that way until milestone I9. `SUPPORTED_DTYPES` still reads
 `("float64",)`, `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
 and the native checkpoint format is still
@@ -45,16 +49,36 @@ allocation or mutation, at both the Python layer and the C ABI. **No export
 was added** (still 54), no capability registry moved, and float64 results
 are unchanged.
 
-Everything numerically downstream still rejects a float32 handle with
-`TF_ERROR_INVALID` before touching memory: reductions, matmul,
-narrow-backward, conv2d, pooling, classification, dropout, normalization,
-optimizers, modules, and checkpoints — and so do `tf_storage_fill` and
-`tf_storage_scale`. Nor does a dtype-general Core primitive make float32
-autograd, parameters, or training exist: no public constructor produces a
-float32 tensor, so no float32 graph can be built at all.
+What I4 changed, and only this: float32 storage now **accumulates**. `sum`,
+`mean`, `matmul`, and `narrow_backward` are dtype-general (3 exports, none
+new), `tf_storage_scale` and `tf_storage_fill` narrow their `double`
+argument once before the loop, both traversals of the reduction and matmul
+families are one templated source at both widths with their metadata
+predicates untouched, and **private/internal** float32 `NativeTensor`
+graphs run forward and backward over the whole set. The float32
+accumulation witness — sequential binary32 versus binary64-then-narrow —
+became provable here and is proved.
 
-Internal allocation, transfer, and elementwise capability is not public
-support — that distinction is §27.1's, and the registry moves at I9.
+What I5 changed, and only this: the **CNN stack** is dtype-general. All
+three Conv2d directions and both MaxPool2d directions (5 exports, none
+new) dispatch once from the storage tag into templated kernels; H9's
+traversals and geometry predicates are one source at both widths; Conv2d
+accumulates in the element type, witnessed in all three directions on both
+paths; the MaxPool2d **winner buffer stays private float64 at every value
+dtype** with the `2**53` plane bound unchanged (§13.3); and private
+float32 graphs differentiate through convolution and pooling with the
+winner riding the unchanged `graph_resources` contract.
+
+Everything numerically downstream still rejects a float32 handle with
+`TF_ERROR_INVALID` before touching memory: classification (softmax,
+log-softmax, cross-entropy), dropout, normalization, optimizers, modules,
+and checkpoints. Nor does a dtype-general Core primitive make float32
+parameters or training exist: no public constructor produces a float32
+tensor, so no float32 graph a *user* can build exists at all.
+
+Internal allocation, transfer, elementwise, reduction, matmul, CNN, and
+private-autograd capability is not public support — that distinction is
+§27.1's, and the registry moves at I9.
 
 **Phase H remains complete (H0–H10) and is the latest *completed*
 phase.** Nothing in Phase I revisits, reverses, or re-measures a Phase-H
@@ -2952,6 +2976,113 @@ with (1, 2) accepted, and **54** exports — I4 added none.
 - **Invariants:** float64 bit-identical; no new export; no workspace.
 - **Exit gate:** full suite green.
 - **Commit message:** `Add float32 native CNN kernel support`
+
+#### I5 as delivered
+
+Landed as specified, with six implementation decisions recorded here
+because the contract left each judgement open.
+
+1. **All six Conv2d compute paths and both pooling kernels became
+   templates deduced from their pointer arguments, and the definitions
+   moved into the internal headers** — `tf_conv2d_internal.h` and
+   `tf_pooling_internal.h` — for I4's reason: both instantiations must
+   reach the exported wrappers *and* the CTests that compile those files
+   directly. Every pre-I5 call site passes `double*`, so `T = double` is
+   the pre-I5 kernel statement for statement, including every H9
+   accumulation-order proof comment, which carried over verbatim. The
+   file-local `index4d`/`tap_begin`/`tap_end` helpers moved with the
+   kernels and gained `conv2d_`/`pool_` prefixes — metadata arithmetic
+   with no dtype — so two kernel headers can coexist in one test binary
+   without an ODR collision. The three geometry predicates stayed
+   non-template functions in `conv2d.cpp`: they read `int64` geometry
+   alone and have no dtype to read, which is precisely why both widths
+   take the same traversal for the same geometry.
+
+2. **One dispatch per export, held by five file-local helpers.**
+   `tf::require_float64` became `tf::require_matching_dtype` at all five
+   exports — over *every* participating handle, the nullable conv2d bias
+   included when present — and a file-local `*_dispatch<T>` helper per
+   export holds the typed-pointer formation below the export's single
+   `switch (tf::dispatch_dtype(...))`, none with a `default:` label. The
+   dtype guard runs first, before the null checks and the span
+   validation, exactly as I3 ordered it: a call that is both mixed-dtype
+   and otherwise malformed reports the dtype. Validation itself did not
+   move — same checks, same messages, same order after the guard.
+
+3. **The winner buffer is pinned to float64 on both sides of the
+   boundary, and the pin is a guard of its own.** The pooling exports
+   validate the *value* handles for agreement and the winner handle for
+   exact float64, separately, through a file-local
+   `require_winner_float64` whose message names the §13.3 rationale; the
+   winner takes no part in the value dispatch and is reached through the
+   unchanged `storage_f64` accessor in both arms. On the Python side the
+   winner allocation is an explicit `dtype="float64"` — never
+   `self.dtype` — and `maxpool2d_backward` replaced its
+   `_require_matching_metadata(winners, ...)` with the same two separate
+   statements: winner dtype exactly float64, winner device equal to the
+   gradient's. A float64 winner beside float32 gradients is not a
+   mixed-dtype operation; a float32 winner anywhere is a corrupted saved
+   state and is refused before anything is allocated or written. The
+   `2**53` plane bound is asserted unchanged at both widths, and a
+   float32 pool over a plane beyond float32's `2**24` exact-integer range
+   records its offsets exactly — the capability the decision preserves,
+   proved by test with an offset of `2**24 + 1`.
+
+4. **The two §2.3 hard gates I5 owned came out; Python changes stayed
+   inside the two files the phase already touched.** The
+   `dtype != "float64"` gates on `maxpool2d_forward` and
+   `maxpool2d_backward` are gone — the value dtype comes from the storage
+   tag, which can hold only an internally representable dtype — while the
+   cross-entropy and dropout gates stand untouched for I6 and I7. The
+   conv2d Core wrappers needed **no** functional change at all: they
+   already validated operand agreement through
+   `_require_matching_metadata` and already allocated outputs at
+   `dtype=self.dtype` through the trusted I2 path, so I5's Python surface
+   is the pooling wrapper edits plus docstrings. `NativeTensor.conv2d`
+   and `.maxpool2d` needed no functional change either — the autograd
+   closures are dtype-transparent, and every gradient, temporary, and
+   Policy-B copy inherits its operand's dtype through the same paths I4
+   proved.
+
+5. **The conv2d accumulation witness is exercised per direction, per
+   traversal.** Forward accumulates ascending `c -> p -> q`, the input
+   gradient ascending `o` (through the gather's descending-tap
+   enumeration, which reproduces it), the weight gradient ascending
+   `n -> i -> j`; each direction gets a geometry in which the witness
+   sequence arrives in exactly that order on the generic path *and* one
+   on the optimized path, because a widening accumulator introduced on
+   only one traversal is the plausible mistake. The pooling backward gets
+   the same treatment through nine overlapping windows all selecting one
+   cell. The float64 halves are asserted exactly equal to
+   `1.0 + n * 2**-24`, which is the statement that the generalization did
+   not disturb the width Phase H measured.
+
+6. **A test lesson, recorded so nobody "fixes" the kernels to satisfy a
+   wrong oracle:** the first draft of the C++ special-values sweep fed
+   the weight-gradient a plane containing an input NaN *and* a
+   `0 x inf`-manufactured NaN, so two NaNs met in one accumulation — and
+   MSVC demonstrably selects different ADDSD operand registers for the
+   generic and gather loops, so the surviving payload's sign differed.
+   That is exactly the two-or-more-NaN carve-out the Conv2d contract
+   inherited from H2, now observed in a second family. The sweep was
+   corrected to the contractual cases — at most one NaN per destination,
+   at most one infinite term per destination — which agree bit-for-bit,
+   payloads included, on both paths at both widths.
+
+The CTest inventory moved **21 → 22** with `test_dtype_cnn`, which
+compiles `conv2d.cpp`, `pooling.cpp`, `storage.cpp`, and `error.cpp`
+directly so it reaches the hidden predicates and both traversals of every
+Conv2d direction beside the exports. It is complementary to the D2–D9
+targets and to `test_conv2d_execution` rather than a superset: those keep
+their hand-computed float64 cases and H9's float64 sweeps untouched, while
+this one drives all five exports at both dtypes, carries the accumulation
+witnesses, proves the winner-buffer and plane-bound rules, and proves
+mixed dtype refused in every participating handle position with the
+destination unmoved.
+
+Public capability did not move: float64 CPU only, `float32` still in
+`UNSUPPORTED`, `RAW_KERNEL_DTYPES` still `("float64",)`, checkpoint
+version 2 with (1, 2) accepted, and **54** exports — I5 added none.
 
 ### I6 — Stable math and classification dtype support
 

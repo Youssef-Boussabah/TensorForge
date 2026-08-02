@@ -902,10 +902,10 @@ proposed optimizations. Every number behind those statements is a local
 characterization of one machine, is reported with its spread, and is
 asserted by no test.
 
-## Phase I — native dtype generalization and float32 CPU support, **I0–I4 complete**
+## Phase I — native dtype generalization and float32 CPU support, **I0–I5 complete**
 
-**Phase I is the latest phase. Milestones I0 through I4 are complete;
-I5 through I11 are not started.** Its architecture contract is
+**Phase I is the latest phase. Milestones I0 through I5 are complete;
+I6 through I11 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
 
@@ -1032,7 +1032,48 @@ them, and added **no export**. What it changed:
 - the native CTest inventory moved **20 → 21**
   (`test_dtype_reduction_matmul`).
 
-**What I1 through I4 did *not* change is the whole of the rest of this
+**I5** extended that to the CNN stack, and added **no export**. What it
+changed:
+
+- all three Conv2d directions (`tf_core_conv2d_forward`,
+  `tf_core_conv2d_input_backward`, `tf_core_conv2d_weight_backward`) and
+  both MaxPool2d directions (`tf_core_maxpool2d_forward`,
+  `tf_core_maxpool2d_backward`) are **dtype-general** — five exports, every
+  one of them the symbol Python already declared, each validating that its
+  numeric operands agree and dispatching **once** from the storage tag into
+  a templated kernel;
+- **both traversals of every Conv2d direction are instantiated for both
+  element types from the same source**: the retained Phase-D generic loops
+  and H9's row-sweep and gather traversals, with all three geometry
+  predicates untouched — they read `int64` geometry only — so the two
+  widths take the *same* path for the same geometry and every optimized
+  path keeps its oracle **per dtype**. Conv2d accumulates in the element
+  type: the float32 accumulation witness (`1.0` plus eight `2**-24`) is
+  proved in all three directions, on both traversals of each, equal to the
+  sequential binary32 result and unequal to the binary64-then-narrow one;
+- MaxPool2d's value path follows the input dtype — the window scan, the
+  strict `>` first-winner tie rule, the NaN policy, the signed-zero
+  selection, and the padding-as-`-inf` behavior are the identical
+  comparison sequence at both widths — while **the winner buffer stays
+  private float64 at every value dtype** (design §13.3). The `2**53` exact
+  winner-plane bound is float64's and does not shrink to float32's
+  `2**24`: a float32 pool over a plane larger than `2**24` still records
+  its winner offsets exactly, which is the capability the decision
+  preserves. A non-float64 winner buffer is refused before anything is
+  read or written, in Python and again at the C ABI;
+- the overlapping-window pooling backward accumulates repeated winners in
+  the **graph dtype**, witnessed at float32 against the widened
+  alternative; unique routing reproduces finite upstream values bitwise;
+- **private/internal float32 `NativeTensor` graphs differentiate through
+  convolution and pooling**: input, weight, bias, and pooling gradients
+  all carry the graph dtype, the float64 winner buffer rides the unchanged
+  `graph_resources` contract (released exactly once, retained under
+  `retain_graph`, alive across a failed retryable backward, closed
+  immediately by a no-grad forward), and mixed dtype is rejected in every
+  operand position before any allocation;
+- the native CTest inventory moved **21 → 22** (`test_dtype_cnn`).
+
+**What I1 through I5 did *not* change is the whole of the rest of this
 matrix.** The native runtime is still **publicly float64 CPU only**:
 `SUPPORTED_DTYPES` reads `("float64",)`, `SUPPORTED_DEVICES` reads
 `("cpu",)`, `UNSUPPORTED` reads `("float32", "cuda", "amp")`, and the
@@ -1041,35 +1082,39 @@ with versions **(1, 2)** accepted. `float32` therefore stays in the
 **Unsupported or future** section above, and it stays there until
 milestone **I9**.
 
-The honest statement of what float32 *is* after I4: **allocatable, movable,
-and computed on by transfer/copy, the elementwise and unary family,
-reductions, matmul, view-backward, and the private Core autograd graph
-composed from them — and by nothing else.** It can be copied in from a host
-buffer, copied out, viewed through any layout the metadata contract permits,
-materialized, and copied storage-to-storage, all bit-exactly; it can be
-added, subtracted, multiplied, rectified (forwards and backwards),
-square-rooted, reciprocated, exponentiated, and logged, with broadcasting, at
-genuine binary32; it can be summed, averaged, matrix-multiplied, and
-scattered back through a narrow, with the accumulation genuinely in binary32;
-and an internal graph over those operations differentiates end to end with
-every gradient at the graph's dtype.
+The honest statement of what float32 *is* after I5: **internally supported
+for storage, transfer, views, elementwise/unary execution, reductions,
+matmul, Conv2d, MaxPool2d, view backward, and private Core autograd — and
+for nothing else.** It can be copied in from a host buffer, copied out,
+viewed through any layout the metadata contract permits, materialized, and
+copied storage-to-storage, all bit-exactly; it can be added, subtracted,
+multiplied, rectified (forwards and backwards), square-rooted,
+reciprocated, exponentiated, and logged, with broadcasting, at genuine
+binary32; it can be summed, averaged, matrix-multiplied, and scattered back
+through a narrow, with the accumulation genuinely in binary32; it can be
+convolved in all three directions and max-pooled in both, through H9's
+unchanged traversals, again accumulating in binary32, with the pooling
+winners kept as private float64 index metadata; and an internal graph over
+those operations — convolution and pooling included — differentiates end to
+end with every gradient at the graph's dtype.
 
-Nothing beyond that accepts it: no convolution, no pooling, no softmax,
-log-softmax, or cross-entropy, no Dropout, no normalization, no module, no
-parameter, no optimizer, and no checkpoint. Every operation that has not been
-generalized rejects a float32 handle with `TF_ERROR_INVALID` before reading
-or writing a single element — necessarily so, because walking a
-4-byte-per-element buffer through a `double*` would overrun it by exactly a
-factor of two.
+Classification, normalization, Dropout, modules, parameters, optimizers,
+checkpointing, and public float32 construction remain unsupported: no
+softmax, log-softmax, or cross-entropy, no Dropout, no normalization, no
+module, no parameter, no optimizer, and no checkpoint accepts it. Every
+operation that has not been generalized rejects a float32 handle with
+`TF_ERROR_INVALID` before reading or writing a single element — necessarily
+so, because walking a 4-byte-per-element buffer through a `double*` would
+overrun it by exactly a factor of two.
 
 **A private float32 graph is not public float32 autograd, and not float32
 training.** No public constructor produces a float32 tensor — `from_array`,
 `zeros`, and `full` all still raise for it, at the Core layer and at the
 `NativeTensor` layer — no `NativeParameter` accepts one, and no module, loss,
 or optimizer accepts a dtype argument yet, so nothing a user can write
-reaches any of it. The graphs I4 proves are built through the private typed
-constructors the rollout rule requires an intermediate milestone to test
-through. Internal capability is not public support, and the two are
+reaches any of it. The graphs I4 and I5 prove are built through the private
+typed constructors the rollout rule requires an intermediate milestone to
+test through. Internal capability is not public support, and the two are
 deliberately kept apart until the whole stack exists.
 
 What the phase will deliver, when its milestones land: float32 CPU

@@ -1443,11 +1443,14 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     # dtype-reduction/matmul test on exactly the same terms: it drives the
     # *existing* H6 and H2 traversals at a second element type, plus the
     # float32 accumulation witness that only becomes observable once an
-    # accumulation exists.
-    assert len(ctests) == 21
+    # accumulation exists. I5 added the dtype-CNN test, again on the same
+    # terms: it drives the *existing* H9 conv2d traversals and the D8/D9
+    # pooling kernels at a second element type, plus the winner-buffer
+    # dtype rule — no new kernel, no new export, no new traversal.
+    assert len(ctests) == 22
     phase_i = {"test_dtype_storage.cpp", "test_typed_transfer.cpp",
                "test_dtype_elementwise.cpp",
-               "test_dtype_reduction_matmul.cpp"}
+               "test_dtype_reduction_matmul.cpp", "test_dtype_cnn.cpp"}
     assert phase_i <= set(ctests)
     assert len([name for name in ctests if name not in phase_i]) == 17
     assert "test_conv2d_execution.cpp" in ctests

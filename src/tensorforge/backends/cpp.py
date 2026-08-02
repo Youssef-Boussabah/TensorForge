@@ -3201,7 +3201,8 @@ class NativeTensorCore:
 
         No dilation, groups, channels-last, or output padding — those are
         not part of the signature. The weight/bias/input must all be open
-        CPU float64 tensor cores."""
+        CPU tensor cores of one dtype (I5: the output inherits it; mixed
+        dtype is rejected before anything is allocated)."""
         self._require_open()
         if not isinstance(weight, NativeTensorCore):
             raise TypeError(
@@ -3511,13 +3512,18 @@ class NativeTensorCore:
         """The pooling forward plus its private saved-winner buffer.
 
         Returns ``(output, winners)``: two fresh **owning** row-major
-        contiguous ``(N, C, out_h, out_w)`` cores. ``winners`` holds, for
-        each output cell, the flat offset ``ih * W + iw`` of the selected
-        input element inside its ``(n, c)`` plane, or the sentinel ``-1.0``
-        when a padding cell won (docs/native_cnn_design.md §12). Every
-        stored value is an exact integral float64 — the wrapper proves
-        ``H * W <= 2**53`` in Python arbitrary-precision arithmetic
-        *before* allocating or calling anything, so no index can round.
+        contiguous ``(N, C, out_h, out_w)`` cores. ``output`` inherits the
+        input's dtype (I5); ``winners`` is **always float64**, whatever the
+        value dtype, and holds, for each output cell, the flat offset
+        ``ih * W + iw`` of the selected input element inside its ``(n, c)``
+        plane, or the sentinel ``-1.0`` when a padding cell won
+        (docs/native_cnn_design.md §12). Every stored value is an exact
+        integral float64 — the wrapper proves ``H * W <= 2**53`` in Python
+        arbitrary-precision arithmetic *before* allocating or calling
+        anything, so no index can round. The bound is float64's at every
+        value dtype: the winner buffer deliberately does not follow the
+        input's dtype (design §13.3), because a float32 winner buffer would
+        cut the largest exactly-indexable plane from 2**53 to 2**24.
 
         The winner buffer is **internal**: it is never exposed as a public
         NativeTensor, never given a dtype tag of its own, never traversed
@@ -3538,11 +3544,12 @@ class NativeTensorCore:
                 f"maxpool2d_forward requires a 4-D NCHW input, got shape "
                 f"{self.shape}"
             )
-        if self.dtype != "float64" or self.device != "cpu":
-            raise ValueError(
-                f"maxpool2d_forward requires a float64/cpu input, got "
-                f"{self.dtype}/{self.device}"
-            )
+        # Phase I, milestone I5: the hard float64 gate that stood here since
+        # D8 is gone — the value dtype now comes from the storage tag, which
+        # can only hold an internally representable dtype, and the C ABI
+        # dispatches on it. The winner buffer does NOT follow it (§13.3
+        # below); the device is "cpu" by construction for every
+        # constructible storage.
 
         kh, kw = _spatial_pair(kernel_size, "kernel_size", minimum=1)
         # Stable convention: no stride means non-overlapping windows.
@@ -3592,8 +3599,13 @@ class NativeTensorCore:
                 (n, c, out_h, out_w), dtype=self.dtype, device=self.device
             )
             # H1 uninitialized — maxpool2d winners: assigns winners[n, c, i, j] over the same full extent.
+            # The winner buffer is **explicitly float64 at every value
+            # dtype** (design §13.3): it holds flat plane offsets whose
+            # exactness bound is float64's 2**53, and inferring its dtype
+            # from the input would silently cut that to float32's 2**24.
+            # It is private index metadata, never a numeric operand.
             winners = NativeTensorCore._uninitialized(
-                (n, c, out_h, out_w), dtype=self.dtype, device=self.device
+                (n, c, out_h, out_w), dtype="float64", device=self.device
             )
             self._storage._lib.tf_core_maxpool2d_forward(
                 input_core._storage._require_open(), input_core.offset,
@@ -3648,11 +3660,25 @@ class NativeTensorCore:
                 f"buffer, got {type(winners).__name__}"
             )
         winners._require_open()
-        self._require_matching_metadata(winners, "maxpool2d_backward")
-        if self.dtype != "float64" or self.device != "cpu":
+        # Phase I, milestone I5: the winner buffer is validated as **exactly
+        # float64**, never against the gradient's dtype (design §13.3). It
+        # is private index metadata, not a numeric operand, so a float64
+        # winner beside a float32 upstream is not a mixed-dtype operation —
+        # but a winner at any other dtype is a corrupted saved state and is
+        # refused before anything is allocated. The upstream's own dtype
+        # comes from its tag and dispatches at the C ABI; the input-gradient
+        # destination below is allocated at that same dtype, so the numeric
+        # operands cannot disagree. Devices must still match.
+        if winners.dtype != "float64":
             raise ValueError(
-                f"maxpool2d_backward requires float64/cpu operands, got "
-                f"{self.dtype}/{self.device}"
+                f"maxpool2d_backward requires a float64 winner buffer at "
+                f"every graph dtype (winner offsets are exact float64 plane "
+                f"indices), got {winners.dtype}"
+            )
+        if winners.device != self.device:
+            raise ValueError(
+                f"maxpool2d_backward requires the winner buffer on the "
+                f"grad_output's device, got {winners.device} and {self.device}"
             )
         if self.ndim != 4:
             raise ValueError(

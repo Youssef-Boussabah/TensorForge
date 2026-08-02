@@ -1128,10 +1128,11 @@ class NativeTensor:
         ``(O, C, kh, kw)`` NativeTensor; ``bias`` is ``None`` or a rank-1
         ``(O,)`` NativeTensor. ``stride``/``padding`` are an int or a
         length-2 ``(height, width)`` tuple (bools rejected). No dilation,
-        groups, or channels-last; operands must be open CPU float64
-        NativeTensors (stable ``Tensor`` and implicit conversion are
-        rejected). Returns a fresh **owning** ``(N, O, out_h, out_w)``
-        NativeTensor.
+        groups, or channels-last; operands must be open CPU NativeTensors
+        of one dtype (stable ``Tensor`` and implicit conversion are
+        rejected; mixed dtype raises before anything is allocated).
+        Returns a fresh **owning** ``(N, O, out_h, out_w)`` NativeTensor
+        at the operands' dtype.
 
         The forward reuses ``NativeTensorCore.conv2d_forward`` (no forward
         kernel is duplicated in Python). Differentiable when any of
@@ -1265,11 +1266,12 @@ class NativeTensor:
         construction itself raises, both the buffer and the pooled output
         are closed here before the exception propagates."""
         core = self._require_open()
-        # Forward via the D8 Core path — it validates rank, dtype/device,
-        # the kernel/stride/padding forms (bools and malformed pairs
+        # Forward via the D8 Core path — it validates rank, the
+        # kernel/stride/padding forms (bools and malformed pairs
         # rejected), the winner-exactness bound, and the output shape
-        # before any allocation, and returns the pooled values plus the
-        # private winner buffer.
+        # before any allocation, and returns the pooled values (at the
+        # input's dtype, I5) plus the private winner buffer (always
+        # float64, design §13.3).
         out_core, winners = core._maxpool2d_forward_with_winners(
             kernel_size=kernel_size, stride=stride, padding=padding
         )

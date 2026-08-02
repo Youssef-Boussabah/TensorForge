@@ -42,7 +42,7 @@ sections above are the narrative.
 ## The current phase — Phase I
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I4 are complete; I5 through I11
+latest phase. Milestones I0 through I5 are complete; I6 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
@@ -124,20 +124,35 @@ binary64-then-narrow lands four ULPs higher, and TensorForge is asserted
 equal to the first and unequal to the second — on both reduction traversals
 and both matmul paths. **I4 added no export.**
 
-**None of I1 through I4 moved a public capability.** The native runtime is
+**I5 made float32 convolve and pool.** All three Conv2d directions and both
+MaxPool2d directions are dtype-general, with H9's row-sweep and gather
+traversals — and the retained Phase-D generic loops beside them —
+instantiated for both element types from the same source, the geometry
+predicates untouched, and Conv2d accumulating in the element type: the
+binary32-versus-widened witness is proved in all three directions, on both
+traversals of each. MaxPool2d's values follow the input dtype through the
+identical comparison sequence at both widths, while the private **winner
+buffer stays float64 at every value dtype** with its `2**53` exact-plane
+bound unchanged — a float32 pool over a plane beyond float32's `2**24`
+exact-integer range still records its offsets exactly, which is the
+capability that decision preserves. Private float32 graphs differentiate
+through convolution and pooling, with the winner riding the unchanged
+graph-owned saved-state contract. **I5 added no export.**
+
+**None of I1 through I5 moved a public capability.** The native runtime is
 still float64 CPU only: `float32` is still listed as unsupported,
 `SUPPORTED_DTYPES` still reads `("float64",)`, and the native checkpoint
 format is still `tensorforge.native_checkpoint` version 2 with versions 1
 and 2 accepted. What remains numerically downstream still rejects a float32
-handle before reading or writing anything — convolution, pooling,
-classification, Dropout, normalization, optimizers, modules, and
-checkpoints. That is what keeps a 4-byte-per-element buffer from being
-walked as `double`. Nor is a private float32 graph public float32 autograd:
-no public constructor produces a float32 tensor, no `NativeParameter`
-accepts one, and no module takes a dtype argument, so nothing a user can
-write reaches any of it. The gap between internal capability and public
-promise is deliberate and closes at I9. Nothing about Phase H changed; Phase
-H remains complete, and it closed at 52 exports.
+handle before reading or writing anything — classification, Dropout,
+normalization, optimizers, modules, and checkpoints. That is what keeps a
+4-byte-per-element buffer from being walked as `double`. Nor is a private
+float32 graph public float32 autograd: no public constructor produces a
+float32 tensor, no `NativeParameter` accepts one, and no module takes a
+dtype argument, so nothing a user can write reaches any of it. The gap
+between internal capability and public promise is deliberate and closes at
+I9. Nothing about Phase H changed; Phase H remains complete, and it closed
+at 52 exports.
 
 What Phase I will deliver, once its milestones land: float32 CPU tensors
 beside the existing float64 ones, dtype-tagged storage, dtype-aware
@@ -188,7 +203,7 @@ than re-deriving them:
   optimizer state, checkpoint version 3, and the exact-resume proof all
   exist.
 
-The ladder is I0 through I11 — **I0 through I4 landed; I5 is next**:
+The ladder is I0 through I11 — **I0 through I5 landed; I6 is next**:
 the contract (I0), the dtype model and
 tagged storage (I1), typed transfer and materialization (I2), elementwise
 execution (I3), reductions and matmul (I4), the convolution and pooling

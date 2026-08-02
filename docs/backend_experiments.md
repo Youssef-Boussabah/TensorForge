@@ -78,7 +78,7 @@ and Runtime Efficiency — is complete (H0–H10) and is the latest
 *completed* phase**; both are recorded further below.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I4 are complete; I5 through I11
+latest phase. Milestones I0 through I5 are complete; I6 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
 was design, guardrail tests, and documentation reconciliation, and no
@@ -171,19 +171,37 @@ CTest inventory moved **20 → 21** (`test_dtype_reduction_matmul`), which
 carries the float32 accumulation witness — the runtime check I3 recorded as
 unavailable to it, and which an accumulation finally makes possible.
 
+**I5 delivered dtype-general Conv2d and MaxPool2d and the private float32
+CNN graphs over them**, and added **no export**. The five CNN exports
+validate operand agreement and dispatch **once** from the storage tag; the
+six Conv2d compute paths — three retained Phase-D generic loops and H9's
+row-sweep and two gathers — and both pooling kernels became templates over
+the element type and moved into `tf_conv2d_internal.h` and
+`tf_pooling_internal.h`, for the same reason the I4 traversals moved: both
+instantiations must reach the exported wrapper *and* the CTests that
+compile those files directly. Loop nests, tap ranges, seeds, and
+accumulation orders are unchanged; the three geometry predicates read
+`int64` geometry only and are untouched. The MaxPool2d **winner buffer is
+not templated and never will be**: it stays private float64 at every value
+dtype (design §13.3), validated as exactly float64 by its own guard in
+Python and again at the C ABI, keeping the `2**53` exact winner-plane
+bound instead of shrinking it to float32's `2**24`. The native CTest
+inventory moved **21 → 22** (`test_dtype_cnn`), which carries the Conv2d
+accumulation witnesses in all three directions on both traversals and the
+winner-buffer and plane-bound proofs.
+
 **Everything else on this page is still exactly what Phase H left**:
 float64 CPU only, native checkpoint format version **2** with versions
 **(1, 2)** accepted, `SUPPORTED_DTYPES == ("float64",)`, and
-`UNSUPPORTED == ("float32", "cuda", "amp")`. float32 storage can be
-*allocated, moved, and computed on by transfer/copy, the elementwise and
-unary family, reductions, matmul, view-backward, and the private Core
-autograd graph* — and by nothing else. Convolution, pooling,
-classification, and Dropout reject a float32 handle with
-`TF_ERROR_INVALID` before reading or writing anything, since walking a
-4-byte-per-element buffer through a `double*` would overrun it twofold. And
-a private float32 graph is not public float32 autograd — no public
-constructor produces a float32 tensor, so no float32 parameter, module, or
-optimizer exists.
+`UNSUPPORTED == ("float32", "cuda", "amp")`. float32 is *internally
+supported for storage, transfer, views, elementwise/unary execution,
+reductions, matmul, Conv2d, MaxPool2d, view backward, and private Core
+autograd* — and for nothing else. Classification, normalization, and
+Dropout reject a float32 handle with `TF_ERROR_INVALID` before reading or
+writing anything, since walking a 4-byte-per-element buffer through a
+`double*` would overrun it twofold. And a private float32 graph is not
+public float32 autograd — no public constructor produces a float32 tensor,
+so no float32 parameter, module, or optimizer exists.
 
 The contract's **exactly two** new C ABI symbols for the entire phase
 (`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,

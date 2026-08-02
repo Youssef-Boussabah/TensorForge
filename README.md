@@ -322,8 +322,8 @@ every shipped training workload is **1.50×–3.89× faster than it was at
 the H0 baseline**, with bit-identical results, and **no numerical
 capability, dtype, device, export, registry value, or checkpoint version
 moved at any milestone**. **Phase I — native dtype generalization and
-float32 CPU support — is the latest phase; milestones I0 through I4
-are complete and I5–I11 are not started.** I0 was the design lock and
+float32 CPU support — is the latest phase; milestones I0 through I5
+are complete and I6–I11 are not started.** I0 was the design lock and
 documentation reconciliation, shipping
 [docs/native_dtype_float32_design.md](docs/native_dtype_float32_design.md)
 and its guardrail tests and nothing else. **I1 built the dtype
@@ -356,15 +356,25 @@ accumulates in float32" became a *measured* claim rather than a structural
 one — on `1.0` plus eight copies of `2**-24`, binary32 stays at exactly
 `1.0` while binary64-then-narrow lands four ULPs higher, and TensorForge is
 asserted equal to the first and unequal to the second on every shipped path.
+**I5 made float32 convolve and pool, and added no export**: all three
+Conv2d directions and both MaxPool2d directions dispatch once from the
+storage tag into templated kernels, H9's traversals and geometry predicates
+are one source at both widths, Conv2d accumulates in the element type with
+the witness proved in every direction on both paths, private float32
+graphs differentiate through convolution and pooling, and the MaxPool2d
+winner buffer stays **private float64 at every value dtype** with its
+`2**53` exact-plane bound unchanged — so a float32 pool over a plane beyond
+float32's `2**24` exact-integer range still records its winner offsets
+exactly.
 **The native runtime is still float64 CPU only**: `float32` remains listed
-as unsupported; it is allocatable, movable, and computed on by
-transfer/copy, the elementwise and unary family, reductions, matmul,
-view-backward, and the private Core autograd graph — and by nothing else
-(convolution, pooling, classification, Dropout, normalization, optimizers,
-modules, and checkpoints all still reject a float32 handle before touching
-memory); no public constructor produces a float32 tensor, so float32
-parameters, modules, and training do not exist; and the native checkpoint
-format is still version 2 with versions 1 and 2 accepted. The
+as unsupported; it is internally supported for storage, transfer, views,
+elementwise/unary execution, reductions, matmul, Conv2d, MaxPool2d, view
+backward, and private Core autograd — and for nothing else
+(classification, Dropout, normalization, optimizers, modules, and
+checkpoints all still reject a float32 handle before touching memory); no
+public constructor produces a float32 tensor, so float32 parameters,
+modules, and training do not exist; and the native checkpoint format is
+still version 2 with versions 1 and 2 accepted. The
 contract's **exactly two** new C ABI symbols for the whole phase
 (52 → **54**) are now spent; it rejects per-operation float32 exports, forbids casting,
 promotion, and mixed-dtype arithmetic, requires float32 to accumulate in

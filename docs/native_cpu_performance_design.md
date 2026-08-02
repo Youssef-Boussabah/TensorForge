@@ -5295,6 +5295,19 @@ with versions `(1, 2)` supported.
 
 ## 16.9 H9 — Conv2d execution efficiency, as shipped
 
+> **Later note (Phase I, milestone I5).** The six compute paths this
+> section describes — the three retained generic loops and the three
+> optimized traversals — were made templates over the element type and
+> moved from `conv2d.cpp` into `tf_conv2d_internal.h`, so both
+> `float` and `double` instantiations reach the exported wrappers and the
+> CTests that compile the file directly. `T = double` is the H9 code
+> statement for statement: no loop nest, tap range, seed, predicate, or
+> accumulation order changed, and every proof in this section reads
+> unchanged at both widths. The dispatch predicates read `int64` geometry
+> only, which is why they carried over untouched — exactly the property
+> §2.17 of the Phase-I contract predicted. This note records history; it
+> rewrites none.
+
 ### 16.9.0 Why convolution, and why now
 
 H0's ladder did not name a convolution milestone. This one was chosen

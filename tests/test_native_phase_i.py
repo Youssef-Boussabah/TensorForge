@@ -1,6 +1,6 @@
 """Phase-I contract guardrails (native dtype generalization).
 
-Milestones I0 through I4 are complete; I5 through I11 are not started.
+Milestones I0 through I5 are complete; I6 through I11 are not started.
 
 I0 was a design-and-reconciliation milestone: it shipped
 ``docs/native_dtype_float32_design.md``, this module, and documentation,
@@ -13,9 +13,14 @@ elementwise and unary Core family. I4 extended that to the reduction,
 matmul, and view-backward families and to the private Core autograd graph
 composed from them — and, because accumulation is where a hidden wider
 accumulator would finally show, added the runtime witness I3 recorded as
-unavailable to it.
+unavailable to it. I5 extended the same treatment to the CNN stack: all
+three Conv2d directions and both MaxPool2d directions execute at both
+dtypes through H9's unchanged traversals and predicates, private float32
+graphs differentiate through convolution and pooling, and the MaxPool2d
+winner buffer stays **float64 at every value dtype** with its ``2**53``
+plane bound unchanged (design §13.3).
 
-None of the four moved a **public** capability: float32 is allocatable,
+None of the five moved a **public** capability: float32 is allocatable,
 transferable, and now arithmetically usable through the C ABI and the
 private typed constructors, and it is still not a supported TensorForge
 dtype.
@@ -1990,23 +1995,26 @@ def test_i2_moved_no_public_capability_at_all():
 
 
 @needs_native
-def test_the_float32_paths_are_exactly_the_families_landed_through_i4():
-    """The precise statement that replaces I3's "float32 is computed on by
-    exactly the elementwise and unary family".
+def test_the_float32_paths_are_exactly_the_families_landed_through_i5():
+    """The precise statement that replaces I4's "float32 is computed on by
+    transfer/copy, elementwise/unary, reductions, matmul, and view-backward".
 
-    As of I4, float32 is computed on by **transfer/copy, the elementwise and
-    unary family, reductions, matmul, view-backward, and the two scalar
-    storage primitives** — and by nothing else. Every later numerical family
-    still rejects it, and rejects it as *float64-only*, with both operands at
-    the same dtype, so this is not a mixed-dtype rejection in disguise.
+    As of I5, float32 is internally supported for **storage, transfer,
+    views, elementwise/unary execution, reductions, matmul, Conv2d (all
+    three directions), MaxPool2d (both directions), view backward, and
+    private Core autograd** — and for nothing else. Classification,
+    normalization, Dropout, modules, parameters, optimizers, checkpointing,
+    and public float32 construction remain unsupported, and each later
+    numerical family still rejects a float32 operand as *float64-only*,
+    with both operands at the same dtype, so this is not a mixed-dtype
+    rejection in disguise.
 
-    The families still out are exactly the ones I5-I8 own: conv2d (all three
-    directions), maxpool (both), softmax, log-softmax, cross-entropy, and
-    Dropout. Above the Core layer nothing moved at all — no parameter, no
-    module, no optimizer, no checkpoint version, and no public constructor
-    that produces a float32 tensor.
+    The families still out are exactly the ones I6-I8 own: softmax,
+    log-softmax, cross-entropy, and Dropout. Above the Core layer nothing
+    moved at all — no parameter, no module, no optimizer, no checkpoint
+    version, and no public constructor that produces a float32 tensor.
 
-    This is the guardrail that keeps "some float32 works" from ever being
+    This is the guardrail that keeps "most float32 works" from ever being
     the honest summary: the set is enumerated in both directions.
     """
     library = cpp._require_library()
@@ -2015,6 +2023,10 @@ def test_the_float32_paths_are_exactly_the_families_landed_through_i4():
     other = cpp.NativeTensorCore._typed_from_array(
         np.ones((4, 4), dtype=np.float32), "float32")
     output = cpp.NativeStorage._typed(16, "float32")
+    # The winner buffer a float32 pool consumes is **float64** — that is
+    # the §13.3 decision, not a leftover: the value dtype dispatches, the
+    # winner dtype is pinned.
+    winners64 = cpp.NativeStorage(16)
     try:
         # -- consumed: transfer in, transfer out, materialize, identity copy
         assert core.to_numpy().dtype == np.float32
@@ -2061,6 +2073,26 @@ def test_the_float32_paths_are_exactly_the_families_landed_through_i4():
                                         (ctypes.c_int64 * 2)(0, 1), 0, 2),
             lambda: library.tf_core_narrow_backward(a, out, shape, strides,
                                                     strides, 0, 0, 2),
+            # -- consumed, as of I5: all three Conv2d directions and both
+            # MaxPool2d directions. The pooling calls carry a float64
+            # winner buffer beside the float32 values, which is the locked
+            # winner-dtype decision in action.
+            # N, C, H, W, O, kh, kw, sh, sw, ph, pw, out_h, out_w
+            lambda: library.tf_core_conv2d_forward(
+                a, 0, b, 0, None, 0, out, 1, 1, 4, 4, 1, 2, 2, 1, 1, 0, 0,
+                3, 3),
+            lambda: library.tf_core_conv2d_input_backward(
+                a, 0, b, 0, out, 1, 1, 4, 4, 1, 2, 2, 1, 1, 0, 0, 3, 3),
+            lambda: library.tf_core_conv2d_weight_backward(
+                a, 0, b, 0, out, 1, 1, 4, 4, 1, 2, 2, 1, 1, 0, 0, 3, 3),
+            # N, C, H, W, kh, kw, sh, sw, ph, pw, out_h, out_w
+            lambda: library.tf_core_maxpool2d_forward(
+                a, 0, out, winners64._require_open(),
+                1, 1, 4, 4, 2, 2, 2, 2, 0, 0, 2, 2),
+            # The zero-initialized winner values are exact in-range plane
+            # offsets, so the scatter is a legitimate call.
+            lambda: library.tf_core_maxpool2d_backward(
+                a, 0, winners64._require_open(), 0, out, 1, 1, 4, 4, 2, 2),
         ):
             library.tf_clear_error()
             call()
@@ -2084,13 +2116,6 @@ def test_the_float32_paths_are_exactly_the_families_landed_through_i4():
             lambda: library.tf_core_log_softmax_forward(a, 0, out, 4, 4, 1),
             lambda: library.tf_core_dropout_forward(a, 0, out, out, 16,
                                                     1, 0, 0.5),
-            # N, C, H, W, kh, kw, sh, sw, ph, pw, out_h, out_w
-            lambda: library.tf_core_maxpool2d_forward(
-                a, 0, out, out, 1, 1, 4, 4, 2, 2, 2, 2, 0, 0, 2, 2),
-            # N, C, H, W, O, kh, kw, sh, sw, ph, pw, out_h, out_w
-            lambda: library.tf_core_conv2d_forward(
-                a, 0, b, 0, None, 0, out, 1, 1, 4, 4, 1, 2, 2, 1, 1, 0, 0,
-                3, 3),
         ):
             with pytest.raises(ValueError, match="float64-only"):
                 call()
@@ -2111,6 +2136,7 @@ def test_the_float32_paths_are_exactly_the_families_landed_through_i4():
             with pytest.raises((ValueError, TypeError)):
                 construct()
     finally:
+        winners64.close()
         output.close()
         other.close()
         core.close()
@@ -4306,10 +4332,14 @@ def test_the_raw_utility_kernels_are_still_float64_only():
 
 
 @needs_native
-def test_the_families_i5_through_i8_own_still_reject_float32():
-    """The other direction of the I4 boundary: no module, parameter,
+def test_the_families_i6_through_i8_own_still_reject_float32():
+    """The other direction of the I5 boundary: no module, parameter,
     optimizer, or checkpoint path accepts float32, and the later numerical
-    families still refuse a float32 operand as float64-only."""
+    families still refuse a float32 operand as float64-only.
+
+    MaxPool2d left this set at I5 — its float32 acceptance is proved by the
+    I5 tests below — so the rejecting families are now exactly the ones
+    I6-I8 own: softmax, log-softmax, cross-entropy, and Dropout."""
     import inspect
 
     import tensorforge.experimental as experimental
@@ -4327,15 +4357,20 @@ def test_the_families_i5_through_i8_own_still_reject_float32():
     assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I0_CHECKPOINT_VERSIONS)
-    # The Core operations I5 and I6 own still refuse a float32 operand. Some
-    # refuse in Python ("requires a float64/cpu input") and some in C++
-    # ("float64-only in the current runtime"); both name float64, and which
-    # layer answers is not the point — that the operation is unavailable is.
+    # The Core operations I6 owns still refuse a float32 operand as
+    # float64-only ("float64-only in the current runtime" from C++, or the
+    # Python gate's own wording); which layer answers is not the point —
+    # that the operation is unavailable is.
     core = cpp.NativeTensorCore._typed_from_array(
         np.ones((1, 1, 4, 4), dtype=np.float32), "float32")
     try:
-        with pytest.raises(ValueError, match="float64"):
-            core.maxpool2d_forward(kernel_size=2)
+        # ...while the I5 families now accept the same operand: the pool
+        # that refused this exact call through I4 runs, at float32, with
+        # the winner buffer released by the public wrapper.
+        pooled = core.maxpool2d_forward(kernel_size=2)
+        assert pooled.dtype == "float32"
+        assert pooled.shape == (1, 1, 2, 2)
+        pooled.close()
         flat = core.reshape((4, 4))
         try:
             with pytest.raises(ValueError, match="float64"):
@@ -4378,3 +4413,1033 @@ def test_i4_moved_no_public_capability_at_all():
         assert absent not in exports, absent
     assert not [name for name in exports
                 if name.endswith(("_f32", "_f64", "_float32", "_float64"))]
+
+
+# ===========================================================================
+# I5: Conv2d and MaxPool2d dtype execution, as running code
+#
+# Everything below drives the **live** library at both dtypes through the
+# private typed constructors, exactly as the I2-I4 sections do. The
+# comparison rules are per family and stated rather than inherited:
+#
+#   * every Conv2d direction is compared against an **independent
+#     same-dtype reference** written here as explicit loops over 0-d NumPy
+#     scalars of the element dtype, in the documented accumulation order —
+#     never against a float64 result (design §10.4), and never against the
+#     production kernel itself;
+#   * MaxPool2d values and winners are compared against a scalar reference
+#     that reproduces the exact production comparison sequence (first
+#     candidate anchors, first non-NaN seeds, strict ``>`` keeps the first
+#     occurrence of every tie);
+#   * float32 accumulation is witnessed against the widened alternative in
+#     every direction that accumulates;
+#   * gradients are checked analytically where a formula supports it and by
+#     binary32 finite differences (the stated I4 band) where it does not.
+#
+# The winner buffer is asserted **float64 at every value dtype**, and the
+# ``2**53`` plane bound is asserted unchanged — the two halves of the
+# §13.3 decision.
+# ===========================================================================
+
+
+def _conv_forward_reference(input_array, weight_array, bias_array,
+                            stride, padding, floating):
+    """The cross-correlation as explicit loops over ``floating`` scalars,
+    seeding each destination with its bias and adding taps in ascending
+    c -> p -> q order — the documented per-destination order."""
+    n, c, h, w = input_array.shape
+    o, _, kh, kw = weight_array.shape
+    sh, sw = stride
+    ph, pw = padding
+    oh = (h + 2 * ph - kh) // sh + 1
+    ow = (w + 2 * pw - kw) // sw + 1
+    out = np.zeros((n, o, oh, ow), dtype=floating)
+    for ni in range(n):
+        for oi in range(o):
+            for i in range(oh):
+                for j in range(ow):
+                    acc = (bias_array[oi] if bias_array is not None
+                           else floating(0.0))
+                    for ci in range(c):
+                        for p in range(kh):
+                            ih = i * sh + p - ph
+                            if ih < 0 or ih >= h:
+                                continue
+                            for q in range(kw):
+                                iw = j * sw + q - pw
+                                if iw < 0 or iw >= w:
+                                    continue
+                                acc = floating(
+                                    acc + floating(
+                                        input_array[ni, ci, ih, iw]
+                                        * weight_array[oi, ci, p, q]))
+                    out[ni, oi, i, j] = acc
+    return out
+
+
+def _conv_input_backward_reference(grad_array, weight_array, input_shape,
+                                   stride, padding, floating):
+    """The scatter-add adjoint in the documented n -> o -> i -> j -> c ->
+    p -> q order, accumulating in ``floating``."""
+    n, c, h, w = input_shape
+    o, _, kh, kw = weight_array.shape
+    sh, sw = stride
+    ph, pw = padding
+    _, _, oh, ow = grad_array.shape
+    out = np.zeros((n, c, h, w), dtype=floating)
+    for ni in range(n):
+        for oi in range(o):
+            for i in range(oh):
+                for j in range(ow):
+                    g = grad_array[ni, oi, i, j]
+                    for ci in range(c):
+                        for p in range(kh):
+                            ih = i * sh + p - ph
+                            if ih < 0 or ih >= h:
+                                continue
+                            for q in range(kw):
+                                iw = j * sw + q - pw
+                                if iw < 0 or iw >= w:
+                                    continue
+                                out[ni, ci, ih, iw] = floating(
+                                    out[ni, ci, ih, iw] + floating(
+                                        g * weight_array[oi, ci, p, q]))
+    return out
+
+
+def _conv_weight_backward_reference(grad_array, input_array, weight_shape,
+                                    stride, padding, floating):
+    """The weight-gradient scatter in the same documented order."""
+    n, c, h, w = input_array.shape
+    o, _, kh, kw = weight_shape
+    sh, sw = stride
+    ph, pw = padding
+    _, _, oh, ow = grad_array.shape
+    out = np.zeros(weight_shape, dtype=floating)
+    for ni in range(n):
+        for oi in range(o):
+            for i in range(oh):
+                for j in range(ow):
+                    g = grad_array[ni, oi, i, j]
+                    for ci in range(c):
+                        for p in range(kh):
+                            ih = i * sh + p - ph
+                            if ih < 0 or ih >= h:
+                                continue
+                            for q in range(kw):
+                                iw = j * sw + q - pw
+                                if iw < 0 or iw >= w:
+                                    continue
+                                out[oi, ci, p, q] = floating(
+                                    out[oi, ci, p, q] + floating(
+                                        g * input_array[ni, ci, ih, iw]))
+    return out
+
+
+def _maxpool_reference(input_array, kernel, stride, padding, floating):
+    """MaxPool2d values and winners by the exact production comparison
+    sequence: the window's first candidate anchors the all-NaN fallback,
+    the first non-NaN candidate seeds the scan, and only a strictly
+    greater value displaces the selection — so every tie keeps its first
+    occurrence in row-major window order, padding participates as the
+    element type's own -inf with winner -1, and a NaN never wins."""
+    n, c, h, w = input_array.shape
+    kh, kw = kernel
+    sh, sw = stride
+    ph, pw = padding
+    oh = (h + 2 * ph - kh) // sh + 1
+    ow = (w + 2 * pw - kw) // sw + 1
+    values = np.zeros((n, c, oh, ow), dtype=floating)
+    winners = np.zeros((n, c, oh, ow), dtype=np.float64)
+    neg_inf = floating(-np.inf)
+    for ni in range(n):
+        for ci in range(c):
+            for i in range(oh):
+                for j in range(ow):
+                    best = floating(0.0)
+                    winner = -1.0
+                    seen_any = False
+                    seen_number = False
+                    for p in range(kh):
+                        ih = i * sh + p - ph
+                        row_ok = 0 <= ih < h
+                        for q in range(kw):
+                            iw = j * sw + q - pw
+                            ok = row_ok and 0 <= iw < w
+                            cand = (input_array[ni, ci, ih, iw] if ok
+                                    else neg_inf)
+                            cand_winner = float(ih * w + iw) if ok else -1.0
+                            if not seen_any:
+                                seen_any = True
+                                best = cand
+                                winner = cand_winner
+                            if cand != cand:
+                                continue
+                            if not seen_number or cand > best:
+                                seen_number = True
+                                best = cand
+                                winner = cand_winner
+                    values[ni, ci, i, j] = best
+                    winners[ni, ci, i, j] = winner
+    return values, winners
+
+
+# One geometry sweep shared by the three Conv2d directions: both sides of
+# the H9 swept-extent boundary, strides, padding, rectangles, batches, and
+# channels.
+_CONV_GEOMETRIES = (
+    # (n, c, h, w, o, kh, kw, stride, padding, bias)
+    (1, 1, 3, 3, 1, 2, 2, (1, 1), (0, 0), False),   # generic (ow = 2)
+    (1, 1, 4, 5, 1, 2, 2, (1, 1), (0, 0), True),    # optimized (ow = 4)
+    (2, 3, 6, 7, 4, 3, 2, (1, 1), (0, 0), True),    # batched rectangular
+    (1, 2, 6, 6, 2, 3, 3, (1, 1), (1, 1), True),    # padded
+    (1, 1, 7, 7, 1, 3, 3, (2, 2), (0, 0), False),   # strided
+    (2, 2, 8, 8, 3, 3, 3, (2, 2), (1, 1), True),    # strided + padded
+    (1, 1, 5, 9, 1, 1, 3, (1, 2), (0, 1), False),   # asymmetric forms
+)
+
+
+def _conv_case_arrays(geometry, dtype):
+    n, c, h, w, o, kh, kw, stride, padding, bias = geometry
+    floating = _DTYPE_BITS[dtype][2]
+    input_array = _sample(dtype, n * c * h * w, seed=11).reshape(n, c, h, w)
+    weight_array = _sample(dtype, o * c * kh * kw, seed=12).reshape(
+        o, c, kh, kw)
+    bias_array = _sample(dtype, o, seed=13) if bias else None
+    sh, sw = stride
+    ph, pw = padding
+    oh = (h + 2 * ph - kh) // sh + 1
+    ow = (w + 2 * pw - kw) // sw + 1
+    grad_array = _sample(dtype, n * o * oh * ow, seed=14).reshape(
+        n, o, oh, ow)
+    return floating, input_array, weight_array, bias_array, grad_array
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("geometry", _CONV_GEOMETRIES)
+def test_conv2d_forward_matches_the_same_dtype_reference(dtype, geometry):
+    """Every geometry in the sweep, driven through the Core wrapper and
+    compared **bitwise** against the independent same-dtype reference —
+    the per-destination accumulation-order contract restated per dtype."""
+    n, c, h, w, o, kh, kw, stride, padding, bias = geometry
+    floating, input_array, weight_array, bias_array, _ = _conv_case_arrays(
+        geometry, dtype)
+    want = _conv_forward_reference(input_array, weight_array, bias_array,
+                                   stride, padding, floating)
+    x = _core(input_array, dtype)
+    wt = _core(weight_array, dtype)
+    bs = _core(bias_array, dtype) if bias else None
+    try:
+        out = x.conv2d_forward(wt, bs, stride=stride, padding=padding)
+        try:
+            assert out.dtype == dtype
+            assert out.shape == want.shape
+            assert _same_bits(out.to_numpy(), want, dtype), geometry
+        finally:
+            out.close()
+    finally:
+        if bs is not None:
+            bs.close()
+        wt.close()
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("geometry", _CONV_GEOMETRIES)
+def test_conv2d_backwards_match_the_same_dtype_reference(dtype, geometry):
+    """Both gradient directions over the same sweep, bitwise against their
+    own same-dtype scatter references."""
+    n, c, h, w, o, kh, kw, stride, padding, _ = geometry
+    floating, input_array, weight_array, _, grad_array = _conv_case_arrays(
+        geometry, dtype)
+    want_input = _conv_input_backward_reference(
+        grad_array, weight_array, (n, c, h, w), stride, padding, floating)
+    want_weight = _conv_weight_backward_reference(
+        grad_array, input_array, (o, c, kh, kw), stride, padding, floating)
+    grad = _core(grad_array, dtype)
+    wt = _core(weight_array, dtype)
+    x = _core(input_array, dtype)
+    try:
+        grad_in = grad.conv2d_input_backward(
+            wt, input_shape=(n, c, h, w), stride=stride, padding=padding)
+        try:
+            assert grad_in.dtype == dtype
+            assert _same_bits(grad_in.to_numpy(), want_input, dtype), geometry
+        finally:
+            grad_in.close()
+        grad_wt = grad.conv2d_weight_backward(
+            x, weight_shape=(o, c, kh, kw), stride=stride, padding=padding)
+        try:
+            assert grad_wt.dtype == dtype
+            assert _same_bits(grad_wt.to_numpy(), want_weight, dtype), geometry
+        finally:
+            grad_wt.close()
+    finally:
+        x.close()
+        wt.close()
+        grad.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_conv2d_reads_non_contiguous_operands_at_both_dtypes(dtype):
+    """Policy B at both widths: a transposed (non-contiguous) input
+    produces bit-identical results to its contiguous equivalent, through
+    the same private materialization the float64 path has always used —
+    and the dtype survives the temporary copy."""
+    floating = _DTYPE_BITS[dtype][2]
+    base = _sample(dtype, 36, seed=15).reshape(1, 1, 6, 6)
+    weight = _sample(dtype, 4, seed=16).reshape(1, 1, 2, 2)
+    x = _core(base, dtype)
+    wt = _core(weight, dtype)
+    try:
+        # Transpose the two spatial axes: a genuinely non-contiguous view,
+        # compared against the reference over the transposed array.
+        view = x.transpose(0, 1, 3, 2)
+        assert not view.contiguous
+        want = _conv_forward_reference(
+            np.ascontiguousarray(base.transpose(0, 1, 3, 2)),
+            weight, None, (1, 1), (0, 0), floating)
+        out = view.conv2d_forward(wt, stride=1, padding=0)
+        try:
+            assert out.dtype == dtype
+            assert _same_bits(out.to_numpy(), want, dtype)
+        finally:
+            out.close()
+    finally:
+        wt.close()
+        x.close()
+
+
+@needs_native
+def test_the_float32_conv2d_witness_from_python():
+    """The accumulation witness through the Core wrapper on both forward
+    traversals: 1.0 followed by eight copies of 2**-24 stays exactly 1.0
+    under sequential binary32 accumulation and lands higher when
+    accumulated in binary64 and narrowed once. TensorForge must equal the
+    first and differ from the second — a float32 Conv2d that is secretly
+    float64 fails here by bit pattern."""
+    tiny = np.float32(2.0 ** -24)
+    sequential = np.float32(1.0)
+    widened = 1.0
+    for _ in range(8):
+        sequential = np.float32(sequential + tiny)
+        widened += float(tiny)
+    narrowed_once = np.float32(widened)
+    assert _bits(np.array([sequential]), "float32") != _bits(
+        np.array([narrowed_once]), "float32")
+
+    weight = np.ones((1, 1, 1, 9), dtype=np.float32)
+    for width, label in ((9, "generic (ow=1)"), (12, "optimized (ow=4)")):
+        values = np.full((1, 1, 1, width), tiny, dtype=np.float32)
+        values[0, 0, 0, 0] = np.float32(1.0)
+        x = _core(values, "float32")
+        wt = _core(weight, "float32")
+        try:
+            out = x.conv2d_forward(wt, stride=1, padding=0)
+            try:
+                got = out.to_numpy()[0, 0, 0, 0]
+                assert _bits(np.array([got]), "float32") == _bits(
+                    np.array([sequential]), "float32"), label
+                assert _bits(np.array([got]), "float32") != _bits(
+                    np.array([narrowed_once]), "float32"), label
+            finally:
+                out.close()
+        finally:
+            wt.close()
+            x.close()
+
+
+@needs_native
+def test_private_float32_conv2d_autograd_is_analytic():
+    """A float32 conv2d graph with bias, differentiated end to end: with an
+    all-ones weight and upstream, the input gradient is the per-cell window
+    count, the weight gradient is the sum of the input cells each tap saw,
+    and the bias gradient is the output count — all exactly representable,
+    so the comparison is equality at float32."""
+    host = np.arange(1.0, 17.0, dtype=np.float32).reshape(1, 1, 4, 4)
+    x = _tensor(host, "float32", requires_grad=True)
+    w = _tensor(np.ones((1, 1, 2, 2), dtype=np.float32), "float32",
+                requires_grad=True)
+    b = _tensor(np.zeros(1, dtype=np.float32), "float32", requires_grad=True)
+    try:
+        out = x.conv2d(w, b, stride=1, padding=0)
+        try:
+            assert out.dtype == "float32"
+            loss = out.sum()
+            try:
+                loss.backward()
+            finally:
+                loss.close()
+        finally:
+            out.close()
+        # Window counts for a 2x2 kernel at stride 1 on a 4x4 plane.
+        counts = np.array([[1, 2, 2, 1],
+                           [2, 4, 4, 2],
+                           [2, 4, 4, 2],
+                           [1, 2, 2, 1]], dtype=np.float32)
+        assert x.grad.dtype == "float32"
+        assert np.array_equal(x.grad.to_numpy()[0, 0], counts)
+        # Each weight tap saw a 3x3 block of the input.
+        want_w = np.empty((2, 2), dtype=np.float32)
+        for p in range(2):
+            for q in range(2):
+                want_w[p, q] = host[0, 0, p:p + 3, q:q + 3].sum(
+                    dtype=np.float32)
+        assert w.grad.dtype == "float32"
+        assert np.array_equal(w.grad.to_numpy()[0, 0], want_w)
+        assert b.grad.dtype == "float32"
+        assert np.array_equal(b.grad.to_numpy(), np.array([9.0],
+                                                          dtype=np.float32))
+    finally:
+        b.close()
+        w.close()
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_conv2d_and_maxpool_gradients_have_the_graph_dtype(dtype):
+    """Design §11 invariants 1 and 2 over the I5 operations: every
+    gradient — input, weight, bias, and pooling input — has the dtype of
+    the tensor it is a gradient of, at both widths."""
+    floating = _DTYPE_BITS[dtype][2]
+    x = _tensor(_sample(dtype, 36, seed=17).reshape(1, 1, 6, 6), dtype,
+                requires_grad=True)
+    w = _tensor(_sample(dtype, 4, seed=18).reshape(1, 1, 2, 2), dtype,
+                requires_grad=True)
+    b = _tensor(np.zeros(1, dtype=floating), dtype, requires_grad=True)
+    try:
+        convolved = x.conv2d(w, b, stride=1, padding=1)
+        pooled = convolved.maxpool2d(kernel_size=2)
+        loss = pooled.sum()
+        try:
+            loss.backward()
+        finally:
+            loss.close()
+            pooled.close()
+            convolved.close()
+        for leaf in (x, w, b):
+            assert leaf.grad is not None
+            assert leaf.grad.dtype == dtype
+            assert leaf.grad.shape == leaf.shape
+    finally:
+        b.close()
+        w.close()
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("build", ["conv", "conv_pool"])
+def test_float32_cnn_finite_differences(build):
+    """The float32 conv2d input gradient (and the composed conv+pool
+    gradient away from ties) against central finite differences computed
+    in binary32 with the stated I4 step and tolerances. The pooling case
+    uses inputs whose window maxima are unique and stable under the
+    perturbation, so the finite difference is taken away from the
+    nondifferentiable tie boundaries. The negative control shows the band
+    rejects a deliberately wrong gradient."""
+    # Distinct, well-separated values: every window maximum is unique with
+    # margin far larger than 2 * step.
+    host = (np.arange(16, dtype=np.float32).reshape(1, 1, 4, 4)
+            * np.float32(0.5) + np.float32(0.25))
+    w_host = np.array([[[[0.5, -0.25], [1.5, 0.75]]]], dtype=np.float32)
+
+    # The analytical gradient: intermediates stay open until the backward
+    # has consumed the graph, per the ordinary ownership contract.
+    x = _tensor(host, "float32", requires_grad=True)
+    w = _tensor(w_host, "float32")
+    try:
+        chain = [x.conv2d(w, stride=1, padding=0)]
+        if build == "conv_pool":
+            chain.append(chain[-1].maxpool2d(kernel_size=2, stride=1))
+        chain.append(chain[-1].sum())
+        try:
+            chain[-1].backward()
+        finally:
+            for tensor in reversed(chain):
+                tensor.close()
+        analytical = x.grad.to_numpy().copy()
+        assert analytical.dtype == np.float32
+    finally:
+        w.close()
+        x.close()
+
+    def scalar(value_host):
+        # Forward-only: no graph is built, so eager closing is safe.
+        t = _tensor(value_host, "float32")
+        weight = _tensor(w_host, "float32")
+        try:
+            convolved = t.conv2d(weight, stride=1, padding=0)
+            try:
+                if build == "conv":
+                    result = convolved.sum()
+                else:
+                    pooled = convolved.maxpool2d(kernel_size=2, stride=1)
+                    try:
+                        result = pooled.sum()
+                    finally:
+                        pooled.close()
+            finally:
+                convolved.close()
+            try:
+                return np.float32(result.to_numpy().reshape(()))
+            finally:
+                result.close()
+        finally:
+            weight.close()
+            t.close()
+
+    numeric = np.zeros_like(host)
+    for index in np.ndindex(*host.shape):
+        plus = host.copy()
+        minus = host.copy()
+        plus[index] = np.float32(plus[index] + _F32_FD_STEP)
+        minus[index] = np.float32(minus[index] - _F32_FD_STEP)
+        numeric[index] = np.float32(
+            (scalar(plus) - scalar(minus)) / np.float32(2.0 * _F32_FD_STEP))
+    assert np.allclose(analytical, numeric, rtol=_F32_FD_RTOL,
+                       atol=_F32_FD_ATOL), (
+        f"{build}: analytical {analytical!r} vs numeric {numeric!r}")
+    # The negative control: the band rejects a deliberately wrong gradient.
+    wrong = np.ascontiguousarray(analytical[..., ::-1])
+    assert not np.allclose(wrong, numeric, rtol=_F32_FD_RTOL,
+                           atol=_F32_FD_ATOL)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_maxpool_forward_matches_the_exact_scalar_reference(dtype):
+    """Values and winners over ordinary, overlapping, and padded windows,
+    bitwise against the scalar reference — and the winner buffer is
+    float64 at BOTH value dtypes, which is the §13.3 decision made
+    observable."""
+    for kernel, stride, padding, shape in (
+        ((2, 2), (2, 2), (0, 0), (2, 2, 4, 4)),
+        ((3, 2), (1, 1), (1, 0), (1, 2, 4, 5)),
+        ((2, 2), (1, 1), (0, 0), (1, 1, 5, 5)),
+    ):
+        floating = _DTYPE_BITS[dtype][2]
+        host = _sample(dtype, int(np.prod(shape)), seed=19).reshape(shape)
+        want_values, want_winners = _maxpool_reference(
+            host, kernel, stride, padding, floating)
+        x = _core(host, dtype)
+        try:
+            out, winners = x._maxpool2d_forward_with_winners(
+                kernel_size=kernel, stride=stride, padding=padding)
+            try:
+                assert out.dtype == dtype
+                assert winners.dtype == "float64"
+                assert _same_bits(out.to_numpy(), want_values, dtype)
+                assert np.array_equal(winners.to_numpy(), want_winners)
+            finally:
+                winners.close()
+                out.close()
+        finally:
+            x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_maxpool_tie_nan_and_signed_zero_semantics(dtype):
+    """The exact selection rules, pinned beyond reference agreement: the
+    first occurrence of an equal maximum wins (strict ``>``), a leading
+    -0.0 is kept against a later +0.0, a NaN never wins and never
+    displaces, an all-NaN window falls back to its first candidate, and
+    +inf wins its window — identically at both widths."""
+    floating = _DTYPE_BITS[dtype][2]
+    host = np.zeros((1, 1, 4, 4), dtype=floating)
+    host[0, 0, 0, 0] = 3.5; host[0, 0, 0, 1] = 3.5        # tie
+    host[0, 0, 1, 0] = 1.0; host[0, 0, 1, 1] = -2.0
+    host[0, 0, 0, 2] = -0.0; host[0, 0, 0, 3] = 0.0       # signed-zero tie
+    host[0, 0, 1, 2] = -1.0; host[0, 0, 1, 3] = -1.0
+    host[0, 0, 2, 0] = np.nan; host[0, 0, 2, 1] = -7.0    # NaN first
+    host[0, 0, 3, 0] = -8.0; host[0, 0, 3, 1] = -9.0
+    host[0, 0, 2, 2] = -np.inf
+    host[0, 0, 2, 3] = np.finfo(floating).tiny
+    host[0, 0, 3, 2] = np.inf; host[0, 0, 3, 3] = 5.0
+    x = _core(host, dtype)
+    try:
+        out, winners = x._maxpool2d_forward_with_winners(kernel_size=2)
+        try:
+            values = out.to_numpy()
+            offsets = winners.to_numpy()
+            assert values[0, 0, 0, 0] == floating(3.5)
+            assert offsets[0, 0, 0, 0] == 0.0          # first of the tie
+            assert _bits(values[0, 0, 0, 1:2].copy(),
+                         dtype) == _bits(np.array([-0.0], dtype=floating),
+                                         dtype)
+            assert offsets[0, 0, 0, 1] == 2.0          # -0.0 kept by strict >
+            assert values[0, 0, 1, 0] == floating(-7.0)
+            assert offsets[0, 0, 1, 0] == 9.0          # NaN never wins
+            assert values[0, 0, 1, 1] == floating(np.inf)
+            assert offsets[0, 0, 1, 1] == 14.0
+        finally:
+            winners.close()
+            out.close()
+        # The all-NaN window: output and winner still agree, at the
+        # window's first candidate.
+        nan_host = np.full((1, 1, 2, 2), np.nan, dtype=floating)
+        core = _core(nan_host, dtype)
+        try:
+            out, winners = core._maxpool2d_forward_with_winners(kernel_size=2)
+            try:
+                assert np.isnan(out.to_numpy()[0, 0, 0, 0])
+                assert winners.to_numpy()[0, 0, 0, 0] == 0.0
+            finally:
+                winners.close()
+                out.close()
+        finally:
+            core.close()
+    finally:
+        x.close()
+
+
+@needs_native
+def test_maxpool_winner_offsets_stay_exact_beyond_float32_range():
+    """The consequence the §13.3 decision buys: a float32 pool over a
+    plane larger than float32's exact-integer range (2**24) still records
+    its winner offset exactly, because the winner buffer is float64 and
+    the bound is float64's 2**53. A winner buffer that followed the value
+    dtype would round this offset."""
+    width = 2 ** 24 + 2
+    offset = width - 1                       # odd, above 2**24
+    assert int(np.float32(offset)) != offset  # not float32-representable
+    host = np.zeros((1, 1, 1, width), dtype=np.float32)
+    host[0, 0, 0, offset] = np.float32(1.0)
+    x = _core(host, "float32")
+    try:
+        out, winners = x._maxpool2d_forward_with_winners(
+            kernel_size=(1, width))
+        try:
+            assert winners.dtype == "float64"
+            recorded = winners.to_numpy()[0, 0, 0, 0]
+            assert recorded == float(offset)          # exact, not rounded
+            assert out.to_numpy()[0, 0, 0, 0] == np.float32(1.0)
+        finally:
+            winners.close()
+            out.close()
+    finally:
+        x.close()
+    assert cpp._MAX_EXACT_WINNER_PLANE == 2 ** 53
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_maxpool_backward_routes_and_accumulates_at_the_graph_dtype(dtype):
+    """Unique windows reproduce each upstream value at its winner, in the
+    graph dtype, bitwise against the scatter reference."""
+    floating = _DTYPE_BITS[dtype][2]
+    host = _sample(dtype, 16, seed=21).reshape(1, 1, 4, 4)
+    x = _core(host, dtype)
+    try:
+        out, winners = x._maxpool2d_forward_with_winners(kernel_size=2)
+        try:
+            upstream_host = _sample(dtype, 4, seed=22).reshape(1, 1, 2, 2)
+            upstream = _core(upstream_host, dtype)
+            try:
+                grad = upstream.maxpool2d_backward(
+                    winners, input_shape=(1, 1, 4, 4))
+                try:
+                    assert grad.dtype == dtype
+                    reference = _maxpool_reference(
+                        host, (2, 2), (2, 2), (0, 0), floating)[1]
+                    expected = np.zeros((1, 1, 4, 4), dtype=floating)
+                    for i in range(2):
+                        for j in range(2):
+                            w_at = int(reference[0, 0, i, j])
+                            expected[0, 0, w_at // 4, w_at % 4] = floating(
+                                expected[0, 0, w_at // 4, w_at % 4]
+                                + upstream_host[0, 0, i, j])
+                    assert _same_bits(grad.to_numpy(), expected, dtype)
+                finally:
+                    grad.close()
+            finally:
+                upstream.close()
+        finally:
+            winners.close()
+            out.close()
+    finally:
+        x.close()
+
+
+@needs_native
+def test_the_float32_maxpool_backward_witness():
+    """Overlapping windows all selecting one cell: the cell's gradient is
+    the witness sum, accumulated sequentially in binary32 — equal to the
+    sequential result and unequal to the widened one, by bit pattern."""
+    host = np.zeros((1, 1, 5, 5), dtype=np.float32)
+    host[0, 0, 2, 2] = np.float32(100.0)     # wins all nine 3x3 windows
+    upstream_host = np.full((1, 1, 3, 3), np.float32(2.0 ** -24),
+                            dtype=np.float32)
+    upstream_host[0, 0, 0, 0] = np.float32(1.0)
+    sequential = np.float32(1.0)
+    widened = 1.0
+    for _ in range(8):
+        sequential = np.float32(sequential + np.float32(2.0 ** -24))
+        widened += 2.0 ** -24
+    narrowed_once = np.float32(widened)
+    x = _core(host, "float32")
+    try:
+        out, winners = x._maxpool2d_forward_with_winners(
+            kernel_size=3, stride=1)
+        try:
+            upstream = _core(upstream_host, "float32")
+            try:
+                grad = upstream.maxpool2d_backward(
+                    winners, input_shape=(1, 1, 5, 5))
+                try:
+                    got = grad.to_numpy()[0, 0, 2, 2]
+                    assert _bits(np.array([got]), "float32") == _bits(
+                        np.array([sequential]), "float32")
+                    assert _bits(np.array([got]), "float32") != _bits(
+                        np.array([narrowed_once]), "float32")
+                    # Every unselected cell holds exactly +0.0.
+                    rest = grad.to_numpy().copy()
+                    rest[0, 0, 2, 2] = 0.0
+                    assert _same_bits(rest, np.zeros_like(rest), "float32")
+                finally:
+                    grad.close()
+            finally:
+                upstream.close()
+        finally:
+            winners.close()
+            out.close()
+    finally:
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_a_non_float64_winner_buffer_is_rejected_before_allocation(
+        dtype, monkeypatch):
+    """The other half of §13.3: the winner buffer is validated as exactly
+    float64 — never against the gradient's dtype — before any output is
+    allocated, at both value dtypes, and a rejection leaves live storage
+    exactly as it was."""
+    live = _live_storage_ids(monkeypatch)
+    upstream = _core(_sample(dtype, 4, seed=23).reshape(1, 1, 2, 2), dtype)
+    fake_winners = cpp.NativeTensorCore._typed_from_array(
+        np.zeros((1, 1, 2, 2), dtype=np.float32), "float32")
+    try:
+        baseline = len(live)
+        with pytest.raises(ValueError, match="float64 winner"):
+            upstream.maxpool2d_backward(fake_winners,
+                                        input_shape=(1, 1, 4, 4))
+        assert len(live) == baseline
+    finally:
+        fake_winners.close()
+        upstream.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_mixed_dtype_cnn_operations_allocate_nothing(dtype, monkeypatch):
+    """Design §9.3 over the I5 operations: a mixed-dtype conv2d in any
+    operand position is rejected before any allocation, and both operands
+    stay open and unchanged."""
+    other = "float64" if dtype == "float32" else "float32"
+    live = _live_storage_ids(monkeypatch)
+    x = _core(np.ones((1, 1, 4, 4), dtype=_DTYPE_BITS[dtype][2]), dtype)
+    wrong_w = _core(np.ones((1, 1, 2, 2), dtype=_DTYPE_BITS[other][2]), other)
+    wrong_b = _core(np.ones(1, dtype=_DTYPE_BITS[other][2]), other)
+    right_w = _core(np.ones((1, 1, 2, 2), dtype=_DTYPE_BITS[dtype][2]), dtype)
+    try:
+        baseline = len(live)
+        with pytest.raises(ValueError, match="matching dtype"):
+            x.conv2d_forward(wrong_w)
+        with pytest.raises(ValueError, match="matching dtype"):
+            x.conv2d_forward(right_w, wrong_b)
+        with pytest.raises(ValueError, match="matching dtype"):
+            x.conv2d_input_backward(wrong_w, input_shape=(1, 1, 5, 5))
+        with pytest.raises(ValueError, match="matching dtype"):
+            x.conv2d_weight_backward(wrong_w, weight_shape=(1, 1, 2, 2))
+        assert len(live) == baseline
+        assert x.dtype == dtype and wrong_w.dtype == other
+    finally:
+        right_w.close()
+        wrong_b.close()
+        wrong_w.close()
+        x.close()
+
+
+@needs_native
+def test_float32_maxpool_graph_resources_follow_the_saved_state_contract(
+        monkeypatch):
+    """The winner buffer at float32 rides the same graph_resources contract
+    as at float64: float64 dtype beside float32 values, released exactly
+    once by a one-shot backward, retained under retain_graph, and closed
+    immediately by a no-grad forward."""
+    host = np.arange(16, dtype=np.float32).reshape(1, 1, 4, 4)
+
+    captured = {}
+    original = cpp.NativeTensorCore._maxpool2d_forward_with_winners
+
+    def capturing(self, **kwargs):
+        out, winners = original(self, **kwargs)
+        captured["winners"] = winners
+        return out, winners
+
+    monkeypatch.setattr(cpp.NativeTensorCore,
+                        "_maxpool2d_forward_with_winners", capturing)
+
+    # A no-grad forward releases the winners immediately.
+    plain = _tensor(host, "float32")
+    try:
+        pooled = plain.maxpool2d(kernel_size=2)
+        try:
+            assert captured["winners"]._closed is True
+        finally:
+            pooled.close()
+    finally:
+        plain.close()
+
+    # A one-shot backward releases them exactly once; retain_graph keeps
+    # them for another pass first.
+    x = _tensor(host, "float32", requires_grad=True)
+    try:
+        pooled = x.maxpool2d(kernel_size=2)
+        winners = captured["winners"]
+        assert winners.dtype == "float64"
+        assert winners._closed is False
+        loss = pooled.sum()
+        try:
+            loss.backward(retain_graph=True)
+            assert winners._closed is False       # retained for another pass
+            first = x.grad.to_numpy().copy()
+            x.grad.close()
+            x._grad = None
+            loss.backward()
+            assert winners._closed is True        # released exactly once
+            assert np.array_equal(x.grad.to_numpy(), first)
+            assert x.grad.dtype == "float32"
+        finally:
+            loss.close()
+            pooled.close()
+    finally:
+        x.close()
+
+
+@needs_native
+def test_a_failed_float32_maxpool_backward_leaves_the_graph_retryable():
+    """A backward that fails on its output allocation keeps the saved
+    winners alive and the graph retryable, at float32 exactly as the
+    Phase-D contract states at float64 — and the retry produces the
+    correct gradient."""
+    host = np.arange(16, dtype=np.float32).reshape(1, 1, 4, 4)
+    x = _tensor(host, "float32", requires_grad=True)
+    try:
+        pooled = x.maxpool2d(kernel_size=2)
+        winners = pooled._graph_resources[0]
+        assert winners.dtype == "float64"
+        loss = pooled.sum()
+        try:
+            cpp._arm_alloc_failure(1)
+            try:
+                with pytest.raises(MemoryError):
+                    loss.backward()
+            finally:
+                cpp._arm_alloc_failure(0)
+            assert winners._closed is False       # saved state survived
+            assert x.grad is None
+            loss.backward()                        # the retry succeeds
+            assert winners._closed is True
+            assert x.grad is not None and x.grad.dtype == "float32"
+        finally:
+            loss.close()
+            pooled.close()
+    finally:
+        x.close()
+
+
+@needs_native
+def test_repeated_float32_cnn_cycles_return_live_storage_to_baseline(
+        monkeypatch):
+    """Fifteen conv2d + maxpool2d forward/backward cycles at float32 leave
+    live native storage exactly at its baseline — outputs, gradients,
+    Policy-B temporaries, and winner buffers all released."""
+    live = _live_storage_ids(monkeypatch)
+    host = _sample("float32", 36, seed=24).reshape(1, 1, 6, 6)
+    weight = _sample("float32", 4, seed=25).reshape(1, 1, 2, 2)
+    baseline = len(live)
+    for _ in range(15):
+        x = _tensor(host, "float32", requires_grad=True)
+        w = _tensor(weight, "float32", requires_grad=True)
+        try:
+            convolved = x.conv2d(w, stride=1, padding=1)
+            pooled = convolved.maxpool2d(kernel_size=2)
+            loss = pooled.sum()
+            loss.backward()
+            assert x.grad.dtype == "float32"
+            assert w.grad.dtype == "float32"
+            for tensor in (loss, pooled, convolved):
+                tensor.close()
+            x.grad.close()
+            w.grad.close()
+        finally:
+            w.close()
+            x.close()
+    assert len(live) == baseline
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_uninitialized_cnn_destinations_are_fully_written(
+        dtype, monkeypatch):
+    """The H1 audit re-proved per dtype through the Python seam: every CNN
+    destination allocated uninitialized is completely overwritten by its
+    kernel. The poison is applied by test infrastructure around the
+    allocator — no production hook exists — and the negative control shows
+    the detector can fail."""
+    sentinel = float(2 ** 22 + 3)             # exact at both widths
+    floating = _DTYPE_BITS[dtype][2]
+    original = cpp.NativeTensorCore._uninitialized.__func__
+
+    def poisoned(cls, shape, dtype="float64", device="cpu"):
+        out = original(cls, shape, dtype=dtype, device=device)
+        out._storage.fill(sentinel)
+        return out
+
+    monkeypatch.setattr(cpp.NativeTensorCore, "_uninitialized",
+                        classmethod(poisoned))
+    # Negative control: the poison really is visible on a buffer nothing
+    # overwrites.
+    control = cpp.NativeTensorCore._uninitialized((2, 2), dtype=dtype)
+    try:
+        assert np.all(control.to_numpy() == floating(sentinel))
+    finally:
+        control.close()
+
+    host = _sample(dtype, 36, seed=26).reshape(1, 1, 6, 6)
+    weight = _sample(dtype, 4, seed=27).reshape(1, 1, 2, 2)
+    x = _core(host, dtype)
+    wt = _core(weight, dtype)
+    try:
+        out = x.conv2d_forward(wt, stride=1, padding=1)
+        try:
+            assert not np.any(out.to_numpy() == floating(sentinel))
+        finally:
+            out.close()
+        pooled, winners = x._maxpool2d_forward_with_winners(kernel_size=2)
+        try:
+            assert not np.any(pooled.to_numpy() == floating(sentinel))
+            assert not np.any(winners.to_numpy() == sentinel)
+        finally:
+            winners.close()
+            pooled.close()
+    finally:
+        wt.close()
+        x.close()
+
+
+# ---------------------------------------------------------------------------
+# I5: what the generalized CNN source must (and must not) contain
+# ---------------------------------------------------------------------------
+
+def test_the_cnn_exports_carry_one_dispatch_each():
+    """Design §8.1 over the five I5 exports, as source structure: each
+    export runs the matching-dtype guard and exactly one dispatch switch,
+    the pooling exports additionally pin the winner buffer to float64, and
+    no switch has a ``default:`` label to hide behind."""
+    conv = _cpp_code_only(_read("cpp/src/conv2d.cpp"))
+    pool = _cpp_code_only(_read("cpp/src/pooling.cpp"))
+    assert conv.count("tf::require_matching_dtype") == 3
+    assert conv.count("switch (tf::dispatch_dtype") == 3
+    assert pool.count("tf::require_matching_dtype") == 2
+    assert pool.count("switch (tf::dispatch_dtype") == 2
+    assert pool.count("require_winner_float64(") >= 3   # def + 1 per export
+    for source in (conv, pool):
+        assert "require_float64(" not in source.replace(
+            "require_winner_float64(", "")
+        assert "default:" not in source
+    # The winner buffer is reached through the float64 accessor alone and
+    # its bound is written once, as float64's 2**53.
+    assert "storage_f64(winners_handle)" in pool
+    assert "<< 53" in pool
+    assert "<< 24" not in pool
+
+
+def test_no_accumulator_in_the_cnn_kernels_is_hard_coded():
+    """The structural half of the accumulation policy: the kernels take
+    ``T*`` operands, accumulate in ``T``, and contain no widening cast and
+    no double-typed accumulator — while the pooling header keeps its
+    winner parameter spelled ``double*`` at every value dtype."""
+    conv = _cpp_code_only(_read("cpp/include/tf_conv2d_internal.h"))
+    pool = _cpp_code_only(_read("cpp/include/tf_pooling_internal.h"))
+    for header, families in ((conv, ("conv2d_forward_generic",
+                                     "conv2d_forward_row_sweep",
+                                     "conv2d_input_backward_generic",
+                                     "conv2d_input_backward_gather",
+                                     "conv2d_weight_backward_generic",
+                                     "conv2d_weight_backward_gather")),
+                             (pool, ("maxpool2d_forward_contiguous",
+                                     "maxpool2d_backward_contiguous"))):
+        for family in families:
+            assert f"void {family}(" in header, family
+        assert "template <class T>" in header
+        for banned in ("double acc", "double sum", "double bias_o",
+                       "double g =", "double w_value", "double best_value"):
+            assert banned not in header, banned
+    assert "T acc = bias_o" in conv
+    assert "T(0)" in conv
+    # The winner side of the pooling kernels is deliberately NOT templated:
+    # the buffer parameter is double at both widths, and the winner value
+    # written is a double plane offset.
+    assert "double* winners" in pool
+    assert "T* winners" not in pool
+    assert "double best_winner" in pool
+    assert "static_cast<double>(ih * input_width + iw)" in pool
+    # Nothing forbidden by CLAUDE.md §4.3 or design §10.2 appeared.
+    for banned in ("immintrin", "_mm", "omp", "std::thread", "cblas_",
+                   "std::fma", "restrict"):
+        assert banned not in conv and banned not in pool, banned
+
+
+def test_the_python_winner_allocation_is_pinned_to_float64():
+    """The Python half of §13.3, as source structure: the winner buffer is
+    allocated with an explicit ``dtype="float64"`` (never the input's),
+    the backward validates the winner tag as exactly float64, and the
+    ``2**53`` bound survives as the single plane authority."""
+    source = _read("src/tensorforge/backends/cpp.py")
+    assert '_MAX_EXACT_WINNER_PLANE = 2 ** 53' in source
+    assert '(n, c, out_h, out_w), dtype="float64", device=self.device' \
+        in source
+    assert 'winners.dtype != "float64"' in source
+    # The two hard float64 gates I5 owned are gone; the ones the later
+    # milestones own are still standing.
+    assert source.count('!= "float64" or self.device != "cpu"') >= 2
+
+
+@needs_native
+def test_i5_moved_no_public_capability_at_all():
+    """The exit gate, as one assertion block: internal float32 Conv2d and
+    MaxPool2d exist in all their directions, and public float32 support
+    does not."""
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
+    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
+    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    assert cpp.RAW_KERNEL_DTYPES == ("float64",)
+    assert cpp.backend_info()["dtype"] == "float64"
+    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+            == I0_CHECKPOINT_VERSIONS)
+    with pytest.raises(ValueError):
+        cpp.normalize_dtype("float32")
+    exports = _source_exports()
+    assert len(exports) == I1_EXPORT_COUNT       # still 54; I5 adds none
+    for absent in ("tf_core_conv2d_forward_f32", "tf_core_maxpool2d_f32",
+                   "tf_core_conv2d_forward_typed", "tf_storage_winners",
+                   "tf_core_maxpool2d_forward_f32"):
+        assert absent not in exports, absent
+    assert not [name for name in exports
+                if name.endswith(("_f32", "_f64", "_float32", "_float64"))]
+    # NativeConv2d and NativeMaxPool2d still take no dtype argument and
+    # still initialize at float64 only.
+    import inspect
+    from tensorforge.experimental import NativeConv2d, NativeMaxPool2d
+    assert "dtype" not in inspect.signature(NativeConv2d).parameters
+    assert "dtype" not in inspect.signature(NativeMaxPool2d).parameters

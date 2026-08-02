@@ -22,6 +22,19 @@ document therefore reads as the phase's contract *and* its record: where
 implementation refined a D0 decision, the refinement is stated at the
 milestone that made it.
 
+Two later phases refined the Phase-D kernels without changing a Phase-D
+decision, and both are recorded in their own contracts rather than
+restated here: **Phase H milestone H9**
+([native_cpu_performance_design.md](native_cpu_performance_design.md)
+§16.9) added an optimized traversal beside each retained Phase-D Conv2d
+loop behind the unchanged exports, and **Phase I milestone I5**
+([native_dtype_float32_design.md](native_dtype_float32_design.md) §29)
+made the Conv2d and MaxPool2d kernels templates over the element type —
+`T = double` is the Phase-D code statement for statement, the kernel
+definitions now live in `tf_conv2d_internal.h` / `tf_pooling_internal.h`,
+and the **winner buffer stays float64 at every value dtype** with the
+§12 `2**53` exactness bound unchanged, exactly as §12 specifies it.
+
 The stable Python framework (`tensorforge.nn.Conv2d`,
 `tensorforge.nn.MaxPool2d`, `tensorforge.nn.Flatten`) is the **numerical
 and public-behavior reference**. Where the native architecture must

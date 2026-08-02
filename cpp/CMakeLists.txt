@@ -630,4 +630,37 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME conv2d_execution COMMAND test_conv2d_execution)
+
+  # Dtype-general Conv2d and MaxPool2d (Phase I, milestone I5): compiles
+  # conv2d.cpp and pooling.cpp directly so it reaches the hidden
+  # tf::conv2d_*_prefers_* predicates and BOTH compute paths per Conv2d
+  # direction at BOTH dtypes, plus the winner-buffer dtype rule the shared
+  # library enforces but does not expose. Deliberately complementary rather
+  # than a superset: the D2-D9 targets keep their hand-computed float64
+  # cases and test_conv2d_execution keeps H9's float64 sweeps, while this
+  # one proves the set I5 opened — all three Conv2d directions and both
+  # pooling directions at both dtypes, the float32 accumulation witnesses
+  # on both traversals of each direction, the float64 winner buffer and
+  # 2**53 plane bound at a float32 pool, and mixed dtype refused in every
+  # participating handle position with the destination unmoved.
+  # storage.cpp is compiled in because the exported wrappers are driven
+  # through real typed storage handles; error.cpp for the guarded wrappers'
+  # thread-local error slot.
+  add_executable(test_dtype_cnn
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_cnn.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/pooling.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_cnn PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_cnn PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_cnn PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_cnn PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_cnn COMMAND test_dtype_cnn)
 endif()
