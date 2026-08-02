@@ -2326,10 +2326,10 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase I — native dtype generalization and float32 CPU support (I0–I7, phase in progress)
+### Phase I — native dtype generalization and float32 CPU support (I0–I8, phase in progress)
 
-**Phase I is the latest phase. Milestones I0 through I7 are complete;
-I8 through I11 are not started.** This is an in-progress entry, not a
+**Phase I is the latest phase. Milestones I0 through I8 are complete;
+I9, I10, and I11 are not started.** This is an in-progress entry, not a
 release entry: no version and **no public capability** is claimed. **Phase
 H remains complete and remains the latest *completed* phase**, and it
 closed at 52 exports.
@@ -2441,6 +2441,88 @@ initialization, LayerNorm, both BatchNorm buffers, and the Phase-G Dropout
 known-answer vector. float32 optimizer state does not exist: `NativeAdam`
 refuses a float32 parameter when it allocates its moments, `NativeSGD` when
 `step()` materializes its learning-rate scalar, and the refusal is atomic.
+
+#### I8 — optimizer state and native checkpoint version 3
+
+**I8 made float32 survive a step and a file, and added no C ABI symbol.**
+I7 left float32 with parameters, modules, and buffers; I8 gives it
+optimizer state and a checkpoint that can say so. It is the smallest
+runtime change of the phase, and deliberately: I3-I7 had already made
+every operation the optimizers compose dtype-general, so the whole of
+float32 `NativeSGD` and `NativeAdam` is three constructors moving to their
+private typed twins — `NativeTensorCore._typed_full` for SGD's per-step
+`lr` scalar and Adam's `_StepConstants`, `NativeTensor._typed_zeros` for
+Adam's moments — each now allocated at **its own parameter's** width.
+Public construction is untouched: `full`, `zeros`, and `from_array` still
+validate against the public registry and still reject float32.
+
+Adam's `m` and `v` match their parameter in dtype, shape, and device,
+start at bit-exact `+0.0`, and stay plain graph-free tensors; counters
+stay Python ints. Allocation is still eager and still releases every
+buffer it built if any allocation fails, proved at **every** moment
+position at both widths. One optimizer may hold parameters of both
+widths: state is per parameter, so each entry is internally
+dtype-consistent and nothing bridges them, and the scalar caches key on
+`(dtype, device)` — so a mixed collection builds one scalar set per
+**active dtype** rather than one per parameter (SGD 1 and 2; Adam 8 and
+16). **Phase H's H4 architecture is preserved whole.**
+
+**Design §15.3's open question was resolved on measurement, and the answer
+was that the two spellings differ.** H4 replaced a native
+`full(1 - beta**t).reciprocal()` composition with a Python
+`1.0 / (1 - beta**t)`, which is an exact substitution at binary64. At
+binary32 it is not: the kernel divides by the **narrowed** denominator
+while Python divides by the un-narrowed one, so the two are reciprocals of
+different real numbers. Over a deterministic sweep — the default betas at
+`t = 1…2000`, betas near 0 and near 1, and 200,000 randomized pairs — they
+disagree by one ULP for a large fraction of inputs, the **default betas
+included**: at `beta1 = 0.9, t = 5`, `0x401C48CA` against `0x401C48CB`. So
+I8 computes the coefficient the way the kernel does, narrowing the
+denominator first. `1 - beta ** t` is still evaluated in binary64, so the
+cancellation §15.3 warns about is still avoided and "float32 throughout"
+stays rejected; the step gains no allocation and no kernel call, because
+binary64's 53 bits exceed the `2p + 2 = 50` a double rounding would need
+to be visible; and at binary64 the narrowing is the identity, so H4's
+original proof stands untouched. The reference is **real native execution
+of the retained pre-H4 composition**, and the witness is proved
+non-vacuous.
+
+**Native checkpoint format version 3** declares every numeric entry's
+dtype explicitly, with accepted versions `(1, 2, 3)`. Every new save
+writes 3 whatever the model holds, because the version describes the
+schema rather than the content. Adam's `"m"` and `"v"` became lists of
+entry objects (`{"array", "shape", "dtype", "device"}`) instead of bare
+archive names, so a moment's metadata is **carried rather than inferred
+positionally** from `"parameters"` — an inference that holds only while
+the two lists agree, which is exactly what a malformed archive violates.
+`_read_arrays` now validates each array against its **declared** dtype
+instead of a hardcoded `np.float64`, so a dtype/payload disagreement is
+rejected in either direction and a foreign byte order fails as part of the
+dtype identity. float32 model values, persistent buffers, and Adam moments
+round-trip **bit for bit**, signed zeros, infinities, subnormals, and NaN
+payloads included. There is **no cast, no `map_location`, and no device
+movement** on either path, proved by parsing the module's AST rather than
+by a substring search that would trip over the docstring promising their
+absence.
+
+**Versions 1 and 2 remain float64-only formats, permanently.** A declared
+float32 entry in a v1/v2 manifest is rejected naming the version and why,
+and a payload is never *guessed* to be float32. I7's save-time refusal was
+removed because there is now a version that can say "float32" — not
+because the older formats became permissive.
+
+**What I8 did not change:** the export count (**54**), `SUPPORTED_DTYPES`
+(`("float64",)`), `SUPPORTED_DEVICES` (`("cpu",)`), `UNSUPPORTED`
+(`("float32", "cuda", "amp")`), `RAW_KERNEL_DTYPES` (`("float64",)`), the
+CTest inventory (**24**), the **in-memory** optimizer state schema
+(version **1** — float32 metadata simply became reachable through it
+without a line changing), any public tensor constructor, any float64
+value, or any transactional, identity, aliasing, or rollback guarantee.
+Neither optimizer gained a `dtype` or `device` argument, because neither
+owns a dtype it could choose — only state that must match a parameter. The
+exact float32 resume proof and the registry itself are milestone **I9**.
+Tests: `tests/test_native_float32_state.py` (135 new); the suite moved
+6,947 → **7,082**, with zero skips.
 
 #### I6 — stable math and classification dtype support
 

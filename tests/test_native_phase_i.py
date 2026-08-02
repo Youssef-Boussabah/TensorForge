@@ -56,6 +56,7 @@ ordinary prose improvements do not require rewriting them. Nothing here
 asserts a character count, a paragraph order, or a benchmark number.
 """
 import ctypes
+import json
 import re
 import subprocess
 import sys
@@ -69,15 +70,22 @@ from tensorforge.backends import cpp
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PHASE_I_DESIGN = REPO_ROOT / "docs" / "native_dtype_float32_design.md"
 
-# The boundary Phase I inherited. The **public** half of it does not move
-# until milestone I9, so these stay exactly as Phase H left them right
-# through I1-I8 even as internal float32 capability appears beneath them.
+# The boundary Phase I inherited. The **public dtype registry** half of it
+# does not move until milestone I9, so those stay exactly as Phase H left
+# them right through I1-I8 even as internal float32 capability appears
+# beneath them.
 I0_DTYPES = ("float64",)
 I0_DEVICES = ("cpu",)
 I0_UNSUPPORTED = ("float32", "cuda", "amp")
 I0_EXPORT_COUNT = 52
+# The checkpoint constants are the one inherited value with a *different*
+# milestone: design §16.1 puts them at **I8**, not I9. They are recorded
+# here as the pre-I8 baseline and asserted against the post-I8 values
+# below, so the move is a stated fact rather than a relaxed assertion.
 I0_CHECKPOINT_VERSION = 2
 I0_CHECKPOINT_VERSIONS = (1, 2)
+I8_CHECKPOINT_VERSION = 3
+I8_CHECKPOINT_VERSIONS = (1, 2, 3)
 
 # What I1 added, and the only thing it added to the ABI. The count is
 # arithmetic over the inherited baseline so the two cannot drift apart.
@@ -279,12 +287,65 @@ def test_the_design_states_its_milestone_status_and_what_is_unshipped():
     status = re.search(r"Phase-I status:(.{0,200})", text, re.I)
     assert status, "the design does not state its milestone status"
     claim = status.group(1)
-    assert re.search(r"\bI0\b.*\bI1\b.*\bI2\b.*complete", claim, re.I), (
-        f"the status line does not record I0, I1 and I2 as complete: {claim!r}"
+    # Structural, and genuinely milestone-agnostic: the line must name a
+    # first milestone, a last completed one, and a first unstarted one, and
+    # must say both "complete" and "not started". Written this way so the
+    # sentence really can be rewritten each milestone without editing this
+    # test — the shape it pinned before was I2's wording, not its shape.
+    completed = re.search(
+        r"\bI0\b.{0,80}?\bI(\d+)\b.{0,40}?complete", claim, re.I
     )
-    assert re.search(r"I3\b.*\bI11\b.*not started", claim, re.I), (
-        f"the status line does not record I3-I11 as unstarted: {claim!r}"
+    assert completed, (
+        f"the status line does not record a completed run starting at I0: "
+        f"{claim!r}"
     )
+    last_complete = int(completed.group(1))
+    unstarted = re.search(
+        r"complete.{0,120}?\bI(\d+)\b.{0,80}?not started", claim, re.I
+    )
+    assert unstarted, (
+        f"the status line does not record which milestones are unstarted: "
+        f"{claim!r}"
+    )
+    first_unstarted = int(unstarted.group(1))
+    # The two halves must meet exactly: no milestone claimed twice, none
+    # left unaccounted for, and the last one is always I11.
+    assert first_unstarted == last_complete + 1, (
+        f"the status line leaves a gap or an overlap between complete "
+        f"({last_complete}) and unstarted ({first_unstarted}): {claim!r}"
+    )
+    assert f"I{len(MILESTONES) - 1}" in claim, (
+        f"the status line does not run to the end of the ladder: {claim!r}"
+    )
+    # ...and the claim is checked against **runtime reality**, so a status
+    # line cannot be advanced ahead of the code. I8 is defined as the
+    # milestone that moves the checkpoint format to 3 (§16.1), which makes
+    # the live constant an independent witness for the I7/I8 boundary. The
+    # old assertion pinned a literal milestone number and so caught this
+    # for free; parsing the split structurally would not, and dropping the
+    # check with it would have been a real weakening.
+    from tensorforge.experimental import native_checkpoint
+
+    if last_complete >= 8:
+        assert native_checkpoint._FORMAT_VERSION == 3, (
+            f"the status line claims I{last_complete} complete, but the "
+            f"checkpoint format is still version "
+            f"{native_checkpoint._FORMAT_VERSION}; I8 is the milestone "
+            f"that moves it to 3"
+        )
+        assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
+    else:
+        assert native_checkpoint._FORMAT_VERSION == 2, (
+            f"the status line claims only I{last_complete} complete, but "
+            f"the checkpoint format has already moved to version "
+            f"{native_checkpoint._FORMAT_VERSION}"
+        )
+    # The public registry is I9's, and the same cross-check applies to it.
+    if last_complete >= 9:
+        assert "float32" in cpp.SUPPORTED_DTYPES
+    else:
+        assert cpp.SUPPORTED_DTYPES == I0_DTYPES
+        assert cpp.UNSUPPORTED == I0_UNSUPPORTED
     # ...and that I0 itself shipped no behavior, which is a historical
     # fact about I0 and stays true however far the phase progresses. A
     # phase that has begun but claims delivery is the exact drift here.
@@ -895,13 +956,29 @@ def test_no_dtype_capability_name_entered_any_registry():
                 assert word not in lowered, (registry, name, word)
 
 
-def test_the_checkpoint_constants_did_not_move():
+def test_the_checkpoint_constants_moved_exactly_once_and_only_at_i8():
+    """The format **name** never moves; the version moved once, at I8.
+
+    Both halves matter. Every version the phase inherited is still
+    accepted — a pre-Phase-I float64 archive still loads — and the only
+    value added is 3. Nothing was dropped, renumbered, or reordered."""
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
-    assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == I0_CHECKPOINT_VERSIONS)
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
+    assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
+    assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+            == I8_CHECKPOINT_VERSIONS)
+    # The inherited versions survive, in order, with exactly one addition.
+    assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS[:len(
+        I0_CHECKPOINT_VERSIONS)] == I0_CHECKPOINT_VERSIONS)
+    assert (set(I8_CHECKPOINT_VERSIONS) - set(I0_CHECKPOINT_VERSIONS)
+            == {I8_CHECKPOINT_VERSION})
+    # ...and the phase's planned end state is where I8 landed.
+    assert I8_CHECKPOINT_VERSION == FINAL_CHECKPOINT_VERSION
+    # The in-memory optimizer state schema is a different thing and did
+    # not move with the file format (design §15, §16.2).
+    from tensorforge.experimental import native_optimizer_state
+    assert native_optimizer_state.FORMAT_VERSION == 1
 
 
 def test_the_production_export_count_is_now_fifty_four():
@@ -1242,8 +1319,15 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
     ``native_sequential.py`` is in the set for documentation only: containers
     take no dtype and enforce none, and saying so is part of the milestone.
 
-    What stays out is what milestone **I8** owns — every optimizer file — so
-    a float32 optimizer cannot appear under cover of "dtype support".
+    **I8 adds the optimizer and checkpoint surface** it always owned: the
+    two optimizer files, and ``native_checkpoint.py`` again — this time to
+    *carry* float32 under format version 3 rather than to refuse it.
+    ``native_optimizer_state.py`` stays out, because the in-memory state
+    schema does not move (design §15, §16.2): float32 metadata becomes
+    reachable through it without a single line changing.
+
+    What stays out is what milestone **I9** owns — the public registry — so
+    public float32 support cannot appear under cover of "optimizer work".
     """
     allowed = {
         "src/tensorforge/backends/cpp.py",
@@ -1257,6 +1341,9 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
         "src/tensorforge/experimental/native_batchnorm.py",
         "src/tensorforge/experimental/native_sequential.py",
         "src/tensorforge/experimental/native_checkpoint.py",
+        # I8: the state-bearing dtype stack.
+        "src/tensorforge/experimental/native_sgd.py",
+        "src/tensorforge/experimental/native_adam.py",
     }
     changed = [path for path in _changed_since(I0_COMMIT)
                if path.startswith("src/")]
@@ -1266,18 +1353,20 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
         f"names: {unexpected}"
     )
     # Stated the other way round as well, so a future milestone that adds a
-    # file cannot satisfy the rule above by accident: the optimizer family
-    # I8 owns is untouched, by name, and so is the stable line.
-    for forbidden in ("native_sgd", "native_adam", "native_optimizer_state",
+    # file cannot satisfy the rule above by accident: the in-memory
+    # optimizer state schema is untouched, by name, and so is the stable
+    # line.
+    for forbidden in ("native_optimizer_state",
                       "tensorforge/nn/", "tensorforge/optim/",
                       "tensorforge/tensor.py", "tensorforge/data.py"):
         assert not any(forbidden in path for path in changed), forbidden
-    # ...and the checkpoint file changed only to *refuse* float32: the
-    # format constants are exactly what Phase G left them.
+    from tensorforge.experimental import native_optimizer_state
+    assert native_optimizer_state.FORMAT_VERSION == 1
+    # ...and the checkpoint format moved exactly to its I8 value.
     from tensorforge.experimental import native_checkpoint
-    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == I0_CHECKPOINT_VERSIONS)
+            == I8_CHECKPOINT_VERSIONS)
 
 
 def test_phase_i_introduced_no_prohibited_external_reference():
@@ -2026,9 +2115,9 @@ def test_i2_moved_no_public_capability_at_all():
     assert cpp.SUPPORTED_DEVICES == I0_DEVICES
     assert cpp.UNSUPPORTED == I0_UNSUPPORTED
     assert cpp.backend_info()["dtype"] == "float64"
-    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == I0_CHECKPOINT_VERSIONS)
+            == I8_CHECKPOINT_VERSIONS)
     exports = _source_exports()
     assert len(exports) == I1_EXPORT_COUNT       # still 54; I2 adds none
     for absent in ("tf_storage_copy_from_typed", "tf_storage_copy_to_typed",
@@ -3031,9 +3120,9 @@ def test_i3_moved_no_public_capability_at_all():
     assert cpp.UNSUPPORTED == I0_UNSUPPORTED
     assert cpp.RAW_KERNEL_DTYPES == ("float64",)
     assert cpp.backend_info()["dtype"] == "float64"
-    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == I0_CHECKPOINT_VERSIONS)
+            == I8_CHECKPOINT_VERSIONS)
     with pytest.raises(ValueError):
         cpp.normalize_dtype("float32")
     exports = _source_exports()
@@ -4427,26 +4516,25 @@ def test_the_raw_utility_kernels_are_still_float64_only():
 
 
 @needs_native
-def test_the_families_i8_owns_still_reject_float32():
-    """The other direction of the boundary, advanced to the I7 line.
+def test_the_families_i8_owns_now_execute_at_float32():
+    """The other direction of the boundary, advanced to the I8 line.
 
     MaxPool2d left the rejecting set at I5, the classification stack at I6,
-    and **Dropout at I7** — so there is no float64-only numerical family
-    left, and this test proves the last one crossed rather than pretending
-    the boundary is where it was.
+    Dropout at I7, and **the optimizers at I8** — so nothing numerical
+    rejects float32 any more, and this test proves the last two crossed
+    rather than pretending the boundary is where it was.
 
-    What is still shut is what milestone **I8** owns: optimizer state at a
-    float32 parameter, and the checkpoint format. Both are asserted here as
-    rejections rather than as absences, because "not implemented" is only a
-    safe state if the attempt actually fails."""
+    What is still shut is what milestone **I9** owns: the public registry.
+    That is asserted as a rejection rather than as an absence, because "not
+    supported" is only a safe state if the attempt actually fails."""
     from tensorforge.experimental import (
         NativeAdam, NativeParameter, NativeSGD, native_checkpoint,
     )
 
     assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
-    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == I0_CHECKPOINT_VERSIONS)
+            == I8_CHECKPOINT_VERSIONS)
 
     core = cpp.NativeTensorCore._typed_from_array(
         np.ones((1, 1, 4, 4), dtype=np.float32), "float32")
@@ -4474,19 +4562,42 @@ def test_the_families_i8_owns_still_reject_float32():
     finally:
         core.close()
 
-    # The I8 boundary. A float32 parameter is constructible at I7, so the
-    # optimizers are genuinely reachable with one — and both must refuse,
-    # because their per-parameter numeric state (Adam's moments, the shared
-    # per-step scalar both build) would have to be allocated at a dtype the
-    # public registry does not admit. They refuse at different points, which
-    # is recorded rather than smoothed over: Adam allocates its moments in
-    # ``__init__`` and fails there; SGD holds no per-parameter tensor state
-    # and fails when ``step()`` materializes its learning-rate scalar.
+    # The I8 line. Both optimizers now *run* on a float32 parameter, and
+    # they are proved by execution rather than by the absence of an error:
+    # the value moves, the version moves once, and every piece of state the
+    # optimizer owns comes back at the parameter's own width.
     parameter = NativeParameter(np.ones(4), dtype="float32")
     try:
-        with pytest.raises(ValueError, match="float32"):
-            NativeAdam([parameter], lr=0.1)
+        adam = NativeAdam([parameter], lr=0.1)
+        try:
+            state = adam.state_dict()
+            try:
+                assert [t.dtype for t in state["m"]] == ["float32"]
+                assert [t.dtype for t in state["v"]] == ["float32"]
+                assert state["parameters"][0]["dtype"] == "float32"
+            finally:
+                for snapshot in state["m"] + state["v"]:
+                    snapshot.close()
+            out = parameter.sum()
+            try:
+                out.backward()
+            finally:
+                out.close()
+            assert parameter.grad.dtype == "float32"
+            before = parameter.to_numpy().copy()
+            adam.step()
+            assert parameter.version == 1
+            assert parameter.to_numpy().dtype == np.float32
+            assert not np.array_equal(parameter.to_numpy(), before)
+            assert adam.step_counts == (1,)
+            assert all(t.dtype == "float32" for t in adam._m + adam._v)
+        finally:
+            adam.close()
+    finally:
+        parameter.close()
 
+    parameter = NativeParameter(np.ones(4), dtype="float32")
+    try:
         optimizer = NativeSGD([parameter], lr=0.1)
         out = parameter.sum()
         try:
@@ -4494,17 +4605,24 @@ def test_the_families_i8_owns_still_reject_float32():
         finally:
             out.close()
         assert parameter.grad.dtype == "float32"
-        before = parameter.to_numpy().copy()
-        version = parameter.version
-        with pytest.raises(ValueError, match="float32"):
-            optimizer.step()
-        # ...and the refusal is atomic: the parameter's value and version
-        # are exactly what they were, so a rejected step is a no-op rather
-        # than a half-applied update.
-        assert np.array_equal(parameter.to_numpy(), before)
-        assert parameter.version == version
+        grad_before = parameter.grad.to_numpy().copy()
+        optimizer.step()
+        # value - lr * grad, at float32, with the gradient retained.
+        assert parameter.version == 1
+        assert parameter.to_numpy().dtype == np.float32
+        assert np.array_equal(parameter.to_numpy(),
+                              np.full(4, 0.9, dtype=np.float32))
+        assert np.array_equal(parameter.grad.to_numpy(), grad_before)
+        assert optimizer.state_dict()["parameters"][0]["dtype"] == "float32"
     finally:
         parameter.close()
+
+    # The I9 boundary, which has *not* moved: the public registry still
+    # refuses float32 and no public constructor builds one.
+    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
+    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    with pytest.raises(ValueError):
+        cpp.normalize_dtype("float32")
 
 
 @needs_native
@@ -4519,9 +4637,9 @@ def test_i4_moved_no_public_capability_at_all():
     assert cpp.UNSUPPORTED == I0_UNSUPPORTED
     assert cpp.RAW_KERNEL_DTYPES == ("float64",)
     assert cpp.backend_info()["dtype"] == "float64"
-    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == I0_CHECKPOINT_VERSIONS)
+            == I8_CHECKPOINT_VERSIONS)
     with pytest.raises(ValueError):
         cpp.normalize_dtype("float32")
     exports = _source_exports()
@@ -5547,9 +5665,9 @@ def test_i5_moved_no_public_capability_at_all():
     assert cpp.UNSUPPORTED == I0_UNSUPPORTED
     assert cpp.RAW_KERNEL_DTYPES == ("float64",)
     assert cpp.backend_info()["dtype"] == "float64"
-    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == I0_CHECKPOINT_VERSIONS)
+            == I8_CHECKPOINT_VERSIONS)
     with pytest.raises(ValueError):
         cpp.normalize_dtype("float32")
     exports = _source_exports()
@@ -7028,9 +7146,9 @@ def test_i6_moved_no_public_capability_at_all():
     assert cpp.UNSUPPORTED == I0_UNSUPPORTED
     assert cpp.RAW_KERNEL_DTYPES == ("float64",)
     assert cpp.backend_info()["dtype"] == "float64"
-    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == I0_CHECKPOINT_VERSIONS)
+            == I8_CHECKPOINT_VERSIONS)
     with pytest.raises(ValueError):
         cpp.normalize_dtype("float32")
     exports = _source_exports()
@@ -8415,62 +8533,81 @@ def test_cross_dtype_state_loading_is_refused_transactionally(dtype):
 # ---------------------------------------------------------------------------
 
 @needs_native
-def test_a_float32_model_cannot_be_written_to_a_version_2_checkpoint(tmp_path):
-    """§16.5: format versions 1 and 2 are float64-only, permanently. The
-    loader already proves every archive array is exactly ``np.float64``, so
-    a float32 payload written under a version-2 manifest would be a file
-    this library refuses to read back — silently unrecoverable.
+def test_a_float32_model_round_trips_through_a_version_3_checkpoint(tmp_path):
+    """§16-§17 at the I8 line: a float32 model saves and reloads **bitwise**
+    under format version 3, which declares the dtype rather than implying it.
 
-    So the save **refuses**, before the temporary file exists, and neither
-    casts nor guesses. Dtype-aware serialization is checkpoint version 3,
-    milestone I8, and it is not started."""
+    The I7 refusal this replaces was correct for a version-2 archive and is
+    still correct *for a version-2 archive* — that half is proved by the
+    dedicated v1/v2 compatibility test. What changed is that there is now a
+    version that can say "float32", so the save no longer has to refuse."""
     from tensorforge.experimental import (
         NativeLinear, load_native_checkpoint, native_checkpoint,
         save_native_checkpoint,
     )
 
-    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == I0_CHECKPOINT_VERSIONS)
+            == I8_CHECKPOINT_VERSIONS)
 
-    module = NativeLinear(3, 2, seed=1, dtype="float32")
     path = tmp_path / "float32.npz"
+    source = NativeLinear(3, 2, seed=1, dtype="float32")
+    restored = NativeLinear(3, 2, seed=9, dtype="float32")
     try:
-        with pytest.raises(ValueError) as error:
-            save_native_checkpoint(path, module)
-        message = str(error.value)
-        assert "float32" in message and "float64 only" in message
-        assert not path.exists(), "a refused save left a file behind"
-    finally:
-        _release(module)
+        save_native_checkpoint(path, source)
+        with np.load(path, allow_pickle=False) as archive:
+            manifest = json.loads(
+                archive["manifest"].tobytes().decode("utf-8")
+            )
+            # The payload is genuinely float32 — not float64 widened.
+            for name in archive.files:
+                if name != "manifest":
+                    assert archive[name].dtype == np.float32, name
+        assert manifest["format_version"] == 3
+        for key in ("weight", "bias"):
+            assert manifest["model"]["entries"][key]["dtype"] == "float32"
 
-    # A float64 model round-trips exactly as before — the boundary refuses
-    # float32 without disturbing anything else.
-    reference = NativeLinear(3, 2, seed=1, dtype="float64")
-    restored = NativeLinear(3, 2, seed=2, dtype="float64")
-    try:
-        save_native_checkpoint(path, reference)
         load_native_checkpoint(path, restored)
         for key in ("weight", "bias"):
             assert _same_bits(getattr(restored, key).to_numpy(),
-                              getattr(reference, key).to_numpy(), "float64")
+                              getattr(source, key).to_numpy(), "float32")
+            assert getattr(restored, key).dtype == "float32"
     finally:
         _release(restored)
+        _release(source)
+
+    # A float64 model round-trips exactly as before, at the same version.
+    reference = NativeLinear(3, 2, seed=1, dtype="float64")
+    target64 = NativeLinear(3, 2, seed=2, dtype="float64")
+    path64 = tmp_path / "float64.npz"
+    try:
+        save_native_checkpoint(path64, reference)
+        load_native_checkpoint(path64, target64)
+        for key in ("weight", "bias"):
+            assert _same_bits(getattr(target64, key).to_numpy(),
+                              getattr(reference, key).to_numpy(), "float64")
+    finally:
+        _release(target64)
         _release(reference)
 
-    # Loading a float64 archive into a float32 model is refused too, and it
-    # is refused **before** anything is replaced.
-    target = NativeLinear(3, 2, seed=3, dtype="float32")
-    try:
-        before = {k: p.to_numpy().copy() for k, p in target.named_parameters()}
-        versions = {k: p.version for k, p in target.named_parameters()}
-        with pytest.raises(ValueError):
-            load_native_checkpoint(path, target)
-        for key, parameter in target.named_parameters():
-            assert _same_bits(parameter.to_numpy(), before[key], "float32")
-            assert parameter.version == versions[key]
-    finally:
-        _release(target)
+    # Dtype is matched exactly, never converted: a float64 archive is
+    # refused by a float32 model and a float32 archive by a float64 model,
+    # each **before** anything is replaced. No cast, no map_location.
+    for archive_path, module_dtype in ((path64, "float32"),
+                                       (path, "float64")):
+        wrong = NativeLinear(3, 2, seed=3, dtype=module_dtype)
+        try:
+            before = {k: p.to_numpy().copy()
+                      for k, p in wrong.named_parameters()}
+            versions = {k: p.version for k, p in wrong.named_parameters()}
+            with pytest.raises(ValueError, match="dtype"):
+                load_native_checkpoint(archive_path, wrong)
+            for key, parameter in wrong.named_parameters():
+                assert _same_bits(parameter.to_numpy(), before[key],
+                                  module_dtype)
+                assert parameter.version == versions[key]
+        finally:
+            _release(wrong)
 
 
 # ---------------------------------------------------------------------------
@@ -9020,9 +9157,9 @@ def test_i7_moved_no_public_capability_at_all():
     assert cpp.backend_info()["dtype"] == "float64"
     assert cpp.backend_info()["supported_dtypes"] == I0_DTYPES
     assert cpp.backend_info()["stable_framework_integration"] is False
-    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == I0_CHECKPOINT_VERSIONS)
+            == I8_CHECKPOINT_VERSIONS)
     with pytest.raises(ValueError):
         cpp.normalize_dtype("float32")
 

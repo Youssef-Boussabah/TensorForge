@@ -573,7 +573,7 @@ def test_e9_adds_no_capability_inventory_entry():
 def test_e9_adds_no_kernel_abi_operation_or_schema():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     for absent in ("tf_core_benchmark", "tf_core_train_step",
                    "tf_core_accuracy", "tf_core_argmax"):
         assert absent not in cpp._CHECKED_KERNELS, absent

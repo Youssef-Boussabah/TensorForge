@@ -75,8 +75,15 @@ PHASE_I_ADDED_EXPORTS = (
     "tf_storage_create_uninitialized_typed",
 )
 CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(PHASE_I_ADDED_EXPORTS)  # 54
+# The same history/today split the export counts above use, for the same
+# reason: Phase H closed at checkpoint version 2 and that is a fact about
+# Phase H which does not move again, while Phase I milestone I8 added the
+# dtype-aware version 3. What Phase H must still be able to claim is that
+# *it* changed nothing — not that nothing has changed since.
 FINAL_CHECKPOINT_VERSION = 2
 FINAL_CHECKPOINT_VERSIONS = (1, 2)
+CURRENT_CHECKPOINT_VERSION = 3
+CURRENT_CHECKPOINT_VERSIONS = (1, 2, 3)
 FINAL_MILESTONES = tuple(f"H{n}" for n in range(11))
 
 
@@ -196,11 +203,40 @@ def test_the_support_boundary_is_exactly_what_phase_h_inherited():
 
 
 def test_the_checkpoint_format_did_not_move():
+    """Phase H added no checkpoint field and no checkpoint version.
+
+    Stated as: every version Phase H closed with is **still accepted**, and
+    the format *name* is still the one G5 fixed. Phase I milestone I8 later
+    added version 3, which is why this is a subset relation rather than an
+    equality — an equality here would silently make this Phase-H record a
+    veto on every later milestone, which is not what it ever claimed."""
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == FINAL_CHECKPOINT_VERSION
+    # Phase H's own record, pinned as literals. Without this the constants
+    # float free and "Phase H closed at version 2" could be quietly
+    # rewritten to whatever the present happens to be, which is the one
+    # thing a closure record exists to prevent.
+    assert FINAL_CHECKPOINT_VERSION == 2
+    assert FINAL_CHECKPOINT_VERSIONS == (1, 2)
+
+    assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
+    assert native_checkpoint._FORMAT_VERSION == CURRENT_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == FINAL_CHECKPOINT_VERSIONS)
+            == CURRENT_CHECKPOINT_VERSIONS)
+    # Nothing Phase H shipped was dropped, and exactly one version has been
+    # added since. Stated as an equality on the delta rather than a subset,
+    # so an extra accepted version fails here too and this record cannot be
+    # satisfied by simply accepting more.
+    assert set(FINAL_CHECKPOINT_VERSIONS).issubset(
+        native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+    )
+    assert (set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS)
+            - set(FINAL_CHECKPOINT_VERSIONS)) == {3}
+    # Order and shape are part of the contract: versions are listed
+    # ascending, and the newest is the one new saves write.
+    accepted = native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+    assert list(accepted) == sorted(accepted)
+    assert accepted[-1] == native_checkpoint._FORMAT_VERSION
 
 
 def test_the_unsupported_capabilities_really_are_unreachable():
@@ -482,7 +518,15 @@ def test_claude_md_states_current_facts_and_points_at_the_docs():
     # closed at — the instructions must not let a reader confuse them.
     assert str(CURRENT_EXPORT_COUNT) in text
     assert str(FINAL_EXPORT_COUNT) in text
-    assert re.search(r"version\s*\**\s*2\b", text), "checkpoint version"
+    # The checkpoint format the library writes **today**, and the fact that
+    # every version it has ever written is still accepted. Both are current
+    # facts, and the instructions must not state only the newer one: a
+    # reader deciding whether an old archive still loads needs the second.
+    assert re.search(
+        rf"version\s*\**\s*{CURRENT_CHECKPOINT_VERSION}\b", text
+    ), "current checkpoint version"
+    for version in FINAL_CHECKPOINT_VERSIONS:
+        assert str(version) in text, f"accepted checkpoint version {version}"
 
     # The documents it must hand off to, rather than duplicate.
     for document in ("docs/native_cpu_performance_design.md",

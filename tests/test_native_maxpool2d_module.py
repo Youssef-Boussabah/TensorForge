@@ -729,7 +729,7 @@ def test_checkpoint_format_version_is_unchanged(tmp_path):
     with np.load(path, allow_pickle=False) as archive:
         manifest = archive["manifest"].tobytes().decode("utf-8")
     assert '"tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 2' in manifest  # schema unchanged by D10
+    assert '"format_version": 3' in manifest  # schema unchanged by D10
     for p in model.parameters():
         p.close()
 

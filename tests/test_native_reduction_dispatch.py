@@ -2154,8 +2154,8 @@ def test_no_capability_dtype_device_or_checkpoint_value_moved():
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2}
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2, 3}
 
 
 def test_the_stable_framework_still_imports_nothing_native():

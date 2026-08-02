@@ -636,7 +636,7 @@ def test_the_integrated_checkpoint_holds_only_model_state(tmp_path):
     and added the generator section, which a Phase-F model leaves null.
     Phase F itself still contributes no manifest field."""
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     model = NativePhaseFClassifier()
     optimizer = NativeAdam(model.parameters(), lr=LR)
     x, targets = _inputs()
@@ -648,7 +648,7 @@ def test_the_integrated_checkpoint_holds_only_model_state(tmp_path):
         names = list(archive.files)
         manifest = archive["manifest"].tobytes().decode("utf-8")
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 2' in manifest
+    assert '"format_version": 3' in manifest
     # The archived model section is exactly the canonical state keys —
     # every parameter and the four running buffers as ordinary entries,
     # with no normalization configuration (eps, momentum, num_features,
@@ -1601,7 +1601,7 @@ def test_every_state_capability_maps_to_a_real_api():
         assert callable(getattr(experimental, name)), name
         assert name in experimental.__all__, name
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
 
 def test_the_remaining_capability_boundary_is_unchanged():

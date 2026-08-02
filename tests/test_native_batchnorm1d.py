@@ -1950,7 +1950,7 @@ def test_checkpoint_round_trip_reproduces_all_four_tensors(tmp_path):
     from tensorforge.experimental import native_checkpoint
 
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
     source = NativeBatchNorm1d(3, eps=1e-3, momentum=0.4)
     _load(source, gamma=[1.1, 1.2, 1.3], beta=[-0.1, -0.2, -0.3])

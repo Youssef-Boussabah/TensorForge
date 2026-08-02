@@ -902,10 +902,10 @@ proposed optimizations. Every number behind those statements is a local
 characterization of one machine, is reported with its spread, and is
 asserted by no test.
 
-## Phase I — native dtype generalization and float32 CPU support, **I0–I7 complete**
+## Phase I — native dtype generalization and float32 CPU support, **I0–I8 complete**
 
-**Phase I is the latest phase. Milestones I0 through I7 are complete;
-I8 through I11 are not started.** Its architecture contract is
+**Phase I is the latest phase. Milestones I0 through I8 are complete;
+I9, I10, and I11 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
 
@@ -1205,11 +1205,17 @@ they are three different things:
    Six constructors take a dtype; their parameters, buffers, snapshots,
    graphs, and gradients are physically float32; and a float32 model
    forwards, differentiates, normalizes, and drops.
-3. **float32 is still not a supported TensorForge dtype.** float32
-   optimizer state does not exist, checkpoint version 3 does not exist, the
-   exact float32 resume proof has not been run, and no public tensor
-   constructor produces a float32 tensor. Those are milestones I8 and I9,
-   and the registry moves at **I9**.
+3. **float32 state survives a step and a file (I8).** Both native
+   optimizers execute at float32; Adam's `m` and `v` carry their
+   parameter's dtype; one optimizer may hold parameters of both widths,
+   each with independent dtype-consistent state; and native checkpoint
+   **version 3** round-trips float32 model values, persistent buffers, and
+   Adam moments **bit for bit**, with accepted versions now `(1, 2, 3)`.
+   Versions 1 and 2 stay float64-only formats permanently.
+4. **float32 is still not a supported TensorForge dtype.** The exact
+   float32 resume proof has not been run and no public tensor constructor
+   produces a float32 tensor. Those are milestone **I9**, and the registry
+   moves there and nowhere earlier.
 
 The capability detail behind (1), unchanged from I6 except for the last
 two clauses. float32 can be
@@ -1322,7 +1328,7 @@ any later milestone may do:
   characterized on its own and — as in every phase before it — no timing
   assertion, no committed benchmark number, and no result file.
 
-The ladder is I0–I11 — **I0 through I4 landed; I5 is next**: the
+The ladder is I0–I11 — **I0 through I8 landed; I9 is next**: the
 contract (I0), the internal dtype model and
 tagged storage (I1), typed transfer, views, and materialization (I2),
 elementwise and broadcast execution (I3), reductions, matmul, and core

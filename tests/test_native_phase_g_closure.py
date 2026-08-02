@@ -263,8 +263,8 @@ def test_the_checkpoint_format_and_versions_are_pinned():
     from tensorforge.experimental import native_checkpoint
 
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
 
 
 def test_both_generator_state_capabilities_stay_reported():
@@ -297,7 +297,7 @@ def test_a_real_archive_still_declares_format_version_two(tmp_path):
             archive["manifest"].tobytes().decode("utf-8")
         )
     assert manifest["format"] == "tensorforge.native_checkpoint"
-    assert manifest["format_version"] == 2
+    assert manifest["format_version"] == 3
     # The generator section exists and carries the alias topology, not
     # just the states.
     generators = manifest["generators"]

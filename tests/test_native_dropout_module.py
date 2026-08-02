@@ -1254,12 +1254,12 @@ def test_a_version_2_checkpoint_carries_the_module_generator(tmp_path):
     path = tmp_path / "checkpoint.npz"
     save_native_checkpoint(path, model, optimizer)
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     with np.load(path, allow_pickle=False) as archive:
         manifest = json.loads(archive["manifest"].tobytes().decode("utf-8"))
         # Generator state rides the manifest only — never an NPZ array.
         assert not any("generator" in name for name in archive.files)
-    assert manifest["format_version"] == 2
+    assert manifest["format_version"] == 3
     assert sorted(manifest) == ["format", "format_version", "generators",
                                 "metadata", "model", "optimizer"]
     assert manifest["generators"] == {
@@ -1362,7 +1362,7 @@ def test_the_capability_boundary_did_not_move():
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",

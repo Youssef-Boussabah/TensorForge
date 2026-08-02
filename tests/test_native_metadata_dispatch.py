@@ -1245,7 +1245,7 @@ def test_the_capability_registries_did_not_move():
 def test_the_checkpoint_format_did_not_move():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
 
 @needs_native

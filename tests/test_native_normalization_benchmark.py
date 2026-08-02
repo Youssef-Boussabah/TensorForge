@@ -1106,7 +1106,7 @@ def test_f7_adds_no_kernel_abi_declaration_or_checkpoint_change():
     from tensorforge.experimental import native_checkpoint
 
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     for absent in ("tf_core_layer_norm", "tf_core_batch_norm",
                    "tf_core_normalize", "tf_core_running_update"):
         assert absent not in cpp._CHECKED_KERNELS, absent

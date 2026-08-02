@@ -1125,7 +1125,7 @@ def test_checkpoint_manifest_gains_no_normalization_field(build, tmp_path):
         "metadata"
     }
     assert manifest["format"] == "tensorforge.native_checkpoint"
-    assert manifest["format_version"] == 2
+    assert manifest["format_version"] == 3
     # Normalization models register no generator, so the G5 section is an
     # explicit null — the format grew a field, normalization did not.
     assert manifest["generators"] is None
@@ -1533,7 +1533,7 @@ def _norm_corrupt_cases(source, tmp_path):
     cases.append(("wrong-root-type", bad_root))
 
     add("wrong-format", lambda m: {**m, "format": "tensorforge.checkpoint"})
-    add("unsupported-version", lambda m: {**m, "format_version": 3})
+    add("unsupported-version", lambda m: {**m, "format_version": 4})
     add("wrong-version-type", lambda m: {**m, "format_version": "1"})
     add("missing-field",
         lambda m: {k: v for k, v in m.items() if k != "metadata"})
@@ -1691,7 +1691,7 @@ def test_checkpoint_staging_failure_leaks_nothing(
     _collect()
     baseline = len(live_storages)
 
-    real_from_array = NativeTensor.from_array
+    real_from_array = NativeTensor._typed_from_array
     calls = {"n": 0}
 
     def failing_from_array(*args, **kwargs):
@@ -1701,7 +1701,7 @@ def test_checkpoint_staging_failure_leaks_nothing(
         return real_from_array(*args, **kwargs)
 
     monkeypatch.setattr(
-        NativeTensor, "from_array", staticmethod(failing_from_array)
+        NativeTensor, "_typed_from_array", staticmethod(failing_from_array)
     )
     with pytest.raises(_Boom):
         load_native_checkpoint(path, model)
@@ -2190,7 +2190,7 @@ def test_f5_adds_no_capability_or_public_surface():
         assert name not in cpp.RAW_KERNELS
     # The checkpoint format did not move.
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     # No new public buffer-mutation API, and no NativeModule.close().
     assert not hasattr(NativeModule, "close")
     for banned in ("set_running_stats", "fill_", "copy_"):

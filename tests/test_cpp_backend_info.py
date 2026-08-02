@@ -187,7 +187,7 @@ def test_the_deliberate_dropout_overlap_ended_at_the_g10_closure():
     # G10 has run: the capability is closed, and the conditions that
     # justified the old allowance are settled.
     assert "dropout" not in cpp.UNSUPPORTED
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
 
 # --- guardrails: the advertised capabilities must match reality ------------
@@ -489,4 +489,4 @@ def test_f9_closed_phase_f_without_registering_anything():
     # The checkpoint format did not move at closure.
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3

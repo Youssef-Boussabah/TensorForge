@@ -1286,4 +1286,4 @@ def test_native_softmax_checkpoint_schema_is_untouched():
     is still 1 (docs/native_classification_design.md §12)."""
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3

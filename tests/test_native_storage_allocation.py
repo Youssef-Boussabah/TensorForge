@@ -1517,8 +1517,8 @@ def test_h1_changed_no_capability_registry():
 def test_h1_left_the_checkpoint_contract_at_version_two():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
 
 
 def test_the_installed_python_backend_has_no_poison_control():

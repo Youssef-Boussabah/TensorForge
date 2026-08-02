@@ -37,8 +37,10 @@ The contract (all tested in tests/test_native_adam.py):
   state entry per unique parameter is allocated **eagerly**: first
   moment ``m`` and second moment ``v`` as plain graph-free
   ``NativeTensor`` zeros (never ``NativeParameter``; fresh owning
-  contiguous storage of exactly the parameter's shape/dtype/device;
-  never registered in a module, so never in ``model.state_dict()``),
+  contiguous storage of exactly the parameter's shape/dtype/device —
+  a float32 parameter's moments are float32, at construction, at
+  replacement, and after a load; never registered in a module, so never
+  in ``model.state_dict()``),
   plus a per-parameter integer step count starting at 0. A constructor
   failure mid-allocation closes every buffer created so far and
   touches no user parameter or gradient. The optimizer owns exactly
@@ -73,11 +75,13 @@ The contract (all tested in tests/test_native_adam.py):
   bias-correction reciprocals are evaluated in Python (Phase H,
   milestone H4) rather than by allocating a one-element tensor and
   running the native ``reciprocal`` on it. That is an **exact
-  substitution, not a reassociation**: the kernel *is* ``1.0 / x`` on
-  the same IEEE-754 binary64 value, and IEEE-754 division is correctly
+  substitution, not a reassociation**, at both widths: the kernel *is*
+  ``T(1) / x`` on the narrowed denominator, and division is correctly
   rounded, so both spellings produce the same bits — the results are
   bit-identical to the pre-H4 composition, which the test suite retains
-  and executes natively as its reference. Any
+  and executes natively as its reference. Reaching that equality at
+  float32 required narrowing the denominator before the Python division
+  (Phase I, milestone I8; see ``_StepConstants.corrections``). Any
   phase-1 failure closes every staged temporary and changes no value,
   version, moment, counter, or gradient — the same optimizer recovers
   on a later valid step. Phase 2 commits each active entry in stored
@@ -135,6 +139,27 @@ The contract (all tested in tests/test_native_adam.py):
   version, or gradient and never aliasing or consuming caller state.
   No file format exists (native checkpoint archives are v3.14). See
   the two method docstrings for the complete contract.
+- **Both element widths run** (Phase I, milestone I8). Every tensor in a
+  step — the moments, the bias-corrected estimates, the denominator, the
+  update, and each staged parameter value — is at its parameter's own
+  dtype, with no hidden float64 intermediate; hyperparameters stay Python
+  floats and step counters stay Python ints. One optimizer may hold
+  float32 and float64 parameters at once: state is per parameter, so each
+  entry is internally dtype-consistent and the scalar caches simply key
+  on the width. A gradient or moment of the wrong dtype raises before
+  anything is staged, in both directions, and float64 results are
+  bit-identical to what they were. ``NativeAdam`` gained no ``dtype``
+  argument — it owns no dtype it could choose, only state that must match
+  a parameter — and float32 is still not a publicly supported dtype
+  (design §27.3).
+
+  **One numerical decision was made on measurement, not inheritance**
+  (design §15.3). H4's bias-correction reciprocal is evaluated in Python
+  rather than by the native kernel, which is exact at binary64 but *not*
+  at binary32, because the kernel divides by the narrowed denominator.
+  I8 narrows the denominator first, so the coefficient is the kernel's
+  value at both widths; see ``_StepConstants.corrections`` for the
+  witness and the double-rounding argument that keeps it allocation-free.
 - **Lifetime is explicit.** ``close()`` (idempotent; ``with`` blocks
   work) releases every owned m/v buffer exactly once and makes
   ``step()``/``zero_grad()`` raise deterministically. It never closes
@@ -229,12 +254,26 @@ class _StepConstants:
     @staticmethod
     def _build(values, dtype, device):
         """The scalar cores for ``values``, or nothing at all: a failure
-        part-way closes what it built before propagating."""
+        part-way closes what it built before propagating.
+
+        Phase I, milestone I8 routes this through the private typed
+        constructor so a scalar is built at **the parameter's** width. A
+        coefficient has no dtype of its own to choose — it must match the
+        operand it multiplies, or the step becomes the mixed-dtype request
+        the runtime refuses (design §9) — so there is nothing here for the
+        public registry to decide. ``NativeTensorCore.full`` still
+        validates publicly and still rejects float32 (design §27.3).
+
+        Each value is a Python binary64 hyperparameter, and the fill
+        narrows it **once** to the element type before the loop (design
+        §7.4). One rounding, at the boundary, of a value computed at the
+        widest precision available — which is exactly what §7.4 asks for.
+        """
         cores = []
         try:
             for value in values:
-                cores.append(cpp.NativeTensorCore.full(
-                    (), value, dtype=dtype, device=device
+                cores.append(cpp.NativeTensorCore._typed_full(
+                    (), value, dtype, device=device
                 ))
         except BaseException:
             for core in cores:
@@ -263,19 +302,56 @@ class _StepConstants:
         ``1 / (1 - beta ** t)``, as broadcast scalar cores.
 
         H4 evaluates the reciprocal in Python rather than allocating
-        ``1 - beta ** t`` and calling the native ``reciprocal`` on it. That
-        is an exact substitution, not a reassociation: the native kernel
-        *is* ``1.0 / x`` on the same IEEE-754 binary64 value (see
-        ``op_reciprocal`` in ``cpp/src/elementwise.cpp``), and IEEE-754
-        division is correctly rounded, so there is exactly one possible
-        result and both spellings produce it bit for bit. The saving is one
-        allocation and one kernel call per coefficient per parameter."""
+        ``1 - beta ** t`` and calling the native ``reciprocal`` on it,
+        saving one allocation and one kernel call per coefficient. At
+        binary64 that is an exact substitution: the kernel *is*
+        ``T(1) / x`` on the same IEEE-754 value (``ReciprocalOp`` in
+        ``cpp/include/tf_elementwise_internal.h``) and division is
+        correctly rounded, so both spellings produce the one possible
+        result bit for bit.
+
+        **That proof does not survive narrowing, and Phase I milestone I8
+        measured it rather than assuming it** (design §15.3). At float32
+        the kernel divides by the *narrowed* denominator, so the two
+        spellings are not the same function of ``x``:
+        ``float32(1 / x64)`` rounds the true reciprocal of ``x64`` once,
+        while the kernel computes the reciprocal of ``float32(x64)`` — a
+        different real number. They disagree by one ULP for a large
+        fraction of ordinary inputs, the **default betas included**: at
+        ``beta1 = 0.9, t = 5`` the first gives ``0x401C48CA`` and the
+        kernel ``0x401C48CB``.
+
+        So the denominator is narrowed to the element type **first**, and
+        the reciprocal is taken of that — which is what the kernel does,
+        and what §15.3 pre-committed to for exactly this outcome. Two
+        properties make it a pure Python step with no allocation and no
+        kernel call, so H4 is preserved whole:
+
+        * ``1 - beta ** t`` is still evaluated in Python binary64, so the
+          cancellation §15.3 warns about (``1 - beta2 ** t`` for large
+          ``t``) is still avoided. Only the *reciprocal* moved.
+        * dividing the narrowed denominator in binary64 and narrowing the
+          quotient once is **provably** the binary32 division: binary64's
+          53 bits exceed the ``2p + 2 = 50`` a double rounding would need
+          to be visible. The same theorem the project already relies on
+          for every single correctly-rounded I3 operation.
+
+        At float64 the narrowing is the identity, so this is H4's shipped
+        expression unchanged, bit for bit.
+
+        The narrowed denominator can never be zero or subnormal, so the
+        Python division cannot raise and cannot overflow. ``betas`` is
+        validated to ``0.0 <= beta < 1.0``, so ``beta <= 1 - 2**-53`` and
+        ``beta ** t <= 1 - 2**-53`` for every ``t >= 1``; the denominator
+        therefore lies in ``[2**-53, 1.0]``, whose narrowing stays normal
+        at binary32 (whose smallest normal is ``2**-126``) and whose
+        reciprocal reaches at most ``2**53``, far below ``FLT_MAX``."""
         key = (dtype, device, t)
         cores = self._corrections.get(key)
         if cores is None:
             cores = self._build(
-                (1.0 / (1.0 - self._beta1 ** t),
-                 1.0 / (1.0 - self._beta2 ** t)),
+                (1.0 / cpp._narrowed_to_dtype(1.0 - self._beta1 ** t, dtype),
+                 1.0 / cpp._narrowed_to_dtype(1.0 - self._beta2 ** t, dtype)),
                 dtype, device,
             )
             self._corrections[key] = cores
@@ -399,15 +475,25 @@ class NativeAdam:
         # releases every buffer created so far and touches nothing else.
         m_buffers = []
         v_buffers = []
+        # Phase I, milestone I8: the private typed constructor, so a
+        # moment is allocated at **its own parameter's** dtype. The public
+        # ``zeros`` validates against the public registry and would reject
+        # a float32 parameter's state; a moment has no dtype of its own to
+        # choose, so there is nothing for a public gate to decide here —
+        # matching the parameter is the only correct answer, and building
+        # the pair at float64 beside a float32 parameter would be the
+        # mixed-dtype request the runtime refuses (design §9). Public
+        # construction is unchanged: ``NativeTensor.zeros(...,
+        # dtype="float32")`` still raises (design §27.3).
         try:
             for parameter in unique:
-                m_buffers.append(NativeTensor.zeros(
+                m_buffers.append(NativeTensor._typed_zeros(
                     parameter.shape,
-                    dtype=parameter.dtype, device=parameter.device,
+                    parameter.dtype, device=parameter.device,
                 ))
-                v_buffers.append(NativeTensor.zeros(
+                v_buffers.append(NativeTensor._typed_zeros(
                     parameter.shape,
-                    dtype=parameter.dtype, device=parameter.device,
+                    parameter.dtype, device=parameter.device,
                 ))
         except BaseException:
             for buffer in m_buffers:

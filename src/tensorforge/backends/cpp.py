@@ -760,6 +760,33 @@ def _normalize_internal_dtype(dtype):
     return dtype
 
 
+def _narrowed_to_dtype(value, dtype):
+    """A Python float narrowed to ``dtype``'s precision — the Python-side
+    mirror of the **one** narrowing ``tf_storage_fill`` performs (Phase I,
+    milestone I8; design §7.4).
+
+    A scalar crosses the C ABI as a ``double`` and every typed fill narrows
+    it once, before the loop, to the storage's element type. Occasionally a
+    caller has to know that narrowed value *before* it materializes
+    anything, because a later scalar step must see exactly what the kernel
+    would have seen. The one caller today is ``NativeAdam``'s
+    bias-correction coefficient: the native ``reciprocal`` kernel divides
+    ``T(1)`` by the **narrowed** denominator, so evaluating the reciprocal
+    in Python has to narrow the denominator first or it computes a
+    different function (design §15.3, resolved at I8 with a witness).
+
+    It is not a second dtype authority and must not become one: the
+    narrowing is performed by ``_DTYPE_NUMPY``, the same table every typed
+    constructor already uses to decide what a dtype means on the Python
+    side, and a test proves this agrees with an actual ``tf_storage_fill``
+    round trip at both widths. At float64 it is the identity.
+
+    Not a cast of a tensor, and not a public conversion surface — a
+    ``double`` argument being converted to the element type is exactly what
+    §7.4 already specifies for every scalar primitive."""
+    return float(_DTYPE_NUMPY[_normalize_internal_dtype(dtype)](value))
+
+
 def normalize_device(device="cpu"):
     """Validate and canonicalize a native device tag.
 

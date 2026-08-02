@@ -78,7 +78,7 @@ and Runtime Efficiency — is complete (H0–H10) and is the latest
 *completed* phase**; both are recorded further below.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I7 are complete; I8 through I11
+latest phase. Milestones I0 through I8 are complete; I9, I10, and I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
 was design, guardrail tests, and documentation reconciliation, and no
@@ -233,18 +233,50 @@ out. The native CTest inventory moved **23 → 24** (`test_dtype_dropout`),
 which carries the cross-dtype drop-pattern identity, the narrow-once scale
 witness, and the unchanged validation matrix at both widths.
 
+**I8 delivered float32 optimizer state and native checkpoint version 3.**
+Both `NativeSGD` and `NativeAdam` execute at float32 — Adam's `m` and `v`
+carry their parameter's dtype, one optimizer may hold parameters of both
+widths with independent dtype-consistent state per parameter, and neither
+gained a `dtype` or `device` argument, because they own no dtype they
+could choose. No C++ changed and **no export was added**: I3-I7 had already
+generalized every operation the optimizers compose, so three constructors
+moving to their private typed twins was the whole runtime change, and
+H4's once-per-step scalar architecture is preserved whole (the caches key
+on `(dtype, device)`, so a mixed collection builds one scalar set per
+*active dtype* rather than one per parameter). Design §15.3's open
+question was **resolved on measurement**: H4's Python bias-correction
+reciprocal is an exact substitution at binary64 but not at binary32,
+because the kernel divides by the **narrowed** denominator — the two
+spellings differ by one ULP for a large fraction of inputs, the default
+betas included — so the denominator is narrowed first and the reciprocal
+taken of that, which is what the kernel does, at no allocation and no
+kernel call, with float64 bit-identical to before. Native checkpoint
+**version 3** declares every numeric entry's dtype explicitly, accepts
+versions `(1, 2, 3)`, writes 3 on every new save whatever the model holds,
+and carries Adam's moments as entry objects rather than bare archive names
+so their metadata is stated rather than inferred positionally. float32
+model values, persistent buffers, and Adam moments round-trip **bit for
+bit**; a dtype disagreement is rejected in either direction with no cast,
+no `map_location`, and no device movement; and versions 1 and 2 remain
+float64-only formats permanently, never guessing a payload to be float32.
+Every transactional, identity, aliasing, and rollback guarantee is
+unchanged, and the **in-memory** optimizer state schema stayed at
+version 1.
+
 **Everything else on this page is still exactly what Phase H left**:
-float64 CPU only, native checkpoint format version **2** with versions
-**(1, 2)** accepted, `SUPPORTED_DTYPES == ("float64",)`, and
-`UNSUPPORTED == ("float32", "cuda", "amp")`. Every *numerical* family in
-the runtime is dtype-general as of I7 — storage, transfer, views,
-elementwise/unary execution, reductions, matmul, Conv2d, MaxPool2d,
+float64 CPU only, `SUPPORTED_DTYPES == ("float64",)`, and
+`UNSUPPORTED == ("float32", "cuda", "amp")`. The native checkpoint format
+is now version **3** with versions **(1, 2, 3)** accepted — a schema move
+design §16.1 assigned to I8, not a capability move. Every *numerical*
+family in the runtime is dtype-general as of I7 — storage, transfer,
+views, elementwise/unary execution, reductions, matmul, Conv2d, MaxPool2d,
 softmax, log-softmax, fused cross-entropy, normalization, Dropout, view
-backward, and Core autograd — and the experimental state-owning modules can
-be constructed at float32. What that is **not** is a support claim: float32
-optimizers do not exist, checkpoint version 3 does not exist, and no public
-tensor constructor produces a float32 tensor. Those are milestones I8 and
-I9, and the registry moves at I9.
+backward, and Core autograd — the experimental state-owning modules can be
+constructed at float32, and as of I8 their state survives both an
+optimizer step and a checkpoint. What that is **not** is a support claim:
+the exact float32 resume proof has not been run and no public tensor
+constructor produces a float32 tensor. Those are milestone **I9**, and the
+registry moves there.
 
 The contract's **exactly two** new C ABI symbols for the entire phase
 (`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,

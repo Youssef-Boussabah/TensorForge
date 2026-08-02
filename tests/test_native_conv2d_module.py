@@ -817,7 +817,7 @@ def test_checkpoint_schema_unchanged(tmp_path):
     with np.load(path, allow_pickle=False) as archive:
         manifest = json.loads(bytes(archive["manifest"]).decode("utf-8"))
     assert manifest["format"] == "tensorforge.native_checkpoint"
-    assert manifest["format_version"] == 2
+    assert manifest["format_version"] == 3
     assert set(manifest["model"]["keys"]) == {"weight", "bias"}
 
 

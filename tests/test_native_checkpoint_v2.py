@@ -123,16 +123,49 @@ def _tamper(source, target, mutate_manifest=None, raw_manifest=None):
     return str(target)
 
 
+def _downgrade_moments(manifest):
+    """Rewrite a v3 optimizer section's ``"m"``/``"v"`` entry objects back
+    to the bare archive-name lists v1 and v2 used (Phase I, milestone I8).
+
+    Version 3 carries each moment's shape/dtype/device explicitly; the
+    older formats implied them positionally from ``"parameters"``. A
+    fabricated legacy archive has to be a *genuine* one, so the helpers
+    that build one downgrade the moments too — otherwise they produce a
+    file no released TensorForge ever wrote, and the loader is right to
+    reject it."""
+    section = manifest.get("optimizer")
+    if isinstance(section, dict) and section.get("type") == "NativeAdam":
+        for label in ("m", "v"):
+            listed = section.get(label)
+            if isinstance(listed, list):
+                section[label] = [
+                    item["array"] if isinstance(item, dict) else item
+                    for item in listed
+                ]
+    return manifest
+
+
 def _as_version_1(source, target):
     """The same archive rewritten as a genuine format-version 1 file:
-    version 1 and **no** ``"generators"`` field at all, which is exactly
-    what a pre-G5 TensorForge wrote."""
+    version 1, **no** ``"generators"`` field at all, and bare-name Adam
+    moments — exactly what a pre-G5 TensorForge wrote."""
     def strip(manifest):
         manifest = {k: v for k, v in manifest.items() if k != "generators"}
         manifest["format_version"] = 1
-        return manifest
+        return _downgrade_moments(manifest)
 
     return _tamper(source, target, strip)
+
+
+def _as_version_2(source, target):
+    """The same archive rewritten as a genuine format-version 2 file:
+    version 2, the ``"generators"`` section kept, and bare-name Adam
+    moments — exactly what a pre-I8 TensorForge wrote."""
+    def downgrade(manifest):
+        manifest["format_version"] = 2
+        return _downgrade_moments(manifest)
+
+    return _tamper(source, target, downgrade)
 
 
 class SharedStreamModel(NativeModule):
@@ -250,10 +283,10 @@ def _close(model, optimizer=None):
 
 
 @needs_native
-def test_the_format_name_is_unchanged_and_the_version_is_two():
+def test_the_format_name_is_unchanged_and_the_version_is_three():
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     assert native_checkpoint._MANIFEST_KEYS == {
         "format", "format_version", "model", "optimizer", "generators",
         "metadata",
@@ -272,7 +305,7 @@ def test_a_generator_free_model_writes_an_explicit_null(tmp_path):
     path = tmp_path / "plain.npz"
     save_native_checkpoint(path, model)
     manifest = _manifest_of(path)
-    assert manifest["format_version"] == 2
+    assert manifest["format_version"] == 3
     assert "generators" in manifest
     assert manifest["generators"] is None
     load_native_checkpoint(path, model)          # round-trips unchanged
@@ -1046,7 +1079,7 @@ def test_a_v1_manifest_carrying_a_generator_section_is_rejected(tmp_path):
 
 
 @needs_native
-@pytest.mark.parametrize("version", [0, 3, 99, -1])
+@pytest.mark.parametrize("version", [0, 4, 99, -1])
 def test_unsupported_versions_fail_before_any_live_state(tmp_path, version):
     model = SharedStreamModel()
     source = tmp_path / "src.npz"
@@ -1156,7 +1189,7 @@ def test_a_staging_failure_commits_nothing(tmp_path, monkeypatch,
     before = _fingerprint(model, optimizer)
     baseline = len(live_storages)
 
-    real = NativeTensor.from_array
+    real = NativeTensor._typed_from_array
     calls = {"n": 0}
 
     def failing(*args, **kwargs):
@@ -1165,7 +1198,7 @@ def test_a_staging_failure_commits_nothing(tmp_path, monkeypatch,
             raise MemoryError("forced staging failure")
         return real(*args, **kwargs)
 
-    monkeypatch.setattr(NativeTensor, "from_array", staticmethod(failing))
+    monkeypatch.setattr(NativeTensor, "_typed_from_array", staticmethod(failing))
     with pytest.raises(MemoryError):
         load_native_checkpoint(path, model, optimizer=optimizer)
     monkeypatch.undo()
@@ -1808,7 +1841,7 @@ def test_the_capability_boundary_is_exactly_what_g5_moved():
     from tensorforge.experimental import native_checkpoint as module
 
     # Moved: the format version and the state-support reporting.
-    assert module._FORMAT_VERSION == 2
+    assert module._FORMAT_VERSION == 3
     assert cpp.STATE_SUPPORT == (
         "persistent_buffers", "state_dict", "load_state_dict",
         "generator_state",

@@ -477,7 +477,7 @@ def test_checkpoint_archive_holds_only_persistent_state(tmp_path):
     assert '"keys": ["0.weight", "0.bias", "4.weight", "4.bias"]' in manifest
     # The format contract is untouched by D11.
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 2' in manifest
+    assert '"format_version": 3' in manifest
     for t in (x, y):
         t.close()
     _close(model, optimizer)

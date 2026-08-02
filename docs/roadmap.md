@@ -42,7 +42,7 @@ sections above are the narrative.
 ## The current phase — Phase I
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I7 are complete; I8 through I11
+latest phase. Milestones I0 through I8 are complete; I9, I10, and I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
@@ -192,14 +192,42 @@ at float32 is an observable, separately witnessed property. Generator
 state, its algorithm, its version, and the reserve → commit/abandon call
 accounting are all unchanged, at both widths. **I7 added no export.**
 
-**None of I1 through I7 moved a public capability.** The native runtime is
-still declared float64 CPU only: `float32` is still listed as unsupported,
-`SUPPORTED_DTYPES` still reads `("float64",)`, and the native checkpoint
-format is still `tensorforge.native_checkpoint` version 2 with versions 1
-and 2 accepted — and a float32 model is *refused* by a version-2 save
-rather than written into an archive the loader would reject. What remains
-is exactly what milestones I8 and I9 own: float32 optimizer state,
-checkpoint version 3, the exact float32 resume proof, and the registry
+**I8 delivered float32 optimizer state and native checkpoint version 3.**
+Both `NativeSGD` and `NativeAdam` execute at float32 — Adam's `m` and `v`
+carry their parameter's dtype, one optimizer may hold parameters of both
+widths with independent dtype-consistent state per parameter, and neither
+gained a `dtype` or `device` argument, because they own no dtype they
+could choose. No C++ changed and **no export was added**: I3-I7 had already
+generalized every operation the optimizers compose, so three constructors
+moving to their private typed twins was the whole runtime change, and
+H4's once-per-step scalar architecture is preserved whole (the caches key
+on `(dtype, device)`, so a mixed collection builds one scalar set per
+*active dtype* rather than one per parameter). Design §15.3's open
+question was **resolved on measurement**: H4's Python bias-correction
+reciprocal is an exact substitution at binary64 but not at binary32,
+because the kernel divides by the **narrowed** denominator — the two
+spellings differ by one ULP for a large fraction of inputs, the default
+betas included — so the denominator is narrowed first and the reciprocal
+taken of that, which is what the kernel does, at no allocation and no
+kernel call, with float64 bit-identical to before. Native checkpoint
+**version 3** declares every numeric entry's dtype explicitly, accepts
+versions `(1, 2, 3)`, writes 3 on every new save whatever the model holds,
+and carries Adam's moments as entry objects rather than bare archive names
+so their metadata is stated rather than inferred positionally. float32
+model values, persistent buffers, and Adam moments round-trip **bit for
+bit**; a dtype disagreement is rejected in either direction with no cast,
+no `map_location`, and no device movement; and versions 1 and 2 remain
+float64-only formats permanently, never guessing a payload to be float32.
+Every transactional, identity, aliasing, and rollback guarantee is
+unchanged, and the **in-memory** optimizer state schema stayed at
+version 1.
+
+**None of I1 through I8 moved a public capability.** The native runtime is
+still declared float64 CPU only: `float32` is still listed as unsupported
+and `SUPPORTED_DTYPES` still reads `("float64",)`. The checkpoint version
+moved at I8, which is a **schema** change design §16.1 always assigned to
+that milestone rather than a support claim. What remains is exactly what
+milestone I9 owns: the exact float32 resume proof and the registry
 itself. No public tensor constructor produces a float32 tensor, so the only
 way to a float32 model is to ask a module for one explicitly. The gap
 between internal capability and public promise is deliberate and closes at

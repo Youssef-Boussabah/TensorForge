@@ -1115,12 +1115,12 @@ def test_the_checkpoint_is_version_two_with_the_expected_sections(tmp_path):
     save_native_checkpoint(path, model, optimizer=optimizer,
                            metadata=progress_metadata(1))
 
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     with np.load(path, allow_pickle=False) as archive:
         manifest = json.loads(archive["manifest"].tobytes().decode("utf-8"))
     assert manifest["format"] == "tensorforge.native_checkpoint"
-    assert manifest["format_version"] == 2
+    assert manifest["format_version"] == 3
     assert manifest["model"]["keys"] == [
         "hidden.weight", "hidden.bias", "batch_norm.gamma", "batch_norm.beta",
         "layer_norm.weight", "layer_norm.bias", "output.weight", "output.bias",
@@ -1311,8 +1311,8 @@ def test_g7_adds_no_capability_or_inventory_entry():
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     assert "generator_state" in cpp.STATE_SUPPORT
     assert "checkpoint_generator_state" in cpp.STATE_SUPPORT
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     assert native_checkpoint._GENERATOR_SECTION_KEYS == {
         "keys", "entries", "aliases"
     }

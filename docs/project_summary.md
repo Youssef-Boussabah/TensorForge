@@ -1655,7 +1655,7 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase I — native dtype generalization and float32 CPU support — is the
-latest phase. Milestones I0 through I7 are complete; I8 through I11
+latest phase. Milestones I0 through I8 are complete; I9, I10, and I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
@@ -1832,13 +1832,41 @@ is still declared float64 CPU only: `SUPPORTED_DTYPES` still reads
 the native checkpoint format is still version 2 with versions 1 and 2
 accepted — and a float32 model is now *refused* by a version-2 save rather
 than written into an archive the loader would reject, which would have been
-a silent, unrecoverable checkpoint. Every numerical family in the runtime
-is dtype-general as of I7, and the experimental state-owning modules can be
-constructed at float32; what does not exist is float32 optimizer state,
-checkpoint version 3, and any public constructor that produces a float32
-tensor. Both optimizers refuse a float32 parameter, atomically. Those are
-milestones I8 and I9. Phase H is untouched, remains complete, and closed at
-52 exports.
+a silent, unrecoverable checkpoint.
+
+**I8 made float32 survive a step and a file, and added no export either.**
+Both `NativeSGD` and `NativeAdam` execute at float32 — Adam's `m` and `v`
+carry their parameter's dtype, one optimizer may hold parameters of both
+widths with independent dtype-consistent state per parameter, and neither
+gained a `dtype` or `device` argument, because neither owns a dtype it
+could choose. No C++ changed: I3-I7 had already generalized every
+operation the optimizers compose, so three constructors moving to their
+private typed twins was the whole runtime change, and Phase H's
+once-per-step scalar architecture is preserved whole. Design §15.3's open
+exactness question was **resolved on measurement**: H4's Python
+bias-correction reciprocal is an exact substitution at binary64 but not at
+binary32, because the kernel divides by the *narrowed* denominator — the
+two spellings differ by one ULP for a large fraction of inputs, the
+default betas included — so the denominator is narrowed first, at no
+allocation and no kernel call, with float64 bit-identical to before.
+Native checkpoint **version 3** declares every numeric entry's dtype
+explicitly, accepts versions `(1, 2, 3)`, writes 3 on every new save, and
+carries Adam's moments as entry objects rather than bare archive names so
+their metadata is stated rather than inferred positionally. float32 model
+values, persistent buffers, and Adam moments round-trip **bit for bit**;
+a dtype disagreement is rejected in either direction with no cast, no
+`map_location`, and no device movement; and versions 1 and 2 remain
+float64-only formats permanently that never guess a payload to be float32.
+Every transactional, identity, aliasing, and rollback guarantee is
+unchanged, and the in-memory optimizer state schema stayed at version 1.
+
+Every numerical family in the runtime
+is dtype-general as of I7, the experimental state-owning modules can be
+constructed at float32, and as of I8 their state survives both an
+optimizer step and a checkpoint; what does not exist is the exact float32
+resume proof and any public constructor that produces a float32 tensor.
+That is milestone **I9**, where the registry moves. Phase H is untouched,
+remains complete, and closed at 52 exports.
 
 The contract locked the phase before any of it was built, and the first
 three items below are the ones I1 delivered: an internal dtype

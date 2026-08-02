@@ -1382,8 +1382,8 @@ def test_the_checkpoint_format_and_supported_versions_did_not_move():
         "tensorforge.experimental.native_checkpoint"
     )
     assert checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert checkpoint._FORMAT_VERSION == 2
-    assert set(checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2}
+    assert checkpoint._FORMAT_VERSION == 3
+    assert set(checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2, 3}
 
 
 @needs_native

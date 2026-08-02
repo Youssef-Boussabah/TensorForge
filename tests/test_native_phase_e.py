@@ -734,7 +734,7 @@ def test_a_classification_checkpoint_round_trip_is_exact_for_both_optimizers(
 def test_the_checkpoint_format_is_version_1_and_holds_no_classification_state(
     tmp_path
 ):
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     model = _classifier()
     optimizer = NativeAdam(model.parameters(), lr=0.05)
     loss_fn = NativeCrossEntropyLoss()
@@ -754,7 +754,7 @@ def test_the_checkpoint_format_is_version_1_and_holds_no_classification_state(
                    "cross_entropy", "softmax", "logit"):
         assert banned not in blob, banned
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 2' in manifest
+    assert '"format_version": 3' in manifest
     _close_all(x, model, optimizer)
 
 

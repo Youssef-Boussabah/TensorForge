@@ -268,6 +268,40 @@ class NativeTensor:
         return tensor
 
     @classmethod
+    def _typed_from_array(cls, values, dtype, device="cpu"):
+        """Private: a contiguous tensor at an **internally representable**
+        dtype holding a copy of ``values`` (Phase I, milestone I8).
+
+        The tensor-level counterpart of
+        ``cpp.NativeTensorCore._typed_from_array`` (I2), private for
+        ``_typed_zeros``'s reason and completing the same small family: the
+        typed ingress boundary, for state that arrives as host data already
+        carrying its own width.
+
+        Its one caller is the native checkpoint loader. A version-3 archive
+        declares each entry's dtype explicitly and the loader has already
+        proved the stored array matches that declaration exactly, in native
+        byte order, so the tensor it stages must be built at the declared
+        width — building it at float64 beside a float32 destination would
+        be the mixed-dtype request the runtime refuses (design §9), and
+        there is no cast that could reconcile them.
+
+        Ingress is **not** a tensor cast (design §9.4): the host array's
+        dtype is validated against ``dtype`` before anything is allocated,
+        so this copies matching bits rather than converting between widths.
+        It widens public construction by exactly nothing:
+        ``NativeTensor.from_array(..., dtype="float32")`` raises unchanged.
+        The result is always a gradient-free leaf — checkpointed state is
+        installed through ``copy_value_`` and the loaders, never adopted as
+        a graph node."""
+        tensor = cls._from_core(
+            cpp.NativeTensorCore._typed_from_array(values, dtype,
+                                                   device=device)
+        )
+        tensor._init_requires_grad(False)
+        return tensor
+
+    @classmethod
     def _typed_zeros(cls, shape, dtype, device="cpu"):
         """Private: a row-major contiguous all-zero tensor of ``shape`` at
         an **internally representable** dtype (Phase I, milestone I7).

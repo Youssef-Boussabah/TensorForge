@@ -1610,7 +1610,7 @@ def test_g2_ships_the_core_layer_and_nothing_above_it():
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert "generator_state" in cpp.STATE_SUPPORT
 
 

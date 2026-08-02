@@ -1325,7 +1325,7 @@ def test_phase_e_keeps_the_checkpoint_format_and_the_shipped_surface():
     from tensorforge.experimental import native_checkpoint
     import tensorforge.experimental as experimental
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     for module in ("NativeFlatten", "NativeConv2d", "NativeMaxPool2d"):
         assert module in cpp.NATIVE_MODULES and module in experimental.__all__
     for op in ("conv2d", "maxpool2d"):
@@ -1990,7 +1990,7 @@ def test_state_support_reports_the_real_in_memory_state_surface():
         assert "generator_state" not in inventory
     # ...and "checkpoint_generator_state" is backed by the real format:
     # version 2, a "generators" manifest field, and both entry points.
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert "generators" in native_checkpoint._MANIFEST_KEYS
     assert "generators" not in native_checkpoint._MANIFEST_KEYS_V1
     assert callable(native_checkpoint.save_native_checkpoint)
@@ -2083,7 +2083,7 @@ def test_f3_shipped_the_first_stateful_native_module():
 
     # The checkpoint format did not move for the new persistent keys.
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
     # No numerical primitive appeared at any layer, and no C++ unit.
     for name in ("batch_norm", "batchnorm", "batch_norm_forward",
@@ -2503,7 +2503,7 @@ def test_f4_completed_the_normalization_module_surface_not_the_phase():
     for source in (REPO_ROOT / "cpp" / "src").glob("*.cpp"):
         text = source.read_text(encoding="utf-8")
         assert "batch_norm" not in text and "layer_norm" not in text, source.name
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # Out-of-scope normalization families never appeared.
@@ -2661,7 +2661,7 @@ def test_f6_shipped_the_normalized_training_and_resume_proof():
         assert name not in cpp.AUTOGRAD_OPS
         assert name not in cpp.RAW_KERNELS
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
     # F5's own design section still records the hardening milestone.
     f5 = _design_section("F5 —", relative_path=PHASE_F_DESIGN)
@@ -2804,7 +2804,7 @@ def test_docs_present_the_shipped_phase_f_integration_suite():
         # unrelated to this milestone, which added no module of its own.
         "NativeDropout",
     )
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
     # Every authoritative status surface agrees that F8 **and** F9
     # shipped — the closure form of the old "F9 has not" check.
@@ -3213,7 +3213,7 @@ def test_capability_commentary_keeps_the_boundary_and_the_closed_phase():
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.backend_info()["unsupported"] == cpp.UNSUPPORTED
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     for module in _NORMALIZATION_MODULES:
         assert module in cpp.NATIVE_MODULES, module
 
@@ -3268,7 +3268,7 @@ def test_the_status_reconciliation_moved_no_capability_surface():
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.backend_info()["stable_framework_integration"] is False
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     # Normalization stayed module composition: no operation, Core method,
     # NativeTensor method, or guarded C ABI symbol anywhere.
     for name in _NORMALIZATION_OP_NAMES:
@@ -3521,7 +3521,7 @@ def test_phase_g_design_locks_the_checkpoint_versioning_contract():
     for field in ("algorithm", "algorithm_version", "seed", "calls"):
         assert field in text, f"the design does not lock the {field!r} field"
     # And the version really has not moved yet.
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
 
 def test_phase_g_design_states_the_stable_native_separation_and_non_goals():
@@ -3585,7 +3585,7 @@ def test_phase_g_runtime_surface_is_generator_state_and_the_g2_core():
 
     # The checkpoint format has not moved.
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
     # G1 shipped: exported from the experimental namespace only, and in
     # no capability inventory — a generator is state, not an operation,
@@ -3799,7 +3799,7 @@ def test_no_surface_overclaims_beyond_what_phase_g_shipped():
     assert "dropout" not in cpp.UNSUPPORTED
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "NativeDropout" in cpp.NATIVE_MODULES
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     for name in _PHASE_G_PUBLIC_NAMES:
         assert not hasattr(experimental, name), name
 
@@ -4198,7 +4198,7 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
     assert hasattr(experimental, "NativeDropout")
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert "dropout" not in cpp.UNSUPPORTED
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     # H4's premise, also from reality: the optimizer really does build its
     # scalar coefficients once per step through a private holder, and the
     # staging seam really does accept one, so retiring H4 from the
@@ -4444,7 +4444,7 @@ def test_the_two_generator_capability_names_stay_distinct():
                 "generator_state_dict", "load_generator_state_dict"):
         assert callable(getattr(NativeModule, api)), api
     # The file half is backed by the real format, not by a new API.
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert "generators" in native_checkpoint._MANIFEST_KEYS
     assert "generators" not in native_checkpoint._MANIFEST_KEYS_V1
     assert callable(native_checkpoint.save_native_checkpoint)
@@ -4600,7 +4600,7 @@ def test_g2_core_inventory_is_exactly_one_operation_and_one_abi_symbol():
         "save_native_checkpoint", "load_native_checkpoint",
         "checkpoint_generator_state",
     )
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     # backend_info() mirrors the live registry, so the report cannot drift.
     info = cpp.backend_info()
     assert tuple(info["tensor_core_ops"]) == cpp.TENSOR_CORE_OPS
@@ -4749,7 +4749,7 @@ def test_g7_did_not_begin_g8_or_any_later_milestone():
     assert "NativeDropout" in cpp.NATIVE_MODULES
     # ...and G5 then persisted the stream: format version 2, with the
     # generator section that version-1 archives will never have.
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert "generators" in native_checkpoint._MANIFEST_KEYS
     assert "generators" not in native_checkpoint._MANIFEST_KEYS_V1
     # No Dropout variants, and the module is a *user* of the fourth
@@ -4802,7 +4802,7 @@ def test_g7_did_not_begin_g8_or_any_later_milestone():
     # G6 is hardening only: it added no export, no inventory entry, and no
     # schema field, so the whole public surface is still exactly G5's.
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     assert native_checkpoint._GENERATOR_SECTION_KEYS == {
         "keys", "entries", "aliases"
     }
@@ -4853,7 +4853,7 @@ def test_g6_is_stated_as_hardening_only_on_every_phase_surface():
     assert (REPO_ROOT / "tests"
             / "test_native_phase_g_hardening.py").is_file()
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
     for surface in PHASE_G_STATUS_SURFACES:
         text = _status_text(surface)
@@ -4935,8 +4935,8 @@ def test_g7_added_no_capability_and_no_public_training_api():
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
     # The example defines helpers; none of them is exported anywhere.
@@ -4986,8 +4986,8 @@ def test_g6_claims_no_new_capability_anywhere():
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     # G6 shipped no example, no benchmark, and no integration suite —
     # those arrived at G7, G8, and G9 and are guarded there. What G6 must
     # still not have produced is a result artifact.
@@ -5038,7 +5038,7 @@ def test_g5_persistence_claims_are_layer_qualified():
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert "dropout" not in cpp.UNSUPPORTED      # closed at G10
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert "checkpoint_generator_state" in cpp.STATE_SUPPORT
 
     for surface in PHASE_G_STATUS_SURFACES:
@@ -5124,7 +5124,7 @@ def test_g4_inventory_is_exactly_one_module():
         "save_native_checkpoint", "load_native_checkpoint",
         "checkpoint_generator_state",
     )
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert tuple(cpp.backend_info()["native_modules"]) == cpp.NATIVE_MODULES
 
 
@@ -5285,7 +5285,7 @@ def test_g3_inventory_is_exactly_one_autograd_operation():
         "save_native_checkpoint", "load_native_checkpoint",
         "checkpoint_generator_state",
     )
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert tuple(cpp.backend_info()["autograd_ops"]) == cpp.AUTOGRAD_OPS
 
 
@@ -6450,8 +6450,8 @@ def test_docs_present_the_shipped_phase_g_integration_suite():
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     assert cpp.NATIVE_MODULES.count("NativeDropout") == 1
     for inventory in (cpp.NATIVE_MODULES, cpp.AUTOGRAD_OPS,
                       cpp.TENSOR_CORE_OPS, cpp.STATE_SUPPORT):
@@ -6729,8 +6729,8 @@ def test_no_current_status_surface_calls_checkpoint_version_one_current():
     F3, F4, E8, and G4) all survive."""
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
 
     subject = re.compile(r"format[^.]{0,60}version 1\b"
                          r"|version 1[^.]{0,60}format", re.I)
@@ -6914,8 +6914,8 @@ def test_phase_h_surfaces_state_the_unchanged_capability_boundary():
 
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
 
     # Every surface that carries a Phase-H section says H0 changed no
     # capability. The subject list is deliberately short: the claim is
@@ -7388,8 +7388,8 @@ def test_h1_left_the_public_capability_boundary_untouched():
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     # Allocation strategy is not a capability and appears in no inventory.
     for value in cpp.backend_info().values():
         if isinstance(value, (tuple, list)):
@@ -7639,8 +7639,8 @@ def test_phase_h_surfaces_still_state_the_unchanged_capability_boundary():
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     # ...and matmul is still exactly where it was in every inventory.
     assert "matmul" in cpp.TENSOR_CORE_OPS
     assert "matmul" in cpp.AUTOGRAD_OPS

@@ -2138,7 +2138,7 @@ def test_dropout_stays_unsupported_at_checkpoint_version_two():
     assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
     assert cpp.SUPPORTED_DTYPES == ("float64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
 
 def test_generator_state_is_not_in_state_dict_but_is_in_a_checkpoint(
@@ -2176,7 +2176,7 @@ def test_generator_state_is_not_in_state_dict_but_is_in_a_checkpoint(
     save_native_checkpoint(path, model, optimizer)
     with np.load(path, allow_pickle=False) as archive:
         manifest = json.loads(archive["manifest"].tobytes().decode("utf-8"))
-    assert manifest["format_version"] == 2
+    assert manifest["format_version"] == 3
     assert manifest["generators"] == {
         "keys": ["g"],
         "entries": {"g": {"algorithm": "tensorforge.splitmix64",

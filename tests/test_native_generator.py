@@ -3105,8 +3105,8 @@ def test_the_checkpoint_format_name_never_moves_and_the_version_did():
     from tensorforge.experimental import native_checkpoint
 
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     # G5 serializes generator state through the generator's own locked
     # snapshot/replacement transactions — never by reaching into the
     # generator's private lock, reservation slot, or token machinery.

@@ -684,5 +684,5 @@ def test_native_cross_entropy_loss_scope_boundaries_hold():
 def test_native_cross_entropy_loss_checkpoint_schema_is_untouched():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert NativeCrossEntropyLoss("sum").state_dict() == {}

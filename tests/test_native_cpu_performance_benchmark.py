@@ -1386,9 +1386,9 @@ def test_h0_changes_no_export():
 def test_h0_leaves_the_checkpoint_contract_at_version_two():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2}
+    assert set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2, 3}
 
 
 def test_h0_adds_no_kernel_or_abi_declaration():

@@ -800,8 +800,8 @@ def test_the_result_schema_version_is_not_the_checkpoint_version():
     from tensorforge.experimental import native_checkpoint
 
     assert bench.RESULT_SCHEMA_VERSION == "1.0"
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     # The harness says so where the constant is defined, so the two
     # version numbers cannot be confused by a later reader.
     source = BENCHMARK_FILE.read_text(encoding="utf-8")
@@ -1215,8 +1215,8 @@ def test_g8_changes_no_capability_inventory():
     assert "NativeDropout" in cpp.NATIVE_MODULES
     assert "generator_state" in cpp.STATE_SUPPORT
     assert "checkpoint_generator_state" in cpp.STATE_SUPPORT
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     # No new kernel, ABI symbol, or Core method arrived with the harness.
     assert "tf_core_dropout_forward" in cpp._CHECKED_KERNELS
     for absent in ("tf_core_dropout_backward", "tf_core_random_uniform",

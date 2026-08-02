@@ -107,8 +107,9 @@ any of them is a capability decision, never a side effect:
 | `SUPPORTED_DTYPES` | `("float64",)` |
 | `SUPPORTED_DEVICES` | `("cpu",)` |
 | `UNSUPPORTED` | `("float32", "cuda", "amp")` |
-| Native checkpoint format | `tensorforge.native_checkpoint`, version **2** |
-| Accepted checkpoint versions | `(1, 2)` |
+| Native checkpoint format | `tensorforge.native_checkpoint`, version **3** |
+| Accepted checkpoint versions | `(1, 2, 3)` |
+| In-memory optimizer state format | version **1** (did not move at I8) |
 | Exported production `tf_*` symbols | **54** (Phase H closed at 52; Phase I milestone I1 added the two typed storage creators, which are the only two the phase adds) |
 
 Since Phase I milestone I1, float32 storage is **allocatable through the C
@@ -154,10 +155,18 @@ That is still not a support claim and does not change a single row above:
 `normalize_dtype("float32")` still raises; no **public** tensor constructor
 produces a float32 tensor (`from_array`, `zeros`, `full` all reject it at
 both layers); `NativeSGD` and `NativeAdam` both refuse a float32 parameter,
-atomically; and a version-2 checkpoint **refuses to save** a float32 model
-rather than writing an archive its own loader would reject. float32
-optimizer state, checkpoint version 3, and the registry itself are
-milestones I8 and I9. The float32 graphs I4–I7 prove are reached through
+atomically. The registry itself is milestone **I9**.
+
+Since I8 that optimizer sentence is history rather than current behavior:
+**both optimizers now execute at float32**, Adam's `m` and `v` carry their
+parameter's dtype, one optimizer may hold parameters of both widths with
+independent dtype-consistent state per parameter, and the native
+checkpoint is **version 3**, which declares every numeric entry's dtype
+explicitly and round-trips float32 model values, buffers, and Adam moments
+bit for bit. Versions 1 and 2 stay float64-only formats permanently and a
+payload is never guessed to be float32. Neither optimizer gained a `dtype`
+or `device` argument — they own no dtype they could choose, only state
+that must match a parameter. The float32 graphs I4–I7 prove are reached through
 the private typed constructors (`_typed`, `_typed_from_array`,
 `_typed_full`, `zeros(..., _trusted_dtype=True)`,
 `NativeTensor._typed_zeros`, `NativeTensor._typed_full`,
@@ -604,16 +613,16 @@ matching docs file (and README links) **in the same milestone**.
     exactly **one** C ABI symbol across the whole phase
     (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
-- **Native line: Phase I at I7** — Native Dtype Generalization and
+- **Native line: Phase I at I8** — Native Dtype Generalization and
   Float32 CPU Support. Contract:
   `docs/native_dtype_float32_design.md`. **I0 (design, contract tests,
   documentation), I1 (the dtype model and dtype-tagged storage), I2
   (typed transfer, views, and materialization), I3 (elementwise,
   broadcast, and unary dtype execution), I4 (reductions, matmul, views,
   and core autograd), I5 (CNN and pooling dtype support), I6 (stable
-  math and classification dtype support), and I7 (modules, parameters,
-  buffers, initialization, normalization, and Dropout) are complete;
-  I8–I11 are not started.**
+  math and classification dtype support), I7 (modules, parameters,
+  buffers, initialization, normalization, and Dropout), and I8 (optimizer
+  state and checkpoint version 3) are complete; I9–I11 are not started.**
   - I1 delivered: the C++ `TfDtype`/`tf::Dtype` model with frozen codes
     `0 = float64` and `1 = float32`, one item-size authority
     (`tf::dtype_item_size` — nothing else may spell a storage width), one
@@ -808,11 +817,52 @@ matching docs file (and README links) **in the same milestone**.
     float32 model. **One pre-existing leak fixed**: `NativeLinear.__init__`
     now closes its weight if the bias allocation fails, as its younger
     siblings already did. CTests moved 23 → 24 (`test_dtype_dropout`).
-  - **Public capability did not move at I1 through I7**:
+  - I8 delivered: **float32 `NativeSGD` and `NativeAdam`**, and native
+    checkpoint **version 3**. No C++ changed and no export was added — I3–I7
+    had already generalized every operation the optimizers compose, so the
+    change is three constructors moving to their private typed twins
+    (`NativeTensorCore._typed_full` for SGD's per-step `lr` scalar and
+    Adam's `_StepConstants`, `NativeTensor._typed_zeros` for Adam's
+    moments), each now allocated at **its own parameter's** width. Adam's
+    `m`/`v` match their parameter in dtype, shape, and device, start at
+    bit-exact `+0.0`, and counters stay Python ints; one optimizer may hold
+    both widths, with independent dtype-consistent state per parameter and
+    the scalar caches keyed on `(dtype, device)` — so a mixed collection
+    builds one scalar set per **active dtype**, not one per parameter, and
+    **H4's architecture is preserved whole**. Neither optimizer gained a
+    `dtype` or `device` argument.
+    **§15.3 was resolved on measurement, and the answer was Outcome B.**
+    H4's Python bias-correction reciprocal is an exact substitution at
+    binary64 but *not* at binary32, because the kernel divides by the
+    **narrowed** denominator: the two spellings differ by one ULP for a
+    large fraction of inputs, the default betas included (`beta1 = 0.9,
+    t = 5` → `0x401C48CA` vs `0x401C48CB`). So the denominator is now
+    narrowed first, through `cpp._narrowed_to_dtype`, and the reciprocal
+    taken of that — which is what the kernel does. `1 - beta ** t` is still
+    binary64, so §15.3's rejection of float32-throughout still holds; the
+    step stays allocation-free and kernel-call-free because binary64's 53
+    bits exceed the `2p + 2 = 50` a double rounding would need; and float64
+    is bit-identical to before. The witness is proved non-vacuous and the
+    reference is **real native execution of the retained pre-H4
+    composition**, not an algebraic re-derivation.
+    Checkpoint v3 declares every numeric entry's dtype explicitly; every
+    new save writes 3 whatever the model holds; Adam's `"m"`/`"v"` became
+    entry objects rather than bare archive names, so a moment's metadata is
+    carried rather than inferred positionally; `_read_arrays` validates
+    each array against its **declared** dtype, so a disagreement fails in
+    either direction and a foreign byte order fails with it; staging goes
+    through a new private `NativeTensor._typed_from_array`, copying matching
+    bits with **no cast anywhere**. Versions 1 and 2 stay float64-only
+    permanently. Every transactional, identity, aliasing, and rollback
+    guarantee is unchanged. Tests: `tests/test_native_float32_state.py`
+    (135); suite 6,947 → **7,082**. No CTest was added (still 24).
+  - **Public capability did not move at I1 through I8**:
     float64 CPU only, `float32` still in `UNSUPPORTED`,
-    `RAW_KERNEL_DTYPES` still `("float64",)`, checkpoint version 2 with
-    (1, 2) accepted. Only the export count changed, 52 → **54**, at I1;
-    I2 through I7 added none.
+    `RAW_KERNEL_DTYPES` still `("float64",)`. Only the export count
+    changed, 52 → **54**, at I1; I2 through I8 added none. The **checkpoint**
+    version moved at I8 — 2 → **3**, accepted `(1, 2, 3)` — which §16.1
+    always assigned to I8 and which is a schema change, not a support
+    claim; the **in-memory** optimizer state schema stayed at version 1.
   - **A dtype-general Core kernel is not a public capability, and neither
     is a float32 module.** I3 generalized `tf_core_relu_backward` because it
     is a forward-shaped numerical primitive, not graph machinery.

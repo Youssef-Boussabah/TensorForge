@@ -11,17 +11,21 @@ change, no kernel, no C ABI symbol, no ctypes declaration, no
 optimizer, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-I status: I0, I1, I2, I3, I4, I5, I6, and I7 complete. I8 through
-I11 are not started.** (Recorded with I5: the I4 commit advanced every other
+**Phase-I status: I0 through I8 complete. I9, I10, and I11 are not
+started.** (Recorded with I5: the I4 commit advanced every other
 status surface but left this paragraph reading "I0-I3 complete" — the §29
 delivered record was already present and correct, and the two-line lag is
 repaired here rather than rewritten away.) The native runtime is
 **publicly** float64 CPU only today and
 stays that way until milestone I9. `SUPPORTED_DTYPES` still reads
-`("float64",)`, `UNSUPPORTED` still reads `("float32", "cuda", "amp")`,
-and the native checkpoint format is still
-`tensorforge.native_checkpoint` version **2** with versions **(1, 2)**
-accepted.
+`("float64",)` and `UNSUPPORTED` still reads `("float32", "cuda", "amp")`.
+
+The native checkpoint format moved at **I8**, which is the milestone §16.1
+always assigned it and not a public-capability change: the format is
+`tensorforge.native_checkpoint` version **3**, with versions **(1, 2, 3)**
+accepted. Versions 1 and 2 remain float64-only formats permanently. The
+**in-memory** optimizer state schema is a separate thing and did not move:
+`native_optimizer_state.FORMAT_VERSION` is still **1**.
 
 What I1 changed, and only this: the library now exports **54** production
 `tf_*` symbols — the 52 Phase H closed with, plus the two typed storage
@@ -1784,6 +1788,77 @@ in binary32 for large `t`, and a hyperparameter is exactly the kind of
 scalar §7.4 says should be computed at the widest available precision and
 narrowed once.
 
+#### 15.3.1 Resolved at I8 — the measurement, and what changed
+
+**The two spellings are not the same function, and the difference is
+ordinary rather than exotic.** Measured, not assumed:
+
+- H4's shipped expression is `float32(1 / x64)` — it rounds the true
+  reciprocal of the *un-narrowed* denominator once;
+- the kernel computes `T(1) / x` on the tensor's element type
+  (`ReciprocalOp` in `cpp/include/tf_elementwise_internal.h`), so at
+  float32 it divides by `float32(x64)`.
+
+Those are reciprocals of two different real numbers, so their correctly
+rounded binary32 results legitimately differ. Over a deterministic sweep
+(the default betas at `t = 1…2000`, betas near 0 and near 1, and 200,000
+randomized `(beta, t)` pairs) they disagree by **one ULP** for a large
+fraction of inputs — **including the default betas**: at `beta1 = 0.9,
+t = 5` the shipped value was `0x401C48CA` and the kernel's `0x401C48CB`.
+
+That is **Outcome B**, the branch §15.3 pre-committed to: I8 computes the
+coefficient the way the kernel does. Concretely, the denominator is
+narrowed to the element type *before* the Python reciprocal:
+
+```python
+1.0 / cpp._narrowed_to_dtype(1.0 - beta ** t, dtype)
+```
+
+Three properties make this the right resolution rather than a retreat:
+
+1. **`1 - beta ** t` is still evaluated in Python binary64.** Only the
+   *reciprocal* moved. The cancellation this section warns about —
+   `1 - beta2 ** t` losing precision in binary32 for large `t` — is still
+   avoided, so the paragraph above is honoured rather than overturned.
+   "Computing coefficients in float32 throughout" stays rejected.
+2. **It costs nothing.** Dividing the narrowed denominator in binary64 and
+   narrowing the quotient once is *provably* the binary32 division:
+   binary64's 53 bits exceed the `2p + 2 = 50` a double rounding would
+   need to be visible — the same theorem §10.1 already relies on for every
+   single correctly-rounded operation. So no allocation and no kernel call
+   were added, and **§15.4's H4 architecture is preserved whole**: still
+   one scalar set per `(dtype, device)`, still one correction pair per
+   `(dtype, device, t)`, still lazy, still released before the commit.
+3. **float64 is untouched.** At binary64 the narrowing is the identity, so
+   the expression is H4's shipped one, bit for bit, and H4's original
+   proof stands exactly as written.
+
+The narrowing itself goes through `cpp._narrowed_to_dtype`, the Python
+mirror of the single narrowing `tf_storage_fill` performs (§7.4). It is
+not a second dtype authority: it narrows through `_DTYPE_NUMPY`, the table
+every typed constructor already uses, and a test proves it agrees with a
+real `tf_storage_fill` round trip at both widths.
+
+**Domain.** The Python division cannot raise or overflow. `betas` is
+validated to `0.0 <= beta < 1.0`, so `beta <= 1 - 2**-53` and
+`beta ** t <= 1 - 2**-53` for every `t >= 1`; the denominator therefore
+lies in `[2**-53, 1.0]`, which stays normal at binary32 (smallest normal
+`2**-126`) and whose reciprocal reaches at most `2**53`, far below
+`FLT_MAX`.
+
+**The invariant coefficients did not need to change.** `beta1`,
+`1 - beta1`, `beta2`, `1 - beta2`, `eps`, and `lr` are each a single value
+computed in binary64 and narrowed once at materialization — the §7.4 rule
+exactly, with no second operation to disagree about. That is asserted as
+bits, and its non-vacuity is asserted too: at float32,
+`float32(1 - beta2)` differs from `float32(1) - float32(beta2)`, so the
+narrow-once rule is genuinely pinned rather than trivially satisfied.
+
+The evidence lives in `tests/test_native_float32_state.py`, which executes
+the **retained pre-H4 composition natively** — materialize at the dtype,
+call the native `reciprocal` — as its reference, rather than comparing
+against an invented algebraic equivalent.
+
 ### 15.4 Phase-H efficiency is preserved
 
 The per-step scalar holder, the once-per-step construction, the
@@ -3528,6 +3603,67 @@ unchanged. CTests moved 23 → **24** (`test_dtype_dropout`).
 - **Exit gate:** `CHECKPOINT_VERSION == 3`,
   `SUPPORTED_CHECKPOINT_VERSIONS == (1, 2, 3)`; full suite green.
 - **Commit message:** `Add dtype-aware native checkpoint version 3`
+
+**Delivered.** Both optimizers execute at float32, and neither gained a
+`dtype` or `device` argument — they own no dtype they could choose, only
+state that must match a parameter. The change is small because I3-I7 had
+already made every operation they compose dtype-general: `NativeSGD`'s
+per-step `lr` scalar and `NativeAdam`'s `_StepConstants` now build through
+`NativeTensorCore._typed_full`, and Adam's moments through
+`NativeTensor._typed_zeros`, so each is allocated at **its own parameter's**
+width. Public construction is untouched — `full`, `zeros`, and `from_array`
+still validate against the public registry and still reject float32.
+
+- **Moments match their parameter** in dtype, shape, and device, start at
+  bit-exact `+0.0`, and stay plain graph-free `NativeTensor`s; counters
+  stay Python ints. Allocation is still eager and still closes every
+  buffer it built if any allocation fails — proved at **every** moment
+  position, at both widths.
+- **One optimizer may hold both widths.** State is per parameter, so each
+  entry is internally dtype-consistent and nothing bridges them. The
+  scalar caches key on `(dtype, device)`, so a mixed collection builds one
+  scalar set per **active dtype** rather than one per parameter: SGD
+  builds 1 scalar for N same-width parameters and 2 for a mixed set; Adam
+  builds 8 and 16. **§15.4's H4 architecture is preserved whole.**
+- **§15.3 was resolved on measurement, and the answer was Outcome B** —
+  see §15.3.1 for the witness, the double-rounding argument that keeps it
+  allocation-free, and why float64 is bit-identical to before.
+- **Checkpoint version 3** declares every numeric entry's dtype
+  explicitly. Every new save writes 3 whatever the model contains, because
+  the version describes the *schema*; model entries and optimizer
+  parameter metadata may now say `"float32"`; and Adam's `"m"`/`"v"`
+  became lists of entry objects (`{"array", "shape", "dtype", "device"}`)
+  instead of bare archive names, so a moment's metadata is **carried
+  rather than inferred positionally** from `"parameters"` — the rejected
+  alternative of §16.2, which holds only while the two lists agree and is
+  exactly what a malformed archive violates.
+- **`_read_arrays` validates each array against its declared dtype**
+  instead of a hardcoded `np.float64`, so a dtype/payload disagreement is
+  a rejection in **either** direction, and a foreign byte order fails as
+  part of the dtype identity. Staging goes through a new private
+  `NativeTensor._typed_from_array`, which copies matching bits — the
+  loader has already proved the payload matches the declaration — so
+  there is **no cast anywhere on the path**, and a test parses the
+  checkpoint module's AST to prove no `map_location`, `astype`, or `cast`
+  identifier exists (a substring search would trip over the docstring that
+  correctly promises their absence).
+- **Versions 1 and 2 are float64-only, permanently.** A declared float32
+  entry in a v1/v2 manifest is rejected naming the version and why, and a
+  payload is never *guessed* to be float32. The I7 save-time refusal was
+  removed because there is now a version that can say "float32" — not
+  because the older formats became permissive.
+- **Every transactional guarantee is unchanged**: whole-checkpoint
+  validate → stage → commit under one rollback guard, in-place restoration
+  preserving identity and aliasing, one increment per unique parameter,
+  and generator state untouched and dtype-independent.
+- **Nothing public moved.** No C ABI export was added (still **54**), the
+  registries are exactly as Phase H left them, `normalize_dtype("float32")`
+  still raises, no public constructor builds a float32 tensor, and the
+  in-memory optimizer state schema is still version 1 — float32 metadata
+  simply became reachable through it without a line changing.
+- **Tests:** `tests/test_native_float32_state.py` (135), plus the Phase-I
+  guardrails advanced from "the families I8 owns still reject float32" to
+  "…now execute at float32". Suite 6,947 → **7,082**, zero skips.
 
 ### I9 — Public float32 integration and exact-resume proof
 

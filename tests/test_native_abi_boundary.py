@@ -2028,8 +2028,8 @@ def test_h7_changed_no_capability_dtype_device_or_checkpoint_value():
                      "tf_storage_copy_from", "tf_storage_copy_to"):
         assert unhooked not in cpp._CHECKED_KERNELS, unhooked
     from tensorforge.experimental import native_checkpoint
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert tuple(sorted(native_checkpoint._SUPPORTED_FORMAT_VERSIONS)) == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert tuple(sorted(native_checkpoint._SUPPORTED_FORMAT_VERSIONS)) == (1, 2, 3)
 
 
 def test_importing_stable_tensorforge_loads_no_native_binding():

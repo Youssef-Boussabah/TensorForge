@@ -1,6 +1,7 @@
-"""Native checkpoint files (Advanced C++ v3.14; format version 2 as of
-Phase G milestone G5 — see docs/backend_experiments.md and
-docs/native_rng_dropout_design.md §10).
+"""Native checkpoint files (Advanced C++ v3.14; format version 3 as of
+Phase I milestone I8 — see docs/backend_experiments.md,
+docs/native_rng_dropout_design.md §10, and
+docs/native_dtype_float32_design.md §16-§17).
 
 ``save_native_checkpoint(path, model, optimizer=None, metadata=None)``
 and ``load_native_checkpoint(path, model, optimizer=None)`` persist a
@@ -15,7 +16,7 @@ framework's no-pickle serialization philosophy
 ``allow_pickle=False`` on load, no code and no object reconstruction.
 
 The archive (format ``"tensorforge.native_checkpoint"``, format
-version 2) contains:
+version 3) contains:
 
 - ``manifest`` — one JSON document encoded as UTF-8 bytes in a 1-D
   ``uint8`` array (never an object array, never pickle):
@@ -28,13 +29,38 @@ version 2) contains:
   NativeAdam — step counts and the m/v archive array names). No Python
   ``id()``, pointer, repr, gradient, parameter version, graph data, or
   closed flag is ever written.
-- one float64 array per model parameter/persistent buffer and per Adam
-  moment, under deterministic zero-padded indexed names:
-  ``model::000000`` … in model-key order, ``optimizer::m::000000`` … /
-  ``optimizer::v::000000`` … in the optimizer's positional order. The
-  manifest maps semantic entries to array names explicitly; duplicate
-  references, missing arrays, and unreferenced extra entries are all
-  rejected on load.
+- one array per model parameter/persistent buffer and per Adam moment,
+  under deterministic zero-padded indexed names: ``model::000000`` … in
+  model-key order, ``optimizer::m::000000`` … / ``optimizer::v::000000``
+  … in the optimizer's positional order. The manifest maps semantic
+  entries to array names explicitly; duplicate references, missing
+  arrays, and unreferenced extra entries are all rejected on load.
+
+**Dtype (v3).** Every numeric entry — model parameter, persistent
+buffer, and Adam moment alike — declares its dtype explicitly as the
+canonical string ``"float64"`` or ``"float32"``, and the loader checks
+that declaration against *both* the stored array (exact NumPy dtype, in
+native byte order) and the live destination (exact equality). A
+disagreement in either direction is a ``ValueError`` naming the entry,
+the expected value, and the found one. **There is no cast, no
+promotion, no ``map_location``, no device movement, and no "closest
+match" anywhere on either path** — a float32 checkpoint loads into a
+float32 model or it does not load. Version 3 is where Adam's ``"m"`` and
+``"v"`` became lists of entry objects (``{"array", "shape", "dtype",
+"device"}``) instead of bare archive names, so a moment's metadata is
+carried rather than inferred positionally from ``"parameters"``: that
+inference holds only while the two lists agree, which is exactly what a
+malformed archive violates.
+
+**Versions 1 and 2 are float64-only formats, permanently.** They predate
+float32 and have no way to say otherwise, so loading one requires every
+declared dtype *and* every stored array to be float64, and a payload is
+**never guessed** to be float32 — not from an array's dtype, not from a
+byte length, not from a shape. A v1/v2 archive therefore loads into a
+float64 model or it fails, which is the correct behavior rather than a
+limitation. The **in-memory** optimizer state schema
+(``native_optimizer_state.FORMAT_VERSION``) is a different thing and
+stays at 1: only the file encoding of the moments moved.
 
 **The generator section (v2).** ``"generators"`` is ``null`` for a model
 with no registered generators — absence is explicit, never inferred from
@@ -64,12 +90,14 @@ that was saved. So ``aliases`` records the topology explicitly and a load
 compares it, strictly and in both directions, against a real
 ``named_generators()`` traversal of the live model.
 
-**Version-1 compatibility.** New saves always write version 2. A
+**Version-1 compatibility.** New saves always write version 3 — the
+version describes the *schema*, not the content, so a float64
+generator-free model still writes 3. A
 version-1 archive (no ``"generators"`` field) remains loadable into a
 model with **no** registered generators and behaves exactly as it always
 did; loading one into a model that **has** generators fails, naming them,
 because no seed and no counter is ever fabricated — not zero, not fresh
-entropy, not the generator's current value. A version-2 archive with a
+entropy, not the generator's current value. A version-2 or version-3 archive with a
 non-null generator section loaded into a generator-free model fails as an
 unexpected-generator error. Any other ``format_version`` fails. There is
 no "latest wins", no upgrade in place, and no silent rewrite of an old
@@ -111,8 +139,9 @@ optimizer, then the complete archive: opened with ``allow_pickle=False``;
 manifest presence, representation, UTF-8, JSON (duplicate object keys
 rejected), root type; exact format identity, a supported version, and the
 version's exact field set; strict optimizer presence/type; model keys
-against the live model and every array's exact float64 dtype and shape
-against both manifest and live destination; optimizer
+against the live model and every array's exact declared dtype (float64
+only at versions 1 and 2) and shape against both manifest and live
+destination; optimizer
 scalars/metadata/counters through the same validators the optimizer
 constructors use; the **complete generator topology** — section shape,
 canonical keys, entries mapping them in order, algorithm and version
@@ -177,6 +206,7 @@ import tempfile
 
 import numpy as np
 
+from ..backends import cpp
 from . import _native_checkpoint_transaction as _transaction
 from ._native_state_lock import state_transaction
 from .native_adam import (
@@ -202,12 +232,19 @@ from .native_tensor import NativeTensor
 
 _FORMAT = "tensorforge.native_checkpoint"
 # The schema version, not a statement about what a particular model
-# contains: every new save writes 2, whether or not the model has
-# generators (a generator-free model writes "generators": null).
-_FORMAT_VERSION = 2
-# Both versions load; the loader dispatches on the value. There is no
-# "latest wins" and no upgrade in place.
-_SUPPORTED_FORMAT_VERSIONS = (1, 2)
+# contains: every new save writes 3, whether or not the model holds a
+# float32 tensor and whether or not it has generators — exactly as v2 was
+# written for generator-free models (Phase I, milestone I8; design §16.1).
+# The format **name** never moves; that is the rule G5 established.
+_FORMAT_VERSION = 3
+# All three versions load; the loader dispatches on the value. There is no
+# "latest wins", no upgrade in place, and no silent rewrite of an old file.
+_SUPPORTED_FORMAT_VERSIONS = (1, 2, 3)
+# Versions 1 and 2 are float64-only formats, permanently (design §16.5):
+# they predate float32 and have no way to say otherwise, so a payload is
+# never *guessed* to be float32 — not from an array's dtype, not from a
+# byte length, not from a shape.
+_FLOAT64_ONLY_VERSIONS = (1, 2)
 _MANIFEST_ENTRY = "manifest"
 _MANIFEST_KEYS = {
     "format", "format_version", "model", "optimizer", "generators",
@@ -219,6 +256,12 @@ _MANIFEST_KEYS = {
 _MANIFEST_KEYS_V1 = _MANIFEST_KEYS - {"generators"}
 _MODEL_SECTION_KEYS = {"keys", "entries"}
 _MODEL_ENTRY_KEYS = {"array", "shape", "dtype", "device"}
+# A version-3 optimizer moment is described by an entry object of exactly
+# the same shape as a model entry (design §16.2 item 3). In v1/v2 "m" and
+# "v" were bare lists of archive names whose shape and dtype were implied
+# positionally by the "parameters" list — which works only while the two
+# lists agree, precisely what a malformed archive violates.
+_MOMENT_ENTRY_KEYS = _MODEL_ENTRY_KEYS
 _SGD_SECTION_KEYS = {"type", "state_format_version", "lr", "parameters"}
 _ADAM_SECTION_KEYS = _SGD_SECTION_KEYS | {"betas", "eps", "step_counts", "m", "v"}
 _GENERATOR_SECTION_KEYS = {"keys", "entries", "aliases"}
@@ -498,36 +541,15 @@ def _coherent_snapshot(model, optimizer, metadata, where):
             entries = {}
             for index, key in enumerate(keys):
                 snapshot = model_state[key]
-                # Phase I, milestone I7 — the version-2 boundary, enforced
-                # on the way **out**.
-                #
-                # Format versions 1 and 2 are float64-only formats,
-                # permanently (design §16.5): the loader proves every
-                # archive array is exactly ``np.float64`` and there is no
-                # dtype in the manifest that could say otherwise. Without
-                # this check a float32 parameter would serialize to a
-                # float32 array under a version-2 manifest — a file this
-                # very library refuses to read back. That is worse than a
-                # rejection: it is a silent, unrecoverable checkpoint.
-                #
-                # Rejecting rather than widening or narrowing is the whole
-                # point. Writing float32 as float64 would invent precision
-                # the model does not have; writing it as float32 would
-                # forge a version-2 payload. Dtype-aware serialization is
-                # checkpoint **version 3**, milestone I8, and it is not
-                # started. This runs inside the state-transaction guard,
-                # before the temporary file exists and before any array is
-                # encoded, so a rejected save leaves the model, the
-                # optimizer, the generators, and the filesystem untouched —
-                # and the ``finally`` below still closes every snapshot.
-                if snapshot.dtype != "float64":
-                    raise ValueError(
-                        f"{where}: cannot save {key!r}: it is "
-                        f"{snapshot.dtype}, and native checkpoint format "
-                        f"version {_FORMAT_VERSION} stores float64 only. "
-                        f"Dtype-aware checkpoints are a later milestone; "
-                        f"nothing is cast, widened, or guessed."
-                    )
+                # Phase I, milestone I8 removed the version-2 float32
+                # rejection that used to stand here. Version 3 declares
+                # every entry's dtype explicitly and its loader validates
+                # the declaration against both the payload and the live
+                # destination, so a float32 parameter now serializes as a
+                # float32 array under a manifest that says so — and reads
+                # back bit for bit. Nothing is cast, widened, narrowed, or
+                # guessed on either side; ``to_numpy()`` materializes at
+                # the snapshot's own dtype and the entry records it.
                 array_name = f"model::{index:06d}"
                 arrays[array_name] = snapshot.to_numpy()
                 entries[key] = {
@@ -560,15 +582,24 @@ def _coherent_snapshot(model, optimizer, metadata, where):
                     optimizer_section["step_counts"] = list(
                         optimizer_state["step_counts"]
                     )
+                    # v3: each moment is an explicit entry object carrying
+                    # its own shape/dtype/device, rather than a bare
+                    # archive name whose metadata the loader would have to
+                    # infer positionally from "parameters" (design §16.2).
                     for label in ("m", "v"):
-                        names = []
+                        entries_out = []
                         for index, snapshot in enumerate(
                             optimizer_state[label]
                         ):
                             array_name = f"optimizer::{label}::{index:06d}"
                             arrays[array_name] = snapshot.to_numpy()
-                            names.append(array_name)
-                        optimizer_section[label] = names
+                            entries_out.append({
+                                "array": array_name,
+                                "shape": list(snapshot.shape),
+                                "dtype": snapshot.dtype,
+                                "device": snapshot.device,
+                            })
+                        optimizer_section[label] = entries_out
             # The generator section is built last but is not "extra": a
             # reservation in flight refuses the whole save here, before
             # the temporary file exists, so an ambiguous mid-draw state
@@ -750,7 +781,7 @@ def _parse_manifest(archive, where):
             f"manifest['format_version'] must be one of "
             f"{list(_SUPPORTED_FORMAT_VERSIONS)}, got {version!r}",
         )
-    expected_keys = _MANIFEST_KEYS if version == 2 else _MANIFEST_KEYS_V1
+    expected_keys = _MANIFEST_KEYS if version >= 2 else _MANIFEST_KEYS_V1
     if set(manifest) != expected_keys:
         _checkpoint_error(
             where,
@@ -761,12 +792,61 @@ def _parse_manifest(archive, where):
     return manifest
 
 
-def _validate_model_section(section, model, where):
+def _validated_entry_dtype(declared, version, entry_path, where):
+    """One declared ``"dtype"`` field, validated for ``version``.
+
+    Two rules, in order (design §16.4, §16.5):
+
+    1. it must be a string the native runtime actually represents —
+       ``cpp._normalize_internal_dtype`` is the authority, so this file
+       keeps no dtype table of its own and cannot drift from the storage
+       layer;
+    2. in a version-1 or version-2 archive it must additionally be exactly
+       ``"float64"``, because those formats *are* float64 by definition.
+
+    Returns the canonical dtype string. Raises a checkpoint ``ValueError``
+    naming the field, the value, and what was expected — before anything
+    live is touched."""
+    if not isinstance(declared, str):
+        _checkpoint_error(
+            where,
+            f"{entry_path}['dtype'] must be a string, got "
+            f"{type(declared).__name__}",
+        )
+    try:
+        canonical = cpp._normalize_internal_dtype(declared)
+    except (TypeError, ValueError) as error:
+        _checkpoint_error(
+            where,
+            f"{entry_path}['dtype'] is {declared!r}, which is not a dtype "
+            f"the native runtime represents: {error}",
+            cause=error,
+        )
+    if version in _FLOAT64_ONLY_VERSIONS and canonical != "float64":
+        _checkpoint_error(
+            where,
+            f"{entry_path}['dtype'] is {declared!r}, but native checkpoint "
+            f"format version {version} stores float64 only. Versions "
+            f"{list(_FLOAT64_ONLY_VERSIONS)} predate float32 and are "
+            f"float64 formats permanently; nothing is cast, widened, or "
+            f"guessed",
+        )
+    return canonical
+
+
+def _validate_model_section(section, model, version, where):
     """Validate manifest['model'] against the live model: exact
     section shape, ordered string keys consistent with the entries
     mapping, key set equal to the model's canonical parameter names,
     and per-key shape/dtype/device equal to the live open parameter.
-    Returns the ordered (key, entry) pairs."""
+    Returns the ordered ``(key, entry, canonical_dtype)`` triples.
+
+    The declared dtype is validated twice over, and both matter: once as a
+    dtype the runtime represents and that this format version may carry
+    (``_validated_entry_dtype``), and once as *exactly* the live
+    destination's dtype. The second is the API contract — a checkpoint
+    whose dtype differs from the model's is a rejection naming both, never
+    a cast, a ``map_location``, or a closest match (design §16.4)."""
     if not isinstance(section, dict) or set(section) != _MODEL_SECTION_KEYS:
         _checkpoint_error(
             where,
@@ -800,6 +880,7 @@ def _validate_model_section(section, model, where):
             f"checkpoint model keys do not match the model: missing "
             f"{missing}, unexpected {unexpected}",
         )
+    dtypes = {}
     for key in keys:
         entry = entries[key]
         entry_path = f"manifest['model']['entries'][{key!r}]"
@@ -830,7 +911,10 @@ def _validate_model_section(section, model, where):
                 f"{entry_path}['shape'] is {tuple(shape)}, the model "
                 f"state entry is {destination.shape}",
             )
-        if entry["dtype"] != destination.dtype:
+        dtype = _validated_entry_dtype(
+            entry["dtype"], version, entry_path, where
+        )
+        if dtype != destination.dtype:
             _checkpoint_error(
                 where,
                 f"{entry_path}['dtype'] is {entry['dtype']!r}, the "
@@ -842,15 +926,23 @@ def _validate_model_section(section, model, where):
                 f"{entry_path}['device'] is {entry['device']!r}, the "
                 f"model state entry is {destination.device!r}",
             )
-    return [(key, entries[key]) for key in keys]
+        dtypes[key] = dtype
+    return [(key, entries[key], dtypes[key]) for key in keys]
 
 
-def _validate_optimizer_section(section, optimizer, where):
+def _validate_optimizer_section(section, optimizer, version, where):
     """Validate manifest['optimizer'] against the live optimizer under
     the strict presence rules, using the same validators the optimizer
     constructors and v3.13 loaders use — so after this passes (and the
     arrays validate), the final optimizer.load_state_dict() commit has
-    no ordinary public failure path left."""
+    no ordinary public failure path left.
+
+    Returns the ordered per-moment ``(archive_name, shape, dtype)`` triples
+    as ``{"m": [...], "v": [...]}`` — empty for NativeSGD and for an
+    absent section. The **in-memory** optimizer state schema
+    (``native_optimizer_state.FORMAT_VERSION``) is untouched at 1 and this
+    function still validates against it; only the *file* encoding of the
+    moments differs between archive versions (design §16.2 item 3)."""
     if section is None:
         if optimizer is not None:
             _checkpoint_error(
@@ -858,7 +950,7 @@ def _validate_optimizer_section(section, optimizer, where):
                 "an optimizer was supplied, but this checkpoint "
                 "contains no optimizer state",
             )
-        return
+        return {"m": [], "v": []}
     if optimizer is None:
         _checkpoint_error(
             where,
@@ -921,24 +1013,95 @@ def _validate_optimizer_section(section, optimizer, where):
             f"invalid optimizer state in the manifest: {error}",
             cause=error,
         )
-    if expected_tag == "NativeAdam":
-        for label in ("m", "v"):
-            names = section[label]
-            if not isinstance(names, list) or not all(
-                isinstance(name, str) for name in names
-            ):
-                _checkpoint_error(
-                    where,
-                    f"manifest['optimizer'][{label!r}] must be a list "
-                    f"of archive array names",
+    moments = {"m": [], "v": []}
+    if expected_tag != "NativeAdam":
+        return moments
+    for label in ("m", "v"):
+        listed = section[label]
+        field = f"manifest['optimizer'][{label!r}]"
+        if not isinstance(listed, list):
+            _checkpoint_error(
+                where,
+                f"{field} must be a list of "
+                + ("moment entry objects" if version >= 3
+                   else "archive array names"),
+            )
+        if len(listed) != len(parameters):
+            _checkpoint_error(
+                where,
+                f"{field} names {len(listed)} arrays, the optimizer "
+                f"stores {len(parameters)} parameters",
+            )
+        for index, item in enumerate(listed):
+            entry_path = f"{field}[{index}]"
+            parameter = parameters[index]
+            if version >= 3:
+                # v3: an explicit entry object, so a mismatch is a
+                # rejection rather than a plausible read. Its dtype is
+                # carried, never inferred from parameters[index] — that
+                # inference works only while the two lists agree, which is
+                # exactly what a malformed archive violates (design §16.2).
+                if (not isinstance(item, dict)
+                        or set(item) != _MOMENT_ENTRY_KEYS):
+                    _checkpoint_error(
+                        where,
+                        f"{entry_path} must have exactly the fields "
+                        f"'array', 'shape', 'dtype', and 'device'",
+                    )
+                if not isinstance(item["array"], str):
+                    _checkpoint_error(
+                        where, f"{entry_path}['array'] must be a string"
+                    )
+                shape = item["shape"]
+                if not isinstance(shape, list) or any(
+                    isinstance(dim, bool) or not isinstance(dim, int)
+                    or dim < 0 for dim in shape
+                ):
+                    _checkpoint_error(
+                        where,
+                        f"{entry_path}['shape'] must be a list of "
+                        f"non-negative ints, got {shape!r}",
+                    )
+                if tuple(shape) != parameter.shape:
+                    _checkpoint_error(
+                        where,
+                        f"{entry_path}['shape'] is {tuple(shape)}, the "
+                        f"optimizer's parameter is {parameter.shape}",
+                    )
+                dtype = _validated_entry_dtype(
+                    item["dtype"], version, entry_path, where
                 )
-            if len(names) != len(parameters):
-                _checkpoint_error(
-                    where,
-                    f"manifest['optimizer'][{label!r}] names "
-                    f"{len(names)} arrays, the optimizer stores "
-                    f"{len(parameters)} parameters",
+                if dtype != parameter.dtype:
+                    _checkpoint_error(
+                        where,
+                        f"{entry_path}['dtype'] is {item['dtype']!r}, the "
+                        f"optimizer's parameter is {parameter.dtype!r}",
+                    )
+                if item["device"] != parameter.device:
+                    _checkpoint_error(
+                        where,
+                        f"{entry_path}['device'] is {item['device']!r}, "
+                        f"the optimizer's parameter is "
+                        f"{parameter.device!r}",
+                    )
+                moments[label].append(
+                    (item["array"], parameter.shape, dtype)
                 )
+            else:
+                # v1/v2: a bare archive name, with shape implied
+                # positionally by "parameters" and dtype float64 by the
+                # format's definition — never guessed from the payload.
+                if not isinstance(item, str):
+                    _checkpoint_error(
+                        where,
+                        f"{field} must be a list of archive array names",
+                    )
+                moments[label].append((
+                    item,
+                    tuple(section["parameters"][index]["shape"]),
+                    "float64",
+                ))
+    return moments
 
 
 def _validate_generator_section(manifest, model, where):
@@ -1180,12 +1343,21 @@ def _validate_generator_section(manifest, model, where):
 def _read_arrays(archive, references, where):
     """Read every referenced array, enforcing the cross-reference
     rules: no duplicate references, no missing arrays, no unreferenced
-    extra entries, and every array exactly float64 (which also rules
-    out object dtype) with the expected shape. ``references`` is an
-    ordered list of ``(archive_name, expected_shape, described_as)``.
-    Returns ``{archive_name: ndarray}``."""
+    extra entries, and every array exactly its **declared** dtype in
+    native byte order (which also rules out object dtype) with the
+    expected shape. ``references`` is an ordered list of
+    ``(archive_name, expected_shape, expected_dtype, described_as)``.
+    Returns ``{archive_name: ndarray}``.
+
+    The dtype comes from the manifest rather than from the payload, so a
+    dtype/payload disagreement is a rejection **in either direction** — a
+    declared float32 backed by a float64 array and the reverse both fail
+    here (design §16.4). Byte order is compared as part of the dtype
+    identity, so a foreign-endian array fails too: TensorForge does not
+    claim cross-endian portability and never silently byte-swaps
+    (design §17.2)."""
     seen = set()
-    for name, _, described_as in references:
+    for name, _, _, described_as in references:
         if name in seen:
             _checkpoint_error(
                 where,
@@ -1204,7 +1376,7 @@ def _read_arrays(archive, references, where):
             f"{missing}, unexpected {unexpected}",
         )
     arrays = {}
-    for name, expected_shape, described_as in references:
+    for name, expected_shape, expected_dtype, described_as in references:
         try:
             array = archive[name]
         except Exception as error:  # e.g. a pickled/object entry
@@ -1214,11 +1386,11 @@ def _read_arrays(archive, references, where):
                 f"read without pickle",
                 cause=error,
             )
-        if array.dtype != np.float64:
+        if array.dtype != np.dtype(expected_dtype):
             _checkpoint_error(
                 where,
                 f"archive entry {name!r} ({described_as}) must be "
-                f"float64, got {array.dtype}",
+                f"{expected_dtype}, got {array.dtype}",
             )
         if array.shape != expected_shape:
             _checkpoint_error(
@@ -1262,25 +1434,27 @@ def load_native_checkpoint(path, model, optimizer=None):
         )
     try:
         manifest = _parse_manifest(archive, where)
+        version = manifest["format_version"]
         model_entries = _validate_model_section(
-            manifest["model"], model, where
+            manifest["model"], model, version, where
         )
-        _validate_optimizer_section(manifest["optimizer"], optimizer, where)
+        moment_entries = _validate_optimizer_section(
+            manifest["optimizer"], optimizer, version, where
+        )
         generator_entries = _validate_generator_section(manifest, model, where)
         references = [
-            (entry["array"], tuple(entry["shape"]), f"model key {key!r}")
-            for key, entry in model_entries
+            (entry["array"], tuple(entry["shape"]), dtype,
+             f"model key {key!r}")
+            for key, entry, dtype in model_entries
         ]
         optimizer_section = manifest["optimizer"]
-        if optimizer_section is not None and isinstance(optimizer, NativeAdam):
-            for label in ("m", "v"):
-                for index, name in enumerate(optimizer_section[label]):
-                    shape = tuple(
-                        optimizer_section["parameters"][index]["shape"]
-                    )
-                    references.append(
-                        (name, shape, f"optimizer {label}[{index}]")
-                    )
+        for label in ("m", "v"):
+            for index, (name, shape, dtype) in enumerate(
+                moment_entries[label]
+            ):
+                references.append(
+                    (name, shape, dtype, f"optimizer {label}[{index}]")
+                )
         arrays = _read_arrays(archive, references, where)
         metadata = manifest["metadata"]
         if not isinstance(metadata, dict):
@@ -1301,16 +1475,25 @@ def load_native_checkpoint(path, model, optimizer=None):
     staged_model = {}
     staged_moments = {"m": [], "v": []}
     rollback_snapshots = []
+    # Every staged tensor is built at its **declared** dtype, which
+    # ``_read_arrays`` has already proved the payload matches exactly. The
+    # typed ingress is therefore a bit-for-bit copy of matching data, not a
+    # conversion: there is no cast anywhere on this path, and a float64
+    # archive still takes the identical route it always did (design §9.4).
     try:
-        for key, entry in model_entries:
-            staged_model[key] = NativeTensor.from_array(arrays[entry["array"]])
+        for key, entry, dtype in model_entries:
+            staged_model[key] = NativeTensor._typed_from_array(
+                arrays[entry["array"]], dtype
+            )
         staged_optimizer = None
         if optimizer_section is not None:
             if isinstance(optimizer, NativeAdam):
                 for label in ("m", "v"):
-                    for name in optimizer_section[label]:
+                    for name, _, dtype in moment_entries[label]:
                         staged_moments[label].append(
-                            NativeTensor.from_array(arrays[name])
+                            NativeTensor._typed_from_array(
+                                arrays[name], dtype
+                            )
                         )
                 staged_optimizer = {
                     "format_version": _STATE_FORMAT_VERSION,
