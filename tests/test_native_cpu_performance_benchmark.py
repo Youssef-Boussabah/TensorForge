@@ -1540,21 +1540,40 @@ def test_the_harness_only_reaches_the_native_line_through_public_names():
     assert private <= {"graph_freed", "graph_resources"}, private
 
 
+# The harness inventory as H0 found and left it. Kept as **history**: H0
+# added a new harness and subsumed none of the Phase D/E/F/G ones, and that
+# statement is about H0 and stays true however many later phases add their
+# own. A later phase's addition is named below rather than folded in here,
+# so "Phase H changed no other harness" remains checkable.
+H0_HARNESSES = (
+    "benchmark_native_autograd.py",
+    "benchmark_native_classification.py",
+    "benchmark_native_cnn.py",
+    "benchmark_native_cpu_performance.py",
+    "benchmark_native_dropout.py",
+    "benchmark_native_normalization.py",
+    "cpp_backend.py",
+)
+
+# Phase I, milestone I10 adds exactly one harness, and adds it as a
+# **separate file** precisely so that this one keeps its case inventory,
+# its CLI, and the meaning of every number it published.
+LATER_PHASE_HARNESSES = ("benchmark_native_dtype.py",)
+
+
 def test_the_benchmark_is_separate_from_every_earlier_phase_harness():
     """H0 adds a new harness; it does not modify or subsume the Phase
-    D/E/F/G ones."""
+    D/E/F/G ones — and no later phase has taken one away either.
+
+    Stated as "H0's set, plus exactly what a later phase is on record as
+    adding" rather than as a flat literal, so the H0 claim stays a claim
+    about H0 instead of quietly becoming a claim about today."""
     harnesses = sorted(p.name for p in (REPO_ROOT / "benchmarks").glob("*.py"))
-    assert harnesses == [
-        "benchmark_native_autograd.py",
-        "benchmark_native_classification.py",
-        "benchmark_native_cnn.py",
-        "benchmark_native_cpu_performance.py",
-        "benchmark_native_dropout.py",
-        "benchmark_native_normalization.py",
-        "cpp_backend.py",
-    ]
+    assert harnesses == sorted(H0_HARNESSES + LATER_PHASE_HARNESSES)
+    # Every harness H0 knew about is still there, under its own name.
+    assert set(H0_HARNESSES) <= set(harnesses)
     names = set()
-    for name in harnesses:
+    for name in H0_HARNESSES:
         if name == "cpp_backend.py":
             continue
         text = (REPO_ROOT / "benchmarks" / name).read_text(encoding="utf-8")
@@ -1562,7 +1581,7 @@ def test_the_benchmark_is_separate_from_every_earlier_phase_harness():
         assert match, name
         names.add(match.group(1))
     assert bench.BENCHMARK_NAME in names
-    assert len(names) == len(harnesses) - 1
+    assert len(names) == len(H0_HARNESSES) - 1
 
 
 # --------------------------------------------------------------------------

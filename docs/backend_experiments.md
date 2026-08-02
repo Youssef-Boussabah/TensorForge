@@ -78,7 +78,7 @@ and Runtime Efficiency — is complete (H0–H10) and is the latest
 *completed* phase**; both are recorded further below.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I9 are complete; I10 and I11 are not
+latest phase. Milestones I0 through I10 are complete; I11 is not
 started, so the phase is active rather than closed.** Its architecture
 contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
@@ -1491,6 +1491,196 @@ deliberately frozen as the reference/benchmark set. Several were lifted
   `NativeTensor` layer, and Phases C–D built a training stack on it.)*
 - A proof of mechanism, not a performance claim. *(Still true — every
   benchmark on this page is a characterization.)*
+
+## Native dtype characterization (Phase I, milestone I10)
+
+`benchmarks/benchmark_native_dtype.py` characterizes the native CPU
+runtime at **float64 and float32 separately**, across 24 cases in eleven
+families.
+
+```
+uv run python benchmarks/benchmark_native_dtype.py                  # 21 rounds
+uv run python benchmarks/benchmark_native_dtype.py --repetitions 25
+uv run python benchmarks/benchmark_native_dtype.py --smoke          # correctness only
+uv run python benchmarks/benchmark_native_dtype.py --json           # stdout only
+uv run python benchmarks/benchmark_native_dtype.py --dtype float32 --family matmul
+```
+
+**Why it is a separate file.** Phase H's harness is the instrument that
+phase's ladder was chosen from and re-measured against, and its case
+inventory is pinned by test as "the H0 set". Adding a dtype axis to it
+would have changed that inventory and made every Phase-H number mean
+something different from what it meant when it was published. So Phase H's
+harness is untouched — every CLI option and every test still passing — and
+dtype characterization lives beside it.
+
+**No speed is asserted anywhere**, there is no threshold and no CI job that
+fails on a number, and **no result file of any kind is written**: `--json`
+goes to stdout and nowhere else, which is checked structurally and by
+running the CLI from an empty directory and showing it stayed empty.
+
+**Correctness is gated before timing**, with four gates chosen per family
+rather than one blanket rule: `bitwise` for transfer and elementwise (one
+correctly-rounded IEEE operation per destination element, so bit equality
+really is the contract); `summation_bound` for reductions and matmul;
+`tolerance` for softmax; and `finite` for the composed and stateful cases,
+whose numerics are proved by the test suite and where the gate's job is to
+show the case ran, at the right width, and produced finite values.
+
+The `summation_bound` gate is worth recording, because the first full run
+**failed on it** and that failure was informative. TensorForge preserves a
+strict sequential accumulation order by contract; NumPy's reference goes
+through BLAS, which blocks, vectorizes, and may use FMA. Over 192 binary32
+additions the two legitimately diverge, and a fixed `atol` fails first on
+the output cell that happens to sum to nearly zero — which says nothing
+about either implementation. The gate is now the classical bound for
+sequential summation, `2 * n * eps * max sum|terms|`, computed from the
+actual operands: **derived rather than tuned**, and reported with the
+observed difference beside it so the number can be checked instead of
+trusted.
+
+### Measured results
+
+**Environment.** Windows 11 (10.0.26200), Intel64 Family 6 Model 170
+Stepping 4 (a hybrid performance/efficiency-core part), 22 logical
+processors, Python 3.13.14, NumPy 2.5.1, MSVC Release build of the C++
+backend (the active `_tensorforge_cpp.dll`), no other heavy process
+running. Exact command:
+
+```
+uv run python benchmarks/benchmark_native_dtype.py --repetitions 25
+```
+
+5 warm-up repetitions, **25 measured repetitions**, medians with the
+**interquartile range** as the spread statistic. These are a local
+characterization of one machine, one build, and one moment. They are not a
+performance contract and are not cross-machine comparable.
+
+**Control band** (identical code and inputs, measured twice): **6.95 % at
+float64, 0.81 % at float32**. A reading inside the band is neutral,
+whatever its sign.
+
+#### float64
+
+| case | median | IQR | rel. IQR | gate |
+|---|---|---|---|---|
+| host_ingress | 408.30 µs | 16.30 µs | 3.99 % | bitwise |
+| host_egress | 583.40 µs | 66.55 µs | 11.41 % | bitwise |
+| contiguous_copy | 334.10 µs | 149.90 µs | 44.87 % | bitwise |
+| strided_materialize | 634.10 µs | 36.15 µs | 5.70 % | bitwise |
+| elementwise_contiguous | 409.90 µs | 11.95 µs | 2.92 % | bitwise |
+| elementwise_broadcast | 419.20 µs | 145.70 µs | 34.76 % | bitwise |
+| elementwise_small | 6.20 µs | 0.20 µs | 3.23 % | bitwise |
+| reduction_contiguous | 57.70 µs | 9.20 µs | 15.94 % | summation_bound |
+| reduction_strided | 457.30 µs | 17.60 µs | 3.85 % | summation_bound |
+| matmul_contiguous | 1106.30 µs | 42.00 µs | 3.80 % | summation_bound |
+| matmul_transposed_view | 2695.90 µs | 370.40 µs | 13.74 % | summation_bound |
+| conv2d_forward | 666.10 µs | 30.75 µs | 4.62 % | finite |
+| conv2d_input_backward | 452.50 µs | 51.90 µs | 11.47 % | finite |
+| maxpool2d_forward | 99.60 µs | 13.00 µs | 13.05 % | finite |
+| softmax | 95.70 µs | 6.80 µs | 7.11 % | tolerance |
+| cross_entropy_forward | 132.30 µs | 7.20 µs | 5.44 % | finite |
+| layernorm_step | 1510.50 µs | 559.55 µs | 37.04 % | finite |
+| batchnorm_training_step | 1525.00 µs | 235.75 µs | 15.46 % | finite |
+| dropout_step | 268.70 µs | 21.40 µs | 7.96 % | finite |
+| sgd_step | 1456.00 µs | 60.50 µs | 4.16 % | finite |
+| adam_step | 8716.60 µs | 1102.30 µs | 12.65 % | finite |
+| training_step | 3905.90 µs | 769.20 µs | 19.69 % | finite |
+| control_identical | 20.00 µs | 0.65 µs | 3.25 % | bitwise |
+| control_twin | 18.70 µs | 0.50 µs | 2.67 % | bitwise |
+
+#### float32
+
+| case | median | IQR | rel. IQR | gate |
+|---|---|---|---|---|
+| host_ingress | 239.20 µs | 18.75 µs | 7.84 % | bitwise |
+| host_egress | 400.00 µs | 45.90 µs | 11.48 % | bitwise |
+| contiguous_copy | 235.30 µs | 11.85 µs | 5.04 % | bitwise |
+| strided_materialize | 454.70 µs | 167.90 µs | 36.93 % | bitwise |
+| elementwise_contiguous | 215.70 µs | 14.25 µs | 6.61 % | bitwise |
+| elementwise_broadcast | 223.50 µs | 22.80 µs | 10.20 % | bitwise |
+| elementwise_small | 6.30 µs | 0.35 µs | 5.56 % | bitwise |
+| reduction_contiguous | 26.50 µs | 0.40 µs | 1.51 % | summation_bound |
+| reduction_strided | 432.40 µs | 20.35 µs | 4.71 % | summation_bound |
+| matmul_contiguous | 587.20 µs | 87.85 µs | 14.96 % | summation_bound |
+| matmul_transposed_view | 2628.70 µs | 448.55 µs | 17.06 % | summation_bound |
+| conv2d_forward | 602.10 µs | 108.10 µs | 17.95 % | finite |
+| conv2d_input_backward | 439.70 µs | 12.65 µs | 2.88 % | finite |
+| maxpool2d_forward | 81.90 µs | 7.85 µs | 9.58 % | finite |
+| softmax | 75.40 µs | 2.00 µs | 2.65 % | tolerance |
+| cross_entropy_forward | 108.00 µs | 128.30 µs | 118.80 % | finite |
+| layernorm_step | 930.60 µs | 194.00 µs | 20.85 % | finite |
+| batchnorm_training_step | 1019.90 µs | 71.70 µs | 7.03 % | finite |
+| dropout_step | 249.30 µs | 15.05 µs | 6.04 % | finite |
+| sgd_step | 882.80 µs | 104.70 µs | 11.86 % | finite |
+| adam_step | 4645.50 µs | 297.65 µs | 6.41 % | finite |
+| training_step | 3929.00 µs | 703.85 µs | 17.91 % | finite |
+| control_identical | 12.50 µs | 0.30 µs | 2.40 % | bitwise |
+| control_twin | 12.40 µs | 0.45 µs | 3.63 % | bitwise |
+
+### What the numbers teach, and what they do not
+
+**There is deliberately no float32/float64 ratio anywhere here.** That
+number is a property of one machine's memory bandwidth, not of
+TensorForge, and publishing it would turn a measurement into a promise the
+project cannot keep across machines. The two tables above are the
+prescribed form; nothing here divides one by the other, and no statement
+below is a guarantee about any other machine.
+
+- **The Python-plus-ctypes floor is visible and dtype-independent.**
+  `elementwise_small` (a 4×4 multiply) reads **6.20 µs** at float64 and
+  **6.30 µs** at float32 — a difference well inside the control band, and
+  in the middle of the ~7–12 µs floor Phase H documented. Below roughly
+  1,000 elements the kernel work is invisible whatever the element size.
+  This is an architectural floor, and I10 did not try to optimize it.
+- **Several families appeared bandwidth-sensitive on this machine**:
+  transfer (`host_ingress`, `host_egress`, `contiguous_copy`,
+  `strided_materialize`), contiguous elementwise, contiguous reduction,
+  and the contiguous matmul. That is the expected and honest shape — half
+  the bytes moved for the same number of operations — but it is an
+  observation about *this* run, not a project claim.
+- **Neutral findings, published as prominently as the rest.** Four cases
+  sit inside or within a whisker of the float64 control band:
+  `matmul_transposed_view`, `conv2d_input_backward`, `reduction_strided`,
+  and `elementwise_small`. The strided cases being neutral is the
+  interesting one: those take the retained generic odometer, where the
+  per-element index arithmetic — `int64` layout metadata, identical at
+  both widths — dominates the element loads.
+- **The integrated `training_step` is the flattest result in the table**,
+  at 3905.90 µs and 3929.00 µs. A whole training iteration is dominated by
+  per-call dispatch across ~200 native calls and by the strided and
+  small-tensor work inside it, so the bandwidth wins visible in the
+  isolated elementwise cases do not survive to the workload level on this
+  machine. This is a **negative finding for anyone expecting float32 to
+  speed up training here**, and it is stated plainly rather than buried.
+- **Some readings are noisy and are reported as such.**
+  `cross_entropy_forward` at float32 has a relative IQR of **118.8 %**,
+  and `contiguous_copy`, `elementwise_broadcast`, and `layernorm_step` at
+  float64 exceed 34 %. Those medians should not be quoted; the spread
+  column is there so a reader can see which ones to distrust.
+- **Run-to-run variance on this machine is large, and that is the most
+  important caveat here.** Three consecutive control-only runs gave
+  `control_identical` / `control_twin` pairs differing by +15 %, −58 %,
+  and −5 %, with absolute medians for **byte-identical code** ranging from
+  11.6 µs to 42.6 µs. The likely cause is thread migration between
+  performance and efficiency cores on this hybrid part. The run published
+  above happens to have a tight control band (6.95 % / 0.81 %), but that
+  is a property of that run, not of the machine — which is exactly why the
+  control pair is measured every time and why no case here is treated as
+  distinguishable from another without it.
+
+**Float64 performance was not re-measured against a pre/post baseline, and
+deliberately so.** I10's one production change is a validation branch in
+the checkpoint **loader** — no C++, no kernel, no allocation path, and
+nothing any case above executes. Every numerical path is byte-identical to
+I9, so there is no "post" to compare a "pre" against, and manufacturing an
+alternating pre/post comparison where no numerical code changed would
+produce noise dressed as evidence. Every Phase-H structural and
+allocation-count test continues to pass unchanged, and the tables above
+were not regenerated after the loader repair because nothing they measure
+can reach it.
+
+---
 
 ## Benchmarks
 

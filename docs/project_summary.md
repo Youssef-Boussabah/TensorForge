@@ -204,7 +204,7 @@ the two widths never mix, because casting, promotion, and mixed-dtype
 arithmetic are all absent and a mismatch raises before any allocation; the
 seven handle-free raw utility kernels stay float64-only permanently; and
 AMP, float16, bfloat16, and integer tensors stay outside that phase too.
-Phase I itself is **not closed** — I10 and I11 remain.) Its Dropout is one
+Phase I itself is **not closed** — I11 remains.) Its Dropout is one
 deterministic
 stream behind an explicit `NativeGenerator`, not a generic random-number
 API, and there is no `Dropout2d`/`Dropout3d`. Native checkpoints persist
@@ -1657,7 +1657,7 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase I — native dtype generalization and float32 CPU support — is the
-latest phase. Milestones I0 through I9 are complete; I10 and I11 are not
+latest phase. Milestones I0 through I10 are complete; I11 is not
 started, so the phase is active rather than closed.** Its architecture
 contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
@@ -1891,8 +1891,40 @@ match exactly; live native storage returns to baseline; and a float32 run
 is never required to reproduce a float64 one. I9 changed no C++, added no
 export (still 54) and no CTest (still 24), and moved no checkpoint field or
 version. Phase H is untouched, remains complete, and closed at 52 exports.
-**Phase I is not closed**: I10 (hardening and benchmarking) and I11
-(cross-platform validation and closure) have not started.
+
+**I10 hardened and characterized what I9 published, and found one real
+defect while doing it.** The saver validated checkpoint metadata
+recursively; the loader checked only that its root was a dict — and
+because `json.loads` accepts the non-standard `NaN`/`Infinity`/`-Infinity`
+literals, a hand-written archive could return a value no save could have
+written. The **same** validator now runs on both sides, during archive
+prevalidation, before anything is staged or mutated. That is I10's **only**
+production change: no C++, no ABI or export change, no numerical runtime
+change, no benchmark-path change, and no checkpoint schema, version, or
+manifest field moved, so float64 and float32 numerical behavior and every
+Phase-H path are unchanged. Everything else it added is evidence: the §9.2
+mixed-dtype authority map exercised at every layer and
+**every operand position independently**; the C ABI proved to be a second
+authority rather than a restatement of Python's, by forcing a mismatch
+production Python cannot emit and separately by neutering the Python guard
+— each with its own negative control; the established validation orderings
+recorded rather than chosen; allocation and wrapper-failure cleanup at both
+widths; **all four graph-owned saved-resource families made to coexist in
+one float32 graph** — BatchNorm in eval, Dropout put back into training
+through the public per-module API — and driven through retained, failed,
+one-shot, abandoned, and no-grad lifecycles; a **117-case**
+malformed-checkpoint matrix at both dtypes — the metadata cases re-run at
+v1, v2, and v3 separately — with a complete-world fingerprint after every
+rejection; the concurrency contracts re-proved at exactly the width they
+are claimed; and a new benchmark harness that characterizes both dtypes
+**separately**, deliberately kept out of Phase H's instrument so that every
+number Phase H published keeps its meaning. One finding was recorded rather
+than "fixed", because it is an absence rather than a defect:
+`maxpool2d_backward` has exactly one value operand, so there is no second
+value position for a mixed-dtype rule to govern. Suite 7,409 → **7,626**.
+
+**Phase I is not closed**: I11 (cross-platform validation and closure) has
+not started.
 
 The contract locked the phase before any of it was built, and the first
 three items below are the ones I1 delivered: an internal dtype

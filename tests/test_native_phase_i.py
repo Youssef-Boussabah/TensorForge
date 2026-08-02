@@ -1380,42 +1380,156 @@ I9_DOCUMENTATION_ONLY = frozenset({
     "src/tensorforge/experimental/native_cross_entropy_loss.py",
 })
 
+# The benchmark surface the phase is allowed to add, and the milestone that
+# owns it. §22 assigns **all** benchmark work to I10, and I10 adds exactly
+# one harness: a separate file, so that Phase H's instrument keeps its case
+# inventory, its CLI, its tests, and — most importantly — the meaning of
+# every number it ever published. Modifying an existing benchmark still
+# fails here, which is what makes that separation checkable rather than
+# merely intended.
+I10_ADDED_BENCHMARKS = frozenset({"benchmarks/benchmark_native_dtype.py"})
 
-def test_the_phase_changed_no_benchmark_ci_or_dependency_file():
+
+def test_the_phase_changed_no_ci_or_dependency_file():
     """The phase's discipline, expressed as a cumulative diff assertion
     against the merged I0 commit rather than as a promise.
 
     The milestones legitimately change C++ sources, the CMake build, and
     the Python package — that is the phase. What they must *not* touch is
     the surface that would signal an unearned capability change or a
-    changed environment: a **benchmark**, the CI workflow, or the
-    dependency set. Phase I adds no dependency and no build option, and
-    benchmark work belongs to **I10**, which has not started.
+    changed environment: the CI workflow or the dependency set. Phase I
+    adds no dependency and no build option, and neither of those has an
+    exemption at any milestone.
 
-    Examples are the one qualified case, and the qualification is
-    enumerated rather than waived. I1 through I8 added none — the
-    intermediate milestones were deliberately unable to write one, because
-    no public constructor could produce a float32 tensor. **I9 adds exactly
-    one**, the integrated exact-resume proof its scope calls for, and it is
-    named in ``I9_ADDED_EXAMPLES``. Any other change under ``examples/``,
-    including an edit to an existing float64 example, still fails here.
+    **Examples and benchmarks are the two qualified cases**, and both
+    qualifications are enumerated rather than waived:
+
+    - I1 through I8 added no example — those milestones were deliberately
+      unable to write one, because no public constructor could produce a
+      float32 tensor. **I9 adds exactly one**, the integrated exact-resume
+      proof its scope calls for.
+    - I0 through I9 changed no benchmark at all, because §22 assigns
+      benchmark work to I10. **I10 adds exactly one**, and adds it as a new
+      file rather than as a mode of the Phase-H harness.
+
+    Any *other* change under ``examples/`` or ``benchmarks/`` — including
+    an edit to an existing one — still fails here.
     """
     forbidden = []
     for path in _changed_since(I0_COMMIT):
         if path.startswith("examples/") and path not in I9_ADDED_EXAMPLES:
             forbidden.append(path)
-        if path.startswith(("benchmarks/", ".github/")):
+        if (path.startswith("benchmarks/")
+                and path not in I10_ADDED_BENCHMARKS):
+            forbidden.append(path)
+        if path.startswith(".github/"):
             forbidden.append(path)
         if path in ("pyproject.toml", "uv.lock", "conftest.py"):
             forbidden.append(path)
     assert not forbidden, (
-        f"the phase must not touch existing examples, benchmarks, CI, or "
+        f"the phase must not touch existing examples or benchmarks, CI, or "
         f"dependencies, but these changed: {forbidden}"
     )
-    # ...and the one example it may add really is there, so the exemption
-    # cannot outlive the file it was written for.
-    for example in I9_ADDED_EXAMPLES:
-        assert (REPO_ROOT / example).is_file(), example
+    # ...and the files those exemptions were written for really exist, so
+    # an exemption cannot outlive its subject.
+    for allowed in I9_ADDED_EXAMPLES | I10_ADDED_BENCHMARKS:
+        assert (REPO_ROOT / allowed).is_file(), allowed
+
+
+def _normalized_blob(revision, relative):
+    """``relative``'s committed content at ``revision``, newline-normalized.
+
+    Read straight out of the object database, so it is the *committed*
+    bytes rather than a working-tree checkout. ``None`` when the path does
+    not exist at that revision."""
+    result = subprocess.run(
+        ["git", "show", f"{revision}:{relative}"],
+        cwd=REPO_ROOT, capture_output=True,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.replace(b"\r\n", b"\n")
+
+
+def _normalized_worktree(relative):
+    """``relative``'s current content, newline-normalized, or ``None``."""
+    path = REPO_ROOT / relative
+    if not path.is_file():
+        return None
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
+
+def test_the_phase_h_benchmark_harness_is_untouched():
+    """Phase H's harness is the instrument its ladder was chosen from and
+    re-measured against, and its case inventory is pinned by test as "the
+    H0 set". If I10 had added a dtype axis to it, every published Phase-H
+    number would silently start meaning something else. So it is left
+    exactly as it was, and I10's characterization lives in its own file.
+
+    **Answered from normalized content rather than from a working-tree
+    diff**, deliberately. The sibling guards route through
+    ``_changed_since``, which must skip when git's line-ending
+    configuration disagrees with how the tree was checked out — running
+    this suite from WSL against a Windows checkout makes ``git diff``
+    report every text file as modified, so it can answer nothing. That
+    limitation is real for a *whole-tree* question, but it is not one this
+    test has to inherit: comparing each benchmark's committed bytes at I0
+    against its current bytes, both with newlines normalized, is immune to
+    the checkout's line-ending style and is **stronger** than a name-only
+    diff, because it compares content instead of trusting git's verdict.
+
+    So this test runs everywhere, including Linux, and the two historical
+    guards keep their behavior unchanged."""
+    listed = sorted(path.name for path in
+                    (REPO_ROOT / "benchmarks").glob("*.py"))
+    assert listed, "no benchmark harnesses found at all"
+
+    added, modified, removed = [], [], []
+    for name in listed:
+        relative = f"benchmarks/{name}"
+        base = _normalized_blob(I0_COMMIT, relative)
+        current = _normalized_worktree(relative)
+        if base is None:
+            added.append(relative)
+        elif base != current:
+            modified.append(relative)
+
+    # Every harness the phase inherited must still exist, byte for byte
+    # once newlines are normalized.
+    at_i0 = subprocess.run(
+        ["git", "ls-tree", "--name-only", I0_COMMIT, "benchmarks/"],
+        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+    ).stdout.split()
+    for relative in at_i0:
+        if relative.endswith(".py") and _normalized_worktree(relative) is None:
+            removed.append(relative)
+
+    assert modified == [], (
+        f"the phase modified an existing benchmark: {modified}"
+    )
+    assert removed == [], f"the phase deleted a benchmark: {removed}"
+    assert added == sorted(I10_ADDED_BENCHMARKS), added
+    # The separation stated the other way round as well: the new harness
+    # is a **new** file, and the Phase-H one still exists beside it.
+    assert (REPO_ROOT / "benchmarks"
+            / "benchmark_native_cpu_performance.py").is_file()
+
+
+def test_the_normalized_content_comparison_can_actually_detect_a_change():
+    """The negative control for the helper above: it must notice a real
+    difference, or "no benchmark was modified" would be vacuous — which is
+    exactly the failure mode a CRLF-blind comparison invites."""
+    relative = "benchmarks/benchmark_native_cpu_performance.py"
+    base = _normalized_blob(I0_COMMIT, relative)
+    assert base is not None and len(base) > 1000
+    assert base == _normalized_worktree(relative)
+    assert base != base + b"\n# one added line\n"
+    # ...and a path that does not exist at I0 really does read as absent.
+    assert _normalized_blob(I0_COMMIT, "benchmarks/not_a_file.py") is None
+    # Normalization is the only thing it forgives: the same text with
+    # Windows line endings compares equal, and a genuine edit does not.
+    assert (b"a\r\nb".replace(b"\r\n", b"\n")
+            == b"a\nb".replace(b"\r\n", b"\n"))
 
 
 def test_the_i9_documentation_only_files_really_are_documentation_only():

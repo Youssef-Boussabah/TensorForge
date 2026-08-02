@@ -184,7 +184,33 @@ promotion, no mixed-dtype arithmetic, no `astype`/`to`/`.float()`/
 `.double()`/`map_location`, and no global default; `SUPPORTED_DEVICES`,
 `RAW_KERNEL_DTYPES`, the export count, the checkpoint version, and the
 in-memory optimizer state version are all unchanged. **Phase I is not
-closed** — I10 and I11 remain — so no surface may say it is.
+closed** — I11 remains — so no surface may say it is.
+
+**I10 added no capability, and its only production change is one narrow
+checkpoint-loader validation repair** — the defect its own matrix found.
+`save_native_checkpoint` validated metadata recursively through
+`_validated_metadata`; `load_native_checkpoint` checked only that the root
+was a dict, and `json.loads` accepts the non-standard
+`NaN`/`Infinity`/`-Infinity` literals, so an archive could carry a value
+the saver would have refused to write. The **same** authority now runs on
+both sides, in Phase 1, before anything is staged or mutated. **No C++, no
+ABI or export change, no numerical runtime change, no benchmark-path
+change**, and no checkpoint schema, version, or manifest field moved;
+float64 and float32 numerical behavior are unchanged. Everything else I10
+delivered is cross-cutting adversarial evidence: the §9.2 mixed-dtype
+authority map at every
+layer and **every operand position independently**; the C ABI proved to be
+a second authority rather than a restatement of Python's (each half with
+its own negative control); the established validation orderings recorded
+rather than chosen; allocation and wrapper-failure cleanup at both widths;
+**all four graph-owned saved-resource families coexisting in one float32
+graph** across every lifecycle; a 117-case malformed-checkpoint matrix at
+both dtypes with a complete-world fingerprint after every rejection; the
+concurrency contracts re-proved at exactly the width they are claimed; and
+one new benchmark harness characterizing both dtypes separately. One
+finding was **recorded rather than "fixed"**, because it is an absence
+rather than a defect: `maxpool2d_backward` has exactly one value operand,
+so there is no second value position for a mixed-dtype rule to govern.
 
 The private typed constructors (`_typed`, `_typed_from_array`,
 `_typed_full`, `zeros(..., _trusted_dtype=True)`,
@@ -527,6 +553,11 @@ Required:
 `benchmark_native_cnn.py`, `benchmark_native_classification.py`,
 `benchmark_native_normalization.py`, `benchmark_native_dropout.py`, and
 `benchmark_native_cpu_performance.py` characterize their stacks.
+`benchmark_native_dtype.py` (added at **I10**) characterizes float32 and
+float64 **separately** — never as a ratio of one to the other — and is a
+**separate file** from the Phase-H harness on purpose: that harness's case
+inventory is pinned by test as "the H0 set", and adding a dtype axis to it
+would change what every Phase-H number means.
 
 Non-negotiable, in every harness:
 
@@ -643,7 +674,7 @@ matching docs file (and README links) **in the same milestone**.
     exactly **one** C ABI symbol across the whole phase
     (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
-- **Native line: Phase I at I9** — Native Dtype Generalization and
+- **Native line: Phase I at I10** — Native Dtype Generalization and
   Float32 CPU Support. Contract:
   `docs/native_dtype_float32_design.md`. **I0 (design, contract tests,
   documentation), I1 (the dtype model and dtype-tagged storage), I2
@@ -652,8 +683,9 @@ matching docs file (and README links) **in the same milestone**.
   and core autograd), I5 (CNN and pooling dtype support), I6 (stable
   math and classification dtype support), I7 (modules, parameters,
   buffers, initialization, normalization, and Dropout), I8 (optimizer
-  state and checkpoint version 3), and I9 (public float32 integration and
-  the exact-resume proof) are complete; I10 and I11 are not started, so
+  state and checkpoint version 3), I9 (public float32 integration and
+  the exact-resume proof), and I10 (cross-cutting hardening and benchmark
+  characterization) are complete; I11 is not started, so
   the phase is active rather than closed.**
   - I1 delivered: the C++ `TfDtype`/`tf::Dtype` model with frozen codes
     `0 = float64` and `1 = float32`, one item-size authority
@@ -927,6 +959,50 @@ matching docs file (and README links) **in the same milestone**.
     `tests/test_native_float32_public.py` (175); examples 14 → **15**.
     No C++, no export (54), no CTest (24), no checkpoint or optimizer-state
     change.
+  - I10 delivered: **evidence, plus one narrow loader-validation repair.**
+    The only production change is in `native_checkpoint.py`: the loader now
+    runs the **same** `_validated_metadata` authority the saver uses over
+    the parsed manifest's metadata, in Phase 1. Until I10 it root-type
+    checked only, and because `json.loads` accepts `NaN`/`Infinity`/
+    `-Infinity` a hand-written archive could return a value no save could
+    have written. Design A (validate after parsing) was chosen over B (a
+    strict `parse_constant` plus the validator) because `parse_constant`
+    applies to the *whole* manifest, cannot name a path, and cannot check
+    the root type — B is strictly A plus a second authority. **No C++, no
+    export, no numerical runtime change, no benchmark-path change**, and no
+    schema, version, or manifest field moved, so float64 and float32
+    numerical behavior, allocation counts, and every Phase-H path are
+    unchanged by construction — and no pre/post speed comparison was
+    manufactured where no numerical path changed. What landed:
+    `tests/test_native_float32_hardening.py` (138) — the §9.2 authority
+    map at **every operand position independently and in both
+    directions**, the C ABI proved to be a **second** authority by forcing
+    a destination mismatch production Python cannot emit *and* by
+    neutering the Python guard (each with its own negative control), the
+    established validation orderings **recorded rather than chosen**
+    (liveness → type → dtype → shape, but **shape before dtype** in
+    `copy_value_`, and the seed-gradient dtype before graph staleness),
+    allocation and wrapper-failure cleanup at both widths, **all four
+    saved-resource families in one float32 graph** — model in `eval()`,
+    Dropout put back to training through the public per-module API,
+    classified by the op of the adopting node, with a negative control
+    that finds three families when BatchNorm is in training — and every
+    lifecycle over it; `tests/test_native_float32_checkpoint_corruption.py`
+    (36, carrying **117 corruption cases at each dtype**) with a
+    complete-world fingerprint after every rejection and its own
+    non-vacuity control; and `tests/test_native_dtype_benchmark.py` (41).
+    **One finding recorded rather than "fixed"**: `maxpool2d_backward` has
+    exactly **one** value operand, so the absence of a second mixed-dtype
+    position there is documented rather than left looking like a gap —
+    that one is an absence, not a defect, which is what separates it from
+    the metadata gap I10 did repair. Benchmarks: `benchmark_native_dtype.py`,
+    24 cases in eleven families, both dtypes measured **separately**, four
+    per-family gates including a `summation_bound` **derived** from the
+    classical `2 n eps max sum|terms|` rule after a fixed tolerance was
+    shown to be the wrong instrument. Suite 7,409 → **7,626**; examples
+    still 15; no C++, no export (54), no CTest (24), no registry,
+    checkpoint, or optimizer-state change. **One production file changed:**
+    `src/tensorforge/experimental/native_checkpoint.py`.
   - **Public capability did not move at I1 through I8, and moved exactly
     once at I9**: through I8, float64 CPU only with `float32` still in
     `UNSUPPORTED`. `RAW_KERNEL_DTYPES` stayed `("float64",)` throughout,
@@ -995,7 +1071,9 @@ matching docs file (and README links) **in the same milestone**.
     2 are float64-only and never guessed to be float32);
   - the public registry moved at **I9**, not earlier and not again — and
     only after the integrated exact-resume proof passed. I10 and I11 add
-    no capability: I10 is hardening and benchmark characterization, I11 is
+    no capability: I10 was hardening and benchmark characterization and
+    changed no production runtime code except one narrow
+    checkpoint-loader validation repair, I11 is
     cross-platform validation and closure.
 
 Beyond Phase I (future work, not started): data loaders, native integer

@@ -11,7 +11,7 @@ change, no kernel, no C ABI symbol, no ctypes declaration, no
 optimizer, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-I status: I0 through I9 complete. I10 and I11 are not started.**
+**Phase-I status: I0 through I10 complete. I11 is not started.**
 (Recorded with I5: the I4 commit advanced every other status surface but
 left this paragraph reading "I0-I3 complete" — the §29 delivered record was
 already present and correct, and the two-line lag is repaired here rather
@@ -22,9 +22,9 @@ the CPU**, publicly, as of milestone I9:
 and parameter, and `RAW_KERNEL_DTYPES` is a **different** statement that did
 not move and stays `("float64",)`.
 
-**Phase I is not closed.** I10 (cross-cutting hardening and benchmarking)
-and I11 (cross-platform validation and closure) have not started, so the
-phase remains active and no surface may claim otherwise.
+**Phase I is not closed.** I11 (cross-platform validation and closure) has
+not started, so the phase remains active and no surface may claim
+otherwise.
 
 The native checkpoint format moved at **I8**, which is the milestone §16.1
 always assigned it and not a public-capability change: the format is
@@ -130,11 +130,44 @@ bit patterns (`examples/native_float32_training.py`). No C++ changed, no
 export was added, no checkpoint field or version moved, and the in-memory
 optimizer state schema is still version 1.
 
+What I10 changed, and only this: **one narrow checkpoint-loader validation
+repair, and otherwise evidence.** I10 is the cross-cutting hardening and
+benchmarking milestone, and it adds no operation, module, loss, optimizer,
+dtype, device, C ABI symbol, registry value, checkpoint field or version,
+optimizer-state version, dependency, or build option.
+
+The repair is the one thing the hardening matrix *found*. The saver
+validated metadata recursively through `_validated_metadata`; the loader
+checked only that the root was a dict. Because `json.loads` accepts the
+non-standard `NaN`/`Infinity`/`-Infinity` literals, a hand-written archive
+could carry a value `save_native_checkpoint` would have refused to write,
+and the loader accepted and returned it. The **same** authority now runs on
+both sides, during archive prevalidation. No model, optimizer, or generator
+state was ever at risk of partial mutation — metadata reaches none of them,
+and the check already sat in Phase 1 — but "accepted and returned" was
+still wrong. The fix changes no checkpoint schema, no version, no manifest
+field, and no numerical or C++ behavior. §16.4 records it.
+
+Everything else I10 adds is *evidence*: the complete mixed-dtype
+rejection authority map exercised at every layer and **every operand
+position independently**, the C ABI proved to be a second authority rather
+than a restatement of Python's, the established validation orderings
+recorded, allocation and wrapper-failure cleanup exercised at both widths,
+**all four graph-owned saved-resource families made to coexist in one
+float32 graph** and driven through every lifecycle, the concurrency
+contracts re-proved without being widened, stable/native isolation
+re-proved after the public move, the ABI and registry inventories
+reconciled, a 117-case malformed-checkpoint matrix run at both dtypes with
+a complete-world fingerprint after every rejection, and both dtypes
+characterized separately by a new benchmark harness that asserts no speed
+and writes no file. Two things I10 found and recorded rather than changed
+are in §29's I10 entry.
+
 **What that is not.** It is not a device, not a third dtype, not casting,
 and not promotion. float64 is still the default everywhere and still what
 `None` means; the dtype is still never inferred from an input array; mixed
 dtype still raises before any allocation or mutation; `RAW_KERNEL_DTYPES` is
-still `("float64",)`; and the phase is **not closed** — I10 and I11 remain.
+still `("float64",)`; and the phase is **not closed** — I11 remains.
 
 Internal allocation, transfer, elementwise, reduction, matmul, CNN,
 classification, normalization, Dropout, module, optimizer, and checkpoint
@@ -1999,6 +2032,26 @@ and deliver.
   `map_location`, no device transfer, no "closest match".**
 - a v1 or v2 archive declaring or containing anything but float64
   (§16.5);
+- **metadata that is not recursively JSON-compatible** — added at I10, and
+  the one *repair* that milestone made rather than merely evidenced. The
+  saver had always validated caller metadata through `_validated_metadata`
+  (finite floats, `str` keys, exact scalar types, no cycles); the loader
+  checked only that the root was a dict. Python's `json.loads` accepts
+  `NaN`, `Infinity`, and `-Infinity` as a non-standard extension, so those
+  literals decoded into real floats and were returned to the caller — a
+  value no TensorForge save could have written. The **same** function now
+  runs on the parsed manifest's metadata, in Phase 1, at the position the
+  root-type check already occupied, so every established error precedence
+  is unchanged and the rejection still precedes every staged tensor,
+  rollback snapshot, and live mutation. It applies at **v1, v2, and v3**
+  alike, because metadata is a manifest field in all three. Four of the
+  validator's rules are unreachable from decoded JSON and are kept anyway
+  because a *caller* can still supply them: non-`str` object keys (JSON
+  keys are strings by grammar), cycles (a finite document describes a
+  tree), arbitrary Python objects, and NumPy scalars. Those are
+  save-boundary rules; the wrong root type and the non-finite float are
+  the two that genuinely survive a parse. **No schema, version, manifest
+  field, or save behavior changed.**
 - everything v2 already rejects: unknown versions, wrong format name,
   extra or missing archive entries, pickled entries, duplicate
   references, a generator topology that does not match.
@@ -3837,10 +3890,15 @@ still validate against the public registry and still reject float32.
   The NumPy reference backend's own `supported_dtypes` stays `("float64",)`
   — Phase I is a native-line phase and did not touch it.
 - **Tests:** `tests/test_native_float32_training.py` (147) and
-  `tests/test_native_float32_public.py` (175). Suite 7,082 → **7,404**.
+  `tests/test_native_float32_public.py` (175). Suite 7,082 → **7,409**.
+  (Recorded at I10: this line read "→ 7,404", which counted the two new
+  files' 322 tests but not the 5 further tests I9's three added functions
+  in `test_native_phase_i.py`, `test_native_tensor.py`, and
+  `test_native_tensor_core.py` contribute. The observed total at the I9
+  commit is 7,409. Repaired here rather than rewritten away.)
 - **Examples:** 14 → **15**.
 
-### I10 — Cross-cutting hardening and benchmarking
+### I10 — Cross-cutting hardening and benchmarking — **complete**
 
 - **Entry:** I9 merged.
 - **Scope:** mixed-dtype rejection across every layer of §9.2; the
@@ -3857,6 +3915,201 @@ still validate against the public registry and still reject float32.
 - **Exit gate:** full suite green; benchmarks correctness-gated and
   assertion-free.
 - **Commit message:** `Harden and benchmark native float32 support`
+
+**Delivered.** I10's production change is **exactly one narrow Python
+validation repair in the checkpoint loader** — the defect its own matrix
+found. There is **no C++ change, no ABI or export change, no numerical
+runtime change, and no benchmark-path change**, so float64 and float32
+numerical behavior, allocation counts, and every Phase-H path are unchanged
+by construction rather than by measurement, and no pre/post speed
+comparison was manufactured. Everything else that landed is evidence and
+one new benchmark.
+
+**The defect, and the repair.**
+
+- **Root cause.** `save_native_checkpoint` validated caller metadata
+  recursively through `_validated_metadata` (finite floats, str keys,
+  exact scalar types, no cycles). `load_native_checkpoint` checked only
+  `isinstance(metadata, dict)`. Python's `json.loads` accepts `NaN`,
+  `Infinity`, and `-Infinity` as a **non-standard extension**, so those
+  literals decoded into real floats, passed the root-type check, and were
+  returned to the caller — a value no TensorForge save could have written.
+- **The fix.** The same `_validated_metadata` authority now runs on the
+  parsed manifest's metadata, in Phase 1, at the position the root-type
+  check already occupied. **Design A was chosen over B** (a strict
+  `json.loads(parse_constant=...)` plus the validator) for three reasons:
+  `parse_constant` applies to the *whole manifest*, so it would silently
+  change how `lr`, `eps`, and `betas` are parsed and which validator
+  reports them; it receives only the literal text, so it cannot name the
+  path; and it cannot check the root type, keys, or value types, so B is
+  strictly A plus a second authority. A is the smallest design with one
+  authority and path-aware messages.
+- **Ordering.** It stays where the root-type check was, so every
+  established error precedence is unchanged (manifest structure → model →
+  optimizer → generators → arrays → metadata) and the rejection still
+  precedes every staged `NativeTensor`, every rollback snapshot, and every
+  model, optimizer, and generator mutation. A test proves the staging hook
+  never fires on a metadata rejection, with a control showing it does fire
+  on a valid load.
+- **Scope of the change.** Checkpoint format still version 3, accepted
+  versions still `(1, 2, 3)`, manifest fields unchanged, save behavior
+  unchanged, no dependency added, no tensor cast, and the archive is never
+  rewritten.
+- **Four of the validator's rules are vacuous on the load side and kept
+  anyway**, because they are reachable from a *caller*: decoded JSON has no
+  non-str object keys (JSON keys are strings by grammar), no cycles (a
+  finite document describes a tree), no arbitrary Python objects, and no
+  NumPy scalars. Those are save-boundary tests; the wrong root type and the
+  non-finite float are the two that genuinely survive a parse, and they are
+  the load-corruption cases.
+
+- **The mixed-dtype authority map, at every operand position.** §9.2's
+  table was reached layer by layer, and wherever an authority has more than
+  one operand position, **each position is exercised on its own and in both
+  directions** — the failure a single-position test cannot see is a guard
+  that compares `self` against `other` but never the reverse. Covered:
+  the shared Core binary/matmul guard; `relu_backward`'s gradient operand;
+  Conv2d's weight *and* bias, separately, with the others correct; both
+  Conv2d backward directions; cross-entropy's saved probabilities; the five
+  module forward authorities with buffers and versions fingerprinted;
+  `NativeMSELoss` in both positions; a `NativeSequential` whose mismatched
+  child is the *third* one; `copy_value_` and `_adopt_value_core`; both
+  optimizers, with a **valid parameter beside the invalid one** proving
+  that one bad entry prevents every commit; Adam moments validated against
+  their parameter rather than against each other; `load_state_dict` with
+  exactly one bad entry among many; the BatchNorm two-buffer transaction;
+  and autograd's seed gradient and accumulation.
+- **The C ABI proved to be a second authority, not a restatement.** §9.2
+  calls the C++ check "defence-in-depth", which is only true if it can fire
+  when Python's cannot. Both halves are now proved *separately*: fifteen
+  compute exports are driven through **production geometry** with the
+  destination forced to the other width — a state Python's own guard cannot
+  emit — and each rejects with the C ABI's own message naming both dtypes;
+  and with `_require_matching_metadata` neutered, mismatched *operands*
+  still reject at the boundary. That bypass has its own negative control:
+  with the guard neutered and **matching** dtypes, the same call succeeds,
+  so the rejection came from the dtype disagreement and not from the
+  monkeypatch having broken the call.
+- **Validation orderings recorded rather than chosen.** Liveness before
+  dtype; type before dtype; dtype before a broadcast-shape conflict (which
+  is what makes "no allocation on a mixed-dtype call" unconditional);
+  **shape before dtype in `copy_value_`**, which is the opposite order and
+  is kept; each module's own rank rule before dtype; and the seed
+  gradient's dtype **before** graph staleness, with the staleness rule
+  proved to fire on the next attempt once the seed is right. No error was
+  normalized into a generic message and no guard was moved to make a test
+  tidier.
+- **All four saved-resource families in one float32 graph.** I9 exercised
+  them honestly *across* a run and said so; I10 built the configuration
+  where they genuinely coexist. The model goes to `eval()` — so BatchNorm
+  normalizes with immutable snapshots — and the Dropout layers are put back
+  into training through the ordinary public per-module `train()` API; no
+  undocumented flag is touched. The graph is then **walked**, and every
+  resource is classified by the op of the node that adopted it, so
+  "all four are here" is an observation rather than an inference from
+  shapes. Proved on that one graph: BatchNorm in eval and Dropout in
+  training; the running buffers do not move; the shared generator advances
+  by exactly two; two Dropout masks, one winner buffer, one saved
+  probability set, and two BatchNorm snapshots; every *value* resource at
+  float32 while **the winner buffer is float64**; and no resource aliasing
+  a parameter, buffer, input, output, or another resource. Its **negative
+  control** leaves the model wholly in training mode and finds three
+  families, not four — because training-mode BatchNorm takes no snapshot at
+  all, which is exactly what I9 recorded.
+- **Every lifecycle on that graph.** A retained backward keeps all four
+  alive and the second pass accumulates; a failure injected after backward
+  temporaries exist commits **no** leaf gradient, keeps every saved
+  resource available, consumes no generator call, and a corrected retry
+  succeeds; a final one-shot backward releases all four exactly once and
+  the graph cannot be reused; an abandoned graph releases all four through
+  explicit `close()`; and a genuinely no-grad forward — parameters frozen
+  too, because a model whose parameters track gradients builds a graph
+  whatever the input does — creates none of them.
+- **The malformed-checkpoint matrix: 117 corruptions, each applied alone,
+  at both dtypes.** Archive envelope and manifest structure; the model
+  section down to bool dimensions, overflowing shapes, whitespace and case
+  in a dtype string, and a payload repointing; both optimizer shapes
+  including v3 moment entries, bare-name downgrades, and a moment
+  referencing a model payload; the generator section including ten
+  malformed canonical-uint64 spellings, alias topology, and a shared stream
+  saved as independent; and metadata. After **every** rejection the
+  complete world is fingerprinted — values as raw bit patterns, identities,
+  versions, gradients, generator state and alias topology, training flags,
+  optimizer moments and counters — and compared. The fingerprint helper has
+  its own negative control proving it objects to a moved value, a moved
+  generator counter, a moved training flag, and a moved moment. Genuine v1,
+  v2, and v3 archives still load in the same module, so the matrix cannot
+  pass by rejecting everything, and a successful load is asserted to
+  advance **only** the parameter versions, by exactly one.
+- **One finding recorded rather than "fixed".**
+  **`maxpool2d_backward` has exactly one value operand.** The upstream
+  gradient is the only value tensor; the winner buffer is float64 metadata
+  at every width. So there is no second value position for a mixed-dtype
+  rule to govern, and the absence is recorded — with the same winner buffer
+  proved to drive a correct backward at *either* value width — rather than
+  left to look like a gap. This one really is an absence rather than a
+  defect, which is what separates it from the metadata gap above: there is
+  nothing a caller or an archive can present that the runtime accepts
+  wrongly.
+- **Concurrency tested at exactly the width of the claim.** Immutable dtype
+  under eight barriered concurrent readers; concurrent `state_dict()`
+  snapshots each internally coherent; two racing whole-model loads leaving
+  the state equal to **one** donor and never a mixture; and the BatchNorm
+  running-statistics transaction proved not to tear against a concurrent
+  **checkpoint save** — deliberately the participating reader, because a
+  bare `state_dict()` does not take the guard and §21 does not offer
+  thread-safe concurrent training snapshots. Testing the unsupported path
+  would have been inventing a promise. Phase G's reservation rule is
+  likewise asserted as written: concurrent stochastic use of one generator
+  is **refused**, deterministically, and the counter is proved equal to the
+  number of *successful* draws, so a refusal burns nothing. Every barrier
+  has a bounded join whose timeout is a deadlock detector, thread
+  exceptions are captured and re-raised, and a negative control proves a
+  barrier really does fail when a party never arrives.
+- **Benchmarks: one new harness, deliberately separate.**
+  `benchmarks/benchmark_native_dtype.py` — 24 cases across eleven families,
+  measured at each width **separately**, with the control pair giving the
+  machine's noise band. Phase H's harness was **not** extended: its case
+  inventory is pinned by test as "the H0 set", and adding a dtype axis
+  would have made every Phase-H number mean something different from what
+  it meant when it was published. Four gates, chosen per family rather than
+  by one blanket rule: `bitwise` for transfer and elementwise, `tolerance`
+  for softmax, `finite` for the composed and stateful cases, and — after
+  the gate caught it — `summation_bound` for reductions and matmul, where
+  TensorForge's strict sequential accumulation and NumPy's BLAS reference
+  legitimately diverge. That bound is the classical
+  `2 * n * eps * max sum|terms|`, computed from the actual operands and
+  **derived rather than tuned**: a fixed `atol` fails first on the output
+  cell that happens to sum to nearly zero, which says nothing about either
+  implementation. No timing is asserted anywhere, no threshold exists, and
+  no result file of any kind is written — proved structurally, and by
+  running the CLI from an empty directory and showing it stayed empty. The
+  measured results are in `docs/backend_experiments.md`.
+- **Scope held.** No `src/` or `cpp/` change; still **54** exports and
+  **24** CTests; checkpoint still version 3 accepting `(1, 2, 3)`; in-memory
+  optimizer state still version 1; registries unmoved; examples still
+  **15**; no dependency, build option, or CI change. **One** production
+  file changed: `src/tensorforge/experimental/native_checkpoint.py`.
+- **Tests:** `tests/test_native_float32_hardening.py` (138),
+  `tests/test_native_float32_checkpoint_corruption.py` (36, carrying 117
+  corruption cases at each of two dtypes plus the 13 metadata cases at
+  each of v1/v2/v3), and
+  `tests/test_native_dtype_benchmark.py` (41). Suite 7,409 → **7,626**,
+  reconciled per file: 138 + 36 + 41 new, `test_native_phase_i.py`
+  529 → 531, `test_native_cpu_performance_benchmark.py` 141 → 141.
+- **Two guardrails advanced, and only as far as the milestone earns.**
+  `test_the_phase_changed_no_benchmark_ci_or_dependency_file` became
+  `test_the_phase_changed_no_ci_or_dependency_file` with a named
+  `I10_ADDED_BENCHMARKS` exemption in the same shape as I9's
+  `I9_ADDED_EXAMPLES`, and gained a companion asserting the Phase-H harness
+  is untouched; Phase H's own harness-inventory test keeps its H0 literal
+  as **history** and now asserts the live set is H0's plus exactly what a
+  later phase is on record as adding.
+- **One arithmetic correction, recorded rather than rewritten away.** The
+  I9 entry above recorded "Suite 7,082 → 7,404", which counted the 322
+  tests in its two new files but not the 5 that its three added functions
+  in existing test files contribute. The observed total at the I9 commit is
+  **7,409**, and that is what I10 measured its own baseline against.
 
 ### I11 — Cross-platform validation and Phase-I closure
 

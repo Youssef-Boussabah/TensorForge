@@ -42,7 +42,7 @@ sections above are the narrative.
 ## The current phase — Phase I
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I9 are complete; I10 and I11 are not
+latest phase. Milestones I0 through I10 are complete; I11 is not
 started, so the phase is active rather than closed.** Its architecture
 contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
@@ -268,10 +268,11 @@ What Phase I has delivered: float32 CPU tensors beside the existing float64
 ones, dtype-tagged storage, dtype-aware handle-based operations, float32
 autograd, modules, buffers, optimizers, and optimizer state, float32
 deterministic Dropout over an unchanged generator, a dtype-aware checkpoint
-version 3, exact deterministic float32 resume, public float32 support, and
-unchanged float64 behavior and performance. What remains: **I10**
-(cross-cutting hardening and float32/float64 benchmark characterization)
-and **I11** (cross-platform validation and phase closure).
+version 3, exact deterministic float32 resume, public float32 support,
+unchanged float64 behavior and performance, and — at **I10** — the
+cross-cutting adversarial hardening matrix and separate float32/float64
+benchmark characterization. What remains: **I11** (cross-platform
+validation and phase closure).
 
 The decisions the contract locks, so later milestones inherit them rather
 than re-deriving them:
@@ -318,12 +319,15 @@ than re-deriving them:
 - **Every Phase-H float64 optimization is preserved**, and float32 and
   float64 are benchmarked separately, with no timing assertion, no
   committed number, and no result file — as in every phase before it.
+  *Delivered at I10*, in a harness deliberately separate from Phase H's so
+  that every number Phase H published keeps its meaning. I10 changed no
+  production runtime code at all.
 - **The public support registry moved at milestone I9** and at no other
   one: float32 was not declared supported until the whole training stack,
   optimizer state, checkpoint version 3, and the exact-resume proof all
   existed. *Delivered at I9.*
 
-The ladder is I0 through I11 — **I0 through I9 landed; I10 is next**
+The ladder is I0 through I11 — **I0 through I10 landed; I11 is next**
 (this line lagged a milestone behind after I8 and is repaired here rather
 than rewritten away): the contract (I0), the dtype model and
 tagged storage (I1), typed transfer and materialization (I2), elementwise

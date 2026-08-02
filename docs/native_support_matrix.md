@@ -923,10 +923,10 @@ proposed optimizations. Every number behind those statements is a local
 characterization of one machine, is reported with its spread, and is
 asserted by no test.
 
-## Phase I — native dtype generalization and float32 CPU support, **I0–I9 complete**
+## Phase I — native dtype generalization and float32 CPU support, **I0–I10 complete**
 
-**Phase I is the latest phase. Milestones I0 through I9 are complete;
-I10 and I11 are not started, so the phase is *active*, not closed.** Its
+**Phase I is the latest phase. Milestones I0 through I10 are complete;
+I11 is not started, so the phase is *active*, not closed.** Its
 architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
@@ -1304,8 +1304,9 @@ capability change. What it changed:
   added (still **24**), no checkpoint field or version moved, no new
   module/loss/optimizer/operation appeared, no dependency or build option
   was added, and no benchmark implementation changed — I10 owns
-  benchmarking and has not started. The NumPy reference backend's own
-  `supported_dtypes` stays `("float64",)`: Phase I is a native-line phase.
+  benchmarking, and it added exactly one new harness rather than changing
+  any existing one. The NumPy reference backend's own `supported_dtypes`
+  stays `("float64",)`: Phase I is a native-line phase.
 
 The honest statement of what float32 *is* after I9, in four parts because
 they are four different things:
@@ -1332,9 +1333,11 @@ they are four different things:
    resume proof has been run — integrated, bitwise, and independently at
    each dtype — the registry has moved, and every public tensor
    constructor produces a float32 tensor when asked for one explicitly.
-   **Phase I is still not closed**: I10 (hardening and benchmarking) and
-   I11 (cross-platform validation and closure) have not started, so no
-   surface may call the phase complete.
+   **Phase I is still not closed**: I10 (hardening and benchmarking) is
+   complete — including the one loader-validation repair its matrix found,
+   which moved no schema, version, or capability — but I11 (cross-platform
+   validation and closure) has not started, so no surface may call the
+   phase complete.
 
 The capability detail behind (1), unchanged from I6 except for the last
 two clauses. float32 can be
@@ -1396,10 +1399,11 @@ existing float64 ones, dtype-tagged storage, dtype-aware handle-based
 operations, float32 autograd, float32 modules, persistent buffers,
 optimizers and optimizer state, float32 deterministic Dropout over an
 **unchanged** generator algorithm, a dtype-aware checkpoint **version 3**,
-exact deterministic float32 resume, public float32 support, and unchanged
-float64 behavior and performance. What remains: **I10** (cross-cutting
-hardening and float32/float64 benchmark characterization) and **I11**
-(cross-platform validation and phase closure).
+exact deterministic float32 resume, public float32 support, unchanged
+float64 behavior and performance, and — at **I10** — the cross-cutting
+adversarial hardening matrix and separate float32/float64 benchmark
+characterization. What remains: **I11** (cross-platform validation and
+phase closure).
 
 The decisions the contract locks, recorded here because they bound what
 any later milestone may do:
@@ -1456,10 +1460,15 @@ any later milestone may do:
   with each dtype compared only against itself.
 - **Every Phase-H float64 optimization preserved**, with each dtype
   characterized on its own and — as in every phase before it — no timing
-  assertion, no committed benchmark number, and no result file. The
-  characterization itself is **I10's**, and I10 has not started.
+  assertion, no committed benchmark number, and no result file.
+  **Delivered at I10**, in a harness deliberately separate from Phase H's
+  so that every number Phase H published keeps its meaning. I10's one
+  production change is a validation branch in the checkpoint **loader** —
+  no C++, no kernel, no allocation path — so float64 behavior and
+  allocation counts are unchanged by construction. The measured results
+  are in [backend_experiments.md](backend_experiments.md).
 
-The ladder is I0–I11 — **I0 through I9 landed; I10 is next**: the
+The ladder is I0–I11 — **I0 through I10 landed; I11 is next**: the
 contract (I0), the internal dtype model and
 tagged storage (I1), typed transfer, views, and materialization (I2),
 elementwise and broadcast execution (I3), reductions, matmul, and core

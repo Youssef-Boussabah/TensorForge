@@ -1066,7 +1066,7 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **Native dtype generalization and float32 CPU support (Phase I) is
-  under way: milestones I0 through I9 are complete, I10 and I11 are not
+  under way: milestones I0 through I10 are complete, I11 is not
   started.** Phase I is the latest phase and is **active, not closed**;
   Phase H is unaffected and remains complete, having closed at 52 exports.
   **Since I9 the native runtime supports both `float32` and `float64` on

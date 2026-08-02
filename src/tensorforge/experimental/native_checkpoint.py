@@ -188,7 +188,13 @@ survives a load unchanged.
 
 ``load_native_checkpoint`` returns the checkpoint's metadata as an
 independent plain-Python dictionary (a fresh JSON parse — mutating it
-affects nothing). Deliberately **not** implemented: scheduler state,
+affects nothing), validated by the **same** ``_validated_metadata``
+authority the saver uses, during archive prevalidation and before
+anything is staged or mutated. That symmetry matters because
+``json.loads`` accepts the non-standard ``NaN``/``Infinity``/
+``-Infinity`` literals: without it, a hand-written archive could hand
+back a value ``save_native_checkpoint`` would have refused to write.
+Deliberately **not** implemented: scheduler state,
 Python or NumPy global random-state capture, dataloader/shuffle position,
 multiple models/optimizers, partial loading, name-based remapping,
 checkpoint merging, sharding, compression, encryption, URLs, dtype
@@ -350,7 +356,18 @@ def _validated_metadata(value, path, seen):
     ``type() is`` checks, so NumPy scalars (``np.float64`` subclasses
     ``float``) are rejected; floats must be finite; tuples normalize to
     lists (the stable ``json.dumps`` convention); dict keys must be
-    str; cyclic containers are rejected via the ``seen`` id set."""
+    str; cyclic containers are rejected via the ``seen`` id set.
+
+    **One authority, used on both sides** (Phase I, milestone I10).
+    ``save_native_checkpoint`` runs this over caller-supplied metadata and
+    ``load_native_checkpoint`` runs it over the parsed manifest's, so the
+    set a load accepts is exactly the set a save could have written. Some
+    of the rules are vacuous on the load side and deliberately kept
+    anyway: decoded JSON has no non-str object keys, no cycles, and no
+    arbitrary Python objects, so those branches cannot fire there. The one
+    that genuinely fires on load is the finite-float rule, because
+    ``json.loads`` accepts ``NaN``, ``Infinity``, and ``-Infinity`` as a
+    non-standard extension."""
     if value is None:
         return None
     kind = type(value)
@@ -1456,6 +1473,22 @@ def load_native_checkpoint(path, model, optimizer=None):
                     (name, shape, dtype, f"optimizer {label}[{index}]")
                 )
         arrays = _read_arrays(archive, references, where)
+        # Metadata is validated by the **same** authority the saver uses
+        # (Phase I, milestone I10). Until I10 this was a root-type check
+        # only, which let one class of archive through: ``json.loads``
+        # accepts the non-standard ``NaN``/``Infinity``/``-Infinity``
+        # literals, so a hand-written manifest carrying one parsed cleanly
+        # and was handed straight back to the caller — a value
+        # ``save_native_checkpoint`` would have refused to write. Running
+        # ``_validated_metadata`` here makes "what a load accepts" exactly
+        # "what a save would have produced", by construction rather than by
+        # two rule sets kept in step by hand.
+        #
+        # It stays in Phase 1, at the position the root-type check already
+        # occupied, so every established error precedence is unchanged and
+        # the rejection still happens before any staged NativeTensor, any
+        # rollback snapshot, and any model, optimizer, or generator
+        # mutation exists.
         metadata = manifest["metadata"]
         if not isinstance(metadata, dict):
             _checkpoint_error(
@@ -1463,6 +1496,14 @@ def load_native_checkpoint(path, model, optimizer=None):
                 f"manifest['metadata'] must be an object, got "
                 f"{type(metadata).__name__}",
             )
+        try:
+            metadata = _validated_metadata(
+                metadata, "manifest['metadata']", frozenset()
+            )
+        except (TypeError, ValueError) as error:
+            # Re-raised in the loader's own style so the message names the
+            # failing path and value and still identifies the operation.
+            _checkpoint_error(where, str(error), cause=error)
     finally:
         archive.close()
 
