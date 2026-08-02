@@ -4094,9 +4094,9 @@ one new benchmark.
   `tests/test_native_float32_checkpoint_corruption.py` (36, carrying 117
   corruption cases at each of two dtypes plus the 13 metadata cases at
   each of v1/v2/v3), and
-  `tests/test_native_dtype_benchmark.py` (41). Suite 7,409 → **7,626**,
+  `tests/test_native_dtype_benchmark.py` (41). Suite 7,409 → **7,629**,
   reconciled per file: 138 + 36 + 41 new, `test_native_phase_i.py`
-  529 → 531, `test_native_cpu_performance_benchmark.py` 141 → 141.
+  529 → 534, `test_native_cpu_performance_benchmark.py` 141 → 141.
 - **Two guardrails advanced, and only as far as the milestone earns.**
   `test_the_phase_changed_no_benchmark_ci_or_dependency_file` became
   `test_the_phase_changed_no_ci_or_dependency_file` with a named

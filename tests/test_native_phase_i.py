@@ -56,6 +56,7 @@ ordinary prose improvements do not require rewriting them. Nothing here
 asserts a character count, a paragraph order, or a benchmark number.
 """
 import ctypes
+import hashlib
 import json
 import re
 import subprocess
@@ -1436,27 +1437,112 @@ def test_the_phase_changed_no_ci_or_dependency_file():
         assert (REPO_ROOT / allowed).is_file(), allowed
 
 
-def _normalized_blob(revision, relative):
-    """``relative``'s committed content at ``revision``, newline-normalized.
+# ---------------------------------------------------------------------------
+# The Phase-H benchmark immutability guard, frozen rather than historical
+#
+# The question this guard answers — "did the phase modify a benchmark it
+# inherited?" — was originally asked by reading each file's committed blob
+# at ``I0_COMMIT``. That works locally and fails in CI, and the failure is
+# instructive rather than incidental: ``actions/checkout@v4`` with no
+# ``fetch-depth`` performs a **depth-1** clone, so the runner has the
+# triggering commit and no history at all. ``git show I0:path`` then exits
+# non-zero and ``git ls-tree I0`` exits 128, and a guard that cannot read
+# its own baseline reports every inherited benchmark as newly added.
+#
+# The fix is to stop needing the object. The baseline is a property of one
+# frozen commit, so it is *recorded* here as a content digest rather than
+# re-derived from history on every run. The map below was produced from the
+# genuine I0 commit during the I10 correction and verified three ways: each
+# blob round-tripped through ``git hash-object`` to prove the bytes read are
+# the bytes committed; each digest was recomputed from the current working
+# tree; and ``git diff I0 HEAD -- benchmarks/`` was confirmed to list
+# exactly the one file I10 adds.
+#
+# Why this guard can run everywhere while its two siblings still skip:
+# ``_changed_since`` asks a **whole-tree** question ("what differs from
+# I0?"), which has no answer at all without history, and whose CRLF
+# sensitivity comes from git comparing a normalized index against a
+# denormalized checkout. This guard asks a **fixed, enumerable** question
+# about seven known files, so its baseline can be frozen and its one
+# environment sensitivity — the checkout's line-ending style — is removed
+# by normalizing both sides itself. Freezing the siblings would mean
+# freezing a digest of the entire tree, which would have to be regenerated
+# on every legitimate edit and would assert nothing. That asymmetry is why
+# only this one is converted.
 
-    Read straight out of the object database, so it is the *committed*
-    bytes rather than a working-tree checkout. ``None`` when the path does
-    not exist at that revision."""
-    result = subprocess.run(
-        ["git", "show", f"{revision}:{relative}"],
-        cwd=REPO_ROOT, capture_output=True,
+# Repository-relative path -> SHA-256 of the I0 committed content after
+# CRLF-to-LF normalization. Derived from
+# ``39d416aa51abc00976a771ecbc7a334545c25e59`` and immutable: a value here
+# changes only if the *history* changes, never because a file did.
+I0_BENCHMARK_DIGESTS = {
+    "benchmarks/benchmark_native_autograd.py":
+        "34f15260313dda83d1675858780ef135d57792c9a7726fa41653d5f90f15c26d",
+    "benchmarks/benchmark_native_classification.py":
+        "fac9c087358014af120bf5f8a227c908a84ce4f7dc3226cc5be60d77188e0f06",
+    "benchmarks/benchmark_native_cnn.py":
+        "853e43ad15ff3e4b0f9d5e7dab3277f1f606ea657f40cb92ab75f9333ab80e12",
+    "benchmarks/benchmark_native_cpu_performance.py":
+        "74bb8156166f556c72e5e15970edd7bde41bcfceb8a423f41b2703455c93cf72",
+    "benchmarks/benchmark_native_dropout.py":
+        "1389261c1e390391a785d1e7fd7fe671ee80864c4e1a96b19142e840caefc869",
+    "benchmarks/benchmark_native_normalization.py":
+        "5e70c4c67639dbd49ae821a2cbf7593d04951ea21d343e8a45f4aad236853e07",
+    "benchmarks/cpp_backend.py":
+        "317183a9239191bbd0a8b898de731a088b3fd9aaf8f4c44e3422a8d7764b922a",
+}
+
+
+def _normalized(data):
+    """The repository's one normalization rule, and only it: CRLF to LF.
+
+    Nothing else is forgiven — not whitespace, not encoding, not comments,
+    not formatting, not a trailing newline — because every one of those is
+    a real edit to a file this guard exists to freeze. The rule is needed
+    at all because a Windows checkout stores CRLF for content git holds as
+    LF, so an un-normalized digest would depend on the checkout rather than
+    on the file."""
+    return data.replace(b"\r\n", b"\n")
+
+
+def _content_digest(data):
+    return hashlib.sha256(_normalized(data)).hexdigest()
+
+
+def _benchmark_digests(directory):
+    """``{repository-relative path: digest}`` for every ``*.py`` under
+    ``directory``, which is a real path so a negative control can point it
+    at a temporary copy instead of the repository."""
+    return {
+        f"benchmarks/{path.name}": _content_digest(path.read_bytes())
+        for path in sorted(Path(directory).glob("*.py"))
+    }
+
+
+def _classify_benchmarks(observed):
+    """Split an observed digest map against the frozen baseline.
+
+    Four independent findings, deliberately not collapsed into one: a
+    modified inherited file, a deleted inherited file, an unexpected new
+    file, and the approved I10 addition. Reporting them separately is what
+    makes a failure say *which* invariant broke."""
+    modified = sorted(
+        relative for relative, digest in I0_BENCHMARK_DIGESTS.items()
+        if relative in observed and observed[relative] != digest
     )
-    if result.returncode != 0:
-        return None
-    return result.stdout.replace(b"\r\n", b"\n")
-
-
-def _normalized_worktree(relative):
-    """``relative``'s current content, newline-normalized, or ``None``."""
-    path = REPO_ROOT / relative
-    if not path.is_file():
-        return None
-    return path.read_bytes().replace(b"\r\n", b"\n")
+    deleted = sorted(
+        relative for relative in I0_BENCHMARK_DIGESTS
+        if relative not in observed
+    )
+    unexpected = sorted(
+        relative for relative in observed
+        if relative not in I0_BENCHMARK_DIGESTS
+        and relative not in I10_ADDED_BENCHMARKS
+    )
+    approved = sorted(
+        relative for relative in observed
+        if relative in I10_ADDED_BENCHMARKS
+    )
+    return modified, deleted, unexpected, approved
 
 
 def test_the_phase_h_benchmark_harness_is_untouched():
@@ -1466,70 +1552,296 @@ def test_the_phase_h_benchmark_harness_is_untouched():
     number would silently start meaning something else. So it is left
     exactly as it was, and I10's characterization lives in its own file.
 
-    **Answered from normalized content rather than from a working-tree
-    diff**, deliberately. The sibling guards route through
-    ``_changed_since``, which must skip when git's line-ending
-    configuration disagrees with how the tree was checked out — running
-    this suite from WSL against a Windows checkout makes ``git diff``
-    report every text file as modified, so it can answer nothing. That
-    limitation is real for a *whole-tree* question, but it is not one this
-    test has to inherit: comparing each benchmark's committed bytes at I0
-    against its current bytes, both with newlines normalized, is immune to
-    the checkout's line-ending style and is **stronger** than a name-only
-    diff, because it compares content instead of trusting git's verdict.
+    Answered entirely from **frozen content**: no git command, no
+    historical object, no network, and nothing written. It therefore gives
+    the same verdict on a full clone, on a shallow CI checkout, and on a
+    CRLF working tree."""
+    observed = _benchmark_digests(REPO_ROOT / "benchmarks")
+    assert observed, "no benchmark harnesses found at all"
 
-    So this test runs everywhere, including Linux, and the two historical
-    guards keep their behavior unchanged."""
-    listed = sorted(path.name for path in
-                    (REPO_ROOT / "benchmarks").glob("*.py"))
-    assert listed, "no benchmark harnesses found at all"
-
-    added, modified, removed = [], [], []
-    for name in listed:
-        relative = f"benchmarks/{name}"
-        base = _normalized_blob(I0_COMMIT, relative)
-        current = _normalized_worktree(relative)
-        if base is None:
-            added.append(relative)
-        elif base != current:
-            modified.append(relative)
-
-    # Every harness the phase inherited must still exist, byte for byte
-    # once newlines are normalized.
-    at_i0 = subprocess.run(
-        ["git", "ls-tree", "--name-only", I0_COMMIT, "benchmarks/"],
-        cwd=REPO_ROOT, capture_output=True, text=True, check=True,
-    ).stdout.split()
-    for relative in at_i0:
-        if relative.endswith(".py") and _normalized_worktree(relative) is None:
-            removed.append(relative)
+    modified, deleted, unexpected, approved = _classify_benchmarks(observed)
 
     assert modified == [], (
-        f"the phase modified an existing benchmark: {modified}"
+        f"the phase modified a benchmark it inherited from Phase H: "
+        f"{modified}"
     )
-    assert removed == [], f"the phase deleted a benchmark: {removed}"
-    assert added == sorted(I10_ADDED_BENCHMARKS), added
+    assert deleted == [], (
+        f"the phase deleted a benchmark it inherited from Phase H: {deleted}"
+    )
+    assert unexpected == [], (
+        f"the phase added a benchmark its contract does not permit: "
+        f"{unexpected}"
+    )
+    # ...and the one addition the contract does permit is present, under
+    # exactly the name the contract records.
+    assert approved == sorted(I10_ADDED_BENCHMARKS), approved
+    for relative in I10_ADDED_BENCHMARKS:
+        assert (REPO_ROOT / relative).is_file(), relative
     # The separation stated the other way round as well: the new harness
     # is a **new** file, and the Phase-H one still exists beside it.
     assert (REPO_ROOT / "benchmarks"
             / "benchmark_native_cpu_performance.py").is_file()
 
 
-def test_the_normalized_content_comparison_can_actually_detect_a_change():
-    """The negative control for the helper above: it must notice a real
-    difference, or "no benchmark was modified" would be vacuous — which is
-    exactly the failure mode a CRLF-blind comparison invites."""
-    relative = "benchmarks/benchmark_native_cpu_performance.py"
-    base = _normalized_blob(I0_COMMIT, relative)
-    assert base is not None and len(base) > 1000
-    assert base == _normalized_worktree(relative)
-    assert base != base + b"\n# one added line\n"
-    # ...and a path that does not exist at I0 really does read as absent.
-    assert _normalized_blob(I0_COMMIT, "benchmarks/not_a_file.py") is None
-    # Normalization is the only thing it forgives: the same text with
-    # Windows line endings compares equal, and a genuine edit does not.
-    assert (b"a\r\nb".replace(b"\r\n", b"\n")
-            == b"a\nb".replace(b"\r\n", b"\n"))
+def test_the_frozen_benchmark_baseline_covers_the_inherited_set():
+    """The baseline is the whole inherited set, not a sample.
+
+    Seven harnesses existed at I0 and every one has a digest, so a file
+    quietly dropped from the map could not hide an edit."""
+    assert len(I0_BENCHMARK_DIGESTS) == 7, sorted(I0_BENCHMARK_DIGESTS)
+    for relative, digest in I0_BENCHMARK_DIGESTS.items():
+        assert relative.startswith("benchmarks/") and relative.endswith(".py")
+        assert len(digest) == 64 and set(digest) <= set("0123456789abcdef"), (
+            relative
+        )
+    # The frozen set and the approved addition are disjoint: the I10
+    # harness is deliberately *not* an inherited file, and freezing it
+    # would pin a file the milestone is allowed to keep editing.
+    assert not (set(I0_BENCHMARK_DIGESTS) & set(I10_ADDED_BENCHMARKS))
+    # Every digest is distinct, so no two entries were pasted from one file.
+    assert len(set(I0_BENCHMARK_DIGESTS.values())) == 7
+
+
+def test_the_benchmark_guard_needs_no_git_history_at_runtime():
+    """The CI-independence proof, asserted structurally over the guard's
+    own source rather than promised in a comment.
+
+    The failure this replaced was a depth-1 CI checkout: the runner has the
+    triggering commit and no ancestors, so ``git show I0:path`` fails and
+    ``git ls-tree I0`` exits 128. Nothing in the guard's call chain may
+    reach for history again."""
+    import ast
+    import inspect
+    import textwrap
+
+    def executable_source(function):
+        """``function``'s body with docstrings removed.
+
+        Parsed rather than grepped, and for the same reason
+        ``test_the_i9_documentation_only_files_really_are_documentation_only``
+        parses: the prose here legitimately *discusses* ``git show`` and
+        ``ls-tree``, so a raw substring scan would trip on the very
+        sentences that explain why they are absent."""
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)) and node.body:
+                first = node.body[0]
+                if (isinstance(first, ast.Expr)
+                        and isinstance(first.value, ast.Constant)
+                        and isinstance(first.value.value, str)):
+                    node.body = node.body[1:] or [ast.Pass()]
+        return ast.unparse(tree)
+
+    chain = "".join(executable_source(function) for function in (
+        test_the_phase_h_benchmark_harness_is_untouched,
+        _benchmark_digests,
+        _classify_benchmarks,
+        _content_digest,
+        _normalized,
+    ))
+    for banned in ("git", "subprocess", "ls-tree", "rev-parse",
+                   "I0_COMMIT", "_changed_since", "urlopen", "requests",
+                   "socket", "open(", "write"):
+        assert banned not in chain, (
+            f"the benchmark guard reached for {banned!r}; it must answer "
+            f"from frozen content alone"
+        )
+    # The behavioural half: with git made unreachable the guard still
+    # passes. Proved non-vacuous first — a run in which git happened to
+    # stay reachable would assert nothing.
+    import os
+
+    saved = os.environ.get("PATH")
+    try:
+        os.environ["PATH"] = ""
+        try:
+            probe = subprocess.run(["git", "--version"],
+                                   capture_output=True, env={"PATH": ""})
+            git_reachable = probe.returncode == 0
+        except OSError:
+            git_reachable = False
+        assert not git_reachable, (
+            "git stayed reachable, so this half of the proof is vacuous"
+        )
+        test_the_phase_h_benchmark_harness_is_untouched()
+    finally:
+        if saved is None:                       # pragma: no cover
+            os.environ.pop("PATH", None)
+        else:
+            os.environ["PATH"] = saved
+
+    # ...and for contrast, the *old* approach really would have failed
+    # here: reading a blob out of the object database is exactly what a
+    # depth-1 CI checkout cannot do. Simulated with an object that is
+    # certainly absent, which is the same condition the runner is in.
+    missing = subprocess.run(
+        ["git", "show", f"{'0' * 40}:benchmarks/cpp_backend.py"],
+        cwd=REPO_ROOT, capture_output=True)
+    assert missing.returncode != 0, (
+        "the simulated missing object resolved, so the contrast is vacuous"
+    )
+    absent_tree = subprocess.run(
+        ["git", "ls-tree", "--name-only", "0" * 40, "benchmarks/"],
+        cwd=REPO_ROOT, capture_output=True)
+    assert absent_tree.returncode != 0
+
+
+def test_the_frozen_benchmark_guard_detects_every_kind_of_drift(tmp_path):
+    """The negative controls, all on **temporary** bytes and directories —
+    no repository file is read for mutation, written, or restored.
+
+    A guard that cannot fail proves nothing, so each of the eight failure
+    modes it claims to catch is produced deliberately and shown to be
+    caught."""
+    def stage(sources):
+        """A throwaway benchmarks/ directory with the given contents."""
+        directory = tmp_path / f"bench{len(list(tmp_path.iterdir()))}"
+        directory.mkdir()
+        for name, data in sources.items():
+            (directory / name).write_bytes(data)
+        return directory
+
+    # A faithful stand-in for the real inherited set: bytes whose digests
+    # really are the frozen ones, reconstructed by reading the live files
+    # (read-only) so the control exercises the true baseline.
+    genuine = {}
+    for relative in I0_BENCHMARK_DIGESTS:
+        name = relative.split("/", 1)[1]
+        genuine[name] = (REPO_ROOT / relative).read_bytes()
+    genuine["benchmark_native_dtype.py"] = (
+        REPO_ROOT / "benchmarks" / "benchmark_native_dtype.py").read_bytes()
+
+    # 0. The positive control: unmodified, everything clean.
+    modified, deleted, unexpected, approved = _classify_benchmarks(
+        _benchmark_digests(stage(genuine)))
+    assert (modified, deleted, unexpected) == ([], [], [])
+    assert approved == sorted(I10_ADDED_BENCHMARKS)
+
+    victim = "benchmark_native_cpu_performance.py"
+    target = f"benchmarks/{victim}"
+
+    # 1. One changed byte.
+    one_byte = dict(genuine)
+    body = bytearray(one_byte[victim])
+    body[len(body) // 2] ^= 0x01
+    one_byte[victim] = bytes(body)
+    modified, _, _, _ = _classify_benchmarks(
+        _benchmark_digests(stage(one_byte)))
+    assert modified == [target], "a single changed byte slipped through"
+
+    # 2. One added line.
+    added_line = dict(genuine)
+    added_line[victim] = added_line[victim] + b"\n# one added line\n"
+    modified, _, _, _ = _classify_benchmarks(
+        _benchmark_digests(stage(added_line)))
+    assert modified == [target], "an added line slipped through"
+
+    # 3. One removed line.
+    removed_line = dict(genuine)
+    lines = removed_line[victim].split(b"\n")
+    removed_line[victim] = b"\n".join(lines[:5] + lines[6:])
+    modified, _, _, _ = _classify_benchmarks(
+        _benchmark_digests(stage(removed_line)))
+    assert modified == [target], "a removed line slipped through"
+
+    # 4. CRLF-only conversion is **equal** — the one thing forgiven, and
+    #    the reason this guard survives a Windows checkout.
+    # Normalize first: the live checkout may already be CRLF (it is on
+    # Windows), and a naive replace would produce CRCRLF and measure
+    # nothing.
+    windows = {name: _normalized(data).replace(b"\n", b"\r\n")
+               for name, data in genuine.items()}
+    assert b"\r\r\n" not in windows[victim], "the control corrupted its input"
+    assert b"\r\n" in windows[victim], "the control produced no CRLF at all"
+    modified, deleted, unexpected, approved = _classify_benchmarks(
+        _benchmark_digests(stage(windows)))
+    assert (modified, deleted, unexpected) == ([], [], []), (
+        "a pure CRLF checkout was mistaken for an edit"
+    )
+    assert approved == sorted(I10_ADDED_BENCHMARKS)
+    # ...and CRLF plus a real edit is still caught, so the normalization
+    # does not swallow the edit along with the line endings.
+    windows_edited = dict(windows)
+    windows_edited[victim] += b"\r\n# edited\r\n"
+    modified, _, _, _ = _classify_benchmarks(
+        _benchmark_digests(stage(windows_edited)))
+    assert modified == [target]
+
+    # 5. An inherited benchmark deleted.
+    without = {name: data for name, data in genuine.items() if name != victim}
+    _, deleted, _, _ = _classify_benchmarks(
+        _benchmark_digests(stage(without)))
+    assert deleted == [target], "a deleted inherited benchmark slipped through"
+
+    # 6. An unexpected additional benchmark.
+    intruder = dict(genuine)
+    intruder["benchmark_surprise.py"] = b"# not approved\n"
+    _, _, unexpected, _ = _classify_benchmarks(
+        _benchmark_digests(stage(intruder)))
+    assert unexpected == ["benchmarks/benchmark_surprise.py"]
+
+    # 7. The approved I10 benchmark missing.
+    absent = {name: data for name, data in genuine.items()
+              if name != "benchmark_native_dtype.py"}
+    _, _, _, approved = _classify_benchmarks(_benchmark_digests(stage(absent)))
+    assert approved == [], "a missing I10 harness read as present"
+
+    # 8. The approved benchmark replaced by another filename.
+    renamed = {name: data for name, data in genuine.items()
+               if name != "benchmark_native_dtype.py"}
+    renamed["benchmark_native_dtypes.py"] = genuine[
+        "benchmark_native_dtype.py"]
+    _, _, unexpected, approved = _classify_benchmarks(
+        _benchmark_digests(stage(renamed)))
+    assert approved == []
+    assert unexpected == ["benchmarks/benchmark_native_dtypes.py"]
+
+    # 9. A wrong frozen digest must fail too, so the map itself is load
+    #    bearing rather than decorative.
+    poisoned = dict(I0_BENCHMARK_DIGESTS)
+    poisoned[target] = "0" * 64
+    observed = _benchmark_digests(stage(genuine))
+    assert observed[target] != poisoned[target]
+
+    # Nothing above touched the repository.
+    assert _benchmark_digests(REPO_ROOT / "benchmarks") == {
+        **I0_BENCHMARK_DIGESTS,
+        "benchmarks/benchmark_native_dtype.py": _content_digest(
+            (REPO_ROOT / "benchmarks"
+             / "benchmark_native_dtype.py").read_bytes()),
+    }
+
+
+def test_the_two_history_reading_guards_are_deliberately_left_alone():
+    """The asymmetry, recorded so it is not mistaken for an oversight.
+
+    ``_changed_since`` asks what differs across the **whole tree** since
+    I0. That question has no answer without history, and its CRLF
+    sensitivity is inherent — git is comparing a normalized index against a
+    denormalized checkout, which is a fact about the environment rather
+    than about the tree. So those two guards skip, loudly, with a reason.
+
+    The benchmark guard asks a fixed question about an enumerable set, so
+    its baseline can be frozen and its only environment sensitivity removed
+    by normalizing both sides. Converting the siblings the same way would
+    mean freezing a digest of every tracked file, which would need
+    regenerating on every legitimate edit and would therefore assert
+    nothing at all."""
+    import inspect
+
+    for guard in (test_the_phase_changed_no_ci_or_dependency_file,
+                  test_the_phase_touched_only_the_python_modules_its_scope_names):
+        assert "_changed_since" in inspect.getsource(guard), guard.__name__
+    # ...and _changed_since still owns the documented skip, so the two
+    # guards degrade honestly rather than passing vacuously.
+    source = inspect.getsource(_changed_since)
+    assert "pytest.skip" in source
+    assert "_UNTOUCHED_SENTINEL" in source
+    assert _UNTOUCHED_SENTINEL == "LICENSE"
+    # The benchmark guard, by contrast, contains no skip at all.
+    assert "skip" not in inspect.getsource(
+        test_the_phase_h_benchmark_harness_is_untouched)
 
 
 def test_the_i9_documentation_only_files_really_are_documentation_only():

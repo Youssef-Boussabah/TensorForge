@@ -1921,7 +1921,7 @@ are claimed; and a new benchmark harness that characterizes both dtypes
 number Phase H published keeps its meaning. One finding was recorded rather
 than "fixed", because it is an absence rather than a defect:
 `maxpool2d_backward` has exactly one value operand, so there is no second
-value position for a mixed-dtype rule to govern. Suite 7,409 → **7,626**.
+value position for a mixed-dtype rule to govern. Suite 7,409 → **7,629**.
 
 **Phase I is not closed**: I11 (cross-platform validation and closure) has
 not started.

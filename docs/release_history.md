@@ -2472,7 +2472,7 @@ is evidence, and one new benchmark.
   `tests/test_native_float32_checkpoint_corruption.py` (36, carrying 117
   corruption cases at each of two dtypes plus the 13 metadata cases at
   each of v1/v2/v3), and
-  `tests/test_native_dtype_benchmark.py` (41). Suite 7,409 → **7,626**.
+  `tests/test_native_dtype_benchmark.py` (41). Suite 7,409 → **7,629**.
 - **One arithmetic correction.** The I9 record read "Suite 7,082 → 7,404",
   which counted its two new files' 322 tests but not the 5 further tests
   its three added functions in existing files contribute. The observed

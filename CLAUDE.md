@@ -999,7 +999,7 @@ matching docs file (and README links) **in the same milestone**.
     24 cases in eleven families, both dtypes measured **separately**, four
     per-family gates including a `summation_bound` **derived** from the
     classical `2 n eps max sum|terms|` rule after a fixed tolerance was
-    shown to be the wrong instrument. Suite 7,409 → **7,626**; examples
+    shown to be the wrong instrument. Suite 7,409 → **7,629**; examples
     still 15; no C++, no export (54), no CTest (24), no registry,
     checkpoint, or optimizer-state change. **One production file changed:**
     `src/tensorforge/experimental/native_checkpoint.py`.
