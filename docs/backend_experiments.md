@@ -78,7 +78,7 @@ and Runtime Efficiency — is complete (H0–H10) and is the latest
 *completed* phase**; both are recorded further below.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I5 are complete; I6 through I11
+latest phase. Milestones I0 through I6 are complete; I7 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
 was design, guardrail tests, and documentation reconciliation, and no
@@ -190,18 +190,37 @@ inventory moved **21 → 22** (`test_dtype_cnn`), which carries the Conv2d
 accumulation witnesses in all three directions on both traversals and the
 winner-buffer and plane-bound proofs.
 
+**I6 delivered dtype-general stable math and classification and the private
+float32 graphs over them**, and added **no export**. The four
+classification exports validate that *every* participating numeric handle
+agrees — two for each transform, three for each cross-entropy direction —
+and dispatch **once** from the storage tag; the four compute kernels became
+templates over the element type and moved into
+`tf_classification_internal.h`, for the reason the I4 and I5 kernels moved.
+Slice decomposition, traversal order, the strict `>` maximum scan, the
+fused log-sum-exp, and the saved-probability backward are unchanged;
+`std::exp`/`std::log` are called on the element type, so a float32 slice
+takes the `float` overload rather than widening and narrowing back. The
+class **targets stay host `int64` metadata at every width** and no integer
+tensor dtype was introduced. The native CTest inventory moved **22 → 23**
+(`test_dtype_classification`), which carries the float32 batch-loss
+accumulation witness, the per-width stability witnesses, the recorded
+spread-beyond-the-finite-range qualification, and the exceptional-value
+sweep.
+
 **Everything else on this page is still exactly what Phase H left**:
 float64 CPU only, native checkpoint format version **2** with versions
 **(1, 2)** accepted, `SUPPORTED_DTYPES == ("float64",)`, and
 `UNSUPPORTED == ("float32", "cuda", "amp")`. float32 is *internally
 supported for storage, transfer, views, elementwise/unary execution,
-reductions, matmul, Conv2d, MaxPool2d, view backward, and private Core
-autograd* — and for nothing else. Classification, normalization, and
-Dropout reject a float32 handle with `TF_ERROR_INVALID` before reading or
-writing anything, since walking a 4-byte-per-element buffer through a
-`double*` would overrun it twofold. And a private float32 graph is not
-public float32 autograd — no public constructor produces a float32 tensor,
-so no float32 parameter, module, or optimizer exists.
+reductions, matmul, Conv2d, MaxPool2d, softmax, log-softmax, fused
+cross-entropy, view backward, and private Core autograd* — and for nothing
+else. Normalization and Dropout reject a float32 handle with
+`TF_ERROR_INVALID` before reading or writing anything, since walking a
+4-byte-per-element buffer through a `double*` would overrun it twofold. And
+a private float32 graph is not public float32 autograd — no public
+constructor produces a float32 tensor, so no float32 parameter, module, or
+optimizer exists.
 
 The contract's **exactly two** new C ABI symbols for the entire phase
 (`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,

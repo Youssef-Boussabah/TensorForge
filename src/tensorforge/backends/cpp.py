@@ -2428,12 +2428,15 @@ class NativeTensorCore:
         mutated and shares no storage with the result.
 
         Per slice the kernel computes ``exp(x - max(x)) / sum(exp(x -
-        max(x)))`` in one fused pass, all in float64 — the maximum shift
-        keeps every exponent <= 0, so a large common offset cannot
-        overflow. Exceptional values follow plain IEEE arithmetic with no
-        special-casing: a NaN or ``+inf`` anywhere in a slice propagates
-        through that slice's shift and sum, so the whole slice becomes
-        NaN. Those are values, not errors.
+        max(x)))`` in one fused pass, **entirely at the element dtype**
+        (Phase I, milestone I6: the maximum, the shift, the exponential,
+        the normalizing sum, and the division are all float32 for a float32
+        tensor — there is no widened accumulator anywhere) — the maximum
+        shift keeps every exponent <= 0, so a large common offset cannot
+        overflow at either width. Exceptional values follow plain IEEE
+        arithmetic with no special-casing: a NaN or ``+inf`` anywhere in a
+        slice propagates through that slice's shift and sum, so the whole
+        slice becomes NaN. Those are values, not errors.
 
         The C ABI is **contiguous-only**, so a non-contiguous input is
         materialized into a private contiguous copy (Policy B) that is
@@ -2457,11 +2460,13 @@ class NativeTensorCore:
         unmutated.
 
         Per slice the kernel computes ``(x - max(x)) - log(sum(exp(x -
-        max(x))))`` in one fused pass, all in float64. It is **never**
-        ``softmax(x).log()`` — no probability buffer is formed and no
-        division happens, so a probability too small to represent (which
-        would round to 0 and give ``log(0) == -inf``) still gets an
-        accurate finite log-probability. Exceptional values follow plain
+        max(x))))`` in one fused pass, **entirely at the element dtype**
+        (Phase I, milestone I6). It is **never** ``softmax(x).log()`` — no
+        probability buffer is formed and no division happens, so a
+        probability too small to represent (which would round to 0 and give
+        ``log(0) == -inf``) still gets an accurate finite log-probability;
+        that reason only gets stronger at float32, where the smallest
+        normal probability is ~1.18e-38. Exceptional values follow plain
         IEEE arithmetic with no special-casing: a NaN or ``+inf`` in a
         slice makes that whole slice NaN, while a ``-inf`` gets ``-inf``
         and leaves its finite neighbours governed by the stable
@@ -2539,7 +2544,12 @@ class NativeTensorCore:
         """Fused multi-class cross-entropy over this tensor's logits.
 
         ``self`` is the ``(batch_size, num_classes)`` logits block — rank
-        exactly 2, float64/cpu, open. The class axis is fixed at axis 1;
+        exactly 2, open, at any internally representable dtype (Phase I,
+        milestone I6; the scalar loss and the saved probabilities are
+        allocated at that same dtype, and every value the kernel computes —
+        the row maximum, the shift, the exponentials, ``sum_exp``, the row
+        loss, the batch total, and the mean divisor — is that dtype too).
+        The class axis is fixed at axis 1;
         there is deliberately no ``axis`` argument, no broadcasting, and
         no implicit reshape, so rank-1, rank-3, and flattened logits are
         rejected by shape.
@@ -2608,11 +2618,14 @@ class NativeTensorCore:
                 f"cross_entropy_forward requires 2-D (batch_size, "
                 f"num_classes) logits, got shape {self.shape}"
             )
-        if self.dtype != "float64" or self.device != "cpu":
-            raise ValueError(
-                f"cross_entropy_forward requires float64/cpu logits, got "
-                f"{self.dtype}/{self.device}"
-            )
+        # Phase I, milestone I6: the hard float64 gate that stood here since
+        # E5 is gone — the logits dtype now comes from the storage tag,
+        # which can only hold an internally representable dtype, and the C
+        # ABI dispatches on it. Both destinations are allocated at that same
+        # dtype below, so the three numeric handles cannot disagree; the
+        # device is "cpu" by construction for every constructible storage.
+        # The targets are unaffected at either dtype: they stay host int64
+        # metadata and are never inferred from the logits.
         batch_size, num_classes = self.shape
         # Reduction first: it is the cheapest check and the one most
         # likely to be a caller typo, and normalizing it here keeps the
@@ -2681,7 +2694,10 @@ class NativeTensorCore:
         """Gradient of the fused cross-entropy w.r.t. its logits (E5).
 
         ``self`` is the **saved probability core** the forward produced —
-        rank 2, contiguous, float64/cpu, open. ``targets`` is that
+        rank 2, contiguous, open, at the graph's dtype (Phase I, milestone
+        I6: the upstream must match it and the gradient is allocated at it,
+        so the contribution, the ``- 1`` at the target, the mean divisor,
+        and the upstream scaling all happen at that dtype). ``targets`` is that
         forward's owned ``int64`` copy (the internal trusted-copy
         contract: an independently owned, C-contiguous 1-D ``int64``
         NumPy array, re-checked here for dtype, layout, length, and class
@@ -2721,11 +2737,12 @@ class NativeTensorCore:
                 f"probabilities, got strides {self.strides} for shape "
                 f"{self.shape}"
             )
-        if self.dtype != "float64" or self.device != "cpu":
-            raise ValueError(
-                f"cross_entropy_backward requires a float64/cpu probability "
-                f"core, got {self.dtype}/{self.device}"
-            )
+        # Phase I, milestone I6: the E5 float64 gate is gone here too. The
+        # saved probabilities carry the graph's dtype, the gradient is
+        # allocated at that same dtype below, and the upstream is checked
+        # against it by ``_require_matching_metadata`` — so all three
+        # numeric handles agree before the ABI is entered, and the C ABI
+        # revalidates the agreement itself. The targets stay host int64.
         batch_size, num_classes = self.shape
         # Only the ABI code is needed here; the name is the forward's.
         _, reduction_code = _normalize_reduction(

@@ -11,8 +11,8 @@ change, no kernel, no C ABI symbol, no ctypes declaration, no
 optimizer, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-I status: I0, I1, I2, I3, I4, and I5 complete. I6 through I11 are
-not started.** (Recorded with I5: the I4 commit advanced every other
+**Phase-I status: I0, I1, I2, I3, I4, I5, and I6 complete. I7 through I11
+are not started.** (Recorded with I5: the I4 commit advanced every other
 status surface but left this paragraph reading "I0-I3 complete" — the §29
 delivered record was already present and correct, and the two-line lag is
 repaired here rather than rewritten away.) The native runtime is
@@ -69,16 +69,30 @@ dtype** with the `2**53` plane bound unchanged (§13.3); and private
 float32 graphs differentiate through convolution and pooling with the
 winner riding the unchanged `graph_resources` contract.
 
-Everything numerically downstream still rejects a float32 handle with
-`TF_ERROR_INVALID` before touching memory: classification (softmax,
-log-softmax, cross-entropy), dropout, normalization, optimizers, modules,
-and checkpoints. Nor does a dtype-general Core primitive make float32
-parameters or training exist: no public constructor produces a float32
-tensor, so no float32 graph a *user* can build exists at all.
+What I6 changed, and only this: the **stable-math and classification
+stack** is dtype-general. Softmax, log-softmax, and the fused
+cross-entropy forward and backward (4 exports, none new) dispatch once from
+the storage tag into templated kernels; the maximum scan, the shift, the
+exponentials, the normalizing sum, the log-normalizer, the per-row loss,
+the **batch-loss accumulator**, the mean divisor, and every backward
+contribution all happen at the element type; the saved probabilities carry
+the graph dtype; log-softmax is still its own fused log-sum-exp kernel and
+never `softmax().log()`; the backward still reads the saved probabilities
+and cannot even name the logits; and the class **targets stay host `int64`
+metadata at every width** — they carry no dtype, gain none, and are never
+inferred from the logits. Private float32 graphs differentiate through all
+three operations. **No integer tensor dtype was introduced.**
 
-Internal allocation, transfer, elementwise, reduction, matmul, CNN, and
-private-autograd capability is not public support — that distinction is
-§27.1's, and the registry moves at I9.
+Everything numerically downstream still rejects a float32 handle with
+`TF_ERROR_INVALID` before touching memory: dropout, normalization,
+optimizers, modules, and checkpoints. Nor does a dtype-general Core
+primitive make float32 parameters or training exist: no public constructor
+produces a float32 tensor, so no float32 graph a *user* can build exists at
+all.
+
+Internal allocation, transfer, elementwise, reduction, matmul, CNN,
+classification, and private-autograd capability is not public support —
+that distinction is §27.1's, and the registry moves at I9.
 
 **Phase H remains complete (H0–H10) and is the latest *completed*
 phase.** Nothing in Phase I revisits, reverses, or re-measures a Phase-H
@@ -1410,6 +1424,63 @@ these kernels saturate differ. What does **not** differ is that neither
 kernel produces a NaN or an infinity for any finite input for which the
 float64 kernel does not, because the shift is what guarantees that and
 the shift is width-independent.
+
+#### The domain qualification I6 measured, and why it is not a defect
+
+**Written at I6, on evidence.** The paragraph above is right about what the
+shift guarantees and one clause too strong about what follows from it. The
+shift guarantees no **exponent** overflows: every `x - m` is `<= 0`, so
+`exp` of it is in `(0, 1]` at any width. It does **not** guarantee that
+`x - m` is itself *representable*, and it mathematically cannot: the
+subtraction is an ordinary operation at the element type, so when a slice's
+**spread** `m - min` exceeds the element type's largest finite value, it
+overflows to `-inf`.
+
+The measured counterexample, recorded rather than smoothed over. For the
+finite binary32 slice `[3.0e38, -3.0e38]` — both operands well inside
+`FLT_MAX` = 3.4028235e38 — the spread is 6.0e38 and:
+
+| | float32 | float64 |
+|---|---|---|
+| `x_min - m` | `-inf` | `-6.0e38` |
+| `softmax` | `[1.0, +0.0]` | `[1.0, +0.0]` |
+| `log_softmax` | `[+0.0, -inf]` | `[+0.0, -6.0e38]` |
+| `cross_entropy` (target = the low logit) | `+inf` | `6.0e38` |
+
+Three things make this a dynamic-range fact rather than a stability defect,
+and all three are asserted by test:
+
+1. **`softmax` is unaffected.** The affected class gets exactly `+0.0`,
+   which is the correctly rounded value of a true probability around
+   `e**-6e38`, and the maximum gets exactly `1.0`. The operation the "no
+   NaN or infinity" claim most naturally targets satisfies it
+   **unconditionally**.
+2. **`-inf` / `+inf` are the correctly rounded IEEE-754 results.** The true
+   values (`-6.0e38` and `+6.0e38`) have **no binary32 representation at
+   all**, so overflow to infinity is exactly what round-to-nearest
+   prescribes. No accuracy was lost that a different implementation could
+   have kept.
+3. **It is width-parameterized, not float32-specific.** The identical thing
+   happens at binary64 once a slice's spread passes ~1.8e308. "The shift is
+   width-independent" is true of the *algorithm*; the representable range
+   it operates in is not, and never was.
+
+So the contract statement, as scoped, is:
+
+> For any finite input **whose per-slice spread is representable at the
+> element type**, neither kernel produces a NaN or an infinity that the
+> same kernel at float64 does not also produce for the same input.
+> `softmax` needs no such qualification: for **any** finite input it
+> produces neither. When the spread is *not* representable, the shifted
+> logit correctly rounds to `-inf`, and `log_softmax` reports `-inf` and
+> `cross_entropy` reports `+inf` — values, never ABI errors, with the error
+> slot left at `TF_OK`.
+
+Explicitly forbidden as a "fix", at this and every later milestone: a
+widened intermediate for the subtraction (that is mixed precision, which
+§1.2 excludes and §10.1 forbids), a clamp, a special case in the traversal,
+or a saturating substitute for `-inf`. The kernels are unchanged, and the
+qualification lives in the contract instead.
 
 ---
 
@@ -3099,6 +3170,140 @@ version 2 with (1, 2) accepted, and **54** exports — I5 added none.
 - **Invariants:** float64 bit-identical; no new export.
 - **Exit gate:** full suite green.
 - **Commit message:** `Add float32 native classification support`
+
+#### I6 as delivered
+
+Landed as specified, with seven implementation decisions recorded here
+because the contract left each judgement open — and with one measured
+finding that **changed a contract sentence**, recorded in §10.5 rather than
+smoothed over.
+
+1. **All four classification kernels became templates deduced from their
+   pointer arguments, and the definitions moved into
+   `tf_classification_internal.h`** — I4's and I5's reason, unchanged: a
+   template must be visible where it is instantiated, and both
+   instantiations must reach the exported wrappers in `classification.cpp`
+   *and* the CTests that compile that file directly. Every pre-I6 call site
+   passes `double*`, so `T = double` is the pre-I6 kernel statement for
+   statement. `double sum = 0.0` became `T total = T(0)`,
+   `static_cast<double>(batch_size)` became `static_cast<T>(batch_size)`,
+   and `contribution -= 1.0` became `contribution -= T(1)` — each of which
+   is character-for-character the old expression at `T = double`. Nothing
+   about the §9.1 source organization of
+   `docs/native_classification_design.md` changed: classification is still
+   one compute unit, still deliberately apart from `elementwise.cpp`, and
+   the guarded wrappers still live beside it.
+
+2. **One dispatch per export, held by four file-local helpers.**
+   `tf::require_float64` became `tf::require_matching_dtype` at all four
+   exports, and a file-local `*_dispatch<T>` helper per export holds the
+   typed-pointer formation below the export's single
+   `switch (tf::dispatch_dtype(...))`, none with a `default:` label. The
+   guard covers **every participating numeric handle** — two for each
+   transform, three for the cross-entropy forward (logits, scalar loss,
+   saved probabilities) and three for the backward (saved probabilities,
+   scalar upstream, gradient destination). The dtype guard runs first,
+   before the null checks and the span validation, exactly as I3 ordered
+   it: a call that is both mixed-dtype and otherwise malformed reports the
+   dtype. Validation itself did not move — same checks, same messages, same
+   order after the guard.
+
+3. **The int64 target span is deliberately not a dispatch participant and
+   not a template parameter of anything.** It is host metadata, so there is
+   no target dtype to check, none to dispatch on, and nothing is inferred
+   from it in either direction. `tf_core_cross_entropy_forward` and
+   `tf_core_cross_entropy_backward` keep `const int64_t*` plus an explicit
+   count, C++ still revalidates every index it will dereference before
+   writing anything, and both destinations stay byte-for-byte unchanged on
+   every rejection — re-proved at float32. **No integer storage export, no
+   integer tensor dtype, and no target device concept was added.** This is
+   §13.3's distinction applied a second time: the MaxPool2d winner buffer
+   is index metadata pinned to float64, and a classification target is
+   index metadata that was never a tensor at all.
+
+4. **The two §2.3 hard gates I6 owned came out.** The
+   `dtype != "float64" or device != "cpu"` gates on
+   `cross_entropy_forward` and `cross_entropy_backward` are gone: the
+   logits dtype comes from the storage tag, which can hold only an
+   internally representable dtype; both destinations are allocated at that
+   same dtype; the upstream is checked against it by the pre-existing
+   `_require_matching_metadata`; and the C ABI revalidates the agreement
+   itself. Softmax and log-softmax needed **no** Python change at all —
+   `_axis_fused_forward` already allocated its output at `self.dtype` — so
+   the milestone's Python delta is two gate removals and docstrings. Of
+   the five §2.3 gates, **one** now remains, and it is Dropout's (I7's).
+
+5. **The autograd layer needed no structural change whatsoever.** Softmax's
+   backward is `multiply`/`sum`/`subtract`, log-softmax's is
+   `exp`/`sum`/`multiply`/`subtract` — all generalized at I3 and I4 — and
+   cross-entropy's is one call into the Core backward. So the three graph
+   nodes, the saved-output reads, the "no expected parameter version"
+   decision, and the `graph_resources` adoption are literally the Phase-E
+   code, running at a second width because everything beneath them became
+   dtype-general. **Saved probabilities carry the graph dtype** by
+   construction rather than by a new rule: the Core forward allocates them
+   at `self.dtype`.
+
+6. **The oracle design has two references, and the split is the finding.**
+   Unlike I3-I5, these kernels contain `exp` and `log`, which have no
+   correctly-rounded IEEE guarantee — the reason H8 excluded them from the
+   templated traversal in the first place. So the tests assert **two**
+   separate things. Against an oracle that reproduces the kernel's exact
+   traversal but takes its transcendentals from **TensorForge's own**
+   `exp`/`log`, every kernel is **bit-identical at both dtypes** (measured:
+   0 ULP) — that is a statement about the algorithm, with the
+   non-exact ingredient factored out rather than glossed over. Against a
+   **NumPy** float32 oracle the distance is 2 ULP for softmax and 3 for
+   log-softmax (bound committed at 4), which is a statement about NumPy's
+   separate float32 SIMD transcendental kernel, exactly as I3 measured for
+   `exp`/`log` themselves; at float64 both references give 0. Neither
+   reference is a float32-versus-float64 comparison.
+
+7. **The float32 accumulation witness is the batch-loss accumulator, and
+   its per-row losses come from the kernel.** Every other float32 property
+   of this family is a single correctly-rounded operation per destination,
+   where computing in binary64 and rounding once is *provably*
+   indistinguishable from binary32 — the point recorded at I3 and answered
+   behaviourally at I4. Accumulation is the one place the two policies can
+   differ, so the witness is built there: a batch whose first row has a
+   loss of exactly 200 and whose remaining 199 rows each contribute
+   ~6.1e-6, below half a binary32 ULP of the running total. Sequential
+   binary32 absorbs all of them and stays at exactly 200; binary64 lands
+   ~1.2e-3 higher. TensorForge is asserted by raw bit pattern to equal the
+   first and to **differ** from the second, and the witness is proved
+   non-vacuous before either comparison. Taking the per-row losses from the
+   kernel itself (one single-row `sum` call each) removes every
+   `expf`/`logf` assumption from the witness.
+
+**The measured finding, and the contract sentence it changed.** §10.5 said
+without qualification that neither kernel "produces a NaN or an infinity
+for any finite input for which the float64 kernel does not, because the
+shift is what guarantees that and the shift is width-independent." That is
+right about `exp` and one clause too strong about the subtraction. For the
+finite binary32 slice `[3.0e38, -3.0e38]` the spread exceeds `FLT_MAX`, so
+`x - m` itself overflows to `-inf`: `softmax` is unaffected and still gives
+exactly `[1.0, +0.0]`, but `log_softmax` gives `-inf` where float64 gives
+`-6.0e38`, and `cross_entropy` gives `+inf` where float64 gives `6.0e38`.
+The true values have no binary32 representation at all, so those *are* the
+correctly rounded results, and the identical thing happens at binary64 past
+~1.8e308. The kernel was **not** changed — no widened intermediate, no
+clamp, no special case — and the qualification was written into §10.5 with
+the counterexample, the table, and the three reasons it is a dynamic-range
+fact rather than a defect. It is asserted in both directions by test at
+both widths, so no later milestone can quietly "fix" it.
+
+**Not moved at I6**, and each asserted: `SUPPORTED_DTYPES`,
+`SUPPORTED_DEVICES`, `UNSUPPORTED`, `RAW_KERNEL_DTYPES`,
+`normalize_dtype("float32")`, every public constructor, every module and
+parameter signature, the Dropout gate (I7's), the checkpoint format
+(version 2, (1, 2) accepted), and the export count — still **54**, I6 added
+none. `NativeCrossEntropyLoss` and `native_accuracy` were **inspected and
+left alone**: the loss is a thin delegate to `logits.cross_entropy(...)`
+with no float64 assumption to remove, and the metric materializes through
+`to_numpy()` and returns a Python float. Both work when handed a private
+float32 graph, which is a consequence of the *operation* being
+dtype-general and is not public float32 module support. CTests moved
+22 → **23** (`test_dtype_classification`).
 
 ### I7 — Modules, parameters, buffers, initialization, and Dropout
 

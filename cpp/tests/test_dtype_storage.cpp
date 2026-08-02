@@ -1030,12 +1030,16 @@ void test_every_still_float64_operation_rejects_float32_storage() {
     });
 
     // -- classification.cpp ------------------------------------------------
-    reject_case("tf_core_softmax_forward", dst, 64, [&] {
+    // Dtype-general from I6, so — like the copy, matmul and reduction cases
+    // above — this is no longer a "float64-only operation" rejection but a
+    // **mixed dtype** one, which is the stronger and more permanent rule.
+    reject_case("tf_core_softmax_forward (mixed dtype)", dst, 64, [&] {
         tf_core_softmax_forward(f32, 0, dst, 8, 8, 1);
     });
 
     // -- pooling.cpp -------------------------------------------------------
-    reject_case("tf_core_maxpool2d_forward", dst, 64, [&] {
+    // Dtype-general from I5: mixed dtype again, for the same reason.
+    reject_case("tf_core_maxpool2d_forward (mixed dtype)", dst, 64, [&] {
         tf_core_maxpool2d_forward(f32, 0, dst, dst, 1, 1, 8, 8, 2, 2, 2, 2,
                                   0, 0, 4, 4);
     });

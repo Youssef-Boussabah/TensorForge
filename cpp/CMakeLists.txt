@@ -663,4 +663,36 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME dtype_cnn COMMAND test_dtype_cnn)
+
+  # Dtype-general stable math and classification (Phase I, milestone I6):
+  # compiles classification.cpp directly so it reaches the hidden templated
+  # softmax / log-softmax / cross-entropy kernels at BOTH instantiations
+  # beside the exported wrappers they live inside. Deliberately
+  # complementary rather than a superset: test_softmax, test_log_softmax and
+  # test_cross_entropy keep their hand-computed float64 cases and the full
+  # E3-E5 validation matrix, while this one proves the set I6 opened — all
+  # four kernels at both dtypes against independently written same-order
+  # references, the float32 batch-loss accumulation witness, the stability
+  # witnesses at each width's own magnitudes, the recorded
+  # spread-beyond-the-finite-range qualification, the exceptional-value
+  # sweep, mixed dtype refused in every participating handle position with
+  # both destinations unmoved, and the int64 target boundary unchanged at
+  # float32. storage.cpp supplies the typed Storage handles the exports take;
+  # error.cpp the thread-local slot the guarded wrappers record into.
+  add_executable(test_dtype_classification
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_classification PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_classification PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_classification PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_classification PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_classification COMMAND test_dtype_classification)
 endif()

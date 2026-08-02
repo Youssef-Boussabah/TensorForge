@@ -42,7 +42,7 @@ sections above are the narrative.
 ## The current phase — Phase I
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I5 are complete; I6 through I11
+latest phase. Milestones I0 through I6 are complete; I7 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
@@ -139,13 +139,43 @@ capability that decision preserves. Private float32 graphs differentiate
 through convolution and pooling, with the winner riding the unchanged
 graph-owned saved-state contract. **I5 added no export.**
 
-**None of I1 through I5 moved a public capability.** The native runtime is
+**I6 made float32 classify.** Softmax, log-softmax, and the fused
+cross-entropy forward and backward are dtype-general, with every
+participating numeric handle checked for agreement and one dispatch per
+export into templated kernels. The maximum scan, the shift, the
+exponentials, the normalizing sum, the log-normalizer, the per-row loss,
+the batch-loss accumulator, the mean divisor, and every backward
+contribution all happen at the element type — and the batch-loss
+accumulator is where that became a *measured* claim: on a batch whose first
+row contributes exactly 200 and whose remaining 199 contribute ~6.1e-6
+each, binary32 stays at exactly 200 while binary64-then-narrow lands
+~1.2e-3 higher, and TensorForge is asserted equal to the first and unequal
+to the second. Log-softmax is still its own fused log-sum-exp kernel and
+never `softmax().log()`; the saved probabilities carry the graph dtype and
+stay the only thing the backward reads; the class **targets stay host
+`int64` metadata at every width**, so no integer tensor dtype appeared.
+Private float32 graphs differentiate through all three operations with no
+graph-structure change at all. **I6 added no export.**
+
+I6 is also where the float32 stability statement gained its one honest
+qualification. The maximum shift guarantees no *exponent* overflows; it
+does not make the shifted value representable, so a slice whose **spread**
+exceeds the element type's largest finite value overflows the shift to
+`-inf`. `softmax` is unaffected and still exact; `log_softmax` reports
+`-inf` and `cross_entropy` `+inf`, as values rather than errors. Those are
+the correctly rounded IEEE results for quantities with no representation at
+that width, and the same thing happens at binary64 past ~1.8e308. The
+kernels were left alone — no widened intermediate, no clamp, no special
+case — and the counterexample was written into the contract and asserted by
+test in both directions.
+
+**None of I1 through I6 moved a public capability.** The native runtime is
 still float64 CPU only: `float32` is still listed as unsupported,
 `SUPPORTED_DTYPES` still reads `("float64",)`, and the native checkpoint
 format is still `tensorforge.native_checkpoint` version 2 with versions 1
 and 2 accepted. What remains numerically downstream still rejects a float32
-handle before reading or writing anything — classification, Dropout,
-normalization, optimizers, modules, and checkpoints. That is what keeps a
+handle before reading or writing anything — Dropout, normalization,
+optimizers, modules, and checkpoints. That is what keeps a
 4-byte-per-element buffer from being walked as `double`. Nor is a private
 float32 graph public float32 autograd: no public constructor produces a
 float32 tensor, no `NativeParameter` accepts one, and no module takes a
@@ -189,7 +219,11 @@ than re-deriving them:
   anywhere — that would be mixed precision, which is out of scope. *First
   enforced at I3; **witnessed by test at I4**, where accumulation makes the
   difference between binary32 and binary64-then-narrow observable, on both
-  reduction traversals and both matmul paths.*
+  reduction traversals and both matmul paths.* *Extended at I5 to all three
+  Conv2d directions on both traversals, and at I6 to the cross-entropy
+  batch-loss accumulator — the one place in the classification family where
+  the two policies can differ at all, since every other operation there is a
+  single correctly-rounded operation per destination.*
 - **Checkpoint version 3** is designed but not activated at I0. Versions
   1 and 2 stay readable and are defined as float64-only formats that are
   never guessed to be float32.
@@ -203,7 +237,7 @@ than re-deriving them:
   optimizer state, checkpoint version 3, and the exact-resume proof all
   exist.
 
-The ladder is I0 through I11 — **I0 through I5 landed; I6 is next**:
+The ladder is I0 through I11 — **I0 through I6 landed; I7 is next**:
 the contract (I0), the dtype model and
 tagged storage (I1), typed transfer and materialization (I2), elementwise
 execution (I3), reductions and matmul (I4), the convolution and pooling

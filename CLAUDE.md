@@ -127,20 +127,32 @@ MaxPool2d directions are dtype-general through H9's unchanged traversals
 and predicates, Conv2d accumulates in the element type, private float32
 graphs differentiate through convolution and pooling, and the MaxPool2d
 winner buffer stays **private float64 at every value dtype** with the
-`2**53` exact-plane bound unchanged.
+`2**53` exact-plane bound unchanged; and since I6 it **classifies** —
+softmax, log-softmax, and the fused cross-entropy forward and backward are
+dtype-general, every value they compute (the maximum, the shift, the
+exponentials, the normalizing sum, the log-normalizer, the row loss, the
+**batch-loss accumulator**, the mean divisor, and every backward
+contribution) is at the element type, saved probabilities carry the graph
+dtype, private float32 graphs differentiate through all three, and the
+class **targets stay host `int64` metadata at every width** — no integer
+tensor dtype exists or was added.
 
-That is not a support claim and does not change a single row above: every
-operation that has not been dtype-generalized — softmax, log-softmax,
-cross-entropy, and Dropout — rejects a float32 handle with
-`TF_ERROR_INVALID` before touching memory; `normalize_dtype("float32")`
-still raises; and no public constructor produces a float32 tensor, so
-float32 parameters, modules, optimizers, checkpoints, and training do not
-exist. The private float32 graphs I4 and I5 prove are built through the
-private typed constructors (`_typed`, `_typed_from_array`, `_typed_full`,
-`zeros(..., _trusted_dtype=True)`, `NativeTensor._from_core`), which exist
-so an intermediate milestone can test through them while the public
-boundary stays exactly where it is. The public registry moves at **I9**,
-not before.
+That is not a support claim and does not change a single row above: the one
+numerical operation that has not been dtype-generalized — **Dropout** —
+rejects a float32 handle with `TF_ERROR_INVALID` before touching memory;
+`normalize_dtype("float32")` still raises; and no public constructor
+produces a float32 tensor, so float32 parameters, modules, optimizers,
+checkpoints, and training do not exist. The private float32 graphs I4, I5,
+and I6 prove are built through the private typed constructors (`_typed`,
+`_typed_from_array`, `_typed_full`, `zeros(..., _trusted_dtype=True)`,
+`NativeTensor._from_core`), which exist so an intermediate milestone can
+test through them while the public boundary stays exactly where it is. The
+public registry moves at **I9**, not before.
+
+`NativeCrossEntropyLoss` and `native_accuracy` therefore *work* on a
+private float32 graph, and that is the operation being dtype-general rather
+than public float32 module support. Neither has a dtype argument and
+neither may gain one before I7.
 
 One further registry exists and is a **different** statement from
 `SUPPORTED_DTYPES`: `RAW_KERNEL_DTYPES == ("float64",)` (added at I2,
@@ -571,14 +583,15 @@ matching docs file (and README links) **in the same milestone**.
     exactly **one** C ABI symbol across the whole phase
     (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
-- **Native line: Phase I at I5** — Native Dtype Generalization and
+- **Native line: Phase I at I6** — Native Dtype Generalization and
   Float32 CPU Support. Contract:
   `docs/native_dtype_float32_design.md`. **I0 (design, contract tests,
   documentation), I1 (the dtype model and dtype-tagged storage), I2
   (typed transfer, views, and materialization), I3 (elementwise,
   broadcast, and unary dtype execution), I4 (reductions, matmul, views,
-  and core autograd), and I5 (CNN and pooling dtype support) are
-  complete; I6–I11 are not started.**
+  and core autograd), I5 (CNN and pooling dtype support), and I6 (stable
+  math and classification dtype support) are complete; I7–I11 are not
+  started.**
   - I1 delivered: the C++ `TfDtype`/`tf::Dtype` model with frozen codes
     `0 = float64` and `1 = float32`, one item-size authority
     (`tf::dtype_item_size` — nothing else may spell a storage width), one
@@ -695,17 +708,61 @@ matching docs file (and README links) **in the same milestone**.
     graphs differentiate through convolution and pooling with the winner
     riding the unchanged `graph_resources` contract. CTests moved 21 → 22
     (`test_dtype_cnn`).
-  - **Public capability did not move at I1, I2, I3, I4, or I5**: float64
-    CPU only, `float32` still in `UNSUPPORTED`, `RAW_KERNEL_DTYPES` still
-    `("float64",)`, checkpoint version 2 with (1, 2) accepted. Only the
-    export count changed, 52 → **54**, at I1; I2 through I5 added none.
+  - I6 delivered: the four classification exports —
+    `tf_core_softmax_forward`, `tf_core_log_softmax_forward`,
+    `tf_core_cross_entropy_forward`, `tf_core_cross_entropy_backward` —
+    generalized to both dtypes (**none new**). The four compute kernels
+    became templates deduced from their pointer arguments and moved into
+    `tf_classification_internal.h` on I4's and I5's terms; the slice
+    decomposition, the strict `>` maximum scan, the fused log-sum-exp, and
+    the saved-probability backward are unchanged, and `T = double` is the
+    Phase-E source statement for statement. `tf::require_matching_dtype`
+    covers **every** participating numeric handle — two per transform,
+    three per cross-entropy direction — and one `switch
+    (tf::dispatch_dtype(...))` per export sits above four file-local
+    `*_dispatch<T>` arms. `std::exp`/`std::log` are called on the element
+    type, so a float32 slice takes the `float` overload rather than
+    widening and narrowing back, and there is **no hidden float64
+    accumulator**: the batch-loss accumulator carries the witness (a row of
+    exactly 200 followed by 199 rows of ~6.1e-6 separates sequential
+    binary32 from binary64-then-narrow by ~1.2e-3). Saved probabilities
+    carry the graph dtype and stay the only thing the backward reads — the
+    logits are not a parameter of the kernel, the export, or the Core
+    wrapper. **Targets stay host `int64` metadata at every width**: no
+    target dtype, no dispatch on them, no inference from them, and no
+    integer tensor dtype anywhere. The two §2.3 cross-entropy gates became
+    dtype-general acceptance, leaving **only Dropout's** for I7; the
+    autograd layer needed no structural change, because the two transform
+    backwards are already composed from I3/I4 Core ops. CTests moved
+    22 → 23 (`test_dtype_classification`).
+  - **§10.5's float32 stability sentence gained a domain qualification at
+    I6, on measurement.** The maximum shift guarantees no *exponent*
+    overflows; it cannot make the shifted value `x - m` representable. For
+    the finite binary32 slice `[3.0e38, -3.0e38]` the spread exceeds
+    `FLT_MAX`, so the shift overflows to `-inf`: **softmax is unaffected**
+    (exactly `[1.0, +0.0]`), while `log_softmax` gives `-inf` and
+    `cross_entropy` `+inf` where float64 gives finite `∓6.0e38`. Those are
+    the correctly rounded IEEE results for values with no binary32
+    representation, and the same happens at binary64 past ~1.8e308. **Never
+    "fix" this** with a widened intermediate (mixed precision), a clamp, or
+    a special case; the qualification is in the contract and asserted in
+    both directions by test.
+  - **Public capability did not move at I1, I2, I3, I4, I5, or I6**:
+    float64 CPU only, `float32` still in `UNSUPPORTED`,
+    `RAW_KERNEL_DTYPES` still `("float64",)`, checkpoint version 2 with
+    (1, 2) accepted. Only the export count changed, 52 → **54**, at I1;
+    I2 through I6 added none.
   - **A dtype-general Core kernel is not a public capability, and neither
     is a private graph.** I3 generalized `tf_core_relu_backward` because it
     is a forward-shaped numerical primitive, not graph machinery; the
-    float32 `NativeTensor` graphs I4 and I5 prove are reached only through
-    the private typed constructors. float32 parameters, modules,
-    optimizers, checkpoints, and training remain absent, and no public
-    constructor produces a float32 tensor at all.
+    float32 `NativeTensor` graphs I4, I5, and I6 prove are reached only
+    through the private typed constructors. `NativeCrossEntropyLoss` and
+    `native_accuracy` were inspected at I6 and **left alone** — the loss is
+    a thin delegate and the metric goes through `to_numpy()`, so both work
+    on a private float32 graph without either gaining a dtype argument.
+    float32 parameters, modules, optimizers, checkpoints, and training
+    remain absent, and no public constructor produces a float32 tensor at
+    all.
   - **Recorded so no later milestone relitigates it:** for a *single*
     correctly-rounded IEEE operation — which is every I3 operation, one per
     destination element — computing in binary64 and rounding once to
@@ -721,7 +778,11 @@ matching docs file (and README links) **in the same milestone**.
     TensorForge is asserted equal to the first and **unequal** to the
     second on both reduction traversals and both matmul paths. Keep both
     halves — the witness proves the result, the structural check proves no
-    width in the source could make one path right and another wrong.
+    width in the source could make one path right and another wrong. **I6
+    applied the same split again**: every classification operation but one
+    is a single correctly-rounded operation per destination, so the
+    behavioural witness lives on the batch-loss accumulator and the rest
+    rests on the structural check plus a same-dtype bit-identical oracle.
   When implementing a Phase-I milestone, the durable rules are:
   - **exactly two** new C ABI exports across the whole phase
     (`tf_storage_create_typed`, `tf_storage_create_uninitialized_typed`,

@@ -1995,24 +1995,25 @@ def test_i2_moved_no_public_capability_at_all():
 
 
 @needs_native
-def test_the_float32_paths_are_exactly_the_families_landed_through_i5():
-    """The precise statement that replaces I4's "float32 is computed on by
-    transfer/copy, elementwise/unary, reductions, matmul, and view-backward".
+def test_the_float32_paths_are_exactly_the_families_landed_through_i6():
+    """The precise statement that replaces I5's "float32 is computed on by
+    transfer/copy, elementwise/unary, reductions, matmul, Conv2d, MaxPool2d,
+    and view-backward".
 
-    As of I5, float32 is internally supported for **storage, transfer,
+    As of I6, float32 is internally supported for **storage, transfer,
     views, elementwise/unary execution, reductions, matmul, Conv2d (all
-    three directions), MaxPool2d (both directions), view backward, and
-    private Core autograd** — and for nothing else. Classification,
-    normalization, Dropout, modules, parameters, optimizers, checkpointing,
-    and public float32 construction remain unsupported, and each later
-    numerical family still rejects a float32 operand as *float64-only*,
-    with both operands at the same dtype, so this is not a mixed-dtype
-    rejection in disguise.
+    three directions), MaxPool2d (both directions), softmax, log-softmax,
+    fused cross-entropy (forward and backward), view backward, and private
+    Core autograd** — and for nothing else. Normalization, Dropout, modules,
+    parameters, optimizers, checkpointing, and public float32 construction
+    remain unsupported, and each remaining numerical family still rejects a
+    float32 operand as *float64-only*, with both operands at the same dtype,
+    so this is not a mixed-dtype rejection in disguise.
 
-    The families still out are exactly the ones I6-I8 own: softmax,
-    log-softmax, cross-entropy, and Dropout. Above the Core layer nothing
-    moved at all — no parameter, no module, no optimizer, no checkpoint
-    version, and no public constructor that produces a float32 tensor.
+    The family still out is exactly the one I7 owns: Dropout. Above the Core
+    layer nothing moved at all — no parameter, no module, no optimizer, no
+    checkpoint version, and no public constructor that produces a float32
+    tensor.
 
     This is the guardrail that keeps "most float32 works" from ever being
     the honest summary: the set is enumerated in both directions.
@@ -2110,15 +2111,44 @@ def test_the_float32_paths_are_exactly_the_families_landed_through_i5():
                               np.full(16, 3.0, dtype=np.float32))
         assert output.to_numpy().dtype == np.float32
 
-        # -- not consumed: every later numerical family, still float64-only.
-        for call in (
-            lambda: library.tf_core_softmax_forward(a, 0, out, 4, 4, 1),
-            lambda: library.tf_core_log_softmax_forward(a, 0, out, 4, 4, 1),
-            lambda: library.tf_core_dropout_forward(a, 0, out, out, 16,
-                                                    1, 0, 0.5),
-        ):
-            with pytest.raises(ValueError, match="float64-only"):
+        # -- consumed, as of I6: the stable transforms and the fused
+        # cross-entropy. The cross-entropy calls need their own destinations
+        # (a scalar loss and a probability block) and an int64 target span,
+        # which carries no dtype at either width.
+        targets = np.zeros(4, dtype=np.int64)
+        ce_loss = cpp.NativeStorage._typed(1, "float32")
+        ce_probabilities = cpp.NativeStorage._typed(16, "float32")
+        ce_grad = cpp.NativeStorage._typed(16, "float32")
+        try:
+            loss_handle = ce_loss._require_open()
+            probabilities_handle = ce_probabilities._require_open()
+            grad_handle = ce_grad._require_open()
+            for call in (
+                lambda: library.tf_core_softmax_forward(a, 0, out, 4, 4, 1),
+                lambda: library.tf_core_log_softmax_forward(a, 0, out, 4, 4,
+                                                            1),
+                lambda: library.tf_core_cross_entropy_forward(
+                    a, 0, targets, 4, loss_handle, probabilities_handle,
+                    4, 4, 0),
+                lambda: library.tf_core_cross_entropy_backward(
+                    probabilities_handle, 0, targets, 4, loss_handle, 0,
+                    grad_handle, 4, 4, 0),
+            ):
+                library.tf_clear_error()
                 call()
+                assert library.tf_last_error_code() == 0
+            assert ce_loss.to_numpy().dtype == np.float32
+            assert ce_probabilities.to_numpy().dtype == np.float32
+            assert ce_grad.to_numpy().dtype == np.float32
+        finally:
+            ce_grad.close()
+            ce_probabilities.close()
+            ce_loss.close()
+
+        # -- not consumed: the one numerical family still float64-only, which
+        # is exactly the one milestone I7 owns.
+        with pytest.raises(ValueError, match="float64-only"):
+            library.tf_core_dropout_forward(a, 0, out, out, 16, 1, 0, 0.5)
         library.tf_clear_error()
 
         # Nothing above the Core layer moved: no public constructor makes a
@@ -4332,14 +4362,14 @@ def test_the_raw_utility_kernels_are_still_float64_only():
 
 
 @needs_native
-def test_the_families_i6_through_i8_own_still_reject_float32():
-    """The other direction of the I5 boundary: no module, parameter,
-    optimizer, or checkpoint path accepts float32, and the later numerical
-    families still refuse a float32 operand as float64-only.
+def test_the_families_i7_and_i8_own_still_reject_float32():
+    """The other direction of the boundary: no module, parameter, optimizer,
+    or checkpoint path accepts float32, and the one remaining numerical
+    family still refuses a float32 operand as float64-only.
 
-    MaxPool2d left this set at I5 — its float32 acceptance is proved by the
-    I5 tests below — so the rejecting families are now exactly the ones
-    I6-I8 own: softmax, log-softmax, cross-entropy, and Dropout."""
+    MaxPool2d left this set at I5 and the whole classification stack left it
+    at I6 — their float32 acceptance is proved by the I5 and I6 tests below —
+    so the only rejecting family left is Dropout, which milestone I7 owns."""
     import inspect
 
     import tensorforge.experimental as experimental
@@ -4357,7 +4387,7 @@ def test_the_families_i6_through_i8_own_still_reject_float32():
     assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I0_CHECKPOINT_VERSIONS)
-    # The Core operations I6 owns still refuse a float32 operand as
+    # The one Core operation I7 owns still refuses a float32 operand as
     # float64-only ("float64-only in the current runtime" from C++, or the
     # Python gate's own wording); which layer answers is not the point —
     # that the operation is unavailable is.
@@ -4373,12 +4403,16 @@ def test_the_families_i6_through_i8_own_still_reject_float32():
         pooled.close()
         flat = core.reshape((4, 4))
         try:
-            with pytest.raises(ValueError, match="float64"):
-                flat.softmax(axis=-1)
-            with pytest.raises(ValueError, match="float64"):
-                flat.log_softmax(axis=-1)
-            with pytest.raises(ValueError, match="float64"):
-                flat.cross_entropy_forward([0, 1, 2, 3])
+            # ...and so does the whole I6 classification stack.
+            for method in ("softmax", "log_softmax"):
+                out = getattr(flat, method)(axis=-1)
+                assert out.dtype == "float32"
+                out.close()
+            result = flat.cross_entropy_forward([0, 1, 2, 3])
+            assert result.loss.dtype == "float32"
+            assert result.probabilities.dtype == "float32"
+            result.close()
+            # Dropout, which milestone I7 owns, still refuses.
             with pytest.raises(ValueError, match="float64"):
                 flat.dropout_forward(0.5, seed=1, call_index=0)
         finally:
@@ -5407,9 +5441,9 @@ def test_the_python_winner_allocation_is_pinned_to_float64():
     assert '(n, c, out_h, out_w), dtype="float64", device=self.device' \
         in source
     assert 'winners.dtype != "float64"' in source
-    # The two hard float64 gates I5 owned are gone; the ones the later
-    # milestones own are still standing.
-    assert source.count('!= "float64" or self.device != "cpu"') >= 2
+    # The two hard float64 gates I5 owned are gone; so, since I6, are the two
+    # cross-entropy ones. Dropout's — milestone I7's — is still standing.
+    assert source.count('!= "float64" or self.device != "cpu"') >= 1
 
 
 @needs_native
@@ -5443,3 +5477,1477 @@ def test_i5_moved_no_public_capability_at_all():
     from tensorforge.experimental import NativeConv2d, NativeMaxPool2d
     assert "dtype" not in inspect.signature(NativeConv2d).parameters
     assert "dtype" not in inspect.signature(NativeMaxPool2d).parameters
+
+
+# ===========================================================================
+# I6: stable math and classification dtype execution, as running code
+#
+# Everything below drives the **live** library at both dtypes through the
+# private typed constructors, exactly as the I2-I5 sections do. The
+# comparison rules are per family and stated rather than inherited, and they
+# differ from I5's in one structural way worth naming:
+#
+#   * softmax, log-softmax, and cross-entropy contain ``exp`` and ``log``,
+#     which have **no correctly-rounded IEEE guarantee** — the reason H8
+#     excluded them from the templated traversal and the reason the float64
+#     transcendental contract is a ULP bound rather than bit equality. So
+#     there are deliberately **two** references here, answering two different
+#     questions:
+#
+#       1. an oracle that reproduces the kernel's exact traversal (the strict
+#          ``>`` maximum scan, the shift, the accumulation order, the
+#          in-place normalization, the fused log-sum-exp) but takes its
+#          exponentials and logarithms from **TensorForge's own** ``exp`` and
+#          ``log`` Core ops. Against that, every kernel is **bit-identical**
+#          at both dtypes. That is the strong statement, and it is a
+#          statement about the algorithm — with the one ingredient that has
+#          no exactness guarantee factored out rather than glossed over.
+#
+#       2. an oracle in the same traversal that takes them from **NumPy**.
+#          Against that, float32 sits within a small measured ULP bound and
+#          float64 is exact. The bound is a statement about NumPy's separate
+#          float32 SIMD transcendental kernel — the same two-bound split I3
+#          measured and recorded for ``exp``/``log`` themselves.
+#
+#     Neither is a float32-versus-float64 comparison: both references are
+#     evaluated at the dtype under test (design §10.4 forbids making the
+#     cross-width comparison a contract).
+#
+#   * float32 accumulation is witnessed on the one place in this family where
+#     the two candidate policies can differ at all — the batch-loss
+#     accumulator — using per-row losses taken from the kernel itself, so no
+#     assumption about ``expf``/``logf`` enters the witness.
+#
+#   * gradients are checked analytically where the closed form gives an exact
+#     answer, and by binary32 finite differences (the stated I4 band)
+#     everywhere else.
+#
+# The int64 target boundary is asserted **unchanged at both widths**, and the
+# saved probabilities are asserted to carry the graph dtype — the two halves
+# of what I6 does and does not move.
+# ===========================================================================
+
+# Measured on this machine at I6, and recorded separately for exactly the
+# reason F32_TRANSCENDENTAL_ULP and F32_TRANSCENDENTAL_ULP_VS_NUMPY are: the
+# tighter number is about TensorForge, the looser one is about NumPy. Both
+# are float32-against-float32.
+F32_CLASSIFICATION_ULP_VS_NUMPY = 4
+
+
+def _tf_exp(values, dtype):
+    """``exp`` through TensorForge's own Core op, at ``dtype``."""
+    core = _core(values, dtype)
+    try:
+        out = core.exp()
+        try:
+            return out.to_numpy().copy()
+        finally:
+            out.close()
+    finally:
+        core.close()
+
+
+def _tf_log(values, dtype):
+    core = _core(values, dtype)
+    try:
+        out = core.log()
+        try:
+            return out.to_numpy().copy()
+        finally:
+            out.close()
+    finally:
+        core.close()
+
+
+def _np_exp(values, dtype):
+    floating = _DTYPE_BITS[dtype][2]
+    return np.exp(np.ascontiguousarray(values, dtype=floating), dtype=floating)
+
+
+def _np_log(values, dtype):
+    floating = _DTYPE_BITS[dtype][2]
+    return np.log(np.ascontiguousarray(values, dtype=floating), dtype=floating)
+
+
+def _axis_slices(shape, axis):
+    """Every (outer, inner) reduction slice of ``shape`` along ``axis``, as
+    index tuples — the (outer, axis_length, inner) decomposition the ABI
+    carries, expressed in NumPy indexing."""
+    for prefix in np.ndindex(*shape[:axis]):
+        for suffix in np.ndindex(*shape[axis + 1:]):
+            yield tuple(prefix) + (slice(None),) + tuple(suffix)
+
+
+def _softmax_oracle(values, axis, dtype, expf):
+    """The kernel's own traversal, scalar, at ``dtype``: strict ``>`` maximum
+    scan, shift, exponentials written into the destination while the total
+    accumulates, then an in-place normalization."""
+    floating = _DTYPE_BITS[dtype][2]
+    source = np.ascontiguousarray(values, dtype=floating)
+    axis = axis if axis >= 0 else source.ndim + axis
+    out = np.empty_like(source)
+    for index in _axis_slices(source.shape, axis):
+        row = source[index]
+        maximum = row[0]
+        for value in row[1:]:
+            if value > maximum:
+                maximum = value
+        shifted = expf(np.array([floating(v - maximum) for v in row],
+                                dtype=floating), dtype)
+        total = floating(0)
+        for value in shifted:
+            total = floating(total + value)
+        out[index] = np.array([floating(v / total) for v in shifted],
+                              dtype=floating)
+    return out
+
+
+def _log_softmax_oracle(values, axis, dtype, expf, logf):
+    """The fused log-sum-exp traversal — never ``log(softmax(x))``."""
+    floating = _DTYPE_BITS[dtype][2]
+    source = np.ascontiguousarray(values, dtype=floating)
+    axis = axis if axis >= 0 else source.ndim + axis
+    out = np.empty_like(source)
+    for index in _axis_slices(source.shape, axis):
+        row = source[index]
+        maximum = row[0]
+        for value in row[1:]:
+            if value > maximum:
+                maximum = value
+        shifted = np.array([floating(v - maximum) for v in row],
+                           dtype=floating)
+        exps = expf(shifted, dtype)
+        total = floating(0)
+        for value in exps:
+            total = floating(total + value)
+        denominator = logf(np.array([total], dtype=floating), dtype)[0]
+        out[index] = np.array([floating(v - denominator) for v in shifted],
+                              dtype=floating)
+    return out
+
+
+def _cross_entropy_oracle(logits, targets, reduction, dtype, expf, logf):
+    """The fused forward: per-row maximum, shifted exponentials into the
+    saved probabilities, an in-place normalization, then
+    ``log(sum_exp) - (x[target] - m)`` accumulated in the element type and
+    divided ONCE by the batch size for ``"mean"``."""
+    floating = _DTYPE_BITS[dtype][2]
+    source = np.ascontiguousarray(logits, dtype=floating)
+    batch = source.shape[0]
+    probabilities = np.empty_like(source)
+    total = floating(0)
+    for n in range(batch):
+        row = source[n]
+        maximum = row[0]
+        for value in row[1:]:
+            if value > maximum:
+                maximum = value
+        shifted = np.array([floating(v - maximum) for v in row],
+                           dtype=floating)
+        exps = expf(shifted, dtype)
+        sum_exp = floating(0)
+        for value in exps:
+            sum_exp = floating(sum_exp + value)
+        probabilities[n] = np.array([floating(v / sum_exp) for v in exps],
+                                    dtype=floating)
+        denominator = logf(np.array([sum_exp], dtype=floating), dtype)[0]
+        total = floating(total + floating(denominator - shifted[targets[n]]))
+    if reduction == "mean":
+        return floating(total / floating(batch)), probabilities
+    return total, probabilities
+
+
+def _cross_entropy_backward_oracle(probabilities, targets, upstream,
+                                   reduction, dtype):
+    """``upstream * (p - onehot) / N``, in the kernel's exact order: read the
+    saved probability, subtract the indicator, apply the mean scaling, then
+    multiply by the upstream — never reassociated."""
+    floating = _DTYPE_BITS[dtype][2]
+    probabilities = np.ascontiguousarray(probabilities, dtype=floating)
+    batch, classes = probabilities.shape
+    out = np.empty_like(probabilities)
+    count = floating(batch)
+    scale = floating(upstream)
+    for n in range(batch):
+        for c in range(classes):
+            contribution = probabilities[n, c]
+            if c == targets[n]:
+                contribution = floating(contribution - floating(1))
+            if reduction == "mean":
+                contribution = floating(contribution / count)
+            out[n, c] = floating(scale * contribution)
+    return out
+
+
+_CLASSIFICATION_SHAPES = (
+    ((1,), -1),                 # rank 1, the whole tensor is one slice
+    ((5,), 0),                  # rank 1, positive axis
+    ((4, 3), -1),               # last axis of a matrix
+    ((4, 3), 0),                # FIRST axis: inner > 1
+    ((2, 3, 4), 1),             # middle axis of a rank-3 tensor
+    ((2, 3, 4), -1),            # last axis of a rank-3 tensor
+    ((3, 1, 5), 1),             # a length-one reduction axis
+    ((2, 2, 2, 2), -2),         # rank 4, a negative non-last axis
+)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("shape,axis", _CLASSIFICATION_SHAPES)
+def test_softmax_matches_the_same_dtype_traversal_oracle(dtype, shape, axis):
+    """Reference 1: bit-identical to an oracle that reproduces the kernel's
+    traversal exactly and takes its exponentials from TensorForge's own
+    ``exp``. What this pins is the maximum scan, the shift, the accumulation
+    order, and the in-place normalization — at both widths."""
+    host = _sample(dtype, int(np.prod(shape)), seed=31).reshape(shape)
+    core = _core(host, dtype)
+    try:
+        out = core.softmax(axis=axis)
+        try:
+            assert out.dtype == dtype
+            assert out.shape == shape
+            got = out.to_numpy()
+        finally:
+            out.close()
+    finally:
+        core.close()
+    assert _same_bits(got, _softmax_oracle(host, axis, dtype, _tf_exp), dtype)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("shape,axis", _CLASSIFICATION_SHAPES)
+def test_log_softmax_matches_the_same_dtype_traversal_oracle(dtype, shape,
+                                                             axis):
+    """The same statement for the fused log-sum-exp kernel."""
+    host = _sample(dtype, int(np.prod(shape)), seed=32).reshape(shape)
+    core = _core(host, dtype)
+    try:
+        out = core.log_softmax(axis=axis)
+        try:
+            assert out.dtype == dtype
+            assert out.shape == shape
+            got = out.to_numpy()
+        finally:
+            out.close()
+    finally:
+        core.close()
+    assert _same_bits(
+        got, _log_softmax_oracle(host, axis, dtype, _tf_exp, _tf_log), dtype)
+
+
+@needs_native
+def test_float64_classification_is_exact_against_the_numpy_oracle():
+    """Reference 2 at float64: the width Phase E measured is bit-identical
+    against a NumPy-transcendental oracle too, so the float64 contract is
+    unmoved by the generalization."""
+    host = _sample("float64", 24, seed=33).reshape(4, 6)
+    core = _core(host, "float64")
+    try:
+        out = core.softmax(axis=-1)
+        try:
+            assert _same_bits(out.to_numpy(),
+                              _softmax_oracle(host, -1, "float64", _np_exp),
+                              "float64")
+        finally:
+            out.close()
+        out = core.log_softmax(axis=-1)
+        try:
+            assert _same_bits(
+                out.to_numpy(),
+                _log_softmax_oracle(host, -1, "float64", _np_exp, _np_log),
+                "float64")
+        finally:
+            out.close()
+    finally:
+        core.close()
+
+
+@needs_native
+def test_float32_classification_is_within_the_measured_numpy_ulp_bound():
+    """Reference 2 at float32: within a small measured bound of a NumPy
+    float32 oracle. The gap is NumPy's own float32 SIMD transcendental
+    kernel, which I3 already measured at about two steps from correctly
+    rounded — this is the same statement one composition further on, and it
+    is float32-against-float32 throughout."""
+    host = _sample("float32", 60, seed=34).reshape(6, 10)
+    core = _core(host, "float32")
+    try:
+        out = core.softmax(axis=-1)
+        try:
+            _assert_transcendental(
+                out.to_numpy(), _softmax_oracle(host, -1, "float32", _np_exp),
+                F32_CLASSIFICATION_ULP_VS_NUMPY, "float32 softmax vs NumPy")
+        finally:
+            out.close()
+        out = core.log_softmax(axis=-1)
+        try:
+            _assert_transcendental(
+                out.to_numpy(),
+                _log_softmax_oracle(host, -1, "float32", _np_exp, _np_log),
+                F32_CLASSIFICATION_ULP_VS_NUMPY,
+                "float32 log_softmax vs NumPy")
+        finally:
+            out.close()
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("reduction", ("mean", "sum"))
+@pytest.mark.parametrize("shape", ((1, 1), (1, 6), (5, 3), (4, 7)))
+def test_cross_entropy_forward_matches_the_traversal_oracle(dtype, reduction,
+                                                            shape):
+    """The fused forward at both dtypes and both reductions: the scalar loss
+    and the saved probabilities are each bit-identical to the same-traversal
+    oracle, and both carry the logits' dtype."""
+    floating = _DTYPE_BITS[dtype][2]
+    batch, classes = shape
+    host = _sample(dtype, batch * classes, seed=35).reshape(shape)
+    targets = [(n * 3) % classes for n in range(batch)]
+    want_loss, want_probabilities = _cross_entropy_oracle(
+        host, targets, reduction, dtype, _tf_exp, _tf_log)
+    core = _core(host, dtype)
+    try:
+        result = core.cross_entropy_forward(targets, reduction)
+        try:
+            assert result.loss.dtype == dtype
+            assert result.loss.shape == ()
+            assert result.probabilities.dtype == dtype
+            assert result.probabilities.shape == shape
+            assert _same_bits(result.loss.to_numpy().reshape(1),
+                              np.array([want_loss], dtype=floating), dtype)
+            assert _same_bits(result.probabilities.to_numpy(),
+                              want_probabilities, dtype)
+            # The saved probabilities alias neither the logits nor the loss.
+            assert result.probabilities.storage is not core.storage
+            assert result.probabilities.storage is not result.loss.storage
+            # ...and the backward reads them, at the same dtype.
+            for upstream_value in (1.0, -2.5, 0.125):
+                upstream = _core(np.array(upstream_value, dtype=floating),
+                                 dtype)
+                try:
+                    grad = result.probabilities.cross_entropy_backward(
+                        result.targets, upstream, reduction)
+                    try:
+                        assert grad.dtype == dtype
+                        assert _same_bits(
+                            grad.to_numpy(),
+                            _cross_entropy_backward_oracle(
+                                want_probabilities, targets, upstream_value,
+                                reduction, dtype), dtype)
+                    finally:
+                        grad.close()
+                finally:
+                    upstream.close()
+        finally:
+            result.close()
+    finally:
+        core.close()
+
+
+@needs_native
+def test_the_float32_batch_loss_accumulates_in_float32_from_python():
+    """The one place in this family where a widened accumulator would be
+    visible at all, witnessed through the shipped Core wrapper.
+
+    Every other float32 property here is a single correctly-rounded IEEE
+    operation per destination, where computing in binary64 and rounding once
+    is *provably* indistinguishable from computing in binary32. Accumulation
+    is not, so this is where the policy gets a behavioural proof rather than
+    a structural one — and the per-row losses come from the kernel itself, so
+    no assumption about ``expf``/``logf`` enters.
+
+    Row 0 has a loss of exactly 200; every later row a loss of ~6.1e-6, below
+    half a binary32 ULP of the running total. Sequential binary32 therefore
+    absorbs all 199 of them and stays at exactly 200, while binary64
+    accumulates them and lands ~1.2e-3 higher — two orders of magnitude above
+    the narrowing step."""
+    batch, classes = 200, 2
+    host = np.zeros((batch, classes), dtype=np.float32)
+    targets = [0] * batch
+    host[0, 1] = np.float32(200.0)
+    for n in range(1, batch):
+        host[n, 1] = np.float32(12.0)
+        targets[n] = 1
+    core = _core(host, "float32")
+    try:
+        row_losses = []
+        for n in range(batch):
+            row = _core(host[n:n + 1], "float32")
+            try:
+                one = row.cross_entropy_forward([targets[n]], "sum")
+                try:
+                    row_losses.append(
+                        np.float32(one.loss.to_numpy().reshape(())))
+                finally:
+                    one.close()
+            finally:
+                row.close()
+        sequential = np.float32(0.0)
+        widened = 0.0
+        for value in row_losses:
+            sequential = np.float32(sequential + value)
+            widened += float(value)
+        widened_narrowed = np.float32(widened)
+        # Non-vacuous first: if the two policies agreed here the comparison
+        # below would prove nothing.
+        assert not _same_bits(np.array([sequential]),
+                              np.array([widened_narrowed]), "float32")
+
+        result = core.cross_entropy_forward(targets, "sum")
+        try:
+            got = np.float32(result.loss.to_numpy().reshape(()))
+        finally:
+            result.close()
+        assert _same_bits(np.array([got]), np.array([sequential]), "float32")
+        assert not _same_bits(np.array([got]), np.array([widened_narrowed]),
+                              "float32")
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_mean_reduction_divides_once_by_the_batch_at_the_element_dtype(
+        dtype):
+    """``mean`` is the ``sum`` divided ONCE by ``batch_size`` — never by
+    ``num_classes``, never twice, and the division happens at the element
+    type."""
+    floating = _DTYPE_BITS[dtype][2]
+    batch, classes = 6, 4
+    host = _sample(dtype, batch * classes, seed=36).reshape(batch, classes)
+    targets = [n % classes for n in range(batch)]
+    core = _core(host, dtype)
+    try:
+        total = core.cross_entropy_forward(targets, "sum")
+        mean = core.cross_entropy_forward(targets, "mean")
+        try:
+            summed = floating(total.loss.to_numpy().reshape(()))
+            averaged = floating(mean.loss.to_numpy().reshape(()))
+            assert _same_bits(np.array([averaged]),
+                              np.array([floating(summed / floating(batch))]),
+                              dtype)
+            assert not _same_bits(
+                np.array([averaged]),
+                np.array([floating(summed / floating(classes))]), dtype)
+        finally:
+            mean.close()
+            total.close()
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_policy_b_views_reach_the_classification_kernels(dtype):
+    """The contiguous-only C ABI is unchanged, so a strided view is
+    materialized into a private contiguous copy before the call — at float32
+    exactly as at float64. Transposed, narrowed, and chained views all produce
+    the same result as the equivalent contiguous data."""
+    host = _sample(dtype, 24, seed=37).reshape(4, 6)
+    core = _core(host, dtype)
+    try:
+        views = {
+            "transposed": (core.T, np.ascontiguousarray(host.T)),
+            "narrowed": (core.narrow(1, 1, 4),
+                         np.ascontiguousarray(host[:, 1:5])),
+            "chained": (core.T.narrow(0, 2, 3),
+                        np.ascontiguousarray(host.T[2:5])),
+        }
+        for label, (view, equivalent) in views.items():
+            try:
+                assert view.dtype == dtype
+                out = view.softmax(axis=-1)
+                try:
+                    assert out.dtype == dtype and out.contiguous, label
+                    assert _same_bits(
+                        out.to_numpy(),
+                        _softmax_oracle(equivalent, -1, dtype, _tf_exp),
+                        dtype), label
+                finally:
+                    out.close()
+                out = view.log_softmax(axis=-1)
+                try:
+                    assert _same_bits(
+                        out.to_numpy(),
+                        _log_softmax_oracle(equivalent, -1, dtype, _tf_exp,
+                                            _tf_log), dtype), label
+                finally:
+                    out.close()
+                # ...and the fused cross-entropy, which takes the same
+                # Policy-B path.
+                targets = [n % view.shape[1] for n in range(view.shape[0])]
+                _, want = _cross_entropy_oracle(equivalent, targets, "mean",
+                                                dtype, _tf_exp, _tf_log)
+                result = view.cross_entropy_forward(targets, "mean")
+                try:
+                    assert result.loss.dtype == dtype
+                    assert _same_bits(result.probabilities.to_numpy(), want,
+                                      dtype), label
+                finally:
+                    result.close()
+            finally:
+                view.close()
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_stability_holds_at_each_width_s_own_magnitudes(dtype):
+    """The shift and the fusion carry the stability, not the width — proved at
+    magnitudes chosen for the dtype under test rather than float64 magnitudes
+    reused.
+
+    Each case shows the *naive* form actually failing before showing the
+    kernel succeeding; a stability witness on which the naive form happened to
+    work would prove nothing."""
+    floating = _DTYPE_BITS[dtype][2]
+    # Where a naive unshifted exp() overflows: ~709 at binary64, ~88.7 at
+    # binary32.
+    offset = floating(800.0 if dtype == "float64" else 120.0)
+    for sign in (floating(1.0), floating(-1.0)):
+        base = np.array([[0.0, 1.0, 2.0, -1.0]], dtype=floating)
+        shifted = (base + sign * offset).astype(floating)
+        with np.errstate(over="ignore", under="ignore"):
+            naive = np.exp(shifted, dtype=floating).sum(dtype=floating)
+        assert (not np.isfinite(naive)) or naive == floating(0.0)
+
+        core = _core(shifted, dtype)
+        centered = _core(base, dtype)
+        try:
+            out = core.softmax(axis=-1)
+            want = centered.softmax(axis=-1)
+            try:
+                # A large common offset cancels exactly: the shifted slice is
+                # bit-identical to the centred one.
+                assert _same_bits(out.to_numpy(), want.to_numpy(), dtype)
+                assert np.all(np.isfinite(out.to_numpy()))
+            finally:
+                want.close()
+                out.close()
+            out = core.log_softmax(axis=-1)
+            try:
+                values = out.to_numpy()
+                assert np.all(np.isfinite(values))
+                assert np.all(values <= floating(0.0))
+            finally:
+                out.close()
+        finally:
+            centered.close()
+            core.close()
+
+    # A probability far below the element type's smallest normal: the naive
+    # log(softmax(x)) collapses to -inf, the fused form stays finite and
+    # exact. The gap is chosen per width for the same reason.
+    gap = floating(1600.0 if dtype == "float64" else 240.0)
+    row = np.array([[0.0, -gap]], dtype=floating)
+    core = _core(row, dtype)
+    try:
+        probabilities = core.softmax(axis=-1)
+        try:
+            assert _same_bits(probabilities.to_numpy()[0, 1:2],
+                              np.array([floating(0.0)]), dtype)
+            with np.errstate(divide="ignore"):
+                assert np.isneginf(
+                    np.log(probabilities.to_numpy()[0, 1], dtype=floating))
+        finally:
+            probabilities.close()
+        fused = core.log_softmax(axis=-1)
+        try:
+            values = fused.to_numpy()
+            assert np.isfinite(values[0, 1])
+            # sum_exp rounds to exactly 1 here, so the answer is exactly the
+            # shifted logit and exactly +0.0 at the maximum.
+            assert _same_bits(values[0],
+                              np.array([floating(0.0), -gap], dtype=floating),
+                              dtype)
+        finally:
+            fused.close()
+        # The fused cross-entropy loss on the same row is exact where
+        # -log(p[target]) would be +inf.
+        result = core.cross_entropy_forward([1], "sum")
+        try:
+            assert _same_bits(result.loss.to_numpy().reshape(1),
+                              np.array([gap], dtype=floating), dtype)
+        finally:
+            result.close()
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_a_slice_spread_beyond_the_finite_range_is_recorded_not_hidden(dtype):
+    """The one honest domain qualification of the float32 stability statement,
+    asserted rather than glossed.
+
+    The maximum shift guarantees no *exponent* overflows. It does not — and
+    mathematically cannot — guarantee that the shifted value ``x - m`` is
+    itself representable: a slice whose **spread** exceeds the element type's
+    largest finite value makes the subtraction overflow to ``-inf``. That is
+    the correctly-rounded IEEE-754 result for a quantity with no
+    representation at that width; it is reachable at binary64 too, past
+    ~1.8e308, so it is a dynamic-range fact and not a float32 defect.
+
+    Recorded in both directions so no later milestone "fixes" it with a
+    widened intermediate (which would be mixed precision, which §1.2 excludes)
+    or a special case (which would break the traversal contract):
+
+      * **softmax is unaffected** — the affected class gets exactly the
+        mathematically correct probability ``+0.0``, and the maximum exactly
+        ``1.0``;
+      * **log-softmax reports -inf** and **cross-entropy +inf**, for true
+        values below/above the representable range;
+      * and all three stay **values**, not ABI errors.
+    """
+    floating = _DTYPE_BITS[dtype][2]
+    huge = floating(3.0e38 if dtype == "float32" else 1.0e308)
+    row = np.array([[huge, -huge]], dtype=floating)
+    # Both inputs are finite; the spread between them is not.
+    assert np.all(np.isfinite(row))
+    with np.errstate(over="ignore"):
+        assert not np.isfinite(floating(row[0, 1] - row[0, 0]))
+
+    core = _core(row, dtype)
+    try:
+        probabilities = core.softmax(axis=-1)
+        try:
+            assert _same_bits(
+                probabilities.to_numpy()[0],
+                np.array([floating(1.0), floating(0.0)], dtype=floating),
+                dtype)
+        finally:
+            probabilities.close()
+        logs = core.log_softmax(axis=-1)
+        try:
+            values = logs.to_numpy()
+            assert _same_bits(values[0, 0:1], np.array([floating(0.0)]), dtype)
+            assert np.isneginf(values[0, 1])
+        finally:
+            logs.close()
+        result = core.cross_entropy_forward([1], "sum")
+        try:
+            assert np.isposinf(result.loss.to_numpy().reshape(()))
+        finally:
+            result.close()
+    finally:
+        core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_exceptional_values_follow_plain_ieee_at_both_widths(dtype):
+    """NaN first, NaN later, infinities, an all-``-inf`` slice, signed zeros,
+    and subnormals — every one against the same-traversal oracle by raw bit
+    pattern, and every one leaving the error slot clear, because a NaN in a
+    *result* is a value rather than an ABI failure."""
+    floating = _DTYPE_BITS[dtype][2]
+    tiny = float(np.finfo(floating).smallest_subnormal)
+    slices = [
+        [np.nan, 1.0, 2.0, 3.0],
+        [1.0, 2.0, np.nan, 3.0],
+        [np.inf, 1.0, 2.0, 3.0],
+        [-np.inf, 1.0, 2.0, 3.0],
+        [-np.inf, -np.inf, -np.inf, -np.inf],
+        [np.inf, -np.inf, 1.0, 2.0],
+        [0.0, -0.0, 0.0, -0.0],
+        [tiny, -tiny, 0.0, tiny],
+        [np.nan, np.inf, -np.inf, 0.0],
+    ]
+    for values in slices:
+        host = np.array([values], dtype=floating)
+        # The *oracle* is scalar Python arithmetic over NumPy scalars, so
+        # ``inf - inf`` and friends raise NumPy's invalid-operation warning
+        # while producing exactly the IEEE result the kernel produces. The
+        # warning is about the reference, not about TensorForge, and the
+        # values it warns on are the whole point of these cases.
+        core = _core(host, dtype)
+        try:
+            with np.errstate(all="ignore"):
+                _softmax_want = _softmax_oracle(host, -1, dtype, _tf_exp)
+                _log_want = _log_softmax_oracle(host, -1, dtype, _tf_exp,
+                                                _tf_log)
+                _ce_loss_want, _ce_probabilities_want = _cross_entropy_oracle(
+                    host, [0], "sum", dtype, _tf_exp, _tf_log)
+            out = core.softmax(axis=-1)
+            try:
+                assert _same_bits(out.to_numpy(), _softmax_want,
+                                  dtype), values
+            finally:
+                out.close()
+            out = core.log_softmax(axis=-1)
+            try:
+                assert _same_bits(out.to_numpy(), _log_want, dtype), values
+            finally:
+                out.close()
+            # A NaN result is a value: the call succeeds, so nothing is
+            # recorded in the thread-local error slot and no exception is
+            # raised.
+            result = core.cross_entropy_forward([0], "sum")
+            try:
+                assert _same_bits(result.probabilities.to_numpy(),
+                                  _ce_probabilities_want, dtype), values
+                assert _same_bits(result.loss.to_numpy().reshape(1),
+                                  np.array([_ce_loss_want], dtype=floating),
+                                  dtype), values
+            finally:
+                result.close()
+        finally:
+            core.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_int64_target_boundary_is_unchanged_at_both_widths(dtype):
+    """Targets carry no dtype and never gain one: they stay an independently
+    owned host ``int64`` copy at float32 exactly as at float64, with the same
+    strict accepted/rejected forms, the same boundary labels, and the same
+    caller-independence."""
+    floating = _DTYPE_BITS[dtype][2]
+    batch, classes = 3, 4
+    host = _sample(dtype, batch * classes, seed=38).reshape(batch, classes)
+    core = _core(host, dtype)
+    try:
+        # Both boundary labels are accepted, and the copy is int64.
+        result = core.cross_entropy_forward([0, classes - 1, 2], "mean")
+        try:
+            assert result.targets.dtype == np.int64
+            assert result.targets.shape == (batch,)
+            assert result.targets.flags["C_CONTIGUOUS"]
+        finally:
+            result.close()
+
+        # The strict Phase-E rules are unchanged, and every one of them is
+        # refused before anything is allocated.
+        for bad, error in (
+            ([0, 1, classes], ValueError),        # == num_classes
+            ([0, 1, -1], ValueError),             # negative
+            ([0, 1], ValueError),                 # wrong length
+            ([0, 1, True], TypeError),            # bool is not a class index
+            ([0, 1, 2.0], TypeError),             # integral float still fails
+            ([0, 1, "2"], TypeError),             # a string is not an index
+            ([[0], [1], [2]], TypeError),         # nested / rank 2
+        ):
+            with pytest.raises(error):
+                core.cross_entropy_forward(bad, "mean")
+
+        # Caller mutation after the forward cannot reach the backward: the
+        # labels were copied.
+        mutable = np.array([0, 1, 2], dtype=np.int64)
+        result = core.cross_entropy_forward(mutable, "mean")
+        try:
+            before = result.targets.copy()
+            mutable[:] = [3, 3, 3]
+            assert np.array_equal(result.targets, before)
+            upstream = _core(np.array(1.0, dtype=floating), dtype)
+            try:
+                saved = result.probabilities.to_numpy().copy()
+                grad = result.probabilities.cross_entropy_backward(
+                    result.targets, upstream, "mean")
+                try:
+                    assert grad.dtype == dtype
+                    assert _same_bits(
+                        grad.to_numpy(),
+                        _cross_entropy_backward_oracle(saved, before, 1.0,
+                                                       "mean", dtype), dtype)
+                finally:
+                    grad.close()
+            finally:
+                upstream.close()
+        finally:
+            result.close()
+    finally:
+        core.close()
+
+
+# ---------------------------------------------------------------------------
+# I6: private float32 classification autograd
+# ---------------------------------------------------------------------------
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_softmax_backward_is_analytic_at_the_graph_dtype(dtype):
+    """``dx = y * (g - sum(g * y, axis, keepdims=True))``. Under a plain
+    ``sum`` seed every ``g`` is 1 and ``sum(y)`` is 1 along the axis, so the
+    gradient is exactly zero — an exact analytical answer at both widths, and
+    one a formula error could not accidentally produce."""
+    floating = _DTYPE_BITS[dtype][2]
+    host = np.array([[0.5, 1.5, -0.5], [2.0, -1.0, 0.25]], dtype=floating)
+    for axis in (-1, 0):
+        x = _tensor(host, dtype, requires_grad=True)
+        try:
+            out = x.softmax(axis=axis).sum()
+            try:
+                out.backward()
+            finally:
+                out.close()
+            assert x.grad.dtype == dtype
+            assert x.grad.shape == host.shape
+            assert np.allclose(x.grad.to_numpy(), np.zeros_like(host),
+                               atol=1e-6 if dtype == "float32" else 1e-12)
+        finally:
+            x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_log_softmax_backward_is_analytic_at_the_graph_dtype(dtype):
+    """``dx = g - exp(y) * sum(g, axis, keepdims=True)``. Under a plain
+    ``sum`` seed that is exactly ``1 - n * p``, where ``n`` is the axis length
+    and ``p`` the softmax probabilities — checked against the probabilities
+    the *softmax* kernel produces, at the graph dtype."""
+    floating = _DTYPE_BITS[dtype][2]
+    host = np.array([[0.5, 1.5, -0.5], [2.0, -1.0, 0.25]], dtype=floating)
+    for axis in (-1, 0):
+        x = _tensor(host, dtype, requires_grad=True)
+        try:
+            out = x.log_softmax(axis=axis).sum()
+            try:
+                out.backward()
+            finally:
+                out.close()
+            assert x.grad.dtype == dtype
+            got = x.grad.to_numpy().copy()
+        finally:
+            x.close()
+        probabilities = _softmax_oracle(host, axis, dtype, _tf_exp)
+        length = host.shape[axis]
+        want = (np.ones_like(host) - floating(length) * probabilities)
+        assert np.allclose(got, want,
+                           rtol=1e-5 if dtype == "float32" else 1e-12,
+                           atol=1e-6 if dtype == "float32" else 1e-12)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("reduction", ("mean", "sum"))
+def test_cross_entropy_backward_is_analytic_at_the_graph_dtype(dtype,
+                                                               reduction):
+    """``grad = upstream * (p - onehot) / N``, straight from the saved
+    probabilities — bit-identical to the oracle at both widths, with the loss
+    and the gradient both at the logits' dtype."""
+    floating = _DTYPE_BITS[dtype][2]
+    host = np.array([[0.5, 1.5, -0.5], [2.0, -1.0, 0.25]], dtype=floating)
+    targets = [2, 0]
+    x = _tensor(host, dtype, requires_grad=True)
+    try:
+        loss = x.cross_entropy(targets, reduction=reduction)
+        try:
+            assert loss.dtype == dtype
+            assert loss.shape == ()
+            loss.backward()
+        finally:
+            loss.close()
+        assert x.grad.dtype == dtype
+        got = x.grad.to_numpy().copy()
+    finally:
+        x.close()
+    _, probabilities = _cross_entropy_oracle(host, targets, reduction, dtype,
+                                             _tf_exp, _tf_log)
+    want = _cross_entropy_backward_oracle(probabilities, targets, 1.0,
+                                          reduction, dtype)
+    assert _same_bits(got, want, dtype)
+
+
+@needs_native
+@pytest.mark.parametrize("label,build", [
+    ("softmax-multiply-sum",
+     lambda t: t.softmax(axis=-1).multiply(t).sum()),
+    ("softmax-axis0-multiply-sum",
+     lambda t: t.softmax(axis=0).multiply(t).sum()),
+    ("log_softmax-multiply-sum",
+     lambda t: t.log_softmax(axis=-1).multiply(t).sum()),
+    ("log_softmax-axis0-multiply-sum",
+     lambda t: t.log_softmax(axis=0).multiply(t).sum()),
+    # A composed classification graph: the negative entropy of the softmax,
+    # built from both transforms over one leaf.
+    ("softmax-times-log_softmax",
+     lambda t: t.softmax(axis=-1).multiply(t.log_softmax(axis=-1)).sum()),
+    ("cross-entropy-mean", lambda t: t.cross_entropy([0, 2], "mean")),
+    ("cross-entropy-sum", lambda t: t.cross_entropy([1, 0], "sum")),
+    # cross-entropy over a transformed leaf, so the loss gradient flows back
+    # through an earlier node too.
+    ("relu-then-cross-entropy",
+     lambda t: t.relu().cross_entropy([2, 1], "mean")),
+])
+def test_float32_classification_finite_differences(label, build):
+    """The float32 gradients of the classification stack against central
+    finite differences computed **in binary32**, with the step and tolerances
+    stated at the I4 band above.
+
+    The logits are finite, well conditioned, and deliberately away from the
+    saturated regime the stability tests use: a saturated softmax has a
+    numerically uninformative gradient, so an extreme witness would make this
+    check vacuous rather than strict. Saturation is tested separately, for its
+    own property."""
+    host = np.array([[0.75, 1.25, -0.5], [0.25, -1.5, 1.0]], dtype=np.float32)
+    x = _tensor(host, "float32", requires_grad=True)
+    try:
+        out = build(x)
+        try:
+            out.backward()
+        finally:
+            out.close()
+        analytical = x.grad.to_numpy().copy()
+        assert x.grad.dtype == "float32"
+        assert analytical.dtype == np.float32
+    finally:
+        x.close()
+
+    numeric = _f32_numeric_gradient(build, host)
+    assert np.allclose(analytical, numeric, rtol=_F32_FD_RTOL,
+                       atol=_F32_FD_ATOL), (
+        f"{label}: analytical {analytical!r} vs numeric {numeric!r}")
+
+
+@needs_native
+def test_the_float32_classification_finite_difference_check_can_fail():
+    """The negative control that makes the check above load-bearing: the same
+    tolerances reject a deliberately wrong gradient."""
+    host = np.array([[0.75, 1.25, -0.5], [0.25, -1.5, 1.0]], dtype=np.float32)
+    numeric = _f32_numeric_gradient(
+        lambda t: t.cross_entropy([0, 2], "mean"), host)
+    wrong = np.ascontiguousarray(numeric[:, ::-1])
+    assert not np.allclose(wrong, numeric, rtol=_F32_FD_RTOL,
+                           atol=_F32_FD_ATOL)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_saved_probabilities_carry_the_graph_dtype_and_stay_private(dtype):
+    """The saved probabilities are the graph's, at the graph's dtype: never a
+    public tensor, never a parameter or buffer, never in a ``state_dict`` or a
+    checkpoint, aliasing neither the logits nor the loss."""
+    floating = _DTYPE_BITS[dtype][2]
+    host = np.array([[0.5, 1.5, -0.5], [2.0, -1.0, 0.25]], dtype=floating)
+    x = _tensor(host, dtype, requires_grad=True)
+    try:
+        loss = x.cross_entropy([2, 0], reduction="mean")
+        try:
+            assert len(loss._graph_resources) == 1
+            probabilities = loss._graph_resources[0]
+            assert probabilities.dtype == dtype
+            assert probabilities.shape == host.shape
+            assert probabilities.storage is not x._core.storage
+            assert probabilities.storage is not loss._core.storage
+            # It is not reachable through any public surface.
+            assert not [name for name in dir(loss)
+                        if not name.startswith("_") and "probab" in name]
+            assert "probab" not in repr(loss).lower()
+        finally:
+            loss.close()
+    finally:
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_float32_saved_probabilities_follow_the_graph_resource_contract(
+        dtype, monkeypatch):
+    """The D9 ``graph_resources`` contract, unchanged, at both dtypes: closed
+    immediately by a no-grad forward, retained under ``retain_graph``,
+    released exactly once by a one-shot backward, and freed by an abandoned
+    graph's ``close()``."""
+    floating = _DTYPE_BITS[dtype][2]
+    host = np.array([[0.5, 1.5, -0.5], [2.0, -1.0, 0.25]], dtype=floating)
+    targets = [2, 0]
+
+    captured = {}
+    original = cpp.NativeTensorCore.cross_entropy_forward
+
+    def capturing(self, targets_arg, reduction="mean"):
+        result = original(self, targets_arg, reduction)
+        captured["probabilities"] = result.probabilities
+        return result
+
+    monkeypatch.setattr(cpp.NativeTensorCore, "cross_entropy_forward",
+                        capturing)
+
+    # A no-grad forward closes the probabilities immediately.
+    plain = _tensor(host, dtype)
+    try:
+        loss = plain.cross_entropy(targets, reduction="sum")
+        try:
+            assert captured["probabilities"]._closed is True
+            assert loss.dtype == dtype
+        finally:
+            loss.close()
+    finally:
+        plain.close()
+
+    # retain_graph keeps them; a one-shot backward then releases them once.
+    x = _tensor(host, dtype, requires_grad=True)
+    try:
+        loss = x.cross_entropy(targets, reduction="mean")
+        probabilities = loss._graph_resources[0]
+        assert probabilities._closed is False
+        try:
+            loss.backward(retain_graph=True)
+            assert probabilities._closed is False
+            first = x.grad.to_numpy().copy()
+            x.grad.close()
+            x._grad = None
+            loss.backward()
+            assert probabilities._closed is True
+            assert np.array_equal(x.grad.to_numpy(), first)
+        finally:
+            loss.close()
+    finally:
+        x.close()
+
+    # An abandoned graph frees them through close().
+    y = _tensor(host, dtype, requires_grad=True)
+    try:
+        loss = y.cross_entropy(targets, reduction="sum")
+        probabilities = loss._graph_resources[0]
+        assert probabilities._closed is False
+        loss.close()
+        assert probabilities._closed is True
+    finally:
+        y.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_a_failed_float32_classification_backward_stays_retryable(dtype):
+    """A backward that fails on its output allocation keeps the saved
+    probabilities alive and the graph retryable, at both dtypes — and the
+    retry produces the correct gradient."""
+    floating = _DTYPE_BITS[dtype][2]
+    host = np.array([[0.5, 1.5, -0.5], [2.0, -1.0, 0.25]], dtype=floating)
+    x = _tensor(host, dtype, requires_grad=True)
+    try:
+        loss = x.cross_entropy([2, 0], reduction="mean")
+        probabilities = loss._graph_resources[0]
+        try:
+            cpp._arm_alloc_failure(1)
+            try:
+                with pytest.raises(MemoryError):
+                    loss.backward()
+            finally:
+                cpp._arm_alloc_failure(0)
+            assert probabilities._closed is False      # saved state survived
+            assert x.grad is None
+            loss.backward()                            # the retry succeeds
+            assert probabilities._closed is True
+            assert x.grad is not None and x.grad.dtype == dtype
+        finally:
+            loss.close()
+    finally:
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_a_failed_classification_forward_leaks_nothing_at_any_stage(
+        dtype, monkeypatch):
+    """The forward allocates the scalar loss and then the probability block. A
+    failure at **either** stage must leave live native storage exactly at
+    baseline and return no half-built result — and so must a failure during
+    Python wrapper construction, after both native allocations succeeded and
+    the kernel ran."""
+    floating = _DTYPE_BITS[dtype][2]
+    host = np.array([[0.5, 1.5, -0.5], [2.0, -1.0, 0.25]], dtype=floating)
+    live = _live_storage_ids(monkeypatch)
+    core = _core(host, dtype)
+    try:
+        baseline = set(live)
+        # Stage 1: the loss allocation. Stage 2: the probability block.
+        for attempt in (1, 2):
+            cpp._arm_alloc_failure(attempt)
+            try:
+                with pytest.raises(MemoryError):
+                    core.cross_entropy_forward([2, 0], "mean")
+            finally:
+                cpp._arm_alloc_failure(0)
+            assert set(live) == baseline, attempt
+    finally:
+        core.close()
+
+    # Wrapper construction: both native allocations succeed and the kernel
+    # runs, then building the graph node raises. Both outputs must still be
+    # released.
+    x = _tensor(host, dtype, requires_grad=True)
+    try:
+        def exploding(*args, **kwargs):
+            raise RuntimeError("wrapper construction failed")
+
+        monkeypatch.setattr(type(x), "_from_op", exploding)
+        node_baseline = set(live)
+        with pytest.raises(RuntimeError, match="wrapper construction"):
+            x.cross_entropy([2, 0], reduction="mean")
+        assert set(live) == node_baseline
+    finally:
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_repeated_float32_classification_cycles_return_storage_to_baseline(
+        dtype, monkeypatch):
+    """Fifteen softmax / log-softmax / cross-entropy forward-backward cycles
+    leave live native storage exactly at its baseline: outputs, gradients,
+    Policy-B temporaries, backward intermediates, and saved probabilities all
+    released."""
+    floating = _DTYPE_BITS[dtype][2]
+    host = np.array([[0.5, 1.5, -0.5], [2.0, -1.0, 0.25]], dtype=floating)
+    live = _live_storage_ids(monkeypatch)
+    baseline = len(live)
+    for _ in range(15):
+        x = _tensor(host, dtype, requires_grad=True)
+        try:
+            # softmax, then log-softmax over a non-last axis, then the fused
+            # cross-entropy, then a Policy-B (transposed) softmax. Every
+            # intermediate is closed explicitly — the runtime's ownership
+            # contract is that cleanup is explicit, never collection.
+            probabilities = x.softmax(axis=-1)
+            first = probabilities.sum()
+            first.backward()
+            for tensor in (first, probabilities):
+                tensor.close()
+            x.grad.close()
+            x._grad = None
+
+            logs = x.log_softmax(axis=0)
+            second = logs.sum()
+            second.backward()
+            for tensor in (second, logs):
+                tensor.close()
+            x.grad.close()
+            x._grad = None
+
+            loss = x.cross_entropy([2, 0], "mean")
+            loss.backward()
+            loss.close()
+            x.grad.close()
+            x._grad = None
+
+            transposed = x.T
+            strided = transposed.softmax(axis=-1)
+            fourth = strided.sum()
+            fourth.backward()
+            for tensor in (fourth, strided, transposed):
+                tensor.close()
+            x.grad.close()
+            x._grad = None
+        finally:
+            x.close()
+    assert len(live) == baseline
+
+
+@needs_native
+def test_mixed_dtype_classification_is_rejected_before_allocation(monkeypatch):
+    """Design §9.3 for the four I6 exports: a mixed-dtype call fails before any
+    output is allocated, leaves live native storage exactly as it was, leaves
+    both operands open and unchanged, and writes nothing to any destination.
+
+    Every participating handle position is driven independently — two for each
+    transform, three for each cross-entropy direction — because each could
+    have been left out of the guard on its own."""
+    library = cpp._require_library()
+    live = _live_storage_ids(monkeypatch)
+    baseline = set(live)
+
+    f32 = cpp.NativeStorage._typed(12, "float32")
+    f64 = cpp.NativeStorage(12)
+    loss32 = cpp.NativeStorage._typed(1, "float32")
+    loss64 = cpp.NativeStorage(1)
+    targets = np.zeros(3, dtype=np.int64)
+    try:
+        f64.fill(-12345.5)
+        loss64.fill(-12345.5)
+        a32, a64 = f32._require_open(), f64._require_open()
+        l32, l64 = loss32._require_open(), loss64._require_open()
+        after_setup = set(live)
+
+        calls = [
+            # transforms: source/destination, both directions
+            lambda: library.tf_core_softmax_forward(a32, 0, a64, 1, 12, 1),
+            lambda: library.tf_core_softmax_forward(a64, 0, a32, 1, 12, 1),
+            lambda: library.tf_core_log_softmax_forward(a32, 0, a64, 1, 12, 1),
+            lambda: library.tf_core_log_softmax_forward(a64, 0, a32, 1, 12, 1),
+            # cross-entropy forward: logits / loss / probabilities
+            lambda: library.tf_core_cross_entropy_forward(
+                a32, 0, targets, 3, l64, a64, 3, 4, 0),
+            lambda: library.tf_core_cross_entropy_forward(
+                a64, 0, targets, 3, l32, a64, 3, 4, 0),
+            lambda: library.tf_core_cross_entropy_forward(
+                a64, 0, targets, 3, l64, a32, 3, 4, 0),
+            # cross-entropy backward: probabilities / upstream / gradient
+            lambda: library.tf_core_cross_entropy_backward(
+                a32, 0, targets, 3, l64, 0, a64, 3, 4, 0),
+            lambda: library.tf_core_cross_entropy_backward(
+                a64, 0, targets, 3, l32, 0, a64, 3, 4, 0),
+            lambda: library.tf_core_cross_entropy_backward(
+                a64, 0, targets, 3, l64, 0, a32, 3, 4, 1),
+        ]
+        for index, call in enumerate(calls):
+            with pytest.raises(ValueError, match="same dtype"):
+                call()
+            # No storage was created, and every float64 destination still
+            # holds its sentinel byte for byte.
+            assert set(live) == after_setup, index
+            assert np.all(f64.to_numpy() == -12345.5), index
+            assert np.all(loss64.to_numpy() == -12345.5), index
+    finally:
+        for storage in (loss64, loss32, f64, f32):
+            storage.close()
+    assert set(live) == baseline
+
+
+@needs_native
+def test_a_float64_upstream_is_refused_for_a_float32_classification_loss():
+    """The autograd-level half of the same rule: a float32 loss handed a
+    float64 seed raises before any gradient is mutated, through the existing
+    accumulation check rather than a new one."""
+    host = np.array([[0.5, 1.5, -0.5], [2.0, -1.0, 0.25]], dtype=np.float32)
+    x = _tensor(host, "float32", requires_grad=True)
+    try:
+        loss = x.cross_entropy([2, 0], reduction="mean")
+        try:
+            seed = _tensor(np.array(1.0, dtype=np.float64), "float64")
+            try:
+                with pytest.raises(ValueError):
+                    loss.backward(seed)
+            finally:
+                seed.close()
+            assert x.grad is None
+        finally:
+            loss.close()
+    finally:
+        x.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_uninitialized_classification_destinations_are_fully_written(
+        dtype, monkeypatch):
+    """The H1 audit re-derived per dtype through the Python seam: the softmax
+    destination, the log-softmax destination, the scalar loss, the saved
+    probabilities, and the logits gradient are each allocated uninitialized and
+    each completely overwritten. The poison is applied by test infrastructure
+    around the allocator — no production hook exists — and the negative control
+    shows the detector can fail."""
+    sentinel = float(2 ** 22 + 3)                # exact at both widths
+    floating = _DTYPE_BITS[dtype][2]
+    original = cpp.NativeTensorCore._uninitialized.__func__
+
+    def poisoned(cls, shape, dtype="float64", device="cpu"):
+        out = original(cls, shape, dtype=dtype, device=device)
+        out._storage.fill(sentinel)
+        return out
+
+    monkeypatch.setattr(cpp.NativeTensorCore, "_uninitialized",
+                        classmethod(poisoned))
+    control = cpp.NativeTensorCore._uninitialized((2, 2), dtype=dtype)
+    try:
+        assert np.all(control.to_numpy() == floating(sentinel))
+    finally:
+        control.close()
+
+    host = _sample(dtype, 12, seed=39).reshape(3, 4)
+    core = _core(host, dtype)
+    try:
+        for method in ("softmax", "log_softmax"):
+            out = getattr(core, method)(axis=-1)
+            try:
+                assert not np.any(out.to_numpy() == floating(sentinel)), method
+            finally:
+                out.close()
+        result = core.cross_entropy_forward([0, 1, 3], "mean")
+        try:
+            assert not np.any(result.loss.to_numpy() == floating(sentinel))
+            assert not np.any(
+                result.probabilities.to_numpy() == floating(sentinel))
+            upstream = _core(np.array(1.0, dtype=floating), dtype)
+            try:
+                grad = result.probabilities.cross_entropy_backward(
+                    result.targets, upstream, "mean")
+                try:
+                    assert not np.any(grad.to_numpy() == floating(sentinel))
+                finally:
+                    grad.close()
+            finally:
+                upstream.close()
+        finally:
+            result.close()
+    finally:
+        core.close()
+
+
+@needs_native
+def test_the_classification_module_and_metric_need_no_dtype_authority():
+    """``NativeCrossEntropyLoss`` stays a thin delegate to
+    ``logits.cross_entropy(...)`` and ``native_accuracy`` stays a
+    reporting-only helper over ``to_numpy()``. Neither gained a dtype
+    argument, neither learned anything about dtype, and both simply work when
+    handed a private float32 graph — which is a consequence of the *operation*
+    being dtype-general, **not** public float32 module support."""
+    import inspect
+
+    from tensorforge.experimental import (NativeCrossEntropyLoss,
+                                          native_accuracy)
+
+    assert "dtype" not in inspect.signature(NativeCrossEntropyLoss).parameters
+    assert "dtype" not in inspect.signature(native_accuracy).parameters
+    source = inspect.getsource(NativeCrossEntropyLoss)
+    assert "float64" not in source
+    assert "logits.cross_entropy(targets, reduction=self.reduction)" in source
+
+    host = np.array([[0.5, 1.5, -0.5], [2.0, -1.0, 0.25]], dtype=np.float32)
+    x = _tensor(host, "float32", requires_grad=True)
+    try:
+        criterion = NativeCrossEntropyLoss(reduction="mean")
+        loss = criterion(x, [2, 0])
+        try:
+            assert loss.dtype == "float32"
+            loss.backward()
+            assert x.grad.dtype == "float32"
+        finally:
+            loss.close()
+        accuracy = native_accuracy(x, [2, 0])
+        assert isinstance(accuracy, float)
+        # Row 0's argmax is class 1, row 1's is class 0: one of the two
+        # targets (2, 0) is hit.
+        assert accuracy == 0.5
+    finally:
+        x.close()
+
+
+# ---------------------------------------------------------------------------
+# I6: what the generalized classification source must (and must not) contain
+# ---------------------------------------------------------------------------
+
+def test_the_classification_exports_carry_one_dispatch_each():
+    """Design §8.1 over the four I6 exports, as source structure: each runs the
+    matching-dtype guard and exactly one dispatch switch, and no
+    ``require_float64`` survives in the unit."""
+    source = _read("cpp/src/classification.cpp")
+    for export in ("tf_core_softmax_forward", "tf_core_log_softmax_forward",
+                   "tf_core_cross_entropy_forward",
+                   "tf_core_cross_entropy_backward"):
+        assert f'"{export}",' in source, export
+    assert source.count("tf::require_matching_dtype(") == 4
+    assert "require_float64" not in source
+    assert source.count("switch (tf::dispatch_dtype(") == 4
+    assert source.count("case tf::Dtype::Float32:") == 4
+    assert source.count("case tf::Dtype::Float64:") == 4
+    # No per-dtype duplicate kernel family, and no hand-rolled float64 cast.
+    assert "storage_f64" not in source
+    for banned in ("_f32(", "_f64(", "softmax_forward_f32"):
+        assert banned not in source, banned
+
+
+def test_no_classification_accumulator_is_hard_coded_to_a_width():
+    """The behavioural half of the accumulation proof is the batch-loss
+    witness; this is the structural half, and both are kept.
+
+    Every value the four kernels compute is declared at the element type: the
+    maximum, the shift, the exponentials, the normalizing sum, the
+    log-normalizer, the row loss, the batch total, the mean divisor, the
+    gradient contribution, and the upstream scale. A ``double`` anywhere in the
+    templated kernels would make one instantiation silently wider than its
+    element type."""
+    header = _read("cpp/include/tf_classification_internal.h")
+    body = header.split("constexpr int64_t kCrossEntropyReductionSum", 1)[1]
+    # Comments discuss both widths by name — that is the documentation doing
+    # its job. The claim is about the **code**, so the comments come out
+    # first, exactly as the equivalent I4/I5 structural checks do.
+    code = "\n".join(line.split("//", 1)[0] for line in body.splitlines())
+    for banned in ("double", "float", "static_cast<double>",
+                   "static_cast<float>", "= 0.0;", "= 1.0;", "-= 1.0"):
+        assert banned not in code, banned
+    for required in ("T maximum = ", "T total = T(0)", "T sum_exp = T(0)",
+                     "const T log_denominator", "const T shifted_target",
+                     "static_cast<T>(batch_size)", "contribution -= T(1)",
+                     "const T count = static_cast<T>(batch_size)"):
+        assert required in body, required
+    # exp/log are called on the element type, so a float32 slice takes the
+    # float overload rather than widening and narrowing back.
+    assert "std::exp(shifted)" in body
+    assert "std::log(sum_exp)" in body
+
+
+def test_cross_entropy_backward_cannot_reach_the_logits():
+    """The structural half of "backward never rereads the logits": the logits
+    are not a parameter of the C kernel, not a parameter of the export, and not
+    a parameter of the Core wrapper — so there is no path by which a later
+    change could start reading them without changing a signature. No
+    exponential or logarithm is evaluated there either."""
+    header = _read("cpp/include/tf_classification_internal.h")
+    kernel = header.split("cross_entropy_backward_contiguous", 1)[1]
+    signature = kernel.split(") noexcept", 1)[0]
+    # ``grad_logits`` is the write-only destination; every *readable*
+    # parameter is named here, and none of them is the logits.
+    assert "grad_logits" in signature
+    assert signature.replace("grad_logits", "") .count("logits") == 0
+    for readable in ("const T* probabilities", "const int64_t* targets",
+                     "const T* upstream"):
+        assert readable in signature, readable
+    assert "std::exp" not in kernel
+    assert "std::log" not in kernel
+
+    source = _read("cpp/src/classification.cpp")
+    export = source.split("TF_EXPORT void tf_core_cross_entropy_backward",
+                          1)[1]
+    export_signature = export.split(") {", 1)[0]
+    assert "grad_logits_handle" in export_signature
+    assert export_signature.replace("grad_logits_handle", "") \
+        .count("logits") == 0
+
+
+def test_the_i6_python_gates_are_gone_and_the_i7_gate_remains():
+    """The two hard float64-only gates I6 owned are removed; Dropout's, which
+    milestone I7 owns, is untouched."""
+    source = _read("src/tensorforge/backends/cpp.py")
+    assert "cross_entropy_forward requires float64/cpu logits" not in source
+    assert ("cross_entropy_backward requires a float64/cpu probability"
+            not in source)
+    assert "dropout_forward requires a float64/cpu input" in source
+    # Exactly one of the five §2.3 gates is left, and it is Dropout's.
+    assert source.count('!= "float64" or self.device != "cpu"') == 1
+
+
+@needs_native
+def test_i6_moved_no_public_capability_at_all():
+    """The exit gate, as one assertion block: internal float32 softmax,
+    log-softmax, and fused cross-entropy exist, and public float32 support does
+    not."""
+    import inspect
+
+    import tensorforge.experimental as experimental
+    from tensorforge.experimental import native_checkpoint
+
+    assert cpp.SUPPORTED_DTYPES == I0_DTYPES
+    assert cpp.SUPPORTED_DEVICES == I0_DEVICES
+    assert cpp.UNSUPPORTED == I0_UNSUPPORTED
+    assert cpp.RAW_KERNEL_DTYPES == ("float64",)
+    assert cpp.backend_info()["dtype"] == "float64"
+    assert native_checkpoint._FORMAT_VERSION == I0_CHECKPOINT_VERSION
+    assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+            == I0_CHECKPOINT_VERSIONS)
+    with pytest.raises(ValueError):
+        cpp.normalize_dtype("float32")
+    exports = _source_exports()
+    assert len(exports) == I1_EXPORT_COUNT       # still 54; I6 adds none
+    for absent in ("tf_core_softmax_forward_f32", "tf_core_softmax_typed",
+                   "tf_core_cross_entropy_forward_f32",
+                   "tf_core_cross_entropy_targets", "tf_storage_create_int64",
+                   "tf_core_log_softmax_forward_f32"):
+        assert absent not in exports, absent
+    assert not [name for name in exports
+                if name.endswith(("_f32", "_f64", "_float32", "_float64"))]
+    # No module, parameter, optimizer, or loss constructor gained a dtype
+    # argument — that is milestone I7, not this one.
+    for name in experimental.__all__:
+        obj = getattr(experimental, name)
+        if not inspect.isclass(obj):
+            continue
+        try:
+            signature = inspect.signature(obj)
+        except (TypeError, ValueError):          # pragma: no cover
+            continue
+        assert "dtype" not in signature.parameters, name

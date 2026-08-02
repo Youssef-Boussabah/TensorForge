@@ -1020,6 +1020,28 @@ needs **no build-system change**; `cpp/build.py`'s direct-compiler
 fallback enumerates sources the same way. Verify, do not assume, at the
 milestone that adds the file.
 
+**Forward reference, added with Phase I milestone I6.** One later phase
+refined these kernels without changing a Phase-E decision, and it is
+recorded in its own contract rather than restated here: **Phase I milestone
+I6** ([native_dtype_float32_design.md](native_dtype_float32_design.md) §29)
+made the four classification kernels templates over the element type, so
+their **definitions** moved from `cpp/src/classification.cpp` into
+`cpp/include/tf_classification_internal.h` — a template must be visible
+where it is instantiated, and both instantiations have to reach the
+exported wrappers *and* the CTests that compile the source directly. The
+split in the table above is otherwise exactly as written: classification is
+still one compute unit, still deliberately apart from `elementwise.cpp`,
+the guarded C ABI wrappers still live in `classification.cpp`, and the
+header still exists so the dependency-free CTests can reach the compute
+without going through the C ABI. `T = double` is the Phase-E code statement
+for statement. Every numerical contract of §3, §4, §6, and §7 holds
+unchanged at both widths — the maximum shift, the fused log-sum-exp, the
+"never `log(softmax(x))`" rule, the "never `-log(p[target])`" rule, the
+saved-probability backward, the `int64` target boundary (targets carry no
+dtype and gain none), and the graph-owned resource lifetime. What I6 adds
+is one dtype-agreement check and one dispatch per export, above the
+arithmetic.
+
 ### 9.2 Guarded C ABI families
 
 | Symbol | Milestone | Shape of the call |

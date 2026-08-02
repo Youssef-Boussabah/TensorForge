@@ -1655,7 +1655,7 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase I — native dtype generalization and float32 CPU support — is the
-latest phase. Milestones I0 through I5 are complete; I6 through I11
+latest phase. Milestones I0 through I6 are complete; I7 through I11
 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
@@ -1757,15 +1757,50 @@ convolution and pooling, with the float64 winner riding the unchanged
 graph-owned saved-state contract. Native CTests moved **21 → 22**; exports
 stayed at **54**.
 
+**I6 generalized the stable-math and classification stack, and added no
+export.** Softmax, log-softmax, and the fused cross-entropy forward and
+backward dispatch once from the storage tag into templated kernels, with
+every participating numeric handle checked for agreement first — two for
+each transform, three for each cross-entropy direction. Everything
+numerical happens at the element type: the maximum scan, the shift,
+`std::exp`/`std::log` on the element type, the normalizing sum, the
+log-normalizer, the per-row loss, the batch-loss accumulator, the mean
+divisor, and every backward contribution. The batch-loss accumulator is
+where that became a measured claim rather than a structural one — on a
+batch whose first row contributes exactly 200 and whose remaining 199
+contribute ~6.1e-6 each, binary32 stays at exactly 200 while
+binary64-then-narrow lands ~1.2e-3 higher, and TensorForge is asserted
+equal to the first and unequal to the second. Log-softmax is still its own
+fused log-sum-exp kernel and never `softmax().log()`; the saved
+probabilities carry the graph dtype and remain the only thing the backward
+reads; and the class **targets stay host `int64` metadata at every width**,
+so no integer tensor dtype was introduced. Private float32 graphs
+differentiate through all three operations with no change to the graph
+structure at all. Native CTests moved **22 → 23**; exports stayed at
+**54**.
+
+I6 is also where the float32 stability statement picked up its one honest
+qualification, measured rather than assumed. The maximum shift guarantees
+no *exponent* overflows; it does not make the shifted value itself
+representable, so a slice whose **spread** exceeds the element type's
+largest finite value overflows the shift to `-inf`. `softmax` is unaffected
+and still exact; `log_softmax` reports `-inf` and `cross_entropy` `+inf`,
+as values with the error slot at `TF_OK`. Those are the correctly rounded
+IEEE results for quantities with no representation at that width, and the
+identical thing happens at binary64 past ~1.8e308 — a dynamic-range fact,
+not a float32 defect. The kernels were left alone; the counterexample is
+recorded in the contract and asserted in both directions by test.
+
 **No public capability moved, and none does until I9.** The native runtime
 is still float64 CPU only: `SUPPORTED_DTYPES` still reads `("float64",)`,
 `UNSUPPORTED` still reads `("float32", "cuda", "amp")`, and the native
 checkpoint format is still version 2 with versions 1 and 2 accepted.
 float32 is internally supported for storage, transfer, views,
-elementwise/unary execution, reductions, matmul, Conv2d, MaxPool2d, view
-backward, and private Core autograd — and for nothing else.
-Classification, Dropout, normalization, modules, parameters, optimizers,
-and checkpoints all still reject a float32 handle before touching memory,
+elementwise/unary execution, reductions, matmul, Conv2d, MaxPool2d,
+softmax, log-softmax, fused cross-entropy, view backward, and private Core
+autograd — and for nothing else. Dropout, normalization, modules,
+parameters, optimizers, and checkpoints all still reject a float32 handle
+before touching memory,
 because walking a 4-byte-per-element buffer through a `double*` would
 overrun it twofold. Nor is a private float32 graph public float32
 autograd: no public constructor produces a float32 tensor, so no float32

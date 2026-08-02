@@ -902,10 +902,10 @@ proposed optimizations. Every number behind those statements is a local
 characterization of one machine, is reported with its spread, and is
 asserted by no test.
 
-## Phase I — native dtype generalization and float32 CPU support, **I0–I5 complete**
+## Phase I — native dtype generalization and float32 CPU support, **I0–I6 complete**
 
-**Phase I is the latest phase. Milestones I0 through I5 are complete;
-I6 through I11 are not started.** Its architecture contract is
+**Phase I is the latest phase. Milestones I0 through I6 are complete;
+I7 through I11 are not started.** Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
 
@@ -1073,7 +1073,68 @@ changed:
   operand position before any allocation;
 - the native CTest inventory moved **21 → 22** (`test_dtype_cnn`).
 
-**What I1 through I5 did *not* change is the whole of the rest of this
+**I6** extended that to the stable-math and classification stack, and added
+**no export**. What it changed:
+
+- softmax, log-softmax, and the fused cross-entropy forward and backward
+  (`tf_core_softmax_forward`, `tf_core_log_softmax_forward`,
+  `tf_core_cross_entropy_forward`, `tf_core_cross_entropy_backward`) are
+  **dtype-general** — four exports, every one of them the symbol Python
+  already declared, each validating that **every** participating numeric
+  handle agrees (two for each transform, three for each cross-entropy
+  direction) and dispatching **once** from the storage tag into a templated
+  kernel;
+- the four compute kernels became templates over the element type and moved
+  into `tf_classification_internal.h`, on I4's and I5's terms: a template
+  must be visible where it is instantiated, and both instantiations must
+  reach the exported wrappers and the CTests that compile them directly.
+  `T = double` is the Phase-E kernel statement for statement; the source
+  organization of the classification design's §9.1 is unchanged;
+- **everything numerical happens at the element type**: the maximum scan,
+  the shift, `std::exp`/`std::log` on the element type (so a float32 slice
+  takes the `float` overload rather than widening and narrowing back), the
+  normalizing sum, the log-normalizer, the per-row loss, the batch-loss
+  accumulator, the mean divisor, the gradient contribution, and the
+  upstream scale. There is **no hidden float64 accumulator** anywhere, and
+  the batch-loss accumulator is where that became a *measured* claim: on a
+  batch whose first row contributes exactly 200 and whose remaining 199
+  contribute ~6.1e-6 each, sequential binary32 stays at exactly 200 while
+  binary64-then-narrow lands ~1.2e-3 higher, and TensorForge is asserted
+  equal to the first and **unequal to the second** by raw bit pattern;
+- **log-softmax is still its own fused log-sum-exp kernel** and never
+  `softmax().log()` — a decision that only gets stronger at float32, whose
+  smallest normal probability is ~1.18e-38 — and the cross-entropy loss
+  still comes from `log(sum_exp) - (x[target] - m)`, never from
+  `-log(p[target])`;
+- the **saved probabilities carry the graph dtype**, ride the unchanged
+  `graph_resources` contract, and are still the only thing the backward
+  reads: the logits are not a parameter of the kernel, of the export, or of
+  the Core wrapper, and no exponential or logarithm is evaluated there;
+- the class **targets stay host `int64` metadata at every width** — copied
+  into an independently owned array, revalidated index by index in C++,
+  caller-independent after the forward, never a tensor, never inferred from
+  the logits dtype. **No integer tensor dtype was introduced**, and no
+  integer-storage or target export was added;
+- the float32 stability statement picked up its **one honest
+  qualification**, measured rather than assumed. The maximum shift
+  guarantees no *exponent* overflows; it does not make the shifted value
+  `x - m` representable, so a slice whose **spread** exceeds the element
+  type's largest finite value overflows it to `-inf`. `softmax` is
+  unaffected — the affected class gets exactly `+0.0`, which is the
+  correctly rounded probability — while `log_softmax` reports `-inf` and
+  `cross_entropy` `+inf`, as *values* with the error slot at `TF_OK`. The
+  identical thing happens at binary64 past ~1.8e308, so it is a
+  dynamic-range fact rather than a float32 defect. No widened intermediate,
+  clamp, or special case was added; the counterexample is recorded in the
+  contract's §10.5 and asserted in both directions by test;
+- **private/internal float32 `NativeTensor` graphs differentiate through
+  all three operations**, with no change to the graph structure at all —
+  the backwards are composed from Core operations that I3 and I4 had
+  already generalized;
+- the native CTest inventory moved **22 → 23**
+  (`test_dtype_classification`).
+
+**What I1 through I6 did *not* change is the whole of the rest of this
 matrix.** The native runtime is still **publicly float64 CPU only**:
 `SUPPORTED_DTYPES` reads `("float64",)`, `SUPPORTED_DEVICES` reads
 `("cpu",)`, `UNSUPPORTED` reads `("float32", "cuda", "amp")`, and the
@@ -1082,26 +1143,30 @@ with versions **(1, 2)** accepted. `float32` therefore stays in the
 **Unsupported or future** section above, and it stays there until
 milestone **I9**.
 
-The honest statement of what float32 *is* after I5: **internally supported
+The honest statement of what float32 *is* after I6: **internally supported
 for storage, transfer, views, elementwise/unary execution, reductions,
-matmul, Conv2d, MaxPool2d, view backward, and private Core autograd — and
-for nothing else.** It can be copied in from a host buffer, copied out,
-viewed through any layout the metadata contract permits, materialized, and
-copied storage-to-storage, all bit-exactly; it can be added, subtracted,
-multiplied, rectified (forwards and backwards), square-rooted,
-reciprocated, exponentiated, and logged, with broadcasting, at genuine
-binary32; it can be summed, averaged, matrix-multiplied, and scattered back
-through a narrow, with the accumulation genuinely in binary32; it can be
-convolved in all three directions and max-pooled in both, through H9's
-unchanged traversals, again accumulating in binary32, with the pooling
-winners kept as private float64 index metadata; and an internal graph over
-those operations — convolution and pooling included — differentiates end to
-end with every gradient at the graph's dtype.
+matmul, Conv2d, MaxPool2d, softmax, log-softmax, fused cross-entropy, view
+backward, and private Core autograd — and for nothing else.** It can be
+copied in from a host buffer, copied out, viewed through any layout the
+metadata contract permits, materialized, and copied storage-to-storage, all
+bit-exactly; it can be added, subtracted, multiplied, rectified (forwards
+and backwards), square-rooted, reciprocated, exponentiated, and logged,
+with broadcasting, at genuine binary32; it can be summed, averaged,
+matrix-multiplied, and scattered back through a narrow, with the
+accumulation genuinely in binary32; it can be convolved in all three
+directions and max-pooled in both, through H9's unchanged traversals, again
+accumulating in binary32, with the pooling winners kept as private float64
+index metadata; it can be softmaxed, log-softmaxed, and reduced to a fused
+cross-entropy loss and its gradient, with the maximum shift and the
+log-sum-exp entirely in binary32 and the class targets still host `int64`
+metadata; and an internal graph over those operations — convolution,
+pooling, and classification included — differentiates end to end with every
+gradient at the graph's dtype.
 
-Classification, normalization, Dropout, modules, parameters, optimizers,
-checkpointing, and public float32 construction remain unsupported: no
-softmax, log-softmax, or cross-entropy, no Dropout, no normalization, no
-module, no parameter, no optimizer, and no checkpoint accepts it. Every
+Normalization, Dropout, modules, parameters, optimizers, checkpointing, and
+public float32 construction remain unsupported: no Dropout, no
+normalization, no module, no parameter, no optimizer, and no checkpoint
+accepts it. Every
 operation that has not been generalized rejects a float32 handle with
 `TF_ERROR_INVALID` before reading or writing a single element — necessarily
 so, because walking a 4-byte-per-element buffer through a `double*` would
@@ -1112,10 +1177,18 @@ training.** No public constructor produces a float32 tensor — `from_array`,
 `zeros`, and `full` all still raise for it, at the Core layer and at the
 `NativeTensor` layer — no `NativeParameter` accepts one, and no module, loss,
 or optimizer accepts a dtype argument yet, so nothing a user can write
-reaches any of it. The graphs I4 and I5 prove are built through the private
-typed constructors the rollout rule requires an intermediate milestone to
-test through. Internal capability is not public support, and the two are
-deliberately kept apart until the whole stack exists.
+reaches any of it. The graphs I4, I5, and I6 prove are built through the
+private typed constructors the rollout rule requires an intermediate
+milestone to test through. Internal capability is not public support, and
+the two are deliberately kept apart until the whole stack exists.
+
+The same distinction covers two surfaces I6 inspected and deliberately left
+alone. `NativeCrossEntropyLoss` is a thin delegate to
+`logits.cross_entropy(...)` and `native_accuracy` is a reporting-only
+helper over `to_numpy()`; neither has a float64 assumption to remove and
+neither gained a dtype argument, so both simply work when handed a private
+float32 graph. **That is the operation being dtype-general, not public
+float32 module support**, and it changes nothing in the row above.
 
 What the phase will deliver, when its milestones land: float32 CPU
 tensors beside the existing float64 ones, dtype-tagged storage,

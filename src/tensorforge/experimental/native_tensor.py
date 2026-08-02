@@ -585,17 +585,21 @@ class NativeTensor:
         result is contiguous whatever the input layout.
 
         Per slice the kernel fuses ``exp(x - max(x)) / sum(exp(x -
-        max(x)))`` in float64 — the maximum shift means a large common
-        offset cannot overflow. Exceptional values follow plain IEEE
-        arithmetic: a NaN or ``+inf`` in a slice propagates, making that
-        slice NaN.
+        max(x)))`` **at the graph's dtype** (Phase I, milestone I6) — the
+        maximum shift means a large common offset cannot overflow at either
+        width. Exceptional values follow plain IEEE arithmetic: a NaN or
+        ``+inf`` in a slice propagates, making that slice NaN.
 
         Differentiable, with the Jacobian-vector product written in
         closed form::
 
             dx = y * (upstream - sum(upstream * y, axis, keepdims=True))
 
-        where ``y`` is the **saved forward output**. Like ``exp`` (and
+        where ``y`` is the **saved forward output**. Every intermediate of
+        that expression — the elementwise products, the axis reduction, and
+        the broadcasting subtract — is an existing dtype-general Core
+        operation, so the whole backward runs at the graph's dtype with no
+        literal-float64 tensor anywhere in it. Like ``exp`` (and
         unlike ``log``), the backward never rereads the parent's value and
         never recomputes the softmax, so the graph records **no** expected
         parameter version: mutating a direct parameter input after forward
@@ -653,11 +657,13 @@ class NativeTensor:
         handled by the Core layer's Policy-B copy-then-compute.
 
         Per slice the kernel fuses ``(x - max(x)) - log(sum(exp(x -
-        max(x))))`` in float64. It is **never** ``softmax(x).log()``:
-        that composition is exactly the precision loss this operation
-        exists to avoid, since a probability below the float64 minimum
-        rounds to 0 and its logarithm to ``-inf``, while the fused
-        log-sum-exp form stays finite and accurate. Exceptional values
+        max(x))))`` **at the graph's dtype** (Phase I, milestone I6). It is
+        **never** ``softmax(x).log()``: that composition is exactly the
+        precision loss this operation exists to avoid, since a probability
+        below the element type's smallest normal rounds to 0 and its
+        logarithm to ``-inf``, while the fused log-sum-exp form stays
+        finite and accurate — a margin that matters far sooner at float32,
+        whose smallest normal is ~1.18e-38. Exceptional values
         follow plain IEEE arithmetic: a NaN or ``+inf`` in a slice makes
         that slice NaN; a ``-inf`` gets ``-inf`` and leaves its finite
         neighbours alone.
@@ -667,7 +673,10 @@ class NativeTensor:
             dx = upstream - exp(y) * sum(upstream, axis, keepdims=True)
 
         where ``y`` is the **saved forward output** — ``exp(y)`` recovers
-        the probabilities without ever rereading the input. Like ``exp``
+        the probabilities without ever rereading the input. As in
+        ``softmax``, every intermediate is an existing dtype-general Core
+        operation, so the backward runs at the graph's dtype throughout.
+        Like ``exp``
         and ``softmax`` (and unlike ``log``), the graph therefore records
         **no** expected parameter version: mutating a direct parameter
         input after forward leaves this edge valid and the gradient
@@ -749,6 +758,14 @@ class NativeTensor:
         parent after the forward pass leaves this edge valid and its
         gradient correct for the forward that ran (the ``maxpool2d``
         archetype, the deliberate contrast with ``log``).
+
+        Every numeric operand of that node carries **one** dtype (Phase I,
+        milestone I6): the scalar loss, the saved probabilities, the
+        upstream, and the logits gradient are all the logits' dtype, and
+        the C ABI revalidates the agreement before it writes anything. The
+        copied targets are the deliberate exception and are not a dtype at
+        all — they stay host ``int64`` metadata at every width, are never
+        inferred from the logits, and never become a tensor.
 
         The saved probabilities are **private graph-owned state** (D9's
         ``graph_resources`` contract, reused unchanged): never a public
