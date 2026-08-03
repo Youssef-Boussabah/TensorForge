@@ -1066,9 +1066,14 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **Native dtype generalization and float32 CPU support (Phase I) is
-  under way: milestones I0 through I10 are complete, I11 is not
-  started.** Phase I is the latest phase and is **active, not closed**;
-  Phase H is unaffected and remains complete, having closed at 52 exports.
+  complete: milestones I0 through I11 have all landed.** Phase I is the
+  latest phase and is now also the latest **completed** phase; Phase H is
+  unaffected and remains complete, having closed at 52 exports. **I11 was
+  cross-platform validation and closure** — Windows Release and Debug, a
+  Linux CI-equivalent, Clang ASan/UBSan with a negative control, a
+  LeakSanitizer lifecycle, both exact-resume proofs, the final ABI and
+  inventory reconciliation, and the closure guardrail module — and it added
+  no capability and changed no file under `src/` or `cpp/`.
   **Since I9 the native runtime supports both `float32` and `float64` on
   the CPU** — `SUPPORTED_DTYPES == ("float64", "float32")`, `UNSUPPORTED
   == ("cuda", "amp")` — with float64 still the default everywhere, no

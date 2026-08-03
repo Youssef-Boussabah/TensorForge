@@ -204,7 +204,7 @@ the two widths never mix, because casting, promotion, and mixed-dtype
 arithmetic are all absent and a mismatch raises before any allocation; the
 seven handle-free raw utility kernels stay float64-only permanently; and
 AMP, float16, bfloat16, and integer tensors stay outside that phase too.
-Phase I itself is **not closed** — I11 remains.) Its Dropout is one
+Phase I itself is **complete**, closed at I11.) Its Dropout is one
 deterministic
 stream behind an explicit `NativeGenerator`, not a generic random-number
 API, and there is no `Dropout2d`/`Dropout3d`. Native checkpoints persist
@@ -1657,9 +1657,10 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase I — native dtype generalization and float32 CPU support — is the
-latest phase. Milestones I0 through I10 are complete; I11 is not
-started, so the phase is active rather than closed.** Its architecture
-contract is
+latest phase, and it is complete (I0–I11).** I11 revalidated the whole
+dtype-general stack across every required platform, added the closure
+guardrails, and reconciled the status surfaces, so Phase I is now also the
+latest *completed* phase. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
 **I0 was design and reconciliation only, and added no runtime behavior**:
@@ -1923,8 +1924,13 @@ than "fixed", because it is an absence rather than a defect:
 `maxpool2d_backward` has exactly one value operand, so there is no second
 value position for a mixed-dtype rule to govern. Suite 7,409 → **7,629**.
 
-**Phase I is not closed**: I11 (cross-platform validation and closure) has
-not started.
+**I11 closed the phase.** It changed no file under `src/` or `cpp/` and
+added no capability: it revalidated Windows Release and Debug, a Linux
+CI-equivalent, and Clang ASan/UBSan and LeakSanitizer builds, re-ran both
+exact-resume proofs, reconciled the ABI, registry, checkpoint, CTest,
+example, and benchmark inventories, and added
+`tests/test_native_phase_i_closure.py` — the durable guardrail module that
+keeps the closure from drifting.
 
 The contract locked the phase before any of it was built, and the first
 three items below are the ones I1 delivered: an internal dtype
@@ -1951,8 +1957,9 @@ them; every Phase-H float64 optimization preserved and each dtype
 benchmarked on its own; and the I0–I11 ladder, in which the public
 support registry changes at **I9** and at no earlier milestone.
 
-Beyond Phase I (**not started**): more activations/math, data loaders,
-native integer tensors, then the CUDA runtime, further dtypes and AMP
-work, and Transformer/text and distributed experiments. See
+Beyond Phase I (**not started**, and no successor phase is defined): more
+activations/math, data loaders, native integer tensors, then the CUDA
+runtime, further dtypes and AMP work, and Transformer/text and distributed
+experiments. See
 [roadmap.md](roadmap.md) and
 [release_history.md](release_history.md) for the full arc.

@@ -923,10 +923,12 @@ proposed optimizations. Every number behind those statements is a local
 characterization of one machine, is reported with its spread, and is
 asserted by no test.
 
-## Phase I — native dtype generalization and float32 CPU support, **I0–I10 complete**
+## Phase I — native dtype generalization and float32 CPU support, **complete (I0–I11)**
 
-**Phase I is the latest phase. Milestones I0 through I10 are complete;
-I11 is not started, so the phase is *active*, not closed.** Its
+**Phase I is the latest phase, and it is complete: milestones I0 through
+I11 have all landed.** I11 revalidated the stack across every required
+platform, added the closure guardrails, and reconciled the status
+surfaces, so Phase I is now the latest *completed* phase too. Its
 architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
@@ -1333,11 +1335,11 @@ they are four different things:
    resume proof has been run — integrated, bitwise, and independently at
    each dtype — the registry has moved, and every public tensor
    constructor produces a float32 tensor when asked for one explicitly.
-   **Phase I is still not closed**: I10 (hardening and benchmarking) is
-   complete — including the one loader-validation repair its matrix found,
-   which moved no schema, version, or capability — but I11 (cross-platform
-   validation and closure) has not started, so no surface may call the
-   phase complete.
+   **Phase I is closed.** I10 (hardening and benchmarking) delivered the
+   adversarial matrix and the one loader-validation repair it found, which
+   moved no schema, version, or capability; I11 (cross-platform validation
+   and closure) then revalidated every platform, reconciled every
+   inventory, and ended the ladder without adding a capability of its own.
 
 The capability detail behind (1), unchanged from I6 except for the last
 two clauses. float32 can be
@@ -1394,16 +1396,17 @@ authority** — and the same is true of `NativeReLU`, `NativeFlatten`,
 `NativeMaxPool2d`, `NativeSequential`, `NativeDropout`, `NativeMSELoss`,
 and `NativeGenerator`, none of which takes a dtype or may gain one.
 
-What the phase has delivered so far: float32 CPU tensors beside the
+What the phase delivered: float32 CPU tensors beside the
 existing float64 ones, dtype-tagged storage, dtype-aware handle-based
 operations, float32 autograd, float32 modules, persistent buffers,
 optimizers and optimizer state, float32 deterministic Dropout over an
 **unchanged** generator algorithm, a dtype-aware checkpoint **version 3**,
 exact deterministic float32 resume, public float32 support, unchanged
-float64 behavior and performance, and — at **I10** — the cross-cutting
-adversarial hardening matrix and separate float32/float64 benchmark
-characterization. What remains: **I11** (cross-platform validation and
-phase closure).
+float64 behavior and performance, at **I10** the cross-cutting adversarial
+hardening matrix and separate float32/float64 benchmark characterization,
+and at **I11** the cross-platform revalidation, the closure guardrails, and
+the final inventory reconciliation. Nothing remains: the ladder is
+finished.
 
 The decisions the contract locks, recorded here because they bound what
 any later milestone may do:
@@ -1468,7 +1471,7 @@ any later milestone may do:
   allocation counts are unchanged by construction. The measured results
   are in [backend_experiments.md](backend_experiments.md).
 
-The ladder is I0–I11 — **I0 through I10 landed; I11 is next**: the
+The ladder is I0–I11 — **all twelve landed**: the
 contract (I0), the internal dtype model and
 tagged storage (I1), typed transfer, views, and materialization (I2),
 elementwise and broadcast execution (I3), reductions, matmul, and core

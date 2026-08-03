@@ -183,8 +183,8 @@ NumPy array with no `dtype` still gives float64); there is no casting, no
 promotion, no mixed-dtype arithmetic, no `astype`/`to`/`.float()`/
 `.double()`/`map_location`, and no global default; `SUPPORTED_DEVICES`,
 `RAW_KERNEL_DTYPES`, the export count, the checkpoint version, and the
-in-memory optimizer state version are all unchanged. **Phase I is not
-closed** — I11 remains — so no surface may say it is.
+in-memory optimizer state version are all unchanged. **Phase I is complete,
+closed at I11**, and is now the latest *completed* phase.
 
 **I10 added no capability, and its only production change is one narrow
 checkpoint-loader validation repair** — the defect its own matrix found.
@@ -674,7 +674,7 @@ matching docs file (and README links) **in the same milestone**.
     exactly **one** C ABI symbol across the whole phase
     (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
-- **Native line: Phase I at I10** — Native Dtype Generalization and
+- **Native line: Phase I complete (I0–I11)** — Native Dtype Generalization and
   Float32 CPU Support. Contract:
   `docs/native_dtype_float32_design.md`. **I0 (design, contract tests,
   documentation), I1 (the dtype model and dtype-tagged storage), I2
@@ -684,9 +684,9 @@ matching docs file (and README links) **in the same milestone**.
   math and classification dtype support), I7 (modules, parameters,
   buffers, initialization, normalization, and Dropout), I8 (optimizer
   state and checkpoint version 3), I9 (public float32 integration and
-  the exact-resume proof), and I10 (cross-cutting hardening and benchmark
-  characterization) are complete; I11 is not started, so
-  the phase is active rather than closed.**
+  the exact-resume proof), I10 (cross-cutting hardening and benchmark
+  characterization), and I11 (cross-platform validation and closure) are
+  all complete. The ladder is finished and the phase is closed.**
   - I1 delivered: the C++ `TfDtype`/`tf::Dtype` model with frozen codes
     `0 = float64` and `1 = float32`, one item-size authority
     (`tf::dtype_item_size` — nothing else may spell a storage width), one
@@ -1003,6 +1003,35 @@ matching docs file (and README links) **in the same milestone**.
     still 15; no C++, no export (54), no CTest (24), no registry,
     checkpoint, or optimizer-state change. **One production file changed:**
     `src/tensorforge/experimental/native_checkpoint.py`.
+  - I11 delivered: **closure, and no capability.** No file under `src/` or
+    `cpp/` changed; what moved is `tests/test_native_phase_i_closure.py`
+    (109 tests — ladder, registries, public construction, ABI, CTests,
+    checkpoint, exact-resume and hardening retention, the shallow-clone
+    guard, inventories, isolation, unsupported boundaries, and hygiene,
+    **every parser with a negative control**), the status surfaces, and two
+    guards whose premises expired and were retired rather than deleted:
+    `test_native_phase_i.py`'s status guard no longer demands an unstarted
+    milestone once none exists, and `test_docs.py`'s "Phase I is complete"
+    overclaim entry was retired the way the checkpoint-v2, stochastic-resume,
+    and float32-support entries were at G5/G7/I9 — replaced by the boundary
+    that outlives the phase (float32 support must not erode into casting,
+    promotion, mixed precision, AMP, or float32 raw kernels), with the
+    negative-control lists moved with it. **One stale current statement was
+    found and repaired**: README's Status section still called float32
+    "designed but not implemented", true through I8 and false from I9.
+    Validation: Windows Release and isolated Debug (0 warnings, 24/24
+    CTests, 54 exports, sets equal), Linux CI-equivalent (g++ 13.3.0,
+    `-Wall -Wextra`, 0 warnings, 24/24, 54, no mangled export), Clang 18.1.3
+    ASan/UBSan (instrumentation proved present, 24/24, complete suite green,
+    **zero** diagnostics) with a negative control producing a real
+    `heap-buffer-overflow` in `storage.cpp`, and LeakSanitizer with **no
+    suppression file** whose only reports carry no TensorForge frame. All 15
+    examples and all 8 benchmark smoke paths exit zero. Suite
+    7,629 → **7,738** on Windows and Linux alike, 0 skips on both; the
+    sanitized suite is 7,737 + 1 pre-existing documented skip. Under
+    `detect_leaks=1` alone, 28 subprocess-exit-code tests fail because every
+    child reports CPython's own exit allocations — proved by the same suite
+    passing with only `detect_leaks=0` changed.
   - **Public capability did not move at I1 through I8, and moved exactly
     once at I9**: through I8, float64 CPU only with `float32` still in
     `UNSUPPORTED`. `RAW_KERNEL_DTYPES` stayed `("float64",)` throughout,
@@ -1070,11 +1099,11 @@ matching docs file (and README links) **in the same milestone**.
   - checkpoint **version 3** at I8 (accepted `(1, 2, 3)`; versions 1 and
     2 are float64-only and never guessed to be float32);
   - the public registry moved at **I9**, not earlier and not again — and
-    only after the integrated exact-resume proof passed. I10 and I11 add
+    only after the integrated exact-resume proof passed. I10 and I11 added
     no capability: I10 was hardening and benchmark characterization and
     changed no production runtime code except one narrow
-    checkpoint-loader validation repair, I11 is
-    cross-platform validation and closure.
+    checkpoint-loader validation repair; I11 was cross-platform validation
+    and closure and changed no file under `src/` or `cpp/` at all.
 
 Beyond Phase I (future work, not started): data loaders, native integer
 tensors, further dtypes/devices beyond float32/float64, CUDA experiments.

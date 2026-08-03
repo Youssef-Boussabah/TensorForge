@@ -242,7 +242,8 @@ generic random-number API, ``Dropout2d``/``Dropout3d``, dtype expansion
 beyond float32 and float64, CUDA, AMP, and data-pipeline abstractions.
 
 **Phase H — Native CPU Performance and Runtime Efficiency — is complete
-(H0-H10), and it is the latest completed native phase.** Its contract is
+(H0-H10).** It was the latest completed native phase for the whole of
+I0-I10; Phase I's closure at I11 succeeded it. Its contract is
 ``docs/native_cpu_performance_design.md``. Phase H made this line faster
 without making it broader: every optimized kernel path ships behind the
 export Python already declares, chosen by a hidden metadata-or-geometry
@@ -267,6 +268,45 @@ add: SIMD, threading, OpenMP, BLAS, a memory pool, a scratch workspace,
 general fusion, im2col, or any public performance control — no path
 selector, threshold setter, dispatch tracer, profiling counter, or
 environment variable.
+
+**Phase I — Native Dtype Generalization and Float32 CPU Support — is
+complete (I0-I11), and it is the latest completed native phase.** Its
+contract is ``docs/native_dtype_float32_design.md``. Phase I made this
+line *dtype-general* without making it wider in any other direction:
+native storage is dtype-tagged and is the single authority for every view
+of it, each handle-based export dispatches **once** from that tag into
+templated ``float``/``double`` kernels, and the whole stack — transfer,
+elementwise, reductions, matmul, Conv2d, MaxPool2d, softmax/log-softmax,
+fused cross-entropy, normalization, Dropout, modules, parameters,
+buffers, both optimizers, and the checkpoint — runs at either width.
+**Since milestone I9 both dtypes are publicly supported**:
+``SUPPORTED_DTYPES == ("float64", "float32")`` and ``UNSUPPORTED ==
+("cuda", "amp")``, with **float64 still the default** at every
+constructor, factory, module, and parameter, and still what ``None``
+means. The registry moved only *after* the integrated exact-resume proof
+passed at each dtype independently, compared in raw IEEE-754 bit
+patterns and never across dtypes.
+
+What Phase I did **not** add: casting, promotion, mixed-dtype arithmetic,
+dtype inference from an input array, a global default dtype, ``astype`` /
+``.float()`` / ``.double()`` / ``map_location``, device movement, a
+device, an integer or boolean tensor dtype, float16, bfloat16, AMP, or
+CUDA. A mixed-dtype operation raises **before** any allocation or
+mutation. ``RAW_KERNEL_DTYPES == ("float64",)`` is a **separate and
+permanently narrower** statement about the seven handle-free raw utility
+kernels, which take only ``double*`` and an element count and so have no
+dtype to dispatch on — it is never the overall support claim. The
+MaxPool2d winner buffer stays private float64 metadata at every value
+width, and cross-entropy targets stay host ``int64`` metadata. Exactly
+**two** C ABI symbols were added across the phase
+(``tf_storage_create_typed`` and
+``tf_storage_create_uninitialized_typed``, at I1), taking the library from
+52 to **54**; the native checkpoint moved to **version 3** at I8 with
+``(1, 2, 3)`` accepted and versions 1 and 2 float64-only permanently; and
+the in-memory optimizer state schema did not move from version **1**.
+**I11** closed the phase with cross-platform revalidation, the closure
+guardrails in ``tests/test_native_phase_i_closure.py``, and the final
+inventory reconciliation — adding no capability at all.
 
 ``NativeGenerator`` (Phase G, milestone G1) is the Python half of the
 phase's central split — random state is Python-managed, and the native

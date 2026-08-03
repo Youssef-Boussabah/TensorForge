@@ -11,7 +11,7 @@ change, no kernel, no C ABI symbol, no ctypes declaration, no
 optimizer, no export, no registry change, and no checkpoint-format
 change.
 
-**Phase-I status: I0 through I10 complete. I11 is not started.**
+**Phase-I status: I0 through I11 complete.**
 (Recorded with I5: the I4 commit advanced every other status surface but
 left this paragraph reading "I0-I3 complete" — the §29 delivered record was
 already present and correct, and the two-line lag is repaired here rather
@@ -22,9 +22,12 @@ the CPU**, publicly, as of milestone I9:
 and parameter, and `RAW_KERNEL_DTYPES` is a **different** statement that did
 not move and stays `("float64",)`.
 
-**Phase I is not closed.** I11 (cross-platform validation and closure) has
-not started, so the phase remains active and no surface may claim
-otherwise.
+**Phase I is complete.** I11 ran the cross-platform matrix — Windows
+Release and Debug, a Linux CI-equivalent, Clang ASan/UBSan with a negative
+control, and a LeakSanitizer lifecycle — reconciled every status surface,
+and closed the phase. **Phase I is therefore also the latest *completed*
+phase**, and the closure guardrails live in
+`tests/test_native_phase_i_closure.py`.
 
 The native checkpoint format moved at **I8**, which is the milestone §16.1
 always assigned it and not a public-capability change: the format is
@@ -163,20 +166,31 @@ characterized separately by a new benchmark harness that asserts no speed
 and writes no file. Two things I10 found and recorded rather than changed
 are in §29's I10 entry.
 
+What I11 changed, and only this: **nothing in the runtime.** I11 is the
+closure milestone. It revalidated the complete dtype-general stack on every
+required platform, added the Phase-I closure guardrail module, reconciled
+every public and historical status surface, and recorded the final
+inventories. It adds no operation, module, dtype, device, C ABI symbol,
+registry value, checkpoint field or version, optimizer-state version,
+example, benchmark case, dependency, or build option, and it changes no
+file under `src/` or `cpp/`. §29's I11 entry carries the observed results.
+
 **What that is not.** It is not a device, not a third dtype, not casting,
 and not promotion. float64 is still the default everywhere and still what
 `None` means; the dtype is still never inferred from an input array; mixed
-dtype still raises before any allocation or mutation; `RAW_KERNEL_DTYPES` is
-still `("float64",)`; and the phase is **not closed** — I11 remains.
+dtype still raises before any allocation or mutation; and
+`RAW_KERNEL_DTYPES` is still `("float64",)`. The phase is closed, which
+ends the ladder — it does not widen the boundary.
 
 Internal allocation, transfer, elementwise, reduction, matmul, CNN,
 classification, normalization, Dropout, module, optimizer, and checkpoint
 capability was never public support on its own — that distinction is
 §27.1's, and I9 is the milestone at which the last of it became a promise.
 
-**Phase H remains complete (H0–H10) and is the latest *completed*
-phase.** Nothing in Phase I revisits, reverses, or re-measures a Phase-H
-result. Phase H made the float64 runtime faster; Phase I makes the
+**Phase H remains complete (H0–H10)**, and was the latest *completed*
+phase for the whole of I0–I10; Phase I's own closure at I11 is what
+succeeded it. Nothing in Phase I revisits, reverses, or re-measures a
+Phase-H result. Phase H made the float64 runtime faster; Phase I makes the
 runtime *dtype-general* without giving any of that back.
 
 Related contracts this document builds on rather than replaces:
@@ -2685,7 +2699,7 @@ if repository reality contradicts a milestone's premise, that milestone
 is narrowed, reordered, or dropped, and the revision is recorded here
 rather than rewritten away — the precedent Phase H set three times.
 
-### I0 — Repository reconciliation and dtype architecture contract
+### I0 — Repository reconciliation and dtype architecture contract — **complete**
 
 - **Entry:** Phase H complete and merged; working tree clean; 52 exports;
   checkpoint version 2; 6415 tests passing.
@@ -2708,7 +2722,7 @@ rather than rewritten away — the precedent Phase H set three times.
   contract tests added.
 - **Commit message:** `Define Phase I dtype generalization architecture`
 
-### I1 — Internal dtype model and dtype-tagged storage foundation
+### I1 — Internal dtype model and dtype-tagged storage foundation — **complete**
 
 - **Entry:** I0 merged.
 - **Scope:** the C++ `TfDtype` enum, `dtype_from_code`,
@@ -2806,7 +2820,7 @@ The CTest inventory moved **17 → 18** with `test_dtype_storage`, which
 links every kernel translation unit because the float32-rejection proof
 has to cover each one's own validation front end.
 
-### I2 — Typed array transfer, views, and materialization
+### I2 — Typed array transfer, views, and materialization — **complete**
 
 - **Entry:** I1 merged.
 - **Scope:** float32/float64 ingress and egress; the three transfer
@@ -2933,7 +2947,7 @@ Public capability did not move: float64 CPU only, `float32` still in
 `UNSUPPORTED`, checkpoint version 2 with (1, 2) accepted, and **54**
 exports — I2 added none.
 
-### I3 — Elementwise, broadcast, and unary dtype execution
+### I3 — Elementwise, broadcast, and unary dtype execution — **complete**
 
 - **Entry:** I2 merged.
 - **Scope:** `add`, `subtract`, `multiply`, `relu`, `relu_backward`,
@@ -3066,7 +3080,7 @@ Public capability did not move: float64 CPU only, `float32` still in
 `UNSUPPORTED`, `RAW_KERNEL_DTYPES` still `("float64",)`, checkpoint version
 2 with (1, 2) accepted, and **54** exports — I3 added none.
 
-### I4 — Reductions, matmul, views, and core autograd
+### I4 — Reductions, matmul, views, and core autograd — **complete**
 
 - **Entry:** I3 merged.
 - **Scope:** `sum`, `mean`, `matmul`, `narrow_backward`, and broadcast
@@ -3231,7 +3245,7 @@ Public capability did not move: float64 CPU only, `float32` still in
 `UNSUPPORTED`, `RAW_KERNEL_DTYPES` still `("float64",)`, checkpoint version 2
 with (1, 2) accepted, and **54** exports — I4 added none.
 
-### I5 — CNN and pooling dtype support
+### I5 — CNN and pooling dtype support — **complete**
 
 - **Entry:** I4 merged.
 - **Scope:** all three Conv2d directions and both MaxPool2d directions at
@@ -3354,7 +3368,7 @@ Public capability did not move: float64 CPU only, `float32` still in
 `UNSUPPORTED`, `RAW_KERNEL_DTYPES` still `("float64",)`, checkpoint
 version 2 with (1, 2) accepted, and **54** exports — I5 added none.
 
-### I6 — Stable math and classification dtype support
+### I6 — Stable math and classification dtype support — **complete**
 
 - **Entry:** I5 merged.
 - **Scope:** softmax, log-softmax, and fused cross-entropy at both
@@ -3504,7 +3518,7 @@ float32 graph, which is a consequence of the *operation* being
 dtype-general and is not public float32 module support. CTests moved
 22 → **23** (`test_dtype_classification`).
 
-### I7 — Modules, parameters, buffers, initialization, and Dropout
+### I7 — Modules, parameters, buffers, initialization, and Dropout — **complete**
 
 - **Entry:** I6 merged.
 - **Scope:** dtype-aware constructors with float64 defaults on
@@ -3693,7 +3707,7 @@ per-parameter tensor state and fails when `step()` materializes its
 learning-rate scalar — atomically, with the parameter's value and version
 unchanged. CTests moved 23 → **24** (`test_dtype_dropout`).
 
-### I8 — Optimizer state and checkpoint version 3
+### I8 — Optimizer state and checkpoint version 3 — **complete**
 
 - **Entry:** I7 merged.
 - **Scope:** float32 `NativeSGD` and `NativeAdam`; moments at the
@@ -3773,7 +3787,7 @@ still validate against the public registry and still reject float32.
   guardrails advanced from "the families I8 owns still reject float32" to
   "…now execute at float32". Suite 6,947 → **7,082**, zero skips.
 
-### I9 — Public float32 integration and exact-resume proof
+### I9 — Public float32 integration and exact-resume proof — **complete**
 
 - **Entry:** I8 merged.
 - **Scope:** the integrated float32 training example over the §18.1
@@ -4111,7 +4125,7 @@ one new benchmark.
   in existing test files contribute. The observed total at the I9 commit is
   **7,409**, and that is what I10 measured its own baseline against.
 
-### I11 — Cross-platform validation and Phase-I closure
+### I11 — Cross-platform validation and Phase-I closure — **complete**
 
 - **Entry:** I10 merged.
 - **Scope:** Windows Release and Debug; Linux CI-equivalent; Clang
@@ -4127,6 +4141,87 @@ one new benchmark.
 - **Exit gate:** the full matrix green and recorded with observed
   results.
 - **Commit message:** `Complete Phase I native float32 support`
+
+**Delivered.** I11 changed **no file under `src/` or `cpp/`** and added no
+capability. Two test modules and the status surfaces moved; everything else
+it produced is validation evidence.
+
+**What landed.** `tests/test_native_phase_i_closure.py` (109 tests) — the
+durable closure module described in §30.1 — plus two guards whose premises
+expired at closure and were retired rather than deleted, each on the terms
+its own file already established for retirement:
+
+- `test_native_phase_i.py`'s status guard required the design to name both
+  a completed run **and** a first unstarted milestone. At closure none
+  exists, so demanding one would demand a false sentence. The unstarted
+  half is now conditional on there being an unstarted milestone; the
+  arithmetic tying the two halves together, and every cross-check against
+  runtime reality, are unchanged.
+- `test_docs.py`'s `"Phase I is complete"` overclaim entry banned exactly
+  the sentence closure must write. It was retired the way the
+  checkpoint-v2, stochastic-resume, and float32-support entries were
+  retired at G5, G7, and I9, and replaced by the boundary that outlives the
+  phase: float32 support must not erode into casting, promotion, mixed
+  precision, AMP, or float32 raw kernels. The negative-control lists moved
+  with it, so "Phase I is complete" is now proved *accepted* and five new
+  false claims proved *caught*.
+
+**One stale current statement was found and repaired.** README's Status
+section still read "float32 CPU support is **Phase I's** subject and is
+designed but not implemented" — accurate through I8, false from I9, and
+missed by every surface sweep because it names no milestone. It is a
+documentation defect rather than a runtime one, and it is recorded here
+rather than quietly corrected.
+
+**Observed results, per platform.**
+
+| Gate | Result |
+|---|---|
+| Windows Release (MSVC 19.44.35228, VS 17 2022, x64, CMake 4.4.0) | 0 project warnings, 0 errors; DLL 138,752 bytes; **24/24** CTests; **54** exports in source, in the PE export table, and equal as sets |
+| Windows Debug (isolated build **and** isolated output directory) | 0 warnings, 0 errors; DLL 304,640 bytes; **24/24** CTests; **54** exports, set-equal to Release; 1,934 focused tests green; Release restored and re-verified afterwards |
+| Windows Python suite | **7,738 passed, 0 failed, 0 skipped** |
+| Linux CI-equivalent (g++ 13.3.0, CMake 3.28.3, `-Wall -Wextra`) | 0 project warnings, 0 errors; `.so` 220,280 bytes; **24/24** CTests; **54** exports, set-equal to source; no mangled or template symbol exported |
+| Linux Python suite | **7,738 passed, 0 failed, 0 skipped** |
+| Clang 18.1.3 ASan + UBSan | instrumentation proved present (22 `__asan*`, 15 `__ubsan*` dynamic symbols beside **54** `tf_*`); the library refuses to load without the runtime; **24/24** sanitized CTests; complete Python suite **7,737 passed, 1 skipped**, **zero** ASan and **zero** UBSan diagnostics |
+| Sanitizer negative control | a genuine `heap-buffer-overflow` inside `copy_to_typed<double>` at `storage.cpp:520`, reached through `tf_storage_copy_to`; exit status 1; built outside the repository and leaving no artifact in it |
+| LeakSanitizer, **no suppression file** | 26 reports across the run, **zero** frames naming any TensorForge source; the integrated example reports live native storage `0 / 0` |
+| Examples | all **15** run and exit zero |
+| Benchmark smoke | all **8** paths exit zero |
+
+**Two observations recorded rather than smoothed over.**
+
+- **The Linux run has no skips, where the recorded baseline had two.** The
+  two whole-tree guards that skip when `_changed_since` cannot answer
+  *ran*, and passed, because this Linux tree carries full history **and**
+  LF content — the two conditions that guard needs. The expected
+  `Windows = Linux + 2` relationship therefore did not hold, and the
+  observed totals are reported instead of the arithmetic. Nothing was
+  loosened to achieve it.
+- **Under LeakSanitizer specifically, 28 tests fail, and none of them
+  indicates a defect.** Every one asserts a *child* process's exit status
+  or clean stdout, and `detect_leaks=1` makes every child exit non-zero by
+  reporting CPython's own interpreter-exit allocations. Proved rather than
+  asserted: the same 28, under the **same** sanitized library with only
+  `detect_leaks=0`, all pass — the complete suite gives 7,737 passed and 1
+  skipped. The one skip is pre-existing and documented (a reduction NaN
+  payload this toolchain selects differently; the contract in the
+  neighbouring test is the binding one).
+
+**CI portability, re-proved locally.** The frozen benchmark guard was run
+in a copied tree with **no `.git` at all**, and again with git removed from
+`PATH` entirely; it passes in both and still catches a one-byte edit. The
+two history-dependent guards degrade to their documented skip. The closure
+module's five `git ls-files` hygiene tests skip only in that artificial
+no-`.git` tree — a depth-1 checkout has a complete index, which is all they
+read. `.github/workflows/tests.yml` is unchanged and gained no
+`fetch-depth`.
+
+**Inventories at closure**, unchanged from I10 except the suite total:
+**54** exports, **24** CTests, **15** examples, 8 benchmark harnesses,
+checkpoint version **3** accepting `(1, 2, 3)`, optimizer state version
+**1**, registries `("float64", "float32")` / `("cpu",)` / `("cuda", "amp")`
+/ `("float64",)`. Suite 7,629 → **7,738**, the difference being exactly the
+109 closure tests.
 
 ### 29.1 Ladder adjustments made at I0
 
@@ -4145,7 +4240,7 @@ mistaken for late discoveries:
 
 ---
 
-## 30. What I0's guardrails assert
+## 30. What the Phase-I guardrails assert
 
 `tests/test_native_phase_i.py` is the durable contract module. It asserts
 **values and structure**, not wording, so ordinary prose improvements do
@@ -4168,10 +4263,60 @@ in order; that the public registry changes at **I9**; that exact resume
 is required separately per dtype; and that Phase-H performance
 preservation is required.
 
-It also pins the **unchanged** runtime: `SUPPORTED_DTYPES ==
-("float64",)`, `SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED ==
+**At I0 it also pinned the then-unchanged runtime** — `SUPPORTED_DTYPES
+== ("float64",)`, `SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED ==
 ("float32", "cuda", "amp")`, `_FORMAT_VERSION == 2`,
-`_SUPPORTED_FORMAT_VERSIONS == (1, 2)`, **52** exports in source and in
-the built library, Phase H still complete, and no I0 change to any
-production Python module, C++ source or header, build file, CI workflow,
-example, or benchmark.
+`_SUPPORTED_FORMAT_VERSIONS == (1, 2)`, **52** exports in source and in the
+built library, Phase H complete, and no I0 change to any production Python
+module, C++ source or header, build file, CI workflow, example, or
+benchmark. Those are **I0's** values and are recorded here as history: I1
+took the exports to **54**, I8 took the checkpoint to version **3** with
+`(1, 2, 3)` accepted, and I9 moved the dtype registry to `("float64",
+"float32")` with `UNSUPPORTED == ("cuda", "amp")`. The module tracked each
+move as it happened, and keeps the before/after pair rather than
+overwriting the earlier value — which is why a milestone can still be
+asked what *it* changed.
+
+### 30.1 What the closure guardrails assert
+
+`tests/test_native_phase_i_closure.py` is I11's durable module, in the
+shape of `tests/test_native_phase_h_closure.py`. The contract module above
+answers "does the design say the right things, and has the runtime moved
+where the ladder says"; this one answers "is the phase honestly closed, and
+can it drift".
+
+It pins that the §29 ladder runs I0–I11 once each, in order, with **every**
+row marked complete and no milestone past the end of the ladder; that no
+current status surface still calls
+the phase active; that the final registries are exactly `("float64",
+"float32")` / `("cpu",)` / `("cuda", "amp")` / `("float64",)`, with the
+three dtype rows kept as three different questions; that every public
+constructor builds both widths while an omitted `dtype` still means
+float64 and no dtype is inferred from an input array; that no cast,
+promotion, global default, device transfer, or `map_location` API exists;
+that the source exports exactly **54**, agreeing with the built library,
+with the two typed creators the only Phase-I additions and no `_f32`/`_f64`
+or cast export anywhere; that the CTest inventory is exactly **24** unique
+registered targets, each with a source file and each source file
+registered; that the checkpoint constants are `3` and `(1, 2, 3)` with the
+loader running the saver's own `_validated_metadata`; that the in-memory
+optimizer state is still version **1**; that the I9 exact-resume proof and
+the I10 hardening, corruption, and benchmark-contract evidence are all
+still present and still carry their named subjects; that the frozen
+benchmark guard stays shallow-clone safe and the workflow gained no
+`fetch-depth`; that the inventories are **15** examples and the inherited
+seven benchmarks plus one; that stable/native isolation holds; that no
+unsupported boundary is overclaimed; and that no generated artifact is
+tracked.
+
+**Every parser in it has a negative control.** The ladder checker is driven
+against a missing milestone, a duplicated one, a swapped pair, an invented
+milestone one past the end of the ladder, an I11 left "not started", and an
+earlier row falsely reverted; the
+status scan against four sentences that must be caught and three accurate
+closure sentences that must not be; and the overclaim scanner against eight
+false claims and eight accurate ones — including the pair that matters most
+here, "float32 is supported" (accurate since I9, and must pass) beside
+"float16 is supported" (false, and must fail). The controls operate on
+temporary strings and temporary directories only; no repository file is
+written, moved, or restored.

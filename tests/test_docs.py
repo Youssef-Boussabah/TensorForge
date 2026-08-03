@@ -4210,29 +4210,41 @@ _PHASE_G_OVERCLAIMS = (
     # surface to under-report the runtime, which is the mirror of the
     # failure this list exists to catch.
     #
-    # Two narrower boundaries take its place, because Phase I is **not**
-    # finished and float32 is **not** "any dtype":
+    # Two narrower boundaries took its place at I9, because Phase I was
+    # **not** finished and float32 is **not** "any dtype":
     #
     #   * the phase is complete — I10 (hardening and benchmarking) and I11
-    #     (cross-platform validation and closure) have not started, so no
-    #     surface may say Phase I is done;
+    #     (cross-platform validation and closure) had not started, so no
+    #     surface could say Phase I was done;
     #   * a *third* dtype is supported — float16 and bfloat16 remain
     #     genuinely absent, and "two dtypes" eroding into "any dtype" is
     #     exactly how a support matrix stops being true.
     #
-    # Both are checked against the live registry in
-    # tests/test_native_phase_i.py; this is the prose half.
-    # The past-tense arm is deliberately ``completed``/``closed`` rather
-    # than bare ``complete``: a heading like "…float32 CPU support, I0–I9
-    # complete" sits immediately before the sentence "Phase I is the latest
-    # phase", and once ``_status_text`` flattens whitespace the two
-    # normalize to the adjacent words "complete Phase I" — an accurate
-    # statement about *milestones* that a bare ``complete`` arm would read
-    # as a claim about the phase.
-    ("Phase I is complete when I10 and I11 have not started",
-     r"\bPhase[- ]I\b[^.]{0,60}\b(is|are|was|has been)\s+"
-     r"(complete|closed|finished|done)\b"
-     r"|\b(completed|closed|finished)\s+Phase[- ]I\b"),
+    # **The first of those was retired at I11**, on exactly the terms the
+    # checkpoint-v2, stochastic-resume, and float32-support entries above
+    # were retired at G5, G7, and I9: "Phase I is complete" was the
+    # damaging claim while the ladder still had milestones left, and I11
+    # closing the phase made it the accurate one. Keeping the ban would
+    # force every status surface to under-report the project — the mirror
+    # of the failure this list exists to catch, and the reason each entry
+    # here is retired the moment its premise expires rather than kept for
+    # tidiness.
+    #
+    # What replaces it is the boundary that outlives the phase: Phase I
+    # delivered a second *dtype*, and nothing else. "float32 is supported"
+    # must not erode into "casting works", "AMP is supported", or "the raw
+    # utility kernels take float32" — three claims that are each one short
+    # step from the truth and each false. The finer per-layer versions of
+    # this, with their own negative controls, live in
+    # tests/test_native_phase_i_closure.py; this is the prose half, and the
+    # "a dtype beyond float32 and float64" entry below is its sibling.
+    ("a Phase-I boundary eroded into casting, AMP, or float32 raw kernels",
+     r"\b(casting|dtype promotion|type promotion|mixed[- ]precision|AMP|"
+     r"autocast)\b[^.;]{0,60}?\b(is|are|now)\s+"
+     r"(supported|available|implemented|shipped|working|enabled|performed)\b"
+     r"|\bsupports?\s+(casting|dtype promotion|mixed[- ]precision|AMP)\b"
+     r"|\braw (utility )?kernels?\b[^.;]{0,50}?\b(support|accept)\b"
+     r"[^.;]{0,20}?\bfloat32\b"),
     ("a dtype beyond float32 and float64 is supported",
      r"(float16|bfloat16|float128|int(8|16|32|64) tensors?|complex64)"
      r"[^.]{0,60}\b(is|are|now)\s+"
@@ -4318,8 +4330,8 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
                 f"{surface} claims {label}: {offenders[:3]}"
             )
 
-    # The negative control the I9 edit to this list requires. Retiring an
-    # entry and adding two replacements changes what the scan can catch, so
+    # The negative control every edit to this list requires. Retiring an
+    # entry and adding a replacement changes what the scan can catch, so
     # "no offenders" has to be shown to mean "nothing said it" rather than
     # "the patterns stopped matching anything". Each sentence below must be
     # caught by *some* pattern in the list...
@@ -4328,24 +4340,36 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
         "the saved mask is persisted to the checkpoint",
         "the checkpoint captures data-loader state and is restored",
         "Phase J has begun",
-        "Phase I is complete",
-        "we completed Phase I",
         "float16 is supported",
         "bfloat16 is now available",
         "the backend supports integer tensors",
         "SIMD is enabled",
+        # The I11 replacements: the ways "a second dtype" erodes into
+        # something the phase never delivered.
+        "casting is supported between the two dtypes",
+        "dtype promotion is now available",
+        "mixed-precision is supported",
+        "AMP is supported",
+        "the raw utility kernels accept float32",
     ):
         assert any(re.search(pattern, detected, re.I)
                    for pattern in patterns), detected
     # ...and each sentence below must be caught by **none** of them, because
-    # each is accurate. "float32 is supported" is here rather than above
-    # precisely because milestone I9 made it true.
+    # each is accurate. "float32 is supported" is here because milestone I9
+    # made it true; "Phase I is complete" joined it at I11, for exactly the
+    # same reason, and is the sentence whose ban this control's retired
+    # entry used to enforce.
     for allowed in (
         "float32 is supported",
         "float32 and float64 are supported on the CPU",
         "the native backend supports float32",
         "Phase H is complete",
-        "Phase I is the latest phase and is not complete",
+        "Phase I is complete",
+        "we completed Phase I",
+        "Phase I is the latest completed phase",
+        "there is no casting and no promotion",
+        "AMP remains unsupported",
+        "the raw utility kernels stay float64 only",
     ):
         offenders = [pattern for pattern in patterns
                      if re.search(pattern, allowed, re.I)

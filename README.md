@@ -351,9 +351,9 @@ every shipped training workload is **1.50×–3.89× faster than it was at
 the H0 baseline**, with bit-identical results, and **no numerical
 capability, dtype, device, export, registry value, or checkpoint version
 moved at any milestone**. **Phase I — native dtype generalization and
-float32 CPU support — is the latest phase; milestones I0 through I10
-are complete and I11 is not started, so the phase is active
-rather than closed.** I0 was the design lock and
+float32 CPU support — is the latest phase, and it is complete: milestones
+I0 through I11 have all landed, so Phase I is now the latest *completed*
+phase as well.** I0 was the design lock and
 documentation reconciliation, shipping
 [docs/native_dtype_float32_design.md](docs/native_dtype_float32_design.md)
 and its guardrail tests and nothing else. **I1 built the dtype
@@ -473,8 +473,12 @@ than as agreement between them, and moved the public support registry at
 milestone **I9** and at no other one. **I10** delivered the cross-cutting
 adversarial hardening matrix and the separate float32/float64 benchmark
 characterization, and repaired the one loader-validation gap that hardening
-found — no C++, no ABI, and no numerical change. What remains
-is **I11** (cross-platform validation and phase closure). Phase C shipped
+found — no C++, no ABI, and no numerical change. **I11 closed the phase**:
+cross-platform revalidation on Windows Release and Debug, a Linux
+CI-equivalent, and Clang ASan/UBSan and LeakSanitizer builds, both
+exact-resume proofs re-run, every inventory reconciled, and a closure
+guardrail module added — with no capability change and no file under
+`src/` or `cpp/` touched. Phase C shipped
 parameters, modules, state dictionaries,
 Linear/ReLU/Sequential, MSE loss, parameter versioning with stale-graph
 safety, `sqrt`/`reciprocal` optimizer primitives, SGD and adaptive Adam,
@@ -1814,10 +1818,11 @@ CTests 16 to **17**. No public API, capability, dtype, device, registry
 value, checkpoint field, or checkpoint version moved, and no convolution
 option was added.
 
-float32 CPU support is **Phase I's** subject and is designed but not
-implemented; more activations/math, data loaders, native integer tensors,
-further dtypes beyond float32/float64, and CUDA/GPU experiments remain
-future work beyond Phase I. See
+float32 CPU support was **Phase I's** subject and is **implemented and
+publicly supported** on the native CPU line since milestone I9, with the
+phase closed at I11; more activations/math, data loaders, native integer
+tensors, further dtypes beyond float32/float64, and CUDA/GPU experiments
+remain future work beyond Phase I, and none of them has started. See
 [docs/roadmap.md](docs/roadmap.md) and
 [docs/release_history.md](docs/release_history.md).
 

@@ -2326,19 +2326,92 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase I — native dtype generalization and float32 CPU support (I0–I10, phase in progress)
+### Phase I — native dtype generalization and float32 CPU support (I0–I11, complete)
 
-**Phase I is the latest phase. Milestones I0 through I10 are complete;
-I11 is not started.** This is an in-progress entry, not a release
-entry: **no version is claimed**, and the phase is **not closed**. **Phase
-H remains complete and remains the latest *completed* phase**, and it
-closed at 52 exports.
+**Phase I is the latest phase, and it is complete: milestones I0 through
+I11 have all landed.** Milestone **I11** closed it, which makes Phase I the
+latest *completed* phase as well; Phase H remains complete and closed at 52
+exports. **No version is claimed** — the native line stays experimental and
+is not production-ready.
 
 One public capability *has* moved, at I9 and at no other milestone:
 `SUPPORTED_DTYPES` is `("float64", "float32")` and `UNSUPPORTED` is
 `("cuda", "amp")`. `SUPPORTED_DEVICES`, `RAW_KERNEL_DTYPES`, the export
 count (**54**), and the in-memory optimizer state version (**1**) did not
 move; the checkpoint format moved to version **3** at I8.
+
+#### I11 — cross-platform validation and Phase-I closure
+
+**I11 is the closure milestone, and it added no capability.** It changed
+**no file under `src/` or `cpp/`**: what moved is one new test module, two
+guards whose premises expired, and the status surfaces. There is no C ABI
+change, no numerical change, no registry, checkpoint, or optimizer-state
+change, no new example or benchmark case, no dependency, and no build or
+CI change.
+
+**What the phase finally supports.** `float32` and `float64` on the native
+CPU line, both publicly, since I9 — `SUPPORTED_DTYPES == ("float64",
+"float32")`, `UNSUPPORTED == ("cuda", "amp")` — with **float64 still the
+default** at every constructor, factory, module, and parameter, and still
+what `None` means. Every public tensor factory builds either width; the
+state-owning modules take a keyword-only `dtype`; the stateless ones
+inherit their input's; `NativeSGD` and `NativeAdam` run at either width
+with Adam's moments matching their parameter; and native checkpoint
+**version 3** round-trips both, with versions 1 and 2 remaining float64-only
+formats permanently and `(1, 2, 3)` accepted.
+
+**Exact deterministic resume is proved separately at each dtype**, never as
+agreement between them: the same deep model — Conv2d → BatchNorm2d → ReLU
+→ MaxPool2d → Dropout → Flatten → Linear → BatchNorm1d → ReLU → LayerNorm
+→ Dropout → Linear into cross-entropy with Adam, two Dropout layers sharing
+one registered generator — run interrupted and uninterrupted at each width
+and compared in raw IEEE-754 bit patterns. Reproduced exactly at both: the
+loss sequence, the first resumed step's gradients (produced, not restored),
+every parameter and buffer, every Adam moment and counter, the generator
+state and alias topology, the **next Dropout event**, the final logits,
+predictions, and evaluation output. All four graph-owned saved-resource
+families coexist safely in one float32 graph, and live native storage
+returns to zero.
+
+**Validation performed at closure.** Windows Release (MSVC 19.44.35228)
+and an isolated Windows Debug build, each 0 warnings, 0 errors, **24/24**
+CTests and **54** exports with the source, PE, and Debug sets equal; a
+Linux CI-equivalent (g++ 13.3.0, `-Wall -Wextra`) with 0 warnings, 24/24
+CTests, 54 exports and no mangled symbol exported; Clang 18.1.3 ASan and
+UBSan with instrumentation proved present, 24/24 sanitized CTests, the
+complete Python suite green, and **zero** ASan and **zero** UBSan
+diagnostics; a sanitizer negative control producing a genuine
+`heap-buffer-overflow` inside TensorForge's own copy kernel, so the
+detector is known to work; and LeakSanitizer with **no suppression file**,
+whose only reports are CPython interpreter-exit allocations carrying **no
+TensorForge frame**. All **15** examples and all **8** benchmark smoke
+paths exit zero.
+
+**Test totals, observed rather than derived.** Windows **7,738 passed, 0
+failed, 0 skipped**; Linux **7,738 passed, 0 failed, 0 skipped**; the
+sanitized suite 7,737 passed with 1 pre-existing documented skip (a
+reduction NaN payload this toolchain selects differently). The suite grew
+7,629 → **7,738**, which is exactly the 109 closure tests. The Linux run's
+usual two skips did **not** occur, because this tree carried full history
+and LF content — the observed totals are reported rather than the expected
+arithmetic.
+
+**Boundaries that did not move, and are now permanent rather than
+provisional.** No CUDA, no GPU, no AMP or mixed precision, no float16 or
+bfloat16, no integer or boolean tensor dtype, no casting, no promotion, no
+mixed-dtype arithmetic, no dtype inference from an input array, no global
+default dtype, no `astype`/`to`/`map_location`, and no device movement. The
+seven handle-free raw utility kernels stay **float64-only**
+(`RAW_KERNEL_DTYPES == ("float64",)`) because they take only `double*` and
+an element count and so have no dtype to dispatch on — that is a separate
+statement from the support registry and must never be read as one. MaxPool2d
+winners stay private float64 metadata at every value width and
+cross-entropy targets stay host `int64` metadata. Stable/native isolation
+holds: importing `tensorforge` still loads no native library, and
+`stable_framework_integration` is still `False`. **No speed is asserted
+anywhere and no benchmark result file is written.** The native line remains
+experimental and is not production-ready; the two dtypes are numerically
+distinct and are never claimed equivalent.
 
 #### I10 — cross-cutting hardening and benchmark characterization
 

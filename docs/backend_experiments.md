@@ -78,8 +78,9 @@ and Runtime Efficiency — is complete (H0–H10) and is the latest
 *completed* phase**; both are recorded further below.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I10 are complete; I11 is not
-started, so the phase is active rather than closed.** Its architecture
+latest phase, and it is complete (I0–I11).** Milestone I11 revalidated the
+whole dtype-general stack on every required platform and closed the phase,
+which makes Phase I the latest *completed* phase as well. Its architecture
 contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
 was design, guardrail tests, and documentation reconciliation, and no

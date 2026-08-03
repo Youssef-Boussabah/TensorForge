@@ -1,6 +1,14 @@
 """Phase-I contract guardrails (native dtype generalization).
 
-Milestones I0 through I5 are complete; I6 through I11 are not started.
+**Phase I is complete: milestones I0 through I11 have all landed.** This
+module is the *contract* half of the phase's guardrails — what the design
+says, and whether the runtime has moved where the ladder says it should.
+The *closure* half, which asserts that the phase is honestly finished and
+cannot drift back, is ``tests/test_native_phase_i_closure.py``.
+
+(The paragraphs below were written milestone by milestone and are kept as
+the record of how the phase was built; they describe each milestone at the
+moment it landed rather than restating the finished state.)
 
 I0 was a design-and-reconciliation milestone: it shipped
 ``docs/native_dtype_float32_design.md``, this module, and documentation,
@@ -320,19 +328,24 @@ def test_the_design_is_linked_from_the_readme_and_the_agent_instructions():
 
 
 def test_the_design_states_its_milestone_status_and_what_is_unshipped():
+    """The status line, parsed rather than matched as a phrase.
+
+    **Retired at I11, in one half only.** Through I10 this required the
+    line to name *both* a completed run and a first unstarted milestone,
+    which was right while one existed. At closure none does, and demanding
+    one would demand a false sentence — the exact failure this file exists
+    to prevent, pointed the other way. So the "unstarted" half is now
+    conditional on there being an unstarted milestone at all, while the
+    arithmetic that makes the two halves meet exactly is kept for as long
+    as both are present. Everything else is unchanged, including the
+    cross-checks against runtime reality below, which are what stop a
+    status line from running ahead of the code."""
     text = _flat(_design())
-    # The status line names which milestones are done and which are not.
-    # Asserted as structure rather than as one phrasing, so the sentence
-    # can be rewritten each milestone without rewriting this test — but it
-    # must always say *both* halves.
     status = re.search(r"Phase-I status:(.{0,200})", text, re.I)
     assert status, "the design does not state its milestone status"
     claim = status.group(1)
     # Structural, and genuinely milestone-agnostic: the line must name a
-    # first milestone, a last completed one, and a first unstarted one, and
-    # must say both "complete" and "not started". Written this way so the
-    # sentence really can be rewritten each milestone without editing this
-    # test — the shape it pinned before was I2's wording, not its shape.
+    # first milestone and a last completed one.
     completed = re.search(
         r"\bI0\b.{0,80}?\bI(\d+)\b.{0,40}?complete", claim, re.I
     )
@@ -341,21 +354,32 @@ def test_the_design_states_its_milestone_status_and_what_is_unshipped():
         f"{claim!r}"
     )
     last_complete = int(completed.group(1))
+    final = len(MILESTONES) - 1
     unstarted = re.search(
         r"complete.{0,120}?\bI(\d+)\b.{0,80}?not started", claim, re.I
     )
-    assert unstarted, (
-        f"the status line does not record which milestones are unstarted: "
-        f"{claim!r}"
-    )
-    first_unstarted = int(unstarted.group(1))
-    # The two halves must meet exactly: no milestone claimed twice, none
-    # left unaccounted for, and the last one is always I11.
-    assert first_unstarted == last_complete + 1, (
-        f"the status line leaves a gap or an overlap between complete "
-        f"({last_complete}) and unstarted ({first_unstarted}): {claim!r}"
-    )
-    assert f"I{len(MILESTONES) - 1}" in claim, (
+    if last_complete < final:
+        # The phase is still running, so the line must say which milestones
+        # are not, and the two halves must meet exactly: no milestone
+        # claimed twice and none left unaccounted for.
+        assert unstarted, (
+            f"the status line does not record which milestones are "
+            f"unstarted: {claim!r}"
+        )
+        first_unstarted = int(unstarted.group(1))
+        assert first_unstarted == last_complete + 1, (
+            f"the status line leaves a gap or an overlap between complete "
+            f"({last_complete}) and unstarted ({first_unstarted}): {claim!r}"
+        )
+    else:
+        # The phase is closed: the whole ladder is complete, so there is
+        # nothing left to call unstarted and the line must not invent one.
+        assert last_complete == final, claim
+        assert unstarted is None, (
+            f"the status line claims the ladder is complete and still names "
+            f"an unstarted milestone: {claim!r}"
+        )
+    assert f"I{final}" in claim, (
         f"the status line does not run to the end of the ladder: {claim!r}"
     )
     # ...and the claim is checked against **runtime reality**, so a status

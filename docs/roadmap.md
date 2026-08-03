@@ -39,12 +39,14 @@ last of them, native CPU performance and runtime efficiency, closed at
 milestone H10. Each phase's record is in its own design document; the
 sections above are the narrative.
 
-## The current phase — Phase I
+## The latest phase — Phase I, complete
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase. Milestones I0 through I10 are complete; I11 is not
-started, so the phase is active rather than closed.** Its architecture
-contract is
+latest phase, and it is complete (I0–I11).** Milestone I11 revalidated the
+whole dtype-general stack on Windows Release and Debug, on a Linux
+CI-equivalent, and under Clang ASan/UBSan and LeakSanitizer, reconciled
+every status surface, and closed the phase. Phase I is therefore also the
+latest *completed* phase. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
 **Since I9, `float32` and `float64` are both publicly supported native CPU
@@ -269,10 +271,11 @@ ones, dtype-tagged storage, dtype-aware handle-based operations, float32
 autograd, modules, buffers, optimizers, and optimizer state, float32
 deterministic Dropout over an unchanged generator, a dtype-aware checkpoint
 version 3, exact deterministic float32 resume, public float32 support,
-unchanged float64 behavior and performance, and — at **I10** — the
-cross-cutting adversarial hardening matrix and separate float32/float64
-benchmark characterization. What remains: **I11** (cross-platform
-validation and phase closure).
+unchanged float64 behavior and performance, at **I10** the cross-cutting
+adversarial hardening matrix and separate float32/float64 benchmark
+characterization, and at **I11** the cross-platform revalidation, the
+closure guardrails, and the final status reconciliation that closed the
+phase. Nothing remains: the ladder is finished.
 
 The decisions the contract locks, so later milestones inherit them rather
 than re-deriving them:
@@ -327,9 +330,9 @@ than re-deriving them:
   optimizer state, checkpoint version 3, and the exact-resume proof all
   existed. *Delivered at I9.*
 
-The ladder is I0 through I11 — **I0 through I10 landed; I11 is next**
-(this line lagged a milestone behind after I8 and is repaired here rather
-than rewritten away): the contract (I0), the dtype model and
+The ladder is I0 through I11 — **all twelve landed** (this line lagged a
+milestone behind after I8, and that lag was repaired rather than rewritten
+away): the contract (I0), the dtype model and
 tagged storage (I1), typed transfer and materialization (I2), elementwise
 execution (I3), reductions and matmul (I4), the convolution and pooling
 kernels (I5), stable math and classification (I6), modules, buffers, and
@@ -339,10 +342,12 @@ cross-platform validation and closure (I11).
 
 ## Practical next steps
 
-**Phase I is the defined next work, and it is described in the section
-above.** What the existing documents name as future work *beyond* Phase I,
-in no committed order, is: data loaders, native integer tensors, further
-dtypes or devices beyond the two Phase I delivers, and CUDA experiments.
+**Phase I is finished, and no successor phase is defined.** What the
+existing documents name as future work *beyond* Phase I, in no committed
+order, is: data loaders, native integer tensors, further dtypes or devices
+beyond the two Phase I delivers, and CUDA experiments. None of them has
+started, and none may be described as begun until a design contract for it
+exists.
 Each would be a *capability* phase with its own design contract, and each
 is deliberately outside everything shipped so far.
 
