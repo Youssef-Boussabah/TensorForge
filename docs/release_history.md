@@ -2326,6 +2326,93 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
+### Phase J — deterministic native data pipeline and mini-batching (J0 complete, in progress)
+
+**Phase J is the latest phase, it is newly approved, and only milestone J0
+has landed.** J1 through J9 have not started. **No version is claimed** —
+the native line stays experimental and is not production-ready, and this
+entry records a planning milestone rather than a release.
+
+Phase J was approved **after** Phase I closed at I11. The repository
+deliberately finished Phase I without committing to a successor, so Phase J
+is not carried-over roadmap work and must not be described as though it
+were.
+
+**J0 is architecture, contract, and documentation work only, and it shipped
+no runtime behavior at all.** No dataset, sampler, or loader class; no
+helper module; no state serializer, shuffle helper, or batching helper; no
+public export; no production import; no C++; no CMake registration; no C
+ABI symbol; no example; no benchmark; no checkpoint field or version; and
+no optimizer-state version. **No Phase-J runtime API is exported yet**, and
+runtime capability begins at **J1**.
+
+**No capability moved, and none will.** `SUPPORTED_DTYPES` is
+`("float64", "float32")`, `SUPPORTED_DEVICES` is `("cpu",)`, `UNSUPPORTED`
+is `("cuda", "amp")`, and `RAW_KERNEL_DTYPES` is `("float64",)`. The
+library exports **54** production `tf_*` symbols, the CTest inventory is
+**24**, the example inventory is **15**, the native checkpoint is
+`tensorforge.native_checkpoint` version **3** with `(1, 2, 3)` accepted,
+and the in-memory optimizer state is version **1**. Phase J plans **no new
+C ABI export** at any milestone.
+
+What J0 delivered is `docs/native_data_pipeline_design.md` — the
+implementation contract for the whole phase — plus
+`tests/test_native_phase_j.py` and the status reconciliation across the
+README, roadmap, project summary, support matrix, architecture, backend
+experiments, and `CLAUDE.md`. The decisions it locks, so J1–J9 inherit them
+rather than reopening them: three eventual public names —
+`NativeTensorDataset` (J1), `NativeBatchSampler` (J2), `NativeDataLoader`
+(J3) — with the permutation helpers and the batch iterator permanently
+private; a strict `numpy.ndarray`-only input contract with floating-point
+features and integer non-`bool` targets, whose native feature dtype is
+**explicitly chosen and never inferred** from the input array and still
+defaults to float64; copied host snapshots taken once at construction, with
+indexing that returns copies rather than views; empty datasets and
+zero-batch epochs **rejected at construction**, because the native runtime
+cannot represent a zero-element tensor; a deterministic **SHA-256** dataset
+fingerprint over an explicit little-endian canonical byte stream, checked
+after `samples`, `feature_shape`, and `feature_dtype`; a sampler that owns
+`batch_size` and `drop_last` and emits batch-index groups, with `epoch` the
+active epoch, `cursor` the batches already delivered, and the epoch
+boundary canonicalized immediately so every position has exactly one
+representation; a deterministic shuffle that **reuses the locked
+`tensorforge.splitmix64` derivation** under a domain-separated key schedule
+— no new RNG algorithm, no new global generator, and deliberately no
+coupling to a live `NativeGenerator`, which exposes no bit derivation to
+couple to — with unbiased rejection-based bounded integers, a downward
+Fisher–Yates sweep, directly implementable pseudocode, and committed
+reference vectors at lengths 1, 2, 5, and 8 across seed 0, a nontrivial
+large seed, and the accepted upper bound; a permutation that is a **pure
+function** of `(seed, epoch, length)`, so an abandoned iterator, a rejected
+state load, and a failed batch consume nothing by construction; one-epoch
+iterators with a superseding `iter()` and a single atomic cursor commit
+after materialization and immediately before handoff; **caller-owned**
+`NativeTensor` feature batches beside fresh read-only host `int64` targets,
+which the loader never retains; strict JSON-compatible state schemas with
+their own format tags, carrying no payload and **no serialized
+permutation**; transactional state loading whose commit is six assignments
+that cannot fail; an explicit **caller-managed** checkpoint-metadata
+workflow over the unchanged version-3 format, with cross-object atomicity
+explicitly **not** claimed; a documented **not thread-safe, no lock**
+concurrency contract; and an exact interrupted-versus-uninterrupted resume
+contract compared in raw IEEE-754 bit patterns, with no tolerance anywhere.
+
+**Two premises were checked at J0 rather than assumed**, and both held, so
+the approved ladder survived inspection unchanged. The Python
+implementation of the shared finalizer was verified against the **built**
+library — over 48 combinations of seed, call index, and probability at
+4,096 elements each, it predicted the shipped Dropout kernel's keep/drop
+pattern exactly — which is what makes "no new RNG algorithm and no new
+export" a measured statement rather than a hope. And the checkpoint's
+existing metadata channel was verified to carry every state field
+unchanged, which is what makes "no checkpoint schema change" true by
+construction.
+
+**The checkpoint's capture set did not grow.** A native checkpoint still
+captures no data-loader position, no shuffle order, and no epoch counter;
+what Phase J will eventually add is a loader whose position the *caller*
+serializes into the metadata channel that already exists.
+
 ### Phase I — native dtype generalization and float32 CPU support (I0–I11, complete)
 
 **Phase I is the latest phase, and it is complete: milestones I0 through

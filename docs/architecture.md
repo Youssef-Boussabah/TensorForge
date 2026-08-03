@@ -1065,9 +1065,38 @@ explicit layer at a time:
   CTests 16 to **17**. No public API, capability, dtype, device, registry
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
+- **A deterministic native data pipeline and mini-batching (Phase J) is
+  the latest phase, and it is newly approved: milestone J0 has landed and
+  J1 through J9 have not started.** Phase J was approved *after* Phase I
+  closed at I11 rather than having been on the earlier roadmap. **J0 is
+  architecture, contract, and documentation work and added no runtime
+  behavior**: no dataset, sampler, or loader class, no helper module, no
+  state serializer, no public export, no C++, no C ABI symbol, no example,
+  no benchmark, and no checkpoint or optimizer-state change. **No Phase-J
+  runtime API is exported yet**; runtime capability begins at **J1**. Its
+  contract is
+  [native_data_pipeline_design.md](native_data_pipeline_design.md), and
+  the architectural decisions it locks are the ones that would otherwise
+  be re-argued in every later milestone: three eventual public names
+  (`NativeTensorDataset`, `NativeBatchSampler`, `NativeDataLoader`) with
+  the permutation helpers and the batch iterator permanently private;
+  copied host snapshots so nothing aliases caller memory; an explicitly
+  chosen native feature dtype that is **never inferred** from the input
+  array; a SHA-256 dataset fingerprint so a restored position cannot be
+  applied to different data; a sampler that owns `batch_size` and
+  `drop_last` and emits batch-index groups; a deterministic shuffle that
+  **reuses the locked `tensorforge.splitmix64` derivation** under a
+  domain-separated key schedule, with no new RNG algorithm, no new global
+  generator, and deliberately no coupling to a live `NativeGenerator`;
+  caller-owned `NativeTensor` feature batches beside fresh read-only host
+  `int64` targets; strict JSON-compatible state schemas with no payload
+  and no serialized permutation; and an explicit **caller-managed**
+  checkpoint-metadata workflow that leaves the version-3 format untouched.
+  Phase J moves no registry, dtype, device, export, checkpoint version, or
+  optimizer-state version at any milestone.
 - **Native dtype generalization and float32 CPU support (Phase I) is
-  complete: milestones I0 through I11 have all landed.** Phase I is the
-  latest phase and is now also the latest **completed** phase; Phase H is
+  complete: milestones I0 through I11 have all landed**, and the latest
+  completed phase is Phase I; Phase H is
   unaffected and remains complete, having closed at 52 exports. **I11 was
   cross-platform validation and closure** — Windows Release and Debug, a
   Linux CI-equivalent, Clang ASan/UBSan with a negative control, a

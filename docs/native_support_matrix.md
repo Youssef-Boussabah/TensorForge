@@ -461,7 +461,17 @@ in the stable Python framework — that does not make them native.
   `random`, or NumPy global-RNG capture in native checkpoints (registered
   `NativeGenerator` state and its alias topology **are** captured, as of
   Phase G milestone **G5**); `map_location`, partial or name-remapped
-  loading, checkpoint merging, sharding, compression, or encryption
+  loading, checkpoint merging, sharding, compression, or encryption.
+  *(Phase J does not change this. Its contract carries a loader position as
+  **caller-supplied metadata** through the channel that already exists, so
+  the archive's own capture set stays exactly what it is — and no Phase-J
+  runtime exists yet in any case.)*
+- a data pipeline of any kind: datasets, samplers, loaders, shuffling,
+  mini-batching, epoch or cursor state, or batch-index planning. The
+  newly approved **Phase J** is designing these
+  ([native_data_pipeline_design.md](native_data_pipeline_design.md),
+  milestone **J0** complete), and **no runtime for any of it exists**:
+  J1 through J9 have not started and nothing is exported
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
 - *(Phase E itself is complete — E0–E10 — so nothing from it is listed
@@ -925,13 +935,14 @@ asserted by no test.
 
 ## Phase I — native dtype generalization and float32 CPU support, **complete (I0–I11)**
 
-**Phase I is the latest phase, and it is complete: milestones I0 through
-I11 have all landed.** I11 revalidated the stack across every required
-platform, added the closure guardrails, and reconciled the status
-surfaces, so Phase I is now the latest *completed* phase too. Its
-architecture contract is
+**Phase I is complete: milestones I0 through I11 have all landed, and the
+latest completed phase is Phase I.** I11 revalidated the stack across every
+required platform, added the closure guardrails, and reconciled the status
+surfaces. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
+Phase J, below, is the latest phase; it is newly approved and its runtime
+has not begun.
 
 **Since milestone I9, `float32` and `float64` are both supported native
 CPU dtypes**, and this is the row that supersedes every "float64 only"
@@ -1484,6 +1495,81 @@ registry moved at I9** — and at no other milestone — after integrated
 float32 training and the exact float32 resume proof both passed, which is
 the same discipline that kept `dropout` in `UNSUPPORTED` from G3 through
 G9 while the operation and the module both already existed.
+
+## Phase J — deterministic native data pipeline and mini-batching, **newly approved (J0 complete, J1–J9 not started)**
+
+**Phase J is the latest phase, and it is newly approved.** The repository
+closed Phase I at I11 without committing to a successor; Phase J was
+approved afterwards, so nothing here describes pre-existing roadmap work.
+Its architecture contract is
+[native_data_pipeline_design.md](native_data_pipeline_design.md).
+
+**Nothing in this section is supported today.** Milestone **J0** is
+architecture, contract, and documentation work and shipped **no runtime
+behavior at all** — no dataset, sampler, or loader class, no helper module,
+no state serializer, no public export, no C++, no C ABI symbol, no example,
+no benchmark, and no checkpoint or optimizer-state change. **No Phase-J
+runtime API is exported yet**; runtime capability begins at **J1**.
+
+| Registry | Value at J0 | Value expected at J9 |
+|---|---|---|
+| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
+| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
+| `UNSUPPORTED` | `("cuda", "amp")` | unchanged |
+| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged |
+| Native checkpoint format | version **3**, accepted `(1, 2, 3)` | unchanged |
+| In-memory optimizer state format | version **1** | unchanged |
+| Exported production `tf_*` symbols | **54** | unchanged |
+| Registered native CTests | **24** | unchanged |
+
+**Phase J is not a capability phase in any dtype, device, or ABI
+direction.** It plans **no** new C ABI export; §22.3 of the contract states
+the one measured condition under which that could even be reopened, and it
+would require separate approval rather than being a milestone's to take.
+
+The milestone ladder, with its current status:
+
+| Milestone | Subject | Status |
+|---|---|---|
+| **J0** | architecture and API contract | **complete** |
+| J1 | host-backed dataset foundation | not started |
+| J2 | deterministic sampler | not started |
+| J3 | native mini-batch loader | not started |
+| J4 | loader state and mid-epoch resume | not started |
+| J5 | native checkpoint metadata integration | not started |
+| J6 | deterministic mini-batch training example | not started |
+| J7 | cross-cutting hardening | not started |
+| J8 | performance and transfer characterization | not started |
+| J9 | integration and closure | not started |
+
+What J0 locked, so that later milestones inherit it: three eventual public
+names — `NativeTensorDataset` (J1), `NativeBatchSampler` (J2), and
+`NativeDataLoader` (J3), with the permutation helpers and the batch
+iterator permanently private; a strict `numpy.ndarray`-only input contract
+whose native feature dtype is explicitly chosen and **never inferred** from
+the input array, still defaulting to float64; copied host snapshots with no
+aliasing, and indexing that returns copies rather than views; a
+deterministic **SHA-256** dataset fingerprint over an explicit
+little-endian canonical byte stream; a sampler owning `batch_size` and
+`drop_last` and emitting batch-index groups, with the epoch boundary
+canonicalized immediately; a deterministic shuffle that **reuses the locked
+`tensorforge.splitmix64` derivation** under a domain-separated key schedule
+— no new RNG algorithm, no new global generator, and deliberately no
+coupling to a live `NativeGenerator` — with unbiased rejection-based
+bounded integers, a downward Fisher–Yates sweep, and committed reference
+vectors; a permutation that is a pure function of `(seed, epoch, length)`;
+caller-owned `NativeTensor` feature batches beside fresh read-only host
+`int64` targets; strict JSON-compatible state schemas carrying no payload
+and no serialized permutation; transactional state loading; and an
+explicit **caller-managed** checkpoint-metadata workflow.
+
+**The checkpoint's capture set does not grow.** A native checkpoint still
+captures no data-loader position, no shuffle order, and no epoch counter,
+exactly as the list above says. What Phase J will eventually add is a
+loader whose position the **caller** can serialize and hand back through
+the existing validated `metadata` channel — which needs no new checkpoint
+field, no new version, and no coupling between the checkpoint runtime and
+the pipeline.
 
 ## How to build and verify
 

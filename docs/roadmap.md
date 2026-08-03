@@ -39,14 +39,71 @@ last of them, native CPU performance and runtime efficiency, closed at
 milestone H10. Each phase's record is in its own design document; the
 sections above are the narrative.
 
-## The latest phase — Phase I, complete
+## The latest phase — Phase J, newly approved
 
-**Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase, and it is complete (I0–I11).** Milestone I11 revalidated the
-whole dtype-general stack on Windows Release and Debug, on a Linux
-CI-equivalent, and under Clang ASan/UBSan and LeakSanitizer, reconciled
-every status surface, and closed the phase. Phase I is therefore also the
-latest *completed* phase. Its architecture contract is
+**Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
+latest phase.** It is **newly approved**: the repository deliberately
+closed Phase I at I11 without committing to a successor, and Phase J was
+approved afterwards, so it must not be described as work that was already
+on the roadmap. Its architecture contract is
+[native_data_pipeline_design.md](native_data_pipeline_design.md).
+
+**Only milestone J0 has landed; J1 through J9 have not started.** J0 is an
+architecture, contract, and documentation milestone and **added no runtime
+behavior at all** — no dataset, sampler, or loader class, no helper module,
+no state serializer, no public export, no C++, no C ABI symbol, no example,
+no benchmark, and no checkpoint or optimizer-state change. **No Phase-J
+runtime API is exported yet**, and runtime capability begins at **J1**.
+
+What J0 resolved, so that later milestones inherit an unambiguous design
+rather than re-deriving one: the three eventual public names —
+`NativeTensorDataset` (J1), `NativeBatchSampler` (J2), and
+`NativeDataLoader` (J3) — with the permutation helpers and the batch
+iterator permanently private; a strict `numpy.ndarray`-only input contract
+whose native feature dtype is **explicitly chosen and never inferred** from
+the input array, still defaulting to float64; copied host snapshots taken
+once at construction, so no caller mutation can reach a later batch; a
+deterministic **SHA-256** dataset fingerprint over an explicit
+little-endian canonical byte stream, so a restored position cannot be
+applied to different data; a sampler owning `batch_size` and `drop_last`
+and emitting batch-index groups, with `epoch` the active epoch, `cursor`
+the batches already delivered, and the epoch boundary canonicalized
+immediately so every position has exactly one representation; a
+deterministic shuffle that **reuses the locked `tensorforge.splitmix64`
+derivation** under a domain-separated key schedule — no new RNG algorithm,
+no new global generator, and deliberately no coupling to a live
+`NativeGenerator`, which exposes no bit derivation to couple to — with
+unbiased rejection-based bounded integers, a downward Fisher–Yates sweep,
+directly implementable pseudocode, and committed reference vectors; a
+permutation that is a **pure function** of `(seed, epoch, length)`, so an
+abandoned iterator, a rejected state load, and a failed batch consume
+nothing by construction rather than by cleanup; one-epoch iterators with a
+superseding `iter()` and a single atomic cursor commit after
+materialization and immediately before handoff; caller-owned `NativeTensor`
+feature batches beside fresh read-only host `int64` targets, which the
+loader never retains; strict JSON-compatible sampler and loader state
+schemas carrying no payload and **no serialized permutation**, because the
+compact `(seed, epoch)` derivation reproduces it exactly; transactional
+state loading whose commit is six assignments that cannot fail; an explicit
+**caller-managed** checkpoint-metadata workflow over the unchanged
+version-3 format, with cross-object atomicity explicitly **not** claimed;
+and an exact interrupted-versus-uninterrupted resume contract compared in
+raw IEEE-754 bit patterns, with no tolerance anywhere.
+
+**Phase J moves no capability, at any milestone.** `SUPPORTED_DTYPES`,
+`SUPPORTED_DEVICES`, `UNSUPPORTED`, and `RAW_KERNEL_DTYPES` are unchanged;
+so are the **54** exported `tf_*` symbols, the 24 native CTests, checkpoint
+version **3** with `(1, 2, 3)` accepted, and the in-memory optimizer state
+version **1**. The phase plans no new C ABI export at all.
+
+## The latest completed phase — Phase I, complete
+
+**Phase I — Native Dtype Generalization and Float32 CPU Support — is
+complete (I0–I11), and the latest completed phase is Phase I.** Milestone
+I11 revalidated the whole dtype-general stack on Windows Release and Debug,
+on a Linux CI-equivalent, and under Clang ASan/UBSan and LeakSanitizer,
+reconciled every status surface, and closed the phase. Its architecture
+contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
 **Since I9, `float32` and `float64` are both publicly supported native CPU
@@ -342,9 +399,21 @@ cross-platform validation and closure (I11).
 
 ## Practical next steps
 
-**Phase I is finished, and no successor phase is defined.** What the
-existing documents name as future work *beyond* Phase I, in no committed
-order, is: data loaders, native integer tensors, further dtypes or devices
+**Phase I is finished, and Phase J is the approved successor.** That
+sentence read "no successor phase is defined" for as long as it was true —
+Phase I closed at I11 without one, deliberately — and Phase J was approved
+afterwards. It is recorded that way rather than rewritten, because "the
+phase that came next" and "the phase that was always planned next" are
+different facts.
+
+Phase J's own design contract now exists
+([native_data_pipeline_design.md](native_data_pipeline_design.md), milestone
+**J0**), which is what makes naming it accurate. Its runtime has **not**
+begun: J1 through J9 are all unstarted, and nothing about a data pipeline
+may be described as working until the milestone that ships it has landed.
+
+What the existing documents still name as future work *beyond* Phase J, in
+no committed order, is: native integer tensors, further dtypes or devices
 beyond the two Phase I delivers, and CUDA experiments. None of them has
 started, and none may be described as begun until a design contract for it
 exists.
@@ -1744,9 +1813,9 @@ here; what remains is expansion on its own terms:
     dropout, integer tensors, embeddings, float32, CUDA, AMP,
     schedulers, new optimizers, CPU performance tuning, and any stable
     framework change.
-  - **Phase H — Native CPU Performance and Runtime Efficiency — is the
-    latest *completed* phase.**
-    Phase H is **complete**: milestones H0 through H10 have all landed, and it is the latest *completed* phase. H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, the convolution kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**. Its
+  - **Phase H — Native CPU Performance and Runtime Efficiency — is
+    complete.**
+    Milestones H0 through H10 have all landed. (This entry read "is the latest *completed* phase" twice, which was accurate until Phase I closed at I11 and stale afterwards; it is repaired here rather than rewritten away. The latest completed phase is Phase I.) H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, the convolution kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**. Its
     architecture contract is
     [native_cpu_performance_design.md](native_cpu_performance_design.md).
     **H0 is architecture, profiling, and baseline work: nothing was made
