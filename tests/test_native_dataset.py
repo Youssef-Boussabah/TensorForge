@@ -194,6 +194,7 @@ def test_the_experimental_inventory_grew_by_exactly_one_name():
     # an exact equality in both directions.
     post_j1_additions = {
         "NativeBatchSampler",   # Phase J, milestone J2 — not J1
+        "NativeDataLoader",     # Phase J, milestone J3 — not J1
     }
     live = set(experimental.__all__)
     assert len(experimental.__all__) == len(live), "duplicate export"
@@ -203,13 +204,14 @@ def test_the_experimental_inventory_grew_by_exactly_one_name():
         post_j1_additions)
 
 
-def test_no_later_phase_j_name_exists_yet():
-    """J3 has not started, so neither its class, its iterator, nor its
-    module may appear — and J2's derivation helper, which *has* landed,
-    stays permanently private rather than joining the exports."""
+def test_no_later_phase_j_name_landed_inside_this_milestone():
+    """Every private Phase-J helper stays private, and no later
+    milestone's class was defined here. J2's derivation helper and J3's
+    iterator and delivery seam are exported by nothing, and the dataset
+    module defines neither the sampler nor the loader."""
     import tensorforge.experimental as experimental
 
-    for name in ("NativeDataLoader", "_NativeBatchIterator"):
+    for name in ("_NativeBatchIterator", "_deliver_batch"):
         assert not hasattr(experimental, name), name
         assert name not in experimental.__all__, name
     for helper in ("_native_permutation", "splitmix64_mix", "epoch_key",
@@ -218,14 +220,15 @@ def test_no_later_phase_j_name_exists_yet():
     package = native_dataset_module.__file__.rsplit("native_dataset.py", 1)[0]
     from pathlib import Path
 
-    assert not (Path(package) / "native_data_loader.py").exists()
-    # J2's two modules exist; the dataset must still not be the one that
-    # defines their classes.
-    for module in ("native_sampler.py", "_native_permutation.py"):
+    # J2's and J3's modules exist; the dataset must still not be the one
+    # that defines their classes.
+    for module in ("native_sampler.py", "_native_permutation.py",
+                   "native_data_loader.py"):
         assert (Path(package) / module).is_file(), module
     dataset_source = Path(native_dataset_module.__file__).read_text(
         encoding="utf-8")
-    for absent in ("class NativeBatchSampler", "class NativeDataLoader"):
+    for absent in ("class NativeBatchSampler", "class NativeDataLoader",
+                   "class _NativeBatchIterator", "def _deliver_batch"):
         assert absent not in dataset_source, absent
 
 

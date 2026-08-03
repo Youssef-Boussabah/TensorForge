@@ -505,6 +505,7 @@ from .native_adam import NativeAdam
 from .native_checkpoint import load_native_checkpoint, save_native_checkpoint
 from .native_dataset import NativeTensorDataset
 from .native_sampler import NativeBatchSampler
+from .native_data_loader import NativeDataLoader
 
 __all__ = [
     "NativeTensor",
@@ -531,4 +532,5 @@ __all__ = [
     "load_native_checkpoint",
     "NativeTensorDataset",
     "NativeBatchSampler",
+    "NativeDataLoader",
 ]

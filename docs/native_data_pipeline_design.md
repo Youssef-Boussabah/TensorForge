@@ -12,21 +12,24 @@ batching helper, no public export, no production import, no C++, no CMake
 registration, no C ABI symbol, no example, no benchmark, no checkpoint
 field, no checkpoint version, and no optimizer-state version. Runtime
 capability began at **J1**, which added **exactly one** public name —
-`NativeTensorDataset` (§3.3, §4, §5, §6) — and continued at **J2**, which
+`NativeTensorDataset` (§3.3, §4, §5, §6) — continued at **J2**, which
 added **exactly one** more — `NativeBatchSampler` (§3.4, §7, §8, §11.2,
 §12.3, §12.4) — over the permanently private `_native_permutation`
-derivation (§3.2, §8).
+derivation (§3.2, §8), and continued at **J3**, which added the last of
+§3.1's three names, `NativeDataLoader` (§3.5, §3.6, §9, §10, §15, §17.3),
+over the permanently private `_NativeBatchIterator` and `_deliver_batch`.
 
-**Phase-J status: J0, J1, and J2 complete; J3 through J9 not started.**
-What exists today is the dataset and the sampler: a finite host-backed
-dataset, a deterministic permutation and batch **planner** with an
-explicit epoch and cursor, and compact transactional sampler state.
-**No loader, no iterator, no batch delivery, no successful-delivery cursor
-advancement, no native mini-batching, no loader state schema, and no
-checkpoint loader-state integration exists yet** — those are J3 onward,
-and **J3 is the next implementation milestone**. Nothing yet iterates or
-materializes a batch, so every §9, §10, §13, and §14 statement, and every
-§11.3 and §12.5 statement, describes work that has not been written.
+**Phase-J status: J0, J1, J2, and J3 complete; J4 through J9 not
+started.** What exists today is the dataset, the sampler, and the loader:
+a finite host-backed dataset, a deterministic permutation and batch
+**planner** with an explicit epoch and cursor, compact transactional
+sampler state, and native mini-batch iteration whose committed position
+advances **if and only if** a batch was delivered. **No loader state
+schema, no loader `state_dict` or `load_state_dict`, no exact mid-epoch
+loader restoration, no checkpoint loader-state integration, no training
+example, and no benchmark exists yet** — those are J4 onward, and **J4 is
+the next implementation milestone**. Every §11.3 and §12.5 statement, and
+every §13 and §14 statement, describes work that has not been written.
 
 Phase J is a **newly approved** direction. It was not part of the roadmap
 while Phases A–I were being built: the repository deliberately closed
@@ -2907,7 +2910,7 @@ locked rule — the §23 discipline is to record rather than rewrite:
    uint64 epoch-overflow refusal is testable at J2. It is called from no
    public path: **J2 performs no iteration and delivers no batch.**
 
-### J3 — Native mini-batch loader — **not started**
+### J3 — Native mini-batch loader — **complete**
 
 - **Entry:** J2 merged.
 - **Scope:** `NativeDataLoader`, `_NativeBatchIterator`, and the
@@ -2931,6 +2934,81 @@ locked rule — the §23 discipline is to record rather than rewrite:
 - **Exit gate:** the §9.5, §9.6, §10.6, and §17.3 tables asserted row by
   row; the delivery-failure rollback proved with a non-vacuity control;
   `__all__` grows by exactly one; 54 exports.
+- **Outcome:** met. `experimental/native_data_loader.py` ships
+  `NativeDataLoader`, exported from `tensorforge.experimental`, whose
+  `__all__` went from 24 names to 25: `NativeDataLoader` and no other.
+  The module imports **exactly one name** — `NativeBatchSampler` — so it
+  reaches no ctypes layer, no NumPy, no checkpoint, and no generator, and
+  it constructs no lock, thread, queue, or worker. `_NativeBatchIterator`
+  and `_deliver_batch` live in that module, are defined nowhere else, and
+  are exported by nothing.
+
+  **The §9.4 transaction is asserted at every failure position rather
+  than argued**, each by injection with its own non-vacuity control and
+  an exact before/after comparison of the position, the whole
+  `state_dict()`, the captured countdown, and the native live-storage
+  baseline: a claim failure before publication (which mints no serial), a
+  feature-materialization failure, a **real native allocation failure**
+  through the existing `tf_test_arm_alloc_failure` hook, a target-gather
+  failure after the feature tensor exists, a publication failure, a
+  commit failure injected into the structurally non-failing write seam,
+  and the **delivery-seam failure at both dtypes** — after which the very
+  next `__next__` returns the **same indices and the same values** in a
+  freshly allocated tensor. Reentrant `iterator.close()` and
+  `loader.close()` are driven from *inside* the seam, so a reentrant
+  arrival is real rather than simulated, and the exact-match completion
+  check refuses to hand back a batch a reentrant close already rolled
+  back. Stale, foreign, and never-minted serials are proved to match
+  nothing against a live newer transaction, and a rollback invoked four
+  times is proved idempotent.
+
+  The C ABI stayed at 54 exports, the CTests at 24, the examples at 15,
+  the benchmarks at 8, the checkpoint at version 3 with `(1, 2, 3)`
+  accepted, and the optimizer state at version 1; no C++ or CMake file
+  was touched, and no loader state schema, format tag, or checkpoint
+  integration was added.
+
+**Implementation clarifications recorded at J3**, none of which changes a
+locked rule — the §23 discipline is to record rather than rewrite:
+
+1. **The dataset's open/closed check runs at §9.4 Phase 1 rather than
+   inside Phase 2.** §9.4 step 1 already lists "the dataset is open"
+   among the lifecycle validations, and §9.6's row places the resulting
+   `RuntimeError` in Phase 2; both describe the same observable outcome —
+   a `RuntimeError`, nothing allocated, nothing advanced — so the check
+   is made where the lifecycle validations are, *before* a claim exists.
+   The stated post-state is strictly stronger: no claim is ever published
+   for a closed dataset, so there is none to clear. `feature_batch`'s own
+   `RuntimeError` remains the second authority and is not removed.
+2. **`sampler` is checked with `isinstance`, not an exact type**, for
+   J2's recorded reason one level down: the loader reads only the
+   sampler's documented surface, which any subclass inherits intact.
+3. **The iterator releases its resource half unconditionally on every
+   unsuccessful path**, while the *sampler* half stays strictly
+   exact-match. An iterator owns at most one transaction's resources at a
+   time and the only route that detaches them without releasing them is
+   Phase 6, which hands them to the caller — so "release whatever this
+   iterator still holds" can never reach a delivered batch, and it is
+   what closes the tensor when a **reentrant** `close()` rolled the
+   record back and the interrupted call then re-attached a freshly
+   constructed one. Without it that one tensor would leak.
+4. **`_commit_pending` marks the record committed *before* it writes.**
+   The write is structurally non-failing, so the order is unobservable in
+   production; it matters only under the J3 injection that makes it fail
+   anyway, where marking first is what keeps the rollback's restore
+   correct instead of concluding that nothing had been applied.
+5. **The transaction serial advances at the claim, not at publication.**
+   `NativeGenerator` advances its serial at publish, so a discarded claim
+   reuses one; §9.4 says each claim receives a serial "never reused for
+   the lifetime of the sampler", and advancing at the claim is the
+   literal reading. A failed *delivery* therefore consumes a serial and a
+   failed *claim* does not — serials are opaque, and skipping one costs
+   nothing.
+6. **`_commit_pending` is the private spelling of §3.2's committing
+   half.** §3.2 lists `_assign_position`/`_snapshot_position`; J2 shipped
+   the equivalent `_assign_state`/`_snapshot_state` and J3 reuses them
+   rather than adding a second name for one seam, so the candidate
+   commit and the rollback restore genuinely share one write path.
 
 ### J4 — Loader state and mid-epoch resume — **not started**
 

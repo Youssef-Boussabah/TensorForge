@@ -1976,6 +1976,10 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
         # dtype at all, which is why it is a *later phase's* file here and
         # nowhere in the dtype inventories above.
         "src/tensorforge/experimental/_native_permutation.py",
+        # Phase J, J3 — the mini-batch loader. It owns no dtype either:
+        # the batches it delivers carry the *dataset's*, so it takes no
+        # ``dtype`` argument and appears in no dtype inventory above.
+        "src/tensorforge/experimental/native_data_loader.py",
     }
     changed = [path for path in _changed_since(I0_COMMIT)
                if path.startswith("src/") and path not in LATER_PHASE_FILES]

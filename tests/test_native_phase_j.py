@@ -1,22 +1,27 @@
 """Phase-J contract guardrails (deterministic native data pipeline).
 
-**Phase J is newly approved, and milestones J0, J1, and J2 have landed.**
+**Phase J is newly approved, and milestones J0 through J3 have landed.**
 J0 was an architecture, contract, documentation, and status milestone: it
 shipped ``docs/native_data_pipeline_design.md``, this module, and
 documentation, and **no runtime behavior at all**. **J1** shipped the
 first runtime — ``NativeTensorDataset``, the finite host-backed dataset —
-and **J2** the second — ``NativeBatchSampler``, the deterministic order
-and batch planner, over the permanently private ``_native_permutation``
-derivation. Each added exactly one new public experimental name, and
-neither added C++, a C ABI symbol, an example, a benchmark, or a
-checkpoint or optimizer-state change. Their own behavior is covered by
-``tests/test_native_dataset.py`` and ``tests/test_native_sampler.py``;
-what lives here is the *phase* boundary.
+**J2** the second — ``NativeBatchSampler``, the deterministic order and
+batch planner, over the permanently private ``_native_permutation``
+derivation — and **J3** the third and last of §3.1's names,
+``NativeDataLoader``, with its private ``_NativeBatchIterator`` and the
+transactional batch delivery behind it. Each added exactly one new public
+experimental name, and none added C++, a C ABI symbol, an example, a
+benchmark, or a checkpoint or optimizer-state change. Their own behavior
+is covered by ``tests/test_native_dataset.py``,
+``tests/test_native_sampler.py``, and
+``tests/test_native_data_loader.py``; what lives here is the *phase*
+boundary.
 
-**J3 through J9 have not started**, so the loader, its iterator, the
-delivery transaction, the loader state schema, and every checkpoint
-integration are still asserted **absent** below. Nothing iterates and
-nothing materializes a batch.
+**J4 through J9 have not started**, so the loader **state schema**, the
+exact mid-epoch loader restoration, every checkpoint integration, the
+training example, and the benchmark are still asserted **absent** below.
+Iteration and batch delivery exist; serializing where a loader stopped
+does not.
 
 Three kinds of fact live here, and keeping them apart is the point of the
 module:
@@ -89,22 +94,29 @@ PLANNED_CLASSES = {
 # exported; ``UNLANDED_CLASSES`` must not exist at all. A milestone moves a
 # name from the second set to the first and nowhere else, so the two
 # together are always exactly ``PLANNED_CLASSES``.
-LANDED_CLASSES = {"NativeTensorDataset", "NativeBatchSampler"}   # J1, J2
-UNLANDED_CLASSES = {"NativeDataLoader"}                          # J3
+LANDED_CLASSES = {"NativeTensorDataset", "NativeBatchSampler",
+                  "NativeDataLoader"}                            # J1, J2, J3
+UNLANDED_CLASSES = set()                                         # J4 onward
 assert LANDED_CLASSES | UNLANDED_CLASSES == set(PLANNED_CLASSES)
 
 # The Phase-J modules under ``src/tensorforge/experimental``, split the
 # same way. ``_native_permutation`` is J2's derivation helper and is
 # **permanently private**: it exists, and it must never be exported.
 LANDED_MODULES = ("native_dataset.py", "native_sampler.py",
-                  "_native_permutation.py")
-UNLANDED_MODULES = ("native_data_loader.py",)
+                  "_native_permutation.py", "native_data_loader.py")
+UNLANDED_MODULES = ()
+
+# The private names J3 added inside ``native_data_loader.py``. They exist
+# and must **never** be exported: a caller receives an iterator from
+# ``iter(loader)`` and never constructs one, and the delivery seam is a
+# test seam rather than a hook.
+PRIVATE_LOADER_NAMES = ("_NativeBatchIterator", "_deliver_batch")
 
 # The milestones complete right now, and the ones still promised. The
 # ladder parser below is driven from these rather than from a hard-coded
 # "only J0", so landing a milestone is a one-line change here and a
 # document edit — never a loosened checker.
-COMPLETE_MILESTONES = ("J0", "J1", "J2")
+COMPLETE_MILESTONES = ("J0", "J1", "J2", "J3")
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
 
@@ -212,10 +224,12 @@ def test_the_design_states_exactly_which_runtime_exists():
     assert re.search(r"[Rr]untime capability began at \*{0,2}J1", head), head[:400]
     assert re.search(rf"{landed} complete; {next_up} through {last} not "
                      rf"started", head, re.I), head[:800]
-    # The absent half, named rather than implied: what J3 onward will add
-    # must still be spelled out as missing.
-    for absent in ("loader", "iterator", "batch delivery",
-                   "native mini-batching", "loader state schema"):
+    # The absent half, named rather than implied: what the *next*
+    # milestones will add must still be spelled out as missing.
+    for absent in ("loader state schema", "loader state_dict",
+                   "exact mid-epoch loader restoration",
+                   "checkpoint loader-state integration",
+                   "training example", "benchmark"):
         assert re.search(rf"no {absent}", head, re.I), absent
     assert re.search(rf"{next_up} is\s+(the\s+)?next", head, re.I), head[:800]
 
@@ -352,10 +366,10 @@ def test_exactly_the_landed_milestones_are_marked_complete():
         assert re.search(r"\*\*complete\*\*", rows[name], re.I), rows[name]
     for name in UNSTARTED_MILESTONES:
         assert re.search(r"\*\*not started\*\*", rows[name], re.I), rows[name]
-    # J3 is the next implementation milestone, and nothing beyond it may be
-    # claimed under a J2 heading.
-    assert COMPLETE_MILESTONES == ("J0", "J1", "J2")
-    assert UNSTARTED_MILESTONES[0] == "J3"
+    # J4 is the next implementation milestone, and nothing beyond it may be
+    # claimed under a J3 heading.
+    assert COMPLETE_MILESTONES == ("J0", "J1", "J2", "J3")
+    assert UNSTARTED_MILESTONES[0] == "J4"
 
 
 def test_the_ladder_checker_can_actually_fail():
@@ -396,7 +410,8 @@ def test_the_ladder_checker_can_actually_fail():
     # shipped must not still read "not started". Both landed runtime rows
     # are driven, so neither edit can silently stop being checked.
     for row in ("### J1 — Host-backed dataset foundation",
-                "### J2 — Deterministic sampler"):
+                "### J2 — Deterministic sampler",
+                "### J3 — Native mini-batch loader"):
         understated = ladder.replace(f"{row} — **complete**",
                                      f"{row} — **not started**")
         assert understated != ladder, f"the {row!r} row was not found"
@@ -1101,6 +1116,23 @@ def test_exactly_the_landed_phase_j_classes_exist():
             f"{name} exists, but its milestone has not landed"
         )
         assert name not in experimental.__all__, name
+    # All three of §3.1's names have now landed, so the absence half of
+    # this split is carried by the *closed* surface instead: **three
+    # names, and no more**. A fourth Phase-J public name is the over-claim
+    # this check now guards against, and J4-J9 add none.
+    assert LANDED_CLASSES == set(PLANNED_CLASSES)
+    assert UNLANDED_CLASSES == set()
+    for invented in ("NativeDataset", "NativeSampler", "NativeLoader",
+                     "NativeBatchLoader", "NativeDataIterator",
+                     "NativeCollate", "NativeWorker", "NativePrefetcher",
+                     "native_batches", "NativeBatchIterator"):
+        assert not hasattr(experimental, invented), invented
+        assert invented not in experimental.__all__, invented
+    # The submodules themselves are ordinary package attributes and are
+    # **not** exports: reaching one requires naming the private module.
+    for module in ("native_dataset", "native_sampler", "native_data_loader",
+                   "_native_permutation"):
+        assert module not in experimental.__all__, module
 
 
 def test_only_the_landed_phase_j_modules_exist_under_src():
@@ -1137,6 +1169,25 @@ def test_only_the_landed_phase_j_modules_exist_under_src():
     assert definitions["NativeBatchSampler"] == ["native_sampler.py"], (
         definitions["NativeBatchSampler"]
     )
+    assert definitions["NativeDataLoader"] == ["native_data_loader.py"], (
+        definitions["NativeDataLoader"]
+    )
+    # J3's iterator and delivery seam exist, in exactly one module, and
+    # stay permanently private: a caller receives an iterator from
+    # ``iter(loader)`` and never constructs one, and the seam takes no
+    # user-supplied callable and is no public hook.
+    for private in PRIVATE_LOADER_NAMES:
+        assert private not in private_check.__all__, private
+        assert not hasattr(private_check, private), private
+    owners = {"_NativeBatchIterator": [], "_deliver_batch": []}
+    for path in sorted(package.glob("*.py")):
+        text = path.read_text(encoding="utf-8")
+        if re.search(r"^\s*class _NativeBatchIterator\b", text, re.M):
+            owners["_NativeBatchIterator"].append(path.name)
+        if re.search(r"^\s*def _deliver_batch\b", text, re.M):
+            owners["_deliver_batch"].append(path.name)
+    assert owners == {"_NativeBatchIterator": ["native_data_loader.py"],
+                      "_deliver_batch": ["native_data_loader.py"]}, owners
 
 
 # The public experimental surface as each milestone left it. Each entry is
@@ -1154,14 +1205,15 @@ J0_EXPORT_INVENTORY = frozenset({
 })
 J1_ADDITION = frozenset({"NativeTensorDataset"})
 J2_ADDITION = frozenset({"NativeBatchSampler"})
+J3_ADDITION = frozenset({"NativeDataLoader"})
 
 
 def test_each_landed_milestone_added_exactly_one_public_name():
-    """The J1 and J2 exit gates, over the live inventory: ``__all__`` grew
-    by **exactly one** name per milestone, and by that name.
+    """The J1, J2, and J3 exit gates, over the live inventory: ``__all__``
+    grew by **exactly one** name per milestone, and by that name.
 
-    22 at J0, 23 at J1, 24 at J2 — asserted as a running exact equality
-    rather than as a subset, so an unannounced export fails here.
+    22 at J0, 23 at J1, 24 at J2, 25 at J3 — asserted as a running exact
+    equality rather than as a subset, so an unannounced export fails here.
     """
     import tensorforge.experimental as experimental
 
@@ -1170,9 +1222,13 @@ def test_each_landed_milestone_added_exactly_one_public_name():
     assert len(J0_EXPORT_INVENTORY) == 22
     assert len(J0_EXPORT_INVENTORY | J1_ADDITION) == 23
     assert len(J0_EXPORT_INVENTORY | J1_ADDITION | J2_ADDITION) == 24
-    assert live == J0_EXPORT_INVENTORY | J1_ADDITION | J2_ADDITION
-    assert live - J0_EXPORT_INVENTORY == J1_ADDITION | J2_ADDITION
-    assert len(live) == 24
+    assert len(J0_EXPORT_INVENTORY | J1_ADDITION | J2_ADDITION
+               | J3_ADDITION) == 25
+    assert live == (J0_EXPORT_INVENTORY | J1_ADDITION | J2_ADDITION
+                    | J3_ADDITION)
+    assert live - J0_EXPORT_INVENTORY == (J1_ADDITION | J2_ADDITION
+                                          | J3_ADDITION)
+    assert len(live) == 25
 
 
 def test_the_dataset_still_plans_orders_and_groups_nothing():
@@ -1202,12 +1258,12 @@ def test_the_dataset_still_plans_orders_and_groups_nothing():
     assert "np.random" not in code
 
 
-def test_no_loader_iteration_or_delivery_runtime_exists_yet():
-    """J3-J9 vocabulary, asserted absent over the two Phase-J classes that
-    do exist. The sampler is a **planner**: it owns a position, but
-    nothing in this phase yet iterates, delivers a batch, or advances a
-    cursor through a public call."""
-    from tensorforge.experimental import NativeBatchSampler
+def test_the_sampler_stays_a_planner_and_j4_onward_has_no_runtime():
+    """The sampler is a **planner**: it owns a position, but it never
+    iterates, never materializes, and exposes no public advance — only
+    J3's loader may consume a batch position, and only through the private
+    transaction primitives. J4-J9's vocabulary stays absent everywhere."""
+    from tensorforge.experimental import NativeBatchSampler, NativeDataLoader
 
     for name in ("__iter__", "__next__", "advance", "step", "reset",
                  "next_epoch", "advance_epoch", "advance_cursor", "consume",
@@ -1215,13 +1271,27 @@ def test_no_loader_iteration_or_delivery_runtime_exists_yet():
                  "feature_batch", "target_batch", "materialize", "collate",
                  "prefetch", "num_workers", "pin_memory", "loader"):
         assert not hasattr(NativeBatchSampler, name), name
+    # J4 owns loader state and mid-epoch restoration; J5 owns the
+    # checkpoint workflow. Neither has a runtime, and a stub that existed
+    # only to fail until then would be the over-claim this module exists
+    # to prevent.
+    for name in ("state_dict", "load_state_dict", "__len__", "__next__",
+                 "save", "load", "num_workers", "collate_fn", "prefetch",
+                 "pin_memory", "transform"):
+        assert not hasattr(NativeDataLoader, name), name
+    from tensorforge.experimental import native_data_loader
+
+    for name in ("_FORMAT", "_FORMAT_VERSION", "_SUPPORTED_FORMAT_VERSIONS"):
+        assert not hasattr(native_data_loader, name), name
     package = REPO_ROOT / "src" / "tensorforge" / "experimental"
-    for path in sorted(package.glob("*.py")):
-        text = path.read_text(encoding="utf-8")
-        assert not re.search(r"^\s*def _deliver_batch\b", text, re.M), path.name
-        assert not re.search(r"^\s*class _NativeBatchIterator\b", text, re.M), (
-            path.name
-        )
+    # The checkpoint stays uncoupled in both directions.
+    checkpoint = (package / "native_checkpoint.py").read_text(encoding="utf-8")
+    for pipeline in ("native_dataset", "native_sampler", "native_data_loader",
+                     "_native_permutation"):
+        assert pipeline not in checkpoint, pipeline
+    loader_source = (package / "native_data_loader.py").read_text(
+        encoding="utf-8")
+    assert "native_checkpoint" not in loader_source
     # The sampler consults no Python or NumPy random source, and no
     # generator: its order is a pure function of (seed, epoch, length).
     for module in ("native_sampler.py", "_native_permutation.py"):

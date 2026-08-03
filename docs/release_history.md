@@ -2326,10 +2326,10 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase J — deterministic native data pipeline and mini-batching (J0, J1, and J2 complete, in progress)
+### Phase J — deterministic native data pipeline and mini-batching (J0–J3 complete, in progress)
 
-**Phase J is the latest phase, it is newly approved, and milestones J0,
-J1, and J2 have landed.** J3 through J9 have not started, and **J3 is
+**Phase J is the latest phase, it is newly approved, and milestones J0
+through J3 have landed.** J4 through J9 have not started, and **J4 is
 next**. **No version is claimed** — the native line stays experimental and
 is not production-ready, and this entry records milestones rather than a
 release.
@@ -2429,12 +2429,85 @@ entry, no C ABI symbol, no example, no benchmark, and no dependency, so
 **no native rebuild, CTest run, or sanitizer run was required and none is
 claimed**.
 
-**What still does not exist after J2**: `NativeDataLoader`,
-`_NativeBatchIterator`, `native_data_loader.py`, the `_deliver_batch`
-seam, and with them all iteration, batch delivery, successful-delivery
-cursor advancement, loader state, and checkpoint loader-state
-integration. The sampler plans; nothing yet turns a plan into a batch.
-**There is no native mini-batching yet.**
+**J3 shipped the native mini-batch loader** —
+`src/tensorforge/experimental/native_data_loader.py` and its one public
+class, `NativeDataLoader`, exported from `tensorforge.experimental`. That
+export inventory went from 24 names to **25**, which is the only public
+surface J3 moved, and it is the **last** of the three names J0 locked.
+The module imports **exactly one name**, `NativeBatchSampler`, so it
+reaches no ctypes layer, no NumPy, no checkpoint, and no generator, and
+it constructs no lock, thread, queue, or worker.
+
+`NativeDataLoader(sampler)` takes a sampler and nothing else: no
+batch-size, shuffle, seed, drop-last, dtype, or device argument, because
+the sampler and the dataset already own those and one fact needs one
+owner. The loader is **not itself an iterator**; `iter(loader)` returns a
+fresh private `_NativeBatchIterator` for **one epoch**, which captures
+`sampler.remaining` at construction and counts it down — captured rather
+than re-read, because the sampler's `remaining` resets to a whole epoch
+the moment the canonical boundary is crossed. A new `iter()` **supersedes**
+any previous iterator, so `for ... break` followed by another `for`
+continues cleanly from the committed position while nested iteration
+fails loudly rather than interleaving two traversals over one cursor.
+
+**The milestone's whole subject is the batch handoff, and it is an
+explicit transaction.** Every `__next__` runs five phases — claim,
+construct, publish, commit-and-deliver, and rollback — under one
+invariant: **the committed sampler position advances if and only if a
+batch was successfully delivered to the caller.** The record is
+deliberately **split by ownership**: the sampler keeps the integer half
+(a never-reused serial, the owning iterator's token, the exact
+pre-delivery and candidate post-delivery positions, and the indices),
+which is why it still owns nothing releasable and still has no
+`close()`; the iterator keeps the resource half, because an owned
+resource belongs on the object whose `close()` releases it. Commit
+happens **before** delivery, not after: if the position advanced after
+the handoff, a failure in between would hand the caller a batch the
+loader still considered unconsumed and the next call would deliver it
+twice. Committing first makes the only recoverable state "not yet
+delivered", and it is fully recoverable — the rollback restores the exact
+pre-delivery position through the **same non-failing write seam** a state
+load commits with, so a rollback that could itself raise is structurally
+impossible.
+
+Every failure position is proved by injection rather than argued, each
+with its own **non-vacuity control** and an exact before/after comparison
+of the position, the whole `state_dict()`, the captured countdown, and
+the native live-storage baseline: a claim failure before publication
+(which mints no serial), a feature-materialization failure, a **real
+native allocation failure** through the shipped `tf_test_arm_alloc_failure`
+hook, a target-gather failure after the feature tensor exists, a
+publication failure, a commit failure injected into the structurally
+non-failing seam, and the **delivery-seam failure at both dtypes** —
+after which the very next `__next__` returns the **same indices and the
+same values** in a freshly allocated tensor. Reentrant `iterator.close()`
+and `loader.close()` are driven from *inside* the seam, so a reentrant
+arrival is real rather than simulated, and the exact-match completion
+check refuses to hand back a batch a reentrant close already rolled back.
+Stale, foreign, and never-minted serials are proved to match nothing
+against a live newer transaction, and a rollback invoked four times is
+proved idempotent. `iter(loader)`, `sampler.state_dict()`, and
+`sampler.load_state_dict()` are each refused with `RuntimeError` while a
+transaction is in flight — the load guard running **before** the state is
+inspected at all — while pure planning and property reads stay permitted.
+
+A delivered batch is a caller-owned `NativeTensor` at the dataset's dtype
+beside a fresh read-only C-contiguous host `int64` array, and **the
+caller closes the tensor**: after the delivery seam returns, neither the
+loader, the iterator, nor the sampler retains any reference to it, so no
+close path can reach one. The Phase-J objects remain **not thread-safe**;
+the transaction's claim guards reentrancy, not concurrency, and J3 adds
+no lock, thread, queue, future, prefetch, collate, transform, or callback
+surface. J3 added no C++, no CMake entry, no C ABI symbol, no example, no
+benchmark, and no dependency, so **no native rebuild, CTest run, or
+sanitizer run was required and none is claimed**.
+
+**What still does not exist after J3**: `loader.state_dict()`,
+`loader.load_state_dict()`, the loader state schema and its format tag,
+exact mid-epoch loader restoration, checkpoint loader-state integration,
+the deterministic mini-batch training example, and the benchmark. A
+loader iterates and delivers; **where it stopped cannot yet be
+serialized**. Those are J4 onward.
 
 **No capability moved, and none will.** `SUPPORTED_DTYPES` is
 `("float64", "float32")`, `SUPPORTED_DEVICES` is `("cpu",)`, `UNSUPPORTED`

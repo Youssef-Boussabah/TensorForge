@@ -1,14 +1,15 @@
 """NativeBatchSampler — the deterministic native batch planner (Phase J,
 milestone J2; see docs/native_data_pipeline_design.md §3.4, §7, §8, §11.2,
-§12.3, §12.4, §15.2, and §16).
+§12.3, §12.4, §15.2, and §16), carrying the **integer half** of J3's
+batch-delivery transaction (§9.4).
 
 The second piece of Phase-J runtime, and a **planner and state holder**,
 not an iterator. It answers *"which indices, in which groups, in which
 order"* and nothing else: it materializes no batch, allocates nothing
 native, constructs no ``NativeTensor``, and has no ``__iter__``,
-``__next__``, or public advance of any kind. ``NativeDataLoader`` (J3)
-does not exist yet, and iteration and successful-delivery cursor
-advancement are its milestone, not this one.
+``__next__``, or public advance of any kind. Iteration and batch delivery
+belong to ``NativeDataLoader`` (J3), which reaches the position **only**
+through the private transaction primitives below.
 
 The three properties that shape every line below
 -------------------------------------------------
@@ -24,10 +25,14 @@ nothing either. The only state that ever moves is the ``(seed, shuffle,
 batch_size, drop_last, epoch, cursor)`` tuple.
 
 **2. It owns nothing releasable, so it has no ``close()``.** Six
-configuration-and-position scalars, one reference to its dataset, and an
-optional private tuple cache. No native storage, no host snapshot, no
-batch, no tensor, no file, no generator, no thread, no lock, no worker,
-and no queue. Inventing a ``close()`` would advertise a lifetime this
+configuration-and-position scalars, one reference to its dataset, an
+optional private tuple cache, and — while a J3 batch handoff is in
+flight — the **integer half** of one delivery record: a serial, an owning
+iterator token, two position tuples, and the claimed indices. No native
+storage, no host snapshot, no batch, no tensor, no file, no generator, no
+thread, no lock, no worker, and no queue: **the feature tensor and the
+target array are the iterator's**, which is exactly why the sampler still
+owns nothing releasable. Inventing a ``close()`` would advertise a lifetime this
 object does not have — ``NativeGenerator``'s stated reason, applied
 rather than replaced (§15.1). A sampler is *always* usable; there is no
 closed-sampler state to reason about and no lifecycle question in its
@@ -61,12 +66,22 @@ reaches the batch count — canonicalized *immediately*, so every position
 has exactly one representation and two runs that consumed the same number
 of batches always have byte-identical state (§7.4).
 
-**No public method here applies it.** At J2 a position other than
-``(0, 0)`` arrives only through a validated ``load_state_dict``, which is
-the one audited path into a position. ``_next_position`` computes the
-candidate without mutating anything, and ``_assign_state`` is the single
-non-failing write seam; J3 uses both to commit a delivery and to roll one
-back, which is what keeps a rollback exact.
+**No public method here applies it.** A position other than ``(0, 0)``
+arrives through exactly two audited paths: a validated
+``load_state_dict``, and the loader's **successful** batch delivery.
+``_next_position`` computes the candidate without mutating anything, and
+``_assign_state`` is the single non-failing write seam — used in **both**
+directions, to commit a delivery and to roll one back, which is what
+makes a rollback structurally unable to fail.
+
+**No public advance exists**, and none may be added: a caller who could
+move the cursor could desynchronize an active iteration or strand a
+pending delivery. ``_claim_batch``, ``_publish_pending``,
+``_commit_pending``, ``_rollback_pending``, and ``_complete_pending`` are
+private, are reachable only from the loader's iterator, and every one of
+them matches on the transaction's **never-reused serial** *and* its
+owning iterator token, so a stale, foreign, completed, or already
+rolled-back record is left strictly alone.
 
 Adds no kernel, C ABI symbol, ctypes declaration, checkpoint field or
 version, optimizer-state version, capability registry value, dtype,
@@ -111,6 +126,54 @@ _IDENTITY_DTYPES = ("float64", "float32")
 # uppercase, a leading sign, and underscores.
 _FINGERPRINT_LENGTH = 64
 _HEX_DIGITS = frozenset("0123456789abcdef")
+
+# The three phases one batch-delivery record passes through (§9.4). They are
+# ordinary private strings: they are never serialized, never appear in
+# ``state_dict()``, never appear in ``__repr__`` of the sampler, and carry no
+# C ABI meaning.
+_CLAIMED = "claim"          # phase 1 done; nothing constructed, nothing moved
+_PENDING = "pending"        # phase 3 done; both batches exist, nothing moved
+_COMMITTED = "committed"    # phase 4 step 1 done; the candidate is applied
+
+# The value that is never a live serial, so "no transaction" needs no second
+# flag and a cleanup called with it can match nothing.
+_NO_SERIAL = 0
+
+
+class _BatchTransaction:
+    """The **integer half** of one in-flight batch handoff (§9.4, Phase 3).
+
+    The record is split across two owners by what each *owns*: the sampler
+    keeps this half — the serial, the owning iterator's token, the exact
+    pre-delivery position, the candidate post-delivery position, and the
+    claimed indices — because that is what its own ``state_dict()`` and
+    ``load_state_dict()`` guards must be able to see. The **iterator**
+    keeps the resource half, because §15.1 puts an owned resource on the
+    object whose ``close()`` releases it, and a sampler that transiently
+    owned native storage would contradict §15.2.
+
+    Nothing here is releasable, nothing here is state, and nothing here is
+    public: it is never serialized, never compared, never in a repr of the
+    sampler, and never reachable from a public attribute.
+    """
+
+    __slots__ = ("serial", "owner", "status", "before", "after", "indices")
+
+    def __init__(self, serial, owner, before, after, indices):
+        self.serial = serial
+        # The owning iterator's participation token — a process-local
+        # integer minted by ``_begin_iteration`` and never reused. It is
+        # internal ownership matching only: it is not an ``id()``, it never
+        # leaves the process, and it never enters state.
+        self.owner = owner
+        self.status = _CLAIMED
+        self.before = before
+        self.after = after
+        self.indices = indices
+
+    def __repr__(self):
+        return (f"<NativeBatchSampler batch transaction {self.serial} "
+                f"({self.status})>")
 
 
 def _require_exact_int(value, what):
@@ -183,7 +246,16 @@ class NativeBatchSampler:
     # deliberately **no ``_closed``** — a sampler owns nothing releasable
     # (§15.2).
     __slots__ = ("_dataset", "_batch_size", "_shuffle", "_seed", "_drop_last",
-                 "_epoch", "_cursor", "_cache_key", "_cache_order")
+                 "_epoch", "_cursor", "_cache_key", "_cache_order",
+                 # J3's bookkeeping. ``_transaction`` is the integer half of
+                 # at most one in-flight batch handoff; ``_active_iterations``
+                 # is the set of live iterator tokens behind the
+                 # ``load_state_dict`` refusal. Neither is state: neither is
+                 # serialized, compared, or reported anywhere, and neither
+                 # holds a native resource — so the sampler still needs no
+                 # ``close()``.
+                 "_transaction", "_next_serial",
+                 "_active_iterations", "_next_iteration_token")
 
     def __init__(self, dataset, *, batch_size, shuffle=False, seed=0,
                  drop_last=False):
@@ -254,6 +326,14 @@ class NativeBatchSampler:
         # compared, and droppable at any moment without observable change.
         self._cache_key = None
         self._cache_order = None
+        # The J3 transaction bookkeeping, all inert until a loader iterates.
+        # Serials and iteration tokens start at 1 and only ever increase, so
+        # ``_NO_SERIAL`` can never name a live record and a released token
+        # can never be handed out again.
+        self._transaction = None
+        self._next_serial = 1
+        self._active_iterations = set()
+        self._next_iteration_token = 1
 
     # -- configuration and position (read-only) ------------------------
 
@@ -298,8 +378,8 @@ class NativeBatchSampler:
     def cursor(self):
         """Batches already **successfully delivered** in the active epoch;
         always ``0 <= cursor < batches_per_epoch``. No public method
-        advances it: at J2 nothing delivers a batch, and at J3 only a
-        successful delivery will."""
+        advances it: it moves only when a ``NativeDataLoader`` iterator
+        hands a batch to its caller, or through a validated state load."""
         return self._cursor
 
     @property
@@ -444,12 +524,20 @@ class NativeBatchSampler:
         ``_validated_metadata`` unchanged, which is what lets a caller
         carry it through the existing version-3 metadata channel without
         the archive growing a field.
+
+        **Refused with ``RuntimeError`` while a §9.4 batch transaction is
+        in flight**, reading nothing and changing nothing. Inside Phase 4
+        the candidate position has been applied but the batch has not been
+        delivered, so there is no honest single answer: reporting the
+        candidate would expose a committed cursor that skipped an
+        undelivered batch, and reporting the pre-delivery one would
+        contradict the object's own fields. **A snapshot must never be
+        able to observe a skipped-but-undelivered position**, so the
+        ambiguous window is refused rather than captured — exactly
+        ``snapshot_generator_states``' rule. Every other time, including
+        between batches while an iterator is active, it is allowed.
         """
-        # (J3 adds the §9.5 in-flight-transaction refusal here, ahead of
-        # everything else. At J2 no loader, iterator, or batch transaction
-        # exists, so no such transaction can exist to refuse; inventing a
-        # flag to advertise the behavior early would be a fiction. The
-        # public schema below does not change when the guard arrives.)
+        self._require_no_transaction("take a state snapshot of this sampler")
         return {
             "format": _FORMAT,
             "format_version": _FORMAT_VERSION,
@@ -491,11 +579,23 @@ class NativeBatchSampler:
         Nothing is cast, coerced, truncated, clamped, wrapped, rounded,
         defaulted, or ignored; every one of those is a rejection naming
         the field.
+
+        Two lifecycle guards run **before** ``state`` is inspected at all,
+        in §12.4's order. A live §9.4 transaction is refused first,
+        because replacing a position underneath one would make its
+        pre/post pair describe a stream that no longer exists. An **active
+        iteration** is refused next, because an iterator captures its
+        epoch's remaining batch count when it is created (§9.3), so a load
+        would leave that countdown describing a position that is gone.
+        Neither reads the argument, so a malformed state cannot even be
+        parsed while either holds.
         """
-        # (J3 adds the §12.4 transaction and active-iteration guards here,
-        # ahead of the container check, exactly as the design orders them.
-        # Neither can exist at J2: there is no iterator and no batch
-        # transaction to be in flight.)
+        # 1. Transaction guard, first of all — ahead of the container check
+        #    and ahead of reading a single field of ``state``.
+        self._require_no_transaction("load state into this sampler")
+        # 2. Active-iteration guard, next.
+        self._require_no_active_iteration("load state into this sampler")
+        # 3 onward: J2's validation, unchanged.
         values = self._validate_state(state)
         self._assign_state(*values)
         return None
@@ -751,7 +851,9 @@ class NativeBatchSampler:
         seed. An advance past ``2**64 - 1`` raises ``RuntimeError`` and
         moves nothing, exactly as ``NativeGenerator`` refuses at an
         exhausted counter. Unreachable in practice, and specified so that
-        it is not undefined.
+        it is not undefined. Because ``_claim_batch`` calls it **before**
+        it mints a serial or publishes anything, that refusal leaves no
+        claim, allocates no batch, and permits no wrapped epoch.
         """
         cursor += 1
         if cursor == _perm.batches_per_epoch(self._dataset.samples,
@@ -765,6 +867,200 @@ class NativeBatchSampler:
             epoch += 1
             cursor = 0
         return epoch, cursor
+
+    # -- active iterations (J3) -----------------------------------------
+    #
+    # Not public state, never serialized, never compared, and absent from
+    # every property, repr, identity, and cache. Tokens are minted from a
+    # monotonic counter and **never reused**, so a stale iterator cannot
+    # release another iterator's participation and a released token can
+    # never be handed out again. Nothing here allocates native storage and
+    # nothing here takes a lock: this is reentrancy bookkeeping, not a
+    # concurrency mechanism (§16.2).
+
+    def _begin_iteration(self):
+        """Register one live iterator and return its never-reused token."""
+        token = self._next_iteration_token
+        self._next_iteration_token = token + 1
+        self._active_iterations.add(token)
+        return token
+
+    def _end_iteration(self, token):
+        """Release exactly the participation ``token`` names, if it is still
+        held.
+
+        ``discard`` rather than ``remove``, so the release is idempotent:
+        an iterator that exhausts, is closed, and is then finalized
+        releases **once**, and the second and third calls find nothing.
+        Matching on the token is what makes it exact — a stale iterator
+        can never decrement a *different* iterator's participation.
+        """
+        self._active_iterations.discard(token)
+
+    def _iteration_is_active(self):
+        """Whether any iterator is live over this sampler."""
+        return bool(self._active_iterations)
+
+    def _has_transaction(self):
+        """Whether a §9.4 claim or pending-delivery record is in flight."""
+        return self._transaction is not None
+
+    def _require_no_transaction(self, what):
+        """Refuse an operation that cannot be answered honestly mid-handoff."""
+        transaction = self._transaction
+        if transaction is not None:
+            raise RuntimeError(
+                f"cannot {what} while batch-delivery transaction "
+                f"{transaction.serial} is in flight ({transaction.status}): "
+                f"the candidate position it carries has not been delivered, "
+                f"so there is no single honest answer. Let the handoff "
+                f"finish, or close the iterator to roll it back."
+            )
+
+    def _require_no_active_iteration(self, what):
+        """Refuse a position replacement while a countdown depends on one."""
+        active = len(self._active_iterations)
+        if active:
+            raise RuntimeError(
+                f"cannot {what} while {active} batch iterator(s) are active "
+                f"over it: an iterator captures its epoch's remaining batch "
+                f"count when it is created, so replacing the position "
+                f"underneath it would leave that countdown describing a "
+                f"position that no longer exists. Close the iterator(s) "
+                f"first."
+            )
+
+    # -- the batch-delivery transaction (J3) ----------------------------
+    #
+    # Five phases, and the integer half of each. Private, unexported, and
+    # reachable only from the loader's iterator: a public advance would let
+    # a caller desynchronize a live iteration or strand a pending delivery.
+    #
+    # Every one of the four resolution routes below is **exact-match**: it
+    # acts only on a live record whose serial *and* owning token are this
+    # transaction's, and whose status is the one it expects. A newer
+    # transaction, a foreign iterator's transaction, a completed one, and
+    # an already rolled-back one are each left strictly alone — which is
+    # what makes a rollback idempotent, so a reentrant ``close()`` racing
+    # the delivery's own ``finally`` cannot double-roll.
+
+    def _matching_transaction(self, serial, owner, status):
+        """The live record iff it is exactly this one; otherwise ``None``."""
+        transaction = self._transaction
+        if (transaction is None
+                or transaction.serial != serial
+                or transaction.owner != owner
+                or (status is not None and transaction.status != status)):
+            return None
+        return transaction
+
+    def _claim_batch(self, owner):
+        """Phase 1: decide the next batch and publish **only the claim**.
+
+        Returns ``(serial, indices)``. The committed epoch and cursor do
+        **not** move here, and neither does anything else: ``before``,
+        ``indices``, and ``after`` are all pure functions of committed
+        state, so computing them mutates nothing.
+
+        The claim is written **last**, so a failure anywhere before it —
+        including the uint64 epoch-overflow refusal inside
+        ``_next_position`` — leaves no record, mints no serial, and
+        changes nothing at all.
+        """
+        # Reject another in-flight transaction, whoever owns it. This is
+        # what makes a reentrant ``__next__`` (from a finalizer, a
+        # callback, or a signal handler) a deterministic refusal rather
+        # than two interleaved traversals over one cursor.
+        self._require_no_transaction("claim a batch from this sampler")
+        before = self._snapshot_state()
+        indices = self.next_batch_indices()
+        epoch, cursor = self._next_position(self._epoch, self._cursor)
+        after = (self._seed, self._shuffle, self._batch_size,
+                 self._drop_last, epoch, cursor)
+        # A never-reused serial: it advances here, at the claim, so even a
+        # discarded claim's serial is never handed out twice for the
+        # lifetime of this sampler.
+        serial = self._next_serial
+        self._next_serial = serial + 1
+        self._transaction = _BatchTransaction(serial, owner, before, after,
+                                              indices)
+        return serial, indices
+
+    def _publish_pending(self, serial, owner):
+        """Phase 3: turn this claim into a pending-delivery record.
+
+        The claim is rechecked rather than assumed: only its owner can
+        resolve it, so a mismatch already means internal state was broken,
+        and failing loudly is worth more than proceeding. The committed
+        epoch and cursor still do not move.
+        """
+        transaction = self._matching_transaction(serial, owner, _CLAIMED)
+        if transaction is None:
+            raise RuntimeError(
+                f"batch-delivery transaction {serial} lost its claim before "
+                f"it could be published; this sampler's internal transaction "
+                f"state is inconsistent"
+            )
+        transaction.status = _PENDING
+
+    def _commit_pending(self, serial, owner):
+        """Phase 4, step 1: apply the candidate position.
+
+        Through ``_assign_state`` — the one non-failing write seam, shared
+        with ``load_state_dict`` and with the rollback below, so a
+        rollback that could itself raise is structurally impossible.
+
+        The status is advanced **before** the write rather than after. The
+        write cannot fail, so the order is unobservable in production; it
+        matters under the J3 injection that makes it fail anyway, where
+        marking first is what keeps the rollback's restore correct instead
+        of concluding that nothing had been applied.
+        """
+        transaction = self._matching_transaction(serial, owner, _PENDING)
+        if transaction is None:
+            raise RuntimeError(
+                f"batch-delivery transaction {serial} is not pending on this "
+                f"sampler; it cannot be committed"
+            )
+        transaction.status = _COMMITTED
+        self._assign_state(*transaction.after)
+
+    def _rollback_pending(self, serial, owner):
+        """Phase 5: restore the exact pre-delivery position and clear the
+        record. Returns whether it matched.
+
+        Restoring comes **first**, and through the non-failing seam,
+        precisely so the committed state is already correct before any
+        step that could conceivably raise. A record still in its claim or
+        pending phase never had the candidate applied, so there is nothing
+        to restore and only the record is cleared.
+
+        Exact-match and therefore **idempotent**: a second attempt finds
+        no matching live record and does nothing.
+        """
+        transaction = self._matching_transaction(serial, owner, None)
+        if transaction is None:
+            return False
+        if transaction.status == _COMMITTED:
+            self._assign_state(*transaction.before)
+        self._transaction = None
+        return True
+
+    def _complete_pending(self, serial, owner):
+        """Phase 4, step 3: mark this transaction delivered. Returns
+        whether it matched.
+
+        Only a **committed** record owned by this exact serial and token
+        can complete, so a transaction that a reentrant ``close()``
+        already rolled back cannot be completed afterwards, and no
+        transaction can be completed twice. The serial is never reused, so
+        no later cleanup can reach a completed one.
+        """
+        transaction = self._matching_transaction(serial, owner, _COMMITTED)
+        if transaction is None:
+            return False
+        self._transaction = None
+        return True
 
     # -- representation -------------------------------------------------
 

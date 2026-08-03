@@ -275,6 +275,7 @@ def test_experimental_exports_stay_intentional():
         "NativeDropout",                                # Phase G, G4
         "NativeTensorDataset",                          # Phase J, J1
         "NativeBatchSampler",                           # Phase J, J2
+        "NativeDataLoader",                             # Phase J, J3
     }
     for name in experimental.__all__:
         assert hasattr(experimental, name)
@@ -1544,6 +1545,10 @@ POST_PHASE_F_EXPORTS = frozenset({
     # derivation helper (``_native_permutation``) is deliberately **not**
     # here: it is permanently private and is exported by nothing.
     "NativeBatchSampler",
+    # Phase J, milestone J3 — the mini-batch loader. Its iterator
+    # (``_NativeBatchIterator``) and its delivery seam (``_deliver_batch``)
+    # are likewise permanently private and exported by nothing.
+    "NativeDataLoader",
 })
 
 
@@ -1967,6 +1972,7 @@ def test_phase_f_export_surface_adds_only_the_shipped_normalization_modules():
         "NativeDropout",          # Phase G, milestone G4
         "NativeTensorDataset",    # Phase J, milestone J1
         "NativeBatchSampler",     # Phase J, milestone J2
+        "NativeDataLoader",       # Phase J, milestone J3
     }
     assert exports - phase_e_surface - later_phase_exports == phase_f_surface
     for absent in ("NativeBatchNorm3d",):

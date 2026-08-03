@@ -1066,8 +1066,8 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
-  the latest phase, and it is newly approved: milestones J0, J1, and J2
-  have landed and J3 through J9 have not started.** Phase J was approved
+  the latest phase, and it is newly approved: milestones J0 through J3
+  have landed and J4 through J9 have not started.** Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1092,10 +1092,24 @@ explicit layer at a time:
   schedule — no new RNG algorithm, no new global generator, and no
   `NativeGenerator` coupling. It carries compact JSON-compatible
   transactional state, allocates nothing native, and owns nothing
-  releasable, so it has no `close()`. **The loader does not exist yet**,
-  so nothing iterates, nothing delivers a batch, no cursor advances
-  through a public call, and there is no native mini-batching and no
-  loader state; **J3 is next**. Its contract is
+  releasable, so it has no `close()`. **J3** added the last of the three —
+  `NativeDataLoader`, in
+  `tensorforge/experimental/native_data_loader.py`: `iter(loader)` returns
+  a private one-epoch iterator that captures the sampler's remaining batch
+  count and supersedes any previous one, and each `__next__` runs an
+  explicit five-phase transaction — claim, construct, publish,
+  commit-and-deliver, rollback — whose invariant is that **the committed
+  sampler position advances if and only if a batch was successfully
+  delivered to the caller**. Every failure closes the undelivered feature
+  tensor, restores the exact pre-delivery epoch and cursor through the
+  same non-failing write seam a state load uses, and leaves a retry
+  returning the same indices and values. The sampler holds the
+  transaction's **integer half** and the iterator its **resource half**,
+  which is why the sampler still owns nothing releasable; delivered
+  batches are the caller's and no close path can reach one. **Loader
+  state does not exist yet**, so where a loader stopped cannot be
+  serialized, there is no exact mid-epoch loader restoration and no
+  checkpoint loader-state integration; **J4 is next**. Its contract is
   [native_data_pipeline_design.md](native_data_pipeline_design.md), and
   the architectural decisions it locks are the ones that would otherwise
   be re-argued in every later milestone: three eventual public names

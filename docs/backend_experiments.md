@@ -81,26 +81,44 @@ repaired here rather than rewritten away. The latest completed phase is
 Phase I.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
-latest phase, and it is newly approved: milestones J0, J1, and J2 have
-landed and J3 through J9 have not started.** It was approved *after* Phase
+latest phase, and it is newly approved: milestones J0 through J3 have
+landed and J4 through J9 have not started.** It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
 module, no state serializer, no public export, no C++, no C ABI symbol, no
 example, no benchmark, and no checkpoint or optimizer-state change.
 Runtime capability began at **J1**, which shipped `NativeTensorDataset`,
-and continued at **J2**, which shipped `NativeBatchSampler` over the
-private `_native_permutation` derivation — both **pure Python** (J1 over
-NumPy; J2 over built-in integer arithmetic, importing nothing at all),
-adding no kernel, no ctypes declaration, and no C++ or CMake file. Its
-architecture contract is
+continued at **J2**, which shipped `NativeBatchSampler` over the private
+`_native_permutation` derivation, and continued at **J3**, which shipped
+`NativeDataLoader` over the private `_NativeBatchIterator` — all three
+**pure Python** (J1 over NumPy; J2 over built-in integer arithmetic,
+importing nothing at all; J3 importing exactly one name, the sampler
+class), adding no kernel, no ctypes declaration, and no C++ or CMake
+file. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md). Nothing
-on this page changed for any of the three milestones: the library still
+on this page changed for any of the four milestones: the library still
 exports **54** `tf_*` symbols, the CTest inventory is still **24**, and
 every capability registry, checkpoint version, and optimizer-state version
-is exactly what Phase I left. **J1 and J2 therefore required no native
-rebuild, no CTest run, and no sanitizer run**, and none is claimed for
-either; the loader, which will need none either, has not started.
+is exactly what Phase I left. **J1, J2, and J3 therefore required no
+native rebuild, no CTest run, and no sanitizer run**, and none is claimed
+for any of them.
+
+**J3 is the first Phase-J milestone that allocates native storage**, and
+that is worth recording precisely because it is still not a build change:
+every feature batch reaches the device through the existing
+`NativeTensor.from_array` boundary and the already-compiled
+`tf_storage_copy_from` path, so the code the loader runs is exactly the
+code Phase I shipped. What is new is the **traffic**: an allocate,
+transfer, and release cycle per batch, driven from Python. J3 asserts it
+with the repository's existing deterministic instrumentation rather than
+with a sanitizer — a live-`NativeStorage` set around every ownership and
+failure test, proving live storage returns **exactly** to its pre-call
+baseline after a whole epoch, after every injected failure position, and
+after an explicit caller close — and it exercises the shipped
+`tf_test_arm_alloc_failure` hook to prove that a real native allocation
+failure inside batch materialization consumes no batch position. A
+LeakSanitizer lifecycle over that traffic is J9's, where §22.4 puts it.
 
 J2 does exercise the built library, and that is worth recording precisely
 because it is *not* a build change: its cross-implementation gate predicts

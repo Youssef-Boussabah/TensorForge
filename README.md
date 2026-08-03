@@ -464,8 +464,8 @@ to baseline. A float32 run is never required to reproduce a float64 one,
 and nothing asserts that it does.
 
 **Phase J — a deterministic native data pipeline and mini-batching — is the
-latest phase, and it is newly approved: milestones J0, J1, and J2 have
-landed, and J3 through J9 have not started.** Phase J was approved *after*
+latest phase, and it is newly approved: milestones J0 through J3 have
+landed, and J4 through J9 have not started.** Phase J was approved *after*
 Phase I closed at I11 rather than having been on the earlier roadmap. **J0 was
 architecture, contract, and documentation work only, and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -507,10 +507,29 @@ before six assignments that cannot fail. It allocates nothing native,
 materializes no batch, and owns nothing releasable, so it has **no
 `close()`** and works unchanged against a closed dataset.
 
-**The loader does not exist yet**, so nothing iterates, nothing delivers
-a batch, no cursor advances through a public call, and there is no loader
-state and **no native mini-batching**; those begin at **J3, which is
-next**. What J0 shipped is
+**J3 shipped `NativeDataLoader`**, the phase's third runtime and its one
+new public experimental name (the experimental export inventory went from
+24 to 25). It takes a sampler and nothing else. `iter(loader)` returns a
+**private** one-epoch iterator that captures the sampler's remaining
+batch count and supersedes any previous one, and each `__next__` runs an
+explicit five-phase transaction — claim, construct, publish,
+commit-and-deliver, rollback — under one invariant: **the committed
+sampler position advances if and only if a batch was successfully
+delivered to the caller.** A failure at any point closes the undelivered
+feature tensor, restores the exact pre-delivery epoch and cursor through
+the same non-failing write seam a state load uses, and leaves a retry
+returning the *same indices and the same values*; every failure position
+is proved by injection with its own non-vacuity control and a native
+live-storage baseline. A batch is a caller-owned `NativeTensor` at the
+dataset's dtype beside a fresh read-only host `int64` array, and **the
+caller closes the tensor** — no close path retains or can reach a
+delivered batch. It is not thread-safe and adds no lock, thread, queue,
+worker, prefetch, collate, or callback surface.
+
+**Loader state does not exist yet**, so where a loader stopped cannot be
+serialized, and there is no exact mid-epoch loader restoration, no
+checkpoint loader-state integration, no training example, and no
+benchmark; those begin at **J4, which is next**. What J0 shipped is
 [docs/native_data_pipeline_design.md](docs/native_data_pipeline_design.md)
 and its contract guardrails: the three eventual public names
 (`NativeTensorDataset`, `NativeBatchSampler`, `NativeDataLoader`), a

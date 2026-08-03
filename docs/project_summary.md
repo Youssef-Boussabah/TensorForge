@@ -1660,8 +1660,8 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase J — deterministic native data pipeline and mini-batching — is the
-latest phase, and it is newly approved: milestones J0, J1, and J2 have
-landed, and J3 through J9 have not started.** Phase J was approved *after* Phase I
+latest phase, and it is newly approved: milestones J0 through J3 have
+landed, and J4 through J9 have not started.** Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -1691,11 +1691,23 @@ against the compiled Dropout kernel. It holds no consumable stream,
 allocates nothing native, materializes no batch, and owns nothing
 releasable, so it has no `close()`; its compact JSON-compatible state
 carries the configuration, the position, and the dataset's four identity
-fields and loads transactionally. **The loader does not exist yet, so
-nothing iterates, nothing delivers a batch, no cursor advances through a
-public call, and there is still no native mini-batching and no loader
-state**; those are J3 onward, and **J3 is next**. Its architecture
-contract is
+fields and loads transactionally. **J3** added the last of the three,
+`NativeDataLoader`: `iter(loader)` returns a private one-epoch iterator
+that captures the sampler's remaining batch count and supersedes any
+previous one, and every `__next__` runs an explicit five-phase
+transaction — claim, construct, publish, commit-and-deliver, rollback —
+under one invariant, that **the committed sampler position advances if
+and only if a batch was successfully delivered to the caller**. Every
+failure position closes the undelivered feature tensor, restores the
+exact pre-delivery epoch and cursor through the same non-failing write
+seam a state load uses, and leaves a retry returning the same indices and
+the same values; each is proved by injection with its own non-vacuity
+control and a native live-storage baseline. Delivered batches are the
+caller's and no close path can reach one. **Loader state does not exist
+yet, so where a loader stopped cannot be serialized, there is no exact
+mid-epoch loader restoration, no checkpoint loader-state integration, no
+training example, and no benchmark**; those are J4 onward, and **J4 is
+next**. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md), which
 locks three eventual public names (`NativeTensorDataset`,
 `NativeBatchSampler`, `NativeDataLoader`), a copied-snapshot dataset whose

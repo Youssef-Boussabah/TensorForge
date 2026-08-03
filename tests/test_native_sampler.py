@@ -208,7 +208,13 @@ def test_the_sampler_module_and_class_exist_where_the_contract_says():
 
 def test_j2_added_exactly_one_public_experimental_name():
     """The J2 exit gate over the live inventory: ``__all__`` grew from 23
-    names to 24, by ``NativeBatchSampler`` and nothing else."""
+    names to 24, by ``NativeBatchSampler`` and nothing else.
+
+    Stated as an exact equality against the post-J1 inventory **plus the
+    later-phase additions, named explicitly** — the J1/J2 pattern — so the
+    J2 claim stays exact in both directions as milestones land, rather
+    than being loosened into a subset check.
+    """
     post_j1 = {
         "NativeTensor", "NativeGenerator", "NativeParameter",
         "NativeParameterRegistry", "NativeModule", "NativeLinear",
@@ -219,24 +225,43 @@ def test_j2_added_exactly_one_public_experimental_name():
         "NativeAdam", "save_native_checkpoint", "load_native_checkpoint",
         "NativeTensorDataset",
     }
+    # What a *later* milestone legitimately added, named separately so the
+    # J2 statement above stays exactly what J2 shipped.
+    later_additions = {"NativeDataLoader"}      # Phase J, milestone J3
     assert len(post_j1) == 23
     live = set(experimental.__all__)
     assert len(experimental.__all__) == len(live), "duplicate export"
-    assert len(experimental.__all__) == 24
-    assert live - post_j1 == {"NativeBatchSampler"}
+    assert len(experimental.__all__) == 23 + 1 + len(later_additions)
+    assert live - post_j1 == {"NativeBatchSampler"} | later_additions
+    assert live - post_j1 - later_additions == {"NativeBatchSampler"}
     assert post_j1 - live == set()
     # J1's name is still exported, and reachable.
     assert experimental.NativeTensorDataset is NativeTensorDataset
     assert experimental.NativeBatchSampler is NativeBatchSampler
 
 
-def test_the_loader_milestone_has_not_landed():
-    """J3's name and module stay absent: an exported name whose class does
-    not work is exactly the over-claim the rollout discipline prevents."""
-    assert not hasattr(experimental, "NativeDataLoader")
-    assert "NativeDataLoader" not in experimental.__all__
+def test_the_loader_milestone_landed_without_moving_the_sampler():
+    """J3 shipped ``NativeDataLoader`` and its module. What matters here is
+    that it added nothing to *this* milestone's surface: the sampler's own
+    public API is exactly what J2 left, and the loader's iterator and
+    delivery seam stay permanently private."""
+    assert hasattr(experimental, "NativeDataLoader")
+    assert "NativeDataLoader" in experimental.__all__
     package = REPO_ROOT / "src" / "tensorforge" / "experimental"
-    assert not (package / "native_data_loader.py").exists()
+    assert (package / "native_data_loader.py").is_file()
+    for private in ("_NativeBatchIterator", "_deliver_batch"):
+        assert private not in experimental.__all__, private
+        assert not hasattr(experimental, private), private
+    # The sampler's public surface is unchanged: the loader reaches the
+    # position only through private primitives, and no public advance,
+    # iteration, or delivery method appeared here.
+    sampler = make_sampler(8)
+    assert sorted(name for name in dir(sampler)
+                  if not name.startswith("_")) == [
+        "batch_size", "batches_per_epoch", "cursor", "dataset", "drop_last",
+        "epoch", "epoch_permutation", "load_state_dict", "next_batch_indices",
+        "plan", "remaining", "seed", "shuffle", "state_dict",
+    ]
 
 
 def test_the_permutation_helper_module_stays_private():
@@ -2285,19 +2310,35 @@ def test_the_repr_works_when_the_dataset_is_closed():
 # 11. J2 non-goals — what this milestone must not have added
 # ===========================================================================
 
-def test_no_loader_iterator_or_delivery_runtime_exists_anywhere():
+def test_no_loader_iterator_or_delivery_runtime_lives_in_this_milestone():
+    """J2's exclusion, restated exactly: iteration and delivery are J3's,
+    and they live in **J3's module**. Nothing that materializes or
+    delivers a batch may appear in ``native_sampler.py`` or in
+    ``_native_permutation.py``, and no *other* module may define one
+    either — which is what keeps a milestone's work under its own name."""
     package = REPO_ROOT / "src" / "tensorforge" / "experimental"
-    assert not (package / "native_data_loader.py").exists()
-    definitions = set()
-    for path in (REPO_ROOT / "src").rglob("*.py"):
+    owners = {"NativeDataLoader": [], "_NativeBatchIterator": [],
+              "_deliver_batch": []}
+    for path in sorted((REPO_ROOT / "src").rglob("*.py")):
         text = path.read_text(encoding="utf-8")
         for name in ("NativeDataLoader", "_NativeBatchIterator"):
             if re.search(rf"^\s*class {name}\b", text, re.M):
-                definitions.add(name)
-        assert not re.search(r"^\s*def _deliver_batch\b", text, re.M), path.name
-    assert definitions == set()
+                owners[name].append(path.name)
+        if re.search(r"^\s*def _deliver_batch\b", text, re.M):
+            owners["_deliver_batch"].append(path.name)
+    assert owners == {"NativeDataLoader": ["native_data_loader.py"],
+                      "_NativeBatchIterator": ["native_data_loader.py"],
+                      "_deliver_batch": ["native_data_loader.py"]}, owners
+    # This milestone's two modules define none of them, and materialize
+    # nothing: the sampler is a planner, and it stayed one.
+    for module in ("native_sampler.py", "_native_permutation.py"):
+        text = (package / module).read_text(encoding="utf-8")
+        for name in ("NativeDataLoader", "_NativeBatchIterator"):
+            assert not re.search(rf"^\s*class {name}\b", text, re.M), module
+        assert not re.search(r"^\s*def _deliver_batch\b", text, re.M), module
     # Negative control: the scanner really does find a class when one is
-    # present, so "none found" is evidence rather than a dead regex.
+    # present, so a name mapped to one module is evidence rather than a
+    # dead regex.
     planted = "class _NativeBatchIterator:\n    pass\n"
     assert re.search(r"^\s*class _NativeBatchIterator\b", planted, re.M)
     assert re.search(r"^\s*def _deliver_batch\b", "def _deliver_batch(r):\n",

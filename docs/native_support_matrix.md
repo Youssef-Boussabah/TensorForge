@@ -465,21 +465,23 @@ in the stable Python framework — that does not make them native.
   *(Phase J does not change this. Its contract carries a loader position as
   **caller-supplied metadata** through the channel that already exists, so
   the archive's own capture set stays exactly what it is — and no
-  Phase-J loader exists yet in any case, so there is no position to
-  capture.)*
-- loaders, mini-batching, batch delivery, and loader state. The newly
+  Phase-J loader **state** exists yet in any case, so there is no
+  position the archive could be handed.)*
+- **loader state, and exact mid-epoch loader restoration.** The newly
   approved **Phase J** is building these
   ([native_data_pipeline_design.md](native_data_pipeline_design.md),
-  milestones **J0**, **J1**, and **J2** complete), and **no runtime for
-  any of them exists**: J3 through J9 have not started and nothing beyond
-  the dataset and the sampler is exported. What *does* exist is
+  milestones **J0** through **J3** complete), and **no runtime for
+  either exists**: J4 through J9 have not started, `NativeDataLoader` has
+  no `state_dict()` and no `load_state_dict()`, and no checkpoint
+  loader-state integration exists. What *does* exist is
   `NativeTensorDataset` (**J1**) — a finite host-backed dataset that
-  materializes a feature batch and a target batch for an index sequence
-  the **caller** supplies — and `NativeBatchSampler` (**J2**), which
-  plans shuffled or sequential batch-index groups and holds an explicit
-  epoch and cursor. Neither iterates, and neither delivers a batch: the
-  sampler is a planner, its cursor advances through no public call, and
-  there is no loader to join the two
+  materializes a feature batch and a target batch for an index sequence —
+  `NativeBatchSampler` (**J2**), which plans shuffled or sequential
+  batch-index groups and holds an explicit epoch and cursor, and
+  `NativeDataLoader` (**J3**), which iterates one epoch at a time and
+  delivers `(NativeTensor, numpy.ndarray)` batches transactionally. So
+  **native mini-batching exists**; serializing where a loader stopped
+  does not
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
 - *(Phase E itself is complete — E0–E10 — so nothing from it is listed
@@ -950,7 +952,8 @@ surfaces. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
 Phase J, below, is the latest phase; it is newly approved and its runtime
-has begun at J1 with the dataset alone.
+has reached J3 — the dataset, the sampler, and the loader — with loader
+state and everything after it still unstarted.
 
 **Since milestone I9, `float32` and `float64` are both supported native
 CPU dtypes**, and this is the row that supersedes every "float64 only"
@@ -1504,7 +1507,7 @@ float32 training and the exact float32 resume proof both passed, which is
 the same discipline that kept `dropout` in `UNSUPPORTED` from G3 through
 G9 while the operation and the module both already existed.
 
-## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0, J1, and J2 complete, J3–J9 not started)**
+## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0–J3 complete, J4–J9 not started)**
 
 **Phase J is the latest phase, and it is newly approved.** The repository
 closed Phase I at I11 without committing to a successor; Phase J was
@@ -1514,7 +1517,7 @@ Its architecture contract is
 
 Milestone **J0** was architecture, contract, and documentation work and
 shipped **no runtime behavior at all**. Runtime capability began at
-**J1**, and **exactly two** things in this section exist today:
+**J1**, and **exactly three** things in this section exist today:
 
 - **`NativeTensorDataset`** (J1) — the finite host-backed dataset, in
   `tensorforge.experimental`. One owned copied host snapshot of the
@@ -1545,15 +1548,35 @@ shipped **no runtime behavior at all**. Runtime capability began at
   and works unchanged against a closed dataset. It moved no registry
   value, added no C ABI symbol, and took the experimental Python export
   inventory from 23 names to 24.
+- **`NativeDataLoader`** (J3) — the mini-batch iteration surface, in
+  `tensorforge.experimental`. `NativeDataLoader(sampler)`, and nothing
+  else: no batch-size, shuffle, seed, drop-last, dtype, or device
+  argument, because the sampler and the dataset own those.
+  `iter(loader)` returns a **private** one-epoch iterator that captures
+  the sampler's remaining batch count and supersedes any previous one,
+  and each `__next__` runs an explicit five-phase transaction — claim,
+  construct, publish, commit-and-deliver, rollback — under one invariant:
+  **the committed sampler position advances if and only if a batch was
+  successfully delivered to the caller.** Every failure position closes
+  the undelivered feature tensor, restores the exact pre-delivery epoch
+  and cursor through the same non-failing write seam a state load uses,
+  and leaves a retry returning the same indices and the same values. A
+  batch is a caller-owned `NativeTensor` at the dataset's dtype beside a
+  fresh read-only host `int64` array, and **the caller closes the
+  tensor** — no close path on the loader, the iterator, or the sampler
+  retains or can reach a delivered batch. It is **not thread-safe** and
+  adds no lock, thread, queue, worker, prefetch, collate, or callback
+  surface. It moved no registry value, added no C ABI symbol, and took
+  the experimental Python export inventory from 24 names to 25.
 
 **Everything else in this section is still unsupported.** There is **no
-loader, no iterator, no batch delivery, no successful-delivery cursor
-advancement, no loader state, and no checkpoint loader-state
-integration** — and therefore **no native mini-batching**. The sampler
-plans; nothing yet materializes a batch from a plan. Those are J3 onward;
-**J3 is next**.
+loader `state_dict()` or `load_state_dict()`, no loader state schema or
+format tag, no exact mid-epoch loader restoration, no checkpoint
+loader-state integration, no training example, and no benchmark.** A
+loader iterates and delivers; where it stopped cannot yet be serialized.
+Those are J4 onward; **J4 is next**.
 
-| Registry | Value at J0, J1, and J2 | Value expected at J9 |
+| Registry | Value at J0–J3 | Value expected at J9 |
 |---|---|---|
 | `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
 | `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
@@ -1576,7 +1599,7 @@ The milestone ladder, with its current status:
 | **J0** | architecture and API contract | **complete** |
 | **J1** | host-backed dataset foundation | **complete** |
 | **J2** | deterministic sampler | **complete** |
-| J3 | native mini-batch loader | not started |
+| **J3** | native mini-batch loader | **complete** |
 | J4 | loader state and mid-epoch resume | not started |
 | J5 | native checkpoint metadata integration | not started |
 | J6 | deterministic mini-batch training example | not started |

@@ -48,8 +48,8 @@ approved afterwards, so it must not be described as work that was already
 on the roadmap. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md).
 
-**Milestones J0, J1, and J2 have landed; J3 through J9 have not started,
-and J3 is next.** J0 was an architecture, contract, and documentation
+**Milestones J0 through J3 have landed; J4 through J9 have not started,
+and J4 is next.** J0 was an architecture, contract, and documentation
 milestone and **added no runtime behavior at all** — no dataset, sampler,
 or loader class, no helper module, no state serializer, no public export,
 no C++, no C ABI symbol, no example, no benchmark, and no checkpoint or
@@ -96,11 +96,33 @@ which is exported by nothing. It added no C++, no CMake entry, no C ABI
 symbol, no example, no benchmark, no checkpoint field or version, no
 optimizer-state version, and no dependency.
 
-**What Phase J still does not have**, because J3 onward have not started:
-`NativeDataLoader` and its iterator, and with them every batch delivery,
-successful-delivery cursor advancement, loader state schema, and
-checkpoint loader-state integration. Nothing iterates and nothing
-materializes a batch. **Native mini-batching does not exist yet.**
+**J3 shipped the native mini-batch loader, `NativeDataLoader`** — the
+last of the phase's three public names, and again **exactly one** new
+public experimental name (`tensorforge.experimental.__all__` went from 24
+names to 25). `iter(loader)` returns a private one-epoch iterator that
+captures the sampler's remaining batch count and supersedes any previous
+one, and each `__next__` runs an explicit five-phase transaction — claim,
+construct, publish, commit-and-deliver, rollback — whose single invariant
+is that **the committed sampler position advances if and only if a batch
+was successfully delivered to the caller**. A failure at any point closes
+the undelivered feature tensor, restores the exact pre-delivery epoch and
+cursor through the same non-failing write seam a state load uses, clears
+the record on both owners, and leaves a retry returning the *same
+indices and the same values*; that is asserted by injection at every
+failure position, each with a non-vacuity control and a native
+live-storage baseline. Delivered batches are the **caller's** — no close
+path retains or can reach one — and the caller closes each feature
+tensor. It added no C++, no CMake entry, no C ABI symbol, no example, no
+benchmark, no checkpoint field or version, no optimizer-state version,
+and no dependency; it is not thread-safe and contains no lock, thread,
+queue, worker, prefetch, collate, or callback surface.
+
+**What Phase J still does not have**, because J4 onward have not started:
+the loader **state schema**, `loader.state_dict()` and
+`loader.load_state_dict()`, exact mid-epoch loader restoration, the
+checkpoint loader-state integration, the deterministic mini-batch
+training example, and the benchmark. A loader iterates, but **where it
+stopped cannot yet be serialized**.
 
 What J0 resolved, so that later milestones inherit an unambiguous design
 rather than re-deriving one: the three eventual public names —
@@ -455,12 +477,14 @@ different facts.
 
 Phase J's own design contract exists
 ([native_data_pipeline_design.md](native_data_pipeline_design.md), milestone
-**J0**), and its runtime has begun at **J1** with `NativeTensorDataset`
-and continued at **J2** with `NativeBatchSampler`. **J3 through J9 are
-unstarted**, so the loader, batch delivery, loader state, and the
-checkpoint workflow remain promises — and nothing about them may be
-described as working until the milestone that ships it has landed.
-**J3, the native mini-batch loader, is next.**
+**J0**), and its runtime has begun at **J1** with `NativeTensorDataset`,
+continued at **J2** with `NativeBatchSampler`, and at **J3** with
+`NativeDataLoader` and its transactional batch delivery. **J4 through J9
+are unstarted**, so loader state, exact mid-epoch loader restoration, the
+checkpoint workflow, the training example, and the benchmark remain
+promises — and nothing about them may be described as working until the
+milestone that ships it has landed.
+**J4, loader state and mid-epoch resume, is next.**
 
 What the existing documents still name as future work *beyond* Phase J, in
 no committed order, is: native integer tensors, further dtypes or devices
