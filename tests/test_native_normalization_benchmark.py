@@ -1059,6 +1059,7 @@ def test_f7_changes_no_capability_inventory():
         "NativeGenerator",   # Phase G, milestone G1 — not F7
         "NativeDropout",     # Phase G, milestone G4 — not F7
         "NativeTensorDataset",   # Phase J, milestone J1 — not F7
+        "NativeBatchSampler",    # Phase J, milestone J2 — not F7
     }
     assert cpp.RAW_KERNELS == (
         "elementwise_add", "elementwise_subtract", "elementwise_multiply",

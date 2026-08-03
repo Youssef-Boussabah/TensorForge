@@ -12,15 +12,21 @@ batching helper, no public export, no production import, no C++, no CMake
 registration, no C ABI symbol, no example, no benchmark, no checkpoint
 field, no checkpoint version, and no optimizer-state version. Runtime
 capability began at **J1**, which added **exactly one** public name —
-`NativeTensorDataset` (§3.3, §4, §5, §6) — and nothing else.
+`NativeTensorDataset` (§3.3, §4, §5, §6) — and continued at **J2**, which
+added **exactly one** more — `NativeBatchSampler` (§3.4, §7, §8, §11.2,
+§12.3, §12.4) — over the permanently private `_native_permutation`
+derivation (§3.2, §8).
 
-**Phase-J status: J0 and J1 complete; J2 through J9 not started.** What
-exists today is the dataset and nothing more. **No sampler, no loader, no
-permutation helper, no shuffle, no seed, no epoch, no cursor, no batch
-size, no drop-last, no sampler or loader state schema, and no checkpoint
-loader-state integration exists yet** — those are J2 onward, and **J2 is
-the next implementation milestone**. Every §7–§14 statement about them
-describes work that has not been written.
+**Phase-J status: J0, J1, and J2 complete; J3 through J9 not started.**
+What exists today is the dataset and the sampler: a finite host-backed
+dataset, a deterministic permutation and batch **planner** with an
+explicit epoch and cursor, and compact transactional sampler state.
+**No loader, no iterator, no batch delivery, no successful-delivery cursor
+advancement, no native mini-batching, no loader state schema, and no
+checkpoint loader-state integration exists yet** — those are J3 onward,
+and **J3 is the next implementation milestone**. Nothing yet iterates or
+materializes a batch, so every §9, §10, §13, and §14 statement, and every
+§11.3 and §12.5 statement, describes work that has not been written.
 
 Phase J is a **newly approved** direction. It was not part of the roadmap
 while Phases A–I were being built: the repository deliberately closed
@@ -2811,7 +2817,7 @@ locked rule — the §23 discipline is to record rather than rewrite:
    places. The step order is unchanged: rank is checked before dtype, so
    a 2-D float array is reported as the more structural fault.
 
-### J2 — Deterministic sampler — **not started**
+### J2 — Deterministic sampler — **complete**
 
 - **Entry:** J1 merged.
 - **Scope:** `_native_permutation.py` (§8) and `NativeBatchSampler` (§7) —
@@ -2829,6 +2835,77 @@ locked rule — the §23 discipline is to record rather than rewrite:
 - **Exclusions:** materialization, iteration, checkpoints.
 - **Exit gate:** every reference vector reproduced exactly; the C++
   equivalence check green; `__all__` grows by exactly one; 54 exports.
+- **Outcome:** met. `experimental/_native_permutation.py` ships the §8
+  derivation — importing **nothing at all**, so the whole bit path is
+  built-in Python integer arithmetic with explicit `& MASK` — and
+  `experimental/native_sampler.py` ships `NativeBatchSampler`, exported
+  from `tensorforge.experimental`, whose `__all__` went from 23 names to
+  24: `NativeBatchSampler` and no other. **Every §8.9 reference vector is
+  reproduced exactly** — the four `splitmix64_mix` known answers, all
+  twelve `epoch_key` vectors, all thirty-two permutations, the sequential
+  orders, and all ten batch plans — written on the test side as literals
+  rather than generated from the production helper. The §8.8 live
+  cross-check runs at 48 `(seed, call_index, p)` combinations of 4,096
+  elements each against the built `tf_core_dropout_forward`, with a
+  non-vacuity control that mutates the multiplier, the golden constant,
+  the first shift, and the domain separator in turn and proves each one
+  breaks the prediction; a companion assertion keeps the sampler's own
+  domain-separated key schedule provably **distinct** from Dropout's
+  rather than letting the equivalence proof be misread. The rejection
+  branch of `bounded` is forced directly at `bound = 2**63 + 1`, where
+  `limit` makes roughly half of all draws fall out, against hard-coded
+  residues and final draw indices. The C ABI stayed at 54 exports, the
+  CTests at 24, the examples at 15, the benchmarks at 8, the checkpoint at
+  version 3 with `(1, 2, 3)` accepted, and the optimizer state at version
+  1; no C++ or CMake file was touched, and no `NativeTensor` is allocated
+  anywhere in the milestone.
+
+**Implementation clarifications recorded at J2**, none of which changes a
+locked rule — the §23 discipline is to record rather than rewrite:
+
+1. **The sampler shares `NativeGenerator`'s seed validator rather than
+   restating it.** `native_sampler` imports exactly `_validate_uint64`
+   and `UINT64_MAX` from `native_generator`. That is §8.3's "the same
+   unsigned 64-bit domain, validated by the same rules" taken literally:
+   a duplicated validator would be the second seed contract §8.3 exists
+   to prevent, and it could drift. It is **not** the generator coupling
+   §8.3 forbids, and the distinction is asserted rather than argued — the
+   import set is pinned by test, no `NativeGenerator` is accepted, held,
+   created, or consulted, no call is reserved or committed, and no
+   generator instance is reachable from any sampler slot.
+2. **`dataset` is checked with `isinstance`, not an exact type.** §4.1's
+   exact-type discipline exists because an `ndarray` subclass could make
+   a gather mean something other than a gather; the sampler reads only
+   `samples` and `identity()`, which any subclass inherits intact, so the
+   `_require_token` precedent (`isinstance`) is the right one here. §7.2
+   says "must be a `NativeTensorDataset`", which this satisfies.
+3. **The permutation cache holds only the *active* epoch.** §7.8 keys it
+   on `(seed, epoch, samples)`; an explicit-epoch `epoch_permutation()`
+   or `plan()` therefore recomputes without touching it. This is
+   narrower than the key alone requires and is deliberate: a batch is only
+   ever taken from the active epoch, so that is the only entry worth
+   keeping, and it makes "an arbitrary-epoch inspection never touches the
+   cache" a property a test can state. Because the value is a pure
+   function of the key, the choice is unobservable — §7.8's "dropping it
+   at any moment changes no observable behavior" is asserted directly.
+4. **`shuffle=False` never reaches the bit path**, and that is proved
+   rather than assumed: `sample_order` branches before `epoch_key`, and a
+   test patches both `epoch_key` and `draw_bits` to record every call and
+   asserts none happens at any seed, epoch, or length. §8.6 states
+   sequential order is "a different, cheaper branch"; this is its
+   executable form.
+5. **§12.4's step 10 ordering is unobservable, and is implemented as
+   written anyway.** The step orders every dataset-block field *type*
+   before every field *range*, but the per-element rules for
+   `feature_shape` are element types and element ranges at once. Element
+   type is checked immediately before element range, per element. No
+   state can distinguish the two orderings, because the only rule between
+   them — the fingerprint's format — belongs to a different field.
+6. **`_next_position` exists, is private, and mutates nothing.** §7.4's
+   canonical transition is encoded now so J3 applies it through this
+   object rather than redesigning the position semantics, and so the
+   uint64 epoch-overflow refusal is testable at J2. It is called from no
+   public path: **J2 performs no iteration and delivers no batch.**
 
 ### J3 — Native mini-batch loader — **not started**
 
@@ -3075,7 +3152,11 @@ registry, the live source, and real files wherever possible.
 It pins that this document exists and is linked; that Phase J is presented
 as newly approved **after** a completed Phase I rather than as pre-existing
 roadmap work; that the ladder runs J0–J9 exactly once each in order, with
-J0 marked complete and J1–J9 marked not started; that the design resolves
+**exactly the landed milestones marked complete and every other one marked
+not started** — driven from one list, so landing a milestone is a one-line
+edit rather than a loosened checker, and carrying **both** an over-claim
+and an under-claim negative control so neither direction can rot; that the
+design resolves
 each load-bearing decision in the section that owns it — the three public
 class names and their eventual package, the copied-snapshot rule, the
 content fingerprint with its algorithm and endian normalization, the
@@ -3117,11 +3198,16 @@ source, and the built library rather than against prose: `SUPPORTED_DTYPES
 state version **1**, **54** exports in source and in the built library,
 **24** registered CTests, **15** examples, and Phase I still complete.
 
-And it pins **absence**: no `NativeTensorDataset`, `NativeBatchSampler`, or
-`NativeDataLoader` in `tensorforge.experimental` or its `__all__`; no
-dataset, sampler, loader, or permutation module under `src/`; nothing in
-the stable public API; and no status surface claiming a Phase-J runtime
-capability, that Phase J is complete, or that a data loader is supported.
+And it pins **presence and absence** as one split, so a name can only move
+from the second set to the first in the milestone that ships it: exactly
+the landed classes are exported from `tensorforge.experimental` and appear
+in its `__all__`, each defined exactly once and in its own contracted
+module, and every unlanded one is absent from the package, from `__all__`,
+and from every module under `src/`. `_native_permutation` exists but is
+**never exported**, and neither is any helper in it. Nothing Phase J adds
+enters the stable public API. No status surface claims a Phase-J runtime
+capability that has not landed, calls Phase J complete, or says a data
+loader is supported.
 
 Every parser in the module has a **negative control**, so a check that
 finds nothing is shown able to find something.

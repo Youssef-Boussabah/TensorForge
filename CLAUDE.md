@@ -588,14 +588,14 @@ document (and README links) **in the same milestone**.
   Mini-Batching**, authority `docs/native_data_pipeline_design.md`. It was
   approved **after** Phase I closed and was not on the earlier roadmap;
   never describe it as pre-existing plan work.
-- Milestones **J0** (contract) and **J1** (dataset) are done; **J2 through
-  J9 have not started**, and **J2 is next.** J1 added exactly one public
-  name, `NativeTensorDataset` — a finite dataset over two owned copied host
-  snapshots at an explicitly chosen native dtype, with caller-owned batches.
-  **`NativeBatchSampler` (J2) and `NativeDataLoader` (J3) do not exist**, so
-  there is no shuffle, epoch, cursor, loader state, or native mini-batching
-  yet. Everything the contract locks is in the design document; read it
-  there.
+- Milestones **J0** (contract), **J1** (dataset), and **J2** (sampler) are
+  done; **J3 through J9 have not started**, and **J3 is next.** J1 and J2
+  each added one export: `NativeTensorDataset` and `NativeBatchSampler` —
+  a batch **planner**: explicit `epoch`/`cursor`, pure planning, no native
+  allocation, no `close()`, order a pure function of `(seed, epoch,
+  length)` from `splitmix64` in the private `_native_permutation`.
+  **`NativeDataLoader` (J3) does not exist**: no iteration, batch
+  delivery, cursor advance, loader state, or native mini-batching.
 - **Phase J moves no capability at any milestone.** Every §3 row — registries,
   exports, CTests, checkpoint and optimizer-state versions — is expected to be
   unchanged at J9, and the phase plans **no new C ABI export**.

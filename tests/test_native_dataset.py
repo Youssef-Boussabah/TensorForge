@@ -189,28 +189,44 @@ def test_the_experimental_inventory_grew_by_exactly_one_name():
         "NativeCrossEntropyLoss", "native_accuracy", "NativeSGD",
         "NativeAdam", "save_native_checkpoint", "load_native_checkpoint",
     }
+    # What a *later* milestone legitimately added, named separately so the
+    # J1 statement stays exactly what J1 shipped and the whole check stays
+    # an exact equality in both directions.
+    post_j1_additions = {
+        "NativeBatchSampler",   # Phase J, milestone J2 — not J1
+    }
     live = set(experimental.__all__)
     assert len(experimental.__all__) == len(live), "duplicate export"
-    assert live - j0_inventory == {"NativeTensorDataset"}
+    assert live - j0_inventory == {"NativeTensorDataset"} | post_j1_additions
     assert j0_inventory - live == set()
-    assert len(experimental.__all__) == len(j0_inventory) + 1
+    assert len(experimental.__all__) == len(j0_inventory) + 1 + len(
+        post_j1_additions)
 
 
 def test_no_later_phase_j_name_exists_yet():
-    """J2 and J3 have not started, and neither their classes nor their
-    modules may appear under a J1 heading."""
+    """J3 has not started, so neither its class, its iterator, nor its
+    module may appear — and J2's derivation helper, which *has* landed,
+    stays permanently private rather than joining the exports."""
     import tensorforge.experimental as experimental
 
-    for name in ("NativeBatchSampler", "NativeDataLoader",
-                 "_NativeBatchIterator"):
+    for name in ("NativeDataLoader", "_NativeBatchIterator"):
         assert not hasattr(experimental, name), name
         assert name not in experimental.__all__, name
+    for helper in ("_native_permutation", "splitmix64_mix", "epoch_key",
+                   "draw_bits", "bounded", "permutation"):
+        assert helper not in experimental.__all__, helper
     package = native_dataset_module.__file__.rsplit("native_dataset.py", 1)[0]
     from pathlib import Path
 
-    for module in ("native_sampler.py", "native_data_loader.py",
-                   "_native_permutation.py"):
-        assert not (Path(package) / module).exists(), module
+    assert not (Path(package) / "native_data_loader.py").exists()
+    # J2's two modules exist; the dataset must still not be the one that
+    # defines their classes.
+    for module in ("native_sampler.py", "_native_permutation.py"):
+        assert (Path(package) / module).is_file(), module
+    dataset_source = Path(native_dataset_module.__file__).read_text(
+        encoding="utf-8")
+    for absent in ("class NativeBatchSampler", "class NativeDataLoader"):
+        assert absent not in dataset_source, absent
 
 
 def test_no_sampler_or_loader_concept_leaked_into_the_dataset():

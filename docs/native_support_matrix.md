@@ -467,15 +467,19 @@ in the stable Python framework — that does not make them native.
   the archive's own capture set stays exactly what it is — and no
   Phase-J loader exists yet in any case, so there is no position to
   capture.)*
-- samplers, loaders, shuffling, mini-batching, epoch or cursor state, and
-  batch-index planning. The newly approved **Phase J** is building these
+- loaders, mini-batching, batch delivery, and loader state. The newly
+  approved **Phase J** is building these
   ([native_data_pipeline_design.md](native_data_pipeline_design.md),
-  milestones **J0** and **J1** complete), and **no runtime for any of
-  them exists**: J2 through J9 have not started and nothing beyond the
-  dataset is exported. What *does* exist, since **J1**, is
-  `NativeTensorDataset` — a finite host-backed dataset that materializes
-  a feature batch and a target batch for an index sequence the **caller**
-  supplies, which is not a loader and plans no batches
+  milestones **J0**, **J1**, and **J2** complete), and **no runtime for
+  any of them exists**: J3 through J9 have not started and nothing beyond
+  the dataset and the sampler is exported. What *does* exist is
+  `NativeTensorDataset` (**J1**) — a finite host-backed dataset that
+  materializes a feature batch and a target batch for an index sequence
+  the **caller** supplies — and `NativeBatchSampler` (**J2**), which
+  plans shuffled or sequential batch-index groups and holds an explicit
+  epoch and cursor. Neither iterates, and neither delivers a batch: the
+  sampler is a planner, its cursor advances through no public call, and
+  there is no loader to join the two
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
 - *(Phase E itself is complete — E0–E10 — so nothing from it is listed
@@ -1500,7 +1504,7 @@ float32 training and the exact float32 resume proof both passed, which is
 the same discipline that kept `dropout` in `UNSUPPORTED` from G3 through
 G9 while the operation and the module both already existed.
 
-## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0 and J1 complete, J2–J9 not started)**
+## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0, J1, and J2 complete, J3–J9 not started)**
 
 **Phase J is the latest phase, and it is newly approved.** The repository
 closed Phase I at I11 without committing to a successor; Phase J was
@@ -1510,7 +1514,7 @@ Its architecture contract is
 
 Milestone **J0** was architecture, contract, and documentation work and
 shipped **no runtime behavior at all**. Runtime capability began at
-**J1**, and **exactly one** thing in this section exists today:
+**J1**, and **exactly two** things in this section exist today:
 
 - **`NativeTensorDataset`** (J1) — the finite host-backed dataset, in
   `tensorforge.experimental`. One owned copied host snapshot of the
@@ -1522,14 +1526,34 @@ shipped **no runtime behavior at all**. Runtime capability began at
   sequence, order and duplicates preserved exactly; and no native storage
   held between calls. It moved no registry value, added no C ABI symbol,
   and took the experimental Python export inventory from 22 names to 23.
+- **`NativeBatchSampler`** (J2) — the deterministic order and batch
+  **planner**, in `tensorforge.experimental`. It owns `batch_size`,
+  `drop_last`, `shuffle`, the `seed`, the `epoch`, and the `cursor`, and
+  emits batch-index groups through `epoch_permutation()`, `plan()`, and
+  `next_batch_indices()`, all of them pure. Its permutation is a pure
+  function of `(seed, epoch, length)`, derived by the permanently private
+  `_native_permutation` module from the locked `tensorforge.splitmix64`
+  finalizer under one domain-separated epoch key schedule — **no new RNG
+  algorithm, no new global or default generator, no `NativeGenerator`
+  coupling, and no raw-random C ABI export** — with unbiased
+  rejection-based bounded integers and a downward Fisher–Yates sweep. Its
+  compact JSON-compatible `state_dict()` carries the configuration, the
+  position, and the dataset's four identity fields (no permutation, no
+  payload) and loads transactionally, validating dataset identity against
+  live reality and adopting the state's configuration. It allocates
+  nothing native, owns nothing releasable — so it has **no `close()`** —
+  and works unchanged against a closed dataset. It moved no registry
+  value, added no C ABI symbol, and took the experimental Python export
+  inventory from 23 names to 24.
 
 **Everything else in this section is still unsupported.** There is **no
-sampler, no loader, no shuffle, no seed, no epoch, no cursor, no batch
-size, no drop-last, no sampler or loader state, and no checkpoint
-loader-state integration** — and therefore **no native mini-batching**.
-Those are J2 onward; **J2 is next**.
+loader, no iterator, no batch delivery, no successful-delivery cursor
+advancement, no loader state, and no checkpoint loader-state
+integration** — and therefore **no native mini-batching**. The sampler
+plans; nothing yet materializes a batch from a plan. Those are J3 onward;
+**J3 is next**.
 
-| Registry | Value at J0 and J1 | Value expected at J9 |
+| Registry | Value at J0, J1, and J2 | Value expected at J9 |
 |---|---|---|
 | `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
 | `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
@@ -1551,7 +1575,7 @@ The milestone ladder, with its current status:
 |---|---|---|
 | **J0** | architecture and API contract | **complete** |
 | **J1** | host-backed dataset foundation | **complete** |
-| J2 | deterministic sampler | not started |
+| **J2** | deterministic sampler | **complete** |
 | J3 | native mini-batch loader | not started |
 | J4 | loader state and mid-epoch resume | not started |
 | J5 | native checkpoint metadata integration | not started |

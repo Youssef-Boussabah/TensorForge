@@ -309,8 +309,8 @@ guardrails in ``tests/test_native_phase_i_closure.py``, and the final
 inventory reconciliation — adding no capability at all.
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
-the latest phase and is in progress: milestones J0 and J1 have landed,
-and J2 through J9 have not started.** Its contract is
+the latest phase and is in progress: milestones J0, J1, and J2 have
+landed, and J3 through J9 have not started.** Its contract is
 ``docs/native_data_pipeline_design.md`` (milestone **J0**: architecture,
 contract, and documentation only, adding no runtime behavior).
 **Milestone J1** adds ``NativeTensorDataset`` below — the finite,
@@ -325,15 +325,42 @@ after construction reaches nothing; a SHA-256 content ``fingerprint``
 over a canonical little-endian byte stream gives the dataset a
 deterministic, cross-platform ``identity()`` that carries no payload; and
 the dataset owns **no native storage between calls**, so holding one
-leaves the native live-storage count untouched. It adds no kernel, C ABI
-symbol, ctypes declaration, checkpoint field or version,
-optimizer-state version, capability registry value, or dependency.
+leaves the native live-storage count untouched. The dataset plans,
+orders, and groups nothing: it answers only "given these indices, what is
+the batch?".
+
+**Milestone J2** adds ``NativeBatchSampler`` below — the deterministic
+order and batch **planner**, and the phase's second runtime. It owns
+``batch_size``, ``drop_last``, ``shuffle``, the ``seed``, the ``epoch``,
+and the ``cursor``, and turns them into batch-index groups through
+``epoch_permutation()``, ``plan()``, and ``next_batch_indices()``. Every
+permutation is a **pure function** of ``(seed, epoch, length)``: it
+reuses the locked ``tensorforge.splitmix64`` finalizer and golden
+constant under one domain-separated epoch key schedule — **no new RNG
+algorithm, no new global or default generator, and no coupling to a live
+``NativeGenerator``** — with unbiased rejection-based bounded integers
+and a downward Fisher-Yates sweep, in explicit ``& (2**64 - 1)`` Python
+integer arithmetic that is bit-identical on every platform by
+construction. So it holds no consumable stream and nothing to roll back:
+inspection and planning consume nothing and may be repeated in any order.
+Its compact JSON-compatible ``state_dict()`` carries the configuration,
+the position, and the dataset's four identity fields — no permutation and
+no payload — and ``load_state_dict()`` is transactional: everything is
+validated (dataset identity against **live** reality, configuration
+adopted from the state) before six assignments that cannot fail. It
+allocates nothing native, materializes no batch, and owns nothing
+releasable, so it has **no ``close()``** and works unchanged against a
+closed dataset. The private derivation lives in ``_native_permutation``
+and stays private: it is not exported and is not a public random surface.
+Neither milestone adds a kernel, C ABI symbol, ctypes declaration,
+checkpoint field or version, optimizer-state version, capability registry
+value, or dependency.
+
 What Phase J does **not** yet have, because those milestones have not
-started: ``NativeBatchSampler`` (J2), ``NativeDataLoader`` (J3), any
-shuffle, permutation, cursor, epoch, batch-size, drop-last, sampler or
-loader state, and any checkpoint loader-state integration. **J2 is
-next.** The dataset plans, orders, and groups nothing: it answers only
-"given these indices, what is the batch?".
+started: ``NativeDataLoader`` (J3), any iteration, any batch delivery,
+any successful-delivery cursor advancement, any native mini-batching, any
+loader state, and any checkpoint loader-state integration. **J3 is
+next.** The sampler plans; nothing yet iterates or materializes a batch.
 
 ``NativeGenerator`` (Phase G, milestone G1) is the Python half of the
 phase's central split — random state is Python-managed, and the native
@@ -477,6 +504,7 @@ from .native_sgd import NativeSGD
 from .native_adam import NativeAdam
 from .native_checkpoint import load_native_checkpoint, save_native_checkpoint
 from .native_dataset import NativeTensorDataset
+from .native_sampler import NativeBatchSampler
 
 __all__ = [
     "NativeTensor",
@@ -502,4 +530,5 @@ __all__ = [
     "save_native_checkpoint",
     "load_native_checkpoint",
     "NativeTensorDataset",
+    "NativeBatchSampler",
 ]

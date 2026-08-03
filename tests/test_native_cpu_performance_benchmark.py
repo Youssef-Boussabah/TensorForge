@@ -1381,6 +1381,7 @@ def test_h0_changes_no_export():
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
         "NativeGenerator", "NativeDropout",
         "NativeTensorDataset",   # Phase J, milestone J1 — not H0
+        "NativeBatchSampler",    # Phase J, milestone J2 — not H0
     }
 
 

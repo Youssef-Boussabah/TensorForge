@@ -1660,8 +1660,8 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase J — deterministic native data pipeline and mini-batching — is the
-latest phase, and it is newly approved: milestones J0 and J1 have landed,
-and J2 through J9 have not started.** Phase J was approved *after* Phase I
+latest phase, and it is newly approved: milestones J0, J1, and J2 have
+landed, and J3 through J9 have not started.** Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -1675,10 +1675,27 @@ SHA-256 content fingerprint, a caller-owned `NativeTensor` feature batch
 and a read-only host `int64` target batch per index sequence, exact order
 and duplicate preservation, and **no native storage held between calls**.
 It added exactly one public experimental name and nothing else — no C++,
-no C ABI symbol, no example, no benchmark, and no schema change. **The
-sampler and the loader do not exist yet, so there is still no shuffling,
-no epoch, no cursor, and no native mini-batching**; those are J2 onward,
-and **J2 is next**. Its architecture contract is
+no C ABI symbol, no example, no benchmark, and no schema change. **J2**
+added exactly one more, `NativeBatchSampler`: the deterministic order and
+batch **planner**, which owns `batch_size`, `drop_last`, `shuffle`, the
+`seed`, the `epoch`, and the `cursor` and emits batch-index groups through
+`epoch_permutation()`, `plan()`, and `next_batch_indices()`. Every
+permutation is a **pure function** of `(seed, epoch, length)`, derived by
+the permanently private `_native_permutation` helper from the locked
+`tensorforge.splitmix64` finalizer under one domain-separated epoch key
+schedule, with unbiased rejection-based bounded integers and a downward
+Fisher–Yates sweep in explicit 64-bit-masked Python integer arithmetic —
+so it is bit-identical on every platform by construction, and every
+committed reference vector is reproduced exactly and re-checked live
+against the compiled Dropout kernel. It holds no consumable stream,
+allocates nothing native, materializes no batch, and owns nothing
+releasable, so it has no `close()`; its compact JSON-compatible state
+carries the configuration, the position, and the dataset's four identity
+fields and loads transactionally. **The loader does not exist yet, so
+nothing iterates, nothing delivers a batch, no cursor advances through a
+public call, and there is still no native mini-batching and no loader
+state**; those are J3 onward, and **J3 is next**. Its architecture
+contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md), which
 locks three eventual public names (`NativeTensorDataset`,
 `NativeBatchSampler`, `NativeDataLoader`), a copied-snapshot dataset whose

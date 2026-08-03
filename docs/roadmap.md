@@ -48,8 +48,8 @@ approved afterwards, so it must not be described as work that was already
 on the roadmap. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md).
 
-**Milestones J0 and J1 have landed; J2 through J9 have not started, and
-J2 is next.** J0 was an architecture, contract, and documentation
+**Milestones J0, J1, and J2 have landed; J3 through J9 have not started,
+and J3 is next.** J0 was an architecture, contract, and documentation
 milestone and **added no runtime behavior at all** — no dataset, sampler,
 or loader class, no helper module, no state serializer, no public export,
 no C++, no C ABI symbol, no example, no benchmark, and no checkpoint or
@@ -70,11 +70,37 @@ the dataset owns **no native storage between calls**. It added no C++, no
 CMake entry, no C ABI symbol, no example, no benchmark, no checkpoint
 field or version, no optimizer-state version, and no dependency.
 
-**What Phase J still does not have**, because J2 onward have not started:
-`NativeBatchSampler`, `NativeDataLoader`, the private permutation
-helpers, and with them every shuffle, seed, epoch, cursor, batch size,
-drop-last setting, sampler or loader state schema, and checkpoint
-loader-state integration. **Native mini-batching does not exist yet.**
+**J2 shipped the deterministic batch planner, `NativeBatchSampler`** —
+the phase's second runtime, and again **exactly one** new public
+experimental name (`tensorforge.experimental.__all__` went from 23 names
+to 24). It owns `batch_size`, `drop_last`, `shuffle`, the `seed`, the
+`epoch`, and the `cursor`, and turns them into batch-index groups through
+`epoch_permutation()`, `plan()`, and `next_batch_indices()`. Its
+permutation **reuses the locked `tensorforge.splitmix64` derivation**
+under one domain-separated epoch key schedule — no new RNG algorithm, no
+new global or default generator, and no coupling to a live
+`NativeGenerator` — with unbiased rejection-based bounded integers and a
+downward Fisher–Yates sweep, in explicit 64-bit-masked Python integer
+arithmetic that is bit-identical on every platform by construction. Every
+permutation is a **pure function** of `(seed, epoch, length)`, so the
+sampler holds no consumable stream: inspection and planning consume
+nothing and may be repeated in any order. Its compact JSON-compatible
+`state_dict()` carries the configuration, the position, and the dataset's
+four identity fields — **no permutation and no payload** — and
+`load_state_dict()` is transactional, validating dataset identity against
+live reality and adopting the state's configuration before six
+assignments that cannot fail. It allocates nothing native, materializes
+no batch, and owns nothing releasable, so it has **no `close()`**. Its
+derivation lives in the permanently private `_native_permutation` module,
+which is exported by nothing. It added no C++, no CMake entry, no C ABI
+symbol, no example, no benchmark, no checkpoint field or version, no
+optimizer-state version, and no dependency.
+
+**What Phase J still does not have**, because J3 onward have not started:
+`NativeDataLoader` and its iterator, and with them every batch delivery,
+successful-delivery cursor advancement, loader state schema, and
+checkpoint loader-state integration. Nothing iterates and nothing
+materializes a batch. **Native mini-batching does not exist yet.**
 
 What J0 resolved, so that later milestones inherit an unambiguous design
 rather than re-deriving one: the three eventual public names —
@@ -429,11 +455,12 @@ different facts.
 
 Phase J's own design contract exists
 ([native_data_pipeline_design.md](native_data_pipeline_design.md), milestone
-**J0**), and its runtime has begun at **J1** with `NativeTensorDataset`.
-**J2 through J9 are unstarted**, so the sampler, the loader, and every
-shuffle, epoch, cursor, and state schema remain promises — and nothing
-about them may be described as working until the milestone that ships it
-has landed. **J2, the deterministic sampler, is next.**
+**J0**), and its runtime has begun at **J1** with `NativeTensorDataset`
+and continued at **J2** with `NativeBatchSampler`. **J3 through J9 are
+unstarted**, so the loader, batch delivery, loader state, and the
+checkpoint workflow remain promises — and nothing about them may be
+described as working until the milestone that ships it has landed.
+**J3, the native mini-batch loader, is next.**
 
 What the existing documents still name as future work *beyond* Phase J, in
 no committed order, is: native integer tensors, further dtypes or devices

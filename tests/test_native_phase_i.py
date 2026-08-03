@@ -1971,6 +1971,11 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
     # that it is no part of Phase I is asserted by tests/test_native_phase_j.py.
     LATER_PHASE_FILES = {
         "src/tensorforge/experimental/native_dataset.py",   # Phase J, J1
+        "src/tensorforge/experimental/native_sampler.py",   # Phase J, J2
+        # Phase J, J2 — the private permutation derivation. It owns no
+        # dtype at all, which is why it is a *later phase's* file here and
+        # nowhere in the dtype inventories above.
+        "src/tensorforge/experimental/_native_permutation.py",
     }
     changed = [path for path in _changed_since(I0_COMMIT)
                if path.startswith("src/") and path not in LATER_PHASE_FILES]

@@ -1066,8 +1066,8 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
-  the latest phase, and it is newly approved: milestones J0 and J1 have
-  landed and J2 through J9 have not started.** Phase J was approved
+  the latest phase, and it is newly approved: milestones J0, J1, and J2
+  have landed and J3 through J9 have not started.** Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1080,9 +1080,22 @@ explicit layer at a time:
   dtype, producing a caller-owned `NativeTensor` feature batch and a
   read-only host `int64` target batch for an index sequence the caller
   supplies. It holds no native storage between calls and added no C++, C
-  ABI symbol, example, benchmark, or schema change. **The sampler and the
-  loader do not exist yet**, so there is no shuffle, epoch, cursor, or
-  native mini-batching; **J2 is next**. Its contract is
+  ABI symbol, example, benchmark, or schema change. **J2** added exactly
+  one more — `NativeBatchSampler`, in
+  `tensorforge/experimental/native_sampler.py`: the deterministic order
+  and batch **planner**, owning `batch_size`, `drop_last`, `shuffle`, the
+  `seed`, the `epoch`, and the `cursor`, and emitting batch-index groups
+  through `epoch_permutation()`, `plan()`, and `next_batch_indices()`. Its
+  permutation is a pure function of `(seed, epoch, length)`, derived by the
+  permanently private `_native_permutation` helper from the locked
+  `tensorforge.splitmix64` finalizer under one domain-separated epoch key
+  schedule — no new RNG algorithm, no new global generator, and no
+  `NativeGenerator` coupling. It carries compact JSON-compatible
+  transactional state, allocates nothing native, and owns nothing
+  releasable, so it has no `close()`. **The loader does not exist yet**,
+  so nothing iterates, nothing delivers a batch, no cursor advances
+  through a public call, and there is no native mini-batching and no
+  loader state; **J3 is next**. Its contract is
   [native_data_pipeline_design.md](native_data_pipeline_design.md), and
   the architectural decisions it locks are the ones that would otherwise
   be re-argued in every later milestone: three eventual public names
