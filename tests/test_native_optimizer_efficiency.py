@@ -168,11 +168,18 @@ class _Boom(Exception):
 def _pre_h4_adam_stage(parameter, grad, m, v, beta1, beta2, lr, eps, t):
     """A literal transcription of the pre-H4 ``_stage_entry`` body,
     executed natively. Returns fresh owning ``(m_new, v_new, p_new)``
-    cores the caller closes."""
+    cores the caller closes.
+
+    Phase I, milestone I8 spells the scalar constructor ``_typed_full``
+    rather than ``full`` so this one reference runs at **both** widths and
+    cannot drift into two. At float64 they are the same call — ``full``
+    is ``_typed_full`` behind the public dtype gate — so this is still the
+    literal pre-H4 body; at float32 it is the only spelling there is,
+    because no public constructor builds a float32 tensor before I9."""
     dtype, device = parameter.dtype, parameter.device
 
     def scalar(value):
-        return Core.full((), value, dtype=dtype, device=device)
+        return Core._typed_full((), value, dtype, device=device)
 
     transients = []
     try:
@@ -233,8 +240,9 @@ def _pre_h4_adam_stage(parameter, grad, m, v, beta1, beta2, lr, eps, t):
 
 
 def _pre_h4_sgd_stage(parameter, grad, lr):
-    """The pre-H4 NativeSGD staging body, executed natively."""
-    scale = Core.full((), lr, dtype=grad.dtype, device=grad.device)
+    """The pre-H4 NativeSGD staging body, executed natively (dtype-general
+    since Phase I milestone I8 — see ``_pre_h4_adam_stage``)."""
+    scale = Core._typed_full((), lr, grad.dtype, device=grad.device)
     try:
         scaled = grad.multiply(scale)
     finally:
@@ -492,13 +500,13 @@ def test_scalar_allocations_no_longer_scale_with_the_parameter_count():
         optimizer = NativeAdam(parameters, lr=LR)
         optimizer.step()                     # settle; all share t
         calls = {"n": 0}
-        real_full = Core.full
+        real_full = Core._typed_full
 
         def counting_full(*args, **kwargs):
             calls["n"] += 1
             return real_full(*args, **kwargs)
 
-        patcher = _injected(Core, "full", counting_full)
+        patcher = _injected(Core, "_typed_full", counting_full)
         try:
             optimizer.step()
         finally:
@@ -521,13 +529,13 @@ def test_sgd_scalar_allocations_no_longer_scale_with_the_parameter_count():
                       for i in range(parameter_count)]
         optimizer = NativeSGD(parameters, lr=LR)
         calls = {"n": 0}
-        real_full = Core.full
+        real_full = Core._typed_full
 
         def counting_full(*args, **kwargs):
             calls["n"] += 1
             return real_full(*args, **kwargs)
 
-        patcher = _injected(Core, "full", counting_full)
+        patcher = _injected(Core, "_typed_full", counting_full)
         try:
             optimizer.step()
         finally:
@@ -576,13 +584,13 @@ def test_a_step_with_no_active_parameter_allocates_nothing(live_storages):
     optimizer = NativeAdam([frozen, gradientless], lr=LR)
     baseline = set(live_storages)
     calls = {"n": 0}
-    real_full = Core.full
+    real_full = Core._typed_full
 
     def counting_full(*args, **kwargs):
         calls["n"] += 1
         return real_full(*args, **kwargs)
 
-    patcher = _injected(Core, "full", counting_full)
+    patcher = _injected(Core, "_typed_full", counting_full)
     try:
         optimizer.step()
     finally:
@@ -639,7 +647,7 @@ def test_a_failed_constant_build_closes_what_it_built(live_storages):
     holder = native_adam_module._StepConstants(LR, BETAS, EPS)
     baseline = set(live_storages)
     calls = {"n": 0}
-    real_full = Core.full
+    real_full = Core._typed_full
 
     def flaky_full(*args, **kwargs):
         calls["n"] += 1
@@ -647,7 +655,7 @@ def test_a_failed_constant_build_closes_what_it_built(live_storages):
             raise _Boom("forced constant failure")
         return real_full(*args, **kwargs)
 
-    patcher = _injected(Core, "full", flaky_full)
+    patcher = _injected(Core, "_typed_full", flaky_full)
     try:
         with pytest.raises(_Boom, match="forced constant failure"):
             holder.invariants("float64", "cpu")
@@ -966,9 +974,9 @@ def _step_and_assert_untouched(optimizer, seam_owner, seam, index,
 @needs_native
 @pytest.mark.parametrize("error", _FAILURE_CLASSES)
 @pytest.mark.parametrize("seam,index", [
-    ("full", 1),          # the very first shared scalar
-    ("full", 4),          # part-way through the invariant set
-    ("full", 7),          # the first bias-correction reciprocal
+    ("_typed_full", 1),    # the very first shared scalar
+    ("_typed_full", 4),    # part-way through the invariant set
+    ("_typed_full", 7),    # the first bias-correction reciprocal
     ("multiply", 1),      # the first entry's first arithmetic
     ("multiply", 5),      # mid-expression, first entry
     ("multiply", 9),      # the first entry's last multiply
@@ -1090,7 +1098,7 @@ def test_a_wrapper_construction_failure_releases_every_staged_core(
 @needs_native
 @pytest.mark.parametrize("error", _FAILURE_CLASSES)
 @pytest.mark.parametrize("seam,index", [
-    ("full", 1), ("multiply", 1), ("multiply", 2), ("subtract", 1),
+    ("_typed_full", 1), ("multiply", 1), ("multiply", 2), ("subtract", 1),
     ("subtract", 3),
     # The first parameter's commit copy — pre-H5 ``("zeros", 1)``; see
     # the Adam parametrization above for why it moved.
@@ -1538,13 +1546,13 @@ def test_h4_kept_the_public_constructor_signatures():
 
 @needs_native
 def test_h4_moved_no_capability_registry_dtype_device_or_format():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     from tensorforge.experimental import native_checkpoint
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     from tensorforge.experimental import native_optimizer_state
     assert native_optimizer_state.FORMAT_VERSION == 1
 
@@ -1564,7 +1572,13 @@ def test_h4_added_no_c_abi_symbol():
         for match in re.finditer(r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
                                  text, flags=re.S):
             exported.add(match.group(1))
-    assert len(exported) == 52, sorted(exported)
+    # H4's claim is about Phase H, so it is measured against Phase H's own
+    # surface of 52. The two extra symbols in the source are Phase I's
+    # typed storage creators, added at milestone I1.
+    phase_i_creators = {"tf_storage_create_typed",
+                        "tf_storage_create_uninitialized_typed"}
+    assert len(exported) == 54, sorted(exported)
+    assert len(exported - phase_i_creators) == 52, sorted(exported)
     for banned in ("tf_core_adam", "tf_core_sgd", "tf_core_optimizer",
                    "tf_core_scale", "tf_core_axpy", "tf_core_fused"):
         assert not any(name.startswith(banned) for name in exported), banned

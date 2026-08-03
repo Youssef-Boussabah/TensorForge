@@ -1342,8 +1342,8 @@ def test_the_design_document_marks_every_number_as_a_local_characterization():
 
 def test_h0_changes_no_capability_registry():
     """H0 was measurement and documentation only."""
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.RAW_KERNELS == (
         "elementwise_add", "elementwise_subtract", "elementwise_multiply",
@@ -1386,9 +1386,9 @@ def test_h0_changes_no_export():
 def test_h0_leaves_the_checkpoint_contract_at_version_two():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2}
+    assert set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2, 3}
 
 
 def test_h0_adds_no_kernel_or_abi_declaration():
@@ -1427,8 +1427,40 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     # the matmul path/dispatch test; H5 added the copy path/dispatch
     # test; H6 added the reduction path/dispatch test; H8 added the
     # elementwise plan/traversal test; H9 added the convolution
-    # path/dispatch test. None of the six is a new numerical kernel.
-    assert len(ctests) == 17
+    # path/dispatch test. None of the six is a new numerical kernel, so
+    # Phase H closed with 17.
+    #
+    # Phase I milestone I1 added the dtype/storage contract test, which is
+    # likewise not a numerical kernel — it drives the dtype model, the two
+    # typed creators, and the rejection of a float32 handle by every
+    # operation that has not been generalized yet. I2 added the typed
+    # transfer test, which is not a numerical kernel either — it drives the
+    # three retyped transfer boundaries, materialization, and the identity
+    # copy at both dtypes, by raw IEEE-754 bit comparison. I3 added the
+    # dtype-elementwise test, which drives the *existing* H8 traversals at a
+    # second element type: no new kernel, no new export, no new traversal —
+    # the same three tiers, instantiated twice. I4 added the
+    # dtype-reduction/matmul test on exactly the same terms: it drives the
+    # *existing* H6 and H2 traversals at a second element type, plus the
+    # float32 accumulation witness that only becomes observable once an
+    # accumulation exists. I5 added the dtype-CNN test, again on the same
+    # terms: it drives the *existing* H9 conv2d traversals and the D8/D9
+    # pooling kernels at a second element type, plus the winner-buffer
+    # dtype rule — no new kernel, no new export, no new traversal. I6 added
+    # the dtype-classification test on the same terms again: it drives the
+    # *existing* E3/E4/E5 fused kernels at a second element type, plus the
+    # float32 batch-loss accumulation witness and the recorded
+    # spread-beyond-the-finite-range qualification. I7 added the
+    # dtype-Dropout test, last of the family and on the same terms: it
+    # drives the *existing* G2 kernel at a second element type, plus the
+    # cross-dtype drop-pattern identity and the narrow-once scale witness.
+    assert len(ctests) == 24
+    phase_i = {"test_dtype_storage.cpp", "test_typed_transfer.cpp",
+               "test_dtype_elementwise.cpp",
+               "test_dtype_reduction_matmul.cpp", "test_dtype_cnn.cpp",
+               "test_dtype_classification.cpp", "test_dtype_dropout.cpp"}
+    assert phase_i <= set(ctests)
+    assert len([name for name in ctests if name not in phase_i]) == 17
     assert "test_conv2d_execution.cpp" in ctests
     assert "test_storage_allocation.cpp" in ctests
     assert "test_matmul.cpp" in ctests
@@ -1508,21 +1540,40 @@ def test_the_harness_only_reaches_the_native_line_through_public_names():
     assert private <= {"graph_freed", "graph_resources"}, private
 
 
+# The harness inventory as H0 found and left it. Kept as **history**: H0
+# added a new harness and subsumed none of the Phase D/E/F/G ones, and that
+# statement is about H0 and stays true however many later phases add their
+# own. A later phase's addition is named below rather than folded in here,
+# so "Phase H changed no other harness" remains checkable.
+H0_HARNESSES = (
+    "benchmark_native_autograd.py",
+    "benchmark_native_classification.py",
+    "benchmark_native_cnn.py",
+    "benchmark_native_cpu_performance.py",
+    "benchmark_native_dropout.py",
+    "benchmark_native_normalization.py",
+    "cpp_backend.py",
+)
+
+# Phase I, milestone I10 adds exactly one harness, and adds it as a
+# **separate file** precisely so that this one keeps its case inventory,
+# its CLI, and the meaning of every number it published.
+LATER_PHASE_HARNESSES = ("benchmark_native_dtype.py",)
+
+
 def test_the_benchmark_is_separate_from_every_earlier_phase_harness():
     """H0 adds a new harness; it does not modify or subsume the Phase
-    D/E/F/G ones."""
+    D/E/F/G ones — and no later phase has taken one away either.
+
+    Stated as "H0's set, plus exactly what a later phase is on record as
+    adding" rather than as a flat literal, so the H0 claim stays a claim
+    about H0 instead of quietly becoming a claim about today."""
     harnesses = sorted(p.name for p in (REPO_ROOT / "benchmarks").glob("*.py"))
-    assert harnesses == [
-        "benchmark_native_autograd.py",
-        "benchmark_native_classification.py",
-        "benchmark_native_cnn.py",
-        "benchmark_native_cpu_performance.py",
-        "benchmark_native_dropout.py",
-        "benchmark_native_normalization.py",
-        "cpp_backend.py",
-    ]
+    assert harnesses == sorted(H0_HARNESSES + LATER_PHASE_HARNESSES)
+    # Every harness H0 knew about is still there, under its own name.
+    assert set(H0_HARNESSES) <= set(harnesses)
     names = set()
-    for name in harnesses:
+    for name in H0_HARNESSES:
         if name == "cpp_backend.py":
             continue
         text = (REPO_ROOT / "benchmarks" / name).read_text(encoding="utf-8")
@@ -1530,7 +1581,7 @@ def test_the_benchmark_is_separate_from_every_earlier_phase_harness():
         assert match, name
         names.add(match.group(1))
     assert bench.BENCHMARK_NAME in names
-    assert len(names) == len(harnesses) - 1
+    assert len(names) == len(H0_HARNESSES) - 1
 
 
 # --------------------------------------------------------------------------

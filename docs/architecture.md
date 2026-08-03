@@ -1065,6 +1065,122 @@ explicit layer at a time:
   CTests 16 to **17**. No public API, capability, dtype, device, registry
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
+- **Native dtype generalization and float32 CPU support (Phase I) is
+  complete: milestones I0 through I11 have all landed.** Phase I is the
+  latest phase and is now also the latest **completed** phase; Phase H is
+  unaffected and remains complete, having closed at 52 exports. **I11 was
+  cross-platform validation and closure** — Windows Release and Debug, a
+  Linux CI-equivalent, Clang ASan/UBSan with a negative control, a
+  LeakSanitizer lifecycle, both exact-resume proofs, the final ABI and
+  inventory reconciliation, and the closure guardrail module — and it added
+  no capability and changed no file under `src/` or `cpp/`.
+  **Since I9 the native runtime supports both `float32` and `float64` on
+  the CPU** — `SUPPORTED_DTYPES == ("float64", "float32")`, `UNSUPPORTED
+  == ("cuda", "amp")` — with float64 still the default everywhere, no
+  casting or promotion between the two, and `RAW_KERNEL_DTYPES` still
+  `("float64",)`. **I0 was the
+  architecture contract
+  ([native_dtype_float32_design.md](native_dtype_float32_design.md)), its
+  guardrail tests, and documentation reconciliation — and no runtime
+  behavior.** **I1 delivered the foundation**: the C++ dtype model with
+  frozen ABI codes and a single item-size authority, dtype-tagged storage
+  (one untyped owned buffer, an element count whose meaning did not move,
+  one dtype tag) owning a genuine runtime-selected `float[]` or `double[]`
+  array with checked `numel × itemsize`, type-erased into `void*` only
+  after creation so the kernels' pointer arithmetic is valid under C++17,
+  and the two typed creation exports — taking the
+  library to **54** `tf_*` symbols, which is the count for the whole
+  phase. **I2 delivered the typed transfer boundary and added no
+  export**: the three exports carrying a storage handle *and* a raw host
+  buffer (`tf_storage_copy_from`, `tf_storage_copy_to`,
+  `tf_storage_materialize`) became dtype-general through a source-level
+  retype of their host positions to `void*` — same symbols, same slots,
+  same calling convention — and `tf_core_contiguous_copy`, the
+  value-transfer primitive, became dtype-preserving and dtype-strict over
+  its unchanged three-tier traversal. Transfer is bit-preserving at both
+  widths, and `RAW_KERNEL_DTYPES` records that the seven handle-free raw
+  utility kernels stay float64. **I3 delivered dtype-general elementwise
+  execution and added no export**: `add`, `subtract`, `multiply`, `relu`,
+  `relu_backward`, `sqrt`, `reciprocal`, `exp`, and `log` — across their
+  strided and contiguous forms — validate operand agreement, dispatch
+  **once** from the storage tag, and run one instantiation of a templated
+  kernel, with all three Phase-H traversal tiers instantiated for both
+  element types from the same source and NumPy-style broadcasting working
+  at float32 for every layout it already worked at for float64. **I4
+  delivered dtype-general reductions, matmul, view-backward, and private
+  Core autograd, and added no export**: `sum`, `mean`, `matmul`, and
+  `narrow_backward` dispatch once from the storage tag, with H6's
+  contiguous-block factorization, H2's `i`-`k`-`j` row sweep, and the
+  retained generic paths beside them all instantiated for both element
+  types from the same source and both metadata predicates untouched;
+  `tf_storage_scale` and `tf_storage_fill` became dtype-general with their
+  scalar narrowed **once, before the loop**; and private float32
+  `NativeTensor` graphs now differentiate end to end with every gradient,
+  temporary, and constant at the graph's dtype. **I5 delivered the CNN
+  stack, I6 the stable-math and classification stack, and I7 modules,
+  buffers, normalization, and Dropout — none of them adding an export.**
+  I5 generalized all three Conv2d directions and both MaxPool2d
+  directions over H9's unchanged traversals and geometry predicates,
+  keeping the MaxPool2d winner buffer **private float64 at every value
+  dtype** so its `2**53` exact-plane bound does not shrink to float32's
+  `2**24`. I6 generalized softmax, log-softmax, and the fused
+  cross-entropy in both directions, with every value at the element type
+  and the class targets still host `int64` metadata. I7 gave six
+  state-owning constructors a keyword-only `dtype`, put affine parameters,
+  both BatchNorm running buffers, the evaluation snapshots, and every
+  materialized scalar at the module's dtype, added **one** dtype
+  validation to the atomic two-buffer running-statistics transaction, and
+  generalized `tf_core_dropout_forward` with its exact ABI shape unchanged
+  — leaving the random derivation untouched, so one `(seed, call_index,
+  element count)` key drops exactly the same elements at both widths.
+  Initialization did not move at either width: the same local
+  `default_rng(seed)` stream in the same order, so a float32 layer with
+  seed *S* holds exactly `float32(the float64 draw with seed S)`. Native
+  CTests moved 17 → 18 → 19 → 20 → 21 → 22 → 23 → **24**.
+  **I1 through I7 moved no public capability**, deliberately: every
+  *numerical* family in the runtime was dtype-general as of I7 and the
+  state-owning modules could be constructed at float32, while no public
+  tensor constructor produced a float32 tensor. **I8 then made float32
+  state survive a step and a file** — both optimizers execute at float32,
+  Adam's moments carry their parameter's dtype, and the native checkpoint
+  moved to **version 3** with versions `(1, 2, 3)` accepted, versions 1 and
+  2 staying float64-only formats permanently. **I9 moved the public
+  registry**, the phase's one and only public capability change, and only
+  after the integrated exact-resume proof passed:
+  `examples/native_float32_training.py` runs a Conv2d/BatchNorm2d/ReLU/
+  MaxPool2d/Dropout/Flatten/Linear/BatchNorm1d/ReLU/LayerNorm/Dropout/
+  Linear model with `NativeCrossEntropyLoss` and `NativeAdam`, two Dropout
+  layers sharing one registered generator, interrupted and uninterrupted at
+  **each** dtype and compared **only against itself** in raw IEEE-754 bit
+  patterns. I9 changed no C++, added no export and no CTest, and moved no
+  checkpoint field or version.
+  The architectural fact
+  the contract rests on is visible in the layering
+  above: **42 of Phase H's 52 exports already address their operands
+  through opaque handles**, so putting a dtype tag on the storage behind
+  those handles reaches every one of them, and only *construction* needed
+  new information — hence the **exactly two** new symbols
+  (`tf_storage_create_typed`, `tf_storage_create_uninitialized_typed`,
+  52 → **54**) and an explicit rejection of per-operation float32
+  exports. Storage is now the single dtype authority, so every view over
+  a buffer agrees by construction and no view operation casts; shapes,
+  strides, and offsets stay in logical elements, with bytes appearing only
+  at the allocation boundary; each exported call dispatches **once**
+  into a templated `float`/`double` kernel, with nothing below that
+  branching on dtype (delivered at I2 for the four transfer-shaped
+  exports, at I3 for the whole elementwise and unary family, and at I4 for
+  reductions, matmul, the narrow-backward scatter, and the two scalar
+  storage primitives; at I5 for convolution and pooling, at I6 for the
+  classification stack, and at I7 for Dropout — the last one); casting,
+  promotion, and mixed-dtype arithmetic do not exist and
+  are rejected before any allocation or mutation; **float32 accumulates in
+  float32**, structurally from I3 and by measured witness from I4, where
+  accumulation first makes binary32 and binary64-then-narrow
+  distinguishable; checkpoint **version 3** is designed but not activated, with
+  versions 1 and 2 defined as float64-only formats; exact deterministic
+  resume is proved **separately** per dtype rather than as agreement
+  between them; and the public support registry moves at milestone
+  **I9**, not before.
 
 The execution path for a native training step is:
 

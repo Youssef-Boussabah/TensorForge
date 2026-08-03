@@ -34,9 +34,22 @@ is never read or mutated (unlike the stable Linear's global-RNG
 appears only here, as host-side data preparation feeding
 ``NativeParameter`` — never in forward or backward computation.
 
+**Dtype** (Phase I, milestone I7). ``dtype`` is keyword-only, defaults to
+``"float64"``, and accepts exactly ``"float64"`` and ``"float32"``; both
+parameters are built at it and ``self.dtype`` reports it read-only. The
+**host initialization draw does not change** — same generator, same
+bound, same order, same float64 array — so a float32 layer with seed *S*
+holds exactly ``float32(the float64 draw with seed S)``, one rounding at
+the ingress boundary and no second random stream (design §12.3). The
+input must match the weight's dtype exactly; there is no promotion and no
+cast. float32 remains **publicly unsupported** (``SUPPORTED_DTYPES`` moves
+at milestone I9), so this is an internally available, tested capability
+rather than a support claim — and a call that omits ``dtype`` is
+byte-identical to every pre-Phase-I run.
+
 **Input contract** (strictly 2-D for now): ``forward(input)`` requires
 an open ``NativeTensor`` of shape ``(batch_size, in_features)`` with
-matching dtype/device (``float64``/``cpu``). Nothing is wrapped,
+matching dtype/device (the module's dtype, on ``cpu``). Nothing is wrapped,
 reshaped, flattened, or broadcast implicitly; the stable framework's
 ``Tensor``, NumPy arrays, lists, and scalars are rejected with clear
 errors, as are closed inputs/weights/biases. The output is an ordinary
@@ -62,15 +75,15 @@ after the graph completes; loading parameter values *between* forward
 and backward is memory-safe but mathematically inconsistent (there is no
 version counter — deliberately out of scope here).
 
-Still experimental and explicit: float64/cpu only, no optimizer, loss,
-training loop, activation modules, or ``NativeSequential`` yet (v3.5),
-and fully separate from ``tensorforge.nn.Linear``.
+Still experimental and explicit: cpu only, and fully separate from
+``tensorforge.nn.Linear``.
 """
 
 import math
 
 import numpy as np
 
+from ._native_dtype import normalize_module_dtype
 from .native_module import NativeModule
 from .native_parameter import NativeParameter
 from .native_tensor import NativeTensor
@@ -90,13 +103,14 @@ class NativeLinear(NativeModule):
     """A native fully connected layer: ``y = x @ weight (+ bias)``.
 
     ``NativeLinear(in_features, out_features, bias=True, *, seed=None,
-    requires_grad=True)`` — see the module docstring for the full
-    contract (weight orientation, deterministic initialization, strictly
-    2-D input semantics, frozen parameters, and state_dict keys).
+    requires_grad=True, dtype=None)`` — see the module docstring for the
+    full contract (weight orientation, deterministic initialization,
+    strictly 2-D input semantics, frozen parameters, state_dict keys, and
+    the Phase-I dtype rules).
     """
 
     def __init__(self, in_features, out_features, bias=True, *,
-                 seed=None, requires_grad=True):
+                 seed=None, requires_grad=True, dtype=None):
         # Validate every Python argument before any native allocation,
         # so a bad call never creates parameter storage it abandons.
         _validate_feature_count(in_features, "in_features")
@@ -113,29 +127,66 @@ class NativeLinear(NativeModule):
             raise TypeError(
                 f"seed must be an int or None, got {type(seed).__name__}"
             )
+        # Phase I, milestone I7 — the module's dtype, validated here rather
+        # than left to the first NativeParameter, so a bad value allocates
+        # nothing at all. ``None`` means ``"float64"``.
+        dtype = normalize_module_dtype(dtype)
         super().__init__()
         self.in_features = in_features
         self.out_features = out_features
+        self._dtype = dtype
         # Fan-in uniform initialization from a *local* generator: an int
         # seed reproduces values exactly, None draws fresh entropy, and
         # the global NumPy RNG is untouched either way. NumPy here is
         # host-side data preparation only (the from_array entry
         # boundary) — no graph is built and no native compute runs.
+        #
+        # Phase I, milestone I7 keeps this **host draw exactly as it is at
+        # every dtype** (design §12.3): the bound is computed in Python
+        # binary64, the generator is the same `default_rng(seed)`, the
+        # draws happen in the same order with the same sizes, and the
+        # result is a float64 host array. Only the *ingress conversion*
+        # differs, and it is the one NativeParameter has always performed.
+        # So a float32 layer with seed S holds exactly float32(the float64
+        # draw with seed S), the seed -> values relationship is identical
+        # across dtypes, and no later seed consumption moves. Asking NumPy
+        # for a float32 stream instead would be a different, unrelated
+        # sequence and would make the seed contract dtype-dependent.
         bound = 1.0 / math.sqrt(in_features)
         rng = np.random.default_rng(seed)
         self.weight = NativeParameter(
             rng.uniform(-bound, bound, size=(in_features, out_features)),
-            requires_grad=requires_grad,
+            requires_grad=requires_grad, dtype=dtype,
         )
         if bias:
-            self.bias = NativeParameter(
-                rng.uniform(-bound, bound, size=(out_features,)),
-                requires_grad=requires_grad,
-            )
+            # The weight's native storage is already allocated; if the bias
+            # allocation fails (e.g. MemoryError), close the weight
+            # deterministically rather than abandoning it to eventual GC, so
+            # a partially constructed layer leaks no native storage — the
+            # NativeConv2d/NativeLayerNorm/BatchNorm discipline, which this
+            # older constructor had never been given. The half-built module
+            # is then discarded as __init__ re-raises.
+            try:
+                self.bias = NativeParameter(
+                    rng.uniform(-bound, bound, size=(out_features,)),
+                    requires_grad=requires_grad, dtype=dtype,
+                )
+            except BaseException:
+                self.weight.close()
+                raise
         else:
             # Readable as None; nothing registered under "bias", so
             # traversal and state_dict() see only "weight".
             self.bias = None
+
+    @property
+    def dtype(self):
+        """The dtype this layer's parameters were constructed with —
+        read-only, ``"float64"`` unless ``dtype="float32"`` was requested
+        (Phase I, milestone I7; design §25.3). It is a *report*, never a
+        second authority: ``forward`` compares the input against the
+        weight's own tag, which is where the dtype actually lives."""
+        return self._dtype
 
     def forward(self, input):
         """``input.matmul(weight)`` plus broadcast ``add(bias)`` when

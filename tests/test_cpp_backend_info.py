@@ -56,6 +56,9 @@ def test_backend_info_shape():
         "supported_dtypes",
         "supported_devices",
         "raw_kernels",
+        # Phase I, milestone I2: the raw kernels' own dtype limitation,
+        # reported beside them and separately from ``supported_dtypes``.
+        "raw_kernel_dtypes",
         "kernels",
         "storage_object",
         "tensor_view",
@@ -83,7 +86,7 @@ def test_backend_info_shape():
     assert info["tensor_object"] == "NativeTensor"
     assert info["dtype"] == "float64"
     assert info["device"] == "cpu"
-    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_dtypes"] == ("float64", "float32")
     assert info["supported_devices"] == ("cpu",)
     assert tuple(info["kernels"]) == EXPECTED_KERNELS
     assert tuple(info["raw_kernels"]) == EXPECTED_KERNELS
@@ -184,7 +187,7 @@ def test_the_deliberate_dropout_overlap_ended_at_the_g10_closure():
     # G10 has run: the capability is closed, and the conditions that
     # justified the old allowance are settled.
     assert "dropout" not in cpp.UNSUPPORTED
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
 
 # --- guardrails: the advertised capabilities must match reality ------------
@@ -258,7 +261,7 @@ def test_phase_e_boundary_is_reported_honestly():
     assert "native_accuracy" not in info["native_losses"]
     assert info["native_metrics"] == cpp.NATIVE_METRICS == ("native_accuracy",)
     # The line is still float64/cpu only and still separate from stable.
-    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_dtypes"] == ("float64", "float32")
     assert info["supported_devices"] == ("cpu",)
     assert info["stable_framework_integration"] is False
 
@@ -316,7 +319,7 @@ def test_e8_added_no_capability_inventory_entry():
     for absent in ("tf_core_accuracy", "tf_core_argmax", "tf_core_train_step"):
         assert absent not in cpp._CHECKED_KERNELS, absent
     # The proof persists nothing new: still float64/cpu, still separate.
-    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_dtypes"] == ("float64", "float32")
     assert info["supported_devices"] == ("cpu",)
     assert info["stable_framework_integration"] is False
 
@@ -377,7 +380,7 @@ def test_f4_reports_both_batchnorm_shapes_and_frees_the_capability():
     assert "batchnorm" not in info["unsupported"]
     assert "layernorm" not in info["unsupported"]
     # ...and the remaining boundary is exactly what it was.
-    assert info["unsupported"] == ("float32", "cuda", "amp")
+    assert info["unsupported"] == ("cuda", "amp")
     # BatchNorm3d was never in scope.
     assert "NativeBatchNorm3d" not in info["native_modules"]
     assert not hasattr(experimental, "NativeBatchNorm3d")
@@ -389,7 +392,7 @@ def test_f4_reports_both_batchnorm_shapes_and_frees_the_capability():
     for symbol in ("tf_core_batch_norm", "tf_core_batch_norm_forward",
                    "tf_core_batch_norm_backward", "tf_core_layer_norm"):
         assert symbol not in cpp._CHECKED_KERNELS, symbol
-    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_dtypes"] == ("float64", "float32")
     assert info["supported_devices"] == ("cpu",)
     assert info["stable_framework_integration"] is False
 
@@ -450,8 +453,8 @@ def test_f9_closed_phase_f_without_registering_anything():
         # unrelated to this milestone, which added no module of its own.
         "NativeDropout",
     )
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_LOSSES == ("NativeMSELoss", "NativeCrossEntropyLoss")
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
@@ -486,4 +489,4 @@ def test_f9_closed_phase_f_without_registering_anything():
     # The checkpoint format did not move at closure.
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3

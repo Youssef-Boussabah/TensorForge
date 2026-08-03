@@ -435,7 +435,30 @@ def test_unary_special_values_match_numpy_bit_for_bit(op, numpy_op):
 def test_the_declined_rank_five_plan_agrees_with_the_planned_traversals(op):
     """The fallback control at the bit level: 32 NaN-rich values evaluated
     once through a rank-5 reversed view (which the plan builder declines,
-    so the retained odometer runs) and once contiguously."""
+    so the retained odometer runs) and once contiguously.
+
+    The comparison is the one this file already makes for every other
+    ordered-pair sweep, and for the same reason: **bit-exact wherever at
+    most one operand is a NaN**, NaN positions and quietness exact
+    everywhere, ``subtract`` bit-exact with nothing carved out, and — for
+    the commutative ``add``/``multiply`` with **two** NaN operands — the
+    contractual properties rather than payload identity.
+
+    That last clause is part (4) of H8's numerical contract
+    (cpp/include/tf_elementwise_internal.h), which names this exact
+    situation: a *transposed* operand is the one layout whose payload
+    selection still differs, because x86-64's ADDSD/MULSD return the
+    destination operand's NaN and a commutative operation lets the compiler
+    put either addend there. The declined operand here **is** a transposed
+    view, so this test drives precisely the carve-out. Asserting payload
+    identity was therefore stricter than the contract, and it is
+    toolchain-dependent in exactly the way the contract predicts: on this
+    machine's source, ``add`` and ``multiply`` disagree in **one** of the 32
+    positions under ``g++ -O2`` (the CI/no-CMake path) and under
+    ``clang++ -O2``/``-O3``, and in none under ``g++ -O3``, ``g++ -O0``, or
+    MSVC. Both paths return a quiet NaN, in the same position, carrying one
+    of the two operands' payloads — which is all the contract ever claimed.
+    """
     nans = PATTERNS[np.isnan(PATTERNS)]
     values = np.resize(np.concatenate([nans, PATTERNS]), 32)
     partner = np.resize(np.concatenate([PATTERNS, nans]), 32)
@@ -470,7 +493,43 @@ def test_the_declined_rank_five_plan_agrees_with_the_planned_traversals(op):
         flat_left.close()
 
     assert reversed_shape == shape[::-1]
-    assert same_bits(odometer, planned)
+
+    both_nan = (np.isnan(values) & np.isnan(partner)).reshape(shape)
+    quiet = np.uint64(0x0008000000000000)
+
+    # (1) Bit-exact everywhere at most one operand is a NaN — no exceptions,
+    # every other IEEE-754 class included.
+    mismatch = np.flatnonzero((bits(odometer) != bits(planned)) & ~both_nan)
+    assert mismatch.size == 0, (op, [
+        (hex(int(bits(values)[i])), hex(int(bits(partner)[i])),
+         hex(int(bits(odometer).ravel()[i])),
+         hex(int(bits(planned).ravel()[i])))
+        for i in mismatch[:8]])
+
+    # (2) NaN positions are identical and every NaN either path produces is
+    # quiet — a signaling-NaN operand included.
+    assert np.array_equal(np.isnan(odometer), np.isnan(planned))
+    for produced in (odometer, planned):
+        produced_nans = bits(produced)[np.isnan(produced)]
+        assert np.all((produced_nans & quiet) != 0)
+
+    # (3) subtract is not commutative, so the compiler has no operand
+    # freedom and the two-NaN pairs are exact too — asserted, not carved out.
+    if op == "subtract":
+        assert same_bits(odometer, planned)
+        return
+
+    # (4) add/multiply with **two** NaN operands: the surviving payload is
+    # outside the contract and is asserted in neither direction. What is
+    # contractual is that each path returns one of the two operands'
+    # payloads, quieted.
+    candidates = (bits(values).reshape(shape) | quiet,
+                  bits(partner).reshape(shape) | quiet)
+    for produced in (odometer, planned):
+        produced_bits = bits(produced)[both_nan]
+        assert np.all((produced_bits == candidates[0][both_nan])
+                      | (produced_bits == candidates[1][both_nan])), (
+            op, [hex(int(v)) for v in produced_bits[:6]])
 
 
 @needs_native
@@ -798,22 +857,39 @@ def test_exp_and_log_keep_the_retained_function_pointer_paths():
     and must not name any templated dispatch helper. They are excluded
     because IEEE-754 does not specify them, so a vectorizing toolchain
     would be free to return different bits — and measured, they had nothing
-    to gain."""
+    to gain.
+
+    Phase I milestone I3 made them dtype-general, which sharpens this rather
+    than relaxing it: they now name the walker at an **explicit** element
+    type (``core_unary<float>`` / ``core_unary<double>``), the exclusion is
+    asserted per dtype, and the header still holds no ``ExpOp``/``LogOp``
+    functor for a later edit to hand to a plan walk.
+    """
     source = (REPO_ROOT / "cpp" / "src" / "elementwise.cpp").read_text(
         encoding="utf-8")
-    for name in ("tf_core_exp", "tf_core_exp_contiguous",
-                 "tf_core_log", "tf_core_log_contiguous"):
+    for name, walker in (("tf_core_exp", "core_unary"),
+                         ("tf_core_exp_contiguous", "core_unary_contiguous"),
+                         ("tf_core_log", "core_unary"),
+                         ("tf_core_log_contiguous", "core_unary_contiguous")):
         body = source.split(f"TF_EXPORT void {name}(", 1)[1]
         body = body.split("\n}\n", 1)[0]
         assert "unary_dispatch<" not in body, name
         assert "unary_contiguous_dispatch<" not in body, name
-        assert ("core_unary(" in body or "core_unary_contiguous(" in body), name
+        assert "unary_by_dtype<" not in body, name
+        assert "unary_contiguous_by_dtype<" not in body, name
+        # Both instantiations go straight into the retained odometer.
+        assert f"{walker}<float>(" in body, name
+        assert f"{walker}<double>(" in body, name
     # ...and the plan machinery never names an exponential or a logarithm.
     header = (REPO_ROOT / "cpp" / "include"
               / "tf_elementwise_internal.h").read_text(encoding="utf-8")
+    functors = header.split("// The operation functors", 1)[1]
     for banned in ("std::exp", "std::log", "ExpOp", "LogOp"):
-        assert banned not in header.split("// The operation functors.", 1)[1], \
-            banned
+        assert banned not in functors, banned
+    # No functor exists for either anywhere in the shared header, so an
+    # operation the plan walkers could reach cannot even be named.
+    for banned in ("ExpOp", "LogOp"):
+        assert banned not in header, banned
 
 
 @needs_native
@@ -841,7 +917,11 @@ def test_exp_and_log_still_produce_numpys_values():
 # 7. Scope — no new export, no dispatch control, no public surface
 # ==========================================================================
 
-EXPECTED_TF_EXPORTS = 52
+# H8 added no exported symbol: Phase H's surface is still the 52 H1 left.
+# The live library exports two more — Phase I milestone I1's typed storage
+# creators — so the Phase-H claim is checked against the Phase-H subset.
+PHASE_H_TF_EXPORTS = 52
+EXPECTED_TF_EXPORTS = 54
 
 FORBIDDEN_NAMES = (
     "tf_elementwise_set_path", "tf_elementwise_select",
@@ -862,6 +942,7 @@ def test_h8_added_no_exported_symbol():
         pytest.skip("this image format is not parsed here")
     exported = sorted(name for name in names if name.startswith("tf_"))
     assert len(exported) == EXPECTED_TF_EXPORTS, exported
+    assert len(h1.phase_h_export_names(exported)) == PHASE_H_TF_EXPORTS
     for name in ("tf_core_add", "tf_core_subtract", "tf_core_multiply",
                  "tf_core_relu", "tf_core_relu_backward",
                  "tf_core_contiguous_copy"):
@@ -913,7 +994,13 @@ def test_no_environment_variable_or_dispatch_hook_exists_in_the_sources():
     statics = re.findall(r"\bstatic\b[^;{]*", header_code)
     assert statics, "the scan found no static at all — is it still valid?"
     for occurrence in statics:
-        assert occurrence.startswith("static inline double apply("), occurrence
+        # Every functor's ``apply`` is either the ``double`` form the H8
+        # operations use or the scalar-type-deduced form the identity map
+        # gained at Phase I milestone I2 (so that a float operand stays a
+        # float instead of round-tripping through double). Both are pure
+        # static member functions of a stateless struct; neither is state.
+        assert occurrence.startswith(("static inline double apply(",
+                                      "static inline T apply(")), occurrence
 
 
 def test_the_python_backend_gained_no_dispatch_or_profiling_surface():
@@ -933,16 +1020,24 @@ def test_the_python_backend_gained_no_dispatch_or_profiling_surface():
 def test_the_native_sources_still_declare_the_retained_generic_walkers():
     """The retained reference path is not merely documented — it is still
     in the file, still spelled with the odometer's counter, and still
-    reachable as the fallback of every dispatch helper."""
+    reachable as the fallback of every dispatch helper.
+
+    Phase I milestone I3 gave each walker an explicit scalar type, so the
+    fallback is now named as ``core_unary<T>`` / ``core_binary<T>``: one
+    source, both instantiations, still the only traversal that can address
+    an arbitrary layout.
+    """
     text = (REPO_ROOT / "cpp" / "src" / "elementwise.cpp").read_text(
         encoding="utf-8")
     for name in ("void core_unary(", "void core_binary(",
-                 "void core_unary_contiguous("):
+                 "void core_unary_contiguous(", "void core_unary_typed(",
+                 "void core_binary_typed("):
         assert name in text, name
     assert "tf::make_counter(ndim)" in text
-    # ...and the two dispatch helpers each end in it.
-    for helper, fallback in (("void unary_dispatch(", "core_unary("),
-                             ("void binary_dispatch(", "core_binary(")):
+    # ...and the two dispatch helpers each end in it, at the element type
+    # their caller dispatched on.
+    for helper, fallback in (("void unary_dispatch(", "core_unary<T>("),
+                             ("void binary_dispatch(", "core_binary<T>(")):
         body = text.split(helper, 1)[1].split("\n}\n", 1)[0]
         assert fallback in body, helper
         assert "build_" in body, helper
@@ -1171,7 +1266,7 @@ def test_a_failed_coefficient_allocation_leaves_the_running_state_intact():
     module.train()
     x = NativeTensor.from_array(
         np.random.default_rng(8).standard_normal((6, 8)))
-    original = native_batchnorm.NativeTensor.full
+    original = native_batchnorm.NativeTensor._typed_full
     calls = {"n": 0}
 
     def failing_full(*args, **kwargs):
@@ -1186,12 +1281,12 @@ def test_a_failed_coefficient_allocation_leaves_the_running_state_intact():
         var_before = module.running_var.to_numpy().copy()
         mean_id = id(module.running_mean)
         var_id = id(module.running_var)
-        native_batchnorm.NativeTensor.full = staticmethod(failing_full)
+        native_batchnorm.NativeTensor._typed_full = staticmethod(failing_full)
         try:
             with pytest.raises(MemoryError, match="injected"):
                 module.forward(x)
         finally:
-            native_batchnorm.NativeTensor.full = original
+            native_batchnorm.NativeTensor._typed_full = original
         assert same_bits(module.running_mean.to_numpy(), mean_before)
         assert same_bits(module.running_var.to_numpy(), var_before)
         assert id(module.running_mean) == mean_id
@@ -1442,11 +1537,11 @@ def test_no_fused_normalization_operation_was_added():
 def test_no_capability_dtype_device_or_checkpoint_value_moved():
     from tensorforge.experimental import native_checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2}
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2, 3}
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
 
 

@@ -39,8 +39,22 @@ values, ``seed=None`` draws fresh entropy, and the global NumPy RNG is
 never read or mutated. NumPy appears only here as host-side data
 preparation feeding ``NativeParameter`` — never in forward or backward.
 
+**Dtype** (Phase I, milestone I7). ``dtype`` is keyword-only, defaults to
+``"float64"``, and accepts exactly ``"float64"`` and ``"float32"``; both
+parameters are built at it and ``self.dtype`` reports it read-only. The
+Core Conv2d kernels have been dtype-general since milestone I5, so this
+milestone wires module state to them and adds **no** kernel, export,
+dispatch, or workspace. The **host initialization draw is unchanged at
+every dtype** — same generator, same conv fan-in, same order — so a
+float32 layer with seed *S* holds exactly ``float32(the float64 draw with
+seed S)`` (design §12.3). The input must match the weight's dtype exactly;
+there is no promotion and no cast. float32 remains **publicly
+unsupported** until milestone I9, and a call that omits ``dtype`` is
+byte-identical to every pre-Phase-I run.
+
 **Constructor** ``NativeConv2d(in_channels, out_channels, kernel_size,
-stride=1, padding=0, bias=True, *, seed=None, requires_grad=True)``.
+stride=1, padding=0, bias=True, *, seed=None, requires_grad=True,
+dtype=None)``.
 ``in_channels`` / ``out_channels`` are real positive ints (bools
 rejected). ``kernel_size`` / ``stride`` (each ≥ 1) and ``padding`` (≥ 0)
 are an int or a 2-element ``(height, width)`` pair, normalized to and
@@ -55,8 +69,8 @@ re-raising, so a failed construction leaves no live native storage behind
 
 **Input contract:** ``forward(input)`` requires an open 4-D NCHW
 ``NativeTensor`` whose ``shape[1] == in_channels`` and whose dtype/device
-match the weight (``float64``/``cpu``). Nothing is wrapped, reshaped, or
-broadcast implicitly; the stable framework's ``Tensor``, NumPy arrays,
+match the weight (the module's dtype, on ``cpu``). Nothing is wrapped,
+reshaped, or broadcast implicitly; the stable framework's ``Tensor``, arrays,
 lists, scalars, closed tensors, wrong-rank, and channel-mismatched inputs
 are rejected with clear errors before ``conv2d`` runs. Non-contiguous
 inputs are supported through the existing Conv2d Policy-B copy path. The
@@ -69,8 +83,7 @@ in ``state_dict()``, but no gradient — a requiring input still receives
 its gradient). State loading and checkpoints follow the existing v3.3 /
 v3.14 paths unchanged (independent owning snapshots, atomic
 validate→stage→commit, identity preserved). Fully separate from
-``tensorforge.nn.Conv2d``; float64/cpu only; experimental and explicit.
-MaxPool2d (D8–D10) remains unimplemented.
+``tensorforge.nn.Conv2d``; cpu only; experimental and explicit.
 """
 
 import math
@@ -78,6 +91,7 @@ import math
 import numpy as np
 
 from ..backends.cpp import _spatial_pair
+from ._native_dtype import normalize_module_dtype
 from .native_module import NativeModule
 from .native_parameter import NativeParameter
 from .native_tensor import NativeTensor
@@ -98,14 +112,15 @@ class NativeConv2d(NativeModule):
     bias, stride, padding)`` over the existing D6 autograd primitive.
 
     ``NativeConv2d(in_channels, out_channels, kernel_size, stride=1,
-    padding=0, bias=True, *, seed=None, requires_grad=True)`` — see the
-    module docstring for the full contract (OIHW weight layout,
+    padding=0, bias=True, *, seed=None, requires_grad=True, dtype=None)``
+    — see the module docstring for the full contract (OIHW weight layout,
     deterministic fan-in initialization, 4-D NCHW input semantics, frozen
-    parameters, and state_dict keys).
+    parameters, state_dict keys, and the Phase-I dtype rules).
     """
 
     def __init__(self, in_channels, out_channels, kernel_size, stride=1,
-                 padding=0, bias=True, *, seed=None, requires_grad=True):
+                 padding=0, bias=True, *, seed=None, requires_grad=True,
+                 dtype=None):
         # Validate and normalize every Python argument before any native
         # allocation, so a bad call never creates parameter storage it
         # abandons. kernel_size/stride (>= 1) and padding (>= 0) reuse the
@@ -128,24 +143,35 @@ class NativeConv2d(NativeModule):
             raise TypeError(
                 f"seed must be an int or None, got {type(seed).__name__}"
             )
+        # Phase I, milestone I7 — the module's dtype, validated before any
+        # native allocation. ``None`` means ``"float64"``.
+        dtype = normalize_module_dtype(dtype)
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.kernel_size = kernel_size
         self.stride = stride
         self.padding = padding
+        self._dtype = dtype
         # Fan-in uniform initialization from a *local* generator (the
         # native convention — no global RNG), using the conv fan-in the
         # stable Conv2d uses. NumPy here is host-side data preparation only
         # (the NativeParameter entry boundary): no graph is built and no
         # native compute runs.
+        #
+        # Phase I, milestone I7 keeps the host draw identical at every dtype
+        # (design §12.3): same generator, same conv fan-in, same bound
+        # computed in binary64, same draw order and sizes, same float64 host
+        # array. A float32 layer with seed S therefore holds exactly
+        # float32(the float64 draw with seed S) — one rounding, at the
+        # NativeParameter ingress boundary, and no second random stream.
         kh, kw = kernel_size
         fan_in = in_channels * kh * kw
         bound = 1.0 / math.sqrt(fan_in)
         rng = np.random.default_rng(seed)
         self.weight = NativeParameter(
             rng.uniform(-bound, bound, size=(out_channels, in_channels, kh, kw)),
-            requires_grad=requires_grad,
+            requires_grad=requires_grad, dtype=dtype,
         )
         if bias:
             # The weight's native storage is already allocated; if the bias
@@ -156,7 +182,7 @@ class NativeConv2d(NativeModule):
             try:
                 self.bias = NativeParameter(
                     rng.uniform(-bound, bound, size=(out_channels,)),
-                    requires_grad=requires_grad,
+                    requires_grad=requires_grad, dtype=dtype,
                 )
             except BaseException:
                 self.weight.close()
@@ -165,6 +191,15 @@ class NativeConv2d(NativeModule):
             # Readable as None; nothing registered under "bias", so
             # traversal and state_dict() see only "weight".
             self.bias = None
+
+    @property
+    def dtype(self):
+        """The dtype this layer's parameters were constructed with —
+        read-only, ``"float64"`` unless ``dtype="float32"`` was requested
+        (Phase I, milestone I7; design §25.3). A report, not a second
+        authority: ``forward`` compares the input against the weight's own
+        tag."""
+        return self._dtype
 
     def forward(self, input):
         """``input.conv2d(weight, bias, stride, padding)`` over the

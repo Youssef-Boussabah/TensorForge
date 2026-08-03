@@ -1083,8 +1083,8 @@ def test_f7_changes_no_capability_inventory():
         "save_native_checkpoint", "load_native_checkpoint",
         "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # No normalization operation, Core method, or kernel appeared.
     for name in ("layer_norm", "batch_norm", "layernorm", "batchnorm",
@@ -1106,7 +1106,7 @@ def test_f7_adds_no_kernel_abi_declaration_or_checkpoint_change():
     from tensorforge.experimental import native_checkpoint
 
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     for absent in ("tf_core_layer_norm", "tf_core_batch_norm",
                    "tf_core_normalize", "tf_core_running_update"):
         assert absent not in cpp._CHECKED_KERNELS, absent

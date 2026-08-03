@@ -1,12 +1,13 @@
-// Internal (non-ABI) declarations of the two sum-reduction traversals the
-// production reduction kernel dispatches between, and the metadata
-// predicate that chooses (Phase H, milestone H6). See
+// Internal (non-ABI) definitions of the two sum-reduction traversals the
+// production reduction kernel dispatches between, the narrow-backward
+// scatter, and the metadata predicate that chooses between the two
+// traversals (Phase H, milestone H6). See
 // docs/native_cpu_performance_design.md §16.6.
 //
 // Like the H2 matmul paths, the H5 copy predicate, and the Conv2d/pooling
 // compute kernels these are deliberately NOT part of the public C ABI:
-// plain C++ functions in ``namespace tf`` with hidden visibility, holding
-// only float64 traversal and arithmetic. They allocate nothing, report no
+// plain C++ in ``namespace tf`` with hidden visibility, holding only
+// traversal and arithmetic at the element type. They allocate nothing, report no
 // error, and mutate no input. The exported, guarded ``tf_core_sum``
 // wrapper lives in cpp/src/reduction.cpp alongside them, and the axis
 // normalization, the output-shape construction, the write-stride
@@ -28,6 +29,32 @@
 // ``tf_core_narrow_backward`` — the odometer *dual* of this reduction, a
 // scatter rather than an accumulate — is deliberately **out of H6's
 // scope** and keeps the generic odometer unchanged.
+//
+// ---------------------------------------------------------------------------
+// Phase I, milestone I4: both traversals carry a scalar type parameter
+// ---------------------------------------------------------------------------
+//
+// ``T`` is **deduced from the pointer arguments**, so every pre-Phase-I call
+// site — all of which pass ``double*`` — instantiates ``T = double`` and is
+// the pre-I4 traversal statement for statement. ``T = float`` is the same
+// source at binary32.
+//
+// One traversal, two instantiations, is the whole point: the dtypes cannot
+// drift apart because there is nothing separate to drift, and float64 keeps
+// running the code Phase H measured. The two definitions moved into this
+// header for the ordinary reason a template must — so both instantiations
+// are available to the exported wrapper in reduction.cpp *and* to the CTests
+// that compile it directly — and neither loop, neither carry, and neither
+// accumulator changed in the move.
+//
+// **The accumulator type is exactly ``T``** (design §10.1). A float32
+// reduction loads ``float``, accumulates in ``float``, rounds every partial
+// sum as binary32, and stores ``float``; there is no widening intermediate,
+// no double accumulator, no Kahan compensation, and no reassociation. That
+// is what makes the float32 result a genuinely different value from
+// "accumulate in binary64 and round once at the end" — which, unlike the
+// single correctly-rounded operations of I3, is **observable**, and is
+// witnessed directly by test rather than argued.
 #pragma once
 
 #include <cstdint>
@@ -127,11 +154,38 @@ bool reduce_prefers_contiguous_blocks(
 // representable in int64.
 //
 // Allocates nothing and cannot throw (noexcept).
-void sum_generic_strided(
-    const double* src, double* dst,
+template <class T>
+inline void sum_generic_strided(
+    const T* src, T* dst,
     const int64_t* shape, const int64_t* in_strides,
     const int64_t* out_strides, int64_t offset, int64_t ndim,
-    int64_t* counter) noexcept;
+    int64_t* counter
+) noexcept {
+    int64_t total = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        total *= shape[d];
+        counter[d] = 0;
+    }
+    int64_t in_pos = offset;
+    int64_t out_pos = 0;
+    for (int64_t i = 0; i < total; ++i) {
+        // The accumulation, in the element type: ``dst`` is a ``T*`` and
+        // ``src`` is a ``const T*``, so no operand is widened on the way in
+        // and no result is narrowed on the way out.
+        dst[out_pos] += src[in_pos];
+        for (int64_t d = ndim - 1; d >= 0; --d) {
+            ++counter[d];
+            in_pos += in_strides[d];
+            out_pos += out_strides[d];
+            if (counter[d] < shape[d]) {
+                break;
+            }
+            counter[d] = 0;
+            in_pos -= shape[d] * in_strides[d];
+            out_pos -= shape[d] * out_strides[d];
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // The optimized path: a flat block traversal over the
@@ -211,8 +265,117 @@ void sum_generic_strided(
 // ``reduce_prefers_contiguous_blocks`` with these extents. Allocates
 // nothing (there is no scratch buffer, workspace, or pool) and cannot
 // throw (noexcept).
-void sum_contiguous_blocks(
-    const double* src, double* dst,
-    int64_t outer, int64_t mid, int64_t inner, int64_t offset) noexcept;
+template <class T>
+inline void sum_contiguous_blocks(
+    const T* src, T* dst,
+    int64_t outer, int64_t mid, int64_t inner, int64_t offset
+) noexcept {
+    if (inner == 1) {
+        // One contiguous ascending source run per destination cell. The
+        // accumulator is seeded from the destination, so the
+        // accumulate-into contract and the signed-zero behavior are
+        // exactly the generic path's, and the running total never makes a
+        // round trip through memory.
+        //
+        // It is declared ``T``, not ``double``: at ``T = float`` a
+        // ``double`` accumulator here would silently make every float32
+        // reduction a mixed-precision one (design §10.1), and it would do
+        // so *only* on the optimized path, so the two traversals would
+        // stop agreeing. Following the element type is what keeps them
+        // the same reduction.
+        const T* run = src + offset;
+        for (int64_t o = 0; o < outer; ++o) {
+            T accumulator = dst[o];
+            for (int64_t m = 0; m < mid; ++m) {
+                accumulator += run[m];
+            }
+            dst[o] = accumulator;
+            run += mid;
+        }
+        return;
+    }
+    // A contiguous source row added elementwise into a contiguous
+    // destination row, ``mid`` times per outer block. Distinct ``i`` are
+    // distinct destination cells, so nothing here is a horizontal
+    // reduction and no addition is reassociated.
+    const T* in_row = src + offset;
+    T* out_row = dst;
+    for (int64_t o = 0; o < outer; ++o) {
+        for (int64_t m = 0; m < mid; ++m) {
+            for (int64_t i = 0; i < inner; ++i) {
+                out_row[i] += in_row[i];
+            }
+            in_row += inner;
+        }
+        out_row += inner;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Narrow's backward scatter — the odometer *dual* of the reduction above
+// (Phase I, milestone I4 gave it the same scalar type parameter).
+// ---------------------------------------------------------------------------
+//
+// It walks the (smaller) narrowed shape and **assigns** each upstream
+// element into its own destination cell: the write position advances by
+// ``out_strides`` — the row-major strides of the FULL parent shape, none
+// reduced — from a base ``out_offset`` that skips the leading ``start``
+// slabs along the narrowed dimension. Narrow regions never overlap, so each
+// upstream element maps to exactly one distinct cell and a plain assignment
+// is correct.
+//
+// **This is a scatter, not a reduction**, and the difference is
+// load-bearing rather than terminological: its destination stride vector
+// has no zeros, so it has no accumulation to preserve and no reduced run to
+// factorize — which is why H6 left it alone and why it has one traversal
+// rather than two. It is also **not** an identity copy: it writes only the
+// narrowed region and every un-narrowed cell keeps the zero the allocation
+// gave it, and that zero *is* the gradient there. The caller must therefore
+// supply zero-initialized storage at both dtypes (H1 rejected this
+// destination explicitly).
+//
+// Assignment performs no arithmetic, so at both widths it reproduces the
+// upstream's object representation exactly — signed zeros and NaN payloads
+// included — for the cells it touches.
+//
+// ``counter`` is a caller-owned scratch array of at least ``ndim``
+// ``int64_t`` slots, for the same reason ``sum_generic_strided`` takes one:
+// the RAII allocation stays in the exported wrapper, where the guard can map
+// a failure onto the C ABI error contract.
+//
+// Preconditions (guaranteed by the exported wrapper and the Core layer; NOT
+// re-validated here): both pointers are non-null; ``ndim >= 1``; every
+// dimension is positive; every addressed element lies inside its storage;
+// ``dst`` aliases no part of ``upstream``; every integer product and offset
+// is representable in int64. Allocates nothing and cannot throw (noexcept).
+template <class T>
+inline void narrow_backward_scatter(
+    const T* upstream, T* dst,
+    const int64_t* shape, const int64_t* u_strides,
+    const int64_t* out_strides, int64_t u_offset, int64_t out_offset,
+    int64_t ndim, int64_t* counter
+) noexcept {
+    int64_t total = 1;
+    for (int64_t d = 0; d < ndim; ++d) {
+        total *= shape[d];
+        counter[d] = 0;
+    }
+    int64_t u_pos = u_offset;
+    int64_t out_pos = out_offset;
+    for (int64_t i = 0; i < total; ++i) {
+        dst[out_pos] = upstream[u_pos];
+        for (int64_t d = ndim - 1; d >= 0; --d) {
+            ++counter[d];
+            u_pos += u_strides[d];
+            out_pos += out_strides[d];
+            if (counter[d] < shape[d]) {
+                break;
+            }
+            counter[d] = 0;
+            u_pos -= shape[d] * u_strides[d];
+            out_pos -= shape[d] * out_strides[d];
+        }
+    }
+}
 
 }  // namespace tf

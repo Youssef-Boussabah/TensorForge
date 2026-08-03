@@ -742,7 +742,7 @@ def test_winner_buffer_never_appears_publicly():
     assert not [name for name in public if "indices" in name.lower()]
     # Pooling adds no parameters or buffers to the native stack.
     assert not hasattr(y, "parameters")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     y.close()
     xi.close()
 

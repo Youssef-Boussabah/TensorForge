@@ -2550,6 +2550,60 @@ last milestone at which that is still true.
 
 ---
 
+## 17.1 Forward reference, added with Phase I milestone I7
+
+One later phase generalized the Dropout forward to a second element type
+without changing a single Phase-G decision, and it is recorded in its own
+contract rather than restated here: **Phase I milestone I7**
+([native_dtype_float32_design.md](native_dtype_float32_design.md) §14 and
+§29) made `tf_core_dropout_forward` dtype-general.
+
+**Nothing about the randomness changed, and that is the load-bearing
+statement.** The algorithm identifier `tensorforge.splitmix64`,
+`ALGORITHM_VERSION == 1`, the finalizer constants and shift amounts, the
+per-call stream-key derivation, the per-element bit derivation, the
+53-bit bits-to-uniform conversion of §4.4, the strict `<` comparison, the
+committed known-answer vectors of §4.7, the counter-exhaustion rule, the
+reserve → commit/abandon call transaction of §5, the reservation lock, the
+generator's state representation, and the version-2 checkpoint generator
+schema are **all exactly as this document defines them**. `dropout_uniform`
+in particular stays a **binary64** value at every tensor dtype, deliberately
+and permanently.
+
+The consequence is the property Phase I chose it for: **for one
+`(seed, call_index, element count)` key, a float32 Dropout and a float64
+Dropout drop exactly the same elements.** Only the values written differ —
+the dropped multiplier is `T(0)` and the kept one is
+`static_cast<T>(1.0 / (1.0 - p))`, computed once in binary64 and narrowed
+once, so §4.4's "one reciprocal per call, exactly two distinct mask values"
+rule holds at both widths. Deriving a 24-bit uniform for float32 was
+**rejected**: it would have made the drop *pattern* dtype-dependent for the
+same key, so two runs of one model at two widths would diverge in structure
+rather than only in rounding, and every committed vector above would have
+needed a second, unrelated form.
+
+What I7 changed, structurally: `tf::dropout_forward_contiguous` became a
+template deduced from its pointer arguments and its **definition** moved
+from `cpp/src/random.cpp` into `cpp/include/tf_random_internal.h`, because
+a template must be visible where it is instantiated and both instantiations
+have to reach the exported wrapper *and* the dependency-free CTest that
+compiles the source directly. `T = double` is the Phase-G kernel statement
+for statement. The export keeps its **exact ABI shape** — the same symbol,
+the same eight arguments in the same order with the same types, so a
+previously compiled caller links and runs identically — and gained one
+operand-agreement guard over its three handles plus one dispatch above the
+kernel. §7.3's tensor contract now reads "the input's dtype" wherever it
+read "float64", including the mask; everything else in it is unchanged, and
+§7.4's two-allocation atomicity, §7.5's no-backward-kernel rule, and
+§7.6's no-generator-in-the-runtime rule are untouched.
+
+Call accounting is unchanged and is asserted **identical at both widths**
+on every path of §5 and §14: one call for a successful stochastic forward,
+none for a failed one, none in evaluation, none at `p == 0`. The generator
+took no dtype argument and must never gain one — its state is
+dtype-independent — and neither did `NativeDropout`, which inherits its
+width from its input.
+
 ## 18. Phase-closure requirements
 
 Milestone **G10** closes the phase only when all of the following are

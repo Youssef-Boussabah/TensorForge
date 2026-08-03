@@ -3085,8 +3085,8 @@ def test_the_generator_layer_ships_no_dropout_or_random_operation():
 
 
 def test_g1_moved_no_capability_registry_value():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "NativeGenerator" not in cpp.NATIVE_MODULES
     for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS,
@@ -3105,8 +3105,8 @@ def test_the_checkpoint_format_name_never_moves_and_the_version_did():
     from tensorforge.experimental import native_checkpoint
 
     assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     # G5 serializes generator state through the generator's own locked
     # snapshot/replacement transactions — never by reaching into the
     # generator's private lock, reservation slot, or token machinery.

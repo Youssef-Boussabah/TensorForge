@@ -545,13 +545,42 @@ def test_dtype_device_preserved_through_ops_and_views():
 
 @needs_native
 def test_constructors_reject_unsupported_dtype_device():
+    # "float16" stands where "float32" used to: float32 became a supported
+    # dtype at Phase I milestone I9 and is covered by the acceptance test
+    # below.
     for ctor in (
-        lambda: NativeTensor.zeros((2, 2), dtype="float32"),
+        lambda: NativeTensor.zeros((2, 2), dtype="float16"),
         lambda: NativeTensor.full((2,), 0.0, device="cuda"),
         lambda: NativeTensor.from_array([1.0], dtype="int64"),
+        lambda: NativeTensor.zeros((2, 2), dtype="float32", device="cuda"),
     ):
         with pytest.raises(ValueError):
             ctor()
+
+
+@needs_native
+def test_constructors_accept_both_supported_dtypes():
+    """The other half of the boundary, since Phase I milestone I9. float64
+    stays the default at all three factories, and float32 has to be asked
+    for explicitly — it is never inferred from the input."""
+    for dtype in ("float64", "float32"):
+        for ctor in (
+            lambda: NativeTensor.zeros((2, 2), dtype=dtype),
+            lambda: NativeTensor.full((2,), 1.0, dtype=dtype),
+            lambda: NativeTensor.from_array([1.0, 2.0], dtype=dtype),
+        ):
+            tensor = ctor()
+            try:
+                assert tensor.dtype == dtype
+            finally:
+                tensor.close()
+    for default in (NativeTensor.zeros((2, 2)),
+                    NativeTensor.full((2,), 1.0),
+                    NativeTensor.from_array(np.ones(2, dtype=np.float32))):
+        try:
+            assert default.dtype == "float64"
+        finally:
+            default.close()
 
 
 @needs_native

@@ -448,7 +448,7 @@ def test_native_checkpoint_archive_schema_is_locked(tmp_path):
         "metadata",
     }
     assert manifest["format"] == "tensorforge.native_checkpoint"
-    assert manifest["format_version"] == 2
+    assert manifest["format_version"] == 3
     # A model with no registered generators writes an explicit null, so
     # absence is stated rather than inferred from a missing field (G5,
     # design §10.6).
@@ -468,7 +468,22 @@ def test_native_checkpoint_archive_schema_is_locked(tmp_path):
     assert section["type"] == "NativeAdam"
     assert section["state_format_version"] == 1
     assert section["step_counts"] == [1, 1]
-    assert section["m"] == ["optimizer::m::000000", "optimizer::m::000001"]
+    # Version 3 carries each moment as an entry object of the same shape
+    # as a model entry, rather than the bare archive name v1/v2 used, so a
+    # moment's shape and dtype are stated rather than inferred positionally
+    # from "parameters" (Phase I, milestone I8; design §16.2).
+    assert section["m"] == [
+        {"array": "optimizer::m::000000", "shape": [2, 3],
+         "dtype": "float64", "device": "cpu"},
+        {"array": "optimizer::m::000001", "shape": [3],
+         "dtype": "float64", "device": "cpu"},
+    ]
+    assert section["v"] == [
+        {"array": "optimizer::v::000000", "shape": [2, 3],
+         "dtype": "float64", "device": "cpu"},
+        {"array": "optimizer::v::000001", "shape": [3],
+         "dtype": "float64", "device": "cpu"},
+    ]
     assert manifest["metadata"] == {"epoch": 1}
     # Nothing volatile is serialized: no ids, pointers, reprs,
     # gradients, graphs, versions, or closed flags.
@@ -529,7 +544,7 @@ def test_native_checkpoint_load_staging_failure_leaves_model_untouched(
     """A failure while staging a model tensor during load (phase 2, before
     the commit) must close every staged NativeTensor and leave the live
     model byte-for-byte unchanged, then recover on a valid load. Generic
-    checkpoint infrastructure: the ``NativeTensor.from_array`` staging seam
+    checkpoint infrastructure: the ``NativeTensor._typed_from_array`` staging seam
     is the same for any model, with or without buffers."""
     model = _mlp()
     _set_grads(model)
@@ -537,7 +552,7 @@ def test_native_checkpoint_load_staging_failure_leaves_model_untouched(
     save_native_checkpoint(path, model)
     fingerprint = _model_fingerprint(model)
 
-    real_from_array = NativeTensor.from_array
+    real_from_array = NativeTensor._typed_from_array
     calls = {"n": 0}
 
     def failing_from_array(*args, **kwargs):
@@ -547,7 +562,7 @@ def test_native_checkpoint_load_staging_failure_leaves_model_untouched(
         return real_from_array(*args, **kwargs)
 
     monkeypatch.setattr(
-        NativeTensor, "from_array", staticmethod(failing_from_array)
+        NativeTensor, "_typed_from_array", staticmethod(failing_from_array)
     )
     with pytest.raises(MemoryError):
         load_native_checkpoint(path, model)
@@ -624,7 +639,7 @@ def _corrupt_cases(source, tmp_path):
 
     add("wrong-format",
         lambda m: {**m, "format": "tensorforge.checkpoint"})
-    add("unsupported-version", lambda m: {**m, "format_version": 3})
+    add("unsupported-version", lambda m: {**m, "format_version": 4})
     add("version-zero", lambda m: {**m, "format_version": 0})
     add("missing-field",
         lambda m: {k: v for k, v in m.items() if k != "metadata"})

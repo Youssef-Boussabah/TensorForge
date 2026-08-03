@@ -267,6 +267,101 @@ class NativeTensor:
         tensor._init_requires_grad(requires_grad)
         return tensor
 
+    @classmethod
+    def _typed_from_array(cls, values, dtype, device="cpu"):
+        """Private: a contiguous tensor at an **internally representable**
+        dtype holding a copy of ``values`` (Phase I, milestone I8).
+
+        The tensor-level counterpart of
+        ``cpp.NativeTensorCore._typed_from_array`` (I2), private for
+        ``_typed_zeros``'s reason and completing the same small family: the
+        typed ingress boundary, for state that arrives as host data already
+        carrying its own width.
+
+        Its one caller is the native checkpoint loader. A version-3 archive
+        declares each entry's dtype explicitly and the loader has already
+        proved the stored array matches that declaration exactly, in native
+        byte order, so the tensor it stages must be built at the declared
+        width — building it at float64 beside a float32 destination would
+        be the mixed-dtype request the runtime refuses (design §9), and
+        there is no cast that could reconcile them.
+
+        Ingress is **not** a tensor cast (design §9.4): the host array's
+        dtype is validated against ``dtype`` before anything is allocated,
+        so this copies matching bits rather than converting between widths.
+        It widens public construction by exactly nothing:
+        ``NativeTensor.from_array(..., dtype="float32")`` raises unchanged.
+        The result is always a gradient-free leaf — checkpointed state is
+        installed through ``copy_value_`` and the loaders, never adopted as
+        a graph node."""
+        tensor = cls._from_core(
+            cpp.NativeTensorCore._typed_from_array(values, dtype,
+                                                   device=device)
+        )
+        tensor._init_requires_grad(False)
+        return tensor
+
+    @classmethod
+    def _typed_zeros(cls, shape, dtype, device="cpu"):
+        """Private: a row-major contiguous all-zero tensor of ``shape`` at
+        an **internally representable** dtype (Phase I, milestone I7).
+
+        The tensor-level counterpart of the Core's dtype-trusting zeroed
+        constructor — the same shape validation, the same storage
+        ownership, the same zeroed allocation, the same ``close()``
+        semantics — differing from the
+        public ``zeros`` in exactly one respect: the dtype is validated
+        against the internal table rather than the public registry.
+
+        It exists because a **module's** persistent numeric state has to be
+        built at the module's own dtype: BatchNorm's ``running_mean`` is
+        this call. Building it at float64 and then meeting a float32 input
+        would be a mixed-dtype request, which the runtime refuses (design
+        §9); building it through the public ``zeros`` is impossible while
+        float32 is unsupported.
+
+        Private on purpose, and it widens public construction by exactly
+        nothing: ``NativeTensor.zeros(..., dtype="float32")`` raises
+        unchanged. The result is always a gradient-free leaf — a running
+        statistic is never trainable."""
+        tensor = cls._from_core(
+            cpp.NativeTensorCore.zeros(
+                shape, dtype=dtype, device=device, _trusted_dtype=True
+            )
+        )
+        tensor._init_requires_grad(False)
+        return tensor
+
+    @classmethod
+    def _typed_full(cls, shape, fill_value, dtype, device="cpu"):
+        """Private: a row-major contiguous tensor of ``shape`` filled with
+        ``fill_value`` at an **internally representable** dtype (Phase I,
+        milestone I7).
+
+        The tensor-level counterpart of
+        ``cpp.NativeTensorCore._typed_full`` (I4), private for
+        ``_typed_zeros``'s reason and used for the same two things: a
+        module's persistent numeric state at the module's dtype
+        (BatchNorm's ``running_var``), and the **graph-dtype scalar
+        constants** a composed normalization forward materializes — ``eps``,
+        ``momentum``, and ``1 - momentum``. Those are the constants design
+        §11.4 forbids introducing at literal float64 into a float32 graph.
+
+        The scalar itself crosses the ABI as a ``double`` and is narrowed
+        **once**, before the fill loop, inside ``tf_storage_fill`` (design
+        §7.4). Converting a scalar argument is not casting a tensor.
+
+        It widens public construction by exactly nothing:
+        ``NativeTensor.full(..., dtype="float32")`` raises unchanged. The
+        result is always a gradient-free leaf."""
+        tensor = cls._from_core(
+            cpp.NativeTensorCore._typed_full(
+                shape, fill_value, dtype, device=device
+            )
+        )
+        tensor._init_requires_grad(False)
+        return tensor
+
     def _init_requires_grad(self, requires_grad):
         """Validate and set a leaf's ``requires_grad`` flag. Only ``bool``
         is accepted (``int``/``None``/... raise a clear TypeError, so a
@@ -437,8 +532,10 @@ class NativeTensor:
             # transient cores are closed as soon as they are consumed.
             result_core = result._require_open()
             inverse = result_core.reciprocal()
-            half = cpp.NativeTensorCore.full(
-                (), 0.5, dtype=result_core.dtype, device=result_core.device
+            # The constant is built at the **graph's** dtype (design §11.4),
+            # through the private typed constructor — see ``_negated``.
+            half = cpp.NativeTensorCore._typed_full(
+                (), 0.5, result_core.dtype, device=result_core.device
             )
             local = inverse.multiply(half)
             half.close()
@@ -474,8 +571,10 @@ class NativeTensor:
             # broadcast -1.0 scale — native cores only.
             result_core = result._require_open()
             squared = result_core.multiply(result_core)
-            neg_one = cpp.NativeTensorCore.full(
-                (), -1.0, dtype=result_core.dtype, device=result_core.device
+            # The constant is built at the **graph's** dtype (design §11.4),
+            # through the private typed constructor — see ``_negated``.
+            neg_one = cpp.NativeTensorCore._typed_full(
+                (), -1.0, result_core.dtype, device=result_core.device
             )
             local = squared.multiply(neg_one)
             neg_one.close()
@@ -581,17 +680,21 @@ class NativeTensor:
         result is contiguous whatever the input layout.
 
         Per slice the kernel fuses ``exp(x - max(x)) / sum(exp(x -
-        max(x)))`` in float64 — the maximum shift means a large common
-        offset cannot overflow. Exceptional values follow plain IEEE
-        arithmetic: a NaN or ``+inf`` in a slice propagates, making that
-        slice NaN.
+        max(x)))`` **at the graph's dtype** (Phase I, milestone I6) — the
+        maximum shift means a large common offset cannot overflow at either
+        width. Exceptional values follow plain IEEE arithmetic: a NaN or
+        ``+inf`` in a slice propagates, making that slice NaN.
 
         Differentiable, with the Jacobian-vector product written in
         closed form::
 
             dx = y * (upstream - sum(upstream * y, axis, keepdims=True))
 
-        where ``y`` is the **saved forward output**. Like ``exp`` (and
+        where ``y`` is the **saved forward output**. Every intermediate of
+        that expression — the elementwise products, the axis reduction, and
+        the broadcasting subtract — is an existing dtype-general Core
+        operation, so the whole backward runs at the graph's dtype with no
+        literal-float64 tensor anywhere in it. Like ``exp`` (and
         unlike ``log``), the backward never rereads the parent's value and
         never recomputes the softmax, so the graph records **no** expected
         parameter version: mutating a direct parameter input after forward
@@ -649,11 +752,13 @@ class NativeTensor:
         handled by the Core layer's Policy-B copy-then-compute.
 
         Per slice the kernel fuses ``(x - max(x)) - log(sum(exp(x -
-        max(x))))`` in float64. It is **never** ``softmax(x).log()``:
-        that composition is exactly the precision loss this operation
-        exists to avoid, since a probability below the float64 minimum
-        rounds to 0 and its logarithm to ``-inf``, while the fused
-        log-sum-exp form stays finite and accurate. Exceptional values
+        max(x))))`` **at the graph's dtype** (Phase I, milestone I6). It is
+        **never** ``softmax(x).log()``: that composition is exactly the
+        precision loss this operation exists to avoid, since a probability
+        below the element type's smallest normal rounds to 0 and its
+        logarithm to ``-inf``, while the fused log-sum-exp form stays
+        finite and accurate — a margin that matters far sooner at float32,
+        whose smallest normal is ~1.18e-38. Exceptional values
         follow plain IEEE arithmetic: a NaN or ``+inf`` in a slice makes
         that slice NaN; a ``-inf`` gets ``-inf`` and leaves its finite
         neighbours alone.
@@ -663,7 +768,10 @@ class NativeTensor:
             dx = upstream - exp(y) * sum(upstream, axis, keepdims=True)
 
         where ``y`` is the **saved forward output** — ``exp(y)`` recovers
-        the probabilities without ever rereading the input. Like ``exp``
+        the probabilities without ever rereading the input. As in
+        ``softmax``, every intermediate is an existing dtype-general Core
+        operation, so the backward runs at the graph's dtype throughout.
+        Like ``exp``
         and ``softmax`` (and unlike ``log``), the graph therefore records
         **no** expected parameter version: mutating a direct parameter
         input after forward leaves this edge valid and the gradient
@@ -745,6 +853,14 @@ class NativeTensor:
         parent after the forward pass leaves this edge valid and its
         gradient correct for the forward that ran (the ``maxpool2d``
         archetype, the deliberate contrast with ``log``).
+
+        Every numeric operand of that node carries **one** dtype (Phase I,
+        milestone I6): the scalar loss, the saved probabilities, the
+        upstream, and the logits gradient are all the logits' dtype, and
+        the C ABI revalidates the agreement before it writes anything. The
+        copied targets are the deliberate exception and are not a dtype at
+        all — they stay host ``int64`` metadata at every width, are never
+        inferred from the logits, and never become a tensor.
 
         The saved probabilities are **private graph-owned state** (D9's
         ``graph_resources`` contract, reused unchanged): never a public
@@ -956,9 +1072,15 @@ class NativeTensor:
             # the smaller upstream shape. The scaling is a native
             # multiply against a broadcast scalar (no new kernel, no
             # NumPy, nothing mutated).
+            #
+            # ``1.0 / count`` is computed once in binary64 and narrowed once
+            # into the constant, at the **graph's** dtype (design §7.4,
+            # §11.4) — the same rule the forward ``mean`` follows through
+            # ``tf_storage_scale``, so forward and backward scale by exactly
+            # the same representable factor at either width.
             u_core = upstream._require_open()
-            scale = cpp.NativeTensorCore.full(
-                (), 1.0 / count, dtype=u_core.dtype, device=u_core.device
+            scale = cpp.NativeTensorCore._typed_full(
+                (), 1.0 / count, u_core.dtype, device=u_core.device
             )
             scaled = NativeTensor._from_core(u_core.multiply(scale))
             scale.close()
@@ -1118,10 +1240,11 @@ class NativeTensor:
         ``(O, C, kh, kw)`` NativeTensor; ``bias`` is ``None`` or a rank-1
         ``(O,)`` NativeTensor. ``stride``/``padding`` are an int or a
         length-2 ``(height, width)`` tuple (bools rejected). No dilation,
-        groups, or channels-last; operands must be open CPU float64
-        NativeTensors (stable ``Tensor`` and implicit conversion are
-        rejected). Returns a fresh **owning** ``(N, O, out_h, out_w)``
-        NativeTensor.
+        groups, or channels-last; operands must be open CPU NativeTensors
+        of one dtype (stable ``Tensor`` and implicit conversion are
+        rejected; mixed dtype raises before anything is allocated).
+        Returns a fresh **owning** ``(N, O, out_h, out_w)`` NativeTensor
+        at the operands' dtype.
 
         The forward reuses ``NativeTensorCore.conv2d_forward`` (no forward
         kernel is duplicated in Python). Differentiable when any of
@@ -1255,11 +1378,12 @@ class NativeTensor:
         construction itself raises, both the buffer and the pooled output
         are closed here before the exception propagates."""
         core = self._require_open()
-        # Forward via the D8 Core path — it validates rank, dtype/device,
-        # the kernel/stride/padding forms (bools and malformed pairs
+        # Forward via the D8 Core path — it validates rank, the
+        # kernel/stride/padding forms (bools and malformed pairs
         # rejected), the winner-exactness bound, and the output shape
-        # before any allocation, and returns the pooled values plus the
-        # private winner buffer.
+        # before any allocation, and returns the pooled values (at the
+        # input's dtype, I5) plus the private winner buffer (always
+        # float64, design §13.3).
         out_core, winners = core._maxpool2d_forward_with_winners(
             kernel_size=kernel_size, stride=stride, padding=padding
         )
@@ -1695,9 +1819,16 @@ class NativeTensor:
                     f"backward on a non-scalar output (shape {core.shape}) "
                     f"requires an explicit gradient"
                 )
-            # d(out)/d(out) = 1, as a native scalar-shaped tensor.
-            return NativeTensor.full(
-                core.shape, 1.0, dtype=core.dtype, device=core.device
+            # d(out)/d(out) = 1, as a native scalar-shaped tensor — at the
+            # **graph's** dtype (design §11.1/§11.4), through the private
+            # typed constructor. A float64 seed for a float32 output would
+            # be rejected by the very first gradient accumulation, and
+            # rightly: the seed is a gradient of the output, so it has the
+            # output's dtype by definition.
+            return NativeTensor._from_core(
+                cpp.NativeTensorCore._typed_full(
+                    core.shape, 1.0, core.dtype, device=core.device
+                )
             )
         if not isinstance(gradient, NativeTensor):
             raise TypeError(
@@ -2005,10 +2136,18 @@ def _negated(tensor):
     kernel; reusing the broadcasting multiply is the design's recommended
     composition (docs/native_autograd_design.md §7.5), and it never
     mutates its input — the same upstream object may also flow,
-    un-negated, to the other parent."""
+    un-negated, to the other parent.
+
+    The constant is built at **the operand's dtype**, through the private
+    typed constructor (Phase I, milestone I4). A backward may not introduce
+    a literal-float64 constant into a graph of another dtype (design §11.4):
+    a float64 ``-1.0`` meeting a float32 gradient would be a mixed-dtype
+    multiply, which the runtime refuses before allocating anything. The
+    private route is what keeps that from also requiring public float32
+    construction, which does not exist."""
     core = tensor._require_open()
-    neg_one = cpp.NativeTensorCore.full(
-        (), -1.0, dtype=core.dtype, device=core.device
+    neg_one = cpp.NativeTensorCore._typed_full(
+        (), -1.0, core.dtype, device=core.device
     )
     result = core.multiply(neg_one)
     neg_one.close()
@@ -2062,7 +2201,15 @@ def _broadcast_back(upstream, x_shape, axis):
     upstream — the scalar shape () included — lines up), then expanded by
     the existing broadcasting machinery via ``zeros(x_shape) + upstream``.
     Returns a fresh owning NativeTensor of exactly ``x_shape``;
-    dtype/device preserved; no NumPy and no new kernel."""
+    dtype/device preserved; no NumPy and no new kernel.
+
+    Phase I, milestone I4: the zero operand is built at **the upstream's
+    dtype** through the private typed constructor, for the same reason
+    ``_negated``'s ``-1.0`` is — a float64 zero meeting a float32 gradient
+    would be a mixed-dtype add, rejected before any allocation. The
+    algorithm, the allocation count, and the reduction axes are otherwise
+    exactly what they were: this is still a genuine expansion (the adjoint
+    of a reduction), not a copy."""
     u_core = upstream._require_open()
     keep_shape = cpp.reduce_shape(x_shape, axis=axis, keepdims=True)
     transient = None
@@ -2071,7 +2218,7 @@ def _broadcast_back(upstream, x_shape, axis):
             transient = u_core = _native_copy(u_core)
         u_core = u_core.reshape(keep_shape)  # borrowing view, used below
     zeros = cpp.NativeTensorCore.zeros(
-        x_shape, dtype=u_core.dtype, device=u_core.device
+        x_shape, dtype=u_core.dtype, device=u_core.device, _trusted_dtype=True
     )
     result = zeros.add(u_core)
     zeros.close()

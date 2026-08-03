@@ -183,11 +183,17 @@ def test_native_cross_entropy_forward_is_fused_in_cpp():
     """The structural half of the fused contract: the kernel computes the
     maximum, the exponentials, the log-sum-exp and the loss itself, and
     never routes through the softmax or log-softmax kernels."""
-    classification = (REPO_ROOT / "cpp" / "src" / "classification.cpp").read_text(
-        encoding="utf-8"
-    )
+    # Phase I milestone I6 made the four classification kernels templates
+    # over the element type, so their definitions moved from
+    # cpp/src/classification.cpp into the internal header beside it — a
+    # template has to be visible where it is instantiated. The kernels are
+    # the same kernels and this contract is unchanged; only where the source
+    # lives moved.
+    classification = (
+        REPO_ROOT / "cpp" / "include" / "tf_classification_internal.h"
+    ).read_text(encoding="utf-8")
     body = classification.split(
-        "void cross_entropy_forward_contiguous(", 1
+        "inline void cross_entropy_forward_contiguous(", 1
     )[1].split("\n}\n", 1)[0]
     assert "std::exp(" in body and "std::log(" in body
     for forbidden in ("softmax_forward_contiguous(",
@@ -197,7 +203,7 @@ def test_native_cross_entropy_forward_is_fused_in_cpp():
     # "logits" identifier in its body is the *destination* grad_logits,
     # and it recomputes no exponential or logarithm.
     backward = classification.split(
-        "void cross_entropy_backward_contiguous(", 1
+        "inline void cross_entropy_backward_contiguous(", 1
     )[1].split("\n}\n", 1)[0]
     assert "probabilities[" in backward
     assert backward.replace("grad_logits", "") .count("logits") == 0
@@ -1776,7 +1782,7 @@ def test_native_cross_entropy_scope_boundaries_hold():
     for absent in ("NativeNLLLoss", "NativeSoftmax", "NativeLogSoftmax"):
         assert not hasattr(experimental, absent), absent
     # No integer tensors, no new dtype/device.
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     with pytest.raises(ValueError):
         cpp.NativeTensorCore.zeros((2, 2), dtype="int64")
@@ -1800,7 +1806,7 @@ def test_native_cross_entropy_checkpoint_schema_is_untouched():
     that never reach a state dict."""
     from tensorforge.experimental import (NativeLinear, native_checkpoint)
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     model = NativeLinear(3, 2, seed=0)
     state = model.state_dict()
     for key in state:

@@ -53,7 +53,9 @@ The contract (all tested in tests/test_native_sgd.py):
   the commit begins, so the optimizer still owns no native storage
   between steps and ``NativeSGD`` still keeps no tensor state. That is
   an allocation change only: the same operands, the same operations, in
-  the same order, and bit-identical results.
+  the same order, and bit-identical results. The cache is keyed by
+  ``(dtype, device)``, so a mixed float32/float64 collection builds one
+  scalar per **active dtype**, not one per parameter (Phase I, I8).
   Any phase-1 failure releases all staged
   temporaries and changes no value, version, or gradient. Phase 2
   commits each staged value through ``NativeParameter.copy_value_()``
@@ -83,6 +85,16 @@ The contract (all tested in tests/test_native_sgd.py):
   the existing deterministic stale-value error, gradients unchanged,
   and a fresh forward/backward uses the updated values. The optimizer
   neither weakens nor extends that classification.
+
+- **Both element widths run** (Phase I, milestone I8). ``value - lr *
+  grad`` is dtype-general: the staged update, the ``lr`` scalar, and
+  every temporary are at the parameter's own dtype; a float32 parameter
+  demands a float32 gradient (a mismatch raises in **both** directions,
+  before anything is staged); and float64 results are bit-identical to
+  what they were. That is the *operation* being dtype-general — float32
+  is still not a publicly supported dtype, no public constructor builds
+  one, and ``NativeSGD`` gained no ``dtype`` argument, because it owns no
+  dtype-bearing state to name (design §27.3).
 
 The intended v3.9 pattern — forward → loss → backward → ``step()`` →
 ``zero_grad()`` → fresh forward — composes entirely from these pieces;
@@ -269,9 +281,17 @@ class NativeSGD:
                     key = (grad_core.dtype, grad_core.device)
                     scale = scales.get(key)
                     if scale is None:
-                        scale = cpp.NativeTensorCore.full(
-                            (), learning_rate,
-                            dtype=key[0], device=key[1],
+                        # Phase I, milestone I8: the private typed
+                        # constructor, so the scalar is built at whichever
+                        # width this parameter actually is. ``full`` would
+                        # validate against the public registry and reject a
+                        # float32 parameter, and the scalar has no dtype of
+                        # its own to validate — it must match the operand.
+                        # Public construction is unchanged: ``full`` still
+                        # calls ``normalize_dtype`` and still rejects
+                        # float32 (design §27.3).
+                        scale = cpp.NativeTensorCore._typed_full(
+                            (), learning_rate, key[0], device=key[1],
                         )
                         scales[key] = scale
                     scaled = grad_core.multiply(scale)  # lr * grad

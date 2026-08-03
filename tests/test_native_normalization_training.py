@@ -679,11 +679,11 @@ def test_checkpoint_is_version_one_and_holds_the_expected_canonical_keys(
     save_native_checkpoint(path, model, optimizer=optimizer,
                            metadata={"steps_completed": 1})
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     with np.load(path, allow_pickle=False) as archive:
         manifest = archive["manifest"].tobytes().decode("utf-8")
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 2' in manifest
+    assert '"format_version": 3' in manifest
     # The exact canonical state keys, in order — parameters then the
     # BatchNorm running buffers.
     expected = ('"keys": ["hidden.weight", "hidden.bias", '
@@ -1115,8 +1115,8 @@ def test_f6_adds_no_capability_or_inventory_entry():
         "save_native_checkpoint", "load_native_checkpoint",
         "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # The proof is an integration result, never a named capability.
     for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,
@@ -1129,5 +1129,5 @@ def test_f6_adds_no_capability_or_inventory_entry():
         assert name not in cpp.TENSOR_CORE_OPS
         assert name not in cpp.AUTOGRAD_OPS
         assert name not in cpp.RAW_KERNELS
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert cpp.backend_info()["stable_framework_integration"] is False

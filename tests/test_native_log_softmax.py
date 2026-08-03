@@ -179,12 +179,19 @@ def test_native_log_softmax_forward_is_fused_not_softmax_then_log():
     from pathlib import Path
 
     root = Path(__file__).resolve().parent.parent
-    classification = (root / "cpp" / "src" / "classification.cpp").read_text(
-        encoding="utf-8"
-    )
+    # Phase I milestone I6 made the four classification kernels templates
+    # over the element type, so their definitions moved from
+    # cpp/src/classification.cpp into the internal header beside it — a
+    # template has to be visible where it is instantiated. The kernel is the
+    # same kernel and this contract is unchanged; only where the source
+    # lives moved.
+    classification = (
+        root / "cpp" / "include" / "tf_classification_internal.h"
+    ).read_text(encoding="utf-8")
     # The internal kernel accumulates exponentials and takes ONE
     # logarithm of the sum; it never forms or divides by a probability.
-    body = classification.split("void log_softmax_forward_contiguous(", 1)[1]
+    body = classification.split(
+        "inline void log_softmax_forward_contiguous(", 1)[1]
     body = body.split("\n}\n", 1)[0]
     assert "std::exp(" in body and "std::log(" in body
     assert "/=" not in body, "the fused kernel must not divide"
@@ -1451,4 +1458,4 @@ def test_native_log_softmax_checkpoint_schema_is_untouched():
     is still 1 (docs/native_classification_design.md §12)."""
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3

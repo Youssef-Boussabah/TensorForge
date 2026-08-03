@@ -146,7 +146,34 @@ native temporary is closed immediately — not left to cyclic garbage
 collection, which the ``sqrt``/``reciprocal`` result-capturing closures
 would otherwise require.
 
-Construction — ``NativeBatchNorm1d(num_features, eps=1e-5, momentum=0.1)``
+Dtype (Phase I, milestone I7)
+-----------------------------
+
+``dtype`` is keyword-only, defaults to ``"float64"``, and accepts exactly
+``"float64"`` and ``"float32"``. It governs **all four** numeric state
+objects at once — ``gamma``, ``beta``, ``running_mean``, ``running_var`` —
+because they describe one statistical state, and a per-object dtype would
+be a state the two-buffer transaction could not keep coherent.
+``self.dtype`` reports it read-only, and ``_validate_forward`` re-proves
+the live state still agrees with it on every call.
+
+Everything the forward materializes follows the graph: ``eps``,
+``momentum``, and ``1 - momentum`` are rank-0 native scalars at the input's
+dtype (never literal float64 constants entering a float32 graph), the batch
+mean and the population variance accumulate at that width with no hidden
+wider accumulator, the evaluation snapshots carry it, and both running
+updates commit at it. The Python ``float`` hyperparameters stay Python
+floats; only their *materialization* is dtype-aware, and each is narrowed
+once at the fill boundary (design §7.4).
+
+The input must match every state entry exactly — there is no promotion and
+no cast — and the mismatch is rejected before any graph node is built and
+before either running buffer can move. float32 remains **publicly
+unsupported** until milestone I9; omitting ``dtype`` is byte-identical to
+every pre-Phase-I run.
+
+Construction — ``NativeBatchNorm1d(num_features, eps=1e-5, momentum=0.1,
+*, dtype=None)``
 -------------------------------------------------------------------------
 
 - ``num_features`` must be a positive plain ``int`` (``bool``, floats,
@@ -196,7 +223,7 @@ The output is a **fresh, owning, row-major contiguous** ``NativeTensor``
 of shape ``(N, C)`` in both modes, independent of the input, the
 parameters, and the buffer storage, and never a ``NativeParameter`` or a
 borrowing view. The module stores no per-forward tensor attributes.
-Fully separate from ``tensorforge.nn.BatchNorm1d``; float64/cpu only.
+Fully separate from ``tensorforge.nn.BatchNorm1d``; cpu only.
 
 One implementation, two public shapes
 -------------------------------------
@@ -233,6 +260,7 @@ import numbers
 import numpy as np
 
 from . import _native_state
+from ._native_dtype import normalize_module_dtype
 from .native_module import NativeModule
 from .native_parameter import NativeParameter
 from .native_tensor import NativeTensor, _native_copy
@@ -396,17 +424,24 @@ class _NativeBatchNorm(NativeModule):
     _LAYOUT = ""
     _CHANNELS_LAST = None
 
-    def __init__(self, num_features, eps=1e-5, momentum=0.1):
+    def __init__(self, num_features, eps=1e-5, momentum=0.1, *, dtype=None):
         # Validate every Python argument before any native allocation, so
         # a rejected construction never creates storage it abandons — the
         # live-storage count is unchanged on rejection.
         _validate_num_features(num_features)
         _validate_eps(eps)
         _validate_momentum(momentum)
+        # Phase I, milestone I7 — the module's dtype. It governs **all four**
+        # numeric state objects (gamma, beta, running_mean, running_var),
+        # because they describe one statistical state and a per-object dtype
+        # would be a state the transaction could not keep coherent. ``None``
+        # means ``"float64"``.
+        dtype = normalize_module_dtype(dtype)
         super().__init__()
         self.num_features = num_features
         self.eps = float(eps)
         self.momentum = float(momentum)
+        self._dtype = dtype
         # The per-feature broadcast layout: (1, C) for the 2-D shape,
         # (1, C, 1, 1) for NCHW.
         self._stat_shape = (1, num_features) + (1,) * self._TRAILING_DIMS
@@ -430,21 +465,24 @@ class _NativeBatchNorm(NativeModule):
             # boundary), the NativeLinear/NativeLayerNorm precedent; no
             # graph is built and no native compute runs. Registration
             # order is gamma, then beta.
-            gamma = NativeParameter(np.ones(num_features), requires_grad=True)
+            gamma = NativeParameter(np.ones(num_features), requires_grad=True,
+                                    dtype=dtype)
             created.append(gamma)
             self.gamma = gamma
-            beta = NativeParameter(np.zeros(num_features), requires_grad=True)
+            beta = NativeParameter(np.zeros(num_features), requires_grad=True,
+                                   dtype=dtype)
             created.append(beta)
             self.beta = beta
             # running_mean=zeros, running_var=ones — plain owning
             # contiguous gradient-free NativeTensors built natively (no
-            # NumPy at all), registered as *persistent* buffers in that
-            # order so state_dict()/checkpoints carry them after the
-            # parameters. They are never NativeParameters.
-            running_mean = NativeTensor.zeros((num_features,))
+            # NumPy at all) **at the module's dtype** (Phase I, milestone
+            # I7), registered as *persistent* buffers in that order so
+            # state_dict()/checkpoints carry them after the parameters.
+            # They are never NativeParameters.
+            running_mean = NativeTensor._typed_zeros((num_features,), dtype)
             created.append(running_mean)
             self.register_buffer("running_mean", running_mean, persistent=True)
-            running_var = NativeTensor.full((num_features,), 1.0)
+            running_var = NativeTensor._typed_full((num_features,), 1.0, dtype)
             created.append(running_var)
             self.register_buffer("running_var", running_var, persistent=True)
         except BaseException:
@@ -672,9 +710,13 @@ class _NativeBatchNorm(NativeModule):
         returned inverse standard deviation is deliberately untracked so
         the caller decides its lifetime (the training graph keeps it as an
         ordinary temporary; the evaluation graph adopts it)."""
-        eps_tensor = track(NativeTensor.full(
-            (), self.eps, dtype=like.dtype, device=like.device,
-            requires_grad=False,
+        # Phase I, milestone I7: at the **graph's** dtype, through the
+        # private typed constructor. A literal-float64 eps meeting a float32
+        # variance would be a mixed-dtype request the runtime refuses, and
+        # design §11.4 forbids introducing one into a backward or a forward.
+        # The Python ``float`` is narrowed once, inside tf_storage_fill.
+        eps_tensor = track(NativeTensor._typed_full(
+            (), self.eps, like.dtype, device=like.device,
         ))
         var_plus_eps = track(variance.add(eps_tensor))
         std = track(var_plus_eps.sqrt())
@@ -712,13 +754,17 @@ class _NativeBatchNorm(NativeModule):
         ``finally``. If the second allocation fails the first is already
         tracked, so the failure closes it — the forward has not yet touched
         the running buffers, and the F1 transaction has not begun."""
-        keep_old = track(NativeTensor.full(
-            (), 1.0 - self.momentum, dtype=like.dtype, device=like.device,
-            requires_grad=False,
+        # Phase I, milestone I7: both coefficients at the graph's dtype,
+        # through the private typed constructor, for the same reason
+        # ``_inverse_std``'s eps is. ``1 - momentum`` is evaluated in Python
+        # binary64 — a host hyperparameter arithmetic, not a tensor
+        # operation — and narrowed once at materialization, which is §7.4's
+        # rule for every scalar that crosses the boundary as a ``double``.
+        keep_old = track(NativeTensor._typed_full(
+            (), 1.0 - self.momentum, like.dtype, device=like.device,
         ))
-        take_new = track(NativeTensor.full(
-            (), self.momentum, dtype=like.dtype, device=like.device,
-            requires_grad=False,
+        take_new = track(NativeTensor._typed_full(
+            (), self.momentum, like.dtype, device=like.device,
         ))
         return keep_old, take_new
 
@@ -779,7 +825,27 @@ class _NativeBatchNorm(NativeModule):
         internally, no attribute is reassigned, and no second transaction
         system exists. Buffers carry no value version, so this moves no
         version at all — ``gamma`` and ``beta`` are untouched and no
-        existing graph becomes stale."""
+        existing graph becomes stale.
+
+        Phase I, milestone I7 adds **one** validation and changes nothing
+        else: each prepared replacement must already carry the module's
+        dtype. It cannot fail on any path this forward actually builds —
+        ``_validate_forward`` proved the live state and the input agree with
+        the module, and the blend is arithmetic over exactly those — and it
+        is checked anyway, here, before the transaction begins, because a
+        dtype discovered *inside* staging would be discovered after a
+        factory had already allocated. The transaction's own
+        ``_validate_staged_core`` then re-proves staged-equals-live, so a
+        replacement is pinned to the module's dtype from both ends."""
+        for label, value in (("running_mean", new_mean),
+                             ("running_var", new_var)):
+            if value.dtype != self._dtype:
+                raise ValueError(
+                    f"{type(self).__name__} refused a {value.dtype} "
+                    f"replacement for {label!r} on a {self._dtype} module; "
+                    f"both running buffers advance together at the module's "
+                    f"dtype, and neither is cast"
+                )
         _native_state.replace_native_state((
             _native_state.NativeStateEntry(
                 label="running_mean",
@@ -845,6 +911,20 @@ class _NativeBatchNorm(NativeModule):
         for name, tensor in (("gamma", gamma), ("beta", beta),
                              ("running_mean", running_mean),
                              ("running_var", running_var)):
+            # Phase I, milestone I7 — module coherence first. All four
+            # numeric state objects describe **one** statistical state, so
+            # they share one dtype: the module's. A state entry that has
+            # drifted from it (a hand-substituted buffer, a corrupted
+            # module) is rejected here, before any graph node is built and
+            # before either running buffer can move, rather than being
+            # discovered half-way through a two-buffer transaction.
+            if tensor.dtype != self._dtype:
+                raise ValueError(
+                    f"{type(self).__name__} is a {self._dtype} module but "
+                    f"{name} is {tensor.dtype}; every parameter and running "
+                    f"buffer must carry the module's dtype (the native "
+                    f"runtime performs no casting or promotion)"
+                )
             if tensor.dtype != input.dtype or tensor.device != input.device:
                 raise ValueError(
                     f"{type(self).__name__} expects input dtype/device "
@@ -894,6 +974,20 @@ class _NativeBatchNorm(NativeModule):
                 f"grad (running statistics are never trainable)"
             )
         return tensor
+
+    @property
+    def dtype(self):
+        """The dtype this layer's four numeric state objects were
+        constructed with — read-only, ``"float64"`` by default (Phase I,
+        milestone I7; design §25.3).
+
+        ``gamma``, ``beta``, ``running_mean``, and ``running_var`` all carry
+        it, every training and evaluation temporary is built at it, both
+        running updates commit at it, and the input must match it. It is a
+        *report* of the constructed value; ``_validate_forward`` re-proves
+        the live state still agrees with it on every call, so the two can
+        never silently drift."""
+        return self._dtype
 
     def __repr__(self):
         return (

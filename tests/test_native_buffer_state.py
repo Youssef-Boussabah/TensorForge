@@ -873,10 +873,8 @@ def test_f1_changed_no_other_capability_inventory():
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     # ("dropout" was in this tuple when F1 landed and left at the Phase-G
     # closure, G10 — not a buffer-state change either way.)
-    assert cpp.UNSUPPORTED == (
-        "float32", "cuda", "amp",
-    )
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # No normalization name entered any operation inventory.
     for name in ("layer_norm", "batch_norm", "layernorm", "batchnorm",

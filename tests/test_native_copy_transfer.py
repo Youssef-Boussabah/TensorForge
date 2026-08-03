@@ -1382,8 +1382,8 @@ def test_the_checkpoint_format_and_supported_versions_did_not_move():
         "tensorforge.experimental.native_checkpoint"
     )
     assert checkpoint._FORMAT == "tensorforge.native_checkpoint"
-    assert checkpoint._FORMAT_VERSION == 2
-    assert set(checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2}
+    assert checkpoint._FORMAT_VERSION == 3
+    assert set(checkpoint._SUPPORTED_FORMAT_VERSIONS) == {1, 2, 3}
 
 
 @needs_native
@@ -1521,8 +1521,11 @@ def test_failed_copy_cycles_also_return_storage_to_baseline(
 
 @needs_native
 def test_h5_added_no_exported_symbol():
-    """The ABI is exactly what H1 left: 52 exported ``tf_*`` symbols.
-    H5's traversal choice lives *inside* an existing export."""
+    """H5 added no exported symbol: its traversal choice lives *inside* an
+    existing export, so Phase H's surface is still exactly the 52 symbols
+    H1 left. (The live library exports 54 — Phase I milestone I1 added the
+    two typed storage creators — which is why the Phase-H claim is checked
+    against the Phase-H subset.)"""
     storage_tests = importlib.import_module("test_native_storage_allocation") \
         if "test_native_storage_allocation" in sys.modules else None
     sys.path.insert(0, str(REPO_ROOT / "tests"))
@@ -1536,7 +1539,12 @@ def test_h5_added_no_exported_symbol():
     if names is None:
         pytest.skip("this image format is not parsed here")
     exported = sorted(name for name in names if name.startswith("tf_"))
-    assert len(exported) == 52, exported
+    # H5's claim is about Phase H, so it is measured against Phase H's own
+    # surface: the two extra symbols in the live library are Phase I's
+    # typed storage creators, added at milestone I1.
+    assert len(exported) == storage_tests.EXPECTED_TF_EXPORTS, exported
+    assert (len(storage_tests.phase_h_export_names(exported))
+            == storage_tests.PHASE_H_TF_EXPORTS)
     assert "tf_core_contiguous_copy" in exported
     # Nothing copy-, overlap-, or traversal-flavored was added.
     for banned in ("copy_mode", "set_copy", "overlap", "memcpy",
@@ -1735,6 +1743,6 @@ def test_no_h5_surface_generalizes_h2s_nan_payload_carve_out_to_copies():
 
 @needs_native
 def test_the_capability_boundary_did_not_move():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)

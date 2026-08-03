@@ -1022,13 +1022,20 @@ def test_the_export_table_is_exactly_what_h8_left():
     """H9 changed internal C++ execution only. No new C ABI symbol, and in
     particular no path selector, block-size setter, workspace, im2col, or
     profiling hook."""
-    from test_native_storage_allocation import EXPECTED_TF_EXPORTS, exported_names
+    from test_native_storage_allocation import (
+        EXPECTED_TF_EXPORTS, PHASE_H_TF_EXPORTS, exported_names,
+        phase_h_export_names,
+    )
 
     image, names = exported_names(cpp._LIBRARY_PATH)
     if names is None:
         pytest.skip("this image format is not parsed here")
     exported = sorted(name for name in names if name.startswith("tf_"))
-    assert len(exported) == EXPECTED_TF_EXPORTS == 52, exported
+    assert len(exported) == EXPECTED_TF_EXPORTS, exported
+    # H8's claim — that it added no ABI symbol — is about Phase H, so it
+    # is measured against Phase H's own surface. The two extra symbols in
+    # the live library are Phase I's typed creators (milestone I1).
+    assert len(phase_h_export_names(exported)) == PHASE_H_TF_EXPORTS
     conv = [name for name in exported if "conv" in name]
     assert conv == ["tf_core_conv2d_forward",
                     "tf_core_conv2d_input_backward",
@@ -1086,8 +1093,15 @@ def test_no_environment_variable_changes_convolution_behaviour(monkeypatch):
 
 def test_the_convolution_public_surface_is_unchanged():
     """Signatures, supported options, and the module surface are exactly
-    what Phase D defined: no dilation, no groups, no channels-last, no new
-    keyword."""
+    what Phase D defined: no dilation, no groups, no channels-last, no
+    performance keyword.
+
+    The **operation** and the **Core wrapper** are byte-for-byte the same
+    signatures — dtype travels on the tensors, never as an argument, so
+    neither gained one at any Phase-I milestone. The **module** gained
+    exactly one keyword-only ``dtype`` at milestone I7, because a module is
+    the thing that *creates* state and therefore has to be told what to
+    create it as."""
     import inspect
 
     signature = inspect.signature(NativeTensor.conv2d)
@@ -1099,7 +1113,14 @@ def test_the_convolution_public_surface_is_unchanged():
     module_signature = inspect.signature(NativeConv2d.__init__)
     assert list(module_signature.parameters) == [
         "self", "in_channels", "out_channels", "kernel_size", "stride",
-        "padding", "bias", "seed", "requires_grad"]
+        "padding", "bias", "seed", "requires_grad", "dtype"]
+    assert module_signature.parameters["dtype"].default is None
+    assert (module_signature.parameters["dtype"].kind
+            is inspect.Parameter.KEYWORD_ONLY)
+    assert "dtype" not in signature.parameters
+    assert "dtype" not in core_signature.parameters
+    # Phase I adds no device anywhere.
+    assert "device" not in module_signature.parameters
     for forbidden in ("dilation", "groups", "channels_last", "output_padding",
                       "path", "block_size", "algorithm"):
         assert forbidden not in signature.parameters
@@ -1122,8 +1143,8 @@ def test_stable_tensorforge_still_imports_without_loading_the_native_library():
 
 
 def test_the_supported_capability_boundary_did_not_move():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "conv2d" in cpp.AUTOGRAD_OPS
     assert "conv2d_forward" in cpp.TENSOR_CORE_OPS

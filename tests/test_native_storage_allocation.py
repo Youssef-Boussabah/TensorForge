@@ -252,15 +252,75 @@ def test_both_paths_reject_the_same_invalid_sizes(bad):
 
 
 @needs_native
-@pytest.mark.parametrize("dtype,device", [("float32", "cpu"),
-                                          ("float64", "cuda")])
-def test_both_paths_reject_the_same_unsupported_metadata(dtype, device):
-    """Validation precedes allocation on both paths, so a rejected
-    request allocates nothing."""
+@pytest.mark.parametrize("dtype,device", [("float16", "cpu"),
+                                          ("bfloat16", "cpu"),
+                                          ("float64", "cuda"),
+                                          ("float32", "cuda")])
+def test_the_public_path_rejects_unsupported_metadata(dtype, device):
+    """Validation precedes allocation, so a rejected request allocates
+    nothing. This is the **public** constructor, and it is the one that
+    carries the promise.
+
+    ``("float32", "cpu")`` was a row here through milestone I8 and is
+    deliberately gone: I9 made float32 a supported TensorForge dtype, so it
+    belongs in the acceptance test below. ``("float32", "cuda")`` replaces
+    it and is the sharper case — a supported dtype does not make an
+    unsupported device reachable."""
     with pytest.raises(ValueError):
         cpp.NativeStorage(8, dtype=dtype, device=device)
+
+
+@needs_native
+@pytest.mark.parametrize("dtype,device", [("float16", "cpu"),
+                                          ("float64", "cuda")])
+def test_the_private_allocator_still_rejects_what_the_runtime_cannot_represent(
+        dtype, device):
+    """``NativeStorage._uninitialized`` validates its dtype against the
+    **internal** table from Phase I milestone I2 rather than the public
+    registry, so that an operation's freshly allocated output can match its
+    operand's dtype without asking permission the operand already has.
+
+    That is a narrower relaxation than it sounds, and this pins the
+    boundary: a dtype the runtime cannot physically represent is still
+    rejected, an unsupported *device* is still rejected, and validation
+    still precedes allocation. Only ``"float32"`` — which storage really can
+    be, and which only the private typed constructors can request — moved,
+    and it moved into a private path, not a public one.
+    """
     with pytest.raises(ValueError):
         cpp.NativeStorage._uninitialized(8, dtype=dtype, device=device)
+
+
+@needs_native
+def test_both_allocators_reach_float32_and_agree_about_it():
+    """Through milestone I8 this asserted the exact I2 truth — float32
+    storage internally allocatable and publicly unsupported, at the same
+    moment, on purpose. **I9 ended that split**: the public registry moved,
+    so both paths reach float32 now and the durable claim is that they
+    *agree*.
+
+    That is the property worth pinning either way. When the two disagreed
+    it was by design and the disagreement was the test; now that they
+    concur, a private allocator that produced something a public one could
+    not — a different width, a different size unit, a different tag — would
+    be the drift, and this catches it."""
+    assert cpp.normalize_dtype("float32") == "float32"
+    for storage in (
+        cpp.NativeStorage(8, dtype="float32"),
+        cpp.NativeStorage._uninitialized(8, dtype="float32"),
+        cpp.NativeStorage._typed(8, "float32"),
+    ):
+        try:
+            assert storage.dtype == "float32"
+            assert storage.size == 8          # elements, not bytes
+        finally:
+            storage.close()
+    storage = cpp.NativeStorage.from_array([1.0, 2.0], dtype="float32")
+    try:
+        assert storage.dtype == "float32"
+        assert storage.to_numpy().dtype == np.float32
+    finally:
+        storage.close()
 
 
 @needs_native
@@ -1308,10 +1368,33 @@ def test_a_training_run_is_bit_identical_between_allocation_paths(monkeypatch):
 # 6. Scope — one C ABI symbol, no public capability, no poison control
 # ==========================================================================
 
-# The exported-symbol inventory H1 must leave behind: the pre-H1 baseline
-# of 51 plus tf_storage_create_uninitialized, and nothing else.
+# The exported-symbol inventory H1 left behind: the pre-H1 baseline of 51
+# plus tf_storage_create_uninitialized, and nothing else.
 BASELINE_TF_EXPORTS = 51
-EXPECTED_TF_EXPORTS = 52
+PHASE_H_TF_EXPORTS = 52
+# ...and what the built library holds now. Phase I milestone I1 added the
+# two typed storage creators — the only two symbols the whole phase adds —
+# so the live count is 54 while Phase H's closure remains 52. Kept as two
+# named constants because they are facts about two different moments.
+PHASE_I_TYPED_CREATORS = (
+    "tf_storage_create_typed",
+    "tf_storage_create_uninitialized_typed",
+)
+EXPECTED_TF_EXPORTS = PHASE_H_TF_EXPORTS + len(PHASE_I_TYPED_CREATORS)  # 54
+
+
+def phase_h_export_names(exported):
+    """``exported`` with the Phase-I additions removed — the export surface
+    as Phase H closed it.
+
+    Every per-milestone Phase-H test module asserts "this milestone added
+    no ABI symbol". That claim is about Phase H, it is still true, and it
+    must stay checkable — but the live library now also carries the two
+    typed creators milestone I1 added, so the claim is measured against
+    this subset rather than against the raw total. Sharing the helper
+    keeps the eight modules that make the claim from drifting apart.
+    """
+    return [name for name in exported if name not in PHASE_I_TYPED_CREATORS]
 
 # Every name that would constitute a runtime poison-control API. None may
 # exist in the shipped library or the installed Python backend.
@@ -1440,8 +1523,8 @@ def test_h1_exposes_no_public_empty_api():
 
 
 def test_h1_changed_no_capability_registry():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "uninitialized" not in cpp.backend_info()
     # Allocation strategy is not a capability, so it appears in no
@@ -1454,8 +1537,8 @@ def test_h1_changed_no_capability_registry():
 def test_h1_left_the_checkpoint_contract_at_version_two():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._FORMAT_VERSION == 3
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
 
 
 def test_the_installed_python_backend_has_no_poison_control():
@@ -1532,7 +1615,16 @@ def test_the_built_library_export_table_has_exactly_the_h1_addition():
     # poison hook by name and must not find one.
     assert not [name for name in exported if "poison" in name.lower()]
     assert len(exported) == EXPECTED_TF_EXPORTS, exported
-    assert len(exported) - 1 == BASELINE_TF_EXPORTS
+    # The two Phase-I creators are present in the built library...
+    for name in PHASE_I_TYPED_CREATORS:
+        assert name in exported, name
+    # ...and removing them leaves exactly Phase H's closure inventory,
+    # which is one symbol above the pre-H1 baseline. Nothing else was
+    # added, and nothing H1 shipped was taken away.
+    without_phase_i = [name for name in exported
+                       if name not in PHASE_I_TYPED_CREATORS]
+    assert len(without_phase_i) == PHASE_H_TF_EXPORTS
+    assert len(without_phase_i) - 1 == BASELINE_TF_EXPORTS
     if image == "pe":
         # A PE export directory lists exactly what the DLL publishes, so
         # the count above really is the whole export surface.

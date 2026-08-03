@@ -31,51 +31,64 @@ using tf::as_storage;
 
 namespace {
 
-// Plain function pointers keep the walkers generic without templates.
-typedef double (*BinaryOp)(double, double);
-double op_add(double x, double y) { return x + y; }
-double op_subtract(double x, double y) { return x - y; }
-double op_multiply(double x, double y) { return x * y; }
-// ReLU's backward as a binary op over (input, upstream gradient): the
-// gradient passes through where the forward input was positive and is
-// blocked where relu clamped to zero. x == 0 blocks, matching the Python
-// Tensor's (x > 0) * grad convention exactly.
-double op_relu_backward(double x, double u) { return x > 0.0 ? u : 0.0; }
-
-// Unary ops. IEEE float64 semantics: std::sqrt gives NaN for negatives,
-// preserves signed zeros, maps +inf to +inf; 1.0/x gives signed
-// infinities for signed zeros and signed zeros for signed infinities,
-// and NaN propagates — the same values NumPy produces (NumPy also warns
-// on divide-by-zero; these kernels do not).
-typedef double (*UnaryOp)(double);
-double op_sqrt(double x) { return std::sqrt(x); }
-double op_reciprocal(double x) { return 1.0 / x; }
+// The retained odometers below still call their operation through a plain
+// function pointer, exactly as they always have. What changed at milestone
+// I3 is only where that pointer comes from: every operation the templated
+// traversals also run now has **one** definition — the functor in
+// tf_elementwise_internal.h — and the odometer is handed
+// ``&Op::apply<T>``. Before I3 each expression was written twice, here and
+// in the header, and kept identical by hand; now there is nothing to keep
+// identical. The pointed-to expression is unchanged in both cases.
+//
+// ``exp`` and ``log`` are the deliberate exception. H8 excluded them from
+// the templated traversals — they are library functions with no
+// correctly-rounded guarantee, and a toolchain that vectorized them through
+// a vector-math library would be free to return different bits — so they
+// keep the retained odometer *exclusively*. They therefore have no functor
+// in the shared header and cannot be plan-walked even by accident; these
+// two file-local function templates are what the odometer calls, and there
+// is no ``ExpOp``/``LogOp`` type for a later edit to hand to a plan walk.
+//
+// Both are templated on the element type so a float32 tensor selects the
+// ``float`` overload of ``std::exp`` / ``std::log`` and produces a
+// ``float`` — rather than computing in binary64 and narrowing, which would
+// be a hidden float64 intermediate (design §8.2, §10.1). ``T = double`` is
+// the pre-Phase-I function statement for statement.
+//
 // Phase E, milestone E1. Plain std::exp: no clamping, no inserted bound,
-// no fast approximation. IEEE float64 semantics: exp(0) == 1, a large
-// positive argument overflows to +inf, a large negative one underflows
-// toward +0, +inf maps to +inf, -inf maps to +0, and NaN propagates —
-// the same values NumPy's float64 exp produces (NumPy additionally warns
-// on overflow; this kernel does not).
-double op_exp(double x) { return std::exp(x); }
+// no fast approximation. IEEE semantics at the element type: exp(0) == 1,
+// a large positive argument overflows to +inf, a large negative one
+// underflows toward +0, +inf maps to +inf, -inf maps to +0, and NaN
+// propagates — the same values NumPy's exp produces at the same dtype
+// (NumPy additionally warns on overflow; this kernel does not).
+template <class T> T op_exp(T x) { return std::exp(x); }
 // Phase E, milestone E2. Plain std::log: the natural logarithm, with no
 // clamping, no inserted epsilon, no absolute value, and no domain
-// rejection. IEEE float64 semantics: log(1) == 0, log(±0) == -inf,
-// log(negative) == NaN, log(+inf) == +inf, and NaN propagates. The
-// zero and negative cases raise IEEE divide-by-zero / invalid *flags*,
-// not C++ exceptions, so they stay numerical results and never become
-// ABI errors — the same values NumPy produces (NumPy also warns; this
-// kernel does not).
-double op_log(double x) { return std::log(x); }
+// rejection. IEEE semantics at the element type: log(1) == 0,
+// log(±0) == -inf, log(negative) == NaN, log(+inf) == +inf, and NaN
+// propagates. The zero and negative cases raise IEEE divide-by-zero /
+// invalid *flags*, not C++ exceptions, so they stay numerical results and
+// never become ABI errors — the same values NumPy produces (NumPy also
+// warns; this kernel does not).
+template <class T> T op_log(T x) { return std::log(x); }
 
 // Walk one strided source with the standard odometer and write row-major
 // contiguous output.
-void core_unary(
-    const void* src_handle, void* dst_handle,
+//
+// **The retained generic reference path**, now written over an explicit
+// scalar type (Phase I, milestone I2). The loop body, the traversal order,
+// the carry, and the indirect call through ``op`` are exactly what they
+// were — ``T = double`` reproduces the pre-Phase-I kernel statement for
+// statement — and the handle-based wrapper below keeps every existing
+// caller's signature. The parameter exists so the identity map, which is
+// the one operation I2 generalizes, has the *same* retained fallback at
+// both widths rather than a second copy that could drift from this one.
+template <class T>
+void core_unary_typed(
+    const T* src, T* dst,
     const int64_t* shape, const int64_t* strides,
-    int64_t offset, int64_t ndim, UnaryOp op
+    int64_t offset, int64_t ndim, T (*op)(T)
 ) {
-    const double* src = as_storage(src_handle)->data;
-    double* dst = as_storage(dst_handle)->data;
     if (ndim == 0) {
         dst[0] = op(src[offset]);
         return;
@@ -100,14 +113,36 @@ void core_unary(
     }
 }
 
+// The handle wrapper every caller uses: it resolves the two handles at the
+// element type its caller has already dispatched on and runs the retained
+// odometer above. ``T = double`` resolves through the same static_cast
+// ``tf::storage_f64`` performs and reproduces the pre-Phase-I wrapper
+// exactly; ``T = float`` is the same wrapper over a float32 buffer.
+//
+// The typed accessor is sound because the caller established the tag first:
+// a generalized export reads it once through ``tf::dispatch_dtype``, after
+// ``tf::require_matching_dtype`` has proved every operand agrees, so the
+// recovered pointer addresses a genuine ``T[]`` array (design §4.1).
+template <class T>
+void core_unary(
+    const void* src_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim, T (*op)(T)
+) {
+    core_unary_typed<T>(tf::storage_typed<T>(src_handle),
+                        tf::storage_typed<T>(dst_handle),
+                        shape, strides, offset, ndim, op);
+}
+
 // Contiguous fast path: flat, index-free loop. Scalars fall out as
 // numel == 1; a nonzero offset starts from data + offset.
+template <class T>
 void core_unary_contiguous(
     const void* src_handle, void* dst_handle,
-    int64_t numel, int64_t offset, UnaryOp op
+    int64_t numel, int64_t offset, T (*op)(T)
 ) {
-    const double* src = as_storage(src_handle)->data + offset;
-    double* dst = as_storage(dst_handle)->data;
+    const T* src = tf::storage_typed<T>(src_handle) + offset;
+    T* dst = tf::storage_typed<T>(dst_handle);
     for (int64_t i = 0; i < numel; ++i) {
         dst[i] = op(src[i]);
     }
@@ -115,14 +150,20 @@ void core_unary_contiguous(
 
 // Walk two strided sources in lockstep (same logical shape, separate
 // strides/offsets) and write row-major contiguous output.
-void core_binary(
-    const void* a_handle, const void* b_handle, void* dst_handle,
+//
+// **The retained generic reference path for two-source operations**, over
+// an explicit scalar type since milestone I3. The loop body, the traversal
+// order, the carry, and the indirect call through ``op`` are exactly what
+// they were — ``T = double`` reproduces the pre-Phase-I kernel statement
+// for statement — and it remains the only traversal that can address an
+// arbitrary layout, so it is still what every rejected plan falls back to,
+// now at both widths from one source.
+template <class T>
+void core_binary_typed(
+    const T* a, const T* b, T* dst,
     const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
-    int64_t a_offset, int64_t b_offset, int64_t ndim, BinaryOp op
+    int64_t a_offset, int64_t b_offset, int64_t ndim, T (*op)(T, T)
 ) {
-    const double* a = as_storage(a_handle)->data;
-    const double* b = as_storage(b_handle)->data;
-    double* dst = as_storage(dst_handle)->data;
     if (ndim == 0) {
         dst[0] = op(a[a_offset], b[b_offset]);
         return;
@@ -148,6 +189,21 @@ void core_binary(
             b_pos -= shape[d] * b_strides[d];
         }
     }
+}
+
+// The handle wrapper, the two-source twin of ``core_unary`` above and sound
+// for the same reason: the caller dispatched on the tag first.
+template <class T>
+void core_binary(
+    const void* a_handle, const void* b_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
+    int64_t a_offset, int64_t b_offset, int64_t ndim, T (*op)(T, T)
+) {
+    core_binary_typed<T>(tf::storage_typed<T>(a_handle),
+                         tf::storage_typed<T>(b_handle),
+                         tf::storage_typed<T>(dst_handle),
+                         shape, a_strides, b_strides, a_offset, b_offset, ndim,
+                         op);
 }
 
 // (The pre-H8 flat binary loop that used to live here — the same
@@ -330,58 +386,150 @@ bool plan_checked_mul(int64_t x, int64_t y, int64_t& out) {
     return true;
 }
 
-template <class Op>
+template <class Op, class T>
 void unary_dispatch(
     const void* src_handle, void* dst_handle,
     const int64_t* shape, const int64_t* strides,
-    int64_t offset, int64_t ndim, UnaryOp fallback
+    int64_t offset, int64_t ndim
 ) {
     tf::ElementwiseUnaryPlan plan;
     if (tf::build_unary_plan(shape, strides, ndim, plan)) {
-        tf::unary_plan_walk<Op>(as_storage(src_handle)->data,
-                                as_storage(dst_handle)->data, plan, offset);
+        tf::unary_plan_walk<Op>(tf::storage_typed<T>(src_handle),
+                                tf::storage_typed<T>(dst_handle), plan, offset);
         return;
     }
-    core_unary(src_handle, dst_handle, shape, strides, offset, ndim, fallback);
+    core_unary<T>(src_handle, dst_handle, shape, strides, offset, ndim,
+                  &Op::template apply<T>);
 }
 
-template <class Op>
+template <class Op, class T>
 void binary_dispatch(
     const void* a_handle, const void* b_handle, void* dst_handle,
     const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
-    int64_t a_offset, int64_t b_offset, int64_t ndim, BinaryOp fallback
+    int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     tf::ElementwiseBinaryPlan plan;
     if (tf::build_binary_plan(shape, a_strides, b_strides, ndim, plan)) {
-        tf::binary_plan_walk<Op>(as_storage(a_handle)->data,
-                                 as_storage(b_handle)->data,
-                                 as_storage(dst_handle)->data, plan,
+        tf::binary_plan_walk<Op>(tf::storage_typed<T>(a_handle),
+                                 tf::storage_typed<T>(b_handle),
+                                 tf::storage_typed<T>(dst_handle), plan,
                                  a_offset, b_offset);
         return;
     }
-    core_binary(a_handle, b_handle, dst_handle, shape, a_strides, b_strides,
-                a_offset, b_offset, ndim, fallback);
+    core_binary<T>(a_handle, b_handle, dst_handle, shape, a_strides, b_strides,
+                   a_offset, b_offset, ndim, &Op::template apply<T>);
 }
 
 // The contiguous exports already state "one flat run of ``numel`` elements
 // from ``offset``", which is a rank-1 plan with stride 1 — so they need no
 // plan at all, only the templated row.
-template <class Op>
+template <class Op, class T>
 void unary_contiguous_dispatch(
     const void* src_handle, void* dst_handle, int64_t numel, int64_t offset
 ) {
-    tf::unary_row<Op>(as_storage(src_handle)->data + offset,
-                      as_storage(dst_handle)->data, numel, 1);
+    tf::unary_row<Op>(tf::storage_typed<T>(src_handle) + offset,
+                      tf::storage_typed<T>(dst_handle), numel, 1);
 }
 
-template <class Op>
+template <class Op, class T>
 void binary_contiguous_dispatch(
     const void* a_handle, const void* b_handle, void* dst_handle,
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
-    tf::binary_row<Op>(as_storage(a_handle)->data + a_offset,
-                       as_storage(b_handle)->data + b_offset,
-                       as_storage(dst_handle)->data, numel, 1, 1);
+    tf::binary_row<Op>(tf::storage_typed<T>(a_handle) + a_offset,
+                       tf::storage_typed<T>(b_handle) + b_offset,
+                       tf::storage_typed<T>(dst_handle), numel, 1, 1);
+}
+
+// -- Phase I, milestone I3: the one dispatch per exported call --------------
+//
+// Four helpers, one per traversal family, each holding the **single**
+// ``switch`` its exports perform (design §8.1). They sit above the
+// traversals and below the exports, so the dtype decision is made exactly
+// once — after the export's validation and before any compute — and nothing
+// beneath them branches on dtype again: not the plan builder, not the row
+// kernel, not the odometer carry, not the operation functor, and
+// emphatically not any element.
+//
+// Both arms take the *same source*. ``T = double`` is the pre-I3 call
+// statement for statement, so Phase H's measured float64 traversal is
+// preserved rather than re-derived, and ``T = float`` cannot drift from it
+// because there is nothing separate to drift.
+//
+// The dtype comes from ``tf::dispatch_dtype``, which reads the storage tag —
+// layout and operand metadata only, never a pointer value, an alignment, a
+// clock, an environment variable, or a CPU-feature probe. The ``switch`` has
+// no ``default:`` label, so a future dtype without an instantiation is a
+// compile-time warning rather than a silent misread.
+
+template <class Op>
+void unary_by_dtype(
+    const void* src_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* strides,
+    int64_t offset, int64_t ndim
+) {
+    switch (tf::dispatch_dtype({src_handle, dst_handle})) {
+        case tf::Dtype::Float32:
+            unary_dispatch<Op, float>(src_handle, dst_handle, shape, strides,
+                                      offset, ndim);
+            return;
+        case tf::Dtype::Float64:
+            break;
+    }
+    unary_dispatch<Op, double>(src_handle, dst_handle, shape, strides, offset,
+                               ndim);
+}
+
+template <class Op>
+void unary_contiguous_by_dtype(
+    const void* src_handle, void* dst_handle, int64_t numel, int64_t offset
+) {
+    switch (tf::dispatch_dtype({src_handle, dst_handle})) {
+        case tf::Dtype::Float32:
+            unary_contiguous_dispatch<Op, float>(src_handle, dst_handle, numel,
+                                                 offset);
+            return;
+        case tf::Dtype::Float64:
+            break;
+    }
+    unary_contiguous_dispatch<Op, double>(src_handle, dst_handle, numel,
+                                          offset);
+}
+
+template <class Op>
+void binary_by_dtype(
+    const void* a_handle, const void* b_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* a_strides, const int64_t* b_strides,
+    int64_t a_offset, int64_t b_offset, int64_t ndim
+) {
+    switch (tf::dispatch_dtype({a_handle, b_handle, dst_handle})) {
+        case tf::Dtype::Float32:
+            binary_dispatch<Op, float>(a_handle, b_handle, dst_handle, shape,
+                                       a_strides, b_strides, a_offset, b_offset,
+                                       ndim);
+            return;
+        case tf::Dtype::Float64:
+            break;
+    }
+    binary_dispatch<Op, double>(a_handle, b_handle, dst_handle, shape, a_strides,
+                                b_strides, a_offset, b_offset, ndim);
+}
+
+template <class Op>
+void binary_contiguous_by_dtype(
+    const void* a_handle, const void* b_handle, void* dst_handle,
+    int64_t numel, int64_t a_offset, int64_t b_offset
+) {
+    switch (tf::dispatch_dtype({a_handle, b_handle, dst_handle})) {
+        case tf::Dtype::Float32:
+            binary_contiguous_dispatch<Op, float>(a_handle, b_handle, dst_handle,
+                                                  numel, a_offset, b_offset);
+            return;
+        case tf::Dtype::Float64:
+            break;
+    }
+    binary_contiguous_dispatch<Op, double>(a_handle, b_handle, dst_handle, numel,
+                                           a_offset, b_offset);
 }
 
 }  // namespace
@@ -478,6 +626,21 @@ bool build_binary_plan(const int64_t* shape, const int64_t* a_strides,
 }  // namespace tf
 
 // -- ReLU over tensor cores --------------------------------------------------
+//
+// Phase I, milestone I3: this export and every other in the elementwise
+// family below became dtype-general. Each keeps the symbol, the argument
+// list, the calling convention, the traversal tiers, and the ownership
+// contract it already had — the only change is that
+// ``tf::require_float64`` ("this operation has not been generalized")
+// became ``tf::require_matching_dtype`` ("it has been, and its operands
+// must agree"), and that one ``switch`` now selects the instantiation.
+//
+// Operand dtypes must **match**: there is no casting, no promotion, and no
+// mixed-dtype arithmetic anywhere in the runtime (design §9), so float32
+// with float64 is an invalid *request* rather than a conversion
+// opportunity. The rejection is recorded before anything is read or
+// written, so a rejected call leaves every destination byte-for-byte
+// unchanged.
 
 TF_EXPORT void tf_core_relu(
     const void* src, void* dst,
@@ -485,8 +648,10 @@ TF_EXPORT void tf_core_relu(
     int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    unary_dispatch<tf::ReluOp>(src, dst, shape, strides, offset, ndim,
-                               [](double x) { return x > 0.0 ? x : 0.0; });
+    if (!tf::require_matching_dtype("tf_core_relu", {src, dst})) {
+        return;
+    }
+    unary_by_dtype<tf::ReluOp>(src, dst, shape, strides, offset, ndim);
     TF_GUARD_END_VOID()
 }
 
@@ -494,7 +659,10 @@ TF_EXPORT void tf_core_relu_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
-    unary_contiguous_dispatch<tf::ReluOp>(src, dst, numel, offset);
+    if (!tf::require_matching_dtype("tf_core_relu_contiguous", {src, dst})) {
+        return;
+    }
+    unary_contiguous_by_dtype<tf::ReluOp>(src, dst, numel, offset);
     TF_GUARD_END_VOID()
 }
 
@@ -505,7 +673,10 @@ TF_EXPORT void tf_core_sqrt(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    unary_dispatch<tf::SqrtOp>(src, dst, shape, strides, offset, ndim, op_sqrt);
+    if (!tf::require_matching_dtype("tf_core_sqrt", {src, dst})) {
+        return;
+    }
+    unary_by_dtype<tf::SqrtOp>(src, dst, shape, strides, offset, ndim);
     TF_GUARD_END_VOID()
 }
 
@@ -513,7 +684,10 @@ TF_EXPORT void tf_core_sqrt_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
-    unary_contiguous_dispatch<tf::SqrtOp>(src, dst, numel, offset);
+    if (!tf::require_matching_dtype("tf_core_sqrt_contiguous", {src, dst})) {
+        return;
+    }
+    unary_contiguous_by_dtype<tf::SqrtOp>(src, dst, numel, offset);
     TF_GUARD_END_VOID()
 }
 
@@ -522,8 +696,10 @@ TF_EXPORT void tf_core_reciprocal(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    unary_dispatch<tf::ReciprocalOp>(src, dst, shape, strides, offset, ndim,
-                                     op_reciprocal);
+    if (!tf::require_matching_dtype("tf_core_reciprocal", {src, dst})) {
+        return;
+    }
+    unary_by_dtype<tf::ReciprocalOp>(src, dst, shape, strides, offset, ndim);
     TF_GUARD_END_VOID()
 }
 
@@ -531,7 +707,11 @@ TF_EXPORT void tf_core_reciprocal_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
-    unary_contiguous_dispatch<tf::ReciprocalOp>(src, dst, numel, offset);
+    if (!tf::require_matching_dtype("tf_core_reciprocal_contiguous",
+                                    {src, dst})) {
+        return;
+    }
+    unary_contiguous_by_dtype<tf::ReciprocalOp>(src, dst, numel, offset);
     TF_GUARD_END_VOID()
 }
 
@@ -559,7 +739,12 @@ TF_EXPORT void tf_core_reciprocal_contiguous(
 // identity map; only the traversal matters.
 
 namespace {
-double op_identity(double x) { return x; }
+// Templated for the same reason ``tf::IdentityOp::apply`` is (Phase I,
+// milestone I2): a fixed ``double(double)`` reached with a float operand
+// would convert float -> double -> float, and a conversion quiets a
+// signalling NaN. Deducing the type keeps the identity an identity.
+template <class T>
+T op_identity(T x) { return x; }
 }  // namespace
 
 // Phase H, milestone H5: the traversal predicate. See
@@ -591,45 +776,102 @@ bool copy_prefers_contiguous(const int64_t* shape, const int64_t* strides,
 }
 }  // namespace tf
 
-TF_EXPORT void tf_core_contiguous_copy(
-    const void* src, void* dst,
+// The three-tier traversal, over an explicit scalar type (Phase I,
+// milestone I2). ``T = double`` is the pre-I2 body statement for
+// statement — the same predicate, the same plan builder, the same flat
+// row, the same retained odometer, in the same order — so Phase H's
+// measured float64 behavior is preserved rather than re-derived.
+//
+// H5: pick the traversal from the metadata already in hand. A row-major
+// source is swept with the flat pointer loop every other unary op's
+// contiguous path already uses; anything else keeps the generic odometer,
+// which is the retained reference traversal and the only one that can
+// address a transposed, narrowed, or negatively strided view at all. Both
+// write ``dst[out] = src[pos]`` over the same logical elements in the same
+// row-major destination order, so they are bit-identical by construction —
+// the identity map performs no arithmetic, so no signed zero can be
+// normalized and no NaN can be quieted or have its payload chosen on any
+// path.
+//
+// H8 keeps both of H5's tiers and adds a middle one. The row-major tier
+// still runs the flat loop, now with the identity as a compile-time
+// constant of the loop body rather than an indirect call; a source H5's
+// predicate rejects gets the collapsed plan; and a plan the builder rejects
+// still gets the odometer, which remains the only traversal that can
+// address an arbitrary layout. The bit-identity argument is unchanged and
+// covers all three, at **both** dtypes: the identity map performs no
+// arithmetic at all, which is a property of the operation rather than of
+// the element width.
+//
+// The plan builder and the predicate are untouched by dtype: both read
+// ``int64`` layout metadata only, which is exactly why they carry over.
+namespace {
+template <class T>
+void copy_dispatch(
+    const void* src_handle, void* dst_handle,
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
-    TF_GUARD_BEGIN
-    if (const char* err =
-            unary_strided_error(src, dst, shape, strides, offset, ndim)) {
-        tf::set_error(TF_ERROR_INVALID, err);
-        return;
-    }
-    // H5: pick the traversal from the metadata already in hand. A
-    // row-major source is swept with the flat pointer loop every other
-    // unary op's contiguous path already uses; anything else keeps the
-    // generic odometer, which is the retained reference traversal and the
-    // only one that can address a transposed, narrowed, or negatively
-    // strided view at all. Both write ``dst[out] = src[pos]`` over the
-    // same logical elements in the same row-major destination order, so
-    // they are bit-identical by construction — the identity map performs
-    // no arithmetic, so no signed zero can be normalized and no NaN can
-    // be quieted or have its payload chosen on either path.
-    //
-    // H8 keeps both of H5's tiers and adds a middle one. The row-major tier
-    // still runs the flat loop, now with the identity as a compile-time
-    // constant of the loop body rather than an indirect call; a source H5's
-    // predicate rejects gets the collapsed plan; and a plan the builder
-    // rejects still gets the odometer, which remains the only traversal that
-    // can address an arbitrary layout. The bit-identity argument is
-    // unchanged and covers all three: the identity map performs no
-    // arithmetic at all.
+    const T* src = tf::storage_typed<T>(src_handle);
+    T* dst = tf::storage_typed<T>(dst_handle);
     if (tf::copy_prefers_contiguous(shape, strides, ndim)) {
         int64_t numel = 1;
         for (int64_t d = 0; d < ndim; ++d) {
             numel *= shape[d];
         }
-        unary_contiguous_dispatch<tf::IdentityOp>(src, dst, numel, offset);
+        tf::unary_row<tf::IdentityOp>(src + offset, dst, numel, 1);
         return;
     }
-    unary_dispatch<tf::IdentityOp>(src, dst, shape, strides, offset, ndim,
-                                   op_identity);
+    tf::ElementwiseUnaryPlan plan;
+    if (tf::build_unary_plan(shape, strides, ndim, plan)) {
+        tf::unary_plan_walk<tf::IdentityOp>(src, dst, plan, offset);
+        return;
+    }
+    core_unary_typed<T>(src, dst, shape, strides, offset, ndim, op_identity<T>);
+}
+}  // namespace
+
+// Phase I, milestone I2: the one handle-based compute export the milestone
+// generalizes, and the only one — every other kernel keeps
+// ``tf::require_float64`` until its own milestone.
+//
+// It is generalized here because it is not really arithmetic: it is the
+// runtime's **value-transfer primitive** (H5), the storage-to-storage twin
+// of ``tf_storage_materialize``, and the thing every Policy-B
+// copy-then-compute path, ``NativeFlatten``, ``NativeParameter``
+// construction, and the differentiable ``contiguous_copy`` are built on.
+// Transfer is what I2 is about.
+//
+// Source and destination dtypes must **agree**: there is no casting and no
+// promotion anywhere in the runtime, so float32 -> float64 is an invalid
+// request rather than a conversion. The rejection is recorded before the
+// span validation runs and long before any element is written, so a
+// rejected call leaves the destination byte-for-byte unchanged.
+TF_EXPORT void tf_core_contiguous_copy(
+    const void* src, void* dst,
+    const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
+) {
+    TF_GUARD_BEGIN
+    if (!tf::require_matching_dtype("tf_core_contiguous_copy", src, dst)) {
+        return;
+    }
+    if (const char* err =
+            unary_strided_error(src, dst, shape, strides, offset, ndim)) {
+        tf::set_error(TF_ERROR_INVALID, err);
+        return;
+    }
+    // The one dispatch: after validation, before any compute, reading the
+    // dtype from the handle the caller already passed. Nothing below this
+    // point branches on dtype — not the predicate, not the plan builder,
+    // not the row kernel, not the odometer carry, and emphatically not any
+    // element.
+    switch (tf::storage_dtype(src)) {
+        case tf::Dtype::Float32:
+            copy_dispatch<float>(src, dst, shape, strides, offset, ndim);
+            return;
+        case tf::Dtype::Float64:
+            break;
+    }
+    copy_dispatch<double>(src, dst, shape, strides, offset, ndim);
     TF_GUARD_END_VOID()
 }
 
@@ -651,18 +893,40 @@ TF_EXPORT void tf_core_contiguous_copy(
 // IEEE domain results (NaN from log of a negative, ±inf, ±0) are
 // **values**, not failures: they flow to the destination and leave the
 // error slot clear.
+//
+// Phase I, milestone I3 generalized these four to both dtypes, and they are
+// the family's one structural exception: they hold H8's exclusion from the
+// templated traversals, so they dispatch **straight into the retained
+// odometer** rather than through a plan, at either width. The dtype
+// ``switch`` is therefore written out here instead of going through the
+// ``*_by_dtype`` helpers above — there is no functor to hand them, which is
+// exactly the point (a later edit cannot plan-walk an operation that has no
+// functor). The validation order is unchanged apart from the dtype guard
+// running first, so a mixed-dtype call reports the dtype rather than having
+// its rejection overwritten by a span error.
 
 TF_EXPORT void tf_core_exp(
     const void* src, void* dst,
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_matching_dtype("tf_core_exp", {src, dst})) {
+        return;
+    }
     if (const char* err =
             unary_strided_error(src, dst, shape, strides, offset, ndim)) {
         tf::set_error(TF_ERROR_INVALID, err);
         return;
     }
-    core_unary(src, dst, shape, strides, offset, ndim, op_exp);
+    switch (tf::dispatch_dtype({src, dst})) {
+        case tf::Dtype::Float32:
+            core_unary<float>(src, dst, shape, strides, offset, ndim,
+                              op_exp<float>);
+            return;
+        case tf::Dtype::Float64:
+            break;
+    }
+    core_unary<double>(src, dst, shape, strides, offset, ndim, op_exp<double>);
     TF_GUARD_END_VOID()
 }
 
@@ -670,11 +934,22 @@ TF_EXPORT void tf_core_exp_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_matching_dtype("tf_core_exp_contiguous", {src, dst})) {
+        return;
+    }
     if (const char* err = unary_contiguous_error(src, dst, numel, offset)) {
         tf::set_error(TF_ERROR_INVALID, err);
         return;
     }
-    core_unary_contiguous(src, dst, numel, offset, op_exp);
+    switch (tf::dispatch_dtype({src, dst})) {
+        case tf::Dtype::Float32:
+            core_unary_contiguous<float>(src, dst, numel, offset,
+                                         op_exp<float>);
+            return;
+        case tf::Dtype::Float64:
+            break;
+    }
+    core_unary_contiguous<double>(src, dst, numel, offset, op_exp<double>);
     TF_GUARD_END_VOID()
 }
 
@@ -683,12 +958,23 @@ TF_EXPORT void tf_core_log(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_matching_dtype("tf_core_log", {src, dst})) {
+        return;
+    }
     if (const char* err =
             unary_strided_error(src, dst, shape, strides, offset, ndim)) {
         tf::set_error(TF_ERROR_INVALID, err);
         return;
     }
-    core_unary(src, dst, shape, strides, offset, ndim, op_log);
+    switch (tf::dispatch_dtype({src, dst})) {
+        case tf::Dtype::Float32:
+            core_unary<float>(src, dst, shape, strides, offset, ndim,
+                              op_log<float>);
+            return;
+        case tf::Dtype::Float64:
+            break;
+    }
+    core_unary<double>(src, dst, shape, strides, offset, ndim, op_log<double>);
     TF_GUARD_END_VOID()
 }
 
@@ -696,11 +982,22 @@ TF_EXPORT void tf_core_log_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    if (!tf::require_matching_dtype("tf_core_log_contiguous", {src, dst})) {
+        return;
+    }
     if (const char* err = unary_contiguous_error(src, dst, numel, offset)) {
         tf::set_error(TF_ERROR_INVALID, err);
         return;
     }
-    core_unary_contiguous(src, dst, numel, offset, op_log);
+    switch (tf::dispatch_dtype({src, dst})) {
+        case tf::Dtype::Float32:
+            core_unary_contiguous<float>(src, dst, numel, offset,
+                                         op_log<float>);
+            return;
+        case tf::Dtype::Float64:
+            break;
+    }
+    core_unary_contiguous<double>(src, dst, numel, offset, op_log<double>);
     TF_GUARD_END_VOID()
 }
 
@@ -712,8 +1009,11 @@ TF_EXPORT void tf_core_add(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    binary_dispatch<tf::AddOp>(a, b, dst, shape, a_strides, b_strides,
-                               a_offset, b_offset, ndim, op_add);
+    if (!tf::require_matching_dtype("tf_core_add", {a, b, dst})) {
+        return;
+    }
+    binary_by_dtype<tf::AddOp>(a, b, dst, shape, a_strides, b_strides,
+                               a_offset, b_offset, ndim);
     TF_GUARD_END_VOID()
 }
 
@@ -723,8 +1023,11 @@ TF_EXPORT void tf_core_subtract(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    binary_dispatch<tf::SubtractOp>(a, b, dst, shape, a_strides, b_strides,
-                                    a_offset, b_offset, ndim, op_subtract);
+    if (!tf::require_matching_dtype("tf_core_subtract", {a, b, dst})) {
+        return;
+    }
+    binary_by_dtype<tf::SubtractOp>(a, b, dst, shape, a_strides, b_strides,
+                                    a_offset, b_offset, ndim);
     TF_GUARD_END_VOID()
 }
 
@@ -734,8 +1037,11 @@ TF_EXPORT void tf_core_multiply(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    binary_dispatch<tf::MultiplyOp>(a, b, dst, shape, a_strides, b_strides,
-                                    a_offset, b_offset, ndim, op_multiply);
+    if (!tf::require_matching_dtype("tf_core_multiply", {a, b, dst})) {
+        return;
+    }
+    binary_by_dtype<tf::MultiplyOp>(a, b, dst, shape, a_strides, b_strides,
+                                    a_offset, b_offset, ndim);
     TF_GUARD_END_VOID()
 }
 
@@ -750,9 +1056,12 @@ TF_EXPORT void tf_core_relu_backward(
     int64_t x_offset, int64_t u_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    binary_dispatch<tf::ReluBackwardOp>(x, upstream, dst, shape, x_strides,
-                                        u_strides, x_offset, u_offset, ndim,
-                                        op_relu_backward);
+    if (!tf::require_matching_dtype("tf_core_relu_backward",
+                                    {x, upstream, dst})) {
+        return;
+    }
+    binary_by_dtype<tf::ReluBackwardOp>(x, upstream, dst, shape, x_strides,
+                                        u_strides, x_offset, u_offset, ndim);
     TF_GUARD_END_VOID()
 }
 
@@ -761,7 +1070,10 @@ TF_EXPORT void tf_core_add_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
-    binary_contiguous_dispatch<tf::AddOp>(a, b, dst, numel, a_offset, b_offset);
+    if (!tf::require_matching_dtype("tf_core_add_contiguous", {a, b, dst})) {
+        return;
+    }
+    binary_contiguous_by_dtype<tf::AddOp>(a, b, dst, numel, a_offset, b_offset);
     TF_GUARD_END_VOID()
 }
 
@@ -770,7 +1082,11 @@ TF_EXPORT void tf_core_subtract_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
-    binary_contiguous_dispatch<tf::SubtractOp>(a, b, dst, numel, a_offset,
+    if (!tf::require_matching_dtype("tf_core_subtract_contiguous",
+                                    {a, b, dst})) {
+        return;
+    }
+    binary_contiguous_by_dtype<tf::SubtractOp>(a, b, dst, numel, a_offset,
                                                b_offset);
     TF_GUARD_END_VOID()
 }
@@ -780,7 +1096,11 @@ TF_EXPORT void tf_core_multiply_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
-    binary_contiguous_dispatch<tf::MultiplyOp>(a, b, dst, numel, a_offset,
+    if (!tf::require_matching_dtype("tf_core_multiply_contiguous",
+                                    {a, b, dst})) {
+        return;
+    }
+    binary_contiguous_by_dtype<tf::MultiplyOp>(a, b, dst, numel, a_offset,
                                                b_offset);
     TF_GUARD_END_VOID()
 }

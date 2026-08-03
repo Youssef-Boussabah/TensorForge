@@ -14,12 +14,93 @@
 // never an error. See tf_reduction_internal.h and
 // docs/native_cpu_performance_design.md §16.6. ``tf_core_narrow_backward``
 // is deliberately outside H6's scope and keeps the odometer unchanged.
+//
+// Phase I, milestone I4 made both exports below dtype-general. Each keeps
+// its symbol, its argument list, its calling convention, its traversal
+// tiers, its validation, and its ownership contract; the only changes are
+// that ``tf::require_float64`` ("this operation has not been generalized")
+// became ``tf::require_matching_dtype`` ("it has been, and its operands must
+// agree"), and that one ``switch`` per exported call now selects the
+// instantiation. The traversals themselves live in tf_reduction_internal.h
+// as templates over the element type, so the optimized path, the retained
+// reference path, and the scatter are the *same source* at both widths.
 
 #include "tf_internal.h"
 #include "tf_reduction_internal.h"
 
 using tf::Storage;
 using tf::as_storage;
+
+namespace {
+
+// -- Phase I, milestone I4: the one dispatch per exported call --------------
+//
+// Two helpers, one per export, each holding the **single** ``switch`` its
+// export performs (design §8.1). They sit above the traversals and below the
+// exports, so the dtype decision is made exactly once — after the export's
+// validation and before any compute — and nothing beneath them branches on
+// dtype again: not the predicate, not the factorization, not the odometer
+// carry, not the accumulator, and emphatically not any element.
+//
+// Both arms take the *same source*. ``T = double`` is the pre-I4 call
+// statement for statement, so Phase H's measured float64 traversal is
+// preserved rather than re-derived, and ``T = float`` cannot drift from it.
+//
+// The dtype comes from ``tf::dispatch_dtype``, which reads the storage tag —
+// layout and operand metadata only, never a pointer value, an alignment, a
+// clock, an environment variable, or a CPU-feature probe. Neither ``switch``
+// has a ``default:`` label, so a future dtype without an instantiation is a
+// compile-time warning rather than a silent misread.
+//
+// The counter allocation stays *inside* each helper rather than above the
+// switch, so an injected allocation failure keeps its existing meaning for
+// this kernel and the guard still maps it onto the C ABI error contract.
+
+template <class T>
+void sum_dispatch(
+    const void* src_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* in_strides, const int64_t* out_strides,
+    int64_t offset, int64_t ndim
+) {
+    const T* src = tf::storage_typed<T>(src_handle);
+    T* dst = tf::storage_typed<T>(dst_handle);
+    if (ndim == 0) {  // scalar input: its single element is the whole sum
+        dst[0] += src[offset];
+        return;
+    }
+    int64_t outer = 0;
+    int64_t mid = 0;
+    int64_t inner = 0;
+    // The H6 predicate is untouched by dtype: it reads ``int64`` layout
+    // metadata only, which is exactly why it carries over unchanged.
+    if (tf::reduce_prefers_contiguous_blocks(shape, in_strides, out_strides,
+                                             ndim, &outer, &mid, &inner)) {
+        tf::sum_contiguous_blocks(src, dst, outer, mid, inner, offset);
+        return;
+    }
+    std::vector<int64_t> counter = tf::make_counter(ndim);
+    tf::sum_generic_strided(src, dst, shape, in_strides, out_strides, offset,
+                            ndim, counter.data());
+}
+
+template <class T>
+void narrow_backward_dispatch(
+    const void* upstream_handle, void* dst_handle,
+    const int64_t* shape, const int64_t* u_strides, const int64_t* out_strides,
+    int64_t u_offset, int64_t out_offset, int64_t ndim
+) {
+    const T* upstream = tf::storage_typed<T>(upstream_handle);
+    T* dst = tf::storage_typed<T>(dst_handle);
+    if (ndim == 0) {  // scalar upstream: one element at the base offset
+        dst[out_offset] = upstream[u_offset];
+        return;
+    }
+    std::vector<int64_t> counter = tf::make_counter(ndim);
+    tf::narrow_backward_scatter(upstream, dst, shape, u_strides, out_strides,
+                                u_offset, out_offset, ndim, counter.data());
+}
+
+}  // namespace
 
 namespace tf {
 
@@ -90,76 +171,14 @@ bool reduce_prefers_contiguous_blocks(
     return true;
 }
 
-// -- the retained generic reference traversal -------------------------------
-
-void sum_generic_strided(
-    const double* src, double* dst,
-    const int64_t* shape, const int64_t* in_strides,
-    const int64_t* out_strides, int64_t offset, int64_t ndim,
-    int64_t* counter
-) noexcept {
-    int64_t total = 1;
-    for (int64_t d = 0; d < ndim; ++d) {
-        total *= shape[d];
-        counter[d] = 0;
-    }
-    int64_t in_pos = offset;
-    int64_t out_pos = 0;
-    for (int64_t i = 0; i < total; ++i) {
-        dst[out_pos] += src[in_pos];
-        for (int64_t d = ndim - 1; d >= 0; --d) {
-            ++counter[d];
-            in_pos += in_strides[d];
-            out_pos += out_strides[d];
-            if (counter[d] < shape[d]) {
-                break;
-            }
-            counter[d] = 0;
-            in_pos -= shape[d] * in_strides[d];
-            out_pos -= shape[d] * out_strides[d];
-        }
-    }
-}
-
-// -- the optimized flat block traversal -------------------------------------
-
-void sum_contiguous_blocks(
-    const double* src, double* dst,
-    int64_t outer, int64_t mid, int64_t inner, int64_t offset
-) noexcept {
-    if (inner == 1) {
-        // One contiguous ascending source run per destination cell. The
-        // accumulator is seeded from the destination, so the
-        // accumulate-into contract and the signed-zero behavior are
-        // exactly the generic path's, and the running total never makes a
-        // round trip through memory.
-        const double* run = src + offset;
-        for (int64_t o = 0; o < outer; ++o) {
-            double accumulator = dst[o];
-            for (int64_t m = 0; m < mid; ++m) {
-                accumulator += run[m];
-            }
-            dst[o] = accumulator;
-            run += mid;
-        }
-        return;
-    }
-    // A contiguous source row added elementwise into a contiguous
-    // destination row, ``mid`` times per outer block. Distinct ``i`` are
-    // distinct destination cells, so nothing here is a horizontal
-    // reduction and no addition is reassociated.
-    const double* in_row = src + offset;
-    double* out_row = dst;
-    for (int64_t o = 0; o < outer; ++o) {
-        for (int64_t m = 0; m < mid; ++m) {
-            for (int64_t i = 0; i < inner; ++i) {
-                out_row[i] += in_row[i];
-            }
-            in_row += inner;
-        }
-        out_row += inner;
-    }
-}
+// (The two traversals that used to be defined here — the retained generic
+// odometer and the optimized flat block walk — are now templates over the
+// element type in tf_reduction_internal.h, beside the contract they answer
+// to. Nothing about either loop, either carry, or either accumulator changed
+// in the move: ``T = double`` is the code Phase H measured, statement for
+// statement. The definitions moved for the ordinary reason a template must,
+// so both instantiations are available to the exports below *and* to the
+// CTests that compile this file directly.)
 
 }  // namespace tf
 
@@ -181,33 +200,46 @@ void sum_contiguous_blocks(
 // each destination cell in the same ascending order starting from the same
 // value, so they are bit-identical — exceptional values and NaN payloads
 // included.
+//
+// I4: dtype-general. Source and destination dtypes must **agree** — there is
+// no casting, no promotion, and no mixed-dtype arithmetic anywhere in the
+// runtime (design §9), so summing a float32 source into a float64
+// destination is an invalid *request* rather than a conversion opportunity.
+// The rejection is recorded before anything is read or written, so a
+// rejected call leaves the destination byte-for-byte unchanged — which
+// matters more here than in most exports, because this destination carries
+// the caller's accumulated partial sums rather than a write-only result.
+//
+// **float32 accumulates in float32** (design §10.1): the accumulator type
+// follows the element type on both traversals, so no hidden binary64
+// intermediate exists on either, and the two paths therefore stay the same
+// reduction at binary32 exactly as they are at binary64.
 TF_EXPORT void tf_core_sum(
     const void* src_handle, void* dst_handle,
     const int64_t* shape, const int64_t* in_strides, const int64_t* out_strides,
     int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    const double* src = as_storage(src_handle)->data;
-    double* dst = as_storage(dst_handle)->data;
-    if (ndim == 0) {  // scalar input: its single element is the whole sum
-        dst[0] += src[offset];
+    if (!tf::require_matching_dtype("tf_core_sum", {src_handle, dst_handle})) {
         return;
     }
-    int64_t outer = 0;
-    int64_t mid = 0;
-    int64_t inner = 0;
-    if (tf::reduce_prefers_contiguous_blocks(shape, in_strides, out_strides,
-                                             ndim, &outer, &mid, &inner)) {
-        tf::sum_contiguous_blocks(src, dst, outer, mid, inner, offset);
-        return;
+    // The one dispatch: before any compute, reading the dtype from the
+    // handles the caller already passed. Nothing below this point branches
+    // on dtype again — not the H6 predicate, not the factorization, not the
+    // odometer carry, not the accumulator, and emphatically not any element.
+    // The counter allocation the guard maps onto the error contract lives
+    // inside the helper, so an injected allocation failure keeps its
+    // existing meaning for this kernel at both widths.
+    switch (tf::dispatch_dtype({src_handle, dst_handle})) {
+        case tf::Dtype::Float32:
+            sum_dispatch<float>(src_handle, dst_handle, shape, in_strides,
+                                out_strides, offset, ndim);
+            return;
+        case tf::Dtype::Float64:
+            break;
     }
-    // The odometer's counter is allocated here rather than in the
-    // traversal so the guard can map an allocation failure onto the C ABI
-    // error contract, and so the fault-injection hook keeps its existing
-    // meaning for this kernel.
-    std::vector<int64_t> counter = tf::make_counter(ndim);
-    tf::sum_generic_strided(src, dst, shape, in_strides, out_strides, offset,
-                            ndim, counter.data());
+    sum_dispatch<double>(src_handle, dst_handle, shape, in_strides,
+                         out_strides, offset, ndim);
     TF_GUARD_END_VOID()
 }
 
@@ -226,38 +258,38 @@ TF_EXPORT void tf_core_sum(
 // alone: its destination stride vector has no zeros, so it has no
 // accumulation to preserve and no reduced run to factorize, and widening
 // H6 to cover it would have made the milestone a general scatter one.
+//
+// I4: dtype-general, and the traversal moved to
+// ``tf::narrow_backward_scatter`` in tf_reduction_internal.h so both
+// instantiations come from one source. Upstream and destination dtypes must
+// **agree**; the rejection is recorded before anything is written, so a
+// rejected call leaves the destination — including every zero that *is* the
+// gradient outside the narrowed region — byte-for-byte unchanged.
+//
+// It stays a scatter and not an identity copy: the destination must still be
+// zero-initialized at both widths, because the untouched cells are the
+// answer rather than an initialization detail.
 TF_EXPORT void tf_core_narrow_backward(
     const void* upstream_handle, void* dst_handle,
     const int64_t* shape, const int64_t* u_strides, const int64_t* out_strides,
     int64_t u_offset, int64_t out_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
-    const double* upstream = as_storage(upstream_handle)->data;
-    double* dst = as_storage(dst_handle)->data;
-    if (ndim == 0) {  // scalar upstream: one element at the base offset
-        dst[out_offset] = upstream[u_offset];
+    if (!tf::require_matching_dtype(
+            "tf_core_narrow_backward", {upstream_handle, dst_handle})) {
         return;
     }
-    int64_t total = 1;
-    for (int64_t d = 0; d < ndim; ++d) {
-        total *= shape[d];
+    switch (tf::dispatch_dtype({upstream_handle, dst_handle})) {
+        case tf::Dtype::Float32:
+            narrow_backward_dispatch<float>(upstream_handle, dst_handle, shape,
+                                            u_strides, out_strides, u_offset,
+                                            out_offset, ndim);
+            return;
+        case tf::Dtype::Float64:
+            break;
     }
-    std::vector<int64_t> counter = tf::make_counter(ndim);
-    int64_t u_pos = u_offset;
-    int64_t out_pos = out_offset;
-    for (int64_t i = 0; i < total; ++i) {
-        dst[out_pos] = upstream[u_pos];
-        for (int64_t d = ndim - 1; d >= 0; --d) {
-            ++counter[d];
-            u_pos += u_strides[d];
-            out_pos += out_strides[d];
-            if (counter[d] < shape[d]) {
-                break;
-            }
-            counter[d] = 0;
-            u_pos -= shape[d] * u_strides[d];
-            out_pos -= shape[d] * out_strides[d];
-        }
-    }
+    narrow_backward_dispatch<double>(upstream_handle, dst_handle, shape,
+                                     u_strides, out_strides, u_offset,
+                                     out_offset, ndim);
     TF_GUARD_END_VOID()
 }

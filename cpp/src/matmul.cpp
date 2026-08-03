@@ -26,80 +26,55 @@ bool matmul_prefers_row_sweep(int64_t m, int64_t n, int64_t p,
     return b_stride1 == 1 && n >= 1 && p >= MATMUL_MIN_COLUMNS;
 }
 
-// The pre-H2 kernel, unchanged. Each source element is addressed through
-// its own strides and offset — which is what lets a transposed or
-// narrowed view multiply directly without materializing: a[i, k] lives at
-// a_offset + i*a_stride0 + k*a_stride1, whatever the layout. The naive
-// triple loop, and the reference every optimized result is compared
-// against.
-void matmul_generic_strided(
-    const double* a, const double* b, double* dst,
+// (The two compute paths that used to be defined here — the pre-H2 generic
+// i-j-k triple loop and the H2 i-k-j row sweep — are now templates over the
+// element type in tf_matmul_internal.h, beside the four-part numerical
+// contract they answer to. Nothing about either loop nest, either ``k``
+// order, or either accumulator changed in the move: ``T = double`` is the
+// code Phase H measured, statement for statement. The definitions moved for
+// the ordinary reason a template must, so both instantiations are available
+// to the export below *and* to the CTests that compile this file directly.)
+
+}  // namespace tf
+
+namespace {
+
+// -- Phase I, milestone I4: the one dispatch per exported call --------------
+//
+// One helper holding the **single** ``switch`` ``tf_core_matmul`` performs
+// (design §8.1). It sits above the two compute paths and below the export,
+// so the dtype decision is made exactly once — after validation and before
+// any compute — and nothing beneath it branches on dtype again: not the H2
+// predicate, not the row grouping, not the ``k`` loop, not the accumulator,
+// and emphatically not any element.
+//
+// The predicate is untouched by dtype: it reads ``int64`` metadata only,
+// which is exactly why it carries over unchanged and why both widths take
+// the *same* path for the same layout.
+template <class T>
+void matmul_dispatch(
+    const void* a_handle, const void* b_handle, void* dst_handle,
     int64_t m, int64_t n, int64_t p,
     int64_t a_stride0, int64_t a_stride1,
     int64_t b_stride0, int64_t b_stride1,
     int64_t a_offset, int64_t b_offset
-) noexcept {
-    for (int64_t i = 0; i < m; ++i) {
-        for (int64_t j = 0; j < p; ++j) {
-            double sum = 0.0;
-            for (int64_t k = 0; k < n; ++k) {
-                sum += a[a_offset + i * a_stride0 + k * a_stride1]
-                     * b[b_offset + k * b_stride0 + j * b_stride1];
-            }
-            dst[i * p + j] = sum;
-        }
+) {
+    const T* a = tf::storage_typed<T>(a_handle);
+    const T* b = tf::storage_typed<T>(b_handle);
+    T* dst = tf::storage_typed<T>(dst_handle);
+    if (tf::matmul_prefers_row_sweep(m, n, p, b_stride1)) {
+        tf::matmul_row_sweep(a, b, dst, m, n, p,
+                             a_stride0, a_stride1, b_stride0,
+                             a_offset, b_offset);
+        return;
     }
+    tf::matmul_generic_strided(a, b, dst, m, n, p,
+                               a_stride0, a_stride1,
+                               b_stride0, b_stride1,
+                               a_offset, b_offset);
 }
 
-// The H2 fast path: i-k-j, sweeping MATMUL_ROW_BLOCK destination rows at
-// once. See tf_matmul_internal.h for the four-part numerical contract
-// this shares with the generic kernel — identical accumulation order,
-// bit identity on every non-NaN result, NaN-class equivalence, and NaN
-// payload bits deliberately left outside the contract — and for why it is
-// safe against an uninitialized destination.
-void matmul_row_sweep(
-    const double* a, const double* b, double* dst,
-    int64_t m, int64_t n, int64_t p,
-    int64_t a_stride0, int64_t a_stride1,
-    int64_t b_stride0,
-    int64_t a_offset, int64_t b_offset
-) noexcept {
-    for (int64_t i0 = 0; i0 < m; i0 += MATMUL_ROW_BLOCK) {
-        const int64_t rows =
-            (m - i0 < MATMUL_ROW_BLOCK) ? (m - i0) : MATMUL_ROW_BLOCK;
-        // k == 0 — the assigning pass. Every element of every row in the
-        // group is written here, before any accumulation reads it, which
-        // is what makes an uninitialized destination safe (H1). The
-        // explicit `0.0 +` reproduces the generic kernel's
-        // `double sum = 0.0; sum += ...` exactly: it is not redundant,
-        // because 0.0 + (-0.0) is +0.0 while -0.0 alone is not.
-        {
-            const double* b_row = b + b_offset;
-            for (int64_t r = 0; r < rows; ++r) {
-                double* out = dst + (i0 + r) * p;
-                const double a_ik = a[a_offset + (i0 + r) * a_stride0];
-                for (int64_t j = 0; j < p; ++j) {
-                    out[j] = 0.0 + a_ik * b_row[j];
-                }
-            }
-        }
-        // k >= 1 — the accumulating passes, ascending, so every output
-        // takes its products in the generic kernel's order.
-        for (int64_t k = 1; k < n; ++k) {
-            const double* b_row = b + b_offset + k * b_stride0;
-            for (int64_t r = 0; r < rows; ++r) {
-                double* out = dst + (i0 + r) * p;
-                const double a_ik =
-                    a[a_offset + (i0 + r) * a_stride0 + k * a_stride1];
-                for (int64_t j = 0; j < p; ++j) {
-                    out[j] += a_ik * b_row[j];
-                }
-            }
-        }
-    }
-}
-
-}  // namespace tf
+}  // namespace
 
 // out (m x p, contiguous row-major) = a (m x n) @ b (n x p), each source
 // element addressed through its own strides and offset.
@@ -110,6 +85,18 @@ void matmul_row_sweep(
 // or environment state, and cannot fail; a layout that does not qualify
 // simply takes the generic path. There is no exported selector and no way
 // for a caller to override the choice.
+//
+// Phase I, milestone I4: dtype-general. All three handles must carry the
+// **same** dtype — there is no casting, no promotion, and no mixed-dtype
+// arithmetic anywhere in the runtime (design §9), so a float32 left operand
+// with a float64 right one is an invalid *request* rather than a conversion
+// opportunity, in any of the three positions. The rejection is recorded
+// before anything is read or written, so a rejected call leaves the
+// destination byte-for-byte unchanged.
+//
+// **float32 accumulates in float32** (design §10.1). The per-output ``k``
+// order is preserved exactly at both widths, on both paths, so H2's
+// four-part contract restates rather than weakens at binary32.
 TF_EXPORT void tf_core_matmul(
     const void* a_handle, const void* b_handle, void* dst_handle,
     int64_t m, int64_t n, int64_t p,
@@ -118,19 +105,22 @@ TF_EXPORT void tf_core_matmul(
     int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
-    const double* a = as_storage(a_handle)->data;
-    const double* b = as_storage(b_handle)->data;
-    double* dst = as_storage(dst_handle)->data;
-    if (tf::matmul_prefers_row_sweep(m, n, p, b_stride1)) {
-        tf::matmul_row_sweep(a, b, dst, m, n, p,
-                             a_stride0, a_stride1, b_stride0,
-                             a_offset, b_offset);
-    } else {
-        tf::matmul_generic_strided(a, b, dst, m, n, p,
-                                   a_stride0, a_stride1,
-                                   b_stride0, b_stride1,
-                                   a_offset, b_offset);
+    if (!tf::require_matching_dtype(
+            "tf_core_matmul", {a_handle, b_handle, dst_handle})) {
+        return;
     }
+    switch (tf::dispatch_dtype({a_handle, b_handle, dst_handle})) {
+        case tf::Dtype::Float32:
+            matmul_dispatch<float>(a_handle, b_handle, dst_handle, m, n, p,
+                                   a_stride0, a_stride1, b_stride0, b_stride1,
+                                   a_offset, b_offset);
+            return;
+        case tf::Dtype::Float64:
+            break;
+    }
+    matmul_dispatch<double>(a_handle, b_handle, dst_handle, m, n, p,
+                            a_stride0, a_stride1, b_stride0, b_stride1,
+                            a_offset, b_offset);
     TF_GUARD_END_VOID()
 }
 

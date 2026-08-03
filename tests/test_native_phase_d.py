@@ -527,7 +527,7 @@ def test_checkpoint_holds_no_transient_cnn_state(tmp_path):
     for banned in ("winner", "grad", "graph", "relu", "pool", "flatten",
                    "output", "prediction"):
         assert banned not in blob, banned
-    assert '"format_version": 2' in blob
+    assert '"format_version": 3' in blob
     _close_all(x, y, model)
     optimizer.close()
 
@@ -762,7 +762,7 @@ def test_checked_kernels_remain_the_error_hook_registry():
 
 def test_no_out_of_scope_capability_is_advertised():
     info = cpp.backend_info()
-    assert info["supported_dtypes"] == ("float64",)
+    assert info["supported_dtypes"] == ("float64", "float32")
     assert info["supported_devices"] == ("cpu",)
     assert info["dtype"] == "float64" and info["device"] == "cpu"
     assert info["stable_framework_integration"] is False
@@ -778,11 +778,21 @@ def test_no_out_of_scope_capability_is_advertised():
     # ("layernorm" left UNSUPPORTED in Phase F milestone F2 and
     # "batchnorm" in F4, once both BatchNorm shapes shipped as composed
     # modules; neither is out-of-scope work any more.)
-    for absent in ("float32", "cuda", "amp"):
+    # ("float32" left UNSUPPORTED in Phase I milestone I9, once integrated
+    # float32 training and the exact float32 resume proof both passed. Like
+    # "dropout" below, it is attributed rather than dropped: it really was a
+    # Phase-D boundary, and the milestone that moved it was not Phase D's.)
+    for absent in ("cuda", "amp"):
         assert absent in cpp.UNSUPPORTED, absent
         assert absent not in cpp.AUTOGRAD_OPS
         assert absent not in cpp.TENSOR_CORE_OPS
         assert absent not in cpp.NATIVE_MODULES
+    assert "float32" not in cpp.UNSUPPORTED
+    assert "float32" in cpp.SUPPORTED_DTYPES
+    # ...and it became a dtype, never an operation or a module name.
+    for registry in (cpp.AUTOGRAD_OPS, cpp.TENSOR_CORE_OPS,
+                     cpp.NATIVE_MODULES):
+        assert "float32" not in registry
     # "dropout" was an unsupported *capability* at the boundary Phase D
     # drew, and stayed one through G9 even after Phase G milestones G2
     # and G3 shipped a Core wrapper and a differentiable operation. It

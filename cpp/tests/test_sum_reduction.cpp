@@ -56,8 +56,11 @@
 
 TF_EXPORT void* tf_storage_create(std::int64_t size);
 TF_EXPORT void tf_storage_destroy(void* handle);
-TF_EXPORT void tf_storage_copy_from(void* handle, const double* src);
-TF_EXPORT void tf_storage_copy_to(const void* handle, double* dst);
+// Retyped at Phase I, milestone I2: the host positions are ``void*`` and
+// the storage handle's dtype tag decides how they are read. A source-level
+// retype of an existing export — same symbol, same slots, no ABI change.
+TF_EXPORT void tf_storage_copy_from(void* handle, const void* src);
+TF_EXPORT void tf_storage_copy_to(const void* handle, void* dst);
 TF_EXPORT void tf_core_sum(
     const void* src_handle, void* dst_handle,
     const std::int64_t* shape, const std::int64_t* in_strides,

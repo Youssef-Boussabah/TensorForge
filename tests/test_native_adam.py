@@ -165,7 +165,11 @@ def test_native_adam_constructor_failure_releases_partial_state(monkeypatch):
     first = _param_with_grad()
     second = _param_with_grad()
     created = []
-    real_zeros = NativeTensor.zeros
+    # Phase I, milestone I8 moved the moment allocator from the public
+    # ``zeros`` to the private typed one, so a moment can be built at its
+    # parameter's width. The injection seam moved with it; nothing else
+    # about this test changed.
+    real_zeros = NativeTensor._typed_zeros
 
     def tracking_zeros(*args, **kwargs):
         if len(created) == 3:  # fail allocating the fourth buffer
@@ -174,7 +178,7 @@ def test_native_adam_constructor_failure_releases_partial_state(monkeypatch):
         created.append(tensor)
         return tensor
 
-    monkeypatch.setattr(NativeTensor, "zeros", tracking_zeros)
+    monkeypatch.setattr(NativeTensor, "_typed_zeros", tracking_zeros)
     with pytest.raises(MemoryError, match="forced allocation failure"):
         NativeAdam([first, second], lr=LR)
     monkeypatch.undo()

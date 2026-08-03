@@ -58,6 +58,39 @@ RAW_KERNELS = (
 # Backwards-compatible alias (list_kernels / backend_info["kernels"]).
 KERNELS = RAW_KERNELS
 
+# The element types the seven raw kernels above accept — **float64 only,
+# and permanently** (Phase I, milestone I2; design §7.2).
+#
+# This is a genuinely different statement from ``SUPPORTED_DTYPES``, and I2
+# is the first milestone at which the difference is observable, which is
+# exactly why the registry lands here rather than at I0. The C ABI divides
+# cleanly in two:
+#
+#   * **handle-based paths** — every export that receives a storage handle.
+#     The handle carries the dtype, so the operation reads it from an
+#     argument it already has. These are the paths dtype generalization
+#     travels along, and from I2 the transfer, materialization, and
+#     identity-copy members of the group work at float32.
+#   * **the seven raw utility kernels** — ``tf_elementwise_add`` through
+#     ``tf_matmul_tiled``. They receive *only* ``const double*``,
+#     ``double*``, and an element count. There is no handle, therefore no
+#     dtype tag, therefore nothing to dispatch on. Making them dtype-general
+#     would need either new symbols (rejected — the phase adds exactly two)
+#     or a dtype-code parameter, which is an argument-count change and so a
+#     real ABI break.
+#
+# They are also not needed: they are the reference/benchmark set, and no
+# ``NativeTensorCore``, ``NativeTensor``, module, loss, optimizer, or
+# checkpoint path calls them. The whole native stack runs through the
+# handle-based ``tf_core_*`` exports.
+#
+# Three distinct facts, deliberately reported separately by
+# ``backend_info()`` so none of them can be mistaken for another:
+# ``supported_dtypes`` (the public promise), ``raw_kernel_dtypes`` (this
+# limitation), and the internal ``_DTYPE_CODES`` table (what storage can
+# physically be allocated as).
+RAW_KERNEL_DTYPES = ("float64",)
+
 _BINARY_KERNELS = (
     "tf_elementwise_add",
     "tf_elementwise_subtract",
@@ -451,24 +484,87 @@ STATE_SUPPORT = (
 # G10 no name appears in both.
 #
 # The claim the move makes is deliberately narrow: **native Dropout is
-# supported in TensorForge's experimental native float64 CPU backend**. It
-# says nothing about the stable framework (which has always had its own
-# separate `tensorforge.nn.Dropout`), and float32, CUDA, and AMP stay
-# listed below because they remain genuinely absent.
+# supported in TensorForge's experimental native CPU backend**. It says
+# nothing about the stable framework (which has always had its own
+# separate `tensorforge.nn.Dropout`).
+#
+# **"float32" has now left this tuple too**, at Phase I milestone I9 and
+# not one milestone earlier. It is the second name that ever appeared here
+# while being progressively implemented underneath: I1 made float32 storage
+# allocatable, I2 movable, I3 computable, I4 accumulating, I5 convolving
+# and pooling, I6 classifying, I7 a module dtype, and I8 an optimizer and
+# checkpoint dtype — and through all eight this entry stayed put (design
+# §27.2), for the same reason "dropout" did. A dtype's whole value is that
+# a model trained at it can be *stopped and resumed*, and that is not a
+# claim source code can make. It has to be demonstrated. I8 moved the
+# checkpoint format to version 3 so float32 state survives a file, and I9
+# ran the integrated proof: one deep model carrying parameters, persistent
+# buffers, a shared registered generator, and Adam moments, interrupted,
+# checkpointed, reloaded into a completely fresh set built from different
+# seeds, and continued — with every loss, gradient, parameter, buffer,
+# moment, counter, generator field, alias path, next Dropout mask, logit,
+# prediction, and evaluation output proved **bit-identical** to the
+# uninterrupted run, at float32 and independently at float64
+# (examples/native_float32_training.py).
+#
+# The claim the move makes is again deliberately narrow: **float32 and
+# float64 are supported on the CPU in the experimental native line**.
+# float64 remains the default at every constructor, factory, module, and
+# parameter; there is no casting, no promotion, and no mixed-dtype
+# arithmetic between them; and `RAW_KERNEL_DTYPES` below is a *different*
+# statement that did not move. CUDA and AMP stay listed here because they
+# remain genuinely absent.
 #
 # What remains below is genuinely absent from the native line.
 UNSUPPORTED = (
-    "float32", "cuda", "amp",
+    "cuda", "amp",
 )
 
-# Supported native dtype/device metadata (v1.21). The native kernels are
-# float64 CPU only, so these are the single legal values today. The tags
-# are explicit and validated — a native tensor never claims a dtype/device
-# the kernels cannot actually compute, and unsupported values are rejected
-# at construction rather than silently coerced (see
-# docs/native_dtype_device_metadata_design.md).
-SUPPORTED_DTYPES = ("float64",)
+# Supported native dtype/device metadata (v1.21, extended at Phase I
+# milestone I9). The native kernels compute at **both** float32 and float64
+# on the CPU, so these are the legal values. The tags are explicit and
+# validated — a native tensor never claims a dtype/device the kernels
+# cannot actually compute, and unsupported values are rejected at
+# construction rather than silently coerced (see
+# docs/native_dtype_device_metadata_design.md and
+# docs/native_dtype_float32_design.md).
+#
+# **Order is contractual**: float64 first, because it is the default that
+# `None` selects and the width every pre-Phase-I behavior is defined at.
+# float32 is an addition, never a replacement, and nothing in the runtime
+# reads a default off position 0 — `normalize_dtype` names `"float64"`
+# explicitly.
+SUPPORTED_DTYPES = ("float64", "float32")
 SUPPORTED_DEVICES = ("cpu",)
+
+# ---------------------------------------------------------------------------
+# The Python half of the native dtype model (Phase I, milestone I1; see
+# docs/native_dtype_float32_design.md §3).
+#
+# Exactly two dtype authorities exist in the repository — the C++ enum in
+# cpp/include/tf_internal.h and these tables — and they agree by
+# construction because the ABI codes are the same integers. There is no
+# third table anywhere: anything that needs a code, a width, or a NumPy
+# type reads it from here.
+#
+# **Private on purpose.** These say what the runtime can *represent*;
+# ``SUPPORTED_DTYPES`` says what TensorForge *supports*. Between I1 and I8
+# the two genuinely differed — the runtime could allocate, move, compute
+# on, and checkpoint float32 while ``normalize_dtype`` still rejected the
+# name — which was the deliberate rollout pattern of design §27, the one
+# Phase G used for ``dropout``. **At I9 the two sets became equal**, and
+# that is a fact about today rather than a merger: they remain separate
+# tables with separate jobs, and the next dtype the runtime learns to
+# represent would open the gap again before it earned the promise.
+#
+# Nothing public reads these tables, no public dtype object is built on
+# them, and there is no exported dtype-query symbol: Python knows a
+# storage's dtype because Python asked for it at creation.
+#
+# The codes are frozen in the same sense the TfStatus codes are.
+_DTYPE_CODES = {"float64": 0, "float32": 1}
+_DTYPE_ITEM_SIZES = {"float64": 8, "float32": 4}
+_DTYPE_NUMPY = {"float64": np.float64, "float32": np.float32}
 
 # Largest element count the native int64 storage/ABI arithmetic addresses.
 _INT64_MAX = 2 ** 63 - 1
@@ -562,7 +658,62 @@ _lib = None  # loaded lazily by _require_library()
 _CHECKED_F64_ARRAY = np.ctypeslib.ndpointer(
     dtype=np.float64, flags="C_CONTIGUOUS"
 )
+# Phase I, milestone I2: the float32 sibling. Same binding, same three
+# checks, one dtype narrower — see ``_host_pointer`` below for how one of
+# the two is chosen per call, and why the choice is made from data.
+_CHECKED_F32_ARRAY = np.ctypeslib.ndpointer(
+    dtype=np.float32, flags="C_CONTIGUOUS"
+)
 _CHECKED_I64_ARRAY = np.ctypeslib.ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")
+
+# The checked host-buffer binding, per dtype. Keyed by the canonical dtype
+# string so the lookup is the storage's own tag and never a call-site flag.
+_CHECKED_HOST_ARRAYS = {
+    "float64": _CHECKED_F64_ARRAY,
+    "float32": _CHECKED_F32_ARRAY,
+}
+
+
+def _host_pointer(array, dtype):
+    """The checked ``void*`` for a host buffer crossing one of the three
+    retyped transfer boundaries (Phase I, milestone I2).
+
+    ``tf_storage_copy_from``, ``tf_storage_copy_to``, and
+    ``tf_storage_materialize`` are the only exports that carry a storage
+    handle *and* a raw host buffer, and at I2 their host positions became
+    ``void*`` in C — the storage handle's immutable dtype tag is what says
+    how those bytes are read. A single ctypes ``argtypes`` slot cannot hold
+    two dtypes, so the declaration is a plain ``c_void_p`` (exactly the C
+    parameter) and **the check moves here, where the dtype is known**.
+
+    It is the *same* check, not a reimplementation of one:
+    ``ndpointer.from_param`` is precisely what ctypes would have run had the
+    binding been in the argtypes slot, so there is one implementation of
+    "is this really a NumPy array of exactly this dtype, in native byte
+    order, C-contiguous?" and it cannot drift. A wrong host buffer raises
+    ``TypeError`` and the native call is never made — nothing is cast,
+    widened, narrowed, or guessed at this boundary.
+
+    The returned pointer comes from ``ndarray.ctypes.data_as``, which
+    attaches the owning array to it (``ptr._arr``), so the buffer cannot be
+    freed while the pointer exists — the same lifetime property the trusted
+    layout pointers rely on. ``ctypes.POINTER(...).from_address(...)`` would
+    be cheaper and is deliberately not used: it produces a pointer with no
+    reference to its owner.
+
+    ``dtype`` is a canonical dtype string that came from a live storage, so
+    the lookup is total in practice; an unknown one is a programming error
+    and says so rather than silently picking a width.
+    """
+    try:
+        binding = _CHECKED_HOST_ARRAYS[dtype]
+    except KeyError:
+        raise ValueError(
+            f"no host-buffer binding for dtype {dtype!r}; the native "
+            f"runtime represents {tuple(_CHECKED_HOST_ARRAYS)}"
+        ) from None
+    binding.from_param(array)  # the ndpointer check, at every call
+    return array.ctypes.data_as(ctypes.c_void_p)
 
 # Layout metadata is always a pointer to int64. Declared once, used by every
 # trusted position, so no call site can pick a different (or weaker) type.
@@ -593,11 +744,26 @@ def _layout_vector(values):
 def normalize_dtype(dtype=None):
     """Validate and canonicalize a native dtype tag.
 
-    ``None`` means the default ``"float64"`` (the only supported dtype
-    today). A non-string raises TypeError; a string outside
-    ``SUPPORTED_DTYPES`` raises ValueError naming the offending value and
-    the supported set. Pure Python — never touches the compiled library,
-    so it is safe whether or not the backend is built."""
+    ``None`` means the default ``"float64"``, which is the default at every
+    constructor, factory, module, and parameter and stays that way — code
+    that omits ``dtype`` behaves byte-identically to how it always has.
+    ``"float64"`` and ``"float32"`` are returned unchanged. A non-string
+    raises TypeError; any other string raises ValueError naming the
+    offending value and the supported set. Pure Python — never touches the
+    compiled library, so it is safe whether or not the backend is built.
+
+    **There are no aliases and no leniency**, deliberately (design §25.1):
+    not ``np.float32``, not ``numpy.dtype("float32")``, not ``"f4"``, not
+    ``"single"``, not ``float``, not ``32``, and not ``"Float32"``,
+    ``"FLOAT32"``, ``" float32"``, or ``"float32 "`` — no case folding and
+    no whitespace trimming. A permissive front door is exactly how a
+    "dtype" silently becomes a NumPy-coupled type object.
+
+    The dtype is also **never inferred** from an input array: a float32
+    NumPy array handed to ``from_array`` without a ``dtype`` still produces
+    a **float64** native tensor, because inference would silently change
+    the meaning of existing code the day someone passed a float32 array
+    (design §9.4)."""
     if dtype is None:
         return "float64"
     if not isinstance(dtype, str):
@@ -608,6 +774,79 @@ def normalize_dtype(dtype=None):
             f"{SUPPORTED_DTYPES}"
         )
     return dtype
+
+
+def _normalize_internal_dtype(dtype):
+    """Validate a dtype against the **internal** table rather than the
+    public registry (Phase I, milestone I2).
+
+    The private counterpart of ``normalize_dtype``: the same
+    canonicalization, the same ``TypeError`` for a non-string, and the same
+    shape of ``ValueError`` — measured against ``_DTYPE_CODES``, the
+    **representation** table, rather than against the public capability
+    registry.
+
+    Between I1 and I8 the two sets genuinely differed, and this was the one
+    deliberate route to float32 while the public boundary had not moved.
+    **At I9 they became equal**, so today this accepts exactly what
+    ``normalize_dtype`` accepts. It is kept, and kept private, because the
+    two questions are still different questions: "can the runtime lay these
+    bits out?" is not "does TensorForge promise this dtype?", and the next
+    dtype the runtime learned to represent would separate them again.
+
+    **This is not a public bypass and must not become one.** It is reachable
+    only from the private ``_typed`` constructors, from the private
+    uninitialized allocators, and from the checkpoint staging path, whose
+    ``dtype`` argument is always either the ``"float64"`` default, a
+    canonical tag read off a storage that was validated when it was
+    created, or a dtype a version-3 archive declared and the loader has
+    already verified against the stored payload. Every public constructor —
+    ``NativeStorage``, ``NativeTensorCore.zeros`` / ``.full`` /
+    ``.from_array``, and everything layered on them — keeps calling
+    ``normalize_dtype``.
+
+    That gap between internal capability and public promise was the
+    deliberate rollout pattern (design §27), the same one Phase G used for
+    ``dropout``: the operation existed from G3 and the *name* left
+    ``UNSUPPORTED`` only at G10, once it survived a checkpoint.
+    """
+    if dtype is None:
+        return "float64"
+    if not isinstance(dtype, str):
+        raise TypeError(f"dtype must be a string or None, got {dtype!r}")
+    if dtype not in _DTYPE_CODES:
+        raise ValueError(
+            f"unsupported dtype {dtype!r}; the native runtime represents "
+            f"{tuple(_DTYPE_CODES)}"
+        )
+    return dtype
+
+
+def _narrowed_to_dtype(value, dtype):
+    """A Python float narrowed to ``dtype``'s precision — the Python-side
+    mirror of the **one** narrowing ``tf_storage_fill`` performs (Phase I,
+    milestone I8; design §7.4).
+
+    A scalar crosses the C ABI as a ``double`` and every typed fill narrows
+    it once, before the loop, to the storage's element type. Occasionally a
+    caller has to know that narrowed value *before* it materializes
+    anything, because a later scalar step must see exactly what the kernel
+    would have seen. The one caller today is ``NativeAdam``'s
+    bias-correction coefficient: the native ``reciprocal`` kernel divides
+    ``T(1)`` by the **narrowed** denominator, so evaluating the reciprocal
+    in Python has to narrow the denominator first or it computes a
+    different function (design §15.3, resolved at I8 with a witness).
+
+    It is not a second dtype authority and must not become one: the
+    narrowing is performed by ``_DTYPE_NUMPY``, the same table every typed
+    constructor already uses to decide what a dtype means on the Python
+    side, and a test proves this agrees with an actual ``tf_storage_fill``
+    round trip at both widths. At float64 it is the identity.
+
+    Not a cast of a tensor, and not a public conversion surface — a
+    ``double`` argument being converted to the element type is exactly what
+    §7.4 already specifies for every scalar primitive."""
+    return float(_DTYPE_NUMPY[_normalize_internal_dtype(dtype)](value))
 
 
 def normalize_device(device="cpu"):
@@ -681,25 +920,51 @@ def _load_library():
     # backend detail — no public "empty" API is built on it.
     library.tf_storage_create_uninitialized.argtypes = [ctypes.c_int64]
     library.tf_storage_create_uninitialized.restype = ctypes.c_void_p
+    # Phase I (I1): the two typed creators — the **only** two symbols the
+    # whole phase adds (52 -> 54). Same shape as the untyped pair plus an
+    # int32 dtype code, and the identical failure convention: null plus the
+    # thread-local error, read by the same errcheck hook. They are the one
+    # place the ABI has to grow, because construction is the single moment
+    # at which a storage's dtype is not yet knowable from any argument —
+    # every other export reads it from a handle it already receives.
+    #
+    # ``c_int32`` matches the C ABI exactly; the codes come from the one
+    # table above and never from a literal at a call site.
+    for name in ("tf_storage_create_typed",
+                 "tf_storage_create_uninitialized_typed"):
+        kernel = getattr(library, name)
+        kernel.argtypes = [ctypes.c_int64, ctypes.c_int32]
+        kernel.restype = ctypes.c_void_p
     library.tf_storage_destroy.argtypes = [ctypes.c_void_p]
     library.tf_storage_destroy.restype = None
     library.tf_storage_size.argtypes = [ctypes.c_void_p]
     library.tf_storage_size.restype = ctypes.c_int64
     library.tf_storage_fill.argtypes = [ctypes.c_void_p, ctypes.c_double]
     library.tf_storage_fill.restype = None
-    library.tf_storage_copy_from.argtypes = [ctypes.c_void_p, f64_array]
+    # Phase I (I2): the three transfer boundaries take ``void*`` host
+    # positions, matching the C declarations exactly. The element type comes
+    # from the storage handle's dtype tag, and the per-dtype ``ndpointer``
+    # check that used to sit in these slots now runs in ``_host_pointer``
+    # at every call — it could not stay here, because one argtypes slot
+    # cannot describe two dtypes and the choice must be made from data.
+    #
+    # No symbol was added, renamed, or reordered: this is the source-level
+    # retype §7.3 of the design reserved for I2, and a previously compiled
+    # caller would link and run identically.
+    library.tf_storage_copy_from.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     library.tf_storage_copy_from.restype = None
-    library.tf_storage_copy_to.argtypes = [ctypes.c_void_p, f64_array]
+    library.tf_storage_copy_to.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
     library.tf_storage_copy_to.restype = None
     # The class-label binding: int64 like the layout metadata, but bound
     # CHECKED, because a label array's required length comes from the logits
     # rather than from the array itself (see the contract above).
     i64_array = _CHECKED_I64_ARRAY
-    # The float64 destination stays checked — it is a real NumPy buffer this
-    # call writes into and returns — while the shape/stride pair becomes the
-    # trusted layout binding, exactly as for every other strided export.
+    # The destination is a ``void*`` for the same reason the two flat
+    # transfers are (Phase I, I2) and is checked per dtype at the call site;
+    # the shape/stride pair keeps the trusted layout binding, exactly as for
+    # every other strided export.
     library.tf_storage_materialize.argtypes = [
-        ctypes.c_void_p, f64_array, layout, layout,
+        ctypes.c_void_p, ctypes.c_void_p, layout, layout,
         ctypes.c_int64, ctypes.c_int64,
     ]
     library.tf_storage_materialize.restype = None
@@ -959,6 +1224,13 @@ _CHECKED_KERNELS = (
     # error set — so it takes the identical errcheck hook rather than a
     # second, divergent failure convention.
     "tf_storage_create_uninitialized",
+    # Phase I (I1). The typed creators report failure exactly as the
+    # untyped pair does — a null handle plus the thread-local error — so
+    # they join the same hook. An unknown dtype code, a non-positive size,
+    # and a byte-count overflow all surface as ValueError; a real or
+    # injected allocation failure as MemoryError.
+    "tf_storage_create_typed",
+    "tf_storage_create_uninitialized_typed",
     "tf_storage_materialize",
     "tf_core_relu", "tf_core_relu_contiguous",
     "tf_core_sqrt", "tf_core_sqrt_contiguous",
@@ -1124,12 +1396,31 @@ def backend_info():
     ``native_autograd`` is ``True`` and the optimizer/state lists are
     populated. Every list is sourced from the module-level inventory
     tuples, so this never drifts from the code. Safe to call whether or
-    not the library is built."""
+    not the library is built.
+
+    **Three dtype rows, three different questions** (Phase I, milestone
+    I9), and a caller must not read any of them off another:
+
+    - ``supported_dtypes`` — **the capability statement**:
+      ``("float64", "float32")``, both fully supported on the CPU.
+    - ``dtype`` — **the default statement**: still ``"float64"``, the width
+      a constructor selects when ``dtype`` is omitted or ``None``. It is
+      deliberately *not* a capability row and never was; keeping it as the
+      default is what makes it accurate rather than merely unchanged.
+    - ``raw_kernel_dtypes`` — **a permanent limitation of one small
+      layer**: the seven handle-free raw utility kernels, which are
+      float64-only forever."""
     return {
         "name": "cpp",
         "experimental": True,
         "available": is_available(),
-        # dtype / device metadata (v1.21): float64/cpu only.
+        # The **default** dtype/device, not the supported sets (v1.21;
+        # clarified at Phase I, milestone I9 when float32 joined
+        # ``supported_dtypes``). ``normalize_dtype(None)`` returns exactly
+        # this, at every constructor, factory, module, and parameter, and
+        # that does not change. Read ``supported_dtypes`` /
+        # ``supported_devices`` below for what the runtime can do; these two
+        # rows answer "and what do I get if I say nothing?".
         "dtype": "float64",
         "device": "cpu",
         "supported_dtypes": SUPPORTED_DTYPES,
@@ -1137,6 +1428,13 @@ def backend_info():
         # Layered capabilities (single source of truth: the tuples above).
         "raw_kernels": RAW_KERNELS,
         "kernels": RAW_KERNELS,  # backwards-compatible alias
+        # The element types the seven raw kernels accept, reported
+        # separately from ``supported_dtypes`` because they are separate
+        # facts (Phase I, milestone I2). The raw kernels are handle-free and
+        # take ``double*`` only, so they are float64-only permanently; a
+        # caller must not read overall native dtype support off this row,
+        # and must not read this limitation off ``supported_dtypes``.
+        "raw_kernel_dtypes": RAW_KERNEL_DTYPES,
         "storage_object": "NativeStorage",
         "tensor_view": "NativeTensorView",
         "tensor_core": "NativeTensorCore",
@@ -1160,8 +1458,14 @@ def backend_info():
 
 
 class NativeStorage:
-    """A C++-owned float64 buffer — the storage half of a future
-    tensor runtime prototype.
+    """A C++-owned float64 **or float32** buffer — the storage half of a
+    future tensor runtime prototype.
+
+    The buffer is physically a genuine ``double[]`` or ``float[]`` chosen
+    at construction, and the storage's dtype tag is the **single**
+    authority on which: shapes, strides, offsets, and sizes are all in
+    logical elements, and nothing above this class carries a width of its
+    own.
 
     Not a Tensor: it has a size but no shape, no strides, and no
     connection to Tensor/autograd. Data moves in and out by copy
@@ -1172,11 +1476,13 @@ class NativeStorage:
     """
 
     def __init__(self, size, dtype=None, device="cpu", *,
-                 _zero_initialize=True):
-        """Allocate ``size`` float64 elements, **zero-initialized**.
+                 _zero_initialize=True, _trusted_dtype=False):
+        """Allocate ``size`` elements of ``dtype``, **zero-initialized**.
 
-        The zero-initializing default did not change in Phase H: every
-        existing caller behaves exactly as before.
+        ``dtype`` defaults to ``"float64"`` and is validated against the
+        public registry, which since Phase I milestone I9 accepts
+        ``"float32"`` too. The zero-initializing default did not change in
+        Phase H: every existing caller behaves exactly as before.
 
         ``_zero_initialize`` is a private, keyword-only escape hatch used
         by the ``_uninitialized`` classmethod below and by nothing else.
@@ -1185,18 +1491,43 @@ class NativeStorage:
         constructor so that **every** live-storage accounting hook in the
         test suite — each of which wraps ``NativeStorage.__init__`` — sees
         an uninitialized allocation exactly as it sees a zeroed one.
+
+        ``_trusted_dtype`` is the second such hatch (Phase I, milestone I2)
+        and exists for the same structural reason: the private typed
+        constructors must reach the *one* allocation path rather than
+        growing a second one that could drift from it. When it is set, the
+        dtype is validated against the internal representation table
+        (``_normalize_internal_dtype``) instead of the public registry.
+        Since I9 the two tables accept the same set, so the hatch no longer
+        *widens* anything; it still marks the calls whose dtype is a tag
+        read off a live storage rather than a caller's request, which is a
+        distinction worth keeping visible. It defaults to ``False``, so
+        **every public caller is validated by ``normalize_dtype``**.
         """
         self._handle = None  # so a failed __init__ still __del__s safely
         if not isinstance(size, (int, np.integer)) or isinstance(size, bool) or size <= 0:
             raise ValueError(f"size must be a positive int, got {size!r}")
         # dtype/device are validated *before* allocation, so an
         # unsupported request never leaks native memory.
-        dtype = normalize_dtype(dtype)
+        dtype = (_normalize_internal_dtype(dtype) if _trusted_dtype
+                 else normalize_dtype(dtype))
         device = normalize_device(device)
         lib = _require_library()
-        create = (lib.tf_storage_create if _zero_initialize
-                  else lib.tf_storage_create_uninitialized)
-        handle = create(int(size))
+        # Phase I (I1): allocate through the **typed** creators, uniformly.
+        # One path is easier to prove correct than two, and the dtype the
+        # constructor already validated is the dtype the storage is tagged
+        # with, so the Python tag and the C++ tag cannot disagree.
+        #
+        # ``normalize_dtype`` still admits only ``"float64"``, so the code
+        # this passes is always 0 today and every observable behavior —
+        # zero-initialization, the size rejection, the MemoryError, the
+        # handle, ``close()`` semantics, live-storage accounting — is
+        # byte-for-byte what it was. The untyped exports remain part of the
+        # ABI and keep their own tests; they did not go away because their
+        # primary caller moved.
+        create = (lib.tf_storage_create_typed if _zero_initialize
+                  else lib.tf_storage_create_uninitialized_typed)
+        handle = create(int(size), _DTYPE_CODES[dtype])
         if not handle:
             raise MemoryError(f"could not allocate native storage of size {size}")
         self._lib = lib
@@ -1207,8 +1538,8 @@ class NativeStorage:
 
     @classmethod
     def _uninitialized(cls, size, dtype=None, device="cpu"):
-        """Allocate ``size`` float64 elements whose **initial contents are
-        indeterminate** (Phase H, milestone H1).
+        """Allocate ``size`` elements of ``dtype`` whose **initial contents
+        are indeterminate** (Phase H, milestone H1).
 
         Identical to ``NativeStorage(size, ...)`` in every observable
         respect — argument validation, dtype/device normalization,
@@ -1231,16 +1562,88 @@ class NativeStorage:
         storage with a recognizable pattern, and returns that same
         storage — so the poison is in place before the real kernel runs
         without the runtime itself owning any poison control.
+
+        Its ``dtype`` is trusted (Phase I, milestone I2): every caller
+        passes either the ``"float64"`` default or a canonical tag read off
+        a live storage, and a derived allocation must be able to match its
+        source's dtype by construction rather than by re-asking the public
+        registry for permission that source already has.
         """
-        return cls(size, dtype=dtype, device=device, _zero_initialize=False)
+        return cls(size, dtype=dtype, device=device, _zero_initialize=False,
+                   _trusted_dtype=True)
+
+    @classmethod
+    def _typed(cls, size, dtype, device="cpu", *, zero_initialize=True):
+        """Private: allocate ``size`` elements at an **internally
+        representable** dtype (Phase I, milestone I2).
+
+        It differs from ``NativeStorage(size, dtype=...)`` in exactly one
+        respect — the dtype is validated against ``_DTYPE_CODES`` rather
+        than ``SUPPORTED_DTYPES`` — and in no other: the same size
+        validation, the same typed C ABI creator, the same ``MemoryError``,
+        the same handle, the same ``close()`` semantics, the same
+        exactly-once destruction, and the same live-storage accounting,
+        because it runs through the same ``__init__``.
+
+        **Private on purpose, and it stays private.** It was the one
+        deliberate entry point for float32 storage from I2 until the public
+        registry moved at I9; since the two tables now accept the same set
+        it grants no width the public constructor does not, and it is kept
+        because "the dtype came from a live storage" and "the dtype came
+        from a caller" are different trust statements that should not be
+        spelled the same way.
+        """
+        return cls(size, dtype=dtype, device=device,
+                   _zero_initialize=zero_initialize, _trusted_dtype=True)
+
+    @classmethod
+    def _typed_from_array(cls, values, dtype, device="cpu"):
+        """Private: storage at ``dtype`` holding a copy of ``values``
+        (Phase I, milestone I2).
+
+        The typed counterpart of ``from_array``, with the identical
+        conversion contract — the host input is converted to the storage's
+        element type and flattened in C order — and the identical failure
+        behavior: a failed copy closes the storage rather than returning a
+        partly written buffer.
+
+        H1: the allocation is uninitialized for ``from_array``'s reason —
+        ``copy_from`` writes every element of a storage sized from the same
+        array — and it reaches that allocation through ``_uninitialized``,
+        which is **the** seam the poison tests wrap. Going around it
+        (through ``_typed(..., zero_initialize=False)``, which is the same
+        call) would leave this path un-poisonable, and Phase I, milestone I7
+        put ``NativeParameter`` construction on it.
+        """
+        canonical = _normalize_internal_dtype(dtype)
+        array = np.ascontiguousarray(
+            values, dtype=_DTYPE_NUMPY[canonical]).ravel()
+        storage = cls._uninitialized(int(array.size), dtype=canonical,
+                                     device=device)
+        try:
+            storage.copy_from(array)
+        except BaseException:
+            storage.close()
+            raise
+        return storage
 
     @classmethod
     def from_array(cls, values, dtype=None, device="cpu"):
         """Create storage sized to ``values`` and copy them in.
 
-        The input is always converted to contiguous float64 and flattened
-        (the only element type the kernels compute); ``dtype``/``device``
-        record the metadata and default to ``"float64"``/``"cpu"``.
+        The input is converted to contiguous values of the **requested**
+        dtype and flattened in C order; ``dtype``/``device`` default to
+        ``"float64"``/``"cpu"`` and are validated against the public
+        registry, which since Phase I milestone I9 accepts ``"float32"``.
+
+        This is the explicit **host-to-native conversion boundary** and it
+        has always converted: a Python list or an int64 array becomes
+        native storage of the requested dtype. That is not a tensor cast —
+        no native tensor changes dtype and none can (design §9.4). Phase I
+        changed only *which* targets the conversion has, and the dtype is
+        never inferred from the input: ``dtype=None`` still means
+        ``"float64"``, so handing this a float32 array without asking for
+        float32 still produces float64 storage.
 
         H1: the allocation is uninitialized because ``copy_from`` writes
         **every** element (``tf_storage_copy_from`` loops over the whole
@@ -1248,9 +1651,15 @@ class NativeStorage:
         no element can survive unwritten. A failed copy closes the
         storage rather than returning a partly written buffer.
         """
-        array = np.ascontiguousarray(values, dtype=np.float64).ravel()
+        # Normalized first, publicly, so the conversion target is known
+        # before any allocation and an unsupported dtype is rejected before
+        # NumPy is asked to do any work at all.
+        canonical = normalize_dtype(dtype)
+        array = np.ascontiguousarray(
+            values, dtype=_DTYPE_NUMPY[canonical]).ravel()
         # empty input fails size validation; dtype/device validated too
-        storage = cls._uninitialized(int(array.size), dtype=dtype, device=device)
+        storage = cls._uninitialized(int(array.size), dtype=canonical,
+                                     device=device)
         try:
             storage.copy_from(array)
         except BaseException:
@@ -1260,13 +1669,23 @@ class NativeStorage:
 
     @property
     def size(self):
-        """Number of float64 elements the storage holds."""
+        """Number of elements the storage holds — a **logical element
+        count** at every dtype, never a byte count."""
         return self._size
 
     @property
     def dtype(self):
-        """The element type tag (``"float64"``). Readable after close."""
+        """The element type tag — ``"float64"`` or ``"float32"``, the width
+        this buffer physically is. Read-only, with no setter and no
+        in-place dtype change, and readable after close."""
         return self._dtype
+
+    @property
+    def _numpy_dtype(self):
+        """The NumPy type this storage's elements physically are, from the
+        one private table. Private: it is an implementation detail of the
+        transfer boundary, never a public dtype object."""
+        return _DTYPE_NUMPY[self._dtype]
 
     @property
     def device(self):
@@ -1285,22 +1704,36 @@ class NativeStorage:
     def copy_from(self, values):
         """Copy ``values`` into the storage.
 
-        The input is converted to contiguous float64 and flattened; it
-        must contain exactly ``size`` elements.
+        The input is converted to contiguous values of **this storage's**
+        dtype and flattened in C order; it must contain exactly ``size``
+        elements.
+
+        The conversion is the host-to-native one ``from_array`` documents:
+        a Python list or an array of another type is converted here, once,
+        on the way in. Below this line nothing converts — the C ABI receives
+        a buffer whose element type is checked against the storage's dtype
+        by ``_host_pointer`` and would reject a mismatch rather than
+        reinterpret it.
         """
         handle = self._require_open()
-        array = np.ascontiguousarray(values, dtype=np.float64).ravel()
+        array = np.ascontiguousarray(values, dtype=self._numpy_dtype).ravel()
         if array.size != self._size:
             raise ValueError(
                 f"copy_from needs exactly {self._size} values, got {array.size}"
             )
-        self._lib.tf_storage_copy_from(handle, array)
+        self._lib.tf_storage_copy_from(
+            handle, _host_pointer(array, self._dtype))
 
     def to_numpy(self):
-        """Return a new, independent 1-D float64 copy of the contents."""
+        """Return a new, independent 1-D copy of the contents, as a NumPy
+        array of **exactly this storage's dtype**.
+
+        Never widened on the way out: a float32 storage produces a float32
+        array, because a widened result would silently claim precision the
+        storage does not have (design §9.4)."""
         handle = self._require_open()
-        out = np.empty(self._size, dtype=np.float64)
-        self._lib.tf_storage_copy_to(handle, out)
+        out = np.empty(self._size, dtype=self._numpy_dtype)
+        self._lib.tf_storage_copy_to(handle, _host_pointer(out, self._dtype))
         return out
 
     def close(self):
@@ -1557,16 +1990,23 @@ class NativeTensorView:
     def to_numpy(self):
         """Materialize the logical view into a fresh NumPy array of
         shape ``self.shape`` (row-major), copied element by element by
-        the native materialization kernel."""
+        the native materialization kernel.
+
+        The result's NumPy dtype is **exactly the storage's** — a view has
+        no dtype of its own and never could: it borrows the storage that
+        holds the one authority (design §5.1)."""
         handle = self._storage._require_open()
-        out = np.empty(self._numel, dtype=np.float64)
-        # ``out`` stays a checked ndpointer argument — it is real data this
-        # call writes into and returns. The layout pair is trusted, and both
-        # pointers and the rank below come from this one view (H7).
+        dtype = self._storage.dtype
+        out = np.empty(self._numel, dtype=self._storage._numpy_dtype)
+        # ``out`` is still checked at every call — it is real data this call
+        # writes into and returns — but by ``_host_pointer`` against the
+        # storage's dtype rather than by a fixed argtypes binding (I2). The
+        # layout pair is trusted, and both pointers and the rank below come
+        # from this one view (H7).
         shape_pointer, strides_pointer = self._native_layout_pointers()
         self._storage._lib.tf_storage_materialize(
             handle,
-            out,
+            _host_pointer(out, dtype),
             shape_pointer,
             strides_pointer,
             self._offset,
@@ -1588,8 +2028,14 @@ class NativeTensorView:
         failed gather closes the new storage before propagating, so no
         half-filled allocation escapes.
         """
-        storage = NativeStorage(
-            self._numel, dtype=self._storage.dtype, device=self._storage.device
+        # A derived allocation at **this view's storage's** dtype (Phase I,
+        # milestone I2). The tag is not a caller's request — it was
+        # validated when the source storage was created — so it takes the
+        # trusted private constructor rather than being re-checked against
+        # the public registry, which would refuse to let a float32 view be
+        # copied at all. Zero-initialized exactly as before.
+        storage = NativeStorage._typed(
+            self._numel, self._storage.dtype, device=self._storage.device
         )
         try:
             shape_pointer, strides_pointer = self._native_layout_pointers()
@@ -1669,23 +2115,50 @@ class NativeTensorCore:
     @classmethod
     def from_array(cls, values, dtype=None, device="cpu"):
         """A contiguous tensor holding a copy of ``values``, with the
-        array's shape preserved. ``dtype``/``device`` record metadata and
-        default to ``"float64"``/``"cpu"`` (the values are still coerced to
-        float64); unsupported values are rejected."""
-        array = np.ascontiguousarray(values, dtype=np.float64)
+        array's shape preserved. ``dtype``/``device`` default to
+        ``"float64"``/``"cpu"``; unsupported values are rejected, and the
+        host input is converted once to the requested dtype at this
+        explicit host-to-native boundary (never inferred from the input —
+        see ``NativeStorage.from_array``)."""
+        canonical = normalize_dtype(dtype)
+        array = np.ascontiguousarray(values, dtype=_DTYPE_NUMPY[canonical])
         # empty input fails here; dtype/device validated in the storage
-        storage = NativeStorage.from_array(array, dtype=dtype, device=device)
+        storage = NativeStorage.from_array(array, dtype=canonical,
+                                           device=device)
         return cls(storage, _contiguous_view(storage, _as_shape(array.shape)))
 
     @classmethod
-    def zeros(cls, shape, dtype="float64", device="cpu"):
+    def zeros(cls, shape, dtype="float64", device="cpu", *,
+              _trusted_dtype=False):
         """A row-major contiguous tensor of ``shape``, all zeros
         (native storage is zero-initialized, so no fill pass runs).
         ``dtype``/``device`` default to ``"float64"``/``"cpu"``;
-        unsupported values are rejected."""
+        unsupported values are rejected.
+
+        ``_trusted_dtype`` is a private, keyword-only hatch (Phase I,
+        milestone I4) and is exactly ``NativeStorage.__init__``'s, one
+        layer up and for the same structural reason: the operations that
+        must allocate a **zeroed** output at an operand's own dtype —
+        ``sum`` and ``narrow_backward``, the two the H1 audit rejected
+        from the uninitialized path — have to reach *this* constructor
+        rather than growing a second one that could drift from it on the
+        shape validation, the storage ownership, the contiguous view, the
+        ``MemoryError``, the live-storage accounting, or the failure
+        ordering. When it is set the dtype is validated against the
+        internal representation table instead of the public registry.
+
+        Setting it is sound wherever it is set, and the argument is
+        ``_uninitialized``'s from I2: the dtype passed is never a caller's
+        request but a canonical tag read off a live storage that was
+        validated when it was created, and a derived allocation must be
+        able to match its operand. It defaults to ``False``, so **every
+        public caller is validated by ``normalize_dtype``**; since I9 that
+        admits ``"float32"`` too, which is a decision about the public
+        registry and not about this hatch."""
         dims = _as_shape(shape)  # validates shape by the v0.7 rules
         storage = NativeStorage(
-            _numel_checked(dims), dtype=dtype, device=device
+            _numel_checked(dims), dtype=dtype, device=device,
+            _trusted_dtype=_trusted_dtype,
         )
         return cls(storage, _contiguous_view(storage, dims))
 
@@ -1706,12 +2179,98 @@ class NativeTensorCore:
         ``tensorforge.experimental`` or the stable framework exposes it;
         an operation that accumulates into its output, scatters into it,
         or leaves any element untouched must keep using ``zeros``.
+
+        Its ``dtype`` is trusted (Phase I, milestone I2), inherited from
+        ``NativeStorage._uninitialized``: every one of the call sites in
+        the H1 audit table passes ``dtype=<operand>.dtype``, a canonical
+        tag read off a storage that was validated when it was created, and
+        an operation's freshly allocated output must be able to match its
+        operand's dtype. A **public** constructor that reaches this helper
+        validates publicly first — see ``full`` below.
         """
         dims = _as_shape(shape)  # validates shape by the v0.7 rules
         storage = NativeStorage._uninitialized(
             _numel_checked(dims), dtype=dtype, device=device
         )
         return cls(storage, _contiguous_view(storage, dims))
+
+    @classmethod
+    def _typed(cls, shape, dtype, device="cpu", *, zero_initialize=True):
+        """Private: a row-major contiguous tensor of ``shape`` at an
+        **internally representable** dtype (Phase I, milestone I2).
+
+        The core-level counterpart of ``NativeStorage._typed``, and private
+        for the same reason: it is how the internal float32 paths are
+        reached and tested while ``"float32"`` is still unsupported. Shape
+        validation, storage ownership, the contiguous view, and ``close()``
+        semantics are ``zeros``'s exactly."""
+        dims = _as_shape(shape)  # validates shape by the v0.7 rules
+        storage = NativeStorage._typed(
+            _numel_checked(dims), dtype, device=device,
+            zero_initialize=zero_initialize,
+        )
+        return cls(storage, _contiguous_view(storage, dims))
+
+    @classmethod
+    def _typed_from_array(cls, values, dtype, device="cpu"):
+        """Private: a contiguous tensor at ``dtype`` holding a copy of
+        ``values``, with the array's shape preserved (Phase I, I2).
+
+        The typed counterpart of ``from_array``; see ``_typed`` for why it
+        is private."""
+        canonical = _normalize_internal_dtype(dtype)
+        array = np.ascontiguousarray(values, dtype=_DTYPE_NUMPY[canonical])
+        storage = NativeStorage._typed_from_array(array, canonical,
+                                                  device=device)
+        try:
+            return cls(storage, _contiguous_view(storage,
+                                                 _as_shape(array.shape)))
+        except BaseException:
+            storage.close()
+            raise
+
+    @classmethod
+    def _typed_full(cls, shape, value, dtype, device="cpu"):
+        """Private: a row-major contiguous tensor of ``shape`` filled with
+        ``value`` at an **internally representable** dtype (Phase I, I4).
+
+        The dtype-preserving counterpart of ``full``, and the **one**
+        implementation both share — ``full`` is this method behind the
+        public dtype gate. It exists because a backward formula has to
+        materialize its constants at the *graph's* dtype: ``-1`` for a
+        negation, ``1/count`` for mean backward, and any other literal a
+        derivative needs. Building those at float64 and meeting a float32
+        operand would be a mixed-dtype request, which the runtime refuses
+        (design §9). So the constant is built here, from the **operand's
+        own tag** rather than from anything a caller said — which is why
+        this stayed after I9 opened ``full`` to float32: a derivative must
+        not have to ask a registry what its operand already knows.
+
+        The scalar itself crosses the ABI as a ``double`` and is narrowed
+        **once**, before the fill loop, inside ``tf_storage_fill`` (design
+        §7.4). Converting a scalar argument is not casting a tensor.
+
+        Private for ``_typed``'s reason. ``full`` still calls
+        ``normalize_dtype`` first, so a caller's dtype is always validated
+        publicly before this runs.
+
+        H1: allocated uninitialized because ``tf_storage_fill`` writes every
+        element of the storage, so the zero-fill would be immediately and
+        completely overwritten. It reaches that allocation through
+        ``_uninitialized`` — the seam the poison tests wrap — rather than
+        around it, so the H1 coverage proof for ``full`` is untouched at
+        both widths. ``float(value)`` is evaluated **before** the
+        allocation, so a bad value allocates nothing; a failed fill closes
+        the tensor.
+        """
+        fill_value = float(value)  # reject a bad value before allocating
+        tensor = cls._uninitialized(shape, dtype=dtype, device=device)
+        try:
+            tensor._storage.fill(fill_value)
+        except BaseException:
+            tensor.close()
+            raise
+        return tensor
 
     @classmethod
     def full(cls, shape, value, dtype="float64", device="cpu"):
@@ -1724,14 +2283,17 @@ class NativeTensorCore:
         immediately and completely overwritten. ``float(value)`` is
         evaluated **before** the allocation, so a bad value allocates
         nothing; a failed fill closes the tensor."""
-        fill_value = float(value)  # reject a bad value before allocating
-        tensor = cls._uninitialized(shape, dtype=dtype, device=device)
-        try:
-            tensor._storage.fill(fill_value)
-        except BaseException:
-            tensor.close()
-            raise
-        return tensor
+        # Public validation, explicitly, before the private constructor runs
+        # (Phase I, milestone I2). ``_uninitialized`` trusts its dtype so a
+        # derived allocation can match its operand's; a **public**
+        # constructor must not inherit that trust, and that is still true
+        # now that the registry has moved. What the gate rejects changed at
+        # I9 — ``"float32"`` passes — but *that* it gates did not: a
+        # caller's dtype is validated against the public registry here, so
+        # a future dtype the runtime learns to represent internally cannot
+        # reach public construction by inheriting a lower primitive's trust.
+        return cls._typed_full(shape, value, normalize_dtype(dtype),
+                               device=device)
 
     # -- metadata (readable even after close) --------------------------
 
@@ -1762,8 +2324,9 @@ class NativeTensorCore:
     @property
     def dtype(self):
         """The element type tag, delegated to this core's storage
-        (``"float64"``). A view shares its storage, so it reports the same
-        dtype as its owner. Readable after close, like ``shape``."""
+        (``"float64"`` or ``"float32"``). A view shares its storage, so it
+        reports the same dtype as its owner and never carries a tag of its
+        own. Readable after close, like ``shape``."""
         return self._storage.dtype
 
     @property
@@ -1993,12 +2556,15 @@ class NativeTensorCore:
         mutated and shares no storage with the result.
 
         Per slice the kernel computes ``exp(x - max(x)) / sum(exp(x -
-        max(x)))`` in one fused pass, all in float64 — the maximum shift
-        keeps every exponent <= 0, so a large common offset cannot
-        overflow. Exceptional values follow plain IEEE arithmetic with no
-        special-casing: a NaN or ``+inf`` anywhere in a slice propagates
-        through that slice's shift and sum, so the whole slice becomes
-        NaN. Those are values, not errors.
+        max(x)))`` in one fused pass, **entirely at the element dtype**
+        (Phase I, milestone I6: the maximum, the shift, the exponential,
+        the normalizing sum, and the division are all float32 for a float32
+        tensor — there is no widened accumulator anywhere) — the maximum
+        shift keeps every exponent <= 0, so a large common offset cannot
+        overflow at either width. Exceptional values follow plain IEEE
+        arithmetic with no special-casing: a NaN or ``+inf`` anywhere in a
+        slice propagates through that slice's shift and sum, so the whole
+        slice becomes NaN. Those are values, not errors.
 
         The C ABI is **contiguous-only**, so a non-contiguous input is
         materialized into a private contiguous copy (Policy B) that is
@@ -2022,11 +2588,13 @@ class NativeTensorCore:
         unmutated.
 
         Per slice the kernel computes ``(x - max(x)) - log(sum(exp(x -
-        max(x))))`` in one fused pass, all in float64. It is **never**
-        ``softmax(x).log()`` — no probability buffer is formed and no
-        division happens, so a probability too small to represent (which
-        would round to 0 and give ``log(0) == -inf``) still gets an
-        accurate finite log-probability. Exceptional values follow plain
+        max(x))))`` in one fused pass, **entirely at the element dtype**
+        (Phase I, milestone I6). It is **never** ``softmax(x).log()`` — no
+        probability buffer is formed and no division happens, so a
+        probability too small to represent (which would round to 0 and give
+        ``log(0) == -inf``) still gets an accurate finite log-probability;
+        that reason only gets stronger at float32, where the smallest
+        normal probability is ~1.18e-38. Exceptional values follow plain
         IEEE arithmetic with no special-casing: a NaN or ``+inf`` in a
         slice makes that whole slice NaN, while a ``-inf`` gets ``-inf``
         and leaves its finite neighbours governed by the stable
@@ -2104,7 +2672,12 @@ class NativeTensorCore:
         """Fused multi-class cross-entropy over this tensor's logits.
 
         ``self`` is the ``(batch_size, num_classes)`` logits block — rank
-        exactly 2, float64/cpu, open. The class axis is fixed at axis 1;
+        exactly 2, open, at any internally representable dtype (Phase I,
+        milestone I6; the scalar loss and the saved probabilities are
+        allocated at that same dtype, and every value the kernel computes —
+        the row maximum, the shift, the exponentials, ``sum_exp``, the row
+        loss, the batch total, and the mean divisor — is that dtype too).
+        The class axis is fixed at axis 1;
         there is deliberately no ``axis`` argument, no broadcasting, and
         no implicit reshape, so rank-1, rank-3, and flattened logits are
         rejected by shape.
@@ -2173,11 +2746,14 @@ class NativeTensorCore:
                 f"cross_entropy_forward requires 2-D (batch_size, "
                 f"num_classes) logits, got shape {self.shape}"
             )
-        if self.dtype != "float64" or self.device != "cpu":
-            raise ValueError(
-                f"cross_entropy_forward requires float64/cpu logits, got "
-                f"{self.dtype}/{self.device}"
-            )
+        # Phase I, milestone I6: the hard float64 gate that stood here since
+        # E5 is gone — the logits dtype now comes from the storage tag,
+        # which can only hold an internally representable dtype, and the C
+        # ABI dispatches on it. Both destinations are allocated at that same
+        # dtype below, so the three numeric handles cannot disagree; the
+        # device is "cpu" by construction for every constructible storage.
+        # The targets are unaffected at either dtype: they stay host int64
+        # metadata and are never inferred from the logits.
         batch_size, num_classes = self.shape
         # Reduction first: it is the cheapest check and the one most
         # likely to be a caller typo, and normalizing it here keeps the
@@ -2246,7 +2822,10 @@ class NativeTensorCore:
         """Gradient of the fused cross-entropy w.r.t. its logits (E5).
 
         ``self`` is the **saved probability core** the forward produced —
-        rank 2, contiguous, float64/cpu, open. ``targets`` is that
+        rank 2, contiguous, open, at the graph's dtype (Phase I, milestone
+        I6: the upstream must match it and the gradient is allocated at it,
+        so the contribution, the ``- 1`` at the target, the mean divisor,
+        and the upstream scaling all happen at that dtype). ``targets`` is that
         forward's owned ``int64`` copy (the internal trusted-copy
         contract: an independently owned, C-contiguous 1-D ``int64``
         NumPy array, re-checked here for dtype, layout, length, and class
@@ -2286,11 +2865,12 @@ class NativeTensorCore:
                 f"probabilities, got strides {self.strides} for shape "
                 f"{self.shape}"
             )
-        if self.dtype != "float64" or self.device != "cpu":
-            raise ValueError(
-                f"cross_entropy_backward requires a float64/cpu probability "
-                f"core, got {self.dtype}/{self.device}"
-            )
+        # Phase I, milestone I6: the E5 float64 gate is gone here too. The
+        # saved probabilities carry the graph's dtype, the gradient is
+        # allocated at that same dtype below, and the upstream is checked
+        # against it by ``_require_matching_metadata`` — so all three
+        # numeric handles agree before the ABI is entered, and the C ABI
+        # revalidates the agreement itself. The targets stay host int64.
         batch_size, num_classes = self.shape
         # Only the ABI code is needed here; the name is the forward's.
         _, reduction_code = _normalize_reduction(
@@ -2644,7 +3224,19 @@ class NativeTensorCore:
         # reduction zero-fills 2 KB while reading 512 KB — the fill is under
         # half a percent of the work, against a traversal that was 95 % of
         # it (docs/native_cpu_performance_design.md §16.6.6).
-        out = NativeTensorCore.zeros(out_shape, dtype=self.dtype, device=self.device)
+        #
+        #
+        # Phase I, milestone I4: the **same** zeroed constructor, with the
+        # dtype trusted. ``self.dtype`` is not a caller's request but this
+        # tensor's own canonical tag, read off a storage that was validated
+        # when it was created, and a reduction's output must be able to match
+        # its operand — exactly the trust ``_uninitialized`` has carried
+        # since I2. Nothing else about the allocation changed, so H1's
+        # rejection of the uninitialized path and every seam that observes it
+        # are untouched, and public construction is not broadened one inch:
+        # ``NativeTensorCore.zeros(..., dtype="float32")`` still raises.
+        out = NativeTensorCore.zeros(out_shape, dtype=self.dtype,
+                                     device=self.device, _trusted_dtype=True)
         # Everything after the allocation runs inside the same cleanup
         # boundary every other allocating Core op uses (compare
         # contiguous_copy): a failure in the write-stride construction, the
@@ -2682,10 +3274,22 @@ class NativeTensorCore:
 
     def mean(self, axis=None, keepdims=False):
         """Mean over ``axis`` (``None`` = all elements) natively: the
-        native ``sum`` scaled in place by ``1/count`` in float64, where
-        ``count`` is ``numel`` for ``axis=None`` or ``shape[axis]`` for a
-        single axis. Returns a new owning row-major contiguous
-        NativeTensorCore. No NumPy touches the data; no autograd."""
+        native ``sum`` scaled in place by ``1/count``, where ``count`` is
+        ``numel`` for ``axis=None`` or ``shape[axis]`` for a single axis.
+        Returns a new owning row-major contiguous NativeTensorCore. No
+        NumPy touches the data; no autograd.
+
+        **The scale factor is computed once in binary64 and narrowed once**
+        (design §7.4). ``1.0 / count`` is a correctly-rounded Python float;
+        it crosses the unchanged ``double`` ABI parameter of
+        ``tf_storage_scale``; and the kernel converts it to the storage's
+        element type **before** its loop. So a float32 mean is
+        ``sum`` (accumulated in float32) times ``float(1/count)``, which is
+        deterministic, identical on every platform, and independent of
+        ``count``'s magnitude — where computing ``1.0f / count`` in float32
+        instead would differ by up to one ULP for some counts. The sum
+        itself accumulates in the tensor's own dtype, with no widening
+        intermediate anywhere."""
         self._require_open()
         result = self.sum(axis=axis, keepdims=keepdims)
         # Same cleanup boundary as ``sum``'s: the summed output is already
@@ -2742,7 +3346,8 @@ class NativeTensorCore:
 
         No dilation, groups, channels-last, or output padding — those are
         not part of the signature. The weight/bias/input must all be open
-        CPU float64 tensor cores."""
+        CPU tensor cores of one dtype (I5: the output inherits it; mixed
+        dtype is rejected before anything is allocated)."""
         self._require_open()
         if not isinstance(weight, NativeTensorCore):
             raise TypeError(
@@ -3052,13 +3657,18 @@ class NativeTensorCore:
         """The pooling forward plus its private saved-winner buffer.
 
         Returns ``(output, winners)``: two fresh **owning** row-major
-        contiguous ``(N, C, out_h, out_w)`` cores. ``winners`` holds, for
-        each output cell, the flat offset ``ih * W + iw`` of the selected
-        input element inside its ``(n, c)`` plane, or the sentinel ``-1.0``
-        when a padding cell won (docs/native_cnn_design.md §12). Every
-        stored value is an exact integral float64 — the wrapper proves
-        ``H * W <= 2**53`` in Python arbitrary-precision arithmetic
-        *before* allocating or calling anything, so no index can round.
+        contiguous ``(N, C, out_h, out_w)`` cores. ``output`` inherits the
+        input's dtype (I5); ``winners`` is **always float64**, whatever the
+        value dtype, and holds, for each output cell, the flat offset
+        ``ih * W + iw`` of the selected input element inside its ``(n, c)``
+        plane, or the sentinel ``-1.0`` when a padding cell won
+        (docs/native_cnn_design.md §12). Every stored value is an exact
+        integral float64 — the wrapper proves ``H * W <= 2**53`` in Python
+        arbitrary-precision arithmetic *before* allocating or calling
+        anything, so no index can round. The bound is float64's at every
+        value dtype: the winner buffer deliberately does not follow the
+        input's dtype (design §13.3), because a float32 winner buffer would
+        cut the largest exactly-indexable plane from 2**53 to 2**24.
 
         The winner buffer is **internal**: it is never exposed as a public
         NativeTensor, never given a dtype tag of its own, never traversed
@@ -3079,11 +3689,12 @@ class NativeTensorCore:
                 f"maxpool2d_forward requires a 4-D NCHW input, got shape "
                 f"{self.shape}"
             )
-        if self.dtype != "float64" or self.device != "cpu":
-            raise ValueError(
-                f"maxpool2d_forward requires a float64/cpu input, got "
-                f"{self.dtype}/{self.device}"
-            )
+        # Phase I, milestone I5: the hard float64 gate that stood here since
+        # D8 is gone — the value dtype now comes from the storage tag, which
+        # can only hold an internally representable dtype, and the C ABI
+        # dispatches on it. The winner buffer does NOT follow it (§13.3
+        # below); the device is "cpu" by construction for every
+        # constructible storage.
 
         kh, kw = _spatial_pair(kernel_size, "kernel_size", minimum=1)
         # Stable convention: no stride means non-overlapping windows.
@@ -3133,8 +3744,13 @@ class NativeTensorCore:
                 (n, c, out_h, out_w), dtype=self.dtype, device=self.device
             )
             # H1 uninitialized — maxpool2d winners: assigns winners[n, c, i, j] over the same full extent.
+            # The winner buffer is **explicitly float64 at every value
+            # dtype** (design §13.3): it holds flat plane offsets whose
+            # exactness bound is float64's 2**53, and inferring its dtype
+            # from the input would silently cut that to float32's 2**24.
+            # It is private index metadata, never a numeric operand.
             winners = NativeTensorCore._uninitialized(
-                (n, c, out_h, out_w), dtype=self.dtype, device=self.device
+                (n, c, out_h, out_w), dtype="float64", device=self.device
             )
             self._storage._lib.tf_core_maxpool2d_forward(
                 input_core._storage._require_open(), input_core.offset,
@@ -3189,11 +3805,25 @@ class NativeTensorCore:
                 f"buffer, got {type(winners).__name__}"
             )
         winners._require_open()
-        self._require_matching_metadata(winners, "maxpool2d_backward")
-        if self.dtype != "float64" or self.device != "cpu":
+        # Phase I, milestone I5: the winner buffer is validated as **exactly
+        # float64**, never against the gradient's dtype (design §13.3). It
+        # is private index metadata, not a numeric operand, so a float64
+        # winner beside a float32 upstream is not a mixed-dtype operation —
+        # but a winner at any other dtype is a corrupted saved state and is
+        # refused before anything is allocated. The upstream's own dtype
+        # comes from its tag and dispatches at the C ABI; the input-gradient
+        # destination below is allocated at that same dtype, so the numeric
+        # operands cannot disagree. Devices must still match.
+        if winners.dtype != "float64":
             raise ValueError(
-                f"maxpool2d_backward requires float64/cpu operands, got "
-                f"{self.dtype}/{self.device}"
+                f"maxpool2d_backward requires a float64 winner buffer at "
+                f"every graph dtype (winner offsets are exact float64 plane "
+                f"indices), got {winners.dtype}"
+            )
+        if winners.device != self.device:
+            raise ValueError(
+                f"maxpool2d_backward requires the winner buffer on the "
+                f"grad_output's device, got {winners.device} and {self.device}"
             )
         if self.ndim != 4:
             raise ValueError(
@@ -3316,17 +3946,26 @@ class NativeTensorCore:
         """The Dropout forward plus its private multiplier mask.
 
         Returns ``(output, mask)``: two fresh **owning** row-major
-        contiguous cores of the input's shape. ``mask`` holds exactly two
-        distinct float64 values — ``0.0`` for a dropped element and the
-        single ``1 / (1 - p)`` computed once for the whole call — so it is
-        a *multiplier* mask, not a boolean one, and a backward is one
-        elementwise multiply against it (design §4.4, §7.5).
+        contiguous cores of the input's shape, **both at the input's own
+        dtype** (Phase I, milestone I7). ``mask`` holds exactly two
+        distinct values — ``0.0`` for a dropped element and the single
+        ``1 / (1 - p)`` computed once in binary64 for the whole call and
+        narrowed once to the element type — so it is a *multiplier* mask,
+        not a boolean one, and a backward is one elementwise multiply
+        against it (design §4.4, §7.5).
+
+        **The keep/drop pattern does not depend on the dtype.** The uniform
+        draw stays binary64 at every width (design §14.2), so one
+        ``(seed, call_index, element count)`` key drops exactly the same
+        elements in a float32 call as in a float64 one; only the two
+        multiplier values differ.
 
         The mask is **internal**: it is never exposed as a public
-        NativeTensor, never given a dtype tag of its own, never traversed
-        as a parameter or buffer, and never serialized. It exists so a
-        later backward can multiply without redrawing; the caller of this
-        private helper owns it and must ``close()`` it.
+        NativeTensor, never given a dtype tag *of its own* (it carries the
+        input's, which is what makes the three handles agree), never
+        traversed as a parameter or buffer, and never serialized. It exists
+        so a later backward can multiply without redrawing; the caller of
+        this private helper owns it and must ``close()`` it.
 
         **Logical-layout independence** is a locked property, not an
         accident. Per **Policy B** (docs/native_cnn_design.md §5) a
@@ -3356,11 +3995,14 @@ class NativeTensorCore:
         today. The empty case is proved at the kernel and ABI layers,
         where it is reachable."""
         self._require_open()
-        if self.dtype != "float64" or self.device != "cpu":
-            raise ValueError(
-                f"dropout_forward requires a float64/cpu input, got "
-                f"{self.dtype}/{self.device}"
-            )
+        # Phase I, milestone I7: the hard float64 gate that stood here since
+        # G2 is gone — and it was the **last** of the five §2.3 gates (I5
+        # opened the two pooling ones, I6 the two cross-entropy ones). The
+        # input dtype now comes from the storage tag, which can only hold an
+        # internally representable dtype, and the C ABI dispatches on it.
+        # Both destinations are allocated at that same dtype below, so the
+        # three handles cannot disagree; the device is "cpu" by construction
+        # for every constructible storage.
         # Both key halves and the probability are validated by the shared
         # helpers, so this surface accepts exactly what the operation and
         # the module will accept (design §6.1).
@@ -3574,7 +4216,12 @@ class NativeTensorCore:
         # the gradient's value, not an initialization detail, so an
         # uninitialized buffer would leak heap contents straight into a
         # gradient. Its poison test pins exactly this.
-        out = NativeTensorCore.zeros(original, dtype=self.dtype, device=self.device)
+        #
+        # I4: the same zeroed constructor with the dtype trusted, for
+        # ``sum``'s reason and with ``sum``'s argument — the dtype is this
+        # gradient's own tag, and the scatter's output must carry it.
+        out = NativeTensorCore.zeros(original, dtype=self.dtype,
+                                     device=self.device, _trusted_dtype=True)
         # The gradient lives at the logical shape, so the output is always a
         # fresh row-major contiguous buffer (offset 0) regardless of the
         # narrowed parent's own layout. Each narrowed axis maps 1:1 to the

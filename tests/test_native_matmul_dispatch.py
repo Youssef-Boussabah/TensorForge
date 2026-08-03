@@ -1093,8 +1093,11 @@ def test_optimizer_updates_after_matmul_gradients_are_reproducible(
 # 8. Scope — no new export, no capability move, no dispatch control
 # ==========================================================================
 
-# H2 adds no exported symbol: the count is exactly what H1 left.
-EXPECTED_TF_EXPORTS = 52
+# H2 adds no exported symbol: Phase H's surface is exactly what H1 left.
+# The live library exports two more — Phase I milestone I1's typed storage
+# creators — so the Phase-H claim is checked against the Phase-H subset.
+PHASE_H_TF_EXPORTS = 52
+EXPECTED_TF_EXPORTS = 54
 
 # Names that would constitute a runtime dispatch control. None may exist
 # in the shipped library or the installed Python backend.
@@ -1140,6 +1143,7 @@ def test_h2_added_no_exported_symbol():
         pytest.skip("this image format is not parsed here")
     exported = sorted(name for name in names if name.startswith("tf_"))
     assert len(exported) == EXPECTED_TF_EXPORTS, exported
+    assert len(h1.phase_h_export_names(exported)) == PHASE_H_TF_EXPORTS
     assert "tf_core_matmul" in exported
     assert not [name for name in exported if "row_sweep" in name]
     assert not [name for name in exported
@@ -1163,29 +1167,50 @@ def test_no_environment_variable_or_dispatch_hook_exists_in_the_sources():
 def test_the_matmul_source_ships_both_paths_and_one_predicate():
     """The retained generic reference path (§8.3) is shipped code, not a
     comment or a test fixture, and the export routes through the
-    predicate."""
+    predicate.
+
+    Phase I, milestone I4 made both paths templates over the element type,
+    so their **definitions** moved into tf_matmul_internal.h — the ordinary
+    reason a template must, and the same place H8's elementwise traversals
+    already live. What the definitions say did not change, and this test
+    checks that too: the two load-bearing single lines are asserted at
+    ``T``, where ``T = double`` reproduces the pre-I4 literals exactly.
+    """
     source = (REPO_ROOT / "cpp" / "src" / "matmul.cpp").read_text(
         encoding="utf-8")
-    assert "void matmul_generic_strided(" in source
-    assert "void matmul_row_sweep(" in source
+    header = (REPO_ROOT / "cpp" / "include" / "tf_matmul_internal.h").read_text(
+        encoding="utf-8")
+    assert "void matmul_generic_strided(" in header
+    assert "void matmul_row_sweep(" in header
     assert "bool matmul_prefers_row_sweep(" in source
-    # The export chooses between them, and calls each exactly once.
+    # One dispatch helper chooses between them, and calls each exactly once.
     assert source.count("tf::matmul_prefers_row_sweep(m, n, p, b_stride1)") == 1
     assert source.count("tf::matmul_row_sweep(") == 1
     assert source.count("tf::matmul_generic_strided(") == 1
     # The k == 0 assigning pass is what makes the H1 uninitialized
-    # destination safe, and the explicit `0.0 +` is what preserves the
+    # destination safe, and the explicit `T(0) +` is what preserves the
     # sign of a zero result. Both are load-bearing single lines.
-    assert "out[j] = 0.0 + a_ik * b_row[j];" in source
-    assert "out[j] += a_ik * b_row[j];" in source
+    assert "out[j] = T(0) + a_ik * b_row[j];" in header
+    assert "out[j] += a_ik * b_row[j];" in header
+    # The accumulator follows the element type at both widths: no `double`
+    # local survives in either kernel, which is what makes "float32
+    # accumulates in float32" (design §10.1) a property of the source
+    # rather than of a comment. Asserted over the *code*, with the comment
+    # lines stripped — the prose above the kernels quotes the pre-I4
+    # spellings on purpose, to record what they became.
+    code = "\n".join(line for line in header.splitlines()
+                     if not line.lstrip().startswith("//"))
+    assert "T sum = T(0);" in code
+    assert "double" not in code, "a binary64 local survived in a typed kernel"
+    assert "float" not in code, "a binary32 local was hard-coded"
 
 
 @needs_native
 def test_no_capability_registry_moved():
     """H2 is a memory-access change. Nothing about what the native line
     supports moved."""
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "matmul" in cpp.TENSOR_CORE_OPS
     assert "matmul" in cpp.AUTOGRAD_OPS

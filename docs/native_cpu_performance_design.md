@@ -1694,6 +1694,15 @@ metadata:
 | `matmul_row_sweep` | The optimized path: `i`–`k`–`j` over `MATMUL_ROW_BLOCK` destination rows at a time. |
 | `matmul_prefers_row_sweep` | The dispatch predicate. |
 
+*(Phase I, milestone I4 made the two kernels templates over the element type
+and moved their definitions from `cpp/src/matmul.cpp` into
+`cpp/include/tf_matmul_internal.h` — the ordinary reason a template must, so
+both instantiations reach the exported wrapper and the CTests that compile
+that file directly. `T = double` is the code below statement for statement,
+the predicate is untouched, and both dtypes take the same path for the same
+layout. The H2 record here stands as written; only the file the definitions
+live in and the spelling of their literals changed.)*
+
 The row sweep, for one group of rows:
 
 ```cpp
@@ -3616,6 +3625,17 @@ New `cpp/include/tf_reduction_internal.h` declares three hidden-visibility
 `namespace tf` functions; `cpp/src/reduction.cpp` implements them and
 `tf_core_sum` dispatches between them.
 
+*(Phase I, milestone I4 made the two traversals templates over the element
+type, so their definitions moved into that same header beside the contract
+they answer to — the ordinary reason a template must, so both instantiations
+reach the exported wrapper and the CTest that compiles `reduction.cpp`
+directly. Loop structure, carry, traversal order, and accumulator are
+unchanged; `T = double` is the pre-I4 code statement for statement, and the
+predicate is untouched because it reads `int64` layout metadata only. The
+counter is still allocated on the wrapper's side of the traversal, so the
+guard and the fault-injection hook keep their meaning at both widths. The H6
+record below stands as written.)*
+
 **1. `tf::sum_generic_strided` — the retained generic reference path**
 (§8.3). The pre-H6 odometer, unchanged in loop structure, arithmetic, and
 traversal order. It is shipped, reachable through ordinary production
@@ -4830,6 +4850,15 @@ anything about the loop body. Each operation is a stateless functor with a
 character for character, as the retained function-pointer op beside it**,
 so the two cannot drift apart.
 
+> *Later note (Phase I, milestone I3).* The measurement, the reasoning, and
+> the traversal are unchanged; only the *spelling* of the functors moved.
+> Each `apply` is now templated on the element type, its constants are
+> written `T(...)`, and the retained odometer takes `&Op::apply<T>` rather
+> than a separately written twin — so "the same expression, character for
+> character" became one definition rather than two kept in step by hand. At
+> `T = double` the emitted expression is exactly what H8 measured. See
+> `native_dtype_float32_design.md` §8.2 and its I3 record.
+
 **Which operations take it, and which deliberately do not.** Only those
 IEEE-754 actually specifies: `add`, `subtract`, `multiply`,
 `relu_backward`, `relu`, `sqrt`, `reciprocal`, and the identity gather
@@ -5265,6 +5294,19 @@ with versions `(1, 2)` supported.
 ---
 
 ## 16.9 H9 — Conv2d execution efficiency, as shipped
+
+> **Later note (Phase I, milestone I5).** The six compute paths this
+> section describes — the three retained generic loops and the three
+> optimized traversals — were made templates over the element type and
+> moved from `conv2d.cpp` into `tf_conv2d_internal.h`, so both
+> `float` and `double` instantiations reach the exported wrappers and the
+> CTests that compile the file directly. `T = double` is the H9 code
+> statement for statement: no loop nest, tap range, seed, predicate, or
+> accumulation order changed, and every proof in this section reads
+> unchanged at both widths. The dispatch predicates read `int64` geometry
+> only, which is why they carried over untouched — exactly the property
+> §2.17 of the Phase-I contract predicted. This note records history; it
+> rewrites none.
 
 ### 16.9.0 Why convolution, and why now
 

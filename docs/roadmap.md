@@ -39,13 +39,317 @@ last of them, native CPU performance and runtime efficiency, closed at
 milestone H10. Each phase's record is in its own design document; the
 sections above are the narrative.
 
+## The latest phase — Phase I, complete
+
+**Phase I — Native Dtype Generalization and Float32 CPU Support — is the
+latest phase, and it is complete (I0–I11).** Milestone I11 revalidated the
+whole dtype-general stack on Windows Release and Debug, on a Linux
+CI-equivalent, and under Clang ASan/UBSan and LeakSanitizer, reconciled
+every status surface, and closed the phase. Phase I is therefore also the
+latest *completed* phase. Its architecture contract is
+[native_dtype_float32_design.md](native_dtype_float32_design.md).
+
+**Since I9, `float32` and `float64` are both publicly supported native CPU
+dtypes** — `SUPPORTED_DTYPES == ("float64", "float32")`, `UNSUPPORTED ==
+("cuda", "amp")` — with float64 remaining the default everywhere, no
+casting or promotion between them, and `RAW_KERNEL_DTYPES` still
+`("float64",)` for the seven handle-free raw utility kernels.
+
+**I0 was a design-and-reconciliation milestone: it shipped the contract,
+its guardrail tests, and documentation, and no runtime behavior at all.**
+
+**I1 built the foundation the rest of the phase stands on**: the C++ dtype
+model (frozen ABI codes `0 = float64` and `1 = float32`, one item-size
+authority, one canonical-name authority, and a total validated
+conversion), dtype-tagged storage with an untyped owned buffer and checked
+`numel × itemsize` allocation, and the two typed creation exports
+`tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`.
+The library now exports **54** `tf_*` symbols, which is the count for the
+whole phase — no later milestone adds one. The untyped creators remain,
+unchanged, as thin float64 compatibility wrappers over the same shared
+creation body.
+
+**I2 made float32 storage movable.** The three exports that carry a
+storage handle *and* a host buffer — `tf_storage_copy_from`,
+`tf_storage_copy_to`, and `tf_storage_materialize` — became dtype-general
+through a **source-level retype** of their host positions from `double*`
+to `void*`: same symbols, same argument slots, same calling convention,
+still 54 exports, and a previously compiled caller would link and run
+identically. `tf_core_contiguous_copy`, the runtime's value-transfer
+primitive, became dtype-preserving and dtype-strict, so a float32 view of
+any layout can be materialized or copied storage-to-storage while a mixed
+float32/float64 pair is rejected before anything is written. Internal
+float32 values now round-trip through the host, through every view
+transformation, and through the identity copy **bit for bit** — signed
+zeros, infinities, subnormals, NaN payloads, and signalling NaNs included,
+proved by raw IEEE-754 bit comparison at both widths. `RAW_KERNEL_DTYPES`
+records the other half of the division: the seven handle-free raw utility
+kernels take only `double*` and an element count, so they have no dtype to
+dispatch on and stay float64.
+
+**I3 made float32 storage computable, by the elementwise and unary Core
+family and by nothing else.** `add`, `subtract`, `multiply`, `relu`,
+`relu_backward`, `sqrt`, `reciprocal`, `exp`, and `log` — seventeen exports
+across their strided and contiguous forms — validate that their operands
+agree, dispatch **once** from the storage tag, and run one instantiation of
+a templated kernel, with nothing below that point branching on dtype. All
+three Phase-H traversal tiers (the contiguous row, H8's collapsed plan, and
+the retained generic odometer) are instantiated for both element types from
+the same source, so float64 runs the code Phase H measured and the widths
+cannot drift apart. NumPy-style broadcasting works at float32 for every
+layout it already worked at for float64, outputs preserve the operand
+dtype, and mixed dtype is refused in the left, right, and destination
+positions independently, before any allocation. float32 arithmetic is
+genuinely binary32 — bit-identical to the binary32 oracle for the
+IEEE-specified operations, and within a measured ULP bound for `exp` and
+`log`, which are library functions with no correctly-rounded guarantee.
+**I3 added no export.**
+
+**I4 made float32 reduce, multiply matrices, propagate through views, and
+differentiate.** `sum`, `mean`, `matmul`, and `narrow_backward` are
+dtype-general, with H6's contiguous-block factorization and H2's `i`-`k`-`j`
+row sweep — and the retained generic odometer and triple loop beside them —
+instantiated for both element types from the same source, so every optimized
+path keeps its oracle **per dtype** and float64 runs the code Phase H
+measured. `tf_storage_scale` and `tf_storage_fill` became dtype-general with
+their `(handle, double)` signatures unchanged: the scalar crosses as the
+ABI's widest float and is narrowed **once, before the loop**, which is what
+makes `mean`'s `1/count` deterministic and identical on every platform. On
+top of those, private/internal float32 `NativeTensor` graphs now run forward
+and backward through the whole set of Core operations landed so far —
+elementwise, broadcasting, the views, the reductions, and matmul — with
+every gradient, every backward temporary, and every materialized constant
+carrying the graph's dtype.
+
+**float32 accumulation is genuinely float32, and I4 is where that stopped
+being a structural claim and became a measured one.** Every I3 operation
+produced its result with a single correctly-rounded IEEE operation, for
+which computing in binary64 and rounding once is *provably*
+indistinguishable from computing in binary32 — so no runtime test could
+separate the two, and I3 said so rather than inventing one. A sum is the
+first place the difference is observable: on the vector `1.0` followed by
+eight copies of `2**-24`, sequential binary32 stays at exactly `1.0` while
+binary64-then-narrow lands four ULPs higher, and TensorForge is asserted
+equal to the first and unequal to the second — on both reduction traversals
+and both matmul paths. **I4 added no export.**
+
+**I5 made float32 convolve and pool.** All three Conv2d directions and both
+MaxPool2d directions are dtype-general, with H9's row-sweep and gather
+traversals — and the retained Phase-D generic loops beside them —
+instantiated for both element types from the same source, the geometry
+predicates untouched, and Conv2d accumulating in the element type: the
+binary32-versus-widened witness is proved in all three directions, on both
+traversals of each. MaxPool2d's values follow the input dtype through the
+identical comparison sequence at both widths, while the private **winner
+buffer stays float64 at every value dtype** with its `2**53` exact-plane
+bound unchanged — a float32 pool over a plane beyond float32's `2**24`
+exact-integer range still records its offsets exactly, which is the
+capability that decision preserves. Private float32 graphs differentiate
+through convolution and pooling, with the winner riding the unchanged
+graph-owned saved-state contract. **I5 added no export.**
+
+**I6 made float32 classify.** Softmax, log-softmax, and the fused
+cross-entropy forward and backward are dtype-general, with every
+participating numeric handle checked for agreement and one dispatch per
+export into templated kernels. The maximum scan, the shift, the
+exponentials, the normalizing sum, the log-normalizer, the per-row loss,
+the batch-loss accumulator, the mean divisor, and every backward
+contribution all happen at the element type — and the batch-loss
+accumulator is where that became a *measured* claim: on a batch whose first
+row contributes exactly 200 and whose remaining 199 contribute ~6.1e-6
+each, binary32 stays at exactly 200 while binary64-then-narrow lands
+~1.2e-3 higher, and TensorForge is asserted equal to the first and unequal
+to the second. Log-softmax is still its own fused log-sum-exp kernel and
+never `softmax().log()`; the saved probabilities carry the graph dtype and
+stay the only thing the backward reads; the class **targets stay host
+`int64` metadata at every width**, so no integer tensor dtype appeared.
+Private float32 graphs differentiate through all three operations with no
+graph-structure change at all. **I6 added no export.**
+
+I6 is also where the float32 stability statement gained its one honest
+qualification. The maximum shift guarantees no *exponent* overflows; it
+does not make the shifted value representable, so a slice whose **spread**
+exceeds the element type's largest finite value overflows the shift to
+`-inf`. `softmax` is unaffected and still exact; `log_softmax` reports
+`-inf` and `cross_entropy` `+inf`, as values rather than errors. Those are
+the correctly rounded IEEE results for quantities with no representation at
+that width, and the same thing happens at binary64 past ~1.8e308. The
+kernels were left alone — no widened intermediate, no clamp, no special
+case — and the counterexample was written into the contract and asserted by
+test in both directions.
+
+**I7 made float32 a module dtype, and closed the last float64-only
+kernel.** Six state-owning constructors — `NativeParameter`,
+`NativeLinear`, `NativeConv2d`, `NativeLayerNorm`, `NativeBatchNorm1d`, and
+`NativeBatchNorm2d` — take a keyword-only `dtype` accepting exactly the two
+widths and defaulting to float64, through one shared validator. Affine
+parameters, both BatchNorm running buffers, the evaluation snapshots, and
+every constant a composed normalization forward materializes are at the
+module's dtype; the atomic two-buffer running-statistics transaction gained
+one dtype validation and nothing else. Initialization is unchanged at both
+widths: the same local `default_rng(seed)` stream in the same order, so a
+float32 layer with seed *S* holds exactly `float32(the float64 draw with
+seed S)` — the seed contract does not become dtype-dependent.
+
+Dropout was the last family out. The kernel is templated, the export keeps
+its exact ABI shape with one operand-agreement guard and one dispatch, and
+**the random derivation is untouched**: the uniform stays binary64 at every
+width, so one `(seed, call_index, element count)` key drops exactly the
+same elements at float32 and float64 and only the two multiplier values
+differ. The kept multiplier is the binary64 reciprocal narrowed once, which
+at float32 is an observable, separately witnessed property. Generator
+state, its algorithm, its version, and the reserve → commit/abandon call
+accounting are all unchanged, at both widths. **I7 added no export.**
+
+**I8 delivered float32 optimizer state and native checkpoint version 3.**
+Both `NativeSGD` and `NativeAdam` execute at float32 — Adam's `m` and `v`
+carry their parameter's dtype, one optimizer may hold parameters of both
+widths with independent dtype-consistent state per parameter, and neither
+gained a `dtype` or `device` argument, because they own no dtype they
+could choose. No C++ changed and **no export was added**: I3-I7 had already
+generalized every operation the optimizers compose, so three constructors
+moving to their private typed twins was the whole runtime change, and
+H4's once-per-step scalar architecture is preserved whole (the caches key
+on `(dtype, device)`, so a mixed collection builds one scalar set per
+*active dtype* rather than one per parameter). Design §15.3's open
+question was **resolved on measurement**: H4's Python bias-correction
+reciprocal is an exact substitution at binary64 but not at binary32,
+because the kernel divides by the **narrowed** denominator — the two
+spellings differ by one ULP for a large fraction of inputs, the default
+betas included — so the denominator is narrowed first and the reciprocal
+taken of that, which is what the kernel does, at no allocation and no
+kernel call, with float64 bit-identical to before. Native checkpoint
+**version 3** declares every numeric entry's dtype explicitly, accepts
+versions `(1, 2, 3)`, writes 3 on every new save whatever the model holds,
+and carries Adam's moments as entry objects rather than bare archive names
+so their metadata is stated rather than inferred positionally. float32
+model values, persistent buffers, and Adam moments round-trip **bit for
+bit**; a dtype disagreement is rejected in either direction with no cast,
+no `map_location`, and no device movement; and versions 1 and 2 remain
+float64-only formats permanently, never guessing a payload to be float32.
+Every transactional, identity, aliasing, and rollback guarantee is
+unchanged, and the **in-memory** optimizer state schema stayed at
+version 1.
+
+**None of I1 through I8 moved a public capability**, deliberately. The
+checkpoint version moved at I8, which is a **schema** change design §16.1
+always assigned to that milestone rather than a support claim. The gap
+between internal capability and public promise was the phase's rollout
+discipline, the same one Phase G used for `dropout`.
+
+**I9 closed that gap, and it is the phase's one and only public registry
+change.** It moved *after* the proof, not before: the integrated example
+and its exact-resume proof were written and passing first, through the
+already-approved private typed route and the six I7 module constructors,
+with the registry still reading `("float64",)`; only then did
+`SUPPORTED_DTYPES` become `("float64", "float32")` and `UNSUPPORTED` become
+`("cuda", "amp")`; then the example's one ingress helper switched to the
+public `NativeTensor.from_array(values, dtype=...)` and the whole proof was
+rerun.
+
+`examples/native_float32_training.py` is that proof: one deep model —
+`Conv2d → BatchNorm2d → ReLU → MaxPool2d → Dropout → Flatten → Linear →
+BatchNorm1d → ReLU → LayerNorm → Dropout → Linear`, raw logits into
+`NativeCrossEntropyLoss`, trained by `NativeAdam`, with **two Dropout
+layers sharing one registered generator** so the model carries a real alias
+topology — run uninterrupted and interrupted at **each** dtype and compared
+**only against itself**, in raw IEEE-754 bit patterns. Every loss, the
+first resumed step's gradients, every parameter, every buffer, every Adam
+moment and counter, the generator state, the alias topology, the next
+Dropout mask, the final logits, the predictions, and the evaluation output
+match exactly, and native live storage returns to baseline. A float32 run
+is never required to reproduce a float64 one and nothing asserts that it
+does.
+
+I9 changed no C++, added no export (still 54) and no CTest (still 24),
+moved no checkpoint field or version, and added no module, loss, optimizer,
+operation, dependency, or benchmark change. Nothing about Phase H changed;
+Phase H remains complete, and it closed at 52 exports.
+
+What Phase I has delivered: float32 CPU tensors beside the existing float64
+ones, dtype-tagged storage, dtype-aware handle-based operations, float32
+autograd, modules, buffers, optimizers, and optimizer state, float32
+deterministic Dropout over an unchanged generator, a dtype-aware checkpoint
+version 3, exact deterministic float32 resume, public float32 support,
+unchanged float64 behavior and performance, at **I10** the cross-cutting
+adversarial hardening matrix and separate float32/float64 benchmark
+characterization, and at **I11** the cross-platform revalidation, the
+closure guardrails, and the final status reconciliation that closed the
+phase. Nothing remains: the ladder is finished.
+
+The decisions the contract locks, so later milestones inherit them rather
+than re-deriving them:
+
+- **Exactly two new C ABI symbols for the whole phase** —
+  `tf_storage_create_typed` and `tf_storage_create_uninitialized_typed`,
+  taking the library from 52 to **54**. *Delivered at I1.*
+  Per-operation float32 exports are explicitly **rejected**: handle-based
+  exports already receive their operands as opaque handles, so the dtype
+  travels with the data and one narrow dispatch per call is enough.
+- **Storage carries the dtype**, and it is the single authority, so every
+  view of one buffer agrees and no view operation casts or reinterprets.
+  Shapes, strides, and offsets stay measured in logical elements; bytes
+  appear only at the allocation boundary, with checked
+  `numel × itemsize` arithmetic. *Delivered at I1.*
+- **No casting, no promotion, no mixed-dtype arithmetic.** A mismatch
+  raises before any output is allocated or any state is mutated. *First
+  reachable — and tested — at I2, on the identity copy; enforced across the
+  whole elementwise family at I3, and across reductions, matmul,
+  narrow-backward, and gradient accumulation at I4.*
+- **The raw-buffer boundary is divided explicitly.** Every export that
+  receives a storage handle can be dtype-general because the handle
+  carries the dtype; the seven handle-free raw utility kernels cannot, and
+  stay float64 permanently. *Recorded by `RAW_KERNEL_DTYPES` and reported
+  by `backend_info()` at I2.*
+- **float32 accumulates in float32**, with no hidden wider accumulator
+  anywhere — that would be mixed precision, which is out of scope. *First
+  enforced at I3; **witnessed by test at I4**, where accumulation makes the
+  difference between binary32 and binary64-then-narrow observable, on both
+  reduction traversals and both matmul paths.* *Extended at I5 to all three
+  Conv2d directions on both traversals, and at I6 to the cross-entropy
+  batch-loss accumulator — the one place in the classification family where
+  the two policies can differ at all, since every other operation there is a
+  single correctly-rounded operation per destination.* *At I7 the same split
+  reached Dropout's kept multiplier, which is a **scalar** rather than an
+  accumulator and is therefore governed by the narrow-once rule instead:
+  computed in binary64 and narrowed once, witnessed at a probability where
+  that provably differs from recomputing it in binary32.*
+- **Checkpoint version 3** is designed but not activated at I0. Versions
+  1 and 2 stay readable and are defined as float64-only formats that are
+  never guessed to be float32.
+- **Exact deterministic resume is proved separately for each dtype**, and
+  a float32 run is never required to agree with a float64 one.
+- **Every Phase-H float64 optimization is preserved**, and float32 and
+  float64 are benchmarked separately, with no timing assertion, no
+  committed number, and no result file — as in every phase before it.
+  *Delivered at I10*, in a harness deliberately separate from Phase H's so
+  that every number Phase H published keeps its meaning. I10 changed no
+  production runtime code at all.
+- **The public support registry moved at milestone I9** and at no other
+  one: float32 was not declared supported until the whole training stack,
+  optimizer state, checkpoint version 3, and the exact-resume proof all
+  existed. *Delivered at I9.*
+
+The ladder is I0 through I11 — **all twelve landed** (this line lagged a
+milestone behind after I8, and that lag was repaired rather than rewritten
+away): the contract (I0), the dtype model and
+tagged storage (I1), typed transfer and materialization (I2), elementwise
+execution (I3), reductions and matmul (I4), the convolution and pooling
+kernels (I5), stable math and classification (I6), modules, buffers, and
+Dropout (I7), optimizer state and checkpoint version 3 (I8), the public
+integration and resume proof (I9), hardening and benchmarking (I10), and
+cross-platform validation and closure (I11).
+
 ## Practical next steps
 
-**No next phase is defined, and none is invented here.** What the existing
-documents already name as future work, in no committed order, is: data
-loaders, native integer tensors, further dtypes or devices, and CUDA
-experiments. Each would be a *capability* phase with its own design
-contract, and each is deliberately outside everything shipped so far.
+**Phase I is finished, and no successor phase is defined.** What the
+existing documents name as future work *beyond* Phase I, in no committed
+order, is: data loaders, native integer tensors, further dtypes or devices
+beyond the two Phase I delivers, and CUDA experiments. None of them has
+started, and none may be described as begun until a design contract for it
+exists.
+Each would be a *capability* phase with its own design contract, and each
+is deliberately outside everything shipped so far.
 
 Two things Phase H recorded are worth carrying forward as *inputs* to
 whichever comes next, rather than as work items in themselves:

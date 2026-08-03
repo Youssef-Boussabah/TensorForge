@@ -419,8 +419,8 @@ def test_winner_buffer_is_not_public_surface():
 
 def test_winner_buffer_claims_no_new_dtype_capability():
     info = cpp.backend_info()
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
-    assert info["supported_dtypes"] == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
+    assert info["supported_dtypes"] == ("float64", "float32")
     assert info["dtype"] == "float64"
     # No integer dtype/index capability is advertised anywhere.
     advertised = " ".join(

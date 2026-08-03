@@ -755,9 +755,9 @@ void test_exported_wrapper_matches_the_selected_path() {
         if (!a_handle || !b_handle || !out_handle) {
             continue;
         }
-        std::memcpy(tf::as_storage(a_handle)->data, a.data(),
+        std::memcpy(tf::storage_f64(a_handle), a.data(),
                     sizeof(double) * static_cast<std::size_t>(a_count));
-        std::memcpy(tf::as_storage(b_handle)->data, b.data(),
+        std::memcpy(tf::storage_f64(b_handle), b.data(),
                     sizeof(double) * static_cast<std::size_t>(b_count));
 
         tf_core_matmul(a_handle, b_handle, out_handle, c.m, c.n, c.p,
@@ -774,8 +774,8 @@ void test_exported_wrapper_matches_the_selected_path() {
                                        c.b_stride0, c.b_stride1, 0, 0);
         }
         std::vector<double> produced(
-            tf::as_storage(out_handle)->data,
-            tf::as_storage(out_handle)->data + out_count);
+            tf::storage_f64(out_handle),
+            tf::storage_f64(out_handle) + out_count);
         check_at(same_bits(expected, produced),
                  "the export did not match the predicted path",
                  c.m, c.n, c.p);

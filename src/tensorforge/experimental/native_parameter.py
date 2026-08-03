@@ -24,6 +24,20 @@ Design invariants (all tested in tests/test_native_parameter.py):
   itself. (The inherited ``from_array``/``zeros``/``full`` classmethods
   consequently also return plain ``NativeTensor`` — they are not
   parameter constructors.)
+- **Dtype is chosen at construction and never changes (Phase I,
+  milestone I7).** ``dtype`` is keyword-only, defaults to ``"float64"``
+  (``None`` means ``"float64"``), and accepts exactly ``"float64"`` and
+  ``"float32"``. Array-like data crosses the explicit host-to-native
+  conversion boundary and is converted **once** to that element type; an
+  existing ``NativeTensor`` must already carry it, because there is no
+  tensor cast anywhere in this runtime and a silent narrowing is exactly
+  what "no promotion, no casting" forbids. ``copy_value_`` and
+  ``_adopt_value_core`` already required exact dtype agreement and
+  continue to, so a parameter's dtype is fixed for its whole life and its
+  gradient always matches it. **float32 is still not a publicly supported
+  TensorForge dtype** — the registry moves at milestone I9 — so this
+  constructor validates against the internal table, and every existing
+  call site that omits ``dtype`` produces byte-identical float64 values.
 - **Independent owning contiguous storage, always.** Constructed from
   array-like data, the values are copied into fresh native storage.
   Constructed from an existing ``NativeTensor`` — leaf or non-leaf,
@@ -83,6 +97,7 @@ Design invariants (all tested in tests/test_native_parameter.py):
 import sys
 
 from ..backends import cpp
+from ._native_dtype import normalize_module_dtype
 from .native_tensor import NativeTensor, _native_copy
 
 
@@ -120,14 +135,14 @@ def _reject_framework_object(value, where):
 class NativeParameter(NativeTensor):
     """A trainable native leaf tensor.
 
-    ``NativeParameter(data, requires_grad=True)`` copies ``data`` —
-    array-like values, or the current value of an existing
-    ``NativeTensor`` — into fresh owning contiguous float64/cpu native
-    storage and marks it as a gradient-tracking leaf (pass
+    ``NativeParameter(data, requires_grad=True, *, dtype=None)`` copies
+    ``data`` — array-like values, or the current value of an existing
+    ``NativeTensor`` — into fresh owning contiguous native storage at
+    ``dtype`` on the cpu, and marks it as a gradient-tracking leaf (pass
     ``requires_grad=False`` for a frozen parameter). Every instance is
     graph-free for its whole life; operations on a parameter return
     ordinary ``NativeTensor`` results. See the module docstring for the
-    full contract.
+    full contract, including the Phase-I dtype rules.
     """
 
     # The one subclass slot (v3.7): the monotonically increasing value
@@ -136,13 +151,22 @@ class NativeParameter(NativeTensor):
     # this class's __init__, so the slot is always initialized.
     __slots__ = ("_version",)
 
-    def __init__(self, data, requires_grad=True):
-        # Validate the flag before any native allocation, so a bad call
-        # never creates storage it immediately leaks to GC cleanup.
+    def __init__(self, data, requires_grad=True, *, dtype=None):
+        # Validate every Python argument before any native allocation, so a
+        # bad call never creates storage it immediately leaks to GC cleanup.
         if not isinstance(requires_grad, bool):
             raise TypeError(
                 f"requires_grad must be a bool, got {type(requires_grad).__name__}"
             )
+        # Phase I, milestone I7. ``None`` means ``"float64"`` and the two
+        # accepted values are exactly ``"float64"`` and ``"float32"``; a
+        # non-string is a TypeError, anything else a ValueError. This is the
+        # *internal* validator rather than a rule of this constructor's own
+        # (design §12.2 forbids a constructor inventing dtype validation):
+        # identical canonicalization, identical error kinds, measured
+        # against the internal table because ``"float32"`` has not yet
+        # joined the public registry — which it does at I9, not here.
+        canonical = normalize_module_dtype(dtype)
         _reject_framework_object(data, "NativeParameter")
         if isinstance(data, NativeTensor):
             # Independent owning contiguous copy of the source's current
@@ -150,9 +174,27 @@ class NativeParameter(NativeTensor):
             # borrowing views), raises RuntimeError on a closed source,
             # and by construction inherits no graph history: the new
             # core has never been near an operation.
-            core = data._require_open().contiguous_copy()
+            source = data._require_open()
+            # A native tensor is a *tensor*, and there is no tensor cast in
+            # this runtime (design §9.1/§9.5): it must already be at the
+            # requested dtype. A host array is a different thing entirely —
+            # see below.
+            if source.dtype != canonical:
+                raise ValueError(
+                    f"NativeParameter dtype mismatch: the requested dtype is "
+                    f"{canonical!r}, the source tensor is {source.dtype!r} "
+                    f"(the native runtime performs no casting or promotion; "
+                    f"construct the source at the dtype you want)"
+                )
+            core = source.contiguous_copy()
         else:
-            core = cpp.NativeTensorCore.from_array(data)
+            # Host data goes through the explicit host-to-native conversion
+            # boundary, which has always converted whatever it was given to
+            # the requested element type (design §9.4). That is not a tensor
+            # cast: a float64 NumPy array becoming a float32 parameter is
+            # **one** rounding, at ingress, exactly as a Python list becoming
+            # a float64 parameter is one conversion.
+            core = cpp.NativeTensorCore._typed_from_array(data, canonical)
         super().__init__(core, owns_core=True)
         self._requires_grad = requires_grad
         # Construction is not a mutation: the value version counts

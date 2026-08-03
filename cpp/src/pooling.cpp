@@ -1,203 +1,26 @@
-// MaxPool2d forward (Phase D, milestone D8): the internal CPU float64
-// window-maximum compute kernel plus its exported, exception-guarded C ABI
-// wrapper.
+// MaxPool2d (Phase D, milestones D8/D9): the exported, exception-guarded C
+// ABI wrappers over the internal noexcept window-maximum and scatter-add
+// kernels.
 //
-// The kernel writes the pooled output and the parallel *winner* buffer in
-// one pass, so the forward value and the saved winner are always produced
-// by the same decision (docs/native_cnn_design.md §10). The winner buffer
-// is an internal float64 buffer of flat input-plane offsets with a -1
-// sentinel for "padding won" (§12); it never becomes a public tensor and
-// introduces no new dtype.
+// The compute kernels themselves live in cpp/include/tf_pooling_internal.h
+// as templates over the *value* element type (Phase I, milestone I5), so
+// both the ``float`` and ``double`` instantiations are available to the
+// exported wrappers here *and* to the CTests that compile this file
+// directly. The winner buffer is not templated and never will be: it is an
+// internal **float64** buffer of flat input-plane offsets with a -1
+// sentinel for "padding won" (docs/native_cnn_design.md §12,
+// docs/native_dtype_float32_design.md §13.3), at every value dtype. It
+// never becomes a public tensor and introduces no new dtype.
 //
-// Milestone D9 added the pooling *backward* to this same file: the
-// internal scatter-add `tf::maxpool2d_backward_contiguous` and the checked
-// `tf_core_maxpool2d_backward` wrapper (which validates every winner value
-// before scattering). Backward consumes the saved winners only — it never
-// rereads an input value and never recomputes a window maximum. The
-// Python-managed `NativeTensor.maxpool2d` graph node lives in
+// Backward consumes the saved winners only — it never rereads an input
+// value and never recomputes a window maximum. The Python-managed
+// ``NativeTensor.maxpool2d`` graph node lives in
 // experimental/native_tensor.py; no graph state enters C++.
 
 #include <cmath>
-#include <limits>
 
 #include "tf_internal.h"  // export macro, Storage/as_storage, TF_GUARD, set_error
 #include "tf_pooling_internal.h"
-
-namespace {
-
-// Row-major flat offset into a 4-D array of extents (·, dim1, dim2, dim3)
-// at index (i0, i1, i2, i3). File-local (never part of the ABI); the
-// leading extent is not needed for the offset. Both the NCHW input and the
-// NCHW output/winner buffers share this layout. Deliberately duplicated
-// from conv2d.cpp rather than promoted to a shared header: each compute
-// translation unit keeps its indexing self-contained (design §14).
-inline int64_t index4d(
-    int64_t i0, int64_t i1, int64_t i2, int64_t i3,
-    int64_t dim1, int64_t dim2, int64_t dim3) {
-    return ((i0 * dim1 + i1) * dim2 + i2) * dim3 + i3;
-}
-
-}  // namespace
-
-namespace tf {
-
-void maxpool2d_forward_contiguous(
-    const double* input,
-    double* output,
-    double* winners,
-    int64_t batch,
-    int64_t channels,
-    int64_t input_height,
-    int64_t input_width,
-    int64_t kernel_height,
-    int64_t kernel_width,
-    int64_t stride_height,
-    int64_t stride_width,
-    int64_t pad_height,
-    int64_t pad_width,
-    int64_t output_height,
-    int64_t output_width) noexcept {
-    // Direct nested loops, correctness first: n, c, i, j outer; p, q inner
-    // (row-major over the kernel window). Padded coordinates are computed
-    // in *signed* int64 so an out-of-bounds position is genuinely negative,
-    // never an unsigned wrap; no padded copy of the input is materialized.
-    const double negative_infinity = -std::numeric_limits<double>::infinity();
-    for (int64_t n = 0; n < batch; ++n) {
-        for (int64_t c = 0; c < channels; ++c) {
-            for (int64_t i = 0; i < output_height; ++i) {
-                for (int64_t j = 0; j < output_width; ++j) {
-                    // best_* holds the current selection. ``seen_any`` marks
-                    // the fallback anchor (the window's first candidate,
-                    // used only when every candidate is NaN); ``seen_number``
-                    // marks the first non-NaN candidate, which seeds the
-                    // real scan. Afterwards only a strictly greater value
-                    // replaces the selection, so ties keep the first
-                    // occurrence in row-major window order.
-                    double best_value = 0.0;
-                    double best_winner = -1.0;
-                    bool seen_any = false;
-                    bool seen_number = false;
-                    for (int64_t p = 0; p < kernel_height; ++p) {
-                        const int64_t ih = i * stride_height + p - pad_height;
-                        const bool row_inside =
-                            (ih >= 0 && ih < input_height);
-                        for (int64_t q = 0; q < kernel_width; ++q) {
-                            const int64_t iw = j * stride_width + q - pad_width;
-                            const bool inside =
-                                row_inside && iw >= 0 && iw < input_width;
-                            // A padded position conceptually holds -inf and
-                            // participates in the selection with winner -1.
-                            const double candidate =
-                                inside
-                                    ? input[index4d(n, c, ih, iw, channels,
-                                                    input_height, input_width)]
-                                    : negative_infinity;
-                            const double candidate_winner =
-                                inside
-                                    ? static_cast<double>(ih * input_width + iw)
-                                    : -1.0;
-                            if (!seen_any) {
-                                // Deterministic all-NaN fallback anchor.
-                                seen_any = true;
-                                best_value = candidate;
-                                best_winner = candidate_winner;
-                            }
-                            if (candidate != candidate) {
-                                continue;  // NaN never wins (see the header)
-                            }
-                            if (!seen_number) {
-                                seen_number = true;
-                                best_value = candidate;
-                                best_winner = candidate_winner;
-                            } else if (candidate > best_value) {
-                                // Strict >: an equal later candidate never
-                                // displaces the earlier winner.
-                                best_value = candidate;
-                                best_winner = candidate_winner;
-                            }
-                        }
-                    }
-                    const int64_t out_index = index4d(
-                        n, c, i, j, channels, output_height, output_width);
-                    output[out_index] = best_value;
-                    winners[out_index] = best_winner;
-                }
-            }
-        }
-    }
-}
-
-void maxpool2d_backward_contiguous(
-    const double* grad_output,
-    const double* winners,
-    double* grad_input,
-    int64_t batch,
-    int64_t channels,
-    int64_t input_height,
-    int64_t input_width,
-    int64_t output_height,
-    int64_t output_width) noexcept {
-    // Scatter-add adjoint of the forward window maximum
-    // (docs/native_cnn_design.md §11). The output is fully defined here:
-    // zero the entire grad_input span first, so the caller need not
-    // pre-zero it and overlapping windows can accumulate with a plain +=.
-    const int64_t plane = input_height * input_width;
-    const int64_t input_count = batch * channels * plane;
-    for (int64_t idx = 0; idx < input_count; ++idx) {
-        grad_input[idx] = 0.0;
-    }
-    // Deterministic n -> c -> oh -> ow order. Backward reads ONLY the saved
-    // winners and the upstream: no input value is reread and no window
-    // maximum is recomputed, so forward and backward can never disagree.
-    for (int64_t n = 0; n < batch; ++n) {
-        for (int64_t c = 0; c < channels; ++c) {
-            // Base of this (n, c) plane in both buffers.
-            const int64_t input_base = (n * channels + c) * plane;
-            for (int64_t i = 0; i < output_height; ++i) {
-                for (int64_t j = 0; j < output_width; ++j) {
-                    const int64_t out_index = index4d(
-                        n, c, i, j, channels, output_height, output_width);
-                    const double winner = winners[out_index];
-                    if (winner < 0.0) {
-                        continue;  // -1 sentinel: padding won, drop the grad
-                    }
-                    // The wrapper proved this is an exact integer in
-                    // [0, plane - 1], so the conversion truncates nothing.
-                    const int64_t offset = static_cast<int64_t>(winner);
-                    grad_input[input_base + offset] += grad_output[out_index];
-                }
-            }
-        }
-    }
-}
-
-}  // namespace tf
-
-// ---------------------------------------------------------------------------
-// Exported C ABI wrapper (Phase D, milestone D8).
-//
-// ``tf_core_maxpool2d_forward`` is the exception-guarded boundary between
-// the Python/Core layer and the internal noexcept arithmetic above. It
-// follows the Conv2d wrappers' contract exactly: the Core wrapper
-// (backends/cpp.py) owns the public shape/argument validation and, by
-// Policy B (docs/native_cnn_design.md §5), guarantees the input it passes
-// is **row-major contiguous** — so the raw ABI takes only storage handles +
-// the input offset + the integer dimensions, never stride arrays, and
-// computes row-major offsets itself. Because no stride metadata crosses the
-// boundary, the ABI cannot and does not inspect *logical* contiguity: it
-// interprets each (handle, offset, dims) span as canonical contiguous data
-// and independently guarantees only that the span lies inside its
-// allocation, alongside the metadata checks below.
-//
-// Even though the Core layer validates first, the boundary still defends
-// itself against a direct (mis)call: null handles, non-positive extents,
-// negative padding/offsets, an output shape disagreeing with the locked
-// floor formula, a plane too large for exact float64 winner indices, and —
-// using overflow-checked int64 arithmetic — any span that would fall
-// outside its allocation are all rejected with TF_ERROR_INVALID before the
-// kernel runs. The internal kernel neither allocates nor throws; it writes
-// only the caller-allocated output and winner storage and frees nothing.
-// ---------------------------------------------------------------------------
 
 using tf::as_storage;
 
@@ -229,7 +52,7 @@ bool checked_add(int64_t a, int64_t b, int64_t& out) {
 }
 
 // A contiguous operand of ``count`` elements beginning at ``offset`` must
-// fit inside a storage holding ``size`` doubles. ``offset``/``count`` are
+// fit inside a storage holding ``size`` elements. ``offset``/``count`` are
 // already known non-negative here.
 bool span_within(int64_t offset, int64_t count, int64_t size) {
     int64_t end;
@@ -273,10 +96,120 @@ const char* check_output_dim(
 // only while input_height*input_width <= 2^53 (docs/native_cnn_design.md
 // §12). Python proves this in arbitrary precision before allocating; the
 // ABI re-proves it here in overflow-checked int64 so a direct caller
-// cannot smuggle a plane whose offsets would round.
+// cannot smuggle a plane whose offsets would round. The bound is float64's
+// at every value dtype — it does not shrink to 2^24 for a float32 pool,
+// because the winner buffer does not follow the value dtype (design §13.3).
 const int64_t kMaxExactPlane = static_cast<int64_t>(1) << 53;
 
+// Phase I, milestone I5: the winner-buffer dtype guard.
+//
+// The winner handle is not a numeric operand and takes no part in the value
+// dispatch; it must be **exactly float64** whatever the pool's value dtype,
+// because its contents are plane offsets whose exactness proof is stated at
+// binary64. A float32 winner buffer is refused before anything is read or
+// written — reading 4-byte winners through the ``double*`` the kernels use
+// would overrun the buffer by a factor of two.
+//
+// Null passes for exactly ``require_matching_dtype``'s reason: each export
+// keeps its own null validation, with its own message and ordering, and
+// this guard must not pre-empt it.
+bool require_winner_float64(const char* operation, const void* handle) {
+    if (handle == nullptr) {
+        return true;
+    }
+    const tf::Dtype dtype = tf::storage_dtype(handle);
+    if (tf::dtype_is_float64(dtype)) {
+        return true;
+    }
+    char message[192];
+    std::snprintf(message, sizeof message,
+                  "%s: the winner buffer must be float64 storage at every "
+                  "value dtype (winner offsets are exact float64 plane "
+                  "indices); got %s",
+                  operation, tf::dtype_name(dtype));
+    tf::set_error(TF_ERROR_INVALID, message);
+    return false;
+}
+
+// -- Phase I, milestone I5: the one dispatch per exported call --------------
+//
+// Two helpers, one per export, each holding the typed body its export's
+// **single** ``switch`` selects (design §8.1). The dtype decision is made
+// exactly once, on the *value* handles alone — the winner handle carries
+// index metadata, was proved float64 above, and is reached through the
+// unchanged ``storage_f64`` accessor in both arms. Nothing beneath these
+// branches on dtype again: not the window scan, not the comparison, not
+// the scatter, and emphatically not any element.
+
+template <class T>
+void maxpool2d_forward_dispatch(
+    const void* input_handle, int64_t input_offset,
+    void* output_handle, void* winners_handle,
+    int64_t batch, int64_t channels,
+    int64_t input_height, int64_t input_width,
+    int64_t kernel_height, int64_t kernel_width,
+    int64_t stride_height, int64_t stride_width,
+    int64_t pad_height, int64_t pad_width,
+    int64_t output_height, int64_t output_width
+) {
+    const T* input = tf::storage_typed<T>(input_handle) + input_offset;
+    T* output = tf::storage_typed<T>(output_handle);
+    double* winners = tf::storage_f64(winners_handle);
+    tf::maxpool2d_forward_contiguous(
+        input, output, winners,
+        batch, channels, input_height, input_width,
+        kernel_height, kernel_width, stride_height, stride_width,
+        pad_height, pad_width, output_height, output_width);
+}
+
+template <class T>
+void maxpool2d_backward_dispatch(
+    const void* grad_output_handle, int64_t grad_output_offset,
+    const void* winners_handle, int64_t winners_offset,
+    void* grad_input_handle,
+    int64_t batch, int64_t channels,
+    int64_t input_height, int64_t input_width,
+    int64_t output_height, int64_t output_width
+) {
+    const T* grad_output =
+        tf::storage_typed<T>(grad_output_handle) + grad_output_offset;
+    const double* winners =
+        tf::storage_f64(winners_handle) + winners_offset;
+    T* grad_input = tf::storage_typed<T>(grad_input_handle);
+    tf::maxpool2d_backward_contiguous(
+        grad_output, winners, grad_input,
+        batch, channels, input_height, input_width,
+        output_height, output_width);
+}
+
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// Exported C ABI wrapper (Phase D, milestone D8).
+//
+// ``tf_core_maxpool2d_forward`` is the exception-guarded boundary between
+// the Python/Core layer and the internal noexcept arithmetic. It follows
+// the Conv2d wrappers' contract exactly: the Core wrapper (backends/cpp.py)
+// owns the public shape/argument validation and, by Policy B
+// (docs/native_cnn_design.md §5), guarantees the input it passes is
+// **row-major contiguous** — so the raw ABI takes only storage handles +
+// the input offset + the integer dimensions, never stride arrays, and
+// computes row-major offsets itself. Because no stride metadata crosses the
+// boundary, the ABI cannot and does not inspect *logical* contiguity: it
+// interprets each (handle, offset, dims) span as canonical contiguous data
+// and independently guarantees only that the span lies inside its
+// allocation, alongside the metadata checks below.
+//
+// Even though the Core layer validates first, the boundary still defends
+// itself against a direct (mis)call: mixed value dtypes, a non-float64
+// winner buffer, null handles, non-positive extents, negative
+// padding/offsets, an output shape disagreeing with the locked floor
+// formula, a plane too large for exact float64 winner indices, and — using
+// overflow-checked int64 arithmetic — any span that would fall outside its
+// allocation are all rejected with TF_ERROR_INVALID before the kernel runs.
+// The internal kernel neither allocates nor throws; it writes only the
+// caller-allocated output and winner storage and frees nothing.
+// ---------------------------------------------------------------------------
 
 TF_EXPORT void tf_core_maxpool2d_forward(
     const void* input_handle, int64_t input_offset,
@@ -295,6 +228,17 @@ TF_EXPORT void tf_core_maxpool2d_forward(
     int64_t output_height,
     int64_t output_width) {
     TF_GUARD_BEGIN
+    // The dtype guards run first (I5, matching the I3/I4 exports): the
+    // *value* handles must agree, and the winner buffer must be float64 at
+    // every value dtype (design §13.3). A call that is both mixed-dtype and
+    // otherwise malformed reports the dtype.
+    if (!tf::require_matching_dtype("tf_core_maxpool2d_forward",
+                                    {input_handle, output_handle})) {
+        return;
+    }
+    if (!require_winner_float64("maxpool2d_forward", winners_handle)) {
+        return;
+    }
     // -- required handles (none is nullable for pooling) --
     if (input_handle == nullptr || output_handle == nullptr ||
         winners_handle == nullptr) {
@@ -369,15 +313,23 @@ TF_EXPORT void tf_core_maxpool2d_forward(
                       "maxpool2d_forward: winner span exceeds its storage");
         return;
     }
-    // -- validated: run the internal noexcept pooling kernel --
-    const double* input = as_storage(input_handle)->data + input_offset;
-    double* output = as_storage(output_handle)->data;
-    double* winners = as_storage(winners_handle)->data;
-    tf::maxpool2d_forward_contiguous(
-        input, output, winners,
-        batch, channels, input_height, input_width,
-        kernel_height, kernel_width, stride_height, stride_width,
-        pad_height, pad_width, output_height, output_width);
+    // -- validated: one value-dtype dispatch into the internal kernel --
+    switch (tf::dispatch_dtype({input_handle, output_handle})) {
+        case tf::Dtype::Float32:
+            maxpool2d_forward_dispatch<float>(
+                input_handle, input_offset, output_handle, winners_handle,
+                batch, channels, input_height, input_width,
+                kernel_height, kernel_width, stride_height, stride_width,
+                pad_height, pad_width, output_height, output_width);
+            break;
+        case tf::Dtype::Float64:
+            maxpool2d_forward_dispatch<double>(
+                input_handle, input_offset, output_handle, winners_handle,
+                batch, channels, input_height, input_width,
+                kernel_height, kernel_width, stride_height, stride_width,
+                pad_height, pad_width, output_height, output_width);
+            break;
+    }
     TF_GUARD_END_VOID()
 }
 
@@ -385,12 +337,12 @@ TF_EXPORT void tf_core_maxpool2d_forward(
 // Exported C ABI backward wrapper (Phase D, milestone D9).
 //
 // ``tf_core_maxpool2d_backward`` is the exception-guarded boundary over the
-// internal noexcept scatter-add above. It shares the forward wrapper's
-// contract exactly (same file-local checked arithmetic, same validation
-// classes, same error style): storage handles + per-operand offsets +
-// integer dimensions, **never stride arrays**, so it interprets each span
-// as canonical contiguous data and bounds-checks it — logical contiguity
-// stays the caller precondition the NativeTensorCore layer guarantees by
+// internal noexcept scatter-add. It shares the forward wrapper's contract
+// exactly (same file-local checked arithmetic, same validation classes,
+// same error style): storage handles + per-operand offsets + integer
+// dimensions, **never stride arrays**, so it interprets each span as
+// canonical contiguous data and bounds-checks it — logical contiguity stays
+// the caller precondition the NativeTensorCore layer guarantees by
 // Policy-B copy-then-compute. It allocates and frees nothing and mutates
 // only the caller-allocated grad_input.
 //
@@ -417,6 +369,17 @@ TF_EXPORT void tf_core_maxpool2d_backward(
     int64_t output_height,
     int64_t output_width) {
     TF_GUARD_BEGIN
+    // The dtype guards run first (I5): the upstream gradient and the
+    // gradient destination must agree, and the winner buffer must be
+    // float64 at every value dtype (design §13.3) — it is index metadata,
+    // not a numeric operand, so it takes no part in the value dispatch.
+    if (!tf::require_matching_dtype("tf_core_maxpool2d_backward",
+                                    {grad_output_handle, grad_input_handle})) {
+        return;
+    }
+    if (!require_winner_float64("maxpool2d_backward", winners_handle)) {
+        return;
+    }
     if (grad_output_handle == nullptr || winners_handle == nullptr ||
         grad_input_handle == nullptr) {
         tf::set_error(TF_ERROR_INVALID,
@@ -472,14 +435,14 @@ TF_EXPORT void tf_core_maxpool2d_backward(
                       "maxpool2d_backward: grad_input span exceeds storage");
         return;
     }
-    const double* grad_output =
-        as_storage(grad_output_handle)->data + grad_output_offset;
-    const double* winners = as_storage(winners_handle)->data + winners_offset;
     // Winner validation: exactly -1.0, or a finite, non-negative, exactly
     // integral offset no larger than plane - 1. Nothing else is accepted,
     // and nothing is silently rounded. Checked for the whole buffer before
     // the kernel writes anything, so a malformed winner leaves grad_input
-    // untouched.
+    // untouched. The winners are float64 — proved above — at every value
+    // dtype, so this loop reads them through the unchanged float64
+    // accessor and needs no dispatch.
+    const double* winners = tf::storage_f64(winners_handle) + winners_offset;
     for (int64_t idx = 0; idx < grad_output_count; ++idx) {
         const double winner = winners[idx];
         if (winner == -1.0) {
@@ -497,10 +460,22 @@ TF_EXPORT void tf_core_maxpool2d_backward(
             return;
         }
     }
-    double* grad_input = as_storage(grad_input_handle)->data;
-    tf::maxpool2d_backward_contiguous(
-        grad_output, winners, grad_input,
-        batch, channels, input_height, input_width,
-        output_height, output_width);
+    // -- validated: one value-dtype dispatch into the internal kernel --
+    switch (tf::dispatch_dtype({grad_output_handle, grad_input_handle})) {
+        case tf::Dtype::Float32:
+            maxpool2d_backward_dispatch<float>(
+                grad_output_handle, grad_output_offset,
+                winners_handle, winners_offset, grad_input_handle,
+                batch, channels, input_height, input_width,
+                output_height, output_width);
+            break;
+        case tf::Dtype::Float64:
+            maxpool2d_backward_dispatch<double>(
+                grad_output_handle, grad_output_offset,
+                winners_handle, winners_offset, grad_input_handle,
+                batch, channels, input_height, input_width,
+                output_height, output_width);
+            break;
+    }
     TF_GUARD_END_VOID()
 }

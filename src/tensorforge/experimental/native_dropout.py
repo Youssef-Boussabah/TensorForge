@@ -122,8 +122,14 @@ is exact, demonstrated reproducibility — ``"dropout"` remains listed in
 export are real. The registry reports what is *closed and validated*; the
 inventories report what *exists*.
 
-Fully separate from ``tensorforge.nn.Dropout``; float64/cpu only;
-experimental and explicit.
+Fully separate from ``tensorforge.nn.Dropout``; CPU only;
+experimental and explicit. It takes **no** dtype argument and must
+not gain one — it inherits the dtype of whatever flows through it.
+``tf_core_dropout_forward`` became dtype-general at Phase I
+milestone I7 with its exact ABI shape unchanged and the random
+derivation untouched, so one ``(seed, call_index, element count)``
+key drops exactly the same elements at float32 and float64; only
+the two multiplier values differ.
 """
 
 from ..backends import cpp

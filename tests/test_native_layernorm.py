@@ -1335,6 +1335,6 @@ def test_other_capability_tuples_remain_exact():
         "save_native_checkpoint", "load_native_checkpoint",
         "checkpoint_generator_state",   # Phase G, milestone G5 (the file half)
     )
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
+    assert cpp.UNSUPPORTED == ("cuda", "amp")

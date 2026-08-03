@@ -22,7 +22,9 @@ accepted as the subclass it is; the result is an ordinary
 errors. The inherited ``training`` flag exists and propagates normally,
 but ReLU behaves identically in train and eval modes.
 
-Fully separate from ``tensorforge.nn.ReLU``; float64/cpu only;
+Fully separate from ``tensorforge.nn.ReLU``; CPU only, at either
+supported dtype (it takes no dtype argument and inherits its
+input's);
 experimental and explicit.
 """
 

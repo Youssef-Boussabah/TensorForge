@@ -383,6 +383,44 @@ if(TF_BUILD_TESTS)
 
   add_test(NAME storage_allocation COMMAND test_storage_allocation)
 
+  # The dtype model and dtype-tagged storage (Phase I, milestone I1).
+  #
+  # This target links **every** kernel translation unit, which none of the
+  # others does, and it needs to: a third of what it proves is that a
+  # float32 handle is rejected by an operation that has not been
+  # dtype-generalized yet, and each compute unit has its own validation
+  # front end. Checking one of them would say nothing about the rest, so
+  # the test drives a representative export from each — elementwise,
+  # matmul, reduction, classification, pooling, conv2d, random — beside the
+  # storage primitives themselves.
+  #
+  # The other two thirds are the dtype model (frozen ABI codes, the one
+  # item-size authority, canonical names, total conversion) and the two
+  # typed creators, including every rejection path and the byte-level proof
+  # that zero-initialized storage is +0.0 at both widths.
+  add_executable(test_dtype_storage
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reduction.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/pooling.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/random.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_storage PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_storage PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_storage PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_storage PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_storage COMMAND test_dtype_storage)
+
   # Matmul loop order and dispatch (Phase H, H2): links the matmul source
   # directly, plus storage.cpp (the exported-wrapper check drives real
   # tf::Storage handles) and error.cpp (matmul.cpp carries the guarded
@@ -433,6 +471,33 @@ if(TF_BUILD_TESTS)
 
   add_test(NAME contiguous_copy COMMAND test_contiguous_copy)
 
+  # Typed array transfer, materialization, and the identity copy (Phase I,
+  # milestone I2). Compiles storage.cpp and elementwise.cpp directly so it
+  # reaches the hidden tf::copy_prefers_contiguous predicate beside the four
+  # exports the milestone generalizes, and error.cpp for the thread-local
+  # slot the guarded wrappers record into.
+  #
+  # Its subject is deliberately narrow and complementary to test_dtype_storage:
+  # that target proves float32 is *allocatable and otherwise rejected*, this
+  # one proves the exact set of boundaries float32 may now cross, at both
+  # dtypes, by raw IEEE-754 bit comparison rather than by tolerance.
+  add_executable(test_typed_transfer
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_typed_transfer.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_typed_transfer PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_typed_transfer PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_typed_transfer PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_typed_transfer PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME typed_transfer COMMAND test_typed_transfer)
+
   # Sum reduction and its H6 traversal dispatch: compiles reduction.cpp
   # directly so it can reach the hidden tf::reduce_prefers_contiguous_blocks
   # predicate and BOTH hidden traversals alongside the exported tf_core_sum
@@ -479,6 +544,68 @@ if(TF_BUILD_TESTS)
 
   add_test(NAME elementwise_traversal COMMAND test_elementwise_traversal)
 
+  # Dtype-general elementwise, broadcast, and unary execution (Phase I,
+  # milestone I3). Compiles elementwise.cpp directly so it reaches the hidden
+  # tf::build_unary_plan / tf::build_binary_plan builders and the templated
+  # traversals beside the exports they live inside; storage.cpp supplies the
+  # typed Storage handles, and error.cpp the thread-local slot the guarded
+  # wrappers record into.
+  #
+  # Deliberately complementary rather than a superset: test_elementwise_traversal
+  # keeps H8's float64 NaN sweep, test_dtype_storage proves float32 is
+  # allocatable and otherwise rejected, and test_typed_transfer proves the
+  # boundaries I2 opened. This one proves the set I3 opened — the arithmetic
+  # and unary family at both dtypes, through all three traversal tiers, with
+  # mixed dtype rejected before any destination is touched.
+  add_executable(test_dtype_elementwise
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_elementwise PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_elementwise PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_elementwise PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_elementwise PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_elementwise COMMAND test_dtype_elementwise)
+
+  # Dtype-general reductions, matmul, and the narrow-backward scatter (Phase
+  # I, milestone I4). Compiles reduction.cpp and matmul.cpp directly so it
+  # reaches the hidden tf::reduce_prefers_contiguous_blocks and
+  # tf::matmul_prefers_row_sweep predicates and BOTH traversals of each
+  # family beside the exports they live inside; storage.cpp supplies the
+  # typed Storage handles and the two scalar primitives, and error.cpp the
+  # thread-local slot the guarded wrappers record into.
+  #
+  # Deliberately complementary rather than a superset: test_sum_reduction
+  # keeps H6's float64 sweep and test_matmul keeps H2's, while this one
+  # proves the set I4 opened — both families at both dtypes, on both
+  # traversals, with the float32 accumulation witness that I3's single
+  # correctly-rounded operations could not support, and mixed dtype refused
+  # in every participating handle position with the destination unmoved.
+  add_executable(test_dtype_reduction_matmul
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_reduction_matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reduction.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_reduction_matmul PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_reduction_matmul PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_reduction_matmul PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_reduction_matmul PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_reduction_matmul COMMAND test_dtype_reduction_matmul)
+
   # Conv2d compute paths and their H9 dispatch: compiles conv2d.cpp directly
   # so it can reach the hidden tf::conv2d_*_prefers_* predicates and BOTH
   # compute paths per direction — the retained Phase-D generic loops and the
@@ -503,4 +630,103 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME conv2d_execution COMMAND test_conv2d_execution)
+
+  # Dtype-general Conv2d and MaxPool2d (Phase I, milestone I5): compiles
+  # conv2d.cpp and pooling.cpp directly so it reaches the hidden
+  # tf::conv2d_*_prefers_* predicates and BOTH compute paths per Conv2d
+  # direction at BOTH dtypes, plus the winner-buffer dtype rule the shared
+  # library enforces but does not expose. Deliberately complementary rather
+  # than a superset: the D2-D9 targets keep their hand-computed float64
+  # cases and test_conv2d_execution keeps H9's float64 sweeps, while this
+  # one proves the set I5 opened — all three Conv2d directions and both
+  # pooling directions at both dtypes, the float32 accumulation witnesses
+  # on both traversals of each direction, the float64 winner buffer and
+  # 2**53 plane bound at a float32 pool, and mixed dtype refused in every
+  # participating handle position with the destination unmoved.
+  # storage.cpp is compiled in because the exported wrappers are driven
+  # through real typed storage handles; error.cpp for the guarded wrappers'
+  # thread-local error slot.
+  add_executable(test_dtype_cnn
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_cnn.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/pooling.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_cnn PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_cnn PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_cnn PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_cnn PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_cnn COMMAND test_dtype_cnn)
+
+  # Dtype-general stable math and classification (Phase I, milestone I6):
+  # compiles classification.cpp directly so it reaches the hidden templated
+  # softmax / log-softmax / cross-entropy kernels at BOTH instantiations
+  # beside the exported wrappers they live inside. Deliberately
+  # complementary rather than a superset: test_softmax, test_log_softmax and
+  # test_cross_entropy keep their hand-computed float64 cases and the full
+  # E3-E5 validation matrix, while this one proves the set I6 opened — all
+  # four kernels at both dtypes against independently written same-order
+  # references, the float32 batch-loss accumulation witness, the stability
+  # witnesses at each width's own magnitudes, the recorded
+  # spread-beyond-the-finite-range qualification, the exceptional-value
+  # sweep, mixed dtype refused in every participating handle position with
+  # both destinations unmoved, and the int64 target boundary unchanged at
+  # float32. storage.cpp supplies the typed Storage handles the exports take;
+  # error.cpp the thread-local slot the guarded wrappers record into.
+  add_executable(test_dtype_classification
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_classification PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_classification PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_classification PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_classification PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_classification COMMAND test_dtype_classification)
+
+  # Dtype-general Dropout (Phase I, milestone I7): compiles random.cpp
+  # directly so it reaches the hidden templated dropout_forward_contiguous at
+  # BOTH instantiations beside the exported wrapper it lives inside.
+  # Deliberately complementary rather than a superset: test_dropout_forward
+  # keeps the committed mix64/stream/element-bit known-answer vectors, the
+  # bits-to-uniform conversion, the strict `<` equality-threshold vector, and
+  # the full G2 float64 validation matrix — none of which I7 touched. This
+  # one proves the set I7 opened: the SAME committed keep patterns at
+  # float32, the two widths dropping identical elements for one key, the
+  # kept multiplier proved to be the binary64 reciprocal narrowed once (with
+  # a non-vacuous p = 0.025 witness that distinguishes it from an
+  # all-binary32 recomputation), the exceptional-value sweep at both widths,
+  # mixed dtype refused in each of the three handle positions with both
+  # destinations unmoved, the unchanged validation matrix, and the kernel
+  # holding no state. storage.cpp supplies the typed Storage handles the
+  # export takes; error.cpp the thread-local slot the guarded wrapper
+  # records into.
+  add_executable(test_dtype_dropout
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_dropout.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/random.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_dropout PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_dropout PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_dropout PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_dropout PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_dropout COMMAND test_dtype_dropout)
 endif()

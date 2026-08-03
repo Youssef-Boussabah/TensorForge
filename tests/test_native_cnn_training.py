@@ -477,7 +477,7 @@ def test_checkpoint_archive_holds_only_persistent_state(tmp_path):
     assert '"keys": ["0.weight", "0.bias", "4.weight", "4.bias"]' in manifest
     # The format contract is untouched by D11.
     assert '"format": "tensorforge.native_checkpoint"' in manifest
-    assert '"format_version": 2' in manifest
+    assert '"format_version": 3' in manifest
     for t in (x, y):
         t.close()
     _close(model, optimizer)
@@ -776,7 +776,7 @@ def test_d11_adds_no_capability_entries():
         "NativeBatchNorm2d",   # Phase F, milestone F4 (unrelated to D11)
         "NativeDropout",       # Phase G, milestone G4 (unrelated to D11)
     )
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert "conv2d" in cpp.AUTOGRAD_OPS and "maxpool2d" in cpp.AUTOGRAD_OPS
     # The proof is an integration result, not a new named capability.
     for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,

@@ -1227,8 +1227,8 @@ def test_the_private_checked_primitives_are_not_exported():
 
 
 def test_the_capability_registries_did_not_move():
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     info = cpp.backend_info()
     assert info["dtype"] == "float64" and info["device"] == "cpu"
@@ -1245,7 +1245,7 @@ def test_the_capability_registries_did_not_move():
 def test_the_checkpoint_format_did_not_move():
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
 
 
 @needs_native
@@ -1268,7 +1268,14 @@ def test_no_c_abi_symbol_was_added():
         pytest.skip(f"this image format is not parsed here ({image})")
 
     exported = [name for name in names if name.startswith("tf_")]
-    assert len(exported) == 52, sorted(exported)
+    # H3's claim is about Phase H, so it is measured against Phase H's own
+    # surface of 52. The two extra symbols in the live library are Phase
+    # I's typed storage creators, added at milestone I1.
+    from test_native_storage_allocation import (
+        EXPECTED_TF_EXPORTS, PHASE_H_TF_EXPORTS, phase_h_export_names,
+    )
+    assert len(exported) == EXPECTED_TF_EXPORTS, sorted(exported)
+    assert len(phase_h_export_names(exported)) == PHASE_H_TF_EXPORTS
     for absent in ("tf_core_metadata", "tf_layout_cache", "tf_shape_cache",
                    "tf_core_dispatch", "tf_set_dispatch",
                    "tf_metadata_counter"):

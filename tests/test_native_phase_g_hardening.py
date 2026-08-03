@@ -405,10 +405,23 @@ def rewrite_manifest(source, destination, manifest=None, raw=None):
 
 def downgrade_to_v1(source, destination):
     """The same archive as a format-version 1 one: the field set version 1
-    actually had, with no generator section at all."""
+    actually had, with no generator section at all.
+
+    Phase I milestone I8 gave version 3 entry-object Adam moments, so a
+    *genuine* v1 archive now also has to have its ``"m"``/``"v"`` lists
+    turned back into bare archive names. Without that this helper would
+    build a file no released TensorForge ever wrote, and the loader would
+    be right to reject it."""
     manifest = read_manifest(source)
     manifest["format_version"] = 1
     manifest.pop("generators")
+    section = manifest.get("optimizer")
+    if isinstance(section, dict) and section.get("type") == "NativeAdam":
+        for label in ("m", "v"):
+            section[label] = [
+                entry["array"] if isinstance(entry, dict) else entry
+                for entry in section[label]
+            ]
     return rewrite_manifest(source, destination, manifest=manifest)
 
 
@@ -2090,7 +2103,7 @@ def _corruption_cases(base):
     cases = [
         # -- manifest shape
         ("wrong format name", lambda m: m.__setitem__("format", "other")),
-        ("version 3", lambda m: m.__setitem__("format_version", 3)),
+        ("version 4", lambda m: m.__setitem__("format_version", 4)),
         ("version 0", lambda m: m.__setitem__("format_version", 0)),
         ("version -1", lambda m: m.__setitem__("format_version", -1)),
         ("version bool", lambda m: m.__setitem__("format_version", True)),
@@ -3078,8 +3091,8 @@ def test_g6_moved_no_capability_registry_value():
     G10 closure removed the name — so the durable form of this guard is
     that the removal is attributed there and every other value G6 could
     have touched is still exactly what it was."""
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "dropout" not in cpp.UNSUPPORTED
     assert "dropout" in cpp.AUTOGRAD_OPS
@@ -3095,8 +3108,8 @@ def test_g6_added_no_operation_module_export_or_checkpoint_field():
     import tensorforge.experimental as experimental
 
     assert checkpoint_module._FORMAT == "tensorforge.native_checkpoint"
-    assert checkpoint_module._FORMAT_VERSION == 2
-    assert checkpoint_module._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert checkpoint_module._FORMAT_VERSION == 3
+    assert checkpoint_module._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     assert checkpoint_module._GENERATOR_SECTION_KEYS == {
         "keys", "entries", "aliases"
     }

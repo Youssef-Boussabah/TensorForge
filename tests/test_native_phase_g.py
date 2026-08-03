@@ -1772,7 +1772,7 @@ def test_the_integrated_archive_records_the_whole_state_and_the_topology(
     manifest = _read_manifest(path)
     names = _archive_names(path)
     assert manifest["format"] == native_checkpoint._FORMAT
-    assert manifest["format_version"] == native_checkpoint._FORMAT_VERSION == 2
+    assert manifest["format_version"] == native_checkpoint._FORMAT_VERSION == 3
     assert set(manifest) == {"format", "format_version", "model", "optimizer",
                              "generators", "metadata"}
     assert list(manifest["model"]["keys"]) == (list(PARAMETER_NAMES)
@@ -2390,7 +2390,7 @@ def test_checkpoint_v1_and_generator_free_v2_still_work(tmp_path):
     path = os.path.join(str(tmp_path), "plain_v2.npz")
     save_native_checkpoint(path, model)
     manifest = _read_manifest(path)
-    assert manifest["format_version"] == 2
+    assert manifest["format_version"] == 3
     assert manifest["generators"] is None
 
     # The same archive downgraded to the version-1 field set still loads.
@@ -2405,7 +2405,7 @@ def test_checkpoint_v1_and_generator_free_v2_still_work(tmp_path):
     )
     np.savez(v1_path, **arrays)
     load_native_checkpoint(v1_path, model)
-    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert native_checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
 
     # ...but a version-1 archive cannot describe a model that has a
     # generator: it would have to fabricate a seed and a counter.
@@ -2468,16 +2468,16 @@ def test_the_capability_inventories_are_exactly_what_g8_left():
     is unchanged, and ``"dropout"`` stays unsupported until G10."""
     from tensorforge.experimental import native_checkpoint as checkpoint
 
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.NATIVE_MODULES.count("NativeDropout") == 1
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "dropout_forward" in cpp.TENSOR_CORE_OPS
     assert "generator_state" in cpp.STATE_SUPPORT
     assert "checkpoint_generator_state" in cpp.STATE_SUPPORT
-    assert checkpoint._FORMAT_VERSION == 2
-    assert checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2)
+    assert checkpoint._FORMAT_VERSION == 3
+    assert checkpoint._SUPPORTED_FORMAT_VERSIONS == (1, 2, 3)
     assert cpp.NATIVE_OPTIMIZERS == ("NativeSGD", "NativeAdam")
     # No integration or phase capability name was invented.
     inventories = (cpp.NATIVE_MODULES, cpp.AUTOGRAD_OPS, cpp.TENSOR_CORE_OPS,

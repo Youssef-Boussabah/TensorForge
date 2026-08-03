@@ -1069,25 +1069,45 @@ def test_results_alias_neither_the_input_nor_each_other():
         x.close()
 
 
-def test_unsupported_dtype_or_device_is_rejected(live_storages):
-    """Metadata is validated before anything is allocated. The runtime has
-    exactly one legal dtype/device pair, so this is driven by forcing the
-    tags rather than by constructing an unsupported tensor."""
+def test_a_disagreeing_dtype_tag_is_rejected_before_anything_is_written(
+    live_storages,
+):
+    """The advance of the pre-I7 "float64/cpu only" assertion (Phase I,
+    milestone I7).
+
+    Dropout is dtype-general now, so there is no float64-only gate left to
+    fire — and the rule that replaced it is stronger and permanent: the
+    three handles must **agree**. This drives it by forcing the Python tag
+    out of step with the storage the C++ side actually holds, which is
+    exactly the corruption the C ABI's own guard exists to catch:
+
+    * ``self.dtype`` decides what the output and the mask are allocated
+      as, so a spoofed tag produces two genuinely float32 destinations for
+      a genuinely float64 input;
+    * the C++ ``Storage`` tag — the authority — still says float64 for the
+      input, so ``tf_core_dropout_forward`` refuses the call naming both
+      dtypes;
+    * nothing is written to either destination, both are closed by the
+      Core's own failure path, and live storage returns to baseline.
+
+    The device half of the old assertion is gone with the gate: ``"cpu"``
+    is the only device any constructible storage can carry, so forcing the
+    tag proved a branch rather than a property. Milestone I9 is where
+    ``UNSUPPORTED`` changes; it still lists ``cuda``.
+    """
     x = _core(np.arange(4.0))
     baseline = len(live_storages)
     try:
         x._storage._dtype = "float32"
-        with pytest.raises(ValueError, match="float64/cpu"):
+        with pytest.raises(ValueError, match="same dtype"):
             x._dropout_forward_with_mask(0.5, seed=0, call_index=0)
         assert len(live_storages) == baseline
+        # The input's own values are untouched by the rejected call. Read
+        # them back with the honest tag.
         x._storage._dtype = "float64"
-        x._storage._device = "cuda"
-        with pytest.raises(ValueError, match="float64/cpu"):
-            x._dropout_forward_with_mask(0.5, seed=0, call_index=0)
-        assert len(live_storages) == baseline
+        assert np.array_equal(x.to_numpy(), np.arange(4.0))
     finally:
         x._storage._dtype = "float64"
-        x._storage._device = "cpu"
         x.close()
 
 
@@ -1587,10 +1607,10 @@ def test_g2_ships_the_core_layer_and_nothing_above_it():
         assert symbol not in cpp._CHECKED_KERNELS, symbol
 
     # The capability boundary and the format version are untouched.
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
-    assert native_checkpoint._FORMAT_VERSION == 2
+    assert native_checkpoint._FORMAT_VERSION == 3
     assert "generator_state" in cpp.STATE_SUPPORT
 
 

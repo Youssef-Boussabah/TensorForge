@@ -64,8 +64,39 @@ FINAL_UNSUPPORTED = ("float32", "cuda", "amp")
 FINAL_DTYPES = ("float64",)
 FINAL_DEVICES = ("cpu",)
 FINAL_EXPORT_COUNT = 52
+# ...and the same history/today split the export and checkpoint constants
+# below already use, now applied to the dtype registry. Phase H inherited a
+# float64-only boundary and left it exactly as it found it, which is a fact
+# about Phase H and does not move again. Phase I milestone **I9** then moved
+# ``"float32"`` from UNSUPPORTED into SUPPORTED_DTYPES, once integrated
+# float32 training and the exact float32 resume proof both passed. What
+# Phase H must still be able to claim is that *it* broadened nothing — not
+# that nothing has been broadened since.
+PHASE_I_ADDED_DTYPES = ("float32",)
+CURRENT_DTYPES = FINAL_DTYPES + PHASE_I_ADDED_DTYPES          # float64, float32
+CURRENT_UNSUPPORTED = tuple(name for name in FINAL_UNSUPPORTED
+                            if name not in PHASE_I_ADDED_DTYPES)
+CURRENT_DEVICES = FINAL_DEVICES                                # never moved
+# ...and what the live source holds **now**. Phase H closed at 52; Phase I
+# milestone I1 added the two typed storage creators, taking the current
+# inventory to 54. The two numbers are different facts about different
+# moments and are deliberately kept apart: FINAL_EXPORT_COUNT is Phase H's
+# closure, which is history and does not move again, while
+# CURRENT_EXPORT_COUNT is what the tree exports today.
+PHASE_I_ADDED_EXPORTS = (
+    "tf_storage_create_typed",
+    "tf_storage_create_uninitialized_typed",
+)
+CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(PHASE_I_ADDED_EXPORTS)  # 54
+# The same history/today split the export counts above use, for the same
+# reason: Phase H closed at checkpoint version 2 and that is a fact about
+# Phase H which does not move again, while Phase I milestone I8 added the
+# dtype-aware version 3. What Phase H must still be able to claim is that
+# *it* changed nothing — not that nothing has changed since.
 FINAL_CHECKPOINT_VERSION = 2
 FINAL_CHECKPOINT_VERSIONS = (1, 2)
+CURRENT_CHECKPOINT_VERSION = 3
+CURRENT_CHECKPOINT_VERSIONS = (1, 2, 3)
 FINAL_MILESTONES = tuple(f"H{n}" for n in range(11))
 
 
@@ -178,25 +209,82 @@ def test_the_design_records_why_the_ladder_ends_at_h10():
 # performance work broadened nothing
 # ---------------------------------------------------------------------------
 
-def test_the_support_boundary_is_exactly_what_phase_h_inherited():
-    assert cpp.UNSUPPORTED == FINAL_UNSUPPORTED
-    assert cpp.SUPPORTED_DTYPES == FINAL_DTYPES
-    assert cpp.SUPPORTED_DEVICES == FINAL_DEVICES
+def test_phase_h_broadened_no_support_boundary():
+    """Phase H made the float64 runtime faster and broadened nothing.
+
+    Stated the way the export and checkpoint records above are stated: the
+    Phase-H literals are pinned as history, and the live registries are
+    asserted to differ from them by **exactly** what a later phase is on
+    record as having moved. An equality against the Phase-H literals would
+    have made this closure record a veto on every subsequent milestone,
+    which is not what it ever claimed; dropping it would have lost the
+    Phase-H fact entirely."""
+    # Phase H's own record, pinned as literals.
+    assert FINAL_UNSUPPORTED == ("float32", "cuda", "amp")
+    assert FINAL_DTYPES == ("float64",)
+
+    assert cpp.SUPPORTED_DEVICES == FINAL_DEVICES == CURRENT_DEVICES
+    assert cpp.SUPPORTED_DTYPES == CURRENT_DTYPES
+    assert cpp.UNSUPPORTED == CURRENT_UNSUPPORTED
+    # The difference is exactly the one dtype Phase I moved, in both
+    # directions — nothing else joined, and nothing else left.
+    assert (set(cpp.SUPPORTED_DTYPES) - set(FINAL_DTYPES)
+            == set(PHASE_I_ADDED_DTYPES))
+    assert (set(FINAL_UNSUPPORTED) - set(cpp.UNSUPPORTED)
+            == set(PHASE_I_ADDED_DTYPES))
+    assert set(cpp.UNSUPPORTED) <= set(FINAL_UNSUPPORTED)
+    # Phase H's dtype is still the default and still first.
+    assert cpp.SUPPORTED_DTYPES[0] == "float64"
+    assert cpp.backend_info()["dtype"] == "float64"
 
 
 def test_the_checkpoint_format_did_not_move():
+    """Phase H added no checkpoint field and no checkpoint version.
+
+    Stated as: every version Phase H closed with is **still accepted**, and
+    the format *name* is still the one G5 fixed. Phase I milestone I8 later
+    added version 3, which is why this is a subset relation rather than an
+    equality — an equality here would silently make this Phase-H record a
+    veto on every later milestone, which is not what it ever claimed."""
     from tensorforge.experimental import native_checkpoint
 
-    assert native_checkpoint._FORMAT_VERSION == FINAL_CHECKPOINT_VERSION
+    # Phase H's own record, pinned as literals. Without this the constants
+    # float free and "Phase H closed at version 2" could be quietly
+    # rewritten to whatever the present happens to be, which is the one
+    # thing a closure record exists to prevent.
+    assert FINAL_CHECKPOINT_VERSION == 2
+    assert FINAL_CHECKPOINT_VERSIONS == (1, 2)
+
+    assert native_checkpoint._FORMAT == "tensorforge.native_checkpoint"
+    assert native_checkpoint._FORMAT_VERSION == CURRENT_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
-            == FINAL_CHECKPOINT_VERSIONS)
+            == CURRENT_CHECKPOINT_VERSIONS)
+    # Nothing Phase H shipped was dropped, and exactly one version has been
+    # added since. Stated as an equality on the delta rather than a subset,
+    # so an extra accepted version fails here too and this record cannot be
+    # satisfied by simply accepting more.
+    assert set(FINAL_CHECKPOINT_VERSIONS).issubset(
+        native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+    )
+    assert (set(native_checkpoint._SUPPORTED_FORMAT_VERSIONS)
+            - set(FINAL_CHECKPOINT_VERSIONS)) == {3}
+    # Order and shape are part of the contract: versions are listed
+    # ascending, and the newest is the one new saves write.
+    accepted = native_checkpoint._SUPPORTED_FORMAT_VERSIONS
+    assert list(accepted) == sorted(accepted)
+    assert accepted[-1] == native_checkpoint._FORMAT_VERSION
 
 
 def test_the_unsupported_capabilities_really_are_unreachable():
-    """The registry claim, checked against behavior rather than trusted."""
+    """The registry claim, checked against behavior rather than trusted.
+
+    ``"float32"`` has moved out of this list — Phase I milestone I9 made it
+    real, so asserting it still raises would assert the opposite of the
+    truth. The names below are the ones that remain genuinely absent, and
+    they keep the "two dtypes, not any dtype" boundary honest."""
     import numpy as np
 
-    for dtype in ("float32", "float16", "int64"):
+    for dtype in ("float16", "bfloat16", "int64", "complex64"):
         with pytest.raises((ValueError, TypeError)):
             cpp.NativeTensorCore.from_array(
                 np.zeros((2, 2), dtype=np.float64), dtype=dtype)
@@ -239,14 +327,26 @@ def _source_exports():
     return names
 
 
-def test_the_source_exports_exactly_the_final_symbol_count():
+def test_the_source_exports_exactly_the_current_symbol_count():
+    """The live inventory is Phase H's closure plus exactly the symbols
+    Phase I has added so far, and nothing else.
+
+    Stated as arithmetic rather than as a bare number so that the two
+    facts stay separable: if a milestone adds an unplanned export, the
+    count fails; if it removes one of Phase H's, the difference fails."""
     exports = _source_exports()
-    assert len(exports) == FINAL_EXPORT_COUNT, sorted(exports)
+    assert len(exports) == CURRENT_EXPORT_COUNT, sorted(exports)
+    for name in PHASE_I_ADDED_EXPORTS:
+        assert name in exports, name
+    assert len(exports - set(PHASE_I_ADDED_EXPORTS)) == FINAL_EXPORT_COUNT
 
 
 def test_the_one_symbol_phase_h_added_is_present_and_is_the_only_new_one():
     """H1's uninitialized allocator is the whole of Phase H's ABI
-    footprint. Its zero-initializing sibling is still the default."""
+    footprint. Its zero-initializing sibling is still the default.
+
+    Phase I did not disturb either: both remain exported, and I1 made them
+    thin float64 compatibility wrappers rather than removing them."""
     exports = _source_exports()
     assert "tf_storage_create_uninitialized" in exports
     assert "tf_storage_create" in exports
@@ -454,8 +554,20 @@ def test_claude_md_states_current_facts_and_points_at_the_docs():
     # The current support boundary, verbatim from the live registry.
     for value in FINAL_DTYPES + FINAL_DEVICES + FINAL_UNSUPPORTED:
         assert value in text, value
+    # Both export counts, because both are current facts of a different
+    # kind: 54 is what the library exports today, and 52 is what Phase H
+    # closed at — the instructions must not let a reader confuse them.
+    assert str(CURRENT_EXPORT_COUNT) in text
     assert str(FINAL_EXPORT_COUNT) in text
-    assert re.search(r"version\s*\**\s*2\b", text), "checkpoint version"
+    # The checkpoint format the library writes **today**, and the fact that
+    # every version it has ever written is still accepted. Both are current
+    # facts, and the instructions must not state only the newer one: a
+    # reader deciding whether an old archive still loads needs the second.
+    assert re.search(
+        rf"version\s*\**\s*{CURRENT_CHECKPOINT_VERSION}\b", text
+    ), "current checkpoint version"
+    for version in FINAL_CHECKPOINT_VERSIONS:
+        assert str(version) in text, f"accepted checkpoint version {version}"
 
     # The documents it must hand off to, rather than duplicate.
     for document in ("docs/native_cpu_performance_design.md",

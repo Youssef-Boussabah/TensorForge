@@ -288,15 +288,21 @@ def test_reduce_shape_non_bool_keepdims_raises_typeerror():
 # ---------------------------------------------------------------------------
 
 
-def test_supported_sets_are_float64_and_cpu():
-    assert SUPPORTED_DTYPES == ("float64",)
+def test_supported_sets_are_the_two_float_widths_and_cpu():
+    """The v1.21 metadata model put a validated dtype *tag* on native
+    storage precisely so a second dtype would have somewhere to be
+    recorded. Phase I milestone I9 is when the second one arrived: the
+    device set never moved, and float64 stays first because it is the
+    default."""
+    assert SUPPORTED_DTYPES == ("float64", "float32")
     assert SUPPORTED_DEVICES == ("cpu",)
 
 
-def test_normalize_dtype_defaults_and_accepts_float64():
+def test_normalize_dtype_defaults_to_float64_and_accepts_both_widths():
     assert normalize_dtype() == "float64"       # no argument
     assert normalize_dtype(None) == "float64"   # None means the default
     assert normalize_dtype("float64") == "float64"
+    assert normalize_dtype("float32") == "float32"
 
 
 def test_normalize_device_defaults_and_accepts_cpu():
@@ -306,10 +312,14 @@ def test_normalize_device_defaults_and_accepts_cpu():
 
 
 def test_normalize_dtype_rejects_unsupported_naming_value_and_set():
+    """``"float16"`` stands where ``"float32"`` used to: the message names
+    the offending value **and** the supported set, so a caller is told what
+    it may use rather than only what it may not."""
     with pytest.raises(ValueError) as excinfo:
-        normalize_dtype("float32")
+        normalize_dtype("float16")
     message = str(excinfo.value)
-    assert "float32" in message and "float64" in message
+    assert "float16" in message
+    assert "float64" in message and "float32" in message
 
 
 def test_normalize_device_rejects_unsupported_naming_value_and_set():

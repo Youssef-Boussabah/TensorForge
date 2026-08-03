@@ -384,8 +384,8 @@ def test_the_parent_backend_is_untouched_by_the_simulation():
 
 def test_capability_registries_are_unchanged():
     """Post-Phase-G maintenance moves no capability boundary."""
-    assert cpp.UNSUPPORTED == ("float32", "cuda", "amp")
-    assert cpp.SUPPORTED_DTYPES == ("float64",)
+    assert cpp.UNSUPPORTED == ("cuda", "amp")
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert "dropout" in cpp.AUTOGRAD_OPS
     assert "dropout" not in cpp.UNSUPPORTED

@@ -57,7 +57,10 @@ out_w)`` tensor the operation produced, requiring grad exactly when the
 input does. The inherited ``training`` flag exists and propagates normally
 but never affects pooling numerics.
 
-Fully separate from ``tensorforge.nn.MaxPool2d``; float64/cpu only;
+Fully separate from ``tensorforge.nn.MaxPool2d``; CPU only, at
+either supported dtype (the value path follows the input's dtype
+since Phase I milestone I5, while the private winner buffer stays
+float64 index metadata at every value dtype);
 experimental and explicit. The deterministic end-to-end native CNN
 training + checkpoint-resume proof (D11) is not part of this milestone.
 """
