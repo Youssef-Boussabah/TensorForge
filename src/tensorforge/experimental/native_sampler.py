@@ -101,8 +101,9 @@ from .native_dataset import NativeTensorDataset
 
 # The state schema's identity (§11.2). The format tag is what makes a
 # sampler state distinguishable from any other JSON object a caller might
-# hand back — including, once J3 exists, a loader state, which wraps this
-# one under its own tag precisely so the two cannot be confused.
+# hand back — including J4's loader state, which wraps this one under its
+# own tag precisely so the two cannot be confused. This schema and this
+# version do not move when the wrapper lands around them.
 _FORMAT = "tensorforge.native_sampler"
 _FORMAT_VERSION = 1
 _SUPPORTED_FORMAT_VERSIONS = (1,)
@@ -631,8 +632,8 @@ class NativeBatchSampler:
         #    message is deterministic.
         _require_exact_keys(state, _STATE_FIELDS, "sampler state")
         # 5/6. The format tag, then the version. The tag is what
-        #    distinguishes this from any other JSON object — including,
-        #    once J3 exists, a loader state.
+        #    distinguishes this from any other JSON object — including
+        #    J4's loader state, which carries its own.
         format_tag = state["format"]
         if type(format_tag) is not str:
             raise TypeError(

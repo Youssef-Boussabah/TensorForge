@@ -464,8 +464,8 @@ to baseline. A float32 run is never required to reproduce a float64 one,
 and nothing asserts that it does.
 
 **Phase J — a deterministic native data pipeline and mini-batching — is the
-latest phase, and it is newly approved: milestones J0 through J3 have
-landed, and J4 through J9 have not started.** Phase J was approved *after*
+latest phase, and it is newly approved: milestones J0 through J4 have
+landed, and J5 through J9 have not started.** Phase J was approved *after*
 Phase I closed at I11 rather than having been on the earlier roadmap. **J0 was
 architecture, contract, and documentation work only, and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -526,10 +526,39 @@ caller closes the tensor** — no close path retains or can reach a
 delivered batch. It is not thread-safe and adds no lock, thread, queue,
 worker, prefetch, collate, or callback surface.
 
-**Loader state does not exist yet**, so where a loader stopped cannot be
-serialized, and there is no exact mid-epoch loader restoration, no
-checkpoint loader-state integration, no training example, and no
-benchmark; those begin at **J4, which is next**. What J0 shipped is
+**J4 shipped the loader's own in-memory state and exact mid-epoch
+resume — and added no public name at all**: the experimental export
+inventory stayed at 25, and `NativeDataLoader` gained exactly two
+methods. `state_dict()` returns a compact tagged wrapper with three root
+keys — `format` (`"tensorforge.native_data_loader"`), `format_version`
+(**1**), and `sampler`, the last being the **unchanged** sampler state.
+Every container is fresh at every call, nothing is duplicated at the
+root, and the structure carries no permutation, no dataset content, and
+nothing whose size grows with the number of samples; it survives a JSON
+round trip and is accepted unchanged by the checkpoint's existing
+metadata validator. It is allowed between batches, after exhaustion or
+supersession, with a closed dataset, and after the loader is closed — and
+**refused** while a batch transaction is in flight, because that window
+has no honest answer. `load_state_dict(state)` runs a closed guard, a
+transaction guard, and an active-iteration guard **before** the state is
+read, validates the wrapper, **delegates** the whole nested sampler
+validation to the seam that already owns it, and commits through the same
+non-failing write seam the delivery uses — so a rejected load leaves the
+whole observable world byte-identical, and a successful one adopts all
+six configuration and position values while validating dataset identity
+without adopting it and preserving every object identity. A mid-epoch
+interruption restored into a **separately constructed** dataset, sampler,
+and loader reproduces the remaining batches exactly — identical indices,
+identical raw IEEE-754 feature bits, identical targets — then the same
+canonical next-epoch position and the same following epochs, at both
+dtypes, with **no tolerance anywhere** and a negative control proving the
+sequences differ without the restoration.
+
+**Checkpoint loader-state integration does not exist**, and neither does
+automatic loader discovery in either direction: a loader's position is
+serializable and restorable in memory, but placing it in an archive is
+the caller's step. There is no training example and no benchmark either;
+those begin at **J5, which is next**. What J0 shipped is
 [docs/native_data_pipeline_design.md](docs/native_data_pipeline_design.md)
 and its contract guardrails: the three eventual public names
 (`NativeTensorDataset`, `NativeBatchSampler`, `NativeDataLoader`), a

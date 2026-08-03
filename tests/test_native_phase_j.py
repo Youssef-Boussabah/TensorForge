@@ -1,6 +1,6 @@
 """Phase-J contract guardrails (deterministic native data pipeline).
 
-**Phase J is newly approved, and milestones J0 through J3 have landed.**
+**Phase J is newly approved, and milestones J0 through J4 have landed.**
 J0 was an architecture, contract, documentation, and status milestone: it
 shipped ``docs/native_data_pipeline_design.md``, this module, and
 documentation, and **no runtime behavior at all**. **J1** shipped the
@@ -9,19 +9,22 @@ first runtime — ``NativeTensorDataset``, the finite host-backed dataset —
 batch planner, over the permanently private ``_native_permutation``
 derivation — and **J3** the third and last of §3.1's names,
 ``NativeDataLoader``, with its private ``_NativeBatchIterator`` and the
-transactional batch delivery behind it. Each added exactly one new public
-experimental name, and none added C++, a C ABI symbol, an example, a
-benchmark, or a checkpoint or optimizer-state change. Their own behavior
-is covered by ``tests/test_native_dataset.py``,
-``tests/test_native_sampler.py``, and
-``tests/test_native_data_loader.py``; what lives here is the *phase*
+transactional batch delivery behind it. Each of those three added exactly
+one new public experimental name. **J4** added **none**: it gave the
+existing loader its own in-memory ``state_dict``/``load_state_dict`` and
+exact mid-epoch restoration, and left ``__all__`` at 25. None of the four
+added C++, a C ABI symbol, an example, a benchmark, or a checkpoint or
+optimizer-state change. Their own behavior is covered by
+``tests/test_native_dataset.py``, ``tests/test_native_sampler.py``,
+``tests/test_native_data_loader.py``, and
+``tests/test_native_loader_state.py``; what lives here is the *phase*
 boundary.
 
-**J4 through J9 have not started**, so the loader **state schema**, the
-exact mid-epoch loader restoration, every checkpoint integration, the
+**J5 through J9 have not started**, so every checkpoint integration, the
 training example, and the benchmark are still asserted **absent** below.
-Iteration and batch delivery exist; serializing where a loader stopped
-does not.
+A caller can serialize where a loader stopped and restore it exactly;
+carrying that through an archive is J5's, and nothing here does it for
+them.
 
 Three kinds of fact live here, and keeping them apart is the point of the
 module:
@@ -116,7 +119,7 @@ PRIVATE_LOADER_NAMES = ("_NativeBatchIterator", "_deliver_batch")
 # ladder parser below is driven from these rather than from a hard-coded
 # "only J0", so landing a milestone is a one-line change here and a
 # document edit — never a loosened checker.
-COMPLETE_MILESTONES = ("J0", "J1", "J2", "J3")
+COMPLETE_MILESTONES = ("J0", "J1", "J2", "J3", "J4")
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
 
@@ -225,12 +228,17 @@ def test_the_design_states_exactly_which_runtime_exists():
     assert re.search(rf"{landed} complete; {next_up} through {last} not "
                      rf"started", head, re.I), head[:800]
     # The absent half, named rather than implied: what the *next*
-    # milestones will add must still be spelled out as missing.
-    for absent in ("loader state schema", "loader state_dict",
-                   "exact mid-epoch loader restoration",
-                   "checkpoint loader-state integration",
+    # milestones will add must still be spelled out as missing. J4 landed
+    # the loader state schema, its two methods, and exact in-memory
+    # mid-epoch restoration, so those three moved out of this list and
+    # into the presence checks below rather than being softened.
+    for absent in ("checkpoint loader-state integration",
                    "training example", "benchmark"):
         assert re.search(rf"no {absent}", head, re.I), absent
+    # ``head`` is emphasis-stripped, so these are the flattened spellings.
+    for present in ("loader state schema", "loader state_dict",
+                    "exact in-memory mid-epoch loader restoration"):
+        assert present.lower() in head.lower(), present
     assert re.search(rf"{next_up} is\s+(the\s+)?next", head, re.I), head[:800]
 
 
@@ -366,10 +374,10 @@ def test_exactly_the_landed_milestones_are_marked_complete():
         assert re.search(r"\*\*complete\*\*", rows[name], re.I), rows[name]
     for name in UNSTARTED_MILESTONES:
         assert re.search(r"\*\*not started\*\*", rows[name], re.I), rows[name]
-    # J4 is the next implementation milestone, and nothing beyond it may be
-    # claimed under a J3 heading.
-    assert COMPLETE_MILESTONES == ("J0", "J1", "J2", "J3")
-    assert UNSTARTED_MILESTONES[0] == "J4"
+    # J5 is the next implementation milestone, and nothing beyond it may be
+    # claimed under a J4 heading.
+    assert COMPLETE_MILESTONES == ("J0", "J1", "J2", "J3", "J4")
+    assert UNSTARTED_MILESTONES[0] == "J5"
 
 
 def test_the_ladder_checker_can_actually_fail():
@@ -411,7 +419,8 @@ def test_the_ladder_checker_can_actually_fail():
     # are driven, so neither edit can silently stop being checked.
     for row in ("### J1 — Host-backed dataset foundation",
                 "### J2 — Deterministic sampler",
-                "### J3 — Native mini-batch loader"):
+                "### J3 — Native mini-batch loader",
+                "### J4 — Loader state and mid-epoch resume"):
         understated = ladder.replace(f"{row} — **complete**",
                                      f"{row} — **not started**")
         assert understated != ladder, f"the {row!r} row was not found"
@@ -1258,11 +1267,11 @@ def test_the_dataset_still_plans_orders_and_groups_nothing():
     assert "np.random" not in code
 
 
-def test_the_sampler_stays_a_planner_and_j4_onward_has_no_runtime():
+def test_the_sampler_stays_a_planner_and_j5_onward_has_no_runtime():
     """The sampler is a **planner**: it owns a position, but it never
     iterates, never materializes, and exposes no public advance — only
     J3's loader may consume a batch position, and only through the private
-    transaction primitives. J4-J9's vocabulary stays absent everywhere."""
+    transaction primitives. J5-J9's vocabulary stays absent everywhere."""
     from tensorforge.experimental import NativeBatchSampler, NativeDataLoader
 
     for name in ("__iter__", "__next__", "advance", "step", "reset",
@@ -1271,18 +1280,28 @@ def test_the_sampler_stays_a_planner_and_j4_onward_has_no_runtime():
                  "feature_batch", "target_batch", "materialize", "collate",
                  "prefetch", "num_workers", "pin_memory", "loader"):
         assert not hasattr(NativeBatchSampler, name), name
-    # J4 owns loader state and mid-epoch restoration; J5 owns the
-    # checkpoint workflow. Neither has a runtime, and a stub that existed
-    # only to fail until then would be the over-claim this module exists
-    # to prevent.
-    for name in ("state_dict", "load_state_dict", "__len__", "__next__",
-                 "save", "load", "num_workers", "collate_fn", "prefetch",
-                 "pin_memory", "transform"):
+    # J4 landed the loader's own **in-memory** state, so its two methods
+    # and its private format tag are asserted *present* — and nothing
+    # beside them arrived. J5 owns the checkpoint workflow, which has no
+    # runtime at all; a stub that existed only to fail until then would be
+    # the over-claim this module exists to prevent.
+    for name in ("__len__", "__next__", "save", "load", "state",
+                 "load_state", "restore", "num_workers", "collate_fn",
+                 "prefetch", "pin_memory", "transform"):
         assert not hasattr(NativeDataLoader, name), name
+    assert hasattr(NativeDataLoader, "state_dict")
+    assert hasattr(NativeDataLoader, "load_state_dict")
     from tensorforge.experimental import native_data_loader
 
-    for name in ("_FORMAT", "_FORMAT_VERSION", "_SUPPORTED_FORMAT_VERSIONS"):
-        assert not hasattr(native_data_loader, name), name
+    assert native_data_loader._FORMAT == "tensorforge.native_data_loader"
+    assert native_data_loader._FORMAT_VERSION == 1
+    assert native_data_loader._SUPPORTED_FORMAT_VERSIONS == (1,)
+    assert len(native_data_loader._STATE_FIELDS) == 3
+    # The sampler's own schema and version did not move underneath it.
+    from tensorforge.experimental import native_sampler
+
+    assert native_sampler._FORMAT == "tensorforge.native_sampler"
+    assert native_sampler._FORMAT_VERSION == 1
     package = REPO_ROOT / "src" / "tensorforge" / "experimental"
     # The checkpoint stays uncoupled in both directions.
     checkpoint = (package / "native_checkpoint.py").read_text(encoding="utf-8")

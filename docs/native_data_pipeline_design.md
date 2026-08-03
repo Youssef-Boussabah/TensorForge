@@ -19,17 +19,21 @@ derivation (§3.2, §8), and continued at **J3**, which added the last of
 §3.1's three names, `NativeDataLoader` (§3.5, §3.6, §9, §10, §15, §17.3),
 over the permanently private `_NativeBatchIterator` and `_deliver_batch`.
 
-**Phase-J status: J0, J1, J2, and J3 complete; J4 through J9 not
-started.** What exists today is the dataset, the sampler, and the loader:
-a finite host-backed dataset, a deterministic permutation and batch
-**planner** with an explicit epoch and cursor, compact transactional
-sampler state, and native mini-batch iteration whose committed position
-advances **if and only if** a batch was delivered. **No loader state
-schema, no loader `state_dict` or `load_state_dict`, no exact mid-epoch
-loader restoration, no checkpoint loader-state integration, no training
-example, and no benchmark exists yet** — those are J4 onward, and **J4 is
-the next implementation milestone**. Every §11.3 and §12.5 statement, and
-every §13 and §14 statement, describes work that has not been written.
+**Phase-J status: J0, J1, J2, J3, and J4 complete; J5 through J9 not
+started.** What exists today is the dataset, the sampler, the loader, and
+the loader's own in-memory state: a finite host-backed dataset, a
+deterministic permutation and batch **planner** with an explicit epoch and
+cursor, compact transactional sampler state, native mini-batch iteration
+whose committed position advances **if and only if** a batch was
+delivered, and — new at **J4** — the three-key loader state schema
+(§11.3), the loader `state_dict` and `load_state_dict` pair (§12.5), and
+**exact in-memory mid-epoch loader restoration**, proved by reproducing an
+interrupted epoch's remaining batches from a separately constructed
+dataset, sampler, and loader. **No checkpoint loader-state integration, no
+automatic loader discovery, no training example, and no benchmark exists
+yet** — those are J5 onward, and **J5 is the next implementation
+milestone**. Every §13 and §14 statement describes work that has not been
+written.
 
 Phase J is a **newly approved** direction. It was not part of the roadmap
 while Phases A–I were being built: the repository deliberately closed
@@ -3010,7 +3014,7 @@ locked rule — the §23 discipline is to record rather than rewrite:
    rather than adding a second name for one seam, so the candidate
    commit and the rollback restore genuinely share one write path.
 
-### J4 — Loader state and mid-epoch resume — **not started**
+### J4 — Loader state and mid-epoch resume — **complete**
 
 - **Entry:** J3 merged.
 - **Scope:** §11.3's loader state, §12.5's transactional load, and the
@@ -3026,6 +3030,117 @@ locked rule — the §23 discipline is to record rather than rewrite:
   name.
 - **Exit gate:** exact remaining-sequence equality proved from a restored
   loader; every rejection leaves a byte-identical state.
+- **Outcome:** met, and the milestone added **no public name at all** —
+  `tensorforge.experimental.__all__` stayed at **25**, the first Phase-J
+  runtime milestone whose export delta is zero. `NativeDataLoader` gained
+  exactly two methods, `state_dict()` and `load_state_dict(state)`, over
+  four private module constants (`_FORMAT`, `_FORMAT_VERSION`,
+  `_SUPPORTED_FORMAT_VERSIONS`, `_STATE_FIELDS`) that are exported by
+  nothing and are not a registry. The state is §11.3's schema exactly:
+  **three** root keys around the **unchanged** §11.2 sampler object, with
+  no configuration or position field duplicated at the wrapper's root.
+
+  **The nested validation is delegated rather than restated.** The loader
+  validates its own wrapper — container, exact key set, tag, version,
+  nested container type — and then hands the whole inner object to the
+  sampler's existing validation-only seam `_validate_state`, committing
+  through the existing non-failing `_assign_state`. Both already existed
+  at J2 and neither changed, so **no sampler production logic moved**:
+  J4's only sampler edit is two docstring lines that said "once J3
+  exists" of a wrapper that arrives at J4. That the delegation is real is
+  asserted structurally — the loader's two state methods are proved to
+  name **no** nested schema key as a string literal, against a negative
+  control showing the same scan finds them in the sampler.
+
+  **Every §12.5 guard is proved by precedence, not by claim.** The closed
+  guard, the transaction guard, and the active-iteration guard are each
+  driven with deliberately malformed arguments (`None`, `[]`,
+  `{"bad": "state"}`), so "the guard ran before the state was inspected"
+  is evidence. The transaction guards are driven from *inside* a live
+  handoff through the private `_deliver_batch` seam at both the claim and
+  the pending phase, where `state_dict()` is proved to refuse **while the
+  sampler's raw fields already show the candidate position** — the
+  executable form of "no snapshot may observe a skipped-but-undelivered
+  position". A superseded iterator is proved to block a load until it
+  releases.
+
+  **Every rejection is compared against a complete before/after world
+  fingerprint** — loader, sampler, and dataset identity, the closed
+  states, all six configuration and position values, both `state_dict()`
+  values, the next batch, the permutation, the plan, the iterator slot,
+  the transaction record, the active-iteration set, and the native
+  live-storage count — across nineteen fault classes covering the
+  wrapper, the nested schema, the four dataset-identity fields, and the
+  zero-batch joint rule.
+
+  **The exit gate is proved over two genuinely separate object graphs**:
+  a source dataset/sampler/loader interrupted mid-epoch, and a
+  **separately constructed** target whose sampler is deliberately built
+  with a different batch size, a different shuffle setting, a different
+  seed, and a fresh position. After the load the target adopts all six
+  values, keeps its own loader, sampler, and dataset objects, and
+  reproduces the remaining tail exactly — identical index tuples,
+  identical **raw IEEE-754 feature bits** through `uint32`/`uint64`
+  views, identical `int64` targets with matching dtype, shape,
+  contiguity, ownership, and read-only flag — then the same canonical
+  next-epoch position and the same two following whole epochs, with
+  native live storage returning exactly to baseline. **No tolerance is
+  used anywhere.** It runs at float64 and float32, sequential and
+  shuffled, drop-last false and true, and at every required position:
+  fresh, genuine mid-epoch, final batch, epoch boundary, later epoch,
+  short final batch, exact divisibility, one-batch epoch, one-sample
+  dataset, and batch larger than the dataset. A negative control proves
+  the sequences are **unequal** when the restoration is omitted, and the
+  cross-dtype leg proves batch **indices** identical across equivalent
+  float32 and float64 datasets while the two states remain
+  non-interchangeable in both directions.
+
+  No checkpoint production coupling exists in either direction, asserted
+  by source inspection and by driving a real save and load with the
+  loader's two methods patched to record any call: neither fired. The C
+  ABI stayed at 54 exports, the CTests at 24, the examples at 15, the
+  benchmarks at 8, the checkpoint at version 3 with `(1, 2, 3)` accepted,
+  and the optimizer state at version 1; no C++ or CMake file was touched.
+
+**Implementation clarifications recorded at J4**, none of which changes a
+locked rule — the §23 discipline is to record rather than rewrite:
+
+1. **The sampler needed no new seam.** §12.5 step 5 asks for "a
+   *validation-only* call that mutates nothing and returns the six
+   values", and §12.4's commit for "the sampler's non-failing
+   assignment". J2 already shipped exactly those as `_validate_state` and
+   `_assign_state`, and J3 already reuses the second in both directions.
+   So J4 added no private sampler method, changed no sampler signature,
+   and moved no sampler logic — which is the strongest available form of
+   "one authority, not two".
+2. **The loader shares the two schema-shaped rules rather than restating
+   them.** `native_data_loader` imports `_require_exact_int` and
+   `_require_exact_keys` beside `NativeBatchSampler`, on J2's recorded
+   precedent for `_validate_uint64`: a duplicated exact-`int` or
+   exact-key-set rule would be a second spelling of one convention, free
+   to drift from the one the nested schema is held to. The module's
+   pinned import set therefore grew from one name to three, all from the
+   **same** module, so it still reaches no ctypes layer, no NumPy, no
+   `json`, no checkpoint, and no generator.
+3. **`state_dict()` takes the sampler's snapshot first, and that call is
+   also the guard.** §9.5 requires a refusal mid-transaction, and
+   `NativeBatchSampler.state_dict` already performs exactly that check.
+   Calling it first means the loader has **one** transaction authority
+   rather than a second that could disagree, and it means nothing at all
+   is built when the refusal fires. The error therefore names the
+   sampler; no message text is a contract, and §12.1 already says so.
+4. **The `feature_shape` tuple latitude reaches the nested object only.**
+   §11.2's single exception is a property of the sampler's dataset block,
+   and delegation carries it through unchanged. The **wrapper** takes no
+   such latitude in either position: its root must be an exact `dict` and
+   so must `state["sampler"]`, and a tuple of items is refused at both.
+5. **Two existing J3 assertions moved from absence to presence.** The
+   loader's own module previously asserted `state_dict`,
+   `load_state_dict`, and the format constants **absent**, and this
+   phase's guardrail module did the same. Both now assert them present
+   and unchanged in shape, with the checkpoint-absence half left exactly
+   as it was — the milestone that ships a name is the milestone that
+   moves it, and neither edit weakened anything else.
 
 ### J5 — Native checkpoint metadata integration — **not started**
 

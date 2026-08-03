@@ -1066,8 +1066,8 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
-  the latest phase, and it is newly approved: milestones J0 through J3
-  have landed and J4 through J9 have not started.** Phase J was approved
+  the latest phase, and it is newly approved: milestones J0 through J4
+  have landed and J5 through J9 have not started.** Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1106,10 +1106,25 @@ explicit layer at a time:
   returning the same indices and values. The sampler holds the
   transaction's **integer half** and the iterator its **resource half**,
   which is why the sampler still owns nothing releasable; delivered
-  batches are the caller's and no close path can reach one. **Loader
-  state does not exist yet**, so where a loader stopped cannot be
-  serialized, there is no exact mid-epoch loader restoration and no
-  checkpoint loader-state integration; **J4 is next**. Its contract is
+  batches are the caller's and no close path can reach one. **J4 added no
+  public name at all** — the first Phase-J runtime milestone whose export
+  delta is zero — and gave `NativeDataLoader` its own in-memory
+  `state_dict()` and `load_state_dict()`: a three-key tagged wrapper
+  (`format`, `format_version`, `sampler`) around the **unchanged** sampler
+  state, fresh at every call, JSON-compatible, and accepted unchanged by
+  the existing checkpoint metadata validator. The load runs a closed
+  guard, a transaction guard, and an active-iteration guard **before**
+  reading the state, **delegates** the whole nested sampler validation to
+  the seam that already owns it rather than restating one rule of it, and
+  commits through the same non-failing write seam the delivery uses — so a
+  rejected load changes nothing observable and a successful one adopts all
+  six configuration and position values while preserving every object
+  identity. **Exact in-memory mid-epoch restoration** is proved by
+  reproducing an interrupted epoch's remaining batches — indices, raw
+  IEEE-754 feature bits, and targets — from a separately constructed
+  dataset, sampler, and loader. **Checkpoint loader-state integration does
+  not exist**, and neither does automatic loader discovery in either
+  direction; **J5 is next**. Its contract is
   [native_data_pipeline_design.md](native_data_pipeline_design.md), and
   the architectural decisions it locks are the ones that would otherwise
   be re-argued in every later milestone: three eventual public names

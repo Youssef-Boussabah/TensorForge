@@ -48,8 +48,8 @@ approved afterwards, so it must not be described as work that was already
 on the roadmap. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md).
 
-**Milestones J0 through J3 have landed; J4 through J9 have not started,
-and J4 is next.** J0 was an architecture, contract, and documentation
+**Milestones J0 through J4 have landed; J5 through J9 have not started,
+and J5 is next.** J0 was an architecture, contract, and documentation
 milestone and **added no runtime behavior at all** — no dataset, sampler,
 or loader class, no helper module, no state serializer, no public export,
 no C++, no C ABI symbol, no example, no benchmark, and no checkpoint or
@@ -117,12 +117,48 @@ benchmark, no checkpoint field or version, no optimizer-state version,
 and no dependency; it is not thread-safe and contains no lock, thread,
 queue, worker, prefetch, collate, or callback surface.
 
-**What Phase J still does not have**, because J4 onward have not started:
-the loader **state schema**, `loader.state_dict()` and
-`loader.load_state_dict()`, exact mid-epoch loader restoration, the
-checkpoint loader-state integration, the deterministic mini-batch
-training example, and the benchmark. A loader iterates, but **where it
-stopped cannot yet be serialized**.
+**J4 gave the loader its own in-memory state, and added no public name
+at all** — the first Phase-J runtime milestone whose export delta is
+**zero** (`tensorforge.experimental.__all__` stayed at 25).
+`NativeDataLoader` gained exactly two methods. `state_dict()` returns a
+compact tagged wrapper with **three** root keys — `format`
+(`"tensorforge.native_data_loader"`), `format_version` (**1**), and
+`sampler` — around the **unchanged** sampler state; the loader owns no
+epoch, cursor, seed, shuffle, batch size, or drop-last field of its own,
+so none is duplicated at the root. Every container is fresh at every
+call, the whole structure is JSON-compatible and is accepted unchanged by
+the checkpoint's existing metadata validator, and it carries no
+permutation, no dataset content, and nothing whose size grows with the
+number of samples. It is allowed between batches, after an iterator is
+exhausted or superseded, with a closed dataset, and after the loader is
+closed — and **refused** while a batch transaction is in flight, because
+inside the commit-before-delivery window there is no honest answer.
+`load_state_dict(state)` is transactional in the same sense the delivery
+is: a closed guard, a transaction guard, and an active-iteration guard
+run before the state is read at all, the wrapper is validated completely,
+the **whole** nested sampler validation is delegated to the seam that
+already owns it rather than restated, and only then does a commit run
+that cannot fail — so a rejected load leaves the loader, the sampler, the
+dataset, the position, the cache behavior, the iterator slot, and native
+live storage byte-identical. Dataset identity is validated and never
+adopted; the six configuration and position values **are** adopted, so a
+deliberately differently configured loader takes the state's. The exit
+gate is proved over two separate object graphs: a mid-epoch interruption
+restored into a separately constructed dataset, sampler, and loader
+reproduces the remaining batches exactly — identical indices, identical
+raw IEEE-754 feature bits, identical targets — then the same canonical
+next-epoch position and the same following epochs, at both dtypes, with
+no tolerance anywhere and a negative control proving the sequences differ
+without the restoration. It added no C++, no CMake entry, no C ABI
+symbol, no example, no benchmark, no checkpoint field or version, no
+optimizer-state version, and no dependency.
+
+**What Phase J still does not have**, because J5 onward have not started:
+the checkpoint loader-state integration, automatic loader discovery, the
+deterministic mini-batch training example, and the benchmark. A loader's
+position can be serialized and restored **in memory**, exactly; carrying
+it through a checkpoint archive is the caller's step and is proved end to
+end at J5.
 
 What J0 resolved, so that later milestones inherit an unambiguous design
 rather than re-deriving one: the three eventual public names —
@@ -478,13 +514,13 @@ different facts.
 Phase J's own design contract exists
 ([native_data_pipeline_design.md](native_data_pipeline_design.md), milestone
 **J0**), and its runtime has begun at **J1** with `NativeTensorDataset`,
-continued at **J2** with `NativeBatchSampler`, and at **J3** with
-`NativeDataLoader` and its transactional batch delivery. **J4 through J9
-are unstarted**, so loader state, exact mid-epoch loader restoration, the
-checkpoint workflow, the training example, and the benchmark remain
-promises — and nothing about them may be described as working until the
-milestone that ships it has landed.
-**J4, loader state and mid-epoch resume, is next.**
+continued at **J2** with `NativeBatchSampler`, at **J3** with
+`NativeDataLoader` and its transactional batch delivery, and at **J4**
+with the loader's own in-memory state and exact mid-epoch restoration.
+**J5 through J9 are unstarted**, so the checkpoint workflow, the training
+example, and the benchmark remain promises — and nothing about them may
+be described as working until the milestone that ships it has landed.
+**J5, native checkpoint metadata integration, is next.**
 
 What the existing documents still name as future work *beyond* Phase J, in
 no committed order, is: native integer tensors, further dtypes or devices

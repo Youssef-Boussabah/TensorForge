@@ -28,10 +28,13 @@ What this module proves, and what it deliberately does not:
   abandonment positions, and the garbage-collection fallback as a
   fallback only.
 
-**Not tested here, because it does not exist:** loader ``state_dict``,
-loader ``load_state_dict``, a loader format tag, mid-epoch loader
-restoration, and checkpoint loader-state integration. Those are J4 and
-J5. Their absence *is* asserted, in §12 below.
+**Not tested here, because it belongs elsewhere or does not exist:**
+loader ``state_dict``, loader ``load_state_dict``, the loader format tag,
+and mid-epoch loader restoration are **J4's**, and live in
+``tests/test_native_loader_state.py``; §12 below asserts only that they
+exist and that nothing beside them arrived. Checkpoint loader-state
+integration does not exist at all — that is J5 — and its absence *is*
+asserted, in §12.
 
 No test here asserts an exact error message, a dict ordering, a timing, a
 GC event, or a speed.
@@ -290,8 +293,16 @@ def test_importing_stable_tensorforge_stays_native_lazy():
 
 
 def test_the_loader_module_imports_only_what_the_contract_allows():
-    """One import, from one module. No ctypes, no backends package, no
-    NumPy, no checkpoint, no generator, no threading, no queue."""
+    """From one module, and one module only. No ctypes, no backends
+    package, no NumPy, no json, no checkpoint, no generator, no threading,
+    no queue.
+
+    J4 added the two schema-shaped rules its state wrapper needs — the
+    exact-``int`` check and the exact-key-set check — **shared rather than
+    restated**, exactly as the sampler shares ``_validate_uint64`` rather
+    than duplicating it. A second spelling of either would be free to
+    drift from the one the nested schema is held to.
+    """
     tree = ast.parse((REPO_ROOT / LOADER_SOURCE).read_text(encoding="utf-8"))
     imported = set()
     for node in ast.walk(tree):
@@ -300,7 +311,10 @@ def test_the_loader_module_imports_only_what_the_contract_allows():
         elif isinstance(node, ast.ImportFrom):
             imported.update((node.module or "", alias.name)
                             for alias in node.names)
-    assert imported == {("native_sampler", "NativeBatchSampler")}
+    assert imported == {("native_sampler", "NativeBatchSampler"),
+                        ("native_sampler", "_require_exact_int"),
+                        ("native_sampler", "_require_exact_keys")}
+    assert {module for module, _ in imported} == {"native_sampler"}
 
 
 def test_no_c_abi_or_build_surface_moved():
@@ -2141,26 +2155,42 @@ def test_a_state_load_succeeds_once_every_iterator_is_released():
 # 12. J3 non-goals — what this milestone must not have added
 # ===========================================================================
 
-def test_the_loader_has_no_state_or_checkpoint_runtime():
-    """J4 owns loader state and mid-epoch restoration; J5 owns the
-    checkpoint workflow. A method that existed only to fail until then
-    would be a stub, which the rollout discipline forbids."""
-    for absent in ("state_dict", "load_state_dict", "save", "load",
-                   "__len__", "__next__", "epoch", "cursor", "seed",
-                   "batch_size", "shuffle", "drop_last", "plan",
+def test_the_loader_has_no_checkpoint_runtime():
+    """J5 owns the checkpoint workflow, and no method that exists only to
+    fail until then may appear — the rollout discipline forbids a stub.
+
+    J4 added the loader's own **in-memory** state and its format tag, so
+    those two are asserted *present* here and covered in full by
+    ``tests/test_native_loader_state.py``. Everything that would make the
+    loader a second checkpoint authority stays absent.
+    """
+    for absent in ("save", "load", "__len__", "__next__", "epoch", "cursor",
+                   "seed", "batch_size", "shuffle", "drop_last", "plan",
                    "next_batch_indices", "batches_per_epoch", "remaining",
-                   "reset", "advance", "step"):
+                   "reset", "advance", "step", "state", "load_state",
+                   "save_native_checkpoint", "load_native_checkpoint"):
         assert not hasattr(NativeDataLoader, absent), absent
-    for absent in ("_FORMAT", "_FORMAT_VERSION",
-                   "_SUPPORTED_FORMAT_VERSIONS", "_STATE_FIELDS"):
-        assert not hasattr(loader_module, absent), absent
+    # J4's two methods, and its private constants — the milestone's whole
+    # public delta, and nothing beside it.
+    assert hasattr(NativeDataLoader, "state_dict")
+    assert hasattr(NativeDataLoader, "load_state_dict")
+    assert loader_module._FORMAT == "tensorforge.native_data_loader"
+    assert loader_module._FORMAT_VERSION == 1
+    assert loader_module._SUPPORTED_FORMAT_VERSIONS == (1,)
+    assert set(loader_module._STATE_FIELDS) == {"format", "format_version",
+                                                "sampler"}
+    for private in ("_FORMAT", "_FORMAT_VERSION", "_SUPPORTED_FORMAT_VERSIONS",
+                    "_STATE_FIELDS"):
+        assert private not in experimental.__all__, private
+        assert not hasattr(experimental, private), private
     names = code_identifiers(LOADER_SOURCE)
     for forbidden in ("native_checkpoint", "save_native_checkpoint",
-                      "load_native_checkpoint", "json", "npz",
-                      "tensorforge.native_data_loader"):
+                      "load_native_checkpoint", "json", "npz"):
         assert forbidden not in names, forbidden
-    source = (REPO_ROOT / LOADER_SOURCE).read_text(encoding="utf-8")
-    assert "tensorforge.native_data_loader" not in source
+    checkpoint = (REPO_ROOT / "src" / "tensorforge" / "experimental"
+                  / "native_checkpoint.py").read_text(encoding="utf-8")
+    assert "native_data_loader" not in checkpoint
+    assert "tensorforge.native_data_loader" not in checkpoint
 
 
 def test_the_loader_adds_no_worker_thread_lock_queue_or_async_surface():

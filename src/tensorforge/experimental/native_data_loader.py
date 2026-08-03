@@ -1,6 +1,6 @@
 """NativeDataLoader — the native mini-batch iteration surface (Phase J,
-milestone J3; see docs/native_data_pipeline_design.md §3.5, §3.6, §3.7,
-§9, §10, §15, §16, §17.3).
+milestones J3 and J4; see docs/native_data_pipeline_design.md §3.5, §3.6,
+§3.7, §9, §10, §11.3, §11.4, §11.5, §12.5, §15, §16, §17.3, §17.5).
 
 The third piece of Phase-J runtime, and the one that finally *delivers* a
 batch. It turns each index group the sampler plans into a
@@ -68,12 +68,52 @@ would hold a whole epoch's native storage, which is a leak in the shape
 of a convenience. **The caller closes every feature batch**; the target
 array is ordinary host memory and needs none.
 
+Loader state (J4)
+-----------------
+
+``state_dict()`` returns a compact **tagged wrapper** around the sampler's
+own state — exactly three keys, ``format`` / ``format_version`` /
+``sampler`` — and ``load_state_dict()`` restores one transactionally. The
+loader owns no epoch, cursor, seed, shuffle, batch size, or drop-last
+field of its own, so duplicating any of them at the wrapper's root would
+create a second authority on a fact the sampler already owns.
+
+**Why a wrapper rather than the sampler state itself:** the loader is
+what a caller checkpoints, and the two objects' states must be
+distinguishable in metadata. Without its own ``format`` tag a loader
+state and a sampler state would be the same JSON, so handing one where
+the other was meant would be accepted silently. The wrapper is also where
+a future loader-owned field would go without disturbing the sampler's
+schema — and no such field is added now.
+
+The load is transactional in the exact sense the rest of this module is:
+three lifecycle guards run **before** ``state`` is read at all (closed,
+then transaction, then active iteration), the wrapper is validated
+completely, the **whole** of the nested sampler validation is delegated
+to the sampler's one validation-only seam rather than restated here, and
+only then does the commit run — through the same non-failing write seam a
+delivery commit and a rollback use. Nothing mutates until every check has
+passed and the only remaining step cannot fail, which is what makes a
+rejected load leave the world byte-identical without a rollback path of
+its own.
+
+``state_dict()`` is allowed at every moment except one: it is **refused**
+while a §9.4 transaction is in flight, through the sampler's own guard
+rather than a second inconsistent authority, because inside the
+commit-before-delivery window there is no honest answer. It is allowed
+after ``close()`` — recording where a loader stopped is not a resource
+operation.
+
 What this milestone deliberately does not add
 ---------------------------------------------
 
-No loader ``state_dict``/``load_state_dict``, no loader format tag, no
-loader state serialization, and no checkpoint integration — those are J4
-and J5, and a method that exists only to fail until then would be a stub.
+No checkpoint integration in either direction: this module imports no
+checkpoint code, no checkpoint code imports it, nothing discovers a
+loader, and no global registry of loaders exists. Carrying the state
+through the existing validated version-3 ``metadata`` channel is the
+**caller's** step, and J5 proves that workflow end to end. No checkpoint
+root field, no checkpoint version 4, no ``save``/``restore``/``state``/
+``load_state`` alias, no public validator, and no public state class.
 No ``__len__``, because mid-epoch it would have to mean either "batches
 per epoch" or "batches remaining" and a caller reading the wrong one
 would silently mis-schedule a resumed run; ``loader.sampler
@@ -100,7 +140,34 @@ device, or dependency. It has no ``dtype`` and no ``device`` argument:
 the dataset owns the one and there is no such thing as the other.
 """
 
-from .native_sampler import NativeBatchSampler
+from .native_sampler import (
+    NativeBatchSampler,
+    # The two schema-shaped rules, **shared rather than restated** — the
+    # same stance the sampler itself takes towards ``_validate_uint64``.
+    # A duplicated exact-``int`` rule or key-set rule would be a second
+    # spelling of one convention, free to drift; there is exactly one of
+    # each in the pipeline, and the loader's wrapper is held to it.
+    _require_exact_int,
+    _require_exact_keys,
+)
+
+# The loader state schema's identity (§11.3). The format tag is the whole
+# reason the wrapper exists: without it a loader state and a sampler state
+# would be the same JSON, and handing one where the other was meant would
+# be accepted silently. Private, unexported, and not a public registry —
+# there is no version 2, no alias tag, no migration path, and no
+# placeholder for either.
+_FORMAT = "tensorforge.native_data_loader"
+_FORMAT_VERSION = 1
+_SUPPORTED_FORMAT_VERSIONS = (1,)
+
+# Exactly three root keys, validated by exact **set** equality in both
+# directions, so a missing key is not a default and an unknown key is not
+# ignored. The sampler's six configuration and position fields live in the
+# nested object and are deliberately **not** duplicated here: the loader
+# owns no epoch, cursor, seed, shuffle, batch size, or drop-last of its
+# own, and a second copy could disagree with the first.
+_STATE_FIELDS = ("format", "format_version", "sampler")
 
 
 def _deliver_batch(record):
@@ -440,6 +507,12 @@ class NativeDataLoader:
     **The caller owns and closes every delivered feature batch.** Closing
     the loader never closes, mutates, invalidates, or retains one — and it
     never closes the sampler or the dataset either.
+
+    ``state_dict()`` and ``load_state_dict(state)`` carry where a loader
+    stopped, in memory, exactly: a three-key tagged wrapper around the
+    sampler's own state, transactional on the way back in, and enough on
+    its own to reproduce every remaining batch of an interrupted epoch.
+    See the module docstring for the schema and the load ordering.
     """
 
     # No ``__dict__``: the three members are read-only properties, so
@@ -512,6 +585,199 @@ class NativeDataLoader:
             previous._supersede()
         self._iterator = iterator
         return iterator
+
+    # -- state (§11.3, §12.5) -------------------------------------------
+
+    def state_dict(self):
+        """A fresh, plain, JSON-compatible snapshot of §11.3's schema.
+
+        Exactly three keys — ``format``, ``format_version``, and
+        ``sampler`` — the last being **exactly** the sampler's own §11.2
+        state, unchanged and undecorated. The loader duplicates none of
+        the sampler's six configuration and position fields at the root,
+        because it owns none of them and a second copy could disagree
+        with the first.
+
+        Every container is new at every call: the root dict, the nested
+        sampler dict, its nested ``dataset`` dict, and the
+        ``feature_shape`` list. So the result shares nothing mutable with
+        the loader, the sampler, the dataset, the permutation cache, or a
+        previous result, and a caller may edit what they are given
+        without reaching anything.
+
+        It carries no permutation, no dataset content, no NumPy object,
+        no ``NativeTensor``, no generator, no transaction serial, no
+        active-iteration token, no iterator, no cache, no object id, no
+        address, nothing callable, and nothing whose size grows with the
+        number of samples. Every field is JSON-native and passes the
+        checkpoint's existing ``_validated_metadata`` unchanged, which is
+        what lets a **caller** carry it through the existing version-3
+        metadata channel without the archive growing a field or a
+        version. Placing it there is the caller's step (J5): this module
+        imports no checkpoint code and no checkpoint code knows a loader
+        exists.
+
+        **Pure.** It moves no epoch, no cursor, and no configuration;
+        creates, supersedes, and closes no iterator; changes no
+        active-iteration tracking; allocates nothing native; and closes
+        or reopens nothing. Repeated calls return equal values in
+        distinct containers.
+
+        Allowed immediately after construction, between batches while an
+        iterator is active, after an iterator is exhausted or superseded,
+        at an epoch boundary, mid-epoch, with a **closed dataset**, and
+        after the loader's own ``close()`` — recording where a loader
+        stopped is not a resource operation.
+
+        **Refused with ``RuntimeError`` while a §9.4 batch transaction is
+        in flight**, reading nothing and changing nothing. Inside Phase 4
+        the candidate position has been applied but the batch has not
+        been delivered, so there is no honest single answer: reporting
+        the candidate would expose a committed cursor that skipped an
+        undelivered batch, and reporting the pre-delivery one would
+        contradict the sampler's own fields. The refusal comes from the
+        **sampler's** existing guard rather than a second transaction
+        authority here, so the two can never disagree about what is in
+        flight.
+        """
+        # The sampler's own snapshot is the guard as well as the payload:
+        # it refuses mid-transaction, and it is where the freshness of
+        # every nested container is already contracted. Taken first, so
+        # nothing at all is built when it refuses.
+        sampler_state = self._sampler.state_dict()
+        return {
+            "format": _FORMAT,
+            "format_version": _FORMAT_VERSION,
+            "sampler": sampler_state,
+        }
+
+    def load_state_dict(self, state):
+        """Restore this loader's sampler configuration and position from a
+        §11.3 state. Returns ``None``.
+
+        **Transactional.** Every check runs before anything is written,
+        and the one remaining step cannot fail, so a rejected load leaves
+        the loader, its sampler, its dataset, the position, the
+        configuration, the permutation cache's behavior, the iterator
+        slot, the active-iteration tracking, and the native live-storage
+        count exactly as it found them. There is no rollback path here
+        because there is nothing to roll back from.
+
+        The order is §12.5's, exactly:
+
+        1. **Closed guard** — a closed loader refuses, *before* ``state``
+           is inspected at all. Restoring a position into a closed loader
+           is meaningless, and it must never silently reopen one. There
+           is no reopen method, and ``state_dict()`` stays readable.
+        2. **Transaction guard** — a live §9.4 claim or pending-delivery
+           record refuses, reading nothing, mutating nothing, and
+           disturbing neither the record nor the batch it owns. It comes
+           before the iteration guard because it is the more specific and
+           the more dangerous condition.
+        3. **Active-iteration guard** — any live iterator participation
+           refuses, including a superseded iterator that has not yet
+           closed, exhausted, or been finalized. An iterator captures its
+           epoch's remaining batch count when it is created (§9.3), so
+           replacing the position underneath it would leave that
+           countdown describing a position that no longer exists.
+        4. **The wrapper** — exact ``dict``, exact three-key set, exact
+           ``str`` ``format`` with exactly this module's tag, exact
+           ``int`` ``format_version`` (``bool`` rejected) equal to 1, and
+           an exact ``dict`` under ``sampler``.
+        5. **The nested sampler state**, delegated *whole* to the
+           sampler's validation-only seam, which preserves every J2/J3
+           ordering — key set, format, version, the dataset block's shape
+           and its four compatibility fields in order, the configuration
+           types, the ranges, the zero-batch joint rule, and the cursor
+           last. It is **not** restated here: one rule, one authority.
+           The public sampler ``load_state_dict`` is deliberately *not*
+           called, because it would mutate before this wrapper's
+           transaction is complete.
+        6. **Commit**, through the sampler's non-failing write seam —
+           six already-validated ``int``/``bool`` assignments plus a
+           cache invalidation, the same seam a delivery commit and a
+           rollback share.
+
+        **Dataset identity is validated, never adopted**, and the loader
+        keeps the exact sampler and the exact dataset objects it already
+        had. **Configuration is adopted**: ``seed``, ``shuffle``,
+        ``batch_size``, ``drop_last``, ``epoch``, and ``cursor`` all come
+        from the state, so a loader deliberately built with a different
+        seed, batch size, drop-last setting, and position adopts the
+        state's validated values — the constructor's configuration is not
+        authoritative after a restoration. Object identity is preserved
+        absolutely: ``id(loader)``, ``loader.sampler``, and
+        ``loader.dataset`` are unchanged, no iterator is created or
+        replaced, and nothing is rebound or recreated.
+
+        Nothing is cast, coerced, truncated, clamped, wrapped, rounded,
+        defaulted, or ignored: ``True`` is not ``1``, ``1`` is not
+        ``True``, ``1.0`` is not ``1``, ``"1"`` is not ``1``, a NumPy
+        scalar is not a Python one, a missing key is not a default, an
+        unknown key is not ignored, and a cursor past the end is not
+        clamped.
+        """
+        # 1. The lifecycle guard, ahead of every read of ``state``.
+        if self._closed:
+            raise RuntimeError(
+                "cannot load state into a closed NativeDataLoader; restoring "
+                "a position into one would be meaningless, and a load must "
+                "never silently reopen it. state_dict() is still readable."
+            )
+        sampler = self._sampler
+        # 2. A live batch handoff, next: the more specific and the more
+        #    dangerous of the two remaining conditions. Replacing a
+        #    position underneath one would make its pre/post pair describe
+        #    a stream that no longer exists.
+        sampler._require_no_transaction("load state into this loader")
+        # 3. Then any live iterator participation, whose captured
+        #    countdown a replaced position would strand.
+        sampler._require_no_active_iteration("load state into this loader")
+        # 4. The wrapper: container, exact key set, tag, version, and the
+        #    nested container's type. Exact-type discipline throughout — a
+        #    dict subclass, an OrderedDict, a mapping proxy, a JSON string,
+        #    a list, and a tuple are each refused rather than converted.
+        if type(state) is not dict:
+            raise TypeError(
+                f"loader state must be a dict, got {type(state).__name__}"
+            )
+        _require_exact_keys(state, _STATE_FIELDS, "loader state")
+        format_tag = state["format"]
+        if type(format_tag) is not str:
+            raise TypeError(
+                f"loader state 'format' must be a str, got "
+                f"{type(format_tag).__name__}"
+            )
+        if format_tag != _FORMAT:
+            raise ValueError(
+                f"loader state format mismatch: expected {_FORMAT!r}, got "
+                f"{format_tag!r}. A sampler state is not a loader state; the "
+                f"tags exist so the two cannot be confused."
+            )
+        version = _require_exact_int(state["format_version"],
+                                     "loader state 'format_version'")
+        if version not in _SUPPORTED_FORMAT_VERSIONS:
+            raise ValueError(
+                f"unsupported loader state format version {version}; "
+                f"supported: {list(_SUPPORTED_FORMAT_VERSIONS)}"
+            )
+        nested = state["sampler"]
+        if type(nested) is not dict:
+            raise TypeError(
+                f"loader state 'sampler' must be a dict, got "
+                f"{type(nested).__name__}"
+            )
+        # 5. The whole of the nested validation, delegated. It mutates
+        #    nothing and returns the six values; the public sampler loader
+        #    is deliberately not used, because it would commit before this
+        #    wrapper's transaction finished.
+        values = sampler._validate_state(nested)
+        # 6. The commit — the shared non-failing write seam. Six
+        #    already-validated assignments and a cache invalidation, none
+        #    of which can fail, allocate native storage, replace the
+        #    sampler, replace the dataset, or create an iterator.
+        sampler._assign_state(*values)
+        return None
 
     # -- lifecycle -------------------------------------------------------
 

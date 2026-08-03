@@ -1660,8 +1660,8 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase J — deterministic native data pipeline and mini-batching — is the
-latest phase, and it is newly approved: milestones J0 through J3 have
-landed, and J4 through J9 have not started.** Phase J was approved *after* Phase I
+latest phase, and it is newly approved: milestones J0 through J4 have
+landed, and J5 through J9 have not started.** Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -1703,11 +1703,38 @@ exact pre-delivery epoch and cursor through the same non-failing write
 seam a state load uses, and leaves a retry returning the same indices and
 the same values; each is proved by injection with its own non-vacuity
 control and a native live-storage baseline. Delivered batches are the
-caller's and no close path can reach one. **Loader state does not exist
-yet, so where a loader stopped cannot be serialized, there is no exact
-mid-epoch loader restoration, no checkpoint loader-state integration, no
-training example, and no benchmark**; those are J4 onward, and **J4 is
-next**. Its architecture contract is
+caller's and no close path can reach one. **J4** added **no public name
+at all** — the first Phase-J runtime milestone whose export delta is
+zero, leaving `tensorforge.experimental.__all__` at 25 — and gave
+`NativeDataLoader` exactly two methods. `state_dict()` returns a compact
+tagged wrapper of **three** root keys (`format`
+`"tensorforge.native_data_loader"`, `format_version` **1**, and
+`sampler`) around the **unchanged** sampler state, with every container
+fresh at every call, no field duplicated at the root, no permutation and
+no dataset content inside, and nothing whose size grows with the number
+of samples; it is JSON-compatible and accepted unchanged by the
+checkpoint's existing metadata validator, is allowed between batches,
+after exhaustion or supersession, with a closed dataset, and after the
+loader is closed, and is **refused** while a batch transaction is in
+flight because that window has no honest answer.
+`load_state_dict(state)` runs a closed guard, a transaction guard, and an
+active-iteration guard **before** the state is read, validates the
+wrapper, **delegates** the whole nested sampler validation to the seam
+that already owns it, and commits through the same non-failing write seam
+the delivery uses — so a rejected load leaves the loader, sampler,
+dataset, position, cache behavior, iterator slot, and native live storage
+byte-identical, and a successful one adopts all six configuration and
+position values while validating dataset identity without adopting it and
+preserving every object identity. **Exact in-memory mid-epoch
+restoration** is proved over two separate object graphs: a mid-epoch
+interruption restored into a separately constructed dataset, sampler, and
+loader reproduces the remaining batches exactly — identical indices,
+identical raw IEEE-754 feature bits, identical `int64` targets — then the
+same canonical next-epoch position and the same following epochs, at both
+dtypes and with no tolerance anywhere. **Checkpoint loader-state
+integration does not exist, no automatic loader discovery exists, and
+there is no training example and no benchmark**; those are J5 onward, and
+**J5 is next**. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md), which
 locks three eventual public names (`NativeTensorDataset`,
 `NativeBatchSampler`, `NativeDataLoader`), a copied-snapshot dataset whose

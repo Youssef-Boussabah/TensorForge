@@ -464,24 +464,27 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption.
   *(Phase J does not change this. Its contract carries a loader position as
   **caller-supplied metadata** through the channel that already exists, so
-  the archive's own capture set stays exactly what it is — and no
-  Phase-J loader **state** exists yet in any case, so there is no
-  position the archive could be handed.)*
-- **loader state, and exact mid-epoch loader restoration.** The newly
-  approved **Phase J** is building these
+  the archive's own capture set stays exactly what it is. J4 gave the
+  loader an in-memory `state_dict()`, but nothing discovers, registers, or
+  archives one: placing it in metadata is the caller's step, and no
+  checkpoint code knows a loader exists.)*
+- **checkpoint loader-state integration.** The newly approved **Phase J**
+  is building this
   ([native_data_pipeline_design.md](native_data_pipeline_design.md),
-  milestones **J0** through **J3** complete), and **no runtime for
-  either exists**: J4 through J9 have not started, `NativeDataLoader` has
-  no `state_dict()` and no `load_state_dict()`, and no checkpoint
-  loader-state integration exists. What *does* exist is
+  milestones **J0** through **J4** complete), and **no runtime for it
+  exists**: J5 through J9 have not started, no checkpoint code imports,
+  discovers, registers, or validates a Phase-J object, and no automatic
+  loader discovery exists in either direction. What *does* exist is
   `NativeTensorDataset` (**J1**) — a finite host-backed dataset that
   materializes a feature batch and a target batch for an index sequence —
   `NativeBatchSampler` (**J2**), which plans shuffled or sequential
-  batch-index groups and holds an explicit epoch and cursor, and
+  batch-index groups and holds an explicit epoch and cursor,
   `NativeDataLoader` (**J3**), which iterates one epoch at a time and
-  delivers `(NativeTensor, numpy.ndarray)` batches transactionally. So
-  **native mini-batching exists**; serializing where a loader stopped
-  does not
+  delivers `(NativeTensor, numpy.ndarray)` batches transactionally, and
+  that loader's own **in-memory** `state_dict()` / `load_state_dict()`
+  with exact mid-epoch restoration (**J4**). So **native mini-batching
+  exists** and a loader's position can be serialized and restored in
+  memory; carrying it through an archive does not
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
 - *(Phase E itself is complete — E0–E10 — so nothing from it is listed
@@ -1507,7 +1510,7 @@ float32 training and the exact float32 resume proof both passed, which is
 the same discipline that kept `dropout` in `UNSUPPORTED` from G3 through
 G9 while the operation and the module both already existed.
 
-## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0–J3 complete, J4–J9 not started)**
+## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0–J4 complete, J5–J9 not started)**
 
 **Phase J is the latest phase, and it is newly approved.** The repository
 closed Phase I at I11 without committing to a successor; Phase J was
@@ -1517,7 +1520,8 @@ Its architecture contract is
 
 Milestone **J0** was architecture, contract, and documentation work and
 shipped **no runtime behavior at all**. Runtime capability began at
-**J1**, and **exactly three** things in this section exist today:
+**J1**, and **exactly three public names plus one milestone that added
+none** exist in this section today:
 
 - **`NativeTensorDataset`** (J1) — the finite host-backed dataset, in
   `tensorforge.experimental`. One owned copied host snapshot of the
@@ -1568,15 +1572,41 @@ shipped **no runtime behavior at all**. Runtime capability began at
   adds no lock, thread, queue, worker, prefetch, collate, or callback
   surface. It moved no registry value, added no C ABI symbol, and took
   the experimental Python export inventory from 24 names to 25.
+- **Loader state and exact in-memory mid-epoch restoration** (J4) — two
+  methods on the existing `NativeDataLoader`, and **no new public name**:
+  the experimental Python export inventory stayed at **25**.
+  `state_dict()` returns a compact tagged wrapper with exactly three root
+  keys — `format` (`"tensorforge.native_data_loader"`), `format_version`
+  (**1**), and `sampler`, the last being exactly the **unchanged**
+  version-1 sampler state. Every container is fresh at every call, no
+  configuration or position field is duplicated at the root, and the
+  structure carries no permutation, no dataset content, no NumPy object,
+  no process-local value, and nothing whose size grows with the number of
+  samples; it is JSON-compatible and accepted unchanged by the existing
+  checkpoint metadata validator. It is allowed between batches, after
+  exhaustion or supersession, with a closed dataset, and after the loader
+  is closed, and is **refused** while a batch transaction is in flight,
+  because the commit-before-delivery window has no honest answer.
+  `load_state_dict(state)` runs a closed guard, a transaction guard, and
+  an active-iteration guard **before** reading the state, validates the
+  wrapper, **delegates** the whole nested sampler validation to the seam
+  that already owns it, and commits through the same non-failing write
+  seam the delivery uses — so a rejected load leaves the loader, the
+  sampler, the dataset, the position, the cache behavior, the iterator
+  slot, and native live storage byte-identical, and a successful one
+  adopts all six configuration and position values while validating
+  dataset identity without adopting it and preserving every object
+  identity. It moved no registry value, added no C ABI symbol, and added
+  **no** public name.
 
 **Everything else in this section is still unsupported.** There is **no
-loader `state_dict()` or `load_state_dict()`, no loader state schema or
-format tag, no exact mid-epoch loader restoration, no checkpoint
-loader-state integration, no training example, and no benchmark.** A
-loader iterates and delivers; where it stopped cannot yet be serialized.
-Those are J4 onward; **J4 is next**.
+checkpoint loader-state integration, no automatic loader discovery, no
+training example, and no benchmark.** A loader's position can be
+serialized and restored **in memory**, exactly; carrying it through a
+checkpoint archive is the caller's step and is proved end to end at J5.
+Those are J5 onward; **J5 is next**.
 
-| Registry | Value at J0–J3 | Value expected at J9 |
+| Registry | Value at J0–J4 | Value expected at J9 |
 |---|---|---|
 | `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
 | `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
@@ -1600,7 +1630,7 @@ The milestone ladder, with its current status:
 | **J1** | host-backed dataset foundation | **complete** |
 | **J2** | deterministic sampler | **complete** |
 | **J3** | native mini-batch loader | **complete** |
-| J4 | loader state and mid-epoch resume | not started |
+| **J4** | loader state and mid-epoch resume | **complete** |
 | J5 | native checkpoint metadata integration | not started |
 | J6 | deterministic mini-batch training example | not started |
 | J7 | cross-cutting hardening | not started |

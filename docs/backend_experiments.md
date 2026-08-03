@@ -81,8 +81,8 @@ repaired here rather than rewritten away. The latest completed phase is
 Phase I.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
-latest phase, and it is newly approved: milestones J0 through J3 have
-landed and J4 through J9 have not started.** It was approved *after* Phase
+latest phase, and it is newly approved: milestones J0 through J4 have
+landed and J5 through J9 have not started.** It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -90,19 +90,32 @@ module, no state serializer, no public export, no C++, no C ABI symbol, no
 example, no benchmark, and no checkpoint or optimizer-state change.
 Runtime capability began at **J1**, which shipped `NativeTensorDataset`,
 continued at **J2**, which shipped `NativeBatchSampler` over the private
-`_native_permutation` derivation, and continued at **J3**, which shipped
-`NativeDataLoader` over the private `_NativeBatchIterator` — all three
-**pure Python** (J1 over NumPy; J2 over built-in integer arithmetic,
-importing nothing at all; J3 importing exactly one name, the sampler
-class), adding no kernel, no ctypes declaration, and no C++ or CMake
-file. Its architecture contract is
+`_native_permutation` derivation, continued at **J3**, which shipped
+`NativeDataLoader` over the private `_NativeBatchIterator`, and continued
+at **J4**, which added **no public name at all** and gave that loader its
+own in-memory `state_dict()` and `load_state_dict()` — all four **pure
+Python** (J1 over NumPy; J2 over built-in integer arithmetic, importing
+nothing at all; J3 and J4 importing only from the sampler module), adding
+no kernel, no ctypes declaration, and no C++ or CMake file. Its
+architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md). Nothing
-on this page changed for any of the four milestones: the library still
+on this page changed for any of the five milestones: the library still
 exports **54** `tf_*` symbols, the CTest inventory is still **24**, and
 every capability registry, checkpoint version, and optimizer-state version
-is exactly what Phase I left. **J1, J2, and J3 therefore required no
+is exactly what Phase I left. **J1, J2, J3, and J4 therefore required no
 native rebuild, no CTest run, and no sanitizer run**, and none is claimed
 for any of them.
+
+**J4 allocates no native storage of its own.** Neither state method
+constructs a `NativeTensor`, and both are asserted against the same
+live-`NativeStorage` instrumentation J3 uses: a snapshot, a rejected load,
+a successful load, and a snapshot taken after `close()` each leave live
+storage exactly at its baseline. The batch traffic J4's resume proof
+generates is J3's traffic, unchanged — every remaining batch of an
+interrupted epoch is materialized through the same existing
+`NativeTensor.from_array` boundary, compared by raw bit pattern, and
+closed explicitly, with live storage returning exactly to baseline at the
+end of every restoration case.
 
 **J3 is the first Phase-J milestone that allocates native storage**, and
 that is worth recording precisely because it is still not a build change:

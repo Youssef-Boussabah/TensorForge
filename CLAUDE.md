@@ -566,10 +566,11 @@ that changes the public API or the examples updates the matching document
   as pre-existing plan work. **It moves no capability at any milestone**:
   every §3 row is expected unchanged at J9, and it plans **no new C ABI
   export**.
-- **J0** (contract), **J1** (dataset), **J2** (sampler), and **J3** (loader)
-  are done; **J4 through J9 have not started**, and **J4 is next.** Each of
-  J1–J3 added exactly one export — `NativeTensorDataset`,
-  `NativeBatchSampler`, `NativeDataLoader` — for **25** experimental names.
+- **J0** (contract), **J1** (dataset), **J2** (sampler), **J3** (loader), and
+  **J4** (loader state) are done; **J5 through J9 have not started**, and
+  **J5 is next.** Each of J1–J3 added exactly one export —
+  `NativeTensorDataset`, `NativeBatchSampler`, `NativeDataLoader` — for
+  **25** experimental names; **J4 added none, and the count stays 25.**
   The sampler is a **planner**: explicit `epoch`/`cursor`, pure planning, no
   native allocation, no `close()`, order a pure function of `(seed, epoch,
   length)` from the private `_native_permutation`.
@@ -582,9 +583,44 @@ that changes the public API or the examples updates the matching document
   one; `_deliver_batch` is a private **test seam**, never a hook. Never add a
   public advance, iterator class, delivery hook, collate, transform, worker,
   prefetch, or `__len__`.
-- **Loader state does not exist**: no loader `state_dict`/`load_state_dict`,
-  format tag, exact mid-epoch restoration, checkpoint loader-state
-  integration, example, or benchmark. Those are J4 onward.
+- **J4 gave `NativeDataLoader` exactly two methods**, `state_dict()` and
+  `load_state_dict(state)` — no new class, module, export, or file. The state
+  is a **three-key tagged wrapper**, and the shape is contractual: `format`
+  = `"tensorforge.native_data_loader"`, `format_version` = **1**, and
+  `sampler` = **exactly** the unchanged version-1 sampler state. No epoch,
+  cursor, seed, shuffle, batch-size, or drop-last field may be duplicated at
+  the root — the loader owns none of them. Private constants only
+  (`_FORMAT`, `_FORMAT_VERSION`, `_SUPPORTED_FORMAT_VERSIONS` = `(1,)`,
+  `_STATE_FIELDS`); no version 2, no alias tag, no migration path.
+- **`state_dict()` is pure and fresh**: a new root, sampler, dataset dict and
+  `feature_shape` list at every call, sharing nothing with the objects, the
+  cache, or a previous result; JSON-compatible and accepted unchanged by the
+  checkpoint's `_validated_metadata`; carrying no permutation, payload, NumPy
+  object, serial, token, or id, and nothing that grows with the sample count.
+  Allowed between batches, after exhaustion or supersession, with a closed
+  dataset, and **after the loader closes** — and **refused (`RuntimeError`)
+  while a §9.4 transaction is in flight**, through the *sampler's* existing
+  guard, never a second authority: no snapshot may observe a
+  skipped-but-undelivered position.
+- **`load_state_dict()` order is fixed** (design §12.5) and each step is
+  proved by precedence with malformed input: closed guard → transaction guard
+  → active-iteration guard (all three *before* `state` is read) → exact
+  `dict` → exact three-key set → `format` type then value → `format_version`
+  type (`bool` rejected) then value → nested `dict` → **the whole nested
+  sampler validation delegated to `NativeBatchSampler._validate_state`** →
+  commit via `_assign_state`. Never restate a nested rule in the loader,
+  never call the sampler's public `load_state_dict` from it, and never add a
+  loader rollback: nothing mutates until the only remaining step cannot fail.
+  Dataset identity is **validated, never adopted**; the six configuration and
+  position values **are** adopted; loader, sampler, and dataset identity are
+  preserved absolutely. A rejected load must leave the entire observable
+  world — including the cache's behavior, the iterator slot, and live native
+  storage — byte-identical.
+- **Checkpoint integration does not exist**: no loader discovery, no registry,
+  no import in either direction between the checkpoint and pipeline modules,
+  no checkpoint field, and no version 4. Placing loader state in metadata is
+  the **caller's** step. No training example and no benchmark either. Those
+  are J5 onward.
 
 Beyond Phase J (not started): native integer tensors, further dtypes or
 devices, CUDA experiments. See `docs/roadmap.md`; never invent a phase it

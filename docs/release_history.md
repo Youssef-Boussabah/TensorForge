@@ -2326,10 +2326,10 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase J — deterministic native data pipeline and mini-batching (J0–J3 complete, in progress)
+### Phase J — deterministic native data pipeline and mini-batching (J0–J4 complete, in progress)
 
 **Phase J is the latest phase, it is newly approved, and milestones J0
-through J3 have landed.** J4 through J9 have not started, and **J4 is
+through J4 have landed.** J5 through J9 have not started, and **J5 is
 next**. **No version is claimed** — the native line stays experimental and
 is not production-ready, and this entry records milestones rather than a
 release.
@@ -2502,12 +2502,98 @@ surface. J3 added no C++, no CMake entry, no C ABI symbol, no example, no
 benchmark, and no dependency, so **no native rebuild, CTest run, or
 sanitizer run was required and none is claimed**.
 
-**What still does not exist after J3**: `loader.state_dict()`,
-`loader.load_state_dict()`, the loader state schema and its format tag,
-exact mid-epoch loader restoration, checkpoint loader-state integration,
-the deterministic mini-batch training example, and the benchmark. A
-loader iterates and delivers; **where it stopped cannot yet be
-serialized**. Those are J4 onward.
+**J4 shipped the loader's in-memory state and exact mid-epoch resume**,
+and it is the **first Phase-J runtime milestone that added no public name
+at all**: `tensorforge.experimental.__all__` stayed at **25**.
+`NativeDataLoader` gained exactly two methods, over four private module
+constants (`_FORMAT`, `_FORMAT_VERSION`, `_SUPPORTED_FORMAT_VERSIONS`,
+`_STATE_FIELDS`) that are exported by nothing and are not a registry. No
+new module, no new class, and no new file under `src/` — the milestone is
+two methods on an existing class.
+
+`state_dict()` returns a compact **tagged wrapper** with exactly three
+root keys: `format` (`"tensorforge.native_data_loader"`),
+`format_version` (**1**), and `sampler` — the last being **exactly** the
+unchanged version-1 sampler state. The wrapper exists because the loader
+is what a caller checkpoints, and without its own tag a loader state and
+a sampler state would be the same JSON, so handing one where the other
+was meant would be accepted silently; both directions are asserted
+rejected. The loader owns no epoch, cursor, seed, shuffle, batch size, or
+drop-last field of its own, so **none is duplicated at the root**. Every
+container is fresh at every call — the root dict, the sampler dict, the
+dataset dict, and the `feature_shape` list — so editing what a caller was
+given reaches nothing; the structure carries no permutation, no dataset
+content, no NumPy object, no transaction serial, no iteration token, and
+nothing whose size grows with the number of samples; and it survives a
+`json` round trip and is accepted **unchanged** by the checkpoint's
+existing `_validated_metadata`, which is the compatibility evidence that
+makes J5's caller-managed workflow possible without the archive growing a
+field. It is allowed immediately after construction, between batches
+while an iterator is active, after an iterator is exhausted or
+superseded, at an epoch boundary, mid-epoch, with a **closed dataset**,
+and **after the loader's own `close()`** — and it is **refused** with
+`RuntimeError` while a §9.4 batch transaction is in flight, through the
+sampler's existing guard rather than a second authority, because inside
+the commit-before-delivery window there is no honest answer. That refusal
+is proved from *inside* a live transaction at both the claim and the
+pending phase, where the sampler's raw fields already show the candidate
+position and no snapshot may report it.
+
+`load_state_dict(state)` is transactional in the same sense the delivery
+is. Three lifecycle guards run **before** the state is read at all — the
+closed guard, then the transaction guard, then the active-iteration
+guard, each proved by precedence with deliberately malformed arguments —
+after which the wrapper is validated completely (exact `dict`, exact
+three-key set, exact tag, exact `int` version rejecting `bool`, exact
+nested `dict`) and the **whole** nested sampler validation is
+**delegated** to the sampler's existing validation-only seam rather than
+restated, preserving every J2/J3 ordering including the four
+dataset-compatibility fields in order. Only then does the commit run,
+through the same non-failing write seam a delivery commit and a rollback
+share — so there is no rollback path to test, because nothing mutates
+until the only remaining step cannot fail. Nineteen fault classes are
+each compared against a complete before/after fingerprint of the
+observable world: loader, sampler, and dataset identity, the closed
+states, all six values, both `state_dict()` results, the next batch, the
+permutation, the plan, the iterator slot, the transaction record, the
+active-iteration set, and the native live-storage count. Dataset identity
+is **validated and never adopted**; the six configuration and position
+values **are** adopted, so a loader deliberately built with a different
+seed, batch size, drop-last setting, and position takes the state's — and
+`id(loader)`, `loader.sampler`, and `loader.dataset` are unchanged.
+
+**Exact in-memory mid-epoch restoration** is J4's exit gate, and it is
+proved over two genuinely separate object graphs: a source
+dataset/sampler/loader interrupted mid-epoch, and a **separately
+constructed** target built with a deliberately different valid
+configuration. After the load the target reproduces the remaining tail
+exactly — identical index tuples, identical **raw IEEE-754 feature bits**
+through `uint32`/`uint64` views, identical `int64` targets with matching
+dtype, shape, contiguity, ownership, and read-only flag — then the same
+canonical next-epoch position and the same following whole epochs, with
+native live storage returning exactly to baseline. **No tolerance is used
+anywhere.** It runs at float64 and float32, sequential and shuffled,
+drop-last false and true, and at every required position: fresh, genuine
+mid-epoch, final batch, epoch boundary, later epoch, short final batch,
+exact divisibility, one-batch epoch, one-sample dataset, and batch larger
+than the dataset. A negative control proves the sequences differ when the
+restoration is omitted, and a cross-dtype leg proves batch **indices**
+identical across equivalent float32 and float64 datasets while the two
+states remain non-interchangeable in both directions. J4 added no C++, no
+CMake entry, no C ABI symbol, no example, no benchmark, and no
+dependency, so **no native rebuild, CTest run, or sanitizer run was
+required and none is claimed**.
+
+**What still does not exist after J4**: checkpoint loader-state
+integration, automatic loader discovery in either direction, the
+deterministic mini-batch training example, and the benchmark. No
+production pipeline module imports the checkpoint and no checkpoint
+module names a pipeline object — both asserted by source inspection, and
+by driving a real save and load with the loader's two methods patched to
+record any call, which neither fired. A loader's position can be
+serialized and restored **in memory**, exactly; placing it in checkpoint
+metadata is the caller's step, and proving that workflow end to end is
+J5's. Those are J5 onward.
 
 **No capability moved, and none will.** `SUPPORTED_DTYPES` is
 `("float64", "float32")`, `SUPPORTED_DEVICES` is `("cpu",)`, `UNSUPPORTED`
