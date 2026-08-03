@@ -3030,6 +3030,21 @@ def test_the_float32_paths_are_exactly_the_families_landed_through_i7():
 F32_TRANSCENDENTAL_ULP = 1
 F32_TRANSCENDENTAL_ULP_VS_NUMPY = 2
 
+# The float64 half of the same statement, and not a new concession: it is
+# the bound ``tests/test_native_abi_boundary.py`` has enforced since it was
+# written, for the reason recorded there. ``exp`` and ``log`` are plain
+# ``std::exp``/``std::log`` (cpp/src/elementwise.cpp), which no toolchain
+# promises to round correctly, and they are deliberately excluded from the
+# templated traversals so they stay on the retained odometer exclusively.
+# Comparing TensorForge's libm against NumPy's bit-for-bit therefore tests
+# the platform rather than TensorForge — measured here at 200,000 inputs,
+# the shipped Windows UCRT and Linux glibc 2.39 results differ on 1,034
+# ``exp`` elements and 149 ``log`` elements and **never by more than one
+# representable step**, with each within one step of correctly rounded.
+# One step is the tightest bound that evidence supports; zero is the
+# platform-dependent claim that failed in Linux CI.
+F64_TRANSCENDENTAL_ULP = 1
+
 
 def _f32_ulp_distance(got, want):
     """Representable float32 steps between two finite arrays, elementwise.
@@ -3045,23 +3060,156 @@ def _f32_ulp_distance(got, want):
     return np.abs(monotone(got) - monotone(want))
 
 
-def _assert_transcendental(got, want, limit, label):
+def _f64_ulp_distance(got, want):
+    """Representable float64 steps between two finite arrays, elementwise.
+
+    The same reflection as ``_f32_ulp_distance``, one width up, with the
+    same semantics as ``tests/test_native_abi_boundary.py``'s scalar
+    ``_ulp_distance``: neighbouring floats are 1 apart, a value is 0 from
+    itself, and the count is exact across zero and across the
+    denormal/normal boundary.
+
+    The arithmetic is done in Python ``int`` rather than ``int64`` because
+    the *difference* between two monotone float64 keys can reach
+    ``2**64 - 2`` — representable as a Python integer and not as an
+    ``int64`` — so a vectorized subtraction would silently wrap on exactly
+    the pair a bound is most interested in. The arrays this runs on are
+    small, and exactness is the point.
+    """
+    def keys(values):
+        raw = np.ascontiguousarray(values, dtype=np.float64).view(np.int64)
+        return [(-(2 ** 63) - bits) if bits < 0 else bits
+                for bits in raw.reshape(-1).tolist()]
+    return [abs(a - b) for a, b in zip(keys(got), keys(want))]
+
+
+_ULP_DISTANCE = {"float32": _f32_ulp_distance, "float64": _f64_ulp_distance}
+
+
+def _assert_transcendental(got, want, limit, label, dtype="float32"):
     """NaN by position, infinities and zeros by exact bits, everything else
     within ``limit`` steps. The tolerance deliberately never covers a zero:
     a distance cannot see a zero's sign, and that is precisely the kind of
-    thing this suite exists to catch."""
-    assert got.dtype == np.float32 and want.dtype == np.float32, label
+    thing this suite exists to catch.
+
+    ``dtype`` selects the width the steps are counted in, and both
+    operands are required to be exactly that width — so a float32 result
+    is never compared against a float64 reference, at either setting.
+    """
+    floating = _DTYPE_BITS[dtype][2]
+    assert got.dtype == np.dtype(floating), (label, got.dtype)
+    assert want.dtype == np.dtype(floating), (label, want.dtype)
     assert np.array_equal(np.isnan(got), np.isnan(want)), f"{label}: NaN places"
     special = np.isnan(got) | np.isinf(got) | np.isinf(want) | (got == 0) \
         | (want == 0)
-    assert _same_bits(got[special], want[special], "float32"), (
+    assert _same_bits(got[special], want[special], dtype), (
         f"{label}: a special value is not exactly reproduced")
     ordinary = ~special
     if not ordinary.any():
         return 0
-    worst = int(_f32_ulp_distance(got[ordinary], want[ordinary]).max())
+    worst = int(max(_ULP_DISTANCE[dtype](got[ordinary], want[ordinary])))
     assert worst <= limit, f"{label}: {worst} ULP apart, over the {limit} bound"
     return worst
+
+
+# -- the ULP helpers' own contract, at both widths --------------------------
+#
+# These need no backend: they pin the measuring instrument *before* anything
+# is asserted with it, so "within one ULP" cannot quietly become "within
+# whatever the helper happens to accept". A bound that is never shown able
+# to fail is an unbounded tolerance wearing a number.
+
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("case", ("equal", "neighbour_up", "neighbour_down",
+                                  "across_zero", "denormal_boundary",
+                                  "signed_zeros_are_one_number"))
+def test_the_ulp_distance_helpers_count_representable_steps(dtype, case):
+    """Symmetric, exact at the denormal boundary, correct across zero, and
+    blind to a zero's sign — which is why ``_assert_transcendental`` checks
+    zeros by raw bits instead of by distance."""
+    floating = _DTYPE_BITS[dtype][2]
+    tiny = floating(np.finfo(floating).smallest_subnormal)
+    smallest_normal = floating(np.finfo(floating).smallest_normal)
+    pairs = {
+        "equal": (floating(1.5), floating(1.5), 0),
+        "neighbour_up": (floating(1.0),
+                         np.nextafter(floating(1.0), floating(np.inf)), 1),
+        "neighbour_down": (floating(-1.0),
+                           np.nextafter(floating(-1.0), floating(-np.inf)), 1),
+        "across_zero": (tiny, -tiny, 2),
+        "denormal_boundary": (
+            np.nextafter(smallest_normal, floating(0)), smallest_normal, 1),
+        "signed_zeros_are_one_number": (floating(0.0), floating(-0.0), 0),
+    }
+    a, b, expected = pairs[case]
+    distance = _ULP_DISTANCE[dtype]
+    assert int(max(distance(np.array([a], dtype=floating),
+                            np.array([b], dtype=floating)))) == expected
+    assert int(max(distance(np.array([b], dtype=floating),
+                            np.array([a], dtype=floating)))) == expected
+
+
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_transcendental_assertion_enforces_the_stated_boundary(dtype):
+    """The negative control the one-ULP repair rests on. Exact equality
+    passes, one step passes at a one-step budget, **two steps fail**, and no
+    special value is ever absorbed by the tolerance."""
+    floating = _DTYPE_BITS[dtype][2]
+
+    def array(*values):
+        return np.array(values, dtype=floating)
+
+    one = array(1.0)
+    up = np.nextafter(floating(1.0), floating(np.inf))
+    two_up = np.nextafter(up, floating(np.inf))
+
+    # Exact equality passes, and reports a zero-wide budget.
+    assert _assert_transcendental(one, one, 1, "equal", dtype=dtype) == 0
+    # One representable step passes at limit 1, and reports it honestly.
+    assert _assert_transcendental(one, array(up), 1, "one step",
+                                  dtype=dtype) == 1
+    # Two steps do not. This is the assertion that keeps the bound a bound.
+    with pytest.raises(AssertionError, match="2 ULP apart"):
+        _assert_transcendental(one, array(two_up), 1, "two steps", dtype=dtype)
+    # ...and one step does not pass at a zero-step budget either, so the
+    # limit argument is genuinely load-bearing.
+    with pytest.raises(AssertionError, match="1 ULP apart"):
+        _assert_transcendental(one, array(up), 0, "exactness", dtype=dtype)
+
+    # Specials are never covered by the tolerance, however small it is.
+    with pytest.raises(AssertionError, match="NaN places"):
+        _assert_transcendental(array(np.nan), one, 1, "nan place", dtype=dtype)
+    with pytest.raises(AssertionError, match="NaN places"):
+        _assert_transcendental(one, array(np.nan), 1, "nan place", dtype=dtype)
+    with pytest.raises(AssertionError, match="special value"):
+        _assert_transcendental(array(0.0), array(-0.0), 1, "signed zero",
+                               dtype=dtype)
+    with pytest.raises(AssertionError, match="special value"):
+        _assert_transcendental(array(np.inf), array(-np.inf), 1, "inf sign",
+                               dtype=dtype)
+    with pytest.raises(AssertionError, match="special value"):
+        _assert_transcendental(array(np.inf), array(np.finfo(floating).max),
+                               1, "inf vs finite", dtype=dtype)
+    # A NaN in the *same* place on both sides is fine, and is not measured.
+    assert _assert_transcendental(array(np.nan, 1.0), array(np.nan, 1.0), 1,
+                                  "matching nan", dtype=dtype) == 0
+
+
+def test_the_transcendental_assertion_refuses_a_mixed_width_comparison():
+    """A float32 result is never compared against a float64 reference, at
+    either setting — the dtype claim is exact even where the value claim is
+    a bound."""
+    thirty_two = np.array([1.0], dtype=np.float32)
+    sixty_four = np.array([1.0], dtype=np.float64)
+    with pytest.raises(AssertionError):
+        _assert_transcendental(thirty_two, sixty_four, 1, "mixed",
+                               dtype="float32")
+    with pytest.raises(AssertionError):
+        _assert_transcendental(sixty_four, thirty_two, 1, "mixed",
+                               dtype="float64")
+    with pytest.raises(AssertionError):
+        _assert_transcendental(thirty_two, thirty_two, 1, "wrong width",
+                               dtype="float64")
 
 
 def _core(values, dtype):
@@ -3252,9 +3400,26 @@ def test_unary_operations_match_the_oracle_at_both_dtypes(dtype):
 
 
 @needs_native
-def test_float64_transcendentals_did_not_move():
-    """The float64 half of exp/log is unchanged by the generalization: it is
-    still bit-identical to NumPy's float64, which is what it was before I3.
+def test_float64_transcendentals_stay_within_the_measured_ulp_bound():
+    """The float64 half of exp/log is unchanged by the generalization — same
+    kernel structure, same dtype in and out, same retained-odometer path —
+    and it is held to the **measured** contract rather than to bit equality.
+
+    ``exp`` and ``log`` are plain ``std::exp`` and ``std::log``
+    (cpp/src/elementwise.cpp), and they remain the production operations at
+    both widths; H8 deliberately kept them off the templated traversals for
+    exactly this reason. Neither has a correctly-rounded cross-toolchain
+    guarantee, so **comparing TensorForge's libm against NumPy's
+    bit-for-bit tests the platform, not TensorForge** — it is the same
+    invalid oracle the ABI-boundary module retired, and it is the one that
+    failed in Linux CI while passing on the machine it was written on.
+
+    The established contract, unchanged and not widened here, is: ordinary
+    finite results within **one representable float64 step**, and specials
+    exact — NaN in the same places, infinities matching by sign, and both
+    signed zeros matching by raw bit pattern. The dtype claim stays exact
+    at every point, because the dtype is a fact the implementation does
+    specify.
     """
     values = _sample("float64", 64, seed=9)
     positive = np.abs(values) + 0.5
@@ -3264,7 +3429,16 @@ def test_float64_transcendentals_did_not_move():
         try:
             out = core.exp() if name == "exp" else core.log()
             try:
-                assert _same_bits(out.to_numpy(), oracle(source), "float64")
+                got = out.to_numpy()
+                # Exact, because these are specified: the operation stays at
+                # float64 in and float64 out, and narrows nothing.
+                assert out.dtype == "float64"
+                assert got.dtype == np.float64
+                assert got.shape == source.shape
+                _assert_transcendental(got, oracle(source),
+                                       F64_TRANSCENDENTAL_ULP,
+                                       f"float64 {name} vs numpy",
+                                       dtype="float64")
             finally:
                 out.close()
         finally:
