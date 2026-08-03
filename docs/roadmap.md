@@ -48,12 +48,33 @@ approved afterwards, so it must not be described as work that was already
 on the roadmap. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md).
 
-**Only milestone J0 has landed; J1 through J9 have not started.** J0 is an
-architecture, contract, and documentation milestone and **added no runtime
-behavior at all** — no dataset, sampler, or loader class, no helper module,
-no state serializer, no public export, no C++, no C ABI symbol, no example,
-no benchmark, and no checkpoint or optimizer-state change. **No Phase-J
-runtime API is exported yet**, and runtime capability begins at **J1**.
+**Milestones J0 and J1 have landed; J2 through J9 have not started, and
+J2 is next.** J0 was an architecture, contract, and documentation
+milestone and **added no runtime behavior at all** — no dataset, sampler,
+or loader class, no helper module, no state serializer, no public export,
+no C++, no C ABI symbol, no example, no benchmark, and no checkpoint or
+optimizer-state change. Runtime capability began at **J1**.
+
+**J1 shipped the finite host-backed dataset, `NativeTensorDataset`** —
+the phase's first runtime, and **exactly one** new public experimental
+name (`tensorforge.experimental.__all__` went from 22 names to 23). It
+takes one owned host snapshot of the features and one of the class
+targets — unconditional copies, so caller mutation, resize, or deletion
+afterwards reaches nothing — at an **explicitly chosen** native feature
+dtype that is never inferred from the input array, computes the locked
+SHA-256 content fingerprint eagerly at construction, and turns any index
+sequence into a fresh owning `NativeTensor` feature batch **the caller
+closes** beside a fresh read-only host `int64` target batch. Order and
+duplicate indices are preserved exactly, an empty request is refused, and
+the dataset owns **no native storage between calls**. It added no C++, no
+CMake entry, no C ABI symbol, no example, no benchmark, no checkpoint
+field or version, no optimizer-state version, and no dependency.
+
+**What Phase J still does not have**, because J2 onward have not started:
+`NativeBatchSampler`, `NativeDataLoader`, the private permutation
+helpers, and with them every shuffle, seed, epoch, cursor, batch size,
+drop-last setting, sampler or loader state schema, and checkpoint
+loader-state integration. **Native mini-batching does not exist yet.**
 
 What J0 resolved, so that later milestones inherit an unambiguous design
 rather than re-deriving one: the three eventual public names —
@@ -406,11 +427,13 @@ afterwards. It is recorded that way rather than rewritten, because "the
 phase that came next" and "the phase that was always planned next" are
 different facts.
 
-Phase J's own design contract now exists
+Phase J's own design contract exists
 ([native_data_pipeline_design.md](native_data_pipeline_design.md), milestone
-**J0**), which is what makes naming it accurate. Its runtime has **not**
-begun: J1 through J9 are all unstarted, and nothing about a data pipeline
-may be described as working until the milestone that ships it has landed.
+**J0**), and its runtime has begun at **J1** with `NativeTensorDataset`.
+**J2 through J9 are unstarted**, so the sampler, the loader, and every
+shuffle, epoch, cursor, and state schema remain promises — and nothing
+about them may be described as working until the milestone that ships it
+has landed. **J2, the deterministic sampler, is next.**
 
 What the existing documents still name as future work *beyond* Phase J, in
 no committed order, is: native integer tensors, further dtypes or devices

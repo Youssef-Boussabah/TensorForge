@@ -81,20 +81,23 @@ repaired here rather than rewritten away. The latest completed phase is
 Phase I.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
-latest phase, and it is newly approved: milestone J0 has landed and J1
-through J9 have not started.** It was approved *after* Phase I closed at
-I11, not carried over from an earlier plan. **J0 is architecture,
-contract, and documentation work and shipped no runtime behavior at all**
-— no dataset, sampler, or loader class, no helper module, no state
-serializer, no public export, no C++, no C ABI symbol, no example, no
-benchmark, and no checkpoint or optimizer-state change. **No Phase-J
-runtime API is exported yet**; runtime capability begins at **J1**. Its
-architecture contract is
+latest phase, and it is newly approved: milestones J0 and J1 have landed
+and J2 through J9 have not started.** It was approved *after* Phase I
+closed at I11, not carried over from an earlier plan. **J0 was
+architecture, contract, and documentation work and shipped no runtime
+behavior at all** — no dataset, sampler, or loader class, no helper
+module, no state serializer, no public export, no C++, no C ABI symbol, no
+example, no benchmark, and no checkpoint or optimizer-state change.
+Runtime capability began at **J1**, which shipped `NativeTensorDataset` —
+**pure Python over NumPy**, adding no kernel, no ctypes declaration, and
+no C++ or CMake file. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md). Nothing
-on this page changed for it: the library still exports **54** `tf_*`
-symbols, the CTest inventory is still **24**, and every capability
-registry, checkpoint version, and optimizer-state version is exactly what
-Phase I left. The phase plans no new C ABI export at any milestone, and
+on this page changed for either milestone: the library still exports
+**54** `tf_*` symbols, the CTest inventory is still **24**, and every
+capability registry, checkpoint version, and optimizer-state version is
+exactly what Phase I left. **J1 therefore required no native rebuild, no
+CTest run, and no sanitizer run**, and none is claimed for it; the
+sampler and the loader, which will need none either, have not started. The phase plans no new C ABI export at any milestone, and
 needs none — a batch reaches native storage through the existing
 `NativeTensor.from_array` boundary, and the deterministic shuffle reuses
 the locked `tensorforge.splitmix64` derivation already compiled into

@@ -464,14 +464,18 @@ in the stable Python framework — that does not make them native.
   loading, checkpoint merging, sharding, compression, or encryption.
   *(Phase J does not change this. Its contract carries a loader position as
   **caller-supplied metadata** through the channel that already exists, so
-  the archive's own capture set stays exactly what it is — and no Phase-J
-  runtime exists yet in any case.)*
-- a data pipeline of any kind: datasets, samplers, loaders, shuffling,
-  mini-batching, epoch or cursor state, or batch-index planning. The
-  newly approved **Phase J** is designing these
+  the archive's own capture set stays exactly what it is — and no
+  Phase-J loader exists yet in any case, so there is no position to
+  capture.)*
+- samplers, loaders, shuffling, mini-batching, epoch or cursor state, and
+  batch-index planning. The newly approved **Phase J** is building these
   ([native_data_pipeline_design.md](native_data_pipeline_design.md),
-  milestone **J0** complete), and **no runtime for any of it exists**:
-  J1 through J9 have not started and nothing is exported
+  milestones **J0** and **J1** complete), and **no runtime for any of
+  them exists**: J2 through J9 have not started and nothing beyond the
+  dataset is exported. What *does* exist, since **J1**, is
+  `NativeTensorDataset` — a finite host-backed dataset that materializes
+  a feature batch and a target batch for an index sequence the **caller**
+  supplies, which is not a loader and plans no batches
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
 - *(Phase E itself is complete — E0–E10 — so nothing from it is listed
@@ -942,7 +946,7 @@ surfaces. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
 Phase J, below, is the latest phase; it is newly approved and its runtime
-has not begun.
+has begun at J1 with the dataset alone.
 
 **Since milestone I9, `float32` and `float64` are both supported native
 CPU dtypes**, and this is the row that supersedes every "float64 only"
@@ -1496,7 +1500,7 @@ float32 training and the exact float32 resume proof both passed, which is
 the same discipline that kept `dropout` in `UNSUPPORTED` from G3 through
 G9 while the operation and the module both already existed.
 
-## Phase J — deterministic native data pipeline and mini-batching, **newly approved (J0 complete, J1–J9 not started)**
+## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0 and J1 complete, J2–J9 not started)**
 
 **Phase J is the latest phase, and it is newly approved.** The repository
 closed Phase I at I11 without committing to a successor; Phase J was
@@ -1504,14 +1508,28 @@ approved afterwards, so nothing here describes pre-existing roadmap work.
 Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md).
 
-**Nothing in this section is supported today.** Milestone **J0** is
-architecture, contract, and documentation work and shipped **no runtime
-behavior at all** — no dataset, sampler, or loader class, no helper module,
-no state serializer, no public export, no C++, no C ABI symbol, no example,
-no benchmark, and no checkpoint or optimizer-state change. **No Phase-J
-runtime API is exported yet**; runtime capability begins at **J1**.
+Milestone **J0** was architecture, contract, and documentation work and
+shipped **no runtime behavior at all**. Runtime capability began at
+**J1**, and **exactly one** thing in this section exists today:
 
-| Registry | Value at J0 | Value expected at J9 |
+- **`NativeTensorDataset`** (J1) — the finite host-backed dataset, in
+  `tensorforge.experimental`. One owned copied host snapshot of the
+  features and one of the class targets; the native feature dtype
+  **explicitly chosen** and never inferred from the input array, still
+  defaulting to float64; a locked SHA-256 content fingerprint and a
+  JSON-compatible `identity()`; a caller-owned `NativeTensor` feature
+  batch and a fresh read-only host `int64` target batch per index
+  sequence, order and duplicates preserved exactly; and no native storage
+  held between calls. It moved no registry value, added no C ABI symbol,
+  and took the experimental Python export inventory from 22 names to 23.
+
+**Everything else in this section is still unsupported.** There is **no
+sampler, no loader, no shuffle, no seed, no epoch, no cursor, no batch
+size, no drop-last, no sampler or loader state, and no checkpoint
+loader-state integration** — and therefore **no native mini-batching**.
+Those are J2 onward; **J2 is next**.
+
+| Registry | Value at J0 and J1 | Value expected at J9 |
 |---|---|---|
 | `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
 | `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
@@ -1532,7 +1550,7 @@ The milestone ladder, with its current status:
 | Milestone | Subject | Status |
 |---|---|---|
 | **J0** | architecture and API contract | **complete** |
-| J1 | host-backed dataset foundation | not started |
+| **J1** | host-backed dataset foundation | **complete** |
 | J2 | deterministic sampler | not started |
 | J3 | native mini-batch loader | not started |
 | J4 | loader state and mid-epoch resume | not started |

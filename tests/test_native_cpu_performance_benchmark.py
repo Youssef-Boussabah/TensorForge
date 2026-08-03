@@ -1380,6 +1380,7 @@ def test_h0_changes_no_export():
         "NativeCrossEntropyLoss", "native_accuracy",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
         "NativeGenerator", "NativeDropout",
+        "NativeTensorDataset",   # Phase J, milestone J1 — not H0
     }
 
 

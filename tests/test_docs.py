@@ -273,6 +273,7 @@ def test_experimental_exports_stay_intentional():
         "NativeBatchNorm2d",                            # Phase F, F4
         "NativeGenerator",                              # Phase G, G1
         "NativeDropout",                                # Phase G, G4
+        "NativeTensorDataset",                          # Phase J, J1
     }
     for name in experimental.__all__:
         assert hasattr(experimental, name)
@@ -1534,6 +1535,10 @@ PHASE_F_EXPORT_SURFACE = frozenset({
 POST_PHASE_F_EXPORTS = frozenset({
     "NativeGenerator",   # Phase G, milestone G1 — random *state* only
     "NativeDropout",     # Phase G, milestone G4 — the Dropout module
+    # Phase J, milestone J1 — the host-backed dataset. Phases H and I
+    # added no export at all, which is why the gap in the letters here is
+    # correct rather than an omission.
+    "NativeTensorDataset",
 })
 
 
@@ -1953,8 +1958,9 @@ def test_phase_f_export_surface_adds_only_the_shipped_normalization_modules():
     # ...and Phase F added nothing else: everything beyond the Phase-E
     # baseline that is not a later phase's export is exactly those three.
     later_phase_exports = {
-        "NativeGenerator",   # Phase G, milestone G1
-        "NativeDropout",     # Phase G, milestone G4
+        "NativeGenerator",        # Phase G, milestone G1
+        "NativeDropout",          # Phase G, milestone G4
+        "NativeTensorDataset",    # Phase J, milestone J1
     }
     assert exports - phase_e_surface - later_phase_exports == phase_f_surface
     for absent in ("NativeBatchNorm3d",):

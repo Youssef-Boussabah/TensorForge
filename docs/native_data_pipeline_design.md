@@ -2,24 +2,31 @@
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching.** This
 document is the authoritative architecture contract for the phase. It is
-written **before** any data-pipeline implementation exists, and milestone
-**J0** consists of exactly this document, the status reconciliation it
+written **before** any data-pipeline implementation existed, and milestone
+**J0** consisted of exactly this document, the status reconciliation it
 required, and the contract guardrails that keep it honest.
 
-**J0 adds no runtime behavior.** No dataset class, no sampler class, no
+**J0 added no runtime behavior.** No dataset class, no sampler class, no
 loader class, no helper module, no state serializer, no shuffle helper, no
 batching helper, no public export, no production import, no C++, no CMake
 registration, no C ABI symbol, no example, no benchmark, no checkpoint
-field, no checkpoint version, and no optimizer-state version. **No
-Phase-J runtime API is exported yet, and none exists.** Runtime capability
-begins at **J1**.
+field, no checkpoint version, and no optimizer-state version. Runtime
+capability began at **J1**, which added **exactly one** public name —
+`NativeTensorDataset` (§3.3, §4, §5, §6) — and nothing else.
 
-**Phase-J status: J0 complete; J1 through J9 not started.** Phase J is a
-**newly approved** direction. It was not part of the roadmap while Phases
-A–I were being built: the repository deliberately closed Phase I at I11
-without committing to a successor, and Phase J was approved afterwards.
-Nothing in this document may be read as describing work that already
-existed.
+**Phase-J status: J0 and J1 complete; J2 through J9 not started.** What
+exists today is the dataset and nothing more. **No sampler, no loader, no
+permutation helper, no shuffle, no seed, no epoch, no cursor, no batch
+size, no drop-last, no sampler or loader state schema, and no checkpoint
+loader-state integration exists yet** — those are J2 onward, and **J2 is
+the next implementation milestone**. Every §7–§14 statement about them
+describes work that has not been written.
+
+Phase J is a **newly approved** direction. It was not part of the roadmap
+while Phases A–I were being built: the repository deliberately closed
+Phase I at I11 without committing to a successor, and Phase J was approved
+afterwards. Nothing in this document may be read as describing work that
+already existed.
 
 **Phase I remains complete (I0–I11) and is the latest *completed* phase.**
 Phase J is the latest phase. Nothing in Phase J revisits, reverses, widens,
@@ -2733,7 +2740,7 @@ followed.
   empty modules, stubs, and `NotImplementedError` methods.
 - **Exit gate:** §24.1.
 
-### J1 — Host-backed dataset foundation — **not started**
+### J1 — Host-backed dataset foundation — **complete**
 
 - **Entry:** J0 merged.
 - **Scope:** `NativeTensorDataset` — §4 validation, §5 snapshot semantics,
@@ -2751,6 +2758,58 @@ followed.
 - **Exclusions:** shuffling, batching, cursors, epochs, loader state.
 - **Exit gate:** every §4/§5/§6/§17.2 rule asserted; `tensorforge
   .experimental.__all__` grows by exactly one; 54 exports; suite green.
+- **Outcome:** met. `experimental/native_dataset.py` ships
+  `NativeTensorDataset`, exported from `tensorforge.experimental`, whose
+  `__all__` went from 22 names to 23 — `NativeTensorDataset` and no other.
+  `tests/test_native_dataset.py` covers §4's accepted and rejected input
+  classes and their **precedence**, §5's snapshot and alias rules, §6's
+  digest against **independently computed known answers**, §12.6's index
+  contract at both batch methods, §15's lifecycle, and §17.2's three
+  construction-failure positions by injection with non-vacuity controls.
+  The C ABI stayed at 54 exports, the CTests at 24, the examples at 15,
+  the benchmarks at 8, the checkpoint at version 3 with `(1, 2, 3)`
+  accepted, and the optimizer state at version 1; no C++ or CMake file was
+  touched.
+
+**Implementation clarifications recorded at J1**, none of which changes a
+locked rule — the §23 discipline is to record rather than rewrite:
+
+1. **"Exact `int`s" in §12.6 means `type(value) is int`.** A `tuple` or
+   `list` index container therefore rejects a NumPy integer scalar as well
+   as a `bool`, on the §4.1 exact-type discipline. This costs a caller
+   nothing: a NumPy integer sequence is passed as the **array** the same
+   clause already accepts, which is where NumPy integer widths are
+   handled. Stated because "exact int" could otherwise be read as
+   `_as_int_tuple`'s more permissive rule.
+2. **A NumPy scalar feature argument fails the *type* rule, not the rank
+   rule.** §4.2 makes a 0-d *array* a `ValueError` for having no sample
+   axis; `numpy.float64(1.5)` is not an `ndarray` at all, so §4.1's
+   `TypeError` fires first. Both are rejections, and the ordering is the
+   one §4.8 already specifies.
+3. **The two target-value checks cannot both fire for one array.** §4.8
+   step 5 orders int64 representability before non-negativity; an unsigned
+   dtype cannot hold a negative value and a signed one cannot exceed the
+   int64 maximum, so the order is observable only as which message a given
+   dtype produces. The ordering is implemented as specified regardless.
+4. **The dataset has no `__del__`.** §15.5 permits a garbage-collection
+   fallback where something is owned; the dataset owns two NumPy arrays
+   and **no native resource**, so ordinary Python reclamation is already
+   correct and a finalizer would advertise a lifetime it does not have —
+   `NativeGenerator`'s stated reason for having no `close()` at all,
+   applied rather than replaced. `close()` still exists, because the host
+   snapshots genuinely are owned and releasing them early is meaningful.
+5. **A wrong-*rank* index array raises `ValueError`, not `TypeError`.**
+   §12.6 step 2 names one exception for the whole container check, but the
+   step folds together two different faults, and §2.8 separates them:
+   `TypeError` for a wrong type — a non-container, a non-integer or `bool`
+   dtype, a non-`int` element — and `ValueError` for a well-typed but
+   unacceptable value, which is what a 2-D or 0-d integer index array is.
+   This is exactly the split §4.3 already specifies for the *targets*
+   (dtype kind → `TypeError`, rank → `ValueError` naming the shape) and
+   the one `_prepare_class_targets` has always used, so the alternative
+   would have made the same fault raise two different exceptions in two
+   places. The step order is unchanged: rank is checked before dtype, so
+   a 2-D float array is reported as the more structural fault.
 
 ### J2 — Deterministic sampler — **not started**
 

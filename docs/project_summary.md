@@ -1660,15 +1660,25 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase J — deterministic native data pipeline and mini-batching — is the
-latest phase, and it is newly approved: only milestone J0 has landed, and
-J1 through J9 have not started.** Phase J was approved *after* Phase I
-closed at I11, so it is not pre-existing roadmap work. **J0 is
+latest phase, and it is newly approved: milestones J0 and J1 have landed,
+and J2 through J9 have not started.** Phase J was approved *after* Phase I
+closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
 no state serializer, no public export, no C++, no C ABI symbol, no example,
-no benchmark, and no checkpoint or optimizer-state change. **No Phase-J
-runtime API is exported yet**; runtime capability begins at **J1**. Its
-architecture contract is
+no benchmark, and no checkpoint or optimizer-state change. Runtime
+capability began at **J1**, which shipped `NativeTensorDataset`: the
+finite host-backed dataset holding one owned, copied host snapshot of the
+features and one of the class targets at an **explicitly chosen** native
+feature dtype (never inferred from the input array), with a locked
+SHA-256 content fingerprint, a caller-owned `NativeTensor` feature batch
+and a read-only host `int64` target batch per index sequence, exact order
+and duplicate preservation, and **no native storage held between calls**.
+It added exactly one public experimental name and nothing else — no C++,
+no C ABI symbol, no example, no benchmark, and no schema change. **The
+sampler and the loader do not exist yet, so there is still no shuffling,
+no epoch, no cursor, and no native mini-batching**; those are J2 onward,
+and **J2 is next**. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md), which
 locks three eventual public names (`NativeTensorDataset`,
 `NativeBatchSampler`, `NativeDataLoader`), a copied-snapshot dataset whose

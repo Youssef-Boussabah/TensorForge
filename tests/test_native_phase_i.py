@@ -148,6 +148,23 @@ I7_DTYPE_CONSTRUCTORS = frozenset({
     "NativeBatchNorm2d",
 })
 
+# What a *later* phase legitimately added on the same rule, named separately
+# so the Phase-I statement above stays exactly what Phase I shipped. The
+# assertions below compare against the union, so they remain exact equalities
+# in both directions — a class that quietly gains a ``dtype`` argument still
+# fails, and so does one that loses it.
+#
+# ``NativeTensorDataset`` (Phase J, milestone J1) belongs here rather than
+# among the absences: it **does** own dtype-bearing numeric state — its
+# feature snapshot is materialized at the chosen dtype, which every batch it
+# produces then carries — so it takes the argument through the same shared
+# ``_native_dtype.normalize_module_dtype`` validator, keyword-only, defaulting
+# to ``None`` meaning float64, and infers nothing from the input array.
+POST_PHASE_I_DTYPE_CONSTRUCTORS = frozenset({
+    "NativeTensorDataset",
+})
+DTYPE_CONSTRUCTORS = I7_DTYPE_CONSTRUCTORS | POST_PHASE_I_DTYPE_CONSTRUCTORS
+
 
 def _constructors_with_a_dtype_argument():
     """Every exported ``tensorforge.experimental`` class whose constructor
@@ -1946,8 +1963,17 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
         "src/tensorforge/experimental/native_sgd.py",
         "src/tensorforge/experimental/native_adam.py",
     } | I9_DOCUMENTATION_ONLY
+    # The diff runs from I0 to HEAD, so it necessarily also sees files a
+    # *later* phase added. Those are named explicitly and excluded rather than
+    # the Phase-I claim being loosened: what stays asserted is exactly "Phase I
+    # touched only the files its scope names", and a new *Phase-I* file would
+    # still fail here. ``native_dataset.py`` is Phase J milestone J1's, and
+    # that it is no part of Phase I is asserted by tests/test_native_phase_j.py.
+    LATER_PHASE_FILES = {
+        "src/tensorforge/experimental/native_dataset.py",   # Phase J, J1
+    }
     changed = [path for path in _changed_since(I0_COMMIT)
-               if path.startswith("src/")]
+               if path.startswith("src/") and path not in LATER_PHASE_FILES]
     unexpected = [path for path in changed if path not in allowed]
     assert unexpected == [], (
         f"the phase changed more of the Python package than its scope "
@@ -2749,7 +2775,7 @@ def test_i2_moved_no_public_capability_at_all():
         assert absent not in exports, absent
     # I2 itself gave no constructor a dtype argument; the six that have one
     # are milestone I7's, and they are exactly the six.
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
 
 
 @needs_native
@@ -3627,7 +3653,7 @@ def test_public_tensor_construction_opened_at_i9_and_not_before():
             built.close()
     # ...and the dtype-argument surface is still exactly the closed I7 set:
     # opening the registry gave no *new* class a dtype argument.
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
 
 
 def test_the_float32_elementwise_path_holds_no_hidden_float64():
@@ -5163,7 +5189,7 @@ def test_the_families_i8_owns_now_execute_at_float32():
         NativeAdam, NativeParameter, NativeSGD, native_checkpoint,
     )
 
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
     assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
@@ -6308,7 +6334,7 @@ def test_i5_moved_no_public_capability_at_all():
     from tensorforge.experimental import NativeConv2d, NativeMaxPool2d
     assert "dtype" in inspect.signature(NativeConv2d).parameters
     assert "dtype" not in inspect.signature(NativeMaxPool2d).parameters
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
 
 
 # ===========================================================================
@@ -7781,7 +7807,7 @@ def test_i6_moved_no_public_capability_at_all():
                 if name.endswith(("_f32", "_f64", "_float32", "_float64"))]
     # I6 itself gave no constructor a dtype argument; the six that have one
     # are milestone I7's, and they are exactly the six.
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
 
 
 # ===========================================================================
@@ -7888,7 +7914,7 @@ def test_the_dtype_argument_surface_is_exactly_the_six_named_classes():
 
     import tensorforge.experimental as experimental
 
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
     for name in ("NativeReLU", "NativeFlatten", "NativeMaxPool2d",
                  "NativeSequential", "NativeDropout", "NativeMSELoss",
                  "NativeCrossEntropyLoss", "NativeGenerator", "NativeSGD",
@@ -9796,7 +9822,7 @@ def test_i7_moved_no_public_capability_at_all():
         assert absent not in exports, absent
     assert not [name for name in exports
                 if name.endswith(("_f32", "_f64", "_float32", "_float64"))]
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
 
 
 @needs_native

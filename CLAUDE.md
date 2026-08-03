@@ -586,16 +586,16 @@ document (and README links) **in the same milestone**.
   not an accident: **prove first, then promise.**
 - Phase J is the latest phase — **Deterministic Native Data Pipeline and
   Mini-Batching**, authority `docs/native_data_pipeline_design.md`. It was
-  approved **after** Phase I closed and was not on the earlier roadmap, so it
-  must never be described as pre-existing plan work.
-- Milestone **J0** (architecture, contract, documentation) is done; **J1
-  through J9 have not started**, and **J1 is the next implementation
-  milestone.** J0 added no runtime behavior, and **no Phase-J runtime API
-  exists or is exported yet.** Its three eventual public names, none of which
-  exists yet: `NativeTensorDataset` (J1), `NativeBatchSampler` (J2),
-  `NativeDataLoader` (J3). Everything else the contract locks — inputs,
-  fingerprint, shuffle, state schemas, orderings, ownership, the ladder — is
-  in the design document; read it there.
+  approved **after** Phase I closed and was not on the earlier roadmap;
+  never describe it as pre-existing plan work.
+- Milestones **J0** (contract) and **J1** (dataset) are done; **J2 through
+  J9 have not started**, and **J2 is next.** J1 added exactly one public
+  name, `NativeTensorDataset` — a finite dataset over two owned copied host
+  snapshots at an explicitly chosen native dtype, with caller-owned batches.
+  **`NativeBatchSampler` (J2) and `NativeDataLoader` (J3) do not exist**, so
+  there is no shuffle, epoch, cursor, loader state, or native mini-batching
+  yet. Everything the contract locks is in the design document; read it
+  there.
 - **Phase J moves no capability at any milestone.** Every §3 row — registries,
   exports, CTests, checkpoint and optimizer-state versions — is expected to be
   unchanged at J9, and the phase plans **no new C ABI export**.

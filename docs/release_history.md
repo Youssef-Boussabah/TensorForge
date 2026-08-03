@@ -2326,25 +2326,57 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase J — deterministic native data pipeline and mini-batching (J0 complete, in progress)
+### Phase J — deterministic native data pipeline and mini-batching (J0 and J1 complete, in progress)
 
-**Phase J is the latest phase, it is newly approved, and only milestone J0
-has landed.** J1 through J9 have not started. **No version is claimed** —
-the native line stays experimental and is not production-ready, and this
-entry records a planning milestone rather than a release.
+**Phase J is the latest phase, it is newly approved, and milestones J0 and
+J1 have landed.** J2 through J9 have not started, and **J2 is next**. **No
+version is claimed** — the native line stays experimental and is not
+production-ready, and this entry records milestones rather than a release.
 
 Phase J was approved **after** Phase I closed at I11. The repository
 deliberately finished Phase I without committing to a successor, so Phase J
 is not carried-over roadmap work and must not be described as though it
 were.
 
-**J0 is architecture, contract, and documentation work only, and it shipped
-no runtime behavior at all.** No dataset, sampler, or loader class; no
-helper module; no state serializer, shuffle helper, or batching helper; no
-public export; no production import; no C++; no CMake registration; no C
+**J0 was architecture, contract, and documentation work only, and it
+shipped no runtime behavior at all.** No dataset, sampler, or loader class;
+no helper module; no state serializer, shuffle helper, or batching helper;
+no public export; no production import; no C++; no CMake registration; no C
 ABI symbol; no example; no benchmark; no checkpoint field or version; and
-no optimizer-state version. **No Phase-J runtime API is exported yet**, and
-runtime capability begins at **J1**.
+no optimizer-state version. Runtime capability began at **J1**.
+
+**J1 shipped the host-backed dataset foundation** —
+`src/tensorforge/experimental/native_dataset.py` and its one public class,
+`NativeTensorDataset`, exported from `tensorforge.experimental`. That
+export inventory went from 22 names to **23**, which is the only public
+surface J1 moved. The class takes **two unconditional copied host
+snapshots** at construction — `numpy.array(..., copy=True)` rather than
+`ascontiguousarray`, precisely because the latter returns an
+already-contiguous input unchanged and would alias caller memory in the
+common case — at an **explicitly chosen** native feature dtype that is
+never inferred from the input array and still defaults to float64. It
+computes the locked **SHA-256** fingerprint eagerly over the canonical
+little-endian byte stream, exposes the four-field JSON-compatible
+`identity()` that the existing checkpoint metadata validator accepts
+unchanged, and turns any index sequence into a caller-owned `NativeTensor`
+feature batch through the public `from_array` boundary beside a fresh
+read-only host `int64` target batch — order and duplicates preserved
+exactly, an empty request refused, and **no native storage held between
+calls**. Validation runs in the contracted order with nothing allocated
+until every check has passed, and a construction failure at either
+snapshot or at the digest releases what it allocated before the exception
+leaves the constructor. `tests/test_native_dataset.py` covers all of it,
+including the fingerprint against **independently computed known-answer
+vectors** written with `struct` rather than by calling the implementation
+twice. J1 added no C++, no CMake entry, no C ABI symbol, no example, no
+benchmark, and no dependency, so **no native rebuild, CTest run, or
+sanitizer run was required and none is claimed**.
+
+**What still does not exist after J1**: `NativeBatchSampler`,
+`NativeDataLoader`, `_native_permutation.py`, and with them every shuffle,
+seed, epoch, cursor, batch size, drop-last setting, sampler or loader state
+schema, and checkpoint loader-state integration. **There is no native
+mini-batching yet.**
 
 **No capability moved, and none will.** `SUPPORTED_DTYPES` is
 `("float64", "float32")`, `SUPPORTED_DEVICES` is `("cpu",)`, `UNSUPPORTED`

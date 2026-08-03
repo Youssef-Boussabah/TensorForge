@@ -308,6 +308,33 @@ the in-memory optimizer state schema did not move from version **1**.
 guardrails in ``tests/test_native_phase_i_closure.py``, and the final
 inventory reconciliation — adding no capability at all.
 
+**Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
+the latest phase and is in progress: milestones J0 and J1 have landed,
+and J2 through J9 have not started.** Its contract is
+``docs/native_data_pipeline_design.md`` (milestone **J0**: architecture,
+contract, and documentation only, adding no runtime behavior).
+**Milestone J1** adds ``NativeTensorDataset`` below — the finite,
+host-backed native dataset, and the phase's first runtime. It holds one
+owned host snapshot of the features and one of the class targets, at an
+**explicitly chosen** native feature dtype (``None`` still means
+``"float64"``, and the NumPy feature dtype never selects it), and turns
+any index sequence into a fresh owning ``NativeTensor`` feature batch —
+which **the caller closes** — beside a fresh read-only host ``int64``
+target batch. Both snapshots are unconditional copies, so caller mutation
+after construction reaches nothing; a SHA-256 content ``fingerprint``
+over a canonical little-endian byte stream gives the dataset a
+deterministic, cross-platform ``identity()`` that carries no payload; and
+the dataset owns **no native storage between calls**, so holding one
+leaves the native live-storage count untouched. It adds no kernel, C ABI
+symbol, ctypes declaration, checkpoint field or version,
+optimizer-state version, capability registry value, or dependency.
+What Phase J does **not** yet have, because those milestones have not
+started: ``NativeBatchSampler`` (J2), ``NativeDataLoader`` (J3), any
+shuffle, permutation, cursor, epoch, batch-size, drop-last, sampler or
+loader state, and any checkpoint loader-state integration. **J2 is
+next.** The dataset plans, orders, and groups nothing: it answers only
+"given these indices, what is the batch?".
+
 ``NativeGenerator`` (Phase G, milestone G1) is the Python half of the
 phase's central split — random state is Python-managed, and the native
 random kernels (milestone G2) are stateless and receive the whole
@@ -449,6 +476,7 @@ from .native_metrics import native_accuracy
 from .native_sgd import NativeSGD
 from .native_adam import NativeAdam
 from .native_checkpoint import load_native_checkpoint, save_native_checkpoint
+from .native_dataset import NativeTensorDataset
 
 __all__ = [
     "NativeTensor",
@@ -473,4 +501,5 @@ __all__ = [
     "NativeAdam",
     "save_native_checkpoint",
     "load_native_checkpoint",
+    "NativeTensorDataset",
 ]
