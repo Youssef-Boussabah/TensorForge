@@ -2326,10 +2326,10 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase J — deterministic native data pipeline and mini-batching (J0–J4 complete, in progress)
+### Phase J — deterministic native data pipeline and mini-batching (J0–J5 complete, in progress)
 
 **Phase J is the latest phase, it is newly approved, and milestones J0
-through J4 have landed.** J5 through J9 have not started, and **J5 is
+through J5 have landed.** J6 through J9 have not started, and **J6 is
 next**. **No version is claimed** — the native line stays experimental and
 is not production-ready, and this entry records milestones rather than a
 release.
@@ -2584,16 +2584,82 @@ CMake entry, no C ABI symbol, no example, no benchmark, and no
 dependency, so **no native rebuild, CTest run, or sanitizer run was
 required and none is claimed**.
 
-**What still does not exist after J4**: checkpoint loader-state
-integration, automatic loader discovery in either direction, the
-deterministic mini-batch training example, and the benchmark. No
-production pipeline module imports the checkpoint and no checkpoint
-module names a pipeline object — both asserted by source inspection, and
-by driving a real save and load with the loader's two methods patched to
-record any call, which neither fired. A loader's position can be
-serialized and restored **in memory**, exactly; placing it in checkpoint
-metadata is the caller's step, and proving that workflow end to end is
-J5's. Those are J5 onward.
+**J5 proved the caller-managed checkpoint-metadata workflow, and it added
+no production code at all.** It is the second consecutive Phase-J
+milestone whose export delta is zero, and the only one so far whose diff
+touches no file under `src/` —
+`src/tensorforge/experimental/native_checkpoint.py` is unchanged, which
+was J5's own exit-gate condition. The whole milestone is
+`tests/test_native_data_checkpoint.py` plus documentation.
+
+The workflow is the one the contract has named since J0: take
+`loader.state_dict()`, place it inside the `metadata` a caller already
+controls, save; and on the way back, call `load_native_checkpoint` first,
+then hand the returned `metadata[...]` to
+`fresh_loader.load_state_dict(...)`. Every primary proof writes a **real**
+version-3 `.npz` and reads it back with `allow_pickle=False`. The
+manifest is inspected directly: `format` unchanged, `format_version`
+**3**, the same **six** root keys, and an array inventory holding only the
+manifest, `model::…`, and `optimizer::m::…`/`optimizer::v::…`. Saving
+with and without loader state produces the **same** array inventory and
+manifests differing in nothing but the caller's own `metadata` value, so
+**the archive's capture set did not grow by one field**. There is no root
+loader field, no loader array, no serialized permutation, and no dataset
+payload; loader state exists only below `metadata`.
+
+**The restoration is exact, into objects that share nothing with the
+saving graph.** The proof runs at float64 and float32, sequential and
+shuffled, drop-last false and true, over a model with trainable
+parameters, two persistent batch-norm buffers, and a **shared** generator
+alias topology — two Dropout layers on one `NativeGenerator` and a third
+on its own. The restored graph is deliberately built wrong in every
+family first: different parameter seeds, a different learning rate,
+different generator seeds, a separately constructed dataset, and a sampler
+with a different batch size, shuffle setting, seed, epoch, and cursor.
+After the two calls, every parameter and persistent buffer, every Adam
+`m`, `v`, and step counter, every hyperparameter, every generator's
+algorithm, version, seed, and calls, the alias topology, and all six
+loader values compare exactly — raw IEEE-754 bit patterns through
+`uint32`/`uint64` views, exact `int64` targets with dtype, shape,
+contiguity, ownership, and read-only flag. **No tolerance is used
+anywhere.** The load constructs no generator, parameter, or buffer, and a
+negative control proves the continuation differs when the loader
+restoration is omitted and agrees the moment it is applied.
+
+**All three delivery boundaries are proved through an archive.** A
+delivery failed at the `_deliver_batch` seam — with a non-vacuity record
+proving the seam ran *after* the candidate position was applied and that
+`state_dict()` refused there — rolls back completely, and the checkpoint
+taken immediately afterwards resumes from the **same candidate batch**,
+delivering exactly those indices and bits and advancing exactly once. A
+successful delivery resumes from the **following** batch with no replay.
+An epoch-boundary save records the canonical `(epoch + 1, 0)` and resumes
+at the first batch of the next epoch.
+
+**The metadata boundary is the caller's, and the atomicity boundary is
+honest.** `"training"`, `"data_loader"`, and `"next_step"` are
+conventions no production constant spells; alternate nesting, alternate
+names, and two loaders' states side by side all round-trip unchanged.
+Absent loader state yields `None` and no default; a malformed but
+JSON-compatible state is preserved by the archive and rejected by the
+loader across ten fault shapes; a wrong-dataset state is rejected on
+identity; non-JSON metadata is refused before the destination moves,
+leaving an existing archive byte-identical with no temporary file. A
+checkpoint load that **succeeds** followed by a loader load that **fails**
+leaves the model, optimizer, and generators restored and the loader
+unchanged — **nothing rolls back, because there is no cross-object
+transaction** — after which the documented recovery from the same
+unchanged archive succeeds. J5 added no C++, no CMake entry, no C ABI
+symbol, no example, no benchmark, and no dependency, so **no native
+rebuild, CTest run, or sanitizer run was required and none is claimed**.
+
+**What still does not exist after J5**: automatic loader discovery in
+either direction, the deterministic mini-batch training example, the
+cross-cutting hardening matrix, and the benchmark. No production pipeline
+module imports the checkpoint and no checkpoint module names a pipeline
+object — both asserted by source inspection, and by driving a real save
+and load with the loader's two methods patched to record any call, which
+neither fired. Those are J6 onward.
 
 **No capability moved, and none will.** `SUPPORTED_DTYPES` is
 `("float64", "float32")`, `SUPPORTED_DEVICES` is `("cpu",)`, `UNSUPPORTED`

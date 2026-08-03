@@ -81,8 +81,8 @@ repaired here rather than rewritten away. The latest completed phase is
 Phase I.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
-latest phase, and it is newly approved: milestones J0 through J4 have
-landed and J5 through J9 have not started.** It was approved *after* Phase
+latest phase, and it is newly approved: milestones J0 through J5 have
+landed and J6 through J9 have not started.** It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -96,15 +96,27 @@ at **J4**, which added **no public name at all** and gave that loader its
 own in-memory `state_dict()` and `load_state_dict()` — all four **pure
 Python** (J1 over NumPy; J2 over built-in integer arithmetic, importing
 nothing at all; J3 and J4 importing only from the sampler module), adding
-no kernel, no ctypes declaration, and no C++ or CMake file. Its
+no kernel, no ctypes declaration, and no C++ or CMake file. **J5 added no
+production code whatsoever**: it proved the caller-managed
+checkpoint-metadata workflow against real version-3 archives, and its
+whole diff is one test module plus documentation, with
+`src/tensorforge/experimental/native_checkpoint.py` unchanged. Its
 architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md). Nothing
-on this page changed for any of the five milestones: the library still
+on this page changed for any of the six milestones: the library still
 exports **54** `tf_*` symbols, the CTest inventory is still **24**, and
 every capability registry, checkpoint version, and optimizer-state version
-is exactly what Phase I left. **J1, J2, J3, and J4 therefore required no
+is exactly what Phase I left. **J1 through J5 therefore required no
 native rebuild, no CTest run, and no sanitizer run**, and none is claimed
 for any of them.
+
+**J5 allocates no native storage of its own either.** It builds models,
+optimizers, and loaders like any caller does, and every proof takes a
+live-`NativeStorage` baseline before the graphs exist and asserts the count
+returns exactly to it after every delivered feature batch, every staged
+checkpoint tensor, and both object graphs are closed explicitly — through
+a real save, a real load, a rejected save, a rejected load, and an
+injected delivery failure alike.
 
 **J4 allocates no native storage of its own.** Neither state method
 constructs a `NativeTensor`, and both are asserted against the same

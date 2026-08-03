@@ -156,9 +156,10 @@ faster leaves every row above untouched.
 
 Not supported, and not a bug: float16/bfloat16, mixed precision, AMP, CUDA or
 any GPU backend, integer tensors, float32 raw kernels, distributed training,
-C++-side autograd, attention/Transformers. Loader **state** does not exist
-yet either — see §12. Full dtype contract, evidence, and rejected
-alternatives: `docs/native_dtype_float32_design.md`.
+C++-side autograd, attention/Transformers. Automatic loader **discovery**
+does not exist either, at any milestone — see §12. Full dtype contract,
+evidence, and rejected alternatives:
+`docs/native_dtype_float32_design.md`.
 
 ---
 
@@ -345,9 +346,10 @@ hold no lock, and are **not thread-safe**.
   load restores each generator in place.
 - The native checkpoint captures **no** data-loader position, shuffle order,
   or epoch counter, and no milestone changes that implicitly. Phase-J loader
-  state will be **caller-managed** — serialized by the caller through the
-  existing validated version-3 `metadata` channel. **No automatic loader
-  discovery and no checkpoint/pipeline coupling**, in either direction.
+  state is **caller-managed** — serialized by the caller through the
+  existing validated version-3 `metadata` channel, which J5 proved end to
+  end without the archive growing a field. **No automatic loader discovery
+  and no checkpoint/pipeline coupling**, in either direction.
 
 ---
 
@@ -566,11 +568,12 @@ that changes the public API or the examples updates the matching document
   as pre-existing plan work. **It moves no capability at any milestone**:
   every §3 row is expected unchanged at J9, and it plans **no new C ABI
   export**.
-- **J0** (contract), **J1** (dataset), **J2** (sampler), **J3** (loader), and
-  **J4** (loader state) are done; **J5 through J9 have not started**, and
-  **J5 is next.** Each of J1–J3 added exactly one export —
-  `NativeTensorDataset`, `NativeBatchSampler`, `NativeDataLoader` — for
-  **25** experimental names; **J4 added none, and the count stays 25.**
+- **J0** (contract), **J1** (dataset), **J2** (sampler), **J3** (loader),
+  **J4** (loader state), and **J5** (checkpoint metadata) are done; **J6
+  through J9 have not started**, and **J6 is next.** Each of J1–J3 added
+  exactly one export — `NativeTensorDataset`, `NativeBatchSampler`,
+  `NativeDataLoader` — for **25** experimental names; **J4 and J5 added
+  none, and the count stays 25.**
   The sampler is a **planner**: explicit `epoch`/`cursor`, pure planning, no
   native allocation, no `close()`, order a pure function of `(seed, epoch,
   length)` from the private `_native_permutation`.
@@ -616,11 +619,31 @@ that changes the public API or the examples updates the matching document
   preserved absolutely. A rejected load must leave the entire observable
   world — including the cache's behavior, the iterator slot, and live native
   storage — byte-identical.
-- **Checkpoint integration does not exist**: no loader discovery, no registry,
-  no import in either direction between the checkpoint and pipeline modules,
-  no checkpoint field, and no version 4. Placing loader state in metadata is
-  the **caller's** step. No training example and no benchmark either. Those
-  are J5 onward.
+- **J5 proved the checkpoint workflow and changed no production code** —
+  its whole diff is `tests/test_native_data_checkpoint.py` plus docs, and
+  `native_checkpoint.py` stays untouched. The supported order is fixed:
+  **save** = `loader.state_dict()` → *no iteration* → `save_native_checkpoint`;
+  **restore** = `load_native_checkpoint` **first**, then
+  `loader.load_state_dict(metadata[...])`. `"training"`, `"data_loader"`,
+  and `"next_step"` are **caller conventions**; no production constant may
+  spell one, and alternate keys and nesting must keep working. The
+  checkpoint **preserves metadata and never interprets it**: it validates
+  JSON-compatibility only, invents no default for an absent loader state,
+  and calls no loader method. Malformed loader state is preserved by the
+  archive and rejected by the *loader*. The three delivery boundaries are
+  contractual: a **failed** delivery resumes the same candidate batch, a
+  **successful** one the following batch, an epoch-boundary save the
+  canonical `(epoch + 1, 0)`.
+- **There is no cross-object atomicity, and none may be added.**
+  `load_native_checkpoint` is atomic over model, optimizer, and generators;
+  `loader.load_state_dict` over loader and sampler; `__next__` over one
+  handoff. If the first succeeds and the second fails, **nothing rolls
+  back** — the caller discards everything and repeats both calls. Never
+  couple the two to manufacture one transaction.
+- **Still absent, and asserted absent**: loader discovery, any registry,
+  imports in either direction between the checkpoint and pipeline modules,
+  a checkpoint field, version 4, a training example, and a benchmark. Those
+  are J6 onward.
 
 Beyond Phase J (not started): native integer tensors, further dtypes or
 devices, CUDA experiments. See `docs/roadmap.md`; never invent a phase it

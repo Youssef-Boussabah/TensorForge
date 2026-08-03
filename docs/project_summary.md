@@ -1660,8 +1660,8 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase J — deterministic native data pipeline and mini-batching — is the
-latest phase, and it is newly approved: milestones J0 through J4 have
-landed, and J5 through J9 have not started.** Phase J was approved *after* Phase I
+latest phase, and it is newly approved: milestones J0 through J5 have
+landed, and J6 through J9 have not started.** Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -1731,10 +1731,34 @@ interruption restored into a separately constructed dataset, sampler, and
 loader reproduces the remaining batches exactly — identical indices,
 identical raw IEEE-754 feature bits, identical `int64` targets — then the
 same canonical next-epoch position and the same following epochs, at both
-dtypes and with no tolerance anywhere. **Checkpoint loader-state
-integration does not exist, no automatic loader discovery exists, and
-there is no training example and no benchmark**; those are J5 onward, and
-**J5 is next**. Its architecture contract is
+dtypes and with no tolerance anywhere. **J5** proved the caller-managed
+checkpoint-metadata workflow end to end and **added no production code at
+all** — the second consecutive Phase-J milestone with a zero export
+delta, and the only one whose diff touches no file under `src/`:
+`native_checkpoint.py` is unchanged. Against **real** version-3 `.npz`
+archives read with pickle disabled, the format stays
+`tensorforge.native_checkpoint` version **3** with `(1, 2, 3)` accepted,
+the manifest keeps its same six root keys, and the array inventory is
+identical whether or not loader state travels, so **the archive's own
+capture set did not grow by one field**; loader state lives only inside
+caller metadata, with no root field, no loader array, no serialized
+permutation, and no dataset payload. `"training"`, `"data_loader"`, and
+`"next_step"` are **caller conventions no production constant spells**, so
+alternate nesting, alternate names, and two loaders' states side by side
+all round-trip unchanged. Restoration into an entirely fresh model,
+optimizer, generator set, dataset, sampler, and loader — each deliberately
+built wrong first — reproduces every parameter, persistent buffer, Adam
+moment and step counter, hyperparameter, generator state and **alias
+topology**, and all six loader values exactly in raw IEEE-754 bit
+patterns, then the exact next batch and the exact remaining sequence. All
+three delivery boundaries are proved through an archive: a **failed**
+delivery resumes the same candidate batch, a **successful** one resumes
+the following batch, and an epoch-boundary save resumes the canonical next
+epoch. The absence of cross-object atomicity is proved rather than glossed
+— a checkpoint load that succeeds followed by a loader load that fails
+leaves the first restored and the second untouched. **No automatic loader
+discovery exists, and there is no training example and no benchmark**;
+those are J6 onward, and **J6 is next**. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md), which
 locks three eventual public names (`NativeTensorDataset`,
 `NativeBatchSampler`, `NativeDataLoader`), a copied-snapshot dataset whose

@@ -1066,8 +1066,8 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
-  the latest phase, and it is newly approved: milestones J0 through J4
-  have landed and J5 through J9 have not started.** Phase J was approved
+  the latest phase, and it is newly approved: milestones J0 through J5
+  have landed and J6 through J9 have not started.** Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1122,9 +1122,23 @@ explicit layer at a time:
   identity. **Exact in-memory mid-epoch restoration** is proved by
   reproducing an interrupted epoch's remaining batches — indices, raw
   IEEE-754 feature bits, and targets — from a separately constructed
-  dataset, sampler, and loader. **Checkpoint loader-state integration does
-  not exist**, and neither does automatic loader discovery in either
-  direction; **J5 is next**. Its contract is
+  dataset, sampler, and loader. **J5 added no production code at all** and
+  proved the caller-managed checkpoint-metadata workflow against **real**
+  version-3 archives: `loader.state_dict()` travels inside the `metadata`
+  a caller already controls, and after `load_native_checkpoint` returns,
+  the caller hands it back to `fresh_loader.load_state_dict(...)`. The
+  format stays version **3** with `(1, 2, 3)` accepted, the manifest keeps
+  its six root keys, and the array inventory is the same whether or not
+  loader state travels — **the archive's capture set did not grow**.
+  Restoration into an entirely fresh model, optimizer, generator set,
+  dataset, sampler, and loader reproduces every parameter, buffer, Adam
+  moment, generator state, alias topology, and loader value exactly, then
+  the exact next batch and remaining sequence; a failed delivery resumes
+  the same candidate batch, a successful one the following batch, and an
+  epoch-boundary save the canonical next epoch. There is deliberately **no
+  cross-object atomicity** between the two calls and none is claimed.
+  **No automatic loader discovery exists in either direction**, and there
+  is no training example and no benchmark; **J6 is next**. Its contract is
   [native_data_pipeline_design.md](native_data_pipeline_design.md), and
   the architectural decisions it locks are the ones that would otherwise
   be re-argued in every later milestone: three eventual public names

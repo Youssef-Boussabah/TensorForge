@@ -19,21 +19,24 @@ derivation (§3.2, §8), and continued at **J3**, which added the last of
 §3.1's three names, `NativeDataLoader` (§3.5, §3.6, §9, §10, §15, §17.3),
 over the permanently private `_NativeBatchIterator` and `_deliver_batch`.
 
-**Phase-J status: J0, J1, J2, J3, and J4 complete; J5 through J9 not
-started.** What exists today is the dataset, the sampler, the loader, and
-the loader's own in-memory state: a finite host-backed dataset, a
-deterministic permutation and batch **planner** with an explicit epoch and
-cursor, compact transactional sampler state, native mini-batch iteration
-whose committed position advances **if and only if** a batch was
-delivered, and — new at **J4** — the three-key loader state schema
-(§11.3), the loader `state_dict` and `load_state_dict` pair (§12.5), and
-**exact in-memory mid-epoch loader restoration**, proved by reproducing an
-interrupted epoch's remaining batches from a separately constructed
-dataset, sampler, and loader. **No checkpoint loader-state integration, no
-automatic loader discovery, no training example, and no benchmark exists
-yet** — those are J5 onward, and **J5 is the next implementation
-milestone**. Every §13 and §14 statement describes work that has not been
-written.
+**Phase-J status: J0, J1, J2, J3, J4, and J5 complete; J6 through J9 not
+started.** What exists today is the dataset, the sampler, the loader, the
+loader's own in-memory state, and the caller-managed checkpoint-metadata
+workflow: a finite host-backed dataset, a deterministic permutation and
+batch **planner** with an explicit epoch and cursor, compact transactional
+sampler state, native mini-batch iteration whose committed position
+advances **if and only if** a batch was delivered, the three-key loader
+state schema (§11.3), the loader `state_dict` and `load_state_dict` pair
+(§12.5), **exact in-memory mid-epoch loader restoration** (**J4**), and —
+new at **J5** — that same state proved to survive a **real version-3
+archive** as ordinary caller metadata and to restore an exact continuation
+into entirely fresh objects. **J5 added no production code**: the
+checkpoint module is provably unchanged, the format is still version 3
+with `(1, 2, 3)` accepted, and the archive's own capture set did not grow
+by one field. **No automatic loader discovery, no training example, and no
+benchmark exists yet** — those are J6 onward, and **J6 is the next
+implementation milestone**. Every §14 statement about a *training* program
+still describes work that has not been written.
 
 Phase J is a **newly approved** direction. It was not part of the roadmap
 while Phases A–I were being built: the repository deliberately closed
@@ -3142,7 +3145,7 @@ locked rule — the §23 discipline is to record rather than rewrite:
    as it was — the milestone that ships a name is the milestone that
    moves it, and neither edit weakened anything else.
 
-### J5 — Native checkpoint metadata integration — **not started**
+### J5 — Native checkpoint metadata integration — **complete**
 
 - **Entry:** J4 merged.
 - **Scope:** the §13 workflow, proved end to end against a real version-3
@@ -3158,6 +3161,123 @@ locked rule — the §23 discipline is to record rather than rewrite:
   automatic discovery.
 - **Exit gate:** the fresh-object exact-next-batch proof green; the
   checkpoint module provably unchanged.
+- **Outcome:** met, and the milestone's most important property is what it
+  did **not** contain. J5 added **no production code whatsoever** — no
+  module, no class, no method, no argument, no constant, no export, and no
+  line of `src/`. `tensorforge.experimental.__all__` stayed at **25**, the
+  second consecutive Phase-J milestone whose export delta is zero, and
+  `src/tensorforge/experimental/native_checkpoint.py` is byte-identical to
+  its J4 state. The whole milestone is
+  `tests/test_native_data_checkpoint.py` plus documentation, which is the
+  strongest available form of "the two halves already composed".
+
+  **The workflow is proved against a real archive, never a stand-in.**
+  Every primary proof writes an actual `.npz` through
+  `save_native_checkpoint` and reads it back through
+  `load_native_checkpoint` with `allow_pickle=False`. The manifest is
+  inspected directly: `format` unchanged, `format_version` **3**, the same
+  **six** root keys, and an array inventory containing only the manifest,
+  `model::…`, and `optimizer::m::…`/`optimizer::v::…`. No array name
+  contains a Phase-J word; no loader tag appears in the `model`,
+  `optimizer`, or `generators` sections; and saving with and without
+  loader state produces the **same** array inventory and manifests that
+  differ in nothing but the caller's own `metadata` value. **The capture
+  set did not grow by one field.**
+
+  **The restoration is exact, into objects that share nothing with the
+  saving graph.** The proof runs at float64 and float32, sequential and
+  shuffled, drop-last false and true, over a model carrying trainable
+  parameters, two persistent batch-norm buffers, and a **shared** generator
+  alias topology — two Dropout layers on one `NativeGenerator` and a third
+  on its own, a fact no per-generator state carries. The restored graph is
+  deliberately built **wrong** in every family first: different parameter
+  seeds, a different learning rate, different generator seeds, a
+  separately constructed dataset, and a sampler with a different batch
+  size, shuffle setting, seed, epoch, and cursor. After the two calls,
+  every model parameter and persistent buffer, every Adam `m`, `v`, and
+  step counter, every hyperparameter, every generator's algorithm,
+  version, seed, and call count, the alias topology, and the six loader
+  values compare **exactly** — raw IEEE-754 bit patterns through
+  `uint32`/`uint64` views, exact `int64` targets with their dtype, shape,
+  contiguity, ownership, and read-only flag. **No tolerance is used
+  anywhere.** Object identity is preserved absolutely: the load constructs
+  no generator, parameter, or buffer, and the loader keeps its own sampler
+  and dataset. A negative control proves the continuation **differs** when
+  the loader restoration is omitted and **agrees** the moment it is
+  applied, so the gate cannot pass vacuously; the interruption point is
+  chosen so the resume genuinely lands mid-epoch.
+
+  **All three §13.7 delivery boundaries are proved through an archive.** A
+  delivery failed at the `_deliver_batch` seam — with a non-vacuity record
+  proving the seam ran *after* the candidate position had been applied and
+  that `state_dict()` refused there — rolls back completely, and the
+  checkpoint taken immediately afterwards resumes from the **same
+  candidate batch**, delivering exactly those indices and those bits and
+  advancing exactly once. A successful delivery resumes from the
+  **following** batch with no replay. A save at an epoch boundary records
+  the canonical `(epoch + 1, 0)` and resumes at the first batch of the next
+  epoch, with no terminal or end-of-epoch representation anywhere.
+
+  **The metadata boundary is proved to be the caller's.** `"training"`,
+  `"data_loader"`, and `"next_step"` are conventions this repository
+  speaks consistently and **no runtime code knows**: alternate nesting,
+  alternate names, and two loaders' states side by side all round-trip
+  unchanged, and the checkpoint module is asserted to contain none of
+  those strings as a literal. Absent loader state yields `None` and no
+  default; a malformed but JSON-compatible loader state is **preserved by
+  the archive and rejected by the loader**, transactionally, across ten
+  fault shapes; a wrong-dataset state is rejected on identity; non-JSON
+  metadata is refused before the destination moves, leaving an existing
+  archive byte-identical with no temporary file and every live object
+  untouched. Returned metadata is a fresh, independent plain dict at every
+  load.
+
+  **The ordering and the honest atomicity boundary are both executable.**
+  The loader snapshot precedes the save with no delivery in between,
+  proved as an ordered event log and confirmed by the next delivery using
+  exactly the indices the archive recorded. A failed checkpoint load is
+  proved to leave a complete loader fingerprint untouched and to call
+  neither loader state method. And the case the design refuses to
+  paper over is asserted directly: a checkpoint load that **succeeds**
+  followed by a loader load that **fails** on dataset identity leaves the
+  model, optimizer, and generators restored and the loader unchanged —
+  **nothing rolls back, because there is no cross-object transaction** —
+  after which the documented recovery, discarding everything and repeating
+  both calls from the same unchanged archive, succeeds.
+
+  Non-coupling is asserted in both directions by AST inspection rather
+  than by substring, and at runtime by patching the loader's two state
+  methods to record any call during a real save and a real load: neither
+  fired, and the caller's own two lines then fired exactly one each. The C
+  ABI stayed at 54 exports, the CTests at 24, the examples at 15, the
+  benchmarks at 8, the checkpoint at version 3 with `(1, 2, 3)` accepted,
+  and the optimizer state at version 1; no C++, CMake, or ABI file was
+  touched, and native live storage returns exactly to its baseline in
+  every archive and continuation proof.
+
+**Implementation clarifications recorded at J5**, none of which changes a
+locked rule:
+
+1. **The milestone found no production defect.** J5's instruction was to
+   stop and report rather than silently repair, and there was nothing to
+   report: every §13 statement held against the shipped runtime on the
+   first attempt. The checkpoint's metadata validator already accepted
+   every §11 field — verified at J0 (§23.1) and now exercised through real
+   archives — and the loader's §12.5 ordering already rejected everything
+   an archive could carry back.
+2. **The fresh loader's differing start position is set through the public
+   state-loading route**, never by assigning a private sampler field. §12.4
+   adopts all six configuration and position values, so loading a
+   deliberately edited state is itself an authoritative way to construct a
+   different valid starting position — and it exercises the same seam the
+   proof later depends on.
+3. **The two absence assertions that moved are named.**
+   `tests/test_native_loader_state.py` asserted
+   `tests/test_native_data_checkpoint.py` absent, and this phase's
+   guardrail module asserted the checkpoint workflow unproved. Both now
+   assert the landed half present, with every other entry in the same
+   lists left exactly as it was — the milestone that ships a thing is the
+   milestone that moves it.
 
 ### J6 — Deterministic mini-batch training example — **not started**
 

@@ -33,10 +33,16 @@ checkpoint version. What this module proves:
   canonical next-epoch position, and the same following whole epoch.
   **No tolerance is used anywhere.**
 
-**Not tested here, because it does not exist:** checkpoint save/load
-integration, automatic loader discovery, a training example, and a
-benchmark. Those are J5 onward, and their absence *is* asserted, in §12
-below.
+**Not tested here, because it belongs to another module:** the
+caller-managed checkpoint-metadata workflow, which landed at J5 and is
+proved end to end in ``tests/test_native_data_checkpoint.py``. What §12
+below still asserts about it is only the *production* non-coupling — that
+this module imports no checkpoint code and no checkpoint code knows a
+loader exists — which J5 did not change and could not.
+
+**Not tested here, because it does not exist:** automatic loader
+discovery, a training example, and a benchmark. Those are J6 onward, and
+their absence *is* asserted, in §12 below.
 
 No test here asserts an exact error message, a dict ordering, a timing, a
 GC event, or a speed.
@@ -2324,10 +2330,17 @@ def test_no_c_abi_ctest_example_or_benchmark_surface_moved():
 
 
 def test_no_hardening_module_or_later_milestone_test_landed():
-    """J5's archive tests, J6's example test, J7's hardening module, and
-    J8's benchmark test all belong to later milestones."""
-    for later in ("test_native_data_checkpoint.py",
-                  "test_native_minibatch_training.py",
+    """J6's example test, J7's hardening module, J8's benchmark test, and
+    J9's closure module all belong to later milestones.
+
+    ``test_native_data_checkpoint.py`` moved out of this list at **J5**,
+    which is the milestone that shipped it — the same "presence and
+    absence are one split, and only the milestone that ships a name may
+    move it" discipline J4 applied to the loader's two state methods. The
+    absence half below is otherwise untouched.
+    """
+    assert (REPO_ROOT / "tests" / "test_native_data_checkpoint.py").exists()
+    for later in ("test_native_minibatch_training.py",
                   "test_native_data_hardening.py",
                   "test_native_data_benchmark.py",
                   "test_native_phase_j_closure.py"):

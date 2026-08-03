@@ -1,6 +1,6 @@
 """Phase-J contract guardrails (deterministic native data pipeline).
 
-**Phase J is newly approved, and milestones J0 through J4 have landed.**
+**Phase J is newly approved, and milestones J0 through J5 have landed.**
 J0 was an architecture, contract, documentation, and status milestone: it
 shipped ``docs/native_data_pipeline_design.md``, this module, and
 documentation, and **no runtime behavior at all**. **J1** shipped the
@@ -12,19 +12,24 @@ derivation — and **J3** the third and last of §3.1's names,
 transactional batch delivery behind it. Each of those three added exactly
 one new public experimental name. **J4** added **none**: it gave the
 existing loader its own in-memory ``state_dict``/``load_state_dict`` and
-exact mid-epoch restoration, and left ``__all__`` at 25. None of the four
-added C++, a C ABI symbol, an example, a benchmark, or a checkpoint or
-optimizer-state change. Their own behavior is covered by
+exact mid-epoch restoration, and left ``__all__`` at 25. **J5** added no
+public name *and no production code at all*: it proved that the loader
+state a caller already had survives a real version-3 archive as ordinary
+metadata and restores an exact continuation into entirely fresh objects,
+leaving the checkpoint module untouched. None of the five added C++, a C
+ABI symbol, an example, a benchmark, or a checkpoint or optimizer-state
+change. Their own behavior is covered by
 ``tests/test_native_dataset.py``, ``tests/test_native_sampler.py``,
-``tests/test_native_data_loader.py``, and
-``tests/test_native_loader_state.py``; what lives here is the *phase*
+``tests/test_native_data_loader.py``,
+``tests/test_native_loader_state.py``, and
+``tests/test_native_data_checkpoint.py``; what lives here is the *phase*
 boundary.
 
-**J5 through J9 have not started**, so every checkpoint integration, the
-training example, and the benchmark are still asserted **absent** below.
-A caller can serialize where a loader stopped and restore it exactly;
-carrying that through an archive is J5's, and nothing here does it for
-them.
+**J6 through J9 have not started**, so the training example, the
+hardening matrix, and the benchmark are still asserted **absent** below.
+A caller can serialize where a loader stopped, carry it through an
+archive, and restore it exactly — but nothing discovers a loader for
+them, and no example or benchmark ships it.
 
 Three kinds of fact live here, and keeping them apart is the point of the
 module:
@@ -119,7 +124,7 @@ PRIVATE_LOADER_NAMES = ("_NativeBatchIterator", "_deliver_batch")
 # ladder parser below is driven from these rather than from a hard-coded
 # "only J0", so landing a milestone is a one-line change here and a
 # document edit — never a loosened checker.
-COMPLETE_MILESTONES = ("J0", "J1", "J2", "J3", "J4")
+COMPLETE_MILESTONES = ("J0", "J1", "J2", "J3", "J4", "J5")
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
 
@@ -230,15 +235,21 @@ def test_the_design_states_exactly_which_runtime_exists():
     # The absent half, named rather than implied: what the *next*
     # milestones will add must still be spelled out as missing. J4 landed
     # the loader state schema, its two methods, and exact in-memory
-    # mid-epoch restoration, so those three moved out of this list and
-    # into the presence checks below rather than being softened.
-    for absent in ("checkpoint loader-state integration",
-                   "training example", "benchmark"):
+    # mid-epoch restoration; J5 landed the caller-managed
+    # checkpoint-metadata workflow. Each moved out of this list and into
+    # the presence checks below in the milestone that shipped it, rather
+    # than being softened.
+    for absent in ("automatic loader discovery", "training example",
+                   "benchmark"):
         assert re.search(rf"no {absent}", head, re.I), absent
     # ``head`` is emphasis-stripped, so these are the flattened spellings.
     for present in ("loader state schema", "loader state_dict",
-                    "exact in-memory mid-epoch loader restoration"):
+                    "exact in-memory mid-epoch loader restoration",
+                    "caller-managed checkpoint-metadata workflow",
+                    "real version-3 archive"):
         assert present.lower() in head.lower(), present
+    # ...and J5's defining negative: the archive did not grow.
+    assert re.search(r"capture set did not grow", head, re.I), head[:1200]
     assert re.search(rf"{next_up} is\s+(the\s+)?next", head, re.I), head[:800]
 
 
@@ -374,10 +385,10 @@ def test_exactly_the_landed_milestones_are_marked_complete():
         assert re.search(r"\*\*complete\*\*", rows[name], re.I), rows[name]
     for name in UNSTARTED_MILESTONES:
         assert re.search(r"\*\*not started\*\*", rows[name], re.I), rows[name]
-    # J5 is the next implementation milestone, and nothing beyond it may be
-    # claimed under a J4 heading.
-    assert COMPLETE_MILESTONES == ("J0", "J1", "J2", "J3", "J4")
-    assert UNSTARTED_MILESTONES[0] == "J5"
+    # J6 is the next implementation milestone, and nothing beyond it may be
+    # claimed under a J5 heading.
+    assert COMPLETE_MILESTONES == ("J0", "J1", "J2", "J3", "J4", "J5")
+    assert UNSTARTED_MILESTONES[0] == "J6"
 
 
 def test_the_ladder_checker_can_actually_fail():
@@ -400,11 +411,14 @@ def test_the_ladder_checker_can_actually_fail():
     # An invented milestone one past the end of the ladder.
     invented = ladder + "\n### J10 — Something else — **not started**\n"
     assert any("unexpected" in reason for reason in problems_for(invented))
-    # A row falsely claimed complete before it landed.
-    overclaimed = ladder.replace(
-        "### J6 — Deterministic mini-batch training example — "
-        "**not started**",
-        "### J6 — Deterministic mini-batch training example — **complete**")
+    # A row falsely claimed complete before it landed. Driven from the
+    # first *unstarted* milestone rather than a hard-coded one, so landing
+    # a milestone moves this control with the ladder instead of quietly
+    # leaving it pointed at a row that has since shipped.
+    next_up = UNSTARTED_MILESTONES[0]
+    overclaimed = re.sub(rf"(### {next_up} — [^\n]*?)\*\*not started\*\*",
+                         r"\1**complete**", ladder, count=1)
+    assert overclaimed != ladder, f"the {next_up} row was not found"
     assert any("marked complete before it landed" in reason
                for reason in problems_for(overclaimed))
     # J0 left open.
@@ -420,7 +434,8 @@ def test_the_ladder_checker_can_actually_fail():
     for row in ("### J1 — Host-backed dataset foundation",
                 "### J2 — Deterministic sampler",
                 "### J3 — Native mini-batch loader",
-                "### J4 — Loader state and mid-epoch resume"):
+                "### J4 — Loader state and mid-epoch resume",
+                "### J5 — Native checkpoint metadata integration"):
         understated = ladder.replace(f"{row} — **complete**",
                                      f"{row} — **not started**")
         assert understated != ladder, f"the {row!r} row was not found"
@@ -1322,6 +1337,60 @@ def test_the_sampler_stays_a_planner_and_j5_onward_has_no_runtime():
         for forbidden in ("random", "secrets", "NativeGenerator",
                           "_reserve_call", "time"):
             assert forbidden not in named, (module, forbidden)
+
+
+def test_the_checkpoint_metadata_workflow_is_proved_and_still_uncoupled():
+    """J5's landed half asserted as **presence**, and its defining negative
+    asserted as **absence**.
+
+    J5 shipped no production code, so what must be present is the proof
+    module and the two existing APIs it composes — not a new name. What
+    must stay absent is every form of coupling: a loader argument on
+    either checkpoint entry point, a loader registry or traversal on the
+    module system, and any production constant spelling a caller
+    convention, which is what would turn a recommendation into a schema.
+    """
+    import inspect
+
+    from tensorforge.experimental import (
+        NativeDataLoader, NativeModule, load_native_checkpoint,
+        save_native_checkpoint,
+    )
+
+    assert (REPO_ROOT / "tests" / "test_native_data_checkpoint.py").is_file()
+    for half in (save_native_checkpoint, load_native_checkpoint,
+                 NativeDataLoader.state_dict,
+                 NativeDataLoader.load_state_dict):
+        assert callable(half), half
+    # Neither entry point grew a loader argument, and the loader grew no
+    # checkpoint convenience.
+    assert list(inspect.signature(save_native_checkpoint).parameters) == [
+        "path", "model", "optimizer", "metadata"]
+    assert list(inspect.signature(load_native_checkpoint).parameters) == [
+        "path", "model", "optimizer"]
+    for forbidden in ("save", "load", "checkpoint", "save_checkpoint",
+                      "load_checkpoint", "to_metadata", "from_metadata"):
+        assert not hasattr(NativeDataLoader, forbidden), forbidden
+    # No discovery, no registry, no traversal.
+    for forbidden in ("loaders", "named_loaders", "data_loaders",
+                      "register_loader", "datasets", "named_datasets",
+                      "samplers", "named_samplers"):
+        assert not hasattr(NativeModule, forbidden), forbidden
+
+    package = REPO_ROOT / "src" / "tensorforge" / "experimental"
+    tree = ast.parse((package / "native_checkpoint.py").read_text(
+        encoding="utf-8"))
+    literals = {node.value for node in ast.walk(tree)
+                if isinstance(node, ast.Constant)
+                and isinstance(node.value, str)}
+    # Negative control for the literal scanner: it must find the constants
+    # the module really does define, or the absences below prove nothing.
+    assert "tensorforge.native_checkpoint" in literals
+    assert "manifest" in literals
+    for convention in ("data_loader", "training", "next_step",
+                       "tensorforge.native_data_loader",
+                       "tensorforge.native_sampler"):
+        assert convention not in literals, convention
 
 
 def test_the_stable_public_api_did_not_gain_a_name():

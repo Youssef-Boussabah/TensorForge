@@ -48,8 +48,8 @@ approved afterwards, so it must not be described as work that was already
 on the roadmap. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md).
 
-**Milestones J0 through J4 have landed; J5 through J9 have not started,
-and J5 is next.** J0 was an architecture, contract, and documentation
+**Milestones J0 through J5 have landed; J6 through J9 have not started,
+and J6 is next.** J0 was an architecture, contract, and documentation
 milestone and **added no runtime behavior at all** — no dataset, sampler,
 or loader class, no helper module, no state serializer, no public export,
 no C++, no C ABI symbol, no example, no benchmark, and no checkpoint or
@@ -153,12 +153,48 @@ without the restoration. It added no C++, no CMake entry, no C ABI
 symbol, no example, no benchmark, no checkpoint field or version, no
 optimizer-state version, and no dependency.
 
-**What Phase J still does not have**, because J5 onward have not started:
-the checkpoint loader-state integration, automatic loader discovery, the
-deterministic mini-batch training example, and the benchmark. A loader's
-position can be serialized and restored **in memory**, exactly; carrying
-it through a checkpoint archive is the caller's step and is proved end to
-end at J5.
+**J5 proved the caller-managed checkpoint-metadata workflow, and added no
+production code at all.** It is the second consecutive Phase-J milestone
+whose export delta is **zero**, and the only one so far whose diff
+touches no file under `src/`:
+`src/tensorforge/experimental/native_checkpoint.py` is unchanged. The
+workflow is the one the contract has named since J0 — take
+`loader.state_dict()`, pass it inside the `metadata` a caller already
+controls, and after `load_native_checkpoint` returns, hand
+`metadata[...]` back to `fresh_loader.load_state_dict(...)` — and J5 is
+the evidence that it composes. Against **real** version-3 `.npz` archives
+read with pickle disabled: the format stays
+`tensorforge.native_checkpoint` version **3** with `(1, 2, 3)` accepted,
+the manifest keeps the same six root keys, and the array inventory is
+identical whether or not loader state is carried, so **the archive's own
+capture set did not grow by one field**. Loader state lives only inside
+caller metadata; there is no root field, no loader array, no serialized
+permutation, and no dataset payload. `"training"`, `"data_loader"`, and
+`"next_step"` are **caller conventions** that no production constant
+spells: alternate nesting, alternate key names, and two loaders' states
+side by side all round-trip unchanged. Restoration into an entirely fresh
+model, optimizer, generator set, dataset, sampler, and loader — each
+deliberately built wrong first — reproduces every parameter, persistent
+buffer, Adam moment and step counter, hyperparameter, generator state and
+**alias topology**, and all six loader values exactly, in raw IEEE-754
+bit patterns with no tolerance anywhere, and then the exact next batch and
+the exact remaining sequence. All three delivery boundaries are proved
+through an archive: a **failed** delivery resumes the same candidate
+batch, a **successful** one resumes the following batch, and an
+epoch-boundary save resumes the canonical next epoch. The absence of
+cross-object atomicity is proved rather than glossed — a checkpoint load
+that succeeds followed by a loader load that fails leaves the first
+restored and the second untouched, and the documented recovery is to
+rebuild and repeat both calls. Non-coupling is asserted in both
+directions by source inspection and by driving a real save and load with
+the loader's state methods patched to record any call: neither fired.
+
+**What Phase J still does not have**, because J6 onward have not started:
+automatic loader discovery, the deterministic mini-batch training
+example, the cross-cutting hardening matrix, and the benchmark. A
+loader's position can be serialized, carried through a checkpoint
+archive, and restored exactly — but nothing discovers a loader for the
+caller, and no example or benchmark ships that workflow yet.
 
 What J0 resolved, so that later milestones inherit an unambiguous design
 rather than re-deriving one: the three eventual public names —
@@ -515,12 +551,15 @@ Phase J's own design contract exists
 ([native_data_pipeline_design.md](native_data_pipeline_design.md), milestone
 **J0**), and its runtime has begun at **J1** with `NativeTensorDataset`,
 continued at **J2** with `NativeBatchSampler`, at **J3** with
-`NativeDataLoader` and its transactional batch delivery, and at **J4**
-with the loader's own in-memory state and exact mid-epoch restoration.
-**J5 through J9 are unstarted**, so the checkpoint workflow, the training
-example, and the benchmark remain promises — and nothing about them may
+`NativeDataLoader` and its transactional batch delivery, at **J4**
+with the loader's own in-memory state and exact mid-epoch restoration,
+and at **J5** with the caller-managed checkpoint-metadata workflow proved
+against real version-3 archives — a milestone that added no production
+code and left the checkpoint module unchanged.
+**J6 through J9 are unstarted**, so the training example, the hardening
+matrix, and the benchmark remain promises — and nothing about them may
 be described as working until the milestone that ships it has landed.
-**J5, native checkpoint metadata integration, is next.**
+**J6, the deterministic mini-batch training example, is next.**
 
 What the existing documents still name as future work *beyond* Phase J, in
 no committed order, is: native integer tensors, further dtypes or devices
