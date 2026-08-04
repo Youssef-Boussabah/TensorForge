@@ -2321,27 +2321,35 @@ def test_no_c_abi_ctest_example_or_benchmark_surface_moved():
                 if p.name != "__init__.py"]
     benchmarks = [p.name for p in (REPO_ROOT / "benchmarks").glob("*.py")
                   if p.name != "__init__.py"]
-    assert len(examples) == 15, sorted(examples)
+    # 15 when J4 landed; 16 since **J6** added the one training example.
+    # It is named rather than pattern-matched, so every other data-pipeline
+    # artifact — J8's benchmark included — still fails here.
+    assert len(examples) == 16, sorted(examples)
+    assert "native_minibatch_training.py" in examples
     assert len(benchmarks) == 8, sorted(benchmarks)
     for name in examples + benchmarks:
+        if name == "native_minibatch_training.py":
+            continue
         for artifact in ("data_pipeline", "minibatch", "data_loader",
                          "loader_state"):
             assert artifact not in name, name
 
 
 def test_no_hardening_module_or_later_milestone_test_landed():
-    """J6's example test, J7's hardening module, J8's benchmark test, and
-    J9's closure module all belong to later milestones.
+    """J7's hardening module, J8's benchmark test, and J9's closure module
+    all belong to later milestones.
 
-    ``test_native_data_checkpoint.py`` moved out of this list at **J5**,
-    which is the milestone that shipped it — the same "presence and
-    absence are one split, and only the milestone that ships a name may
-    move it" discipline J4 applied to the loader's two state methods. The
-    absence half below is otherwise untouched.
+    ``test_native_data_checkpoint.py`` moved out of this list at **J5** and
+    ``test_native_minibatch_training.py`` at **J6** — each in the milestone
+    that shipped it, on the same "presence and absence are one split, and
+    only the milestone that ships a name may move it" discipline J4 applied
+    to the loader's two state methods. The absence half below is otherwise
+    untouched.
     """
     assert (REPO_ROOT / "tests" / "test_native_data_checkpoint.py").exists()
-    for later in ("test_native_minibatch_training.py",
-                  "test_native_data_hardening.py",
+    assert (REPO_ROOT / "tests"
+            / "test_native_minibatch_training.py").exists()
+    for later in ("test_native_data_hardening.py",
                   "test_native_data_benchmark.py",
                   "test_native_phase_j_closure.py"):
         assert not (REPO_ROOT / "tests" / later).exists(), later

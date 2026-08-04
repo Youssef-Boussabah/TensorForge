@@ -19,24 +19,40 @@ derivation (§3.2, §8), and continued at **J3**, which added the last of
 §3.1's three names, `NativeDataLoader` (§3.5, §3.6, §9, §10, §15, §17.3),
 over the permanently private `_NativeBatchIterator` and `_deliver_batch`.
 
-**Phase-J status: J0, J1, J2, J3, J4, and J5 complete; J6 through J9 not
+**Phase-J status: J0, J1, J2, J3, J4, J5, and J6 complete; J7 through J9 not
 started.** What exists today is the dataset, the sampler, the loader, the
-loader's own in-memory state, and the caller-managed checkpoint-metadata
-workflow: a finite host-backed dataset, a deterministic permutation and
-batch **planner** with an explicit epoch and cursor, compact transactional
-sampler state, native mini-batch iteration whose committed position
-advances **if and only if** a batch was delivered, the three-key loader
-state schema (§11.3), the loader `state_dict` and `load_state_dict` pair
-(§12.5), **exact in-memory mid-epoch loader restoration** (**J4**), and —
-new at **J5** — that same state proved to survive a **real version-3
-archive** as ordinary caller metadata and to restore an exact continuation
-into entirely fresh objects. **J5 added no production code**: the
-checkpoint module is provably unchanged, the format is still version 3
-with `(1, 2, 3)` accepted, and the archive's own capture set did not grow
-by one field. **No automatic loader discovery, no training example, and no
-benchmark exists yet** — those are J6 onward, and **J6 is the next
-implementation milestone**. Every §14 statement about a *training* program
-still describes work that has not been written.
+loader's own in-memory state, the caller-managed checkpoint-metadata
+workflow, and a worked training program over all of it: a finite
+host-backed dataset, a deterministic permutation and batch **planner** with
+an explicit epoch and cursor, compact transactional sampler state, native
+mini-batch iteration whose committed position advances **if and only if** a
+batch was delivered, the three-key loader state schema (§11.3), the loader
+`state_dict` and `load_state_dict` pair (§12.5), **exact in-memory
+mid-epoch loader restoration** (**J4**), and — at **J5** — that same state
+proved to survive a **real version-3 archive** as ordinary caller metadata
+and to restore an exact continuation into entirely fresh objects. **J5
+added no production code**: the checkpoint module is provably unchanged,
+the format is still version 3 with `(1, 2, 3)` accepted, and the archive's
+own capture set did not grow by one field.
+
+New at **J6**: `examples/native_minibatch_training.py`, the **deterministic
+native mini-batch training example** — the first end-user program to train
+a native model through the pipeline rather than a hand-indexed array — and
+its **exact interrupted-versus-uninterrupted training proof**, run
+independently at float32 and float64 with every numeric comparison made in
+raw IEEE-754 bits and never across dtypes. **J6 added no production code
+and no public name either**: its whole diff is that example,
+`tests/test_native_minibatch_training.py`, the narrow status edits landing
+it requires, and documentation. The example inventory moved 15 → **16**;
+`tensorforge.experimental.__all__` stayed at **25**.
+
+**No automatic loader discovery, no hardening matrix, and no
+benchmark exists yet** — the adversarial injection matrix is J7's and the
+per-dtype characterization J8's, and **J7 is the next implementation
+milestone**. §14's statements about a *training* program now
+describe shipped, executable evidence; §14.1's failed-delivery leg remains
+J5's archive proof and J7's injection matrix rather than anything the
+public example does.
 
 Phase J is a **newly approved** direction. It was not part of the roadmap
 while Phases A–I were being built: the repository deliberately closed
@@ -3279,7 +3295,7 @@ locked rule:
    lists left exactly as it was — the milestone that ships a thing is the
    milestone that moves it.
 
-### J6 — Deterministic mini-batch training example — **not started**
+### J6 — Deterministic mini-batch training example — **complete**
 
 - **Entry:** J5 merged.
 - **Scope:** `examples/native_minibatch_training.py` — a meaningful float32
@@ -3295,6 +3311,142 @@ locked rule:
   or `_native_permutation` call in executable code; no new capability.
 - **Exit gate:** examples 15 → **16**; exact equality at every §14.3 row;
   the negative controls fail as required.
+- **Outcome:** met, and — like J5 — the milestone added **no production
+  code at all**: no module, class, method, argument, constant, or export,
+  and no line of `src/` or `cpp/`.
+  `tensorforge.experimental.__all__` stayed at **25**, the third
+  consecutive Phase-J milestone whose export delta is zero, and the example
+  inventory moved 15 → **16** while the benchmarks stayed at **8**.
+
+  **The example is an ordinary training program, written entirely against
+  the public surface.** `Linear(6→8) → BatchNorm1d(8) → ReLU →
+  Dropout(0.25) → Linear(8→8) → LayerNorm(8) → Dropout(0.25) → Linear(8→3)`
+  into `NativeCrossEntropyLoss` with `NativeAdam`, over a
+  `NativeTensorDataset` → `NativeBatchSampler` → `NativeDataLoader` chain:
+  24 samples of 6 features in 3 classes, `shuffle=True`, `batch_size=6`,
+  `drop_last=False`, seed `20260803`, four batches per epoch, ten steps
+  interrupted after five. **Two Dropout layers share one
+  `NativeGenerator`**, so the model carries a real alias topology beside its
+  parameters, its two BatchNorm running buffers, and Adam's moments and
+  counters — every TensorForge-owned state family is load-bearing at once.
+  That the example touches **no** private runtime seam is asserted by an
+  **AST** scan rather than a substring ban, with a negative control proving
+  the scanner catches a planted `_epoch` assignment, a `_deliver_batch`
+  call, and a `_trusted_dtype=True` keyword — the last of which is only
+  ever reachable *as a keyword*, so the scanner collects those too.
+
+  **The interruption is genuinely mid-epoch, and the schedule is pinned as
+  literal expected values.** After five completed steps the saved position
+  is `(epoch 1, cursor 1)` — not zero, not the final step, not an epoch
+  boundary, with **three** batches still owed by the active epoch and a
+  five-step resumed suffix. The run crosses **two** epoch boundaries across
+  three exercised epochs whose permutations are non-identity and mutually
+  distinct. The three permutations, the twelve batch-index groups, the
+  ten before/after positions, and the canonical final `(2, 2)` are written
+  on the **test** side as committed literals, so a change to the seed, the
+  batch size, the sweep direction, or the key schedule fails there rather
+  than silently redefining what the proof proves.
+
+  **The supported ordering is observed, not reconstructed.** `train()`
+  appends a `("deliver", step)` entry to a journal as each batch actually
+  arrives, and the proof appends its own `loader.state_dict()` and
+  `save_native_checkpoint` entries at the real call sites; the journal's
+  tail is then asserted to be exactly *deliver step 4 → snapshot → save*,
+  which is the executable form of "no delivery happened between the
+  snapshot and the archive". `next_step` is `SPLIT_STEP`, and one delivered
+  batch is one completed step, so the two cannot drift by one.
+
+  **The restore target is deliberately built wrong in every family, and
+  proved so before the load**: different parameter seeds, a different
+  generator seed, a different learning rate, a separately constructed
+  dataset, and a loader with a different seed, a different batch size, a
+  different shuffle setting, and a different position — reached by really
+  delivering batches through the public iteration path, never by assigning
+  a private field. After `load_native_checkpoint` and then
+  `loader.load_state_dict`, every parameter, persistent buffer, Adam `m`,
+  `v`, step counter, hyperparameter, generator state, alias topology, the
+  six loader values, every feature batch's raw bits, every `int64` target
+  array with its dtype, shape, contiguity, ownership and read-only flag,
+  every loss, every logits tensor, and the final evaluation compare
+  **exactly**. **No tolerance is used anywhere**, and object identity is
+  preserved absolutely — the load constructs no generator, parameter, or
+  buffer, and the loader keeps its own sampler and dataset.
+
+  **The negative controls really fail.** Omitting `loader.load_state_dict`
+  alone — everything else identical — is proved to give a different next
+  batch, a different remaining index sequence, different losses, different
+  parameters, and a different evaluation. The bit helper is proved to
+  separate `+0.0` from `-0.0` and adjacent values at both widths, to refuse
+  a wrong-width array, and to perform no conversion. The training-state
+  claims are backed by state that moved: parameters, both running buffers,
+  Adam moments and counters, the generator's call count, a non-constant
+  loss sequence, and a changed evaluation output over identical inputs.
+
+  **Cross-dtype, only the dtype-independent facts are compared** — the
+  complete batch-index sequence, the permutations, the position
+  progression, the next batch at the interruption, and the final loader
+  position. Losses, logits, parameters, buffers, moments, and evaluation
+  outputs are compared **only within their own dtype**, and the two dtypes
+  are asserted to produce genuinely *different* bits, so a cross-dtype
+  numeric equality would be false rather than merely unasserted.
+
+  Native live storage returns **exactly** to baseline across the whole
+  workflow, with every delivered feature batch, logits tensor, loss,
+  gradient, evaluation tensor, parameter, buffer, optimizer, loader, and
+  dataset closed explicitly; the checkpoint lives in a temporary directory
+  that is removed automatically, and running the script leaves no file
+  behind. The C ABI stayed at 54 exports, the CTests at 24, the benchmarks
+  at 8, the checkpoint at version 3 with `(1, 2, 3)` accepted, the
+  optimizer state at version 1, and the loader and sampler state formats at
+  version 1; no C++, CMake, ABI, or dependency file was touched.
+
+**Implementation clarifications recorded at J6**, none of which changes a
+locked rule — the §23 discipline is to record rather than rewrite:
+
+1. **The milestone found no production defect.** J6's instruction was to
+   stop and report rather than silently repair, and there was nothing to
+   report: the public surface J1–J5 shipped expressed the whole training
+   workflow on the first attempt, and every §14 row was provable without a
+   single private call.
+2. **Evaluation goes through the dataset, not the loader.** §14.3 asks for
+   final logits, predictions, and evaluation output; the example gathers
+   the full dataset with the dataset's own public
+   `feature_batch`/`target_batch` pair rather than iterating the loader.
+   Evaluation has no position, no shuffle, and no epoch — it is one fixed
+   gather of every row in index order — and routing it through the loader
+   would advance a cursor that describes *training*. Nothing about §10's
+   materialization contract changes; the same two methods are used.
+3. **The example holds its retired objects only to keep `id()` honest.**
+   §14.2 requires the resumed graph to share no object with the saving one.
+   CPython recycles `id()` values, so measuring that against objects
+   already collected would compare reusable addresses. The example
+   therefore `close()`s every native resource of the interrupted run at the
+   moment the archive is written — which is the ownership contract — and
+   holds the emptied Python objects for exactly as long as the identity
+   comparison runs, then clears them. None is ever passed into the restored
+   graph, and none owns native storage by then.
+4. **The one-epoch iterator rollover is the caller's, and it is two
+   lines.** §9.3 makes one iterator one epoch, so a loop that outruns the
+   captured countdown answers `StopIteration` by calling `iter(loader)`
+   again and continuing at the canonical next-epoch position. Nothing
+   resets or rebuilds the sampler, and no epoch or cursor is incremented by
+   hand. The example's `train()` closes its iterator explicitly on the way
+   out, so the active-iteration count is released there rather than by a
+   finalizer — which is also what makes `load_state_dict` legal again
+   immediately afterwards.
+5. **`_LiveStorageMeter` is a measurement instrument, on the I9
+   precedent.** The runtime exposes no live-allocation counter, and the
+   §14.5 baseline claim has to be measured rather than asserted, so
+   `main()` wraps the **public** `cpp.NativeStorage.__init__`/`close` to
+   count open storages and restores both in a `finally`. It changes nothing
+   about what either does, is not a private seam, and is not the release
+   mechanism — explicit `close()` is, and the counter merely observes it.
+6. **The failed-delivery boundary stays J5's and J7's.** §14.1's third leg
+   requires injection at the private `_deliver_batch` seam. The public
+   example must not do that and does not; J5 already proved through a real
+   archive that a failed delivery consumes nothing and resumes from the
+   same candidate batch, and J7 owns the complete matrix. J6 neither
+   weakens nor restates that proof.
 
 ### J7 — Cross-cutting hardening — **not started**
 

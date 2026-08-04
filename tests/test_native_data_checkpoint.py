@@ -2171,21 +2171,29 @@ def test_j5_added_no_production_module():
 
 
 def test_j5_added_no_example_and_no_benchmark():
-    """J6 owns the example and J8 the benchmark. J5 is an integration
-    proof, and shipping either here would be the over-claim this
-    repository's guardrails exist to prevent."""
+    """J5 itself shipped neither: it is an integration proof whose whole
+    diff is this module plus documentation.
+
+    The example that exists in the tree today is **J6's**
+    (``native_minibatch_training.py``), and it is named here rather than
+    merely counted so this check keeps stating *which* artifact each
+    milestone contributed. J5's own delta is still zero, and the benchmark
+    is still J8's — shipping either under a J5 heading would be the
+    over-claim this repository's guardrails exist to prevent."""
     examples = sorted(path.name
                       for path in (REPO_ROOT / "examples").glob("*.py")
                       if path.name != "__init__.py")
     benchmarks = sorted(path.name
                         for path in (REPO_ROOT / "benchmarks").glob("*.py")
                         if path.name != "__init__.py")
-    assert len(examples) == 15, examples
+    # 15 at J5, 16 since J6 — the one example J6 added, and no other.
+    assert len(examples) == 16, examples
+    assert "native_minibatch_training.py" in examples
     assert len(benchmarks) == 8, benchmarks
-    assert "native_minibatch_training.py" not in examples
     assert "benchmark_native_data_pipeline.py" not in benchmarks
-    assert not (REPO_ROOT / "tests"
-                / "test_native_minibatch_training.py").exists()
+    # J6 landed its own proof module; J7, J8, and J9 have not started.
+    assert (REPO_ROOT / "tests"
+            / "test_native_minibatch_training.py").exists()
     assert not (REPO_ROOT / "tests" / "test_native_data_hardening.py").exists()
     assert not (REPO_ROOT / "tests" / "test_native_data_benchmark.py").exists()
     assert not (REPO_ROOT / "tests"

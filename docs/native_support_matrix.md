@@ -474,7 +474,7 @@ in the stable Python framework — that does not make them native.
 - **automatic loader discovery, in either direction.** The newly approved
   **Phase J**
   ([native_data_pipeline_design.md](native_data_pipeline_design.md),
-  milestones **J0** through **J5** complete) deliberately does **not**
+  milestones **J0** through **J6** complete) deliberately does **not**
   build it, at any milestone: no checkpoint code imports, discovers,
   registers, or validates a Phase-J object, and no pipeline module imports
   checkpoint code. Carrying a loader position through an archive is the
@@ -490,10 +490,11 @@ in the stable Python framework — that does not make them native.
   that loader's own **in-memory** `state_dict()` / `load_state_dict()`
   with exact mid-epoch restoration (**J4**), carried through a real
   version-3 archive as caller metadata and restored exactly into fresh
-  objects (**J5**). So **native mini-batching exists** and a loader's
-  position can be serialized, checkpointed, and restored exactly — but
-  every step of that is the caller's, and nothing finds a loader for
-  them
+  objects (**J5**), with a worked training program over the whole chain
+  and its exact interrupted-versus-uninterrupted proof (**J6**). So
+  **native mini-batching exists** and a loader's position can be
+  serialized, checkpointed, and restored exactly — but every step of that
+  is the caller's, and nothing finds a loader for them
 - weight decay, AdamW, AMSGrad, parameter groups, per-parameter
   learning rates, or schedulers on the native optimizers
 - *(Phase E itself is complete — E0–E10 — so nothing from it is listed
@@ -1519,7 +1520,7 @@ float32 training and the exact float32 resume proof both passed, which is
 the same discipline that kept `dropout` in `UNSUPPORTED` from G3 through
 G9 while the operation and the module both already existed.
 
-## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0–J5 complete, J6–J9 not started)**
+## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0–J6 complete, J7–J9 not started)**
 
 **Phase J is the latest phase, and it is newly approved.** The repository
 closed Phase I at I11 without committing to a successor; Phase J was
@@ -1631,11 +1632,35 @@ same candidate batch, a **successful** one the following batch, and an
 epoch-boundary save the canonical next epoch. There is deliberately **no
 cross-object atomicity** between the two calls, and none is claimed.
 
-**Everything else in this section is still unsupported.** There is **no
-automatic loader discovery, no training example, and no benchmark.**
-Those are J6 onward; **J6 is next**.
+**J6 added no public name and no production code either**, and shipped the
+deterministic mini-batch training example,
+`examples/native_minibatch_training.py`. It trains a
+`Linear → BatchNorm1d → ReLU → Dropout → Linear → LayerNorm → Dropout →
+Linear` classifier over **shuffled** mini-batches drawn through the
+dataset/sampler/loader chain, with `NativeAdam`,
+`NativeCrossEntropyLoss`, and two Dropout layers sharing one
+`NativeGenerator`, and proves an interrupted-and-resumed run **bit-for-bit
+identical** to an uninterrupted one: the complete batch-index sequence,
+every feature batch's raw bits, every `int64` target array with its dtype,
+shape, contiguity, ownership, and read-only flag, every loss, every
+parameter and persistent buffer, Adam's moments and step counters, the
+generator state and alias topology, the final loader `state_dict()`, and
+the evaluation logits, predictions, and metric. It runs at float32 and
+float64 **independently, each compared only against itself**, with **no
+tolerance anywhere**; the only cross-dtype equality asserted is the
+batch-index sequence, which is dtype-independent by construction. The
+interruption is genuinely mid-epoch, the resumed graph is entirely fresh
+and deliberately built wrong in every family first, native live storage
+returns exactly to baseline, and a negative control that omits
+`loader.load_state_dict` alone is proved to diverge. The example uses
+**public APIs only** and claims no timing. The example inventory moved 15
+→ **16**; `tensorforge.experimental.__all__` stayed at **25**.
 
-| Registry | Value at J0–J5 | Value expected at J9 |
+**Everything else in this section is still unsupported.** There is **no
+automatic loader discovery, no hardening matrix, and no benchmark.**
+Those are J7 onward; **J7 is next**.
+
+| Registry | Value at J0–J6 | Value expected at J9 |
 |---|---|---|
 | `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
 | `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
@@ -1661,7 +1686,7 @@ The milestone ladder, with its current status:
 | **J3** | native mini-batch loader | **complete** |
 | **J4** | loader state and mid-epoch resume | **complete** |
 | **J5** | native checkpoint metadata integration | **complete** |
-| J6 | deterministic mini-batch training example | not started |
+| **J6** | deterministic mini-batch training example | **complete** |
 | J7 | cross-cutting hardening | not started |
 | J8 | performance and transfer characterization | not started |
 | J9 | integration and closure | not started |

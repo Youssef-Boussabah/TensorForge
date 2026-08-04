@@ -1,6 +1,6 @@
 """Phase-J contract guardrails (deterministic native data pipeline).
 
-**Phase J is newly approved, and milestones J0 through J5 have landed.**
+**Phase J is newly approved, and milestones J0 through J6 have landed.**
 J0 was an architecture, contract, documentation, and status milestone: it
 shipped ``docs/native_data_pipeline_design.md``, this module, and
 documentation, and **no runtime behavior at all**. **J1** shipped the
@@ -16,20 +16,26 @@ exact mid-epoch restoration, and left ``__all__`` at 25. **J5** added no
 public name *and no production code at all*: it proved that the loader
 state a caller already had survives a real version-3 archive as ordinary
 metadata and restores an exact continuation into entirely fresh objects,
-leaving the checkpoint module untouched. None of the five added C++, a C
-ABI symbol, an example, a benchmark, or a checkpoint or optimizer-state
-change. Their own behavior is covered by
+leaving the checkpoint module untouched. **J6** added no public name
+either, and no production code: it is
+``examples/native_minibatch_training.py`` — the first end-user program to
+train through the pipeline — and its exact interrupted-versus-resumed
+proof, taking the example inventory from 15 to **16**. None of the six
+added C++, a C ABI symbol, a benchmark, or a checkpoint or
+optimizer-state change. Their own behavior is covered by
 ``tests/test_native_dataset.py``, ``tests/test_native_sampler.py``,
 ``tests/test_native_data_loader.py``,
-``tests/test_native_loader_state.py``, and
-``tests/test_native_data_checkpoint.py``; what lives here is the *phase*
-boundary.
+``tests/test_native_loader_state.py``,
+``tests/test_native_data_checkpoint.py``, and
+``tests/test_native_minibatch_training.py``; what lives here is the
+*phase* boundary.
 
-**J6 through J9 have not started**, so the training example, the
-hardening matrix, and the benchmark are still asserted **absent** below.
-A caller can serialize where a loader stopped, carry it through an
-archive, and restore it exactly — but nothing discovers a loader for
-them, and no example or benchmark ships it.
+**J7 through J9 have not started**, so the adversarial hardening matrix,
+the benchmark, and the closure module are still asserted **absent**
+below. A caller can serialize where a loader stopped, carry it through an
+archive, restore it exactly, and now read a worked example doing exactly
+that — but nothing discovers a loader for them, no benchmark ships, and
+Phase J is not complete.
 
 Three kinds of fact live here, and keeping them apart is the point of the
 module:
@@ -89,6 +95,15 @@ J0_CTEST_COUNT = 24
 J0_EXAMPLE_COUNT = 15
 J0_BENCHMARK_COUNT = 8
 
+# The artifacts Phase J has shipped so far, each mapped to the milestone
+# that added it. J0-J5 added none; **J6** added exactly one example. The
+# current count is derived rather than restated, so an unannounced example
+# fails the equality below instead of being absorbed into a bumped literal.
+PHASE_J_EXAMPLES = {"native_minibatch_training.py": "J6"}
+PHASE_J_BENCHMARKS = {}                                  # J8 owns the first
+CURRENT_EXAMPLE_COUNT = J0_EXAMPLE_COUNT + len(PHASE_J_EXAMPLES)
+CURRENT_BENCHMARK_COUNT = J0_BENCHMARK_COUNT + len(PHASE_J_BENCHMARKS)
+
 MILESTONES = tuple(f"J{index}" for index in range(10))   # J0 ... J9
 
 # The three eventual public names, and the milestone that adds each.
@@ -124,7 +139,7 @@ PRIVATE_LOADER_NAMES = ("_NativeBatchIterator", "_deliver_batch")
 # ladder parser below is driven from these rather than from a hard-coded
 # "only J0", so landing a milestone is a one-line change here and a
 # document edit — never a loosened checker.
-COMPLETE_MILESTONES = ("J0", "J1", "J2", "J3", "J4", "J5")
+COMPLETE_MILESTONES = ("J0", "J1", "J2", "J3", "J4", "J5", "J6")
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
 
@@ -236,17 +251,20 @@ def test_the_design_states_exactly_which_runtime_exists():
     # milestones will add must still be spelled out as missing. J4 landed
     # the loader state schema, its two methods, and exact in-memory
     # mid-epoch restoration; J5 landed the caller-managed
-    # checkpoint-metadata workflow. Each moved out of this list and into
-    # the presence checks below in the milestone that shipped it, rather
-    # than being softened.
-    for absent in ("automatic loader discovery", "training example",
+    # checkpoint-metadata workflow; J6 landed the training example and its
+    # exact resume proof. Each moved out of this list and into the presence
+    # checks below in the milestone that shipped it, rather than being
+    # softened.
+    for absent in ("automatic loader discovery", "hardening matrix",
                    "benchmark"):
         assert re.search(rf"no {absent}", head, re.I), absent
     # ``head`` is emphasis-stripped, so these are the flattened spellings.
     for present in ("loader state schema", "loader state_dict",
                     "exact in-memory mid-epoch loader restoration",
                     "caller-managed checkpoint-metadata workflow",
-                    "real version-3 archive"):
+                    "real version-3 archive",
+                    "deterministic native mini-batch training example",
+                    "exact interrupted-versus-uninterrupted training"):
         assert present.lower() in head.lower(), present
     # ...and J5's defining negative: the archive did not grow.
     assert re.search(r"capture set did not grow", head, re.I), head[:1200]
@@ -385,10 +403,10 @@ def test_exactly_the_landed_milestones_are_marked_complete():
         assert re.search(r"\*\*complete\*\*", rows[name], re.I), rows[name]
     for name in UNSTARTED_MILESTONES:
         assert re.search(r"\*\*not started\*\*", rows[name], re.I), rows[name]
-    # J6 is the next implementation milestone, and nothing beyond it may be
-    # claimed under a J5 heading.
-    assert COMPLETE_MILESTONES == ("J0", "J1", "J2", "J3", "J4", "J5")
-    assert UNSTARTED_MILESTONES[0] == "J6"
+    # J7 is the next implementation milestone, and nothing beyond it may be
+    # claimed under a J6 heading.
+    assert COMPLETE_MILESTONES == ("J0", "J1", "J2", "J3", "J4", "J5", "J6")
+    assert UNSTARTED_MILESTONES == ("J7", "J8", "J9")
 
 
 def test_the_ladder_checker_can_actually_fail():
@@ -435,7 +453,8 @@ def test_the_ladder_checker_can_actually_fail():
                 "### J2 — Deterministic sampler",
                 "### J3 — Native mini-batch loader",
                 "### J4 — Loader state and mid-epoch resume",
-                "### J5 — Native checkpoint metadata integration"):
+                "### J5 — Native checkpoint metadata integration",
+                "### J6 — Deterministic mini-batch training example"):
         understated = ladder.replace(f"{row} — **complete**",
                                      f"{row} — **not started**")
         assert understated != ladder, f"the {row!r} row was not found"
@@ -1103,16 +1122,50 @@ def test_the_ctest_inventory_is_still_exactly_twenty_four():
     assert sources == {f"test_{name}" for name in names}
 
 
-def test_the_example_and_benchmark_inventories_are_unchanged():
+def test_the_example_and_benchmark_inventories_moved_by_exactly_j6s_example():
+    """Phase J started at 15 examples and 8 benchmarks. **J6** added one
+    example and nothing else; J8's benchmark has not started.
+
+    Driven from ``PHASE_J_EXAMPLES`` rather than from a bumped literal, so
+    each artifact stays attributed to the milestone that shipped it and an
+    unannounced one fails the exact equality."""
     examples = [path.name for path in (REPO_ROOT / "examples").glob("*.py")
                 if path.name != "__init__.py"]
-    assert len(examples) == J0_EXAMPLE_COUNT, sorted(examples)
     benchmarks = [path.name for path in (REPO_ROOT / "benchmarks").glob("*.py")
                   if path.name != "__init__.py"]
-    assert len(benchmarks) == J0_BENCHMARK_COUNT, sorted(benchmarks)
-    # No Phase-J artifact exists yet.
+    assert len(examples) == CURRENT_EXAMPLE_COUNT == 16, sorted(examples)
+    assert len(benchmarks) == CURRENT_BENCHMARK_COUNT == 8, sorted(benchmarks)
+    assert set(PHASE_J_EXAMPLES) <= set(examples), sorted(PHASE_J_EXAMPLES)
+    assert PHASE_J_BENCHMARKS == {}
+    # Every *other* artifact name is still free of Phase-J vocabulary, so a
+    # second example or J8's benchmark cannot arrive unnoticed.
     for name in examples + benchmarks:
+        if name in PHASE_J_EXAMPLES:
+            continue
         assert "data_pipeline" not in name and "minibatch" not in name, name
+
+
+def test_the_j6_example_and_its_proof_exist_and_nothing_later_does():
+    """J6's two files moved from absence to presence, and only those two.
+    J7's hardening module, J8's benchmark and its test, and J9's closure
+    module are all still absent."""
+    assert (REPO_ROOT / "examples" / "native_minibatch_training.py").is_file()
+    assert (REPO_ROOT / "tests"
+            / "test_native_minibatch_training.py").is_file()
+    for later in ("tests/test_native_data_hardening.py",
+                  "tests/test_native_data_benchmark.py",
+                  "tests/test_native_phase_j_closure.py",
+                  "benchmarks/benchmark_native_data_pipeline.py"):
+        assert not (REPO_ROOT / later).exists(), later
+    # The example is an example: it adds no public name and no production
+    # module, and its model class stays an implementation detail of it.
+    import tensorforge.experimental as experimental
+
+    assert len(experimental.__all__) == 25
+    assert "NativeMiniBatchClassifier" not in experimental.__all__
+    for path in (REPO_ROOT / "src").rglob("*.py"):
+        assert "NativeMiniBatchClassifier" not in path.read_text(
+            encoding="utf-8"), path.name
 
 
 def test_phase_i_is_still_complete_and_is_the_latest_completed_phase():

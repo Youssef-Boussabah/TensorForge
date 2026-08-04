@@ -1066,8 +1066,8 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
-  the latest phase, and it is newly approved: milestones J0 through J5
-  have landed and J6 through J9 have not started.** Phase J was approved
+  the latest phase, and it is newly approved: milestones J0 through J6
+  have landed and J7 through J9 have not started.** Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1137,8 +1137,21 @@ explicit layer at a time:
   the same candidate batch, a successful one the following batch, and an
   epoch-boundary save the canonical next epoch. There is deliberately **no
   cross-object atomicity** between the two calls and none is claimed.
+  **J6 added no production code either** and shipped
+  `examples/native_minibatch_training.py`, the deterministic mini-batch
+  training example: a `Linear → BatchNorm1d → ReLU → Dropout → Linear →
+  LayerNorm → Dropout → Linear` classifier trained over **shuffled**
+  mini-batches with `NativeAdam` and `NativeCrossEntropyLoss` and two
+  Dropout layers sharing one generator, whose interrupted-and-resumed run
+  is proved **bit-for-bit identical** to the uninterrupted one — batch
+  indices, feature bits, target arrays, losses, parameters, buffers, Adam
+  state, generator state and alias topology, the final loader
+  `state_dict()`, and the evaluation output — at float32 and float64
+  independently, with the batch-index sequence identical **across** dtypes
+  and no numeric value compared between them. It composes public APIs
+  only, and the example inventory moved 15 → **16**.
   **No automatic loader discovery exists in either direction**, and there
-  is no training example and no benchmark; **J6 is next**. Its contract is
+  is no hardening matrix and no benchmark; **J7 is next**. Its contract is
   [native_data_pipeline_design.md](native_data_pipeline_design.md), and
   the architectural decisions it locks are the ones that would otherwise
   be re-argued in every later milestone: three eventual public names

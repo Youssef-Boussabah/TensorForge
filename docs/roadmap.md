@@ -48,8 +48,8 @@ approved afterwards, so it must not be described as work that was already
 on the roadmap. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md).
 
-**Milestones J0 through J5 have landed; J6 through J9 have not started,
-and J6 is next.** J0 was an architecture, contract, and documentation
+**Milestones J0 through J6 have landed; J7 through J9 have not started,
+and J7 is next.** J0 was an architecture, contract, and documentation
 milestone and **added no runtime behavior at all** — no dataset, sampler,
 or loader class, no helper module, no state serializer, no public export,
 no C++, no C ABI symbol, no example, no benchmark, and no checkpoint or
@@ -189,12 +189,32 @@ rebuild and repeat both calls. Non-coupling is asserted in both
 directions by source inspection and by driving a real save and load with
 the loader's state methods patched to record any call: neither fired.
 
-**What Phase J still does not have**, because J6 onward have not started:
-automatic loader discovery, the deterministic mini-batch training
-example, the cross-cutting hardening matrix, and the benchmark. A
-loader's position can be serialized, carried through a checkpoint
-archive, and restored exactly — but nothing discovers a loader for the
-caller, and no example or benchmark ships that workflow yet.
+**J6 shipped the deterministic mini-batch training example**,
+`examples/native_minibatch_training.py`, and — like J5 — added **no
+production code and no public name**: the third consecutive Phase-J
+milestone with a zero export delta. The example inventory moved 15 →
+**16**; the benchmarks stayed at **8**. It trains a
+`Linear → BatchNorm1d → ReLU → Dropout → Linear → LayerNorm → Dropout →
+Linear` classifier over shuffled mini-batches with `NativeAdam` and
+`NativeCrossEntropyLoss`, two Dropout layers sharing one generator, and
+proves an interrupted-and-resumed run **bit-for-bit identical** to an
+uninterrupted one — the whole batch-index sequence, every feature batch's
+raw bits, every target array and its flags, every loss, parameter,
+buffer, Adam moment and counter, the generator state and alias topology,
+the final loader `state_dict()`, and the evaluation output — at float32
+and float64 independently, with no tolerance anywhere and no numeric
+comparison between the two dtypes. The interruption is genuinely
+mid-epoch, the resumed graph is entirely fresh and deliberately built
+wrong first, and a negative control that omits the loader restoration
+alone is proved to diverge. It uses **only public APIs**, asserted by an
+AST scan with its own negative control.
+
+**What Phase J still does not have**, because J7 onward have not started:
+automatic loader discovery, the cross-cutting adversarial hardening
+matrix, and the benchmark. A loader's position can be serialized, carried
+through a checkpoint archive, restored exactly, and read in a worked
+example — but nothing discovers a loader for the caller, no benchmark
+ships, and Phase J is not finished.
 
 What J0 resolved, so that later milestones inherit an unambiguous design
 rather than re-deriving one: the three eventual public names —
@@ -553,13 +573,16 @@ Phase J's own design contract exists
 continued at **J2** with `NativeBatchSampler`, at **J3** with
 `NativeDataLoader` and its transactional batch delivery, at **J4**
 with the loader's own in-memory state and exact mid-epoch restoration,
-and at **J5** with the caller-managed checkpoint-metadata workflow proved
+at **J5** with the caller-managed checkpoint-metadata workflow proved
 against real version-3 archives — a milestone that added no production
-code and left the checkpoint module unchanged.
-**J6 through J9 are unstarted**, so the training example, the hardening
-matrix, and the benchmark remain promises — and nothing about them may
-be described as working until the milestone that ships it has landed.
-**J6, the deterministic mini-batch training example, is next.**
+code and left the checkpoint module unchanged — and at **J6** with the
+deterministic mini-batch training example and its exact
+interrupted-versus-uninterrupted proof, which added no production code
+either and took the example inventory from 15 to 16.
+**J7 through J9 are unstarted**, so the adversarial hardening matrix, the
+benchmark, and the phase closure remain promises — and nothing about them
+may be described as working until the milestone that ships it has landed.
+**J7, the cross-cutting hardening matrix, is next.**
 
 What the existing documents still name as future work *beyond* Phase J, in
 no committed order, is: native integer tensors, further dtypes or devices

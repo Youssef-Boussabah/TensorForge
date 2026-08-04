@@ -1660,8 +1660,8 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase J — deterministic native data pipeline and mini-batching — is the
-latest phase, and it is newly approved: milestones J0 through J5 have
-landed, and J6 through J9 have not started.** Phase J was approved *after* Phase I
+latest phase, and it is newly approved: milestones J0 through J6 have
+landed, and J7 through J9 have not started.** Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -1756,9 +1756,33 @@ delivery resumes the same candidate batch, a **successful** one resumes
 the following batch, and an epoch-boundary save resumes the canonical next
 epoch. The absence of cross-object atomicity is proved rather than glossed
 — a checkpoint load that succeeds followed by a loader load that fails
-leaves the first restored and the second untouched. **No automatic loader
-discovery exists, and there is no training example and no benchmark**;
-those are J6 onward, and **J6 is next**. Its architecture contract is
+leaves the first restored and the second untouched.
+
+**J6** shipped `examples/native_minibatch_training.py`, the deterministic
+mini-batch training example, and **added no production code and no public
+name** — the third consecutive Phase-J milestone with a zero export delta.
+The example inventory moved 15 → **16**; the benchmarks stayed at **8**.
+It trains a `Linear → BatchNorm1d → ReLU → Dropout → Linear → LayerNorm →
+Dropout → Linear` classifier over **shuffled** mini-batches with
+`NativeAdam` and `NativeCrossEntropyLoss`, two Dropout layers sharing one
+generator, and proves an interrupted-and-resumed run **bit-for-bit
+identical** to an uninterrupted one across the whole §14.3 inventory — the
+complete batch-index sequence, every feature batch's raw bits, every
+`int64` target array with its flags, every loss, parameter, buffer, Adam
+moment and counter, the generator state and alias topology, the final
+loader `state_dict()`, and the evaluation output. It runs at float32 and
+float64 **independently**, each compared only against itself; the one
+cross-dtype claim is the batch-index sequence, which carries no dtype. The
+interruption is genuinely mid-epoch, the resumed graph is entirely fresh
+and deliberately built wrong in every family first, live storage returns
+exactly to baseline, and a negative control that omits
+`loader.load_state_dict` alone is proved to diverge. The example uses
+**only public APIs**, asserted by an AST scan with its own negative
+control, and claims and measures **no timing**.
+
+**No automatic loader discovery exists, and there is no hardening matrix
+and no benchmark**; those are J7 onward, and **J7 is next**. Its
+architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md), which
 locks three eventual public names (`NativeTensorDataset`,
 `NativeBatchSampler`, `NativeDataLoader`), a copied-snapshot dataset whose

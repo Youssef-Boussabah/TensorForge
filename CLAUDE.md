@@ -569,11 +569,12 @@ that changes the public API or the examples updates the matching document
   every §3 row is expected unchanged at J9, and it plans **no new C ABI
   export**.
 - **J0** (contract), **J1** (dataset), **J2** (sampler), **J3** (loader),
-  **J4** (loader state), and **J5** (checkpoint metadata) are done; **J6
-  through J9 have not started**, and **J6 is next.** Each of J1–J3 added
-  exactly one export — `NativeTensorDataset`, `NativeBatchSampler`,
-  `NativeDataLoader` — for **25** experimental names; **J4 and J5 added
-  none, and the count stays 25.**
+  **J4** (loader state), **J5** (checkpoint metadata), and **J6** (training
+  example) are done; **J7 through J9 have not started**, and **J7 is
+  next.** Each of J1–J3 added exactly one export — `NativeTensorDataset`,
+  `NativeBatchSampler`, `NativeDataLoader` — for **25** experimental names;
+  **J4, J5, and J6 added none, and the count stays 25.** Examples are
+  **16** (J6 added one); benchmarks stay **8**.
   The sampler is a **planner**: explicit `epoch`/`cursor`, pure planning, no
   native allocation, no `close()`, order a pure function of `(seed, epoch,
   length)` from the private `_native_permutation`.
@@ -640,10 +641,40 @@ that changes the public API or the examples updates the matching document
   handoff. If the first succeeds and the second fails, **nothing rolls
   back** — the caller discards everything and repeats both calls. Never
   couple the two to manufacture one transaction.
+- **J6 shipped `examples/native_minibatch_training.py` and changed no
+  production code** — its whole diff is that example,
+  `tests/test_native_minibatch_training.py`, narrow status edits, and docs.
+  It is the reference for *how a caller uses this pipeline*: build dataset →
+  sampler → loader, record `loader.sampler.next_batch_indices()` **before**
+  each delivery, train one step per delivered batch, and close every
+  delivered feature batch, logits, loss, and gradient explicitly. One
+  iterator is one epoch: on `StopIteration` call `iter(loader)` again and
+  continue at the canonical next-epoch position — never reset the sampler,
+  never touch `epoch`/`cursor`. Executable example code stays on **public
+  APIs only** (no `_typed*`, `_from_core`, `_trusted_dtype`,
+  `_native_permutation`, `_deliver_batch`, transaction seam, or private
+  constant), enforced by an **AST** scan — substring bans fail on prose that
+  documents the prohibition, and the scan must read keyword-argument names
+  too or `_trusted_dtype=True` is invisible to it. Every scanner needs a
+  negative control.
+- **J6's proof discipline, which later milestones inherit**: exact equality
+  only — raw IEEE-754 bits through `uint32`/`uint64` views, never
+  `allclose`, `approx`, or any tolerance. Each dtype is proved **only
+  against itself**; the *only* cross-dtype claim is the batch-index
+  sequence, which carries no dtype. The split must be genuinely mid-epoch
+  (`0 < split < total`, not the last step, not a multiple of
+  `batches_per_epoch`, batches still owed), the restored graph entirely
+  fresh and **proved different before the load**, and the omitted-loader
+  leg proved to **diverge**. Committed plans belong in the test as literals.
+  Note the two contracts are different questions: **exact same-run resume**
+  is bit equality, while the **one-ULP `exp`/`log` bound** is about
+  comparing separate libm implementations across platforms — never conflate
+  them or tighten the second.
 - **Still absent, and asserted absent**: loader discovery, any registry,
   imports in either direction between the checkpoint and pipeline modules,
-  a checkpoint field, version 4, a training example, and a benchmark. Those
-  are J6 onward.
+  a checkpoint field, version 4, an adversarial hardening matrix, and a
+  benchmark. Those are J7 onward. J7 owns failure injection at
+  `_deliver_batch`; the public example neither performs nor claims it.
 
 Beyond Phase J (not started): native integer tensors, further dtypes or
 devices, CUDA experiments. See `docs/roadmap.md`; never invent a phase it

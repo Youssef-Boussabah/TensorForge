@@ -2326,10 +2326,10 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase J — deterministic native data pipeline and mini-batching (J0–J5 complete, in progress)
+### Phase J — deterministic native data pipeline and mini-batching (J0–J6 complete, in progress)
 
 **Phase J is the latest phase, it is newly approved, and milestones J0
-through J5 have landed.** J6 through J9 have not started, and **J6 is
+through J6 have landed.** J7 through J9 have not started, and **J7 is
 next**. **No version is claimed** — the native line stays experimental and
 is not production-ready, and this entry records milestones rather than a
 release.
@@ -2653,19 +2653,92 @@ unchanged archive succeeds. J5 added no C++, no CMake entry, no C ABI
 symbol, no example, no benchmark, and no dependency, so **no native
 rebuild, CTest run, or sanitizer run was required and none is claimed**.
 
-**What still does not exist after J5**: automatic loader discovery in
-either direction, the deterministic mini-batch training example, the
-cross-cutting hardening matrix, and the benchmark. No production pipeline
-module imports the checkpoint and no checkpoint module names a pipeline
-object — both asserted by source inspection, and by driving a real save
-and load with the loader's two methods patched to record any call, which
-neither fired. Those are J6 onward.
+**J6 shipped the deterministic mini-batch training example** —
+`examples/native_minibatch_training.py` — and, like J5, **added no
+production code and no public name at all**. It is the third consecutive
+Phase-J milestone with a zero export delta:
+`tensorforge.experimental.__all__` stayed at **25**, and no file under
+`src/` or `cpp/` was touched. The example inventory moved 15 → **16**; the
+benchmarks stayed at **8**.
+
+It is the first end-user program to train a native model **through the
+pipeline** rather than a hand-indexed array, and the first native proof in
+which the **shuffled batch order itself** survives an interruption:
+`Linear(6→8) → BatchNorm1d(8) → ReLU → Dropout(0.25) → Linear(8→8) →
+LayerNorm(8) → Dropout(0.25) → Linear(8→3)` into
+`NativeCrossEntropyLoss` with `NativeAdam`, over 24 samples of 6 features
+in 3 classes at `shuffle=True`, `batch_size=6`, `drop_last=False`, seed
+`20260803` — four batches per epoch, ten steps, interrupted after five.
+**Two Dropout layers share one `NativeGenerator`**, so the model carries a
+real alias topology beside its parameters, its two BatchNorm running
+buffers, and Adam's moments and counters.
+
+The interruption is genuinely mid-epoch: after five completed steps the
+saved position is `(epoch 1, cursor 1)` — not zero, not the final step,
+not an epoch boundary — with **three** batches still owed by the active
+epoch, a five-step resumed suffix, and **two** epoch boundaries crossed
+over three exercised epochs whose permutations are non-identity and
+mutually distinct. The three permutations, the twelve batch-index groups,
+the ten before/after positions, and the canonical final `(2, 2)` are
+committed as **literal expected values on the test side**, so a change to
+the seed, the batch size, the sweep direction, or the key schedule fails
+there rather than redefining the proof.
+
+The save order is observed rather than reconstructed: `train()` journals a
+`("deliver", step)` entry as each batch actually arrives, and the proof
+journals its own `loader.state_dict()` and `save_native_checkpoint` calls
+at the real call sites, so "no delivery between the snapshot and the
+archive" is evidence. `next_step` is the number of completed steps, and
+one delivered batch is one completed step, so the two cannot drift by one.
+The restore target is built **entirely fresh and deliberately wrong** —
+different parameter seeds, a different generator seed, a different
+learning rate, a separately constructed dataset, and a loader with a
+different seed, batch size, shuffle setting, and position, the last
+reached by really delivering batches through the public iteration path —
+and every one of those differences is proved *before*
+`load_native_checkpoint` runs, with `loader.load_state_dict` **second**.
+
+Afterwards the interrupted-and-resumed run matches the uninterrupted one
+**exactly**: the complete batch-index sequence and position progression,
+every feature batch's raw IEEE-754 bits, every `int64` target array with
+its dtype, shape, contiguity, ownership, and read-only flag, every loss,
+every logits tensor, every parameter and persistent buffer, Adam's `m`,
+`v`, step counters, and hyperparameters, the generator state and alias
+topology, the final loader `state_dict()`, and the evaluation logits,
+predictions, and metric. **No tolerance is used anywhere**, and object
+identity is preserved absolutely. The proof runs at **float32 and float64
+independently, each compared only against itself**; the sole cross-dtype
+assertion is the batch-index sequence, and the two dtypes are shown to
+produce genuinely different bits, so a cross-dtype numeric equality would
+be false rather than merely unasserted. Negative controls carry it:
+omitting `loader.load_state_dict` alone diverges in indices, losses,
+parameters, and evaluation; the bit helper separates signed zeros and
+adjacent values at both widths and refuses a wrong-width array; and the
+training-state claims are backed by state that moved. The example uses
+**public APIs only**, asserted by an AST scan whose negative control
+catches a planted `_epoch` assignment, a `_deliver_batch` call, and a
+`_trusted_dtype=True` keyword; native live storage returns exactly to
+baseline; and running the script leaves no file behind. J6 added no C++,
+no CMake entry, no C ABI symbol, no benchmark, and no dependency, so **no
+native rebuild, CTest run, or sanitizer run was required and none is
+claimed**.
+
+**What still does not exist after J6**: automatic loader discovery in
+either direction, the cross-cutting adversarial hardening matrix, and the
+benchmark. No production pipeline module imports the checkpoint and no
+checkpoint module names a pipeline object — both asserted by source
+inspection, and by driving a real save and load with the loader's two
+methods patched to record any call, which neither fired. Those are J7
+onward. The failed-delivery leg in particular stays **J5's archive proof
+and J7's injection matrix**: the public example neither performs nor
+claims it.
 
 **No capability moved, and none will.** `SUPPORTED_DTYPES` is
 `("float64", "float32")`, `SUPPORTED_DEVICES` is `("cpu",)`, `UNSUPPORTED`
 is `("cuda", "amp")`, and `RAW_KERNEL_DTYPES` is `("float64",)`. The
 library exports **54** production `tf_*` symbols, the CTest inventory is
-**24**, the example inventory is **15**, the native checkpoint is
+**24**, the example inventory is **16** (15 through J5, plus J6's one),
+the benchmark inventory is **8**, the native checkpoint is
 `tensorforge.native_checkpoint` version **3** with `(1, 2, 3)` accepted,
 and the in-memory optimizer state is version **1**. Phase J plans **no new
 C ABI export** at any milestone.

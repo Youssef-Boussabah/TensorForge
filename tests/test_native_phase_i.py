@@ -1407,6 +1407,18 @@ def _changed_since(base):
 # unplanned new one.
 I9_ADDED_EXAMPLES = frozenset({"examples/native_float32_training.py"})
 
+# Examples added by **later phases**, after Phase I closed at I11. Phase I's
+# own example set is ``I9_ADDED_EXAMPLES`` and never grows; this second set
+# exists only because the check below is a *cumulative* diff against the I0
+# commit, which keeps seeing later work forever. Each entry names the
+# milestone that shipped it, so a later phase's example is attributed rather
+# than absorbed into Phase I's record — and every *other* path under
+# ``examples/``, including an edit to an existing file, still fails.
+POST_PHASE_I_EXAMPLES = frozenset({
+    "examples/native_minibatch_training.py",          # Phase J, milestone J6
+})
+assert not (I9_ADDED_EXAMPLES & POST_PHASE_I_EXAMPLES)
+
 # The runtime files I9 touches for **documentation only**. Each said
 # "float64/cpu only" in a module docstring — accurate through I8, and wrong
 # the moment the registry moved — so the sentence had to be corrected where
@@ -1456,10 +1468,19 @@ def test_the_phase_changed_no_ci_or_dependency_file():
 
     Any *other* change under ``examples/`` or ``benchmarks/`` — including
     an edit to an existing one — still fails here.
+
+    The diff is **cumulative against the I0 commit**, so it keeps seeing
+    later phases' work indefinitely. ``POST_PHASE_I_EXAMPLES`` names those
+    additions explicitly, one entry per shipping milestone, rather than
+    relaxing the rule to a prefix or a count: Phase I's own example set
+    stays exactly I9's one, and an edit to any pre-existing example still
+    fails.
     """
     forbidden = []
     for path in _changed_since(I0_COMMIT):
-        if path.startswith("examples/") and path not in I9_ADDED_EXAMPLES:
+        if (path.startswith("examples/")
+                and path not in I9_ADDED_EXAMPLES
+                and path not in POST_PHASE_I_EXAMPLES):
             forbidden.append(path)
         if (path.startswith("benchmarks/")
                 and path not in I10_ADDED_BENCHMARKS):
@@ -1474,7 +1495,8 @@ def test_the_phase_changed_no_ci_or_dependency_file():
     )
     # ...and the files those exemptions were written for really exist, so
     # an exemption cannot outlive its subject.
-    for allowed in I9_ADDED_EXAMPLES | I10_ADDED_BENCHMARKS:
+    for allowed in (I9_ADDED_EXAMPLES | I10_ADDED_BENCHMARKS
+                    | POST_PHASE_I_EXAMPLES):
         assert (REPO_ROOT / allowed).is_file(), allowed
 
 

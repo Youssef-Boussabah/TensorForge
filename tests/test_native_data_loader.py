@@ -330,7 +330,10 @@ def test_no_c_abi_or_build_surface_moved():
                 if p.name != "__init__.py"]
     benchmarks = [p.name for p in (REPO_ROOT / "benchmarks").glob("*.py")
                   if p.name != "__init__.py"]
-    assert len(examples) == 15, sorted(examples)
+    # 15 when J3 landed; 16 since **J6** added the one training example, and
+    # no other. The benchmarks are still J8's to move.
+    assert len(examples) == 16, sorted(examples)
+    assert "native_minibatch_training.py" in examples
     assert len(benchmarks) == 8, sorted(benchmarks)
 
 
@@ -2249,8 +2252,19 @@ def test_no_capability_registry_or_version_moved():
 
 
 def test_no_example_or_benchmark_landed_for_this_milestone():
+    """J3 shipped the loader itself and no artifact around it.
+
+    ``examples/native_minibatch_training.py`` arrived at **J6** and is
+    named here as the single permitted exception, so this check still fails
+    on any *other* data-pipeline example or benchmark — J8's benchmark
+    included — rather than being relaxed into a pattern that admits
+    anything."""
+    permitted = {"native_minibatch_training.py"}      # J6
     for directory in ("examples", "benchmarks"):
         for path in (REPO_ROOT / directory).glob("*.py"):
+            if path.name in permitted:
+                assert directory == "examples", path.name
+                continue
             assert "data_pipeline" not in path.name, path.name
             assert "minibatch" not in path.name, path.name
             assert "data_loader" not in path.name, path.name

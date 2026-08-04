@@ -132,10 +132,20 @@ FINAL_CHECKPOINT_VERSIONS = (1, 2, 3)
 FLOAT64_ONLY_CHECKPOINT_VERSIONS = (1, 2)
 FINAL_OPTIMIZER_STATE_VERSION = 1
 
-# Inventories.
+# Inventories, **as Phase I closed on them**. These are historical: they
+# record what I11 left, not what the tree happens to hold today.
 FINAL_CTEST_COUNT = 24
 FINAL_EXAMPLE_COUNT = 15
 MILESTONES = tuple(f"I{index}" for index in range(12))   # I0 ... I11
+
+# Examples added *after* Phase I closed, each mapped to the milestone that
+# shipped it. Keeping the split explicit is what stops later growth from
+# being absorbed into I11's record: Phase I closed at fifteen examples and
+# always will have, whatever the tree grows to afterwards.
+POST_PHASE_I_EXAMPLES = {
+    "native_minibatch_training.py": "J6",
+}
+CURRENT_EXAMPLE_COUNT = FINAL_EXAMPLE_COUNT + len(POST_PHASE_I_EXAMPLES)
 
 # The one example I9 added, and the one benchmark I10 added.
 I9_EXAMPLE = "examples/native_float32_training.py"
@@ -1239,11 +1249,20 @@ def test_the_two_history_reading_guards_still_skip_rather_than_pass():
 # 9. Examples and benchmarks
 # ===========================================================================
 
-def test_the_example_inventory_is_exactly_fifteen():
+def test_the_example_inventory_still_carries_phase_is_fifteen():
+    """Phase I closed at **fifteen** examples, and I9's is one of them.
+
+    The tree may hold more now — later phases ship their own — so the
+    equality is stated as "fifteen, plus exactly the examples later
+    milestones added, each named". That keeps I11's record historically
+    exact while still failing on an unannounced example."""
     examples = sorted((REPO_ROOT / "examples").glob("*.py"))
     names = [path.name for path in examples if path.name != "__init__.py"]
-    assert len(names) == FINAL_EXAMPLE_COUNT, names
     assert "native_float32_training.py" in names
+    assert set(POST_PHASE_I_EXAMPLES) <= set(names), sorted(
+        set(POST_PHASE_I_EXAMPLES) - set(names))
+    assert len(names) == CURRENT_EXAMPLE_COUNT, names
+    assert len(names) - len(POST_PHASE_I_EXAMPLES) == FINAL_EXAMPLE_COUNT
 
 
 def test_the_float32_example_uses_only_public_construction():

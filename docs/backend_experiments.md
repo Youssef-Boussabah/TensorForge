@@ -81,8 +81,8 @@ repaired here rather than rewritten away. The latest completed phase is
 Phase I.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
-latest phase, and it is newly approved: milestones J0 through J5 have
-landed and J6 through J9 have not started.** It was approved *after* Phase
+latest phase, and it is newly approved: milestones J0 through J6 have
+landed and J7 through J9 have not started.** It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -100,15 +100,27 @@ no kernel, no ctypes declaration, and no C++ or CMake file. **J5 added no
 production code whatsoever**: it proved the caller-managed
 checkpoint-metadata workflow against real version-3 archives, and its
 whole diff is one test module plus documentation, with
-`src/tensorforge/experimental/native_checkpoint.py` unchanged. Its
-architecture contract is
+`src/tensorforge/experimental/native_checkpoint.py` unchanged. **J6 added
+no production code either**: its whole diff is
+`examples/native_minibatch_training.py`, one test module, narrow status
+edits, and documentation — the example inventory moved 15 → **16** and no
+file under `src/` or `cpp/` was touched. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md). Nothing
-on this page changed for any of the six milestones: the library still
+on this page changed for any of the seven milestones: the library still
 exports **54** `tf_*` symbols, the CTest inventory is still **24**, and
 every capability registry, checkpoint version, and optimizer-state version
-is exactly what Phase I left. **J1 through J5 therefore required no
+is exactly what Phase I left. **J1 through J6 therefore required no
 native rebuild, no CTest run, and no sanitizer run**, and none is claimed
 for any of them.
+
+**J6 allocates no native storage that it does not release.** The example
+is an ordinary caller: it builds datasets, loaders, models, and
+optimizers, closes every delivered feature batch, logits tensor, loss,
+gradient, evaluation tensor, parameter, buffer, optimizer, loader, and
+dataset explicitly, and both the example's own reporting meter and the
+test suite's live-`NativeStorage` instrumentation confirm the count
+returns **exactly** to baseline across the whole two-dtype workflow —
+including the omitted-loader negative-control leg.
 
 **J5 allocates no native storage of its own either.** It builds models,
 optimizers, and loaders like any caller does, and every proof takes a
