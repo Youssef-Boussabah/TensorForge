@@ -1066,8 +1066,8 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
-  the latest phase, and it is newly approved: milestones J0 through J8
-  have landed and J9 has not started.** Phase J was approved
+  the latest phase, and it is complete: milestones J0 through J9 have all
+  landed and J9 closed it.** Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1179,8 +1179,13 @@ explicit layer at a time:
   cleanup outside the timer. **No speed is asserted, no threshold or CI
   timing job exists, and no result file is written**; the benchmark
   inventory moved 8 → **9**.
-  **No automatic loader discovery exists in either direction**, and the
-  phase closure has not started; **J9 is next**. Its contract is
+  **J9 closed the phase**, adding no production code, no public name,
+  and no export: it shipped the permanent closure guardrails in
+  `tests/test_native_phase_j_closure.py`, re-ran the complete validation
+  matrix, and reconciled every inventory. **Phase J is complete, no
+  milestone remains, and no successor phase is defined.**
+  **No automatic loader discovery exists in either direction**, at any
+  milestone. Its contract is
   [native_data_pipeline_design.md](native_data_pipeline_design.md), and
   the architectural decisions it locks are the ones that would otherwise
   be re-argued in every later milestone: three eventual public names
@@ -1201,8 +1206,8 @@ explicit layer at a time:
   Phase J moves no registry, dtype, device, export, checkpoint version, or
   optimizer-state version at any milestone.
 - **Native dtype generalization and float32 CPU support (Phase I) is
-  complete: milestones I0 through I11 have all landed**, and the latest
-  completed phase is Phase I; Phase H is
+  complete: milestones I0 through I11 have all landed**; it was the
+  latest completed phase until Phase J closed after it, and Phase H is
   unaffected and remains complete, having closed at 52 exports. **I11 was
   cross-platform validation and closure** — Windows Release and Debug, a
   Linux CI-equivalent, Clang ASan/UBSan with a negative control, a

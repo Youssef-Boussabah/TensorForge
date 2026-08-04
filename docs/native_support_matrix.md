@@ -471,10 +471,9 @@ in the stable Python framework — that does not make them native.
   knows a loader exists. J5 is the evidence for that too — a real save and
   a real load with the loader's two state methods patched to record any
   call, and neither fired.)*
-- **automatic loader discovery, in either direction.** The newly approved
-  **Phase J**
+- **automatic loader discovery, in either direction.** **Phase J**
   ([native_data_pipeline_design.md](native_data_pipeline_design.md),
-  milestones **J0** through **J8** complete) deliberately does **not**
+  complete: milestones **J0** through **J9**) deliberately does **not**
   build it, at any milestone: no checkpoint code imports, discovers,
   registers, or validates a Phase-J object, and no pipeline module imports
   checkpoint code. Carrying a loader position through an archive is the
@@ -964,9 +963,8 @@ required platform, added the closure guardrails, and reconciled the status
 surfaces. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
-Phase J, below, is the latest phase; it is newly approved and its runtime
-has reached J3 — the dataset, the sampler, and the loader — with loader
-state and everything after it still unstarted.
+Phase J, below, is the latest phase and is complete (J0–J9); it moved no
+row in this document at any milestone.
 
 **Since milestone I9, `float32` and `float64` are both supported native
 CPU dtypes**, and this is the row that supersedes every "float64 only"
@@ -1520,11 +1518,12 @@ float32 training and the exact float32 resume proof both passed, which is
 the same discipline that kept `dropout` in `UNSUPPORTED` from G3 through
 G9 while the operation and the module both already existed.
 
-## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0–J8 complete, J9 not started)**
+## Phase J — deterministic native data pipeline and mini-batching, **complete (J0–J9)**
 
-**Phase J is the latest phase, and it is newly approved.** The repository
-closed Phase I at I11 without committing to a successor; Phase J was
-approved afterwards, so nothing here describes pre-existing roadmap work.
+**Phase J is the latest phase, and it is complete.** It was newly approved
+when it opened: the repository closed Phase I at I11 without committing to
+a successor, and Phase J was approved afterwards, so nothing here describes
+pre-existing roadmap work.
 Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md).
 
@@ -1700,11 +1699,17 @@ would be a separate, separately approved decision. The benchmark
 inventory moved 8 → **9**; the example inventory stayed at **16** and
 `tensorforge.experimental.__all__` at **25**.
 
-**Everything else in this section is still unsupported.** There is **no
-automatic loader discovery**, and the phase closure has not started.
-That is J9; **J9 is next**.
+**J9 closed the phase**, adding no production code, no public name, and no
+export: it shipped `tests/test_native_phase_j_closure.py`, re-ran the
+complete cross-platform, sanitizer, and leak-detection matrix, and
+reconciled every inventory.
 
-| Registry | Value at J0–J8 | Value expected at J9 |
+**Everything else in this section is permanently unsupported.** There is
+**no automatic loader discovery**, in either direction, and none may be
+added. **Phase J is complete, no milestone remains, and no successor phase
+is defined** — further work requires a separately approved phase.
+
+| Registry | Value at J0 | Value at J9 (final) |
 |---|---|---|
 | `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
 | `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
@@ -1715,8 +1720,9 @@ That is J9; **J9 is next**.
 | Exported production `tf_*` symbols | **54** | unchanged |
 | Registered native CTests | **24** | unchanged |
 
-**Phase J is not a capability phase in any dtype, device, or ABI
-direction.** It plans **no** new C ABI export; §22.3 of the contract states
+**Phase J was not a capability phase in any dtype, device, or ABI
+direction, and it closed without becoming one.** It added **no** new C ABI
+export; §22.3 of the contract states
 the one measured condition under which that could even be reopened, and it
 would require separate approval rather than being a milestone's to take.
 
@@ -1733,7 +1739,7 @@ The milestone ladder, with its current status:
 | **J6** | deterministic mini-batch training example | **complete** |
 | **J7** | cross-cutting hardening | **complete** |
 | **J8** | performance and transfer characterization | **complete** |
-| J9 | integration and closure | not started |
+| **J9** | integration and closure | **complete** |
 
 What J0 locked, so that later milestones inherit it: three eventual public
 names — `NativeTensorDataset` (J1), `NativeBatchSampler` (J2), and

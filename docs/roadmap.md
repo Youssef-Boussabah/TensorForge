@@ -39,17 +39,18 @@ last of them, native CPU performance and runtime efficiency, closed at
 milestone H10. Each phase's record is in its own design document; the
 sections above are the narrative.
 
-## The latest phase — Phase J, newly approved
+## The latest phase — Phase J, complete
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
-latest phase.** It is **newly approved**: the repository deliberately
-closed Phase I at I11 without committing to a successor, and Phase J was
-approved afterwards, so it must not be described as work that was already
-on the roadmap. Its architecture contract is
+latest phase, and it is complete.** It was **newly approved** when it
+opened: the repository deliberately closed Phase I at I11 without
+committing to a successor, and Phase J was approved afterwards, so it must
+not be described as work that was already on the roadmap. Its architecture
+contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md).
 
-**Milestones J0 through J8 have landed; J9 has not started, and J9 is
-next.** J0 was an architecture, contract, and documentation
+**Milestones J0 through J9 have all landed, and J9 closed the phase.** J0
+was an architecture, contract, and documentation
 milestone and **added no runtime behavior at all** — no dataset, sampler,
 or loader class, no helper module, no state serializer, no public export,
 no C++, no C ABI symbol, no example, no benchmark, and no checkpoint or
@@ -254,12 +255,19 @@ and **no threshold, CI timing job, or result file** exists. The
 measurements are one machine, one build, and one moment, and no runtime
 change is derived from them.
 
-**What Phase J still does not have**, because J9 has not started:
-automatic loader discovery and the phase closure. A loader's position can
-be serialized, carried through a checkpoint archive, restored exactly,
-read in a worked example, relied on to consume nothing when a delivery
-fails, and measured layer by layer — but nothing discovers a loader for
-the caller, and Phase J is not finished.
+**J9 closed the phase**, adding no production code, no public name, and
+no export: it shipped `tests/test_native_phase_j_closure.py` — the
+permanent closure guardrails — re-ran the complete validation matrix
+(Windows Release and Debug, a Linux CI-equivalent, Clang ASan/UBSan with a
+detector negative control, and a LeakSanitizer lifecycle over the whole
+pipeline), and reconciled every inventory.
+
+**What Phase J deliberately never had, and never will:** automatic loader
+discovery. A loader's position can be serialized, carried through a
+checkpoint archive, restored exactly, read in a worked example, relied on
+to consume nothing when a delivery fails, and measured layer by layer —
+but nothing discovers a loader for the caller, in either direction, and
+none may be added.
 
 What J0 resolved, so that later milestones inherit an unambiguous design
 rather than re-deriving one: the three eventual public names —
@@ -628,16 +636,16 @@ the cross-cutting adversarial hardening matrix, which added no production
 code either and found no production defect, and at **J8** with the
 data-pipeline characterization benchmark, which added no production code
 and no optimization either and took the benchmark inventory from 8 to 9.
-**J9 is unstarted**, so the phase closure remains a promise — and nothing
-about it may be described as working until the milestone that ships it
-has landed.
-**J9, the integration and closure milestone, is next.**
+and at **J9** with the integration and closure milestone, which added no
+production code either and closed the phase.
 
-What the existing documents still name as future work *beyond* Phase J, in
-no committed order, is: native integer tensors, further dtypes or devices
-beyond the two Phase I delivers, and CUDA experiments. None of them has
-started, and none may be described as begun until a design contract for it
-exists.
+**Phase J is complete, and no milestone remains in it. No successor phase
+is defined.** What the existing documents name as *possible* future work,
+in no committed order and with nothing approved, is: native integer
+tensors, further dtypes or devices beyond the two Phase I delivers, and
+CUDA experiments. None of them has started, none is scheduled, and each
+would require a **separately approved** phase with its own design contract
+before any of it may be described as begun.
 Each would be a *capability* phase with its own design contract, and each
 is deliberately outside everything shipped so far.
 

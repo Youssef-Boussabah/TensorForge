@@ -2002,10 +2002,16 @@ def test_the_harness_reads_only_one_private_attribute_and_only_in_tests():
     assert "_cache_key" in own_source
 
 
-def test_the_later_phase_j_milestone_is_still_absent():
-    """J9 owns the closure module and the sanitizer matrix; J8 ships
-    neither."""
-    assert not (REPO_ROOT / "tests" / "test_native_phase_j_closure.py").exists()
+def test_the_later_phase_j_milestone_lives_in_its_own_module():
+    """J9 owns the closure module and the sanitizer matrix; J8 shipped
+    neither, and that split survives J9 landing.
+
+    Through J8 this read "the closure module is absent", which expired the
+    moment J9 shipped. What replaces it is the durable half: the closure
+    guardrails are a **separate** module, and J8's benchmark contract
+    module still owns no phase-wide claim."""
+    assert (REPO_ROOT / "tests" / "test_native_phase_j_closure.py").exists()
+    assert "test_native_phase_j_closure" not in BENCHMARK_SOURCE
     package = REPO_ROOT / "src" / "tensorforge" / "experimental"
     for absent in ("native_data_benchmark.py", "native_benchmark.py",
                    "native_data_workers.py", "native_data_prefetch.py"):

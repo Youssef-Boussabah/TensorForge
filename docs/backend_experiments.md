@@ -81,8 +81,8 @@ repaired here rather than rewritten away. The latest completed phase is
 Phase I.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
-latest phase, and it is newly approved: milestones J0 through J8 have
-landed and J9 has not started.** It was approved *after* Phase
+latest phase, and it is complete: milestones J0 through J9 have all
+landed and J9 closed it.** It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -122,8 +122,90 @@ exports **54** `tf_*` symbols, the CTest inventory is still **24**, and
 every capability registry, checkpoint version, and optimizer-state version
 is exactly what Phase I left. **J1 through J8 therefore required no
 native rebuild, no CTest run, and no sanitizer run**, and none is claimed
-for any of them — **J9 owns the complete final native and sanitizer
-matrix.**
+for any of them — **J9 ran the complete final native and sanitizer
+matrix**, recorded below and in
+[native_data_pipeline_design.md](native_data_pipeline_design.md) §23.3.
+
+### J9 — the Phase-J closure matrix
+
+**J9 changed no production code and added no export**, so nothing on this
+page moved because of the phase itself: the library still exports **54**
+`tf_*` symbols and the CTest inventory is still **24**. What J9 adds here
+is evidence that the tree Phase J leaves behind still builds, runs, and
+stays clean everywhere the project validates.
+
+**Windows** (MSVC 19.44.35228.0), both configurations built out-of-source
+**outside the repository**, with the Debug library written to its own
+directory so the active runtime stayed the Release DLL — confirmed by
+digest, and the two binaries are distinct. Each: clean configure, clean
+build, **zero** project CMake, compiler, and linker warnings, **24/24**
+CTests, and **54** exports with the source set and the PE export table
+**exactly equal**.
+
+**Linux CI-equivalent** — WSL2 Ubuntu 24.04.4, kernel 6.6.87.2, glibc
+2.39, x86_64, g++ 13.3.0 with `-Wall -Wextra`, CMake 3.28.3, Python
+3.13.14, NumPy 2.5.1, uv 0.11.28, in an isolated environment outside the
+worktree. The workflow's own four steps all pass — `cpp/build.py`, the
+hard-failing smoke check, the quick benchmark, and the full pytest suite —
+and a separate out-of-source Release build reports **zero** warnings,
+**24/24** CTests, **54** exports, **zero** mangled exported symbols, and
+source/library equality.
+
+**Sanitizers, with instrumentation proved.** A fresh Clang **18.1.3**
+`-DTF_SANITIZE=address,undefined` build outside the repository compiled
+with **zero** project diagnostics. `nm -D` shows **25 `__asan*`** and **12
+`__ubsan*`** dynamic symbols alongside the **54** exported `tf_*` symbols,
+and the library **refuses to load** without the sanitizer runtime
+(`undefined symbol: __ubsan_vptr_type_cache`) — so the instrumentation is
+proved present rather than assumed. Under
+`halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1:detect_leaks=1`
+and `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`: **24/24** sanitized
+CTests, and the **complete** Python suite green against the sanitized
+library with **zero AddressSanitizer and zero UndefinedBehaviorSanitizer
+diagnostics**. Python-level runs preload the ASan runtime (`LD_PRELOAD`)
+because the interpreter itself is not instrumented, so the claim covers
+the **native** library and the native test binaries. The sanitized `.so`
+was substituted into the package location only for the duration of the run
+and restored afterwards, with the original's SHA-256 verified identical;
+no sanitized library was left in the normal runtime location and the
+Windows DLL was never touched.
+
+**A negative control makes that zero mean something.** A test-only program
+— compiled outside the repository, never committed, and deleted afterwards
+— hands `tf_storage_copy_to` a host destination one element shorter than
+the storage it declares, which is a size the C ABI cannot validate because
+a raw host pointer carries none. It aborts with `ERROR: AddressSanitizer:
+heap-buffer-overflow`, `WRITE of size 8`, inside `copy_to_typed<double>`
+at `cpp/src/storage.cpp:520`, reached through `tf_storage_copy_to`. The
+same program with a correctly sized destination exits zero with no
+diagnostic, so the control discriminates rather than always firing. **No
+production failure API was added**, and the one documented allocation
+hook is unchanged.
+
+**LeakSanitizer, scope stated honestly.** With `detect_leaks=1` and **no
+suppression file** (`LSAN_OPTIONS` confirmed unset), a temporary and never
+committed workload drove one complete Phase-J lifecycle: the shipped J6
+program at both dtypes — reused rather than reimplemented, because a
+hand-written stand-in that forgot one intermediate would report a leak
+belonging to the workload rather than to TensorForge — plus the failure
+paths the public example deliberately does not contain: a failed delivery
+and its rollback, a checkpoint taken immediately after one resuming the
+**same candidate batch**, a superseded iterator, and a reentrant close.
+The native live-storage counter returned **exactly to baseline (0 → 0)** at
+every checkpoint. Running LSan over that *Python* process reports 771,784
+bytes in 693 allocations across 281 records, but **not one leak frame
+names `_tensorforge_cpp`, `tf_core_`, `tf_storage_`, or `tf::`** — every
+named site is CPython, libc, NumPy, `_ctypes`, or the ASan runtime itself.
+**No suppression file was added.**
+
+All **16** examples exit zero, the J8 harness passes every correctness
+gate in both `--smoke` and `--smoke --json`, the CI quick benchmark exits
+zero, and **no result file of any kind is written**.
+
+**GitHub Actions was green for the J8 commit this work started from.** The
+J9 tree is uncommitted, so its workflow run has not happened: a green
+GitHub Actions run for the J9 commit is the remaining **external**
+confirmation before merge, and nothing above stands in for it.
 
 **J8's benchmark measures; it does not gate.** Correctness runs before
 timing in every case and is exact — index tuples, plans, and permutations

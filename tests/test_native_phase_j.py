@@ -44,14 +44,25 @@ optimizer-state change. Their own behavior is covered by
 ``tests/test_native_data_benchmark.py``; what lives here is the
 *phase* boundary.
 
-**J9 has not started**, so the closure module is still asserted
-**absent** below. A caller can serialize where a loader stopped, carry it
-through an archive, restore it exactly, read a worked example doing
-exactly that, rely on an adversarial matrix proving a failed delivery
-consumes nothing, and measure what each layer costs — but nothing
-discovers a loader for them, and Phase J is not complete.
+**J9 closed the phase.** It added no public name and no production code
+either: it is `tests/test_native_phase_j_closure.py`, the permanent
+closure guardrails, plus the expiry edits this module needed and the final
+status reconciliation. **Phase J is complete, J0 through J9 have all
+landed, and no milestone remains.** A caller can serialize where a loader
+stopped, carry it through an archive, restore it exactly, read a worked
+example doing exactly that, rely on an adversarial matrix proving a failed
+delivery consumes nothing, and measure what each layer costs — and nothing
+discovers a loader for them, at any milestone.
 
-Three kinds of fact live here, and keeping them apart is the point of the
+**Where the boundary now lives.** This module owns the *contract* — what
+the design document resolves, and the presence/absence split of the
+runtime it describes. `tests/test_native_phase_j_closure.py` owns the
+*closed boundary*: that every ladder row is complete, that every current
+status surface says so, and that the final registries, inventories, and
+evidence cannot drift. The two are deliberately not duplicates, and a
+claim about closure belongs there rather than here.
+
+Two kinds of fact live here, and keeping them apart is the point of the
 module:
 
 * **What the contract says** — a property of the design document, which
@@ -59,11 +70,10 @@ module:
   assertions are **section-scoped** and require **combinations** of
   architectural terms rather than the presence of one vague word: a
   document that merely contains the string "shuffle" passes nothing here.
-* **What the repository is now** — the live registries, the live source,
-  the built library, and real files, at J0.
-* **What is still a promise** — everything J1 onward will do, asserted as
-  *absent*, so a later milestone cannot be mistaken for an earlier one and
-  so a placeholder class cannot appear without failing a test.
+* **What the repository is** — the live registries, the live source, the
+  built library, and real files. The presence/absence split that carried
+  the phase is now closed on the presence side: exactly the three names
+  §3.1 chose exist, and a fourth would fail.
 
 They deliberately test *values and structure* rather than wording, so
 ordinary prose improvements do not require rewriting them. Nothing here
@@ -152,11 +162,14 @@ PRIVATE_LOADER_NAMES = ("_NativeBatchIterator", "_deliver_batch")
 
 # The milestones complete right now, and the ones still promised. The
 # ladder parser below is driven from these rather than from a hard-coded
-# "only J0", so landing a milestone is a one-line change here and a
-# document edit — never a loosened checker.
-COMPLETE_MILESTONES = ("J0", "J1", "J2", "J3", "J4", "J5", "J6", "J7", "J8")
+# list, so landing a milestone was always a one-line change here and a
+# document edit — never a loosened checker. **At closure every milestone
+# is on the first list and the second is empty**, which is the whole
+# content of "the phase is done".
+COMPLETE_MILESTONES = MILESTONES                          # J0 ... J9
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
+assert UNSTARTED_MILESTONES == ()
 
 # The locked derivation Phase J reuses rather than replacing. These are the
 # Phase-G constants, spelled out here so a change to either side fails.
@@ -171,6 +184,19 @@ def _read(relative):
 
 def _design():
     return PHASE_J_DESIGN.read_text(encoding="utf-8")
+
+
+def _head():
+    """The design's status header — everything before §1.
+
+    Bounded by the document's own first section rather than by a byte
+    count, so a header that legitimately grows by one milestone's status
+    does not silently push a required claim out of the window being
+    checked."""
+    text = _design()
+    end = text.find("\n## 1.")
+    assert end > 0, "the design has no section 1 to bound the header"
+    return _flat(text[:end])
 
 
 def _flat(text):
@@ -232,7 +258,7 @@ def test_the_design_names_the_phase_and_its_subject():
 # without a successor" retroactively false.
 
 def test_the_design_presents_phase_j_as_newly_approved_after_phase_i():
-    head = _flat(_design()[:6000])
+    head = _head()
     assert re.search(r"newly\s+approved", head, re.I), (
         "the design does not say Phase J is newly approved"
     )
@@ -246,42 +272,33 @@ def test_the_design_presents_phase_j_as_newly_approved_after_phase_i():
 
 
 def test_the_design_states_exactly_which_runtime_exists():
-    """The header carries the phase's status, and from J1 on that status
-    has two halves: what landed, and what still has not. Both are
-    required, so a future milestone cannot quietly drop the second.
+    """The header carries the phase's status. Through J8 that status had
+    two halves — what had landed, and what had not — and the second was
+    required so a future milestone could not quietly drop it. **At closure
+    the second half is empty**, and the header must say so as a completed
+    run rather than by falling silent.
 
     Driven from ``COMPLETE_MILESTONES`` rather than from a hard-coded
-    sentence, so the check keeps meaning the same thing as milestones
-    land instead of being rewritten into agreement each time.
+    sentence, so the check kept meaning the same thing as milestones landed
+    instead of being rewritten into agreement each time.
     """
-    head = _flat(_design()[:6000])
-    landed = ", ".join(COMPLETE_MILESTONES[:-1]) + f", and {COMPLETE_MILESTONES[-1]}"
-    next_up = UNSTARTED_MILESTONES[0]
-    last = UNSTARTED_MILESTONES[-1]
-    # One remaining milestone reads "J9 not started"; more than one reads
-    # "J9 through J<n> not started". The check stays exact either way — the
-    # range spelling is not a licence to omit a milestone.
-    remaining = (rf"{next_up} not started" if next_up == last
-                 else rf"{next_up} through {last} not started")
+    head = _head()
+    first, last = COMPLETE_MILESTONES[0], COMPLETE_MILESTONES[-1]
     assert re.search(r"J0 added no runtime behavior", head, re.I), head[:400]
     assert re.search(r"[Rr]untime capability began at \*{0,2}J1", head), head[:400]
-    assert re.search(rf"{landed} complete; {remaining}", head,
-                     re.I), head[:800]
-    # The absent half, named rather than implied: what the *next*
-    # milestones will add must still be spelled out as missing. J4 landed
-    # the loader state schema, its two methods, and exact in-memory
-    # mid-epoch restoration; J5 landed the caller-managed
-    # checkpoint-metadata workflow; J6 landed the training example and its
-    # exact resume proof. Each moved out of this list and into the presence
-    # checks below in the milestone that shipped it, rather than being
-    # softened.
-    for absent in ("automatic loader discovery",):
-        assert re.search(rf"no {absent}", head, re.I), absent
+    # Every milestone complete, stated as the whole closed run, and with
+    # no milestone left open anywhere in the header.
+    assert re.search(rf"{first} through {last} complete", head, re.I), head[:800]
+    assert not re.search(r"not started", head, re.I), head[:800]
+    assert UNSTARTED_MILESTONES == (), UNSTARTED_MILESTONES
+    # The absence that is permanent rather than pending, and must survive
+    # closure as a rule instead of expiring with it.
+    assert re.search(r"no automatic loader discovery", head, re.I)
     # ``head`` is emphasis-stripped, so these are the flattened spellings.
-    # "hardening matrix" moved from the absent list to this one at **J7**
-    # and "data-pipeline benchmark" at **J8**, each in the milestone that
+    # Each moved from an absent list into this one in the milestone that
     # shipped it — the same one-way split every other inventory in this
-    # repository uses.
+    # repository uses — and closure adds the last row rather than
+    # rewriting the earlier ones.
     for present in ("loader state schema", "loader state_dict",
                     "exact in-memory mid-epoch loader restoration",
                     "caller-managed checkpoint-metadata workflow",
@@ -291,40 +308,58 @@ def test_the_design_states_exactly_which_runtime_exists():
                     "adversarial hardening matrix",
                     "checkpoint taken immediately after a failed delivery",
                     "data-pipeline benchmark",
-                    "separately and never as a ratio of one to the other"):
+                    "separately and never as a ratio of one to the other",
+                    "permanent closure guardrails"):
         assert present.lower() in head.lower(), present
     # ...and J5's defining negative: the archive did not grow.
     assert re.search(r"capture set did not grow", head, re.I), head[:1200]
-    assert re.search(rf"{next_up} is\s+(the\s+)?next", head, re.I), head[:800]
+    # The phase itself, closed rather than merely out of milestones.
+    assert re.search(r"Phase J is complete", head, re.I), head[:1200]
+    assert re.search(r"no milestone remains", head, re.I), head[:1600]
 
 
 # The one over-claim pattern, shared by the design scan and the status-surface
 # scan below so the two cannot drift apart. Two arms, because the claim has two
 # ordinary shapes: "<subject> is supported", and "<something> supports
 # <subject>" — the second is invisible to the first.
+#
+# Through J8 this pattern also covered the three class names, because none of
+# the runtime existed and claiming it would have been false. That premise
+# expired one name at a time and is now gone entirely: the dataset, sampler,
+# and loader **do** exist, and a surface saying so is accurate. What remains
+# permanently untrue is everything Phase J deliberately never delivered, so
+# the pattern is retargeted rather than deleted — the subjects below are the
+# ones no milestone may ever make true.
 _RUNTIME_CLAIM = re.compile(
-    r"(NativeTensorDataset|NativeBatchSampler|NativeDataLoader|"
-    r"data loader|dataloader|mini-?batching|shuffled training)"
+    r"(worker processes|worker threads|multiprocessing workers|"
+    r"prefetch(ing)?|asynchronous iteration|async iteration|pinned memory|"
+    r"distributed sampling|collate (callbacks?|function)|"
+    r"streaming datasets?|infinite datasets?|memory[- ]mapp\w+|"
+    r"automatic loader discovery|loader discovery)"
     r"[^.;]{0,60}?\b(is|are|now)\s+"
-    r"(supported|implemented|shipped|available|complete)\b"
-    r"|\bsupports?\s+(native\s+)?(mini-?batching|data loading|data loaders?)\b",
+    r"(supported|implemented|shipped|available|complete|provided)\b"
+    r"|\bsupports?\s+(native\s+)?(workers|prefetch(ing)?|multiprocessing|"
+    r"collate|pinned memory|distributed sampling|streaming datasets?)\b"
+    r"|\b(loader|sampler|dataset|pipeline)s?\b[^.;]{0,40}?"
+    r"\b(is|are)\s+thread[- ]safe\b",
     re.I)
 
 
-def test_the_design_does_not_claim_a_phase_j_runtime_capability():
-    """The document may describe what J1-J9 *will* do at any length; it may
-    not say any of it exists. Spans carrying their own future or negative
-    marker are the honest form and pass."""
+def test_the_design_claims_no_capability_phase_j_never_delivered():
+    """The document may describe a non-goal at any length; it may not say
+    any of it exists. Spans carrying their own negative marker are the
+    honest form and pass — which is most of §20."""
     claim = _RUNTIME_CLAIM
-    future = re.compile(
-        r"\b(not|never|no|will|would|eventual\w*|planned|future|once|until|"
-        r"when|yet|begins?|claim\w*|at J[1-9])\b", re.I)
+    negated = re.compile(
+        r"\b(not|never|no|neither|nor|none|without|would|eventual\w*|"
+        r"planned|future|once|until|when|yet|outside|refus\w*|reject\w*|"
+        r"forbidden|unsupported|claim\w*)\b", re.I)
     text = _flat(_design())
     offenders = [
         match.group(0)
         for match in claim.finditer(text)
-        if not future.search(text[max(0, match.start() - 140):
-                                  match.end() + 30])
+        if not negated.search(text[max(0, match.start() - 140):
+                                   match.end() + 30])
     ]
     assert offenders == [], offenders
 
@@ -332,25 +367,33 @@ def test_the_design_does_not_claim_a_phase_j_runtime_capability():
 def test_the_runtime_claim_scanner_can_actually_fail():
     """Negative control for the scanner above: it must catch the sentences
     it exists to catch, and pass the ones the document has to be able to
-    write."""
+    write — including, now, the accurate statements that the three landed
+    names *are* available."""
     claim = _RUNTIME_CLAIM
     for detected in (
-        "NativeDataLoader is available",
-        "the data loader is supported",
-        "native mini-batching is now implemented",
-        "deterministic shuffled training is implemented",
-        "NativeTensorDataset is shipped",
-        "TensorForge now supports native mini-batching",
+        "worker processes are supported",
+        "prefetching is now available",
+        "TensorForge supports multiprocessing",
+        "asynchronous iteration is implemented",
+        "the loader is thread-safe",
+        "pinned memory is supported",
+        "automatic loader discovery is available",
     ):
         assert claim.search(detected), detected
     for accurate in (
-        "NativeDataLoader is not implemented",
-        "the loader will be available at J3",
-        "no Phase-J runtime API is exported yet",
+        # The landed runtime, which a closed phase must be free to state.
+        "NativeDataLoader is available",
+        "the native data loader is supported on the CPU",
+        "native mini-batching is implemented",
+        # ...and the permanent absences, stated honestly.
+        "worker processes are not supported and none may be added",
+        "prefetching does not exist",
+        "no automatic loader discovery exists, in either direction",
+        "the loader is not thread-safe",
     ):
         match = claim.search(accurate)
-        future = re.compile(r"\b(not|never|no|will|yet)\b", re.I)
-        assert match is None or future.search(accurate), accurate
+        negated = re.compile(r"\b(not|never|no|nor|none|without)\b", re.I)
+        assert match is None or negated.search(accurate), accurate
 
 
 # ===========================================================================
@@ -377,12 +420,21 @@ def _ladder_rows(text):
     return _LADDER_HEADING.findall(_ladder_text(text))
 
 
-def _ladder_problems(text):
-    """Every way the J0 ladder can be wrong, as a list of reasons.
+def _ladder_problems(text, complete=None):
+    """Every way the ladder can be wrong, as a list of reasons.
 
     Returned rather than raised so one call reports all of them, and so the
     negative controls can assert *which* fault was detected instead of
-    merely that something failed."""
+    merely that something failed.
+
+    ``complete`` is the set of milestones expected to be marked complete,
+    defaulting to the live one. It is a parameter rather than a constant so
+    that **both** arms of the check below stay testable after the phase
+    closes: with every real row landed, an over-claim can no longer be
+    produced from the live ladder, and a control that could only be written
+    against reality would silently stop exercising half the parser."""
+    if complete is None:
+        complete = COMPLETE_MILESTONES
     problems = []
     rows = _ladder_rows(text)
     names = [name for name, _ in rows]
@@ -404,15 +456,15 @@ def _ladder_problems(text):
     # claimed complete before it landed is the over-claim this parser
     # exists to catch, and a landed row left open is the under-claim.
     for name, tail in rows:
-        complete = re.search(r"\*\*complete\*\*", tail, re.I) is not None
+        marked_complete = re.search(r"\*\*complete\*\*", tail, re.I) is not None
         unstarted = re.search(r"\*\*not started\*\*", tail, re.I) is not None
-        if name in COMPLETE_MILESTONES:
-            if not complete:
+        if name in complete:
+            if not marked_complete:
                 problems.append(f"{name} is not marked complete")
             if unstarted:
                 problems.append(f"{name} is marked not started")
         else:
-            if complete:
+            if marked_complete:
                 problems.append(f"{name} is marked complete before it landed")
             if not unstarted:
                 problems.append(f"{name} is not marked not started")
@@ -428,13 +480,13 @@ def test_exactly_the_landed_milestones_are_marked_complete():
     rows = dict(_ladder_rows(_design()))
     for name in COMPLETE_MILESTONES:
         assert re.search(r"\*\*complete\*\*", rows[name], re.I), rows[name]
-    for name in UNSTARTED_MILESTONES:
+    for name in UNSTARTED_MILESTONES:                     # empty at closure
         assert re.search(r"\*\*not started\*\*", rows[name], re.I), rows[name]
-    # J9 is the next implementation milestone, and nothing beyond it may be
-    # claimed under a J8 heading.
-    assert COMPLETE_MILESTONES == ("J0", "J1", "J2", "J3", "J4", "J5", "J6",
-                                   "J7", "J8")
-    assert UNSTARTED_MILESTONES == ("J9",)
+    # The phase is closed: every milestone landed, none is open, and there
+    # is no milestone after J9 for one to be claimed under.
+    assert COMPLETE_MILESTONES == MILESTONES
+    assert UNSTARTED_MILESTONES == ()
+    assert set(rows) == set(MILESTONES), sorted(rows)
 
 
 def test_the_ladder_checker_can_actually_fail():
@@ -457,16 +509,23 @@ def test_the_ladder_checker_can_actually_fail():
     # An invented milestone one past the end of the ladder.
     invented = ladder + "\n### J10 — Something else — **not started**\n"
     assert any("unexpected" in reason for reason in problems_for(invented))
-    # A row falsely claimed complete before it landed. Driven from the
-    # first *unstarted* milestone rather than a hard-coded one, so landing
-    # a milestone moves this control with the ladder instead of quietly
-    # leaving it pointed at a row that has since shipped.
-    next_up = UNSTARTED_MILESTONES[0]
-    overclaimed = re.sub(rf"(### {next_up} — [^\n]*?)\*\*not started\*\*",
-                         r"\1**complete**", ladder, count=1)
-    assert overclaimed != ladder, f"the {next_up} row was not found"
-    assert any("marked complete before it landed" in reason
-               for reason in problems_for(overclaimed))
+    # A row falsely claimed complete **before it landed** — the over-claim
+    # arm. With every real row landed, the live ladder can no longer
+    # produce one, so the control drives the parser against a hypothetical
+    # expectation in which J9 has not shipped. That keeps the arm exercised
+    # instead of quietly dying at closure, and it is exactly the check that
+    # protected J1 through J8 on their way in.
+    pretend_open = tuple(name for name in MILESTONES if name != "J9")
+    overclaimed = _ladder_problems(text, complete=pretend_open)
+    assert any("J9 is marked complete before it landed" in reason
+               for reason in overclaimed), overclaimed
+    # ...and the same hypothetical against a still-open document really
+    # would pass, so the arm is discriminating rather than always-firing.
+    open_ladder = re.sub(r"(### J9 — [^\n]*?)\*\*complete\*\*",
+                         r"\1**not started**", ladder, count=1)
+    assert open_ladder != ladder, "the J9 row was not found"
+    assert _ladder_problems(text.replace(ladder, open_ladder),
+                            complete=pretend_open) == []
     # J0 left open.
     unopened = ladder.replace(
         "### J0 — Architecture and API contract — **complete**",
@@ -484,7 +543,8 @@ def test_the_ladder_checker_can_actually_fail():
                 "### J5 — Native checkpoint metadata integration",
                 "### J6 — Deterministic mini-batch training example",
                 "### J7 — Cross-cutting hardening",
-                "### J8 — Performance and transfer characterization"):
+                "### J8 — Performance and transfer characterization",
+                "### J9 — Integration and closure"):
         understated = ladder.replace(f"{row} — **complete**",
                                      f"{row} — **not started**")
         assert understated != ladder, f"the {row!r} row was not found"
@@ -1178,14 +1238,14 @@ def test_the_example_and_benchmark_inventories_moved_by_exactly_two_artifacts():
         assert "data_pipeline" not in name and "minibatch" not in name, name
 
 
-def test_the_j6_j7_and_j8_artifacts_exist_and_nothing_later_does():
-    """J6's two files, J7's one, and J8's two moved from absence to
-    presence, and only those five. J9's closure module is still absent.
+def test_every_phase_j_artifact_exists_and_nothing_later_does():
+    """J6's two files, J7's one, J8's two, and J9's one moved from absence
+    to presence, and only those six.
 
-    J7 is **evidence** and J8 is **measurement**: neither adds a public
-    name or a production file, and J7 adds no artifact to either
-    inventory at all — which is exactly what the counts above
-    re-assert."""
+    J7 is **evidence**, J8 is **measurement**, and J9 is **closure**: none
+    of the three adds a public name or a production file, and J7 and J9 add
+    no artifact to either inventory at all — which is exactly what the
+    counts above re-assert."""
     assert (REPO_ROOT / "examples" / "native_minibatch_training.py").is_file()
     assert (REPO_ROOT / "tests"
             / "test_native_minibatch_training.py").is_file()
@@ -1193,8 +1253,14 @@ def test_the_j6_j7_and_j8_artifacts_exist_and_nothing_later_does():
     assert (REPO_ROOT / "tests" / "test_native_data_benchmark.py").is_file()
     assert (REPO_ROOT / "benchmarks"
             / "benchmark_native_data_pipeline.py").is_file()
-    for later in ("tests/test_native_phase_j_closure.py",):
-        assert not (REPO_ROOT / later).exists(), later
+    # J9's closure module, which owns the closed boundary this module
+    # deliberately stops short of.
+    assert (REPO_ROOT / "tests" / "test_native_phase_j_closure.py").is_file()
+    # ...and nothing belonging to a phase nobody approved.
+    for invented in ("tests/test_native_phase_j10.py",
+                     "tests/test_native_phase_k.py",
+                     "docs/native_phase_k_design.md"):
+        assert not (REPO_ROOT / invented).exists(), invented
     # The example is an example: it adds no public name and no production
     # module, and its model class stays an implementation detail of it.
     import tensorforge.experimental as experimental
@@ -1206,12 +1272,15 @@ def test_the_j6_j7_and_j8_artifacts_exist_and_nothing_later_does():
             encoding="utf-8"), path.name
 
 
-def test_phase_i_is_still_complete_and_is_the_latest_completed_phase():
+def test_phase_i_is_still_complete_and_phase_j_closed_after_it():
     assert (REPO_ROOT / "docs" / "native_dtype_float32_design.md").is_file()
     assert (REPO_ROOT / "tests" / "test_native_phase_i_closure.py").is_file()
-    head = _flat(_design()[:6000])
+    head = _head()
     assert re.search(r"Phase I remains complete \(I0[-–—]I11\)", head), head[:600]
-    assert re.search(r"latest \*{0,2}completed\*{0,2} phase", head), head[:600]
+    # Phase I was the latest *completed* phase while Phase J ran; at closure
+    # Phase J is complete too, and both statements must be able to coexist
+    # without either being rewritten into the other.
+    assert re.search(r"Phase J is complete", head, re.I), head[:1200]
 
 
 # ===========================================================================
@@ -1557,14 +1626,18 @@ def test_the_design_plans_no_new_export_and_says_what_would_change_that():
                      "characterization only", "measured") == []
 
 
-def test_no_status_surface_claims_a_phase_j_capability():
+def test_no_status_surface_claims_a_capability_phase_j_never_delivered():
     """The prose half of the boundary, over the surfaces that must agree.
-    A span carrying its own future or negative marker is the honest form
-    and passes."""
+    A span carrying its own negative marker is the honest form and passes.
+
+    Whether those surfaces say the phase is *complete* is a different
+    question, and it belongs to ``tests/test_native_phase_j_closure.py``
+    — which requires it — rather than here."""
     claim = _RUNTIME_CLAIM
-    future = re.compile(
-        r"\b(not|never|no|will|would|planned|future|once|until|when|yet|"
-        r"begins?|eventual\w*|approved|design\w*|claim\w*)\b", re.I)
+    negated = re.compile(
+        r"\b(not|never|no|nor|none|without|would|planned|future|once|until|"
+        r"when|yet|outside|unsupported|refus\w*|reject\w*|forbidden|"
+        r"eventual\w*|design\w*|claim\w*)\b", re.I)
     surfaces = ("README.md", "CLAUDE.md", "docs/roadmap.md",
                 "docs/project_summary.md", "docs/native_support_matrix.md",
                 "docs/architecture.md", "docs/backend_experiments.md",
@@ -1573,43 +1646,40 @@ def test_no_status_surface_claims_a_phase_j_capability():
         text = _flat(_read(surface))
         offenders = [
             match.group(0) for match in claim.finditer(text)
-            if not future.search(text[max(0, match.start() - 90):
-                                      match.end() + 30])
+            if not negated.search(text[max(0, match.start() - 90):
+                                       match.end() + 30])
         ]
         assert offenders == [], (surface, offenders[:3])
 
 
-def test_no_status_surface_calls_phase_j_complete():
-    complete = re.compile(
-        r"Phase.J\b[^.;]{0,70}?\b(is|are|was|has been)\s+"
-        r"(complete|completed|finished|closed)\b", re.I)
-    scoped = re.compile(r"\bJ0\b|\bmilestone\b|\bwill\b|\bnot\b", re.I)
+def test_no_status_surface_claims_a_milestone_beyond_the_closed_ladder():
+    """Closure is not permission to promise a successor. Work after Phase J
+    requires a separately approved phase, and no surface may name one."""
     for surface in ("README.md", "CLAUDE.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
                     "docs/architecture.md", "docs/backend_experiments.md",
+                    "docs/native_data_pipeline_design.md",
                     "src/tensorforge/experimental/__init__.py"):
-        text = _flat(_read(surface))
-        for match in complete.finditer(text):
-            window = text[max(0, match.start() - 60):match.end() + 30]
-            assert scoped.search(window), (surface, match.group(0))
+        text = _read(surface)
+        for match in re.finditer(r"\bJ1[0-9]\b", text):
+            raise AssertionError(f"{surface} names {match.group(0)}")
+        assert not re.search(r"\bPhase K\b", _flat(text), re.I), surface
 
 
 def test_the_completion_scanner_can_actually_fail():
-    """Negative control for both prose scanners above."""
+    """Negative control for the prose scanners above."""
     claim = _RUNTIME_CLAIM
-    complete = re.compile(
-        r"Phase.J\b[^.;]{0,70}?\b(is|are|was|has been)\s+"
-        r"(complete|completed|finished|closed)\b", re.I)
-    for detected in ("TensorForge now supports native mini-batching",
-                     "NativeDataLoader is available",
-                     "the data loader is implemented"):
+    for detected in ("TensorForge supports prefetching",
+                     "worker processes are available",
+                     "the data loader is thread-safe"):
         assert claim.search(detected), detected
-    for detected in ("Phase J is complete", "Phase J has been finished"):
-        assert complete.search(detected), detected
-    # ...and the accurate sentences this phase must be able to write.
-    for accurate in ("Phase J is approved and J0 is complete",
-                     "Phase J milestone J0 is complete"):
-        match = complete.search(accurate)
-        window_ok = re.search(r"\bJ0\b|\bmilestone\b", accurate, re.I)
-        assert match is None or window_ok, accurate
+    # ...and the accurate sentences a closed phase must be able to write.
+    for accurate in ("NativeDataLoader is available",
+                     "Phase J is complete",
+                     "native mini-batching is implemented"):
+        match = claim.search(accurate)
+        assert match is None, (accurate, match and match.group(0))
+    # The invented-milestone scan really does find one.
+    assert re.search(r"\bJ1[0-9]\b", "milestone J10 is next")
+    assert not re.search(r"\bJ1[0-9]\b", "milestones J0 through J9 complete")

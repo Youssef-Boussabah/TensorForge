@@ -2921,7 +2921,23 @@ def test_the_phase_f_closure_claims_no_later_phase():
     # true. What it may not claim is a Phase-I *capability*, which the I0
     # guardrails check against the live registry — a stronger check than a
     # phase-name scan.
-    later = (r"(Phase J|CUDA (phase|runtime|"
+    #
+    # **``Phase J`` left it in turn when milestone J9 closed that phase**,
+    # on exactly those terms. This arm banned "Phase J ... is complete",
+    # which was accurate protection right up until it stopped being: J0
+    # through J9 have all landed, so the sentence is now simply true, and
+    # keeping the ban would force every status surface to under-report the
+    # project — the mirror of the failure this list exists to catch. What
+    # may not be claimed for Phase J is a *capability*, and that half is
+    # checked against the live registry, the live source, and the built
+    # library by tests/test_native_phase_j.py and
+    # tests/test_native_phase_j_closure.py.
+    #
+    # ``Phase K`` takes its place as the successor that does not exist —
+    # and unlike its predecessors it is not a placeholder for approved
+    # work: no phase after J has been approved, so naming one as begun or
+    # complete would be an invention rather than a status update.
+    later = (r"(Phase K|CUDA (phase|runtime|"
              r"backend)|AMP (phase|path)|Tensor Core"
              r"|distributed (phase|training)|float16|bfloat16)")
     # Negated or explicitly-future forms are the honest ones.

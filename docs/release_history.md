@@ -2326,18 +2326,102 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase J — deterministic native data pipeline and mini-batching (J0–J8 complete, in progress)
+### Phase J — deterministic native data pipeline and mini-batching (J0–J9, complete)
 
-**Phase J is the latest phase, it is newly approved, and milestones J0
-through J8 have landed.** J9 has not started, and **J9 is
-next**. **No version is claimed** — the native line stays experimental and
-is not production-ready, and this entry records milestones rather than a
-release.
+**Phase J is the latest phase and it is complete: milestones J0 through
+J9 have all landed, and J9 closed it.** **No version is claimed** — the
+native line stays experimental and is not production-ready, and this entry
+records milestones rather than a release.
 
 Phase J was approved **after** Phase I closed at I11. The repository
 deliberately finished Phase I without committing to a successor, so Phase J
 is not carried-over roadmap work and must not be described as though it
-were.
+were. **No successor phase is defined**: work beyond Phase J requires a
+separately approved phase with its own design contract.
+
+**Across the whole phase, no capability moved.** `SUPPORTED_DTYPES`,
+`SUPPORTED_DEVICES`, `UNSUPPORTED`, and `RAW_KERNEL_DTYPES` are exactly
+what Phase I left; the library still exports **54** `tf_*` symbols and
+registers **24** native CTests; the checkpoint is still version **3** with
+`(1, 2, 3)` accepted and the in-memory optimizer state still version
+**1**. The phase added **three** public Python names — `NativeTensorDataset`
+(J1), `NativeBatchSampler` (J2), `NativeDataLoader` (J3) — taking
+`tensorforge.experimental.__all__` to **25**, one example (J6, 15 → **16**),
+and one benchmark (J8, 8 → **9**).
+
+#### J9 — cross-platform validation and Phase-J closure
+
+**J9 is the closure milestone, and it added no capability.** It changed
+**no file under `src/` or `cpp/`**, no workflow, and no dependency: what
+moved is one new test module, the milestone-era guards whose premises
+expired, and the status surfaces. There is no C ABI change, no numerical
+change, no registry, checkpoint, or state change, no new example or
+benchmark, and **no optimization**. **No production defect was found.**
+
+**What the phase finally delivers.** A finite host-backed
+`NativeTensorDataset` holding two owned copied host snapshots at an
+explicitly chosen native feature dtype that is **never inferred** from the
+input array; a deterministic `NativeBatchSampler` **planner** whose order
+is a pure function of `(seed, epoch, length)` over the locked
+`tensorforge.splitmix64` derivation, with no new RNG algorithm and no
+coupling to a live `NativeGenerator`; and a `NativeDataLoader` whose
+five-phase batch handoff advances the committed position **if and only if**
+a batch was delivered — a failed delivery closes the undelivered
+`NativeTensor`, restores the exact position, and leaves a retry returning
+the same indices and the same values. Loader state is a three-key
+version-1 wrapper that a **caller** carries through the unchanged
+version-3 checkpoint's existing metadata channel; there is **no automatic
+loader discovery, no checkpoint/pipeline import edge in either direction,
+and no cross-object atomicity**.
+
+**Exact deterministic resume is proved separately at each dtype**, never
+as agreement between them: an interrupted mini-batch training run and an
+uninterrupted one compared in raw IEEE-754 bit patterns at float64 and at
+float32, reproducing the loss sequence, every batch's feature bits and
+target array, every parameter and buffer, every Adam moment and counter,
+the generator state and alias topology, the loader position, and the final
+evaluation output — with the omitted-loader leg proved to **diverge**. The
+one cross-dtype claim is the batch-index and permutation sequence, which
+carries no dtype.
+
+**Validation performed at closure.** Windows Release (MSVC 19.44.35228.0)
+and an isolated Windows Debug build, each with **zero** project CMake,
+compiler, and linker warnings, **24/24** CTests, and **54** exports with
+the source and PE sets equal; a Linux CI-equivalent (WSL2 Ubuntu 24.04.4,
+glibc 2.39, g++ 13.3.0 with `-Wall -Wextra`) with zero warnings, 24/24
+CTests, 54 exports, no mangled symbol exported, and the workflow's own
+four steps all passing; Clang 18.1.3 ASan and UBSan with instrumentation
+**proved present** — 25 `__asan*` and 12 `__ubsan*` dynamic symbols beside
+the 54 `tf_*` exports, and the library refusing to load without the
+sanitizer runtime — 24/24 sanitized CTests, the complete Python suite
+green, and **zero** ASan and **zero** UBSan diagnostics; a sanitizer
+negative control producing a genuine `heap-buffer-overflow`, `WRITE of size
+8`, inside TensorForge's own `copy_to_typed<double>`, so the detector is
+known to work; and LeakSanitizer with **no suppression file**, over a
+lifecycle covering the shipped training example at both dtypes plus a
+failed delivery, its rollback, a checkpoint taken immediately after it, a
+superseded iterator, and a reentrant close — native live storage returning
+**exactly to baseline (0 → 0)**, and the only remaining reports being
+CPython interpreter allocations carrying **no TensorForge frame**. All
+**16** examples and every benchmark smoke path exit zero, and **no result
+file is written**.
+
+**Boundaries that did not move, and are now permanent rather than
+provisional.** No automatic loader discovery, no loader or dataset
+registry, no checkpoint loader field, no checkpoint version 4, no loader or
+sampler state version 2, no cross-object atomicity, and no worker, thread,
+lock, queue, future, async iteration, prefetch, collate, transform, pinned
+memory, distributed sampling, filesystem, network, streaming, infinite, or
+memory-mapped dataset. **Concurrency remains a documented boundary rather
+than a tested safety claim**: no Phase-J module contains a lock, the
+objects join no lock order, external locking is the caller's job, and no
+test starts a thread. Delivered feature batches are the **caller's** to
+close, and explicit `close()` stays the contract with the finalizer only a
+fallback.
+
+**GitHub Actions was green for the J8 commit this work started from; a
+green run for the J9 commit is the remaining external gate before merge**,
+and no local result stands in for it.
 
 **J0 was architecture, contract, and documentation work only, and it
 shipped no runtime behavior at all.** No dataset, sampler, or loader class;

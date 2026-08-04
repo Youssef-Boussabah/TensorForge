@@ -19,8 +19,8 @@ derivation (§3.2, §8), and continued at **J3**, which added the last of
 §3.1's three names, `NativeDataLoader` (§3.5, §3.6, §9, §10, §15, §17.3),
 over the permanently private `_NativeBatchIterator` and `_deliver_batch`.
 
-**Phase-J status: J0, J1, J2, J3, J4, J5, J6, J7, and J8 complete; J9 not
-started.** What exists today is the dataset, the sampler, the loader, the
+**Phase-J status: J0 through J9 complete. Phase J is complete, and J9
+closed it.** What exists today is the dataset, the sampler, the loader, the
 loader's own in-memory state, the caller-managed checkpoint-metadata
 workflow, and a worked training program over all of it: a finite
 host-backed dataset, a deterministic permutation and batch **planner** with
@@ -79,22 +79,28 @@ optimization**: its whole diff is that harness,
 documentation. Benchmarks moved 8 → **9**; examples stay **16** and
 `tensorforge.experimental.__all__` stays at **25**.
 
-**No automatic loader discovery exists yet**, and the phase closure has
-not started: **J9 is the next implementation milestone**. §14's
-statements about a *training* program describe shipped, executable
-evidence, and §14.1's failed-delivery leg is now J5's archive proof
-**and** J7's injection matrix rather than anything the public example
-does.
+New at **J9**: `tests/test_native_phase_j_closure.py`, the **permanent
+closure guardrails**, and the final status reconciliation. **J9 changed no
+production code, added no public name, no export, and no optimization**: its
+whole diff is that module, the expiry edits closure requires in
+`tests/test_native_phase_j.py`, and documentation. It ran the complete
+§22.4 matrix; the outcome is §23.3. **Phase J is complete and no milestone
+remains** — work beyond it requires a separately approved phase, and this
+document defines none.
 
-Phase J is a **newly approved** direction. It was not part of the roadmap
-while Phases A–I were being built: the repository deliberately closed
+**No automatic loader discovery exists**, at any milestone, and none may be
+added. §14's statements about a *training* program describe shipped,
+executable evidence, and §14.1's failed-delivery leg is J5's archive proof
+**and** J7's injection matrix rather than anything the public example does.
+
+Phase J was a **newly approved** direction when it opened, not part of the
+roadmap while Phases A–I were built: the repository deliberately closed
 Phase I at I11 without committing to a successor, and Phase J was approved
-afterwards. Nothing in this document may be read as describing work that
-already existed.
+afterwards. Nothing here may be read as describing work that already
+existed.
 
-**Phase I remains complete (I0–I11) and is the latest *completed* phase.**
-Phase J is the latest phase. Nothing in Phase J revisits, reverses, widens,
-or re-measures a Phase-I result.
+**Phase I remains complete (I0–I11).** Phase J closed after it, and nothing
+in Phase J revisits, reverses, widens, or re-measures a Phase-I result.
 
 **What Phase J will eventually deliver**, once J1–J9 have landed: a small,
 finite, host-backed dataset; a deterministic batch sampler; and a native
@@ -3586,7 +3592,7 @@ produce.
 - **Exit gate:** benchmarks 8 → **9**; no timing assertion anywhere in the
   repository. **Met** — see §23.2.
 
-### J9 — Integration and closure — **not started**
+### J9 — Integration and closure — **complete**
 
 - **Entry:** J8 merged.
 - **Scope:** the full validation matrix (§22.4), final documentation and
@@ -3596,7 +3602,10 @@ produce.
   `tests/test_native_phase_h_closure.py` and
   `tests/test_native_phase_i_closure.py`, **every parser with a negative
   control**.
-- **Exit gate:** §24.2.
+- **Invariants:** no runtime capability, no public name, no C ABI symbol,
+  no optimization, no dependency, and no state or checkpoint version. The
+  closure module is **evidence, not capability**.
+- **Exit gate:** §24.2. **Met** — see §23.3.
 
 ### 23.1 Ladder adjustments made at J0
 
@@ -3719,6 +3728,117 @@ ranked.
 for reopening the export count, and nothing in them is offered as
 justification for a runtime change. The answer there remains no.
 
+### 23.3 J9 outcome — the closure matrix, and what it did not change
+
+**J9 is closure only. It changed no production code, added no public name,
+no C ABI export, no CTest, no example, no benchmark, no dependency, and no
+state or checkpoint version, and it shipped no optimization.** Its whole
+diff is `tests/test_native_phase_j_closure.py`, the expiry edits that
+closure required in the milestone-era guards, and documentation. **No
+production defect was found.**
+
+**What expired, and what replaced it.** Seven modules carried a premise
+that was accurate until J9 landed and false afterwards — "the closure
+module is absent" in the J4, J5, J6, J7, and J8 evidence, "J9 is next" and
+"exactly the landed milestones are complete" in
+`tests/test_native_phase_j.py`, and a `tests/test_docs.py` arm banning
+"Phase J … is complete". None was deleted. Each was **replaced by the
+durable half** of the same claim, on the terms this repository already
+used when the equivalent Phase-G, Phase-H, and Phase-I premises expired:
+the closure guardrails are a module of their own, the ladder is closed
+rather than partially landed, and the successor slot in that
+`tests/test_docs.py` arm now names a phase **nobody has approved**, so a
+surface claiming one has begun or finished fails rather than passes.
+
+**Where the boundary lives now.** `tests/test_native_phase_j.py` keeps the
+*contract* — what this document resolves, and the presence/absence split
+of the runtime it describes. `tests/test_native_phase_j_closure.py` owns
+the *closed boundary*: the whole J0–J9 ladder, every current status
+surface, the final registries and inventories, and the evidence floors.
+Every parser in both has a negative control, both are shallow-clone safe —
+no historical Git object, no `fetch-depth: 0`, no commit SHA — and every
+prohibited-token scan reads identifiers through the AST rather than prose,
+so a module may document a prohibition at any length while remaining
+unable to perform it.
+
+**The validation matrix, as observed.**
+
+- **Windows Release** (MSVC 19.44.35228.0, out-of-source and outside the
+  repository): clean configure and build, **zero** project CMake, compiler,
+  and linker warnings, **24/24** CTests, **54** exports with the source and
+  PE sets **exactly equal**.
+- **Windows Debug** (same toolchain, a second out-of-source tree with its
+  library written outside the repository so the active runtime stayed the
+  Release DLL): **zero** project warnings, **24/24** CTests, **54** exports,
+  source and library sets **exactly equal**. The Debug and Release binaries
+  are confirmed distinct by digest, and the package's DLL is the Release one.
+- **Linux CI-equivalent** (WSL2 Ubuntu 24.04.4, kernel 6.6.87.2, glibc 2.39,
+  x86_64, g++ 13.3.0 with `-Wall -Wextra`, CMake 3.28.3, Python 3.13.14,
+  NumPy 2.5.1, uv 0.11.28, in an isolated environment outside the tree):
+  the workflow's own four steps — build, smoke check, quick benchmark,
+  pytest — all pass; a separate out-of-source Release build reports **zero**
+  warnings, **24/24** CTests, **54** exports, **zero** mangled exported
+  symbols, and source/library equality.
+- **Clang ASan/UBSan** (Clang 18.1.3, `-DTF_SANITIZE=address,undefined`,
+  built outside the repository): **zero** project diagnostics;
+  instrumentation **proved present** — `nm -D` shows **25 `__asan*`** and
+  **12 `__ubsan*`** dynamic symbols beside the **54** exported `tf_*`
+  symbols, and the library **refuses to load** without the sanitizer runtime
+  (`undefined symbol: __ubsan_vptr_type_cache`). Under it: **24/24**
+  sanitized CTests with `detect_leaks=1`, the **complete** Python suite
+  green, and **zero AddressSanitizer and zero UndefinedBehaviorSanitizer
+  diagnostics**. The sanitized library was substituted into the package
+  location only for the duration of the run and restored afterwards, with
+  the original's SHA-256 verified identical.
+- **Sanitizer negative control**, so that zero diagnostics means something:
+  a test-only program — compiled outside the repository, never committed,
+  and deleted afterwards — hands `tf_storage_copy_to` a host destination one
+  element shorter than the storage it declares, a size the C ABI cannot
+  validate because a raw host pointer carries none. It aborts with
+  `ERROR: AddressSanitizer: heap-buffer-overflow`, `WRITE of size 8`, inside
+  `copy_to_typed<double>` at `cpp/src/storage.cpp:520` reached through
+  `tf_storage_copy_to`. The same program with a correctly sized destination
+  exits zero with no diagnostic, so the control discriminates rather than
+  always firing. **No production failure API was added.**
+- **LeakSanitizer**, with `detect_leaks=1` and **no suppression file**
+  (`LSAN_OPTIONS` confirmed unset): one complete Phase-J lifecycle — the
+  shipped J6 program at both dtypes, reused rather than reimplemented, plus
+  the failure paths it deliberately does not contain (a failed delivery and
+  its rollback, a checkpoint taken immediately after one resuming the same
+  candidate batch, a superseded iterator, and a reentrant close). Native
+  live storage returned **exactly to baseline (0 → 0)** at every checkpoint.
+  The process-exit report is 771,784 bytes in 693 allocations across 281
+  records, and **not one frame names `_tensorforge_cpp`, `tf_core_`,
+  `tf_storage_`, or `tf::`** — every named frame is CPython, libc, NumPy,
+  `_ctypes`, or the ASan runtime itself.
+- **Examples and benchmarks**: all **16** examples exit zero, the J8 harness
+  passes every correctness gate in both `--smoke` and `--smoke --json`, the
+  CI quick benchmark exits zero, and **no result file of any kind is
+  written**.
+
+**The final inventories, all unchanged by this phase.**
+`SUPPORTED_DTYPES == ("float64", "float32")`, `SUPPORTED_DEVICES ==
+("cpu",)`, `UNSUPPORTED == ("cuda", "amp")`, `RAW_KERNEL_DTYPES ==
+("float64",)`, `normalize_dtype(None) == "float64"`,
+`backend_info()["dtype"] == "float64"`, `stable_framework_integration` is
+`False`; checkpoint `tensorforge.native_checkpoint` version **3** with
+`(1, 2, 3)` accepted; in-memory optimizer state version **1**; loader state
+`tensorforge.native_data_loader` version **1** accepting `(1,)`; sampler
+state `tensorforge.native_sampler` version **1** accepting `(1,)`; **54**
+production `tf_*` exports; **25** experimental Python exports; **24** native
+CTests; **16** examples; **9** benchmarks. **Every J9 delta is zero.**
+
+**What is still absent, now permanently rather than provisionally**:
+automatic loader discovery, any loader or dataset registry, an import edge
+in either direction between the checkpoint and the pipeline, a checkpoint
+loader field, checkpoint version 4, a loader or sampler state version 2,
+cross-object atomicity, and every concurrency primitive.
+
+**One gate is not local.** GitHub Actions was green for the J8 commit this
+work started from. The J9 tree is uncommitted, so its workflow run has not
+happened: **a green GitHub Actions run for the J9 commit remains the final
+external confirmation before merge**, and nothing above claims otherwise.
+
 ---
 
 ## 24. Exit gates
@@ -3775,30 +3895,39 @@ justification for a runtime change. The answer there remains no.
 
 ### 24.2 J9
 
-- [ ] The complete Phase-J runtime: dataset, sampler, loader, state,
+All rows below are **local** gates and are met; §23.3 records the observed
+results. The one row that cannot be answered from an uncommitted tree is
+marked as the external confirmation it is.
+
+- [x] The complete Phase-J runtime: dataset, sampler, loader, state,
       checkpoint workflow, example, hardening, and benchmark.
-- [ ] Exact mid-epoch resume proved.
-- [ ] The §9.4 delivery transaction proved by injection at the seam: a
+- [x] Exact mid-epoch resume proved.
+- [x] The §9.4 delivery transaction proved by injection at the seam: a
       failed delivery consumes nothing, and a checkpoint taken immediately
       after one resumes from the same candidate batch.
-- [ ] Exact future permutation reproduction proved, including across
+- [x] Exact future permutation reproduction proved, including across
       dtypes (§14.4).
-- [ ] Exact uninterrupted-versus-resumed training proved at each dtype,
+- [x] Exact uninterrupted-versus-resumed training proved at each dtype,
       each against itself, with negative controls.
-- [ ] Windows Release **and** Debug: zero project warnings, 24/24 CTests,
+- [x] Windows Release **and** Debug: zero project warnings, 24/24 CTests,
       54 exports, source and library sets equal.
-- [ ] Linux CI-equivalent: zero warnings, 24/24 CTests, 54 exports.
-- [ ] Clang ASan/UBSan with instrumentation proved present, the full suite
+- [x] Linux CI-equivalent: zero warnings, 24/24 CTests, 54 exports.
+- [x] Clang ASan/UBSan with instrumentation proved present, the full suite
       green, zero diagnostics, and a negative control proving the detector
       works.
-- [ ] LeakSanitizer with no suppression file, whose remaining reports
+- [x] LeakSanitizer with no suppression file, whose remaining reports
       carry no TensorForge frame.
-- [ ] Native live storage returns exactly to baseline across the pipeline
+- [x] Native live storage returns exactly to baseline across the pipeline
       lifecycle.
-- [ ] No ABI drift: 54 exports, unless separately approved under §22.3.
-- [ ] Final documentation and support matrix reconciled.
-- [ ] GitHub Actions green.
-- [ ] No unsupported side capability: registries, checkpoint version,
+- [x] No ABI drift: 54 exports, unless separately approved under §22.3.
+- [x] Final documentation and support matrix reconciled.
+- [ ] **GitHub Actions green for the J9 commit.** The only gate that is not
+      local, and the only one still open: the J8 commit this work started
+      from is green, but the J9 tree is uncommitted, so its workflow run
+      has not happened. This is the **external, post-commit confirmation
+      required before merge**, and it is deliberately not checked off from
+      a local run.
+- [x] No unsupported side capability: registries, checkpoint version,
       optimizer-state version, and the stable surface all unchanged.
 
 ---

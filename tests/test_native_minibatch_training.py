@@ -1621,24 +1621,26 @@ def test_no_cpp_or_build_surface_mentions_the_new_example():
         assert "minibatch" not in path.read_text(encoding="utf-8"), path.name
 
 
-def test_the_later_phase_j_milestones_are_still_absent():
-    """J9 has not started, and J6 anticipates it no more than it
-    anticipated J7 or J8.
+def test_the_later_phase_j_milestones_live_in_their_own_modules():
+    """J6 is the public-API example, and the milestones after it landed
+    elsewhere rather than here.
 
-    J7's hardening matrix and J8's benchmark have since landed as their
-    own files and are asserted **present** here — the same "only the
-    milestone that ships a name may move it" split every other inventory
-    in this repository uses. What must stay true of *this* module is that
-    the adversarial work and the measurement both live there and not
-    here: J6 is the public-API example, it injects nothing, and it times
-    nothing.
+    Through J8 this guard also asserted J9's closure module **absent**,
+    because it had not started. That premise expired when J9 landed, and
+    what replaces it is the durable half: J7's hardening matrix, J8's
+    benchmark, and J9's closure guardrails all live in their **own** files
+    — the same "only the milestone that ships a name may move it" split
+    every other inventory in this repository uses. What must stay true of
+    *this* module is that the adversarial work, the measurement, and the
+    closure boundary are all somewhere else: J6 injects nothing, times
+    nothing, and owns no phase-wide claim.
     """
-    assert (REPO_ROOT / "tests" / "test_native_data_hardening.py").exists()
-    assert (REPO_ROOT / "tests" / "test_native_data_benchmark.py").exists()
+    for shipped in ("test_native_data_hardening.py",           # J7
+                    "test_native_data_benchmark.py",           # J8
+                    "test_native_phase_j_closure.py"):         # J9
+        assert (REPO_ROOT / "tests" / shipped).exists(), shipped
     assert (REPO_ROOT / "benchmarks"
             / "benchmark_native_data_pipeline.py").exists()
-    for later in ("test_native_phase_j_closure.py",):
-        assert not (REPO_ROOT / "tests" / later).exists(), later
     # ...and this module contains none of J7's adversarial vocabulary: it
     # injects nothing, patches no private seam, and adds no failure hook.
     names = code_identifiers("tests/test_native_minibatch_training.py")

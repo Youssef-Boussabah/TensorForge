@@ -2194,14 +2194,15 @@ def test_j5_added_no_example_and_no_benchmark():
     # 8 at J5, 9 since **J8** — the one benchmark J8 added, and no other.
     assert len(benchmarks) == 9, benchmarks
     assert "benchmark_native_data_pipeline.py" in benchmarks
-    # J6 landed its own proof module, J7 its hardening matrix, and J8 its
-    # benchmark contract module — all three test-only. J9 has not started.
-    assert (REPO_ROOT / "tests"
-            / "test_native_minibatch_training.py").exists()
-    assert (REPO_ROOT / "tests" / "test_native_data_hardening.py").exists()
-    assert (REPO_ROOT / "tests" / "test_native_data_benchmark.py").exists()
-    assert not (REPO_ROOT / "tests"
-                / "test_native_phase_j_closure.py").exists()
+    # J6 landed its own proof module, J7 its hardening matrix, J8 its
+    # benchmark contract module, and J9 the closure guardrails — all four
+    # test-only, and each in a file of its own. J5's own artifact delta to
+    # both inventories stays zero, which is what the counts above assert.
+    for shipped in ("test_native_minibatch_training.py",
+                    "test_native_data_hardening.py",
+                    "test_native_data_benchmark.py",
+                    "test_native_phase_j_closure.py"):
+        assert (REPO_ROOT / "tests" / shipped).exists(), shipped
 
 
 def test_j5_touched_no_cpp_or_build_surface():

@@ -1660,8 +1660,8 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase J — deterministic native data pipeline and mini-batching — is the
-latest phase, and it is newly approved: milestones J0 through J8 have
-landed, and J9 has not started.** Phase J was approved *after* Phase I
+latest phase, and it is complete: milestones J0 through J9 have all
+landed, and J9 closed it.** Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -1833,10 +1833,17 @@ raw sample is retained; and setup, per-repetition state reset, and every
 no result file** exists, and no runtime change is derived from any
 measurement.
 
-**No automatic loader discovery exists**, and the phase closure — the
-full validation matrix, the sanitizer runs, and the closure guardrails —
-is J9, and **J9 is next**. Its
-architecture contract is
+**J9 closed the phase**, adding no production code, no public name, and
+no export: it shipped the permanent closure guardrails in
+`tests/test_native_phase_j_closure.py`, re-ran the complete validation
+matrix — Windows Release and Debug, a Linux CI-equivalent, Clang
+ASan/UBSan with a detector negative control, and a LeakSanitizer lifecycle
+over the whole pipeline — and reconciled every inventory. **Phase J is
+complete and no milestone remains; no successor phase is defined, and
+further work requires a separately approved one.**
+
+**No automatic loader discovery exists**, at any milestone, and none may
+be added. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md), which
 locks three eventual public names (`NativeTensorDataset`,
 `NativeBatchSampler`, `NativeDataLoader`), a copied-snapshot dataset whose
@@ -1854,7 +1861,8 @@ no checkpoint or optimizer-state version, and no C ABI symbol at any
 milestone.
 
 **Phase I — native dtype generalization and float32 CPU support — is
-complete (I0–I11), and the latest completed phase is Phase I.** I11
+complete (I0–I11).** It was the latest completed phase until Phase J
+closed after it. I11
 revalidated the whole dtype-general stack across every required platform,
 added the closure guardrails, and reconciled the status surfaces. Its
 architecture contract is

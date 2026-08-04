@@ -2356,8 +2356,10 @@ def test_no_later_milestone_test_landed():
             / "test_native_minibatch_training.py").exists()
     assert (REPO_ROOT / "tests" / "test_native_data_hardening.py").exists()
     assert (REPO_ROOT / "tests" / "test_native_data_benchmark.py").exists()
-    for later in ("test_native_phase_j_closure.py",):
-        assert not (REPO_ROOT / "tests" / later).exists(), later
+    # J9's closure guardrails, likewise a module of their own. This line
+    # asserted their **absence** through J8, which expired at closure.
+    assert (REPO_ROOT / "tests"
+            / "test_native_phase_j_closure.py").exists()
     for later in ("_native_data_hardening.py", "native_data_hardening.py",
                   "native_loader_state.py", "native_data_state.py"):
         assert not (PACKAGE / later).exists(), later

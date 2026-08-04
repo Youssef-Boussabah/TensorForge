@@ -5537,15 +5537,17 @@ def test_j7_added_no_public_name_module_example_or_benchmark():
     for absent in ("native_data_hardening.py", "native_data_benchmark.py",
                    "native_fault_injection.py", "native_data_workers.py"):
         assert not (PACKAGE / absent).exists(), absent
-    # The benchmark and its contract module are **J8's**, not J7's: they
-    # are named here rather than merely counted, so this check keeps
-    # stating which milestone contributed which artifact. J9's closure
-    # module has not started.
+    # The benchmark and its contract module are **J8's**, not J7's, and
+    # the closure guardrails are **J9's**: each is named here rather than
+    # merely counted, so this check keeps stating which milestone
+    # contributed which artifact. Through J8 the last line read "the
+    # closure module is absent"; that premise expired when J9 landed, and
+    # what remains is that it is a module of its own.
     assert (REPO_ROOT / "benchmarks"
             / "benchmark_native_data_pipeline.py").exists()
     assert (REPO_ROOT / "tests" / "test_native_data_benchmark.py").exists()
-    assert not (REPO_ROOT / "tests"
-                / "test_native_phase_j_closure.py").exists()
+    assert (REPO_ROOT / "tests"
+            / "test_native_phase_j_closure.py").exists()
     examples = [path.name for path in (REPO_ROOT / "examples").glob("*.py")
                 if path.name != "__init__.py"]
     benchmarks = [path.name for path in (REPO_ROOT / "benchmarks").glob("*.py")
