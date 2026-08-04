@@ -308,6 +308,96 @@ the in-memory optimizer state schema did not move from version **1**.
 guardrails in ``tests/test_native_phase_i_closure.py``, and the final
 inventory reconciliation — adding no capability at all.
 
+**Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
+the latest phase and is complete: milestones J0 through J9 have all
+landed, and J9 closed it.** Its contract is
+``docs/native_data_pipeline_design.md`` (milestone **J0**: architecture,
+contract, and documentation only, adding no runtime behavior).
+**Milestone J1** adds ``NativeTensorDataset`` below — the finite,
+host-backed native dataset, and the phase's first runtime. It holds one
+owned host snapshot of the features and one of the class targets, at an
+**explicitly chosen** native feature dtype (``None`` still means
+``"float64"``, and the NumPy feature dtype never selects it), and turns
+any index sequence into a fresh owning ``NativeTensor`` feature batch —
+which **the caller closes** — beside a fresh read-only host ``int64``
+target batch. Both snapshots are unconditional copies, so caller mutation
+after construction reaches nothing; a SHA-256 content ``fingerprint``
+over a canonical little-endian byte stream gives the dataset a
+deterministic, cross-platform ``identity()`` that carries no payload; and
+the dataset owns **no native storage between calls**, so holding one
+leaves the native live-storage count untouched. The dataset plans,
+orders, and groups nothing: it answers only "given these indices, what is
+the batch?".
+
+**Milestone J2** adds ``NativeBatchSampler`` below — the deterministic
+order and batch **planner**, and the phase's second runtime. It owns
+``batch_size``, ``drop_last``, ``shuffle``, the ``seed``, the ``epoch``,
+and the ``cursor``, and turns them into batch-index groups through
+``epoch_permutation()``, ``plan()``, and ``next_batch_indices()``. Every
+permutation is a **pure function** of ``(seed, epoch, length)``: it
+reuses the locked ``tensorforge.splitmix64`` finalizer and golden
+constant under one domain-separated epoch key schedule — **no new RNG
+algorithm, no new global or default generator, and no coupling to a live
+``NativeGenerator``** — with unbiased rejection-based bounded integers
+and a downward Fisher-Yates sweep, in explicit ``& (2**64 - 1)`` Python
+integer arithmetic that is bit-identical on every platform by
+construction. So it holds no consumable stream and nothing to roll back:
+inspection and planning consume nothing and may be repeated in any order.
+Its compact JSON-compatible ``state_dict()`` carries the configuration,
+the position, and the dataset's four identity fields — no permutation and
+no payload — and ``load_state_dict()`` is transactional: everything is
+validated (dataset identity against **live** reality, configuration
+adopted from the state) before six assignments that cannot fail. It
+allocates nothing native, materializes no batch, and owns nothing
+releasable, so it has **no ``close()``** and works unchanged against a
+closed dataset. The private derivation lives in ``_native_permutation``
+and stays private: it is not exported and is not a public random surface.
+Neither milestone adds a kernel, C ABI symbol, ctypes declaration,
+checkpoint field or version, optimizer-state version, capability registry
+value, or dependency.
+
+**Milestone J3** adds ``NativeDataLoader`` below — the native mini-batch
+loader, and the last of the phase's three public names. ``iter(loader)``
+returns a **private** one-epoch iterator (a new one supersedes the old),
+and each ``next()`` runs an explicit five-phase transaction — claim,
+construct, publish, commit-and-deliver, rollback — under one absolute
+invariant: **the committed position advances if and only if a batch was
+delivered to the caller**. A failed delivery closes the undelivered
+``NativeTensor``, restores the exact pre-delivery ``epoch``/``cursor``,
+and leaves a retry returning the same indices and the same values. Each
+delivered batch is a fresh owning ``NativeTensor`` beside a fresh
+read-only host ``int64`` target array, and **the caller closes the
+feature batch**; no loader close path may reach a delivered one. There is
+no ``__len__``, no public advance, no collate, transform, worker,
+prefetch, or delivery hook.
+
+**Milestone J4** added **no** public name: it gave that loader its own
+``state_dict()`` / ``load_state_dict(state)`` pair over a three-key
+tagged wrapper (``format`` ``"tensorforge.native_data_loader"``,
+``format_version`` **1**, and ``sampler`` — *exactly* the unchanged
+version-1 sampler state, with nothing duplicated at the root). The
+snapshot is pure and fresh at every call, JSON-compatible, allowed even
+after the loader closes, and **refused while a batch transaction is in
+flight** through the sampler's own guard, so no snapshot can observe a
+skipped-but-undelivered position. Loading is transactional and
+identity-preserving: dataset identity is validated, never adopted.
+
+**Milestones J5 through J9 added no public name and no production code
+at all.** J5 proved the **caller-managed** checkpoint-metadata workflow —
+loader state travels through the existing validated version-3
+``metadata`` channel, the archive grew no field, and there is **no
+automatic loader discovery and no checkpoint/pipeline coupling in either
+direction**; J6 shipped ``examples/native_minibatch_training.py`` and its
+exact interrupted-versus-uninterrupted training proof at float32 and
+float64; J7 the adversarial hardening matrix, which found no production
+defect; J8 the data-pipeline characterization benchmark, which shipped no
+optimization; and J9 the permanent closure guardrails.
+
+**Concurrency is a documented boundary, not a feature.** No Phase-J
+object is thread-safe, none contains a lock, thread, queue, future, or
+async primitive, and none joins the process-wide state-replacement lock
+order. One thread at a time; external locking is the caller's job.
+
 ``NativeGenerator`` (Phase G, milestone G1) is the Python half of the
 phase's central split — random state is Python-managed, and the native
 random kernels (milestone G2) are stateless and receive the whole
@@ -449,6 +539,9 @@ from .native_metrics import native_accuracy
 from .native_sgd import NativeSGD
 from .native_adam import NativeAdam
 from .native_checkpoint import load_native_checkpoint, save_native_checkpoint
+from .native_dataset import NativeTensorDataset
+from .native_sampler import NativeBatchSampler
+from .native_data_loader import NativeDataLoader
 
 __all__ = [
     "NativeTensor",
@@ -473,4 +566,7 @@ __all__ = [
     "NativeAdam",
     "save_native_checkpoint",
     "load_native_checkpoint",
+    "NativeTensorDataset",
+    "NativeBatchSampler",
+    "NativeDataLoader",
 ]

@@ -864,7 +864,17 @@ def test_the_checkpoint_and_optimizer_state_constants_did_not_move_at_i9():
 def test_the_stateless_modules_still_take_no_dtype_argument():
     """They own no dtype-bearing numeric state, so an argument there would
     be a second authority that could disagree with the data. The closed
-    set of dtype-taking constructors is I7's six, and I9 added none."""
+    set of dtype-taking constructors is I7's six, and I9 added none.
+
+    A *later* phase's addition is named separately below so this stays an
+    exact equality in both directions while the Phase-I half keeps saying
+    exactly what Phase I shipped. ``NativeTensorDataset`` (Phase J,
+    milestone J1) qualifies on the same rule the six do rather than as an
+    exception: its feature snapshot is materialized at the chosen dtype,
+    which every batch it produces then carries, so it owns dtype-bearing
+    state and routes through the same shared validator. The stateless
+    classes enumerated at the end still take none, which is the property
+    this test exists for."""
     import inspect
 
     import tensorforge.experimental as experimental
@@ -883,6 +893,7 @@ def test_the_stateless_modules_still_take_no_dtype_argument():
     assert with_dtype == {
         "NativeParameter", "NativeLinear", "NativeConv2d", "NativeLayerNorm",
         "NativeBatchNorm1d", "NativeBatchNorm2d",
+        "NativeTensorDataset",   # Phase J, milestone J1 — not I7, not I9
     }
     for name in ("NativeReLU", "NativeFlatten", "NativeMaxPool2d",
                  "NativeSequential", "NativeDropout", "NativeMSELoss",

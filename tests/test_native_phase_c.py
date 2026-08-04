@@ -712,6 +712,9 @@ def test_native_phase_c_public_surface_guardrails():
         "NativeBatchNorm2d",         # Phase F, milestone F4
         "NativeGenerator",           # Phase G, milestone G1
         "NativeDropout",             # Phase G, milestone G4
+        "NativeTensorDataset",       # Phase J, milestone J1
+        "NativeBatchSampler",        # Phase J, milestone J2
+        "NativeDataLoader",          # Phase J, milestone J3
     }
     for name in experimental.__all__:
         assert not hasattr(tensorforge, name)

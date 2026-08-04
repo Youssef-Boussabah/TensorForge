@@ -1611,11 +1611,17 @@ def test_the_remaining_capability_boundary_is_unchanged():
     assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     for never in ("NativeBatchNorm3d", "NativeInstanceNorm",
-                  "NativeGroupNorm", "NativeRMSNorm", "NativeRNG",
-                  "NativeDataLoader"):
+                  "NativeGroupNorm", "NativeRMSNorm", "NativeRNG"):
         assert not hasattr(experimental, never), never
         assert never not in experimental.__all__, never
         assert never not in cpp.NATIVE_MODULES, never
+    # "NativeDataLoader" left that list at Phase J milestone J3, which
+    # shipped and exported it. It is a data-pipeline object, it carries no
+    # normalization capability, and it is no ``NATIVE_MODULES`` entry — so
+    # the boundary this test guards is unchanged.
+    assert hasattr(experimental, "NativeDataLoader")
+    assert "NativeDataLoader" in experimental.__all__
+    assert "NativeDataLoader" not in cpp.NATIVE_MODULES
     # "NativeDropout" left that list at Phase G milestone G4, which
     # shipped and exported it. It is a Phase-G module, it carries no
     # Phase-F capability, and the *capability* it is named after is still

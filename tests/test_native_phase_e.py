@@ -306,10 +306,14 @@ def test_unsupported_stays_honest_after_closure():
     # ("NativeDropout" is deliberately absent from this list: Phase G
     # milestone G4 shipped it, which is as unrelated to Phase E's scope as
     # the two BatchNorm shapes above.)
+    # ("NativeDataLoader" is deliberately absent for the same reason:
+    # Phase J milestone J3 shipped it. It is a data-pipeline object, it
+    # carries no classification capability, and the Phase-E boundary this
+    # test guards is unchanged — the four classification extensions below
+    # are still absent, which is what the row was ever about.)
     for never in ("NativeNLLLoss", "NativeBCELoss", "NativeSoftmax",
                   "NativeLogSoftmax", "native_top_k_accuracy",
-                  "native_confusion_matrix", "NativeDataLoader",
-                  "NativeBatchNorm3d"):
+                  "native_confusion_matrix", "NativeBatchNorm3d"):
         assert not hasattr(experimental, never), never
     for never in ("argmax", "nll_loss", "one_hot", "randn", "rand"):
         assert not hasattr(NativeTensor, never), never

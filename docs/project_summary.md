@@ -157,7 +157,7 @@ dispatch. The exact per-operation status lives in the
 
 ## Testing and reliability (both lines)
 
-4,920 pytest tests cover every feature of both lines: known-value
+7,844 pytest tests cover every feature of both lines: known-value
 checks against hand-computed math, finite-difference gradient
 verification (stable and native), exact resume-equivalence tests for
 checkpointing, NumPy-tripwire tests proving the native paths never
@@ -545,8 +545,11 @@ Reproducibility is exact only for the state actually captured (no Python
 ordinary concurrent training is not claimed thread-safe: the
 serializability guarantee covers the participating state transactions
 only.
-**Phase H — native CPU performance and runtime efficiency — is the
-latest *completed* phase.** Phase H is **complete**: milestones H0 through H10 have all landed, and it is the latest *completed* phase. H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
+**Phase H — native CPU performance and runtime efficiency — is
+complete.** Milestones H0 through H10 have all landed. (This paragraph read
+"is the latest *completed* phase" twice, which was accurate until Phase I
+closed at I11 and stale afterwards; it is repaired here rather than
+rewritten away. The latest completed phase is Phase I.) H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
 Reported as honestly as the wins. The controls held — the unchanged raw-buffer matmul at 0.99×, NumPy at 1.03×, storage allocation at 0.98×, and Dropout at 1.00× — and **`to_numpy` at 0.95× is the one reproducible regression**, attributed rather than smoothed over: its compiled traversal is byte-identical source measuring 0.975×–1.008×, so what changed is that H3's and H7's much cheaper wrapper no longer hides it. The remaining limitations are stated plainly: the gap to a tuned multi-threaded BLAS is **3.6×–9.3×** and widens with size; convolution is entirely scalar (0 packed-double instructions); `tf_core_narrow_backward` still walks the odometer, deliberately, because it executes **0 times** in every shipped training workload; and a small operation still costs a few microseconds because **60 % of that is the owning allocation and 19 % is building the result's Python ownership objects, against 12 % for the ctypes crossing** — an architectural floor rather than a defect. Every number is a local characterization of one machine, reported with its spread, and asserted by no test. H0 is an
 architecture, profiling, and baseline milestone and **nothing was made
@@ -1656,11 +1659,213 @@ moved, and no C ABI symbol was added.
 
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
-**Phase I — native dtype generalization and float32 CPU support — is the
-latest phase, and it is complete (I0–I11).** I11 revalidated the whole
-dtype-general stack across every required platform, added the closure
-guardrails, and reconciled the status surfaces, so Phase I is now also the
-latest *completed* phase. Its architecture contract is
+**Phase J — deterministic native data pipeline and mini-batching — is the
+latest phase, and it is complete: milestones J0 through J9 have all
+landed, and J9 closed it.** Phase J was approved *after* Phase I
+closed at I11, so it is not pre-existing roadmap work. **J0 was
+architecture, contract, and documentation work and added no runtime
+behavior at all** — no dataset, sampler, or loader class, no helper module,
+no state serializer, no public export, no C++, no C ABI symbol, no example,
+no benchmark, and no checkpoint or optimizer-state change. Runtime
+capability began at **J1**, which shipped `NativeTensorDataset`: the
+finite host-backed dataset holding one owned, copied host snapshot of the
+features and one of the class targets at an **explicitly chosen** native
+feature dtype (never inferred from the input array), with a locked
+SHA-256 content fingerprint, a caller-owned `NativeTensor` feature batch
+and a read-only host `int64` target batch per index sequence, exact order
+and duplicate preservation, and **no native storage held between calls**.
+It added exactly one public experimental name and nothing else — no C++,
+no C ABI symbol, no example, no benchmark, and no schema change. **J2**
+added exactly one more, `NativeBatchSampler`: the deterministic order and
+batch **planner**, which owns `batch_size`, `drop_last`, `shuffle`, the
+`seed`, the `epoch`, and the `cursor` and emits batch-index groups through
+`epoch_permutation()`, `plan()`, and `next_batch_indices()`. Every
+permutation is a **pure function** of `(seed, epoch, length)`, derived by
+the permanently private `_native_permutation` helper from the locked
+`tensorforge.splitmix64` finalizer under one domain-separated epoch key
+schedule, with unbiased rejection-based bounded integers and a downward
+Fisher–Yates sweep in explicit 64-bit-masked Python integer arithmetic —
+so it is bit-identical on every platform by construction, and every
+committed reference vector is reproduced exactly and re-checked live
+against the compiled Dropout kernel. It holds no consumable stream,
+allocates nothing native, materializes no batch, and owns nothing
+releasable, so it has no `close()`; its compact JSON-compatible state
+carries the configuration, the position, and the dataset's four identity
+fields and loads transactionally. **J3** added the last of the three,
+`NativeDataLoader`: `iter(loader)` returns a private one-epoch iterator
+that captures the sampler's remaining batch count and supersedes any
+previous one, and every `__next__` runs an explicit five-phase
+transaction — claim, construct, publish, commit-and-deliver, rollback —
+under one invariant, that **the committed sampler position advances if
+and only if a batch was successfully delivered to the caller**. Every
+failure position closes the undelivered feature tensor, restores the
+exact pre-delivery epoch and cursor through the same non-failing write
+seam a state load uses, and leaves a retry returning the same indices and
+the same values; each is proved by injection with its own non-vacuity
+control and a native live-storage baseline. Delivered batches are the
+caller's and no close path can reach one. **J4** added **no public name
+at all** — the first Phase-J runtime milestone whose export delta is
+zero, leaving `tensorforge.experimental.__all__` at 25 — and gave
+`NativeDataLoader` exactly two methods. `state_dict()` returns a compact
+tagged wrapper of **three** root keys (`format`
+`"tensorforge.native_data_loader"`, `format_version` **1**, and
+`sampler`) around the **unchanged** sampler state, with every container
+fresh at every call, no field duplicated at the root, no permutation and
+no dataset content inside, and nothing whose size grows with the number
+of samples; it is JSON-compatible and accepted unchanged by the
+checkpoint's existing metadata validator, is allowed between batches,
+after exhaustion or supersession, with a closed dataset, and after the
+loader is closed, and is **refused** while a batch transaction is in
+flight because that window has no honest answer.
+`load_state_dict(state)` runs a closed guard, a transaction guard, and an
+active-iteration guard **before** the state is read, validates the
+wrapper, **delegates** the whole nested sampler validation to the seam
+that already owns it, and commits through the same non-failing write seam
+the delivery uses — so a rejected load leaves the loader, sampler,
+dataset, position, cache behavior, iterator slot, and native live storage
+byte-identical, and a successful one adopts all six configuration and
+position values while validating dataset identity without adopting it and
+preserving every object identity. **Exact in-memory mid-epoch
+restoration** is proved over two separate object graphs: a mid-epoch
+interruption restored into a separately constructed dataset, sampler, and
+loader reproduces the remaining batches exactly — identical indices,
+identical raw IEEE-754 feature bits, identical `int64` targets — then the
+same canonical next-epoch position and the same following epochs, at both
+dtypes and with no tolerance anywhere. **J5** proved the caller-managed
+checkpoint-metadata workflow end to end and **added no production code at
+all** — the second consecutive Phase-J milestone with a zero export
+delta, and the only one whose diff touches no file under `src/`:
+`native_checkpoint.py` is unchanged. Against **real** version-3 `.npz`
+archives read with pickle disabled, the format stays
+`tensorforge.native_checkpoint` version **3** with `(1, 2, 3)` accepted,
+the manifest keeps its same six root keys, and the array inventory is
+identical whether or not loader state travels, so **the archive's own
+capture set did not grow by one field**; loader state lives only inside
+caller metadata, with no root field, no loader array, no serialized
+permutation, and no dataset payload. `"training"`, `"data_loader"`, and
+`"next_step"` are **caller conventions no production constant spells**, so
+alternate nesting, alternate names, and two loaders' states side by side
+all round-trip unchanged. Restoration into an entirely fresh model,
+optimizer, generator set, dataset, sampler, and loader — each deliberately
+built wrong first — reproduces every parameter, persistent buffer, Adam
+moment and step counter, hyperparameter, generator state and **alias
+topology**, and all six loader values exactly in raw IEEE-754 bit
+patterns, then the exact next batch and the exact remaining sequence. All
+three delivery boundaries are proved through an archive: a **failed**
+delivery resumes the same candidate batch, a **successful** one resumes
+the following batch, and an epoch-boundary save resumes the canonical next
+epoch. The absence of cross-object atomicity is proved rather than glossed
+— a checkpoint load that succeeds followed by a loader load that fails
+leaves the first restored and the second untouched.
+
+**J6** shipped `examples/native_minibatch_training.py`, the deterministic
+mini-batch training example, and **added no production code and no public
+name** — the third consecutive Phase-J milestone with a zero export delta.
+The example inventory moved 15 → **16**; the benchmarks stayed at **8**.
+It trains a `Linear → BatchNorm1d → ReLU → Dropout → Linear → LayerNorm →
+Dropout → Linear` classifier over **shuffled** mini-batches with
+`NativeAdam` and `NativeCrossEntropyLoss`, two Dropout layers sharing one
+generator, and proves an interrupted-and-resumed run **bit-for-bit
+identical** to an uninterrupted one across the whole §14.3 inventory — the
+complete batch-index sequence, every feature batch's raw bits, every
+`int64` target array with its flags, every loss, parameter, buffer, Adam
+moment and counter, the generator state and alias topology, the final
+loader `state_dict()`, and the evaluation output. It runs at float32 and
+float64 **independently**, each compared only against itself; the one
+cross-dtype claim is the batch-index sequence, which carries no dtype. The
+interruption is genuinely mid-epoch, the resumed graph is entirely fresh
+and deliberately built wrong in every family first, live storage returns
+exactly to baseline, and a negative control that omits
+`loader.load_state_dict` alone is proved to diverge. The example uses
+**only public APIs**, asserted by an AST scan with its own negative
+control, and claims and measures **no timing**.
+
+**J7** shipped `tests/test_native_data_hardening.py`, the cross-cutting
+adversarial hardening matrix, and **added no production code and no public
+name** — the fourth consecutive Phase-J milestone with a zero export
+delta, and one that **found no production defect**. Examples stayed at
+**16** and benchmarks at **8** through J7. It asserts every §12.7, §15,
+§16, and §17
+row by injection: each dataset-construction row, proved to leave **no
+reference alive** by reading the raised exception's own traceback; each
+iteration row, with the host gather, the native allocation, the
+host→native transfer, and the target copy kept as **four distinct
+injections** so no failure is labelled as another; the **commit step made
+to fail after the candidate position was really applied**, which
+exercises the restore path with a position that genuinely moved; a
+`BaseException` through the same unconditional `finally`; the reentrancy
+refusal matrix at all **three** transaction phases; every abandonment
+position and every close ordering; and a **checkpoint taken immediately
+after a failed delivery, proved to resume the same candidate batch** at
+both dtypes through a real version-3 archive into an entirely fresh
+graph. Every rejection is followed by a complete before/after fingerprint
+of the observable world — dataset, sampler, loader, iterator, an
+unrelated `NativeParameter` with its version and gradient, a persistent
+buffer, a live optimizer, a registered `NativeGenerator`, the filesystem,
+both global RNGs, and every registry — and every injection and every
+parser carries its own non-vacuity control. **Concurrency remains
+documented as unsupported rather than tested as safe**: no lock exists in
+any Phase-J module, none was added, no test starts a thread, and external
+locking stays the caller's job.
+
+**J8** shipped `benchmarks/benchmark_native_data_pipeline.py`, the
+data-pipeline characterization, and **added no production code, no public
+name, and no optimization** — the fifth consecutive Phase-J milestone
+with a zero export delta. Examples stayed at **16** and benchmarks moved
+8 → **9**. It isolates the four layers J8 undertook to answer for —
+immutable host dataset indexing, deterministic batch planning,
+deterministic shuffled-permutation construction, and host→native batch
+materialization — and adds one clearly separate composition case for a
+whole `next(iterator)` delivery, so a single end-to-end number can never
+stand in for the layer that dominates. float32 and float64 are measured
+**separately and never as a ratio of one to the other**; every gate is
+exact (index tuples, plans, and permutations by equality; feature values
+in raw IEEE-754 bits within one dtype; targets by exact `int64`
+equality) and runs **before** the timing helper is reached; the length-8
+configurations are known-answer checks against the design's committed
+reference vectors; a case with no honest equivalent is labelled
+`native_only` and publishes **no ratio at all**; cold and warm
+permutation construction are separate cases and are never averaged, with
+the warm case proved a genuine cache hit through the public surface
+alone; medians come with an interquartile range after warm-up and every
+raw sample is retained; and setup, per-repetition state reset, and every
+`close()` stay outside the timer. **No threshold, no CI timing job, and
+no result file** exists, and no runtime change is derived from any
+measurement.
+
+**J9 closed the phase**, adding no production code, no public name, and
+no export: it shipped the permanent closure guardrails in
+`tests/test_native_phase_j_closure.py`, re-ran the complete validation
+matrix — Windows Release and Debug, a Linux CI-equivalent, Clang
+ASan/UBSan with a detector negative control, and a LeakSanitizer lifecycle
+over the whole pipeline — and reconciled every inventory. **Phase J is
+complete and no milestone remains; no successor phase is defined, and
+further work requires a separately approved one.**
+
+**No automatic loader discovery exists**, at any milestone, and none may
+be added. Its architecture contract is
+[native_data_pipeline_design.md](native_data_pipeline_design.md), which
+locks three eventual public names (`NativeTensorDataset`,
+`NativeBatchSampler`, `NativeDataLoader`), a copied-snapshot dataset whose
+native feature dtype is explicitly chosen and never inferred from the input
+array, a SHA-256 dataset fingerprint, a deterministic shuffle that
+**reuses the locked `tensorforge.splitmix64` derivation** rather than
+introducing a second RNG algorithm or coupling to a live
+`NativeGenerator`, a permutation that is a pure function of
+`(seed, epoch, length)` with committed reference vectors, strict
+JSON-compatible state schemas carrying no payload, transactional state
+loading, an explicit **caller-managed** checkpoint-metadata workflow over
+the unchanged version-3 format, and an exact resume contract compared in
+raw IEEE-754 bit patterns. Phase J moves no registry, no dtype, no device,
+no checkpoint or optimizer-state version, and no C ABI symbol at any
+milestone.
+
+**Phase I — native dtype generalization and float32 CPU support — is
+complete (I0–I11).** It was the latest completed phase until Phase J
+closed after it. I11
+revalidated the whole dtype-general stack across every required platform,
+added the closure guardrails, and reconciled the status surfaces. Its
+architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 
 **I0 was design and reconciliation only, and added no runtime behavior**:

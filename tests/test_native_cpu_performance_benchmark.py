@@ -1380,6 +1380,9 @@ def test_h0_changes_no_export():
         "NativeCrossEntropyLoss", "native_accuracy",
         "NativeLayerNorm", "NativeBatchNorm1d", "NativeBatchNorm2d",
         "NativeGenerator", "NativeDropout",
+        "NativeTensorDataset",   # Phase J, milestone J1 — not H0
+        "NativeBatchSampler",    # Phase J, milestone J2 — not H0
+        "NativeDataLoader",      # Phase J, milestone J3 — not H0
     }
 
 
@@ -1555,10 +1558,15 @@ H0_HARNESSES = (
     "cpp_backend.py",
 )
 
-# Phase I, milestone I10 adds exactly one harness, and adds it as a
-# **separate file** precisely so that this one keeps its case inventory,
-# its CLI, and the meaning of every number it published.
-LATER_PHASE_HARNESSES = ("benchmark_native_dtype.py",)
+# Phase I, milestone I10 and Phase J, milestone J8 each add exactly one
+# harness, and each adds it as a **separate file** precisely so that this
+# one keeps its case inventory, its CLI, and the meaning of every number it
+# published. Named individually, with the milestone that shipped each, so
+# "Phase H changed no other harness" stays a claim about Phase H.
+LATER_PHASE_HARNESSES = (
+    "benchmark_native_dtype.py",              # Phase I, I10
+    "benchmark_native_data_pipeline.py",      # Phase J, J8
+)
 
 
 def test_the_benchmark_is_separate_from_every_earlier_phase_harness():

@@ -74,14 +74,227 @@ version-1 checkpoint format.
 
 **Phase F — Native Normalization and Stateful Buffers — is *complete*
 (F0–F9)**. Phase G is complete (G0–G10), and **Phase H — Native CPU Performance
-and Runtime Efficiency — is complete (H0–H10) and is the latest
-*completed* phase**; both are recorded further below.
+and Runtime Efficiency — is complete (H0–H10)**; both are recorded further
+below. (This sentence added "and is the latest *completed* phase", which
+was accurate until Phase I closed at I11 and stale afterwards; it is
+repaired here rather than rewritten away. The latest completed phase is
+Phase I.)
 
-**Phase I — Native Dtype Generalization and Float32 CPU Support — is the
-latest phase, and it is complete (I0–I11).** Milestone I11 revalidated the
-whole dtype-general stack on every required platform and closed the phase,
-which makes Phase I the latest *completed* phase as well. Its architecture
-contract is
+**Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
+latest phase, and it is complete: milestones J0 through J9 have all
+landed and J9 closed it.** It was approved *after* Phase
+I closed at I11, not carried over from an earlier plan. **J0 was
+architecture, contract, and documentation work and shipped no runtime
+behavior at all** — no dataset, sampler, or loader class, no helper
+module, no state serializer, no public export, no C++, no C ABI symbol, no
+example, no benchmark, and no checkpoint or optimizer-state change.
+Runtime capability began at **J1**, which shipped `NativeTensorDataset`,
+continued at **J2**, which shipped `NativeBatchSampler` over the private
+`_native_permutation` derivation, continued at **J3**, which shipped
+`NativeDataLoader` over the private `_NativeBatchIterator`, and continued
+at **J4**, which added **no public name at all** and gave that loader its
+own in-memory `state_dict()` and `load_state_dict()` — all four **pure
+Python** (J1 over NumPy; J2 over built-in integer arithmetic, importing
+nothing at all; J3 and J4 importing only from the sampler module), adding
+no kernel, no ctypes declaration, and no C++ or CMake file. **J5 added no
+production code whatsoever**: it proved the caller-managed
+checkpoint-metadata workflow against real version-3 archives, and its
+whole diff is one test module plus documentation, with
+`src/tensorforge/experimental/native_checkpoint.py` unchanged. **J6 added
+no production code either**: its whole diff is
+`examples/native_minibatch_training.py`, one test module, narrow status
+edits, and documentation — the example inventory moved 15 → **16** and no
+file under `src/` or `cpp/` was touched. **J7 added no production code
+either**: its whole diff is `tests/test_native_data_hardening.py`, the
+narrow inventory edits that move it from absent to present in the four
+modules asserting its absence, and documentation; no file under `src/`,
+`cpp/`, or `.github/` was touched and no dependency changed. **J8 added
+no production code either, and no optimization**: its whole diff is
+`benchmarks/benchmark_native_data_pipeline.py`,
+`tests/test_native_data_benchmark.py`, the narrow inventory edits that
+move both from absent to present in the modules asserting their absence,
+and documentation; the benchmark inventory moved 8 → **9** and no file
+under `src/`, `cpp/`, or `.github/` was touched. Its
+architecture contract is
+[native_data_pipeline_design.md](native_data_pipeline_design.md). Nothing
+on this page changed for any of the nine milestones: the library still
+exports **54** `tf_*` symbols, the CTest inventory is still **24**, and
+every capability registry, checkpoint version, and optimizer-state version
+is exactly what Phase I left. **J1 through J8 therefore required no
+native rebuild, no CTest run, and no sanitizer run**, and none is claimed
+for any of them — **J9 ran the complete final native and sanitizer
+matrix**, recorded below and in
+[native_data_pipeline_design.md](native_data_pipeline_design.md) §23.3.
+
+### J9 — the Phase-J closure matrix
+
+**J9 changed no production code and added no export**, so nothing on this
+page moved because of the phase itself: the library still exports **54**
+`tf_*` symbols and the CTest inventory is still **24**. What J9 adds here
+is evidence that the tree Phase J leaves behind still builds, runs, and
+stays clean everywhere the project validates.
+
+**Windows** (MSVC 19.44.35228.0), both configurations built out-of-source
+**outside the repository**, with the Debug library written to its own
+directory so the active runtime stayed the Release DLL — confirmed by
+digest, and the two binaries are distinct. Each: clean configure, clean
+build, **zero** project CMake, compiler, and linker warnings, **24/24**
+CTests, and **54** exports with the source set and the PE export table
+**exactly equal**.
+
+**Linux CI-equivalent** — WSL2 Ubuntu 24.04.4, kernel 6.6.87.2, glibc
+2.39, x86_64, g++ 13.3.0 with `-Wall -Wextra`, CMake 3.28.3, Python
+3.13.14, NumPy 2.5.1, uv 0.11.28, in an isolated environment outside the
+worktree. The workflow's own four steps all pass — `cpp/build.py`, the
+hard-failing smoke check, the quick benchmark, and the full pytest suite —
+and a separate out-of-source Release build reports **zero** warnings,
+**24/24** CTests, **54** exports, **zero** mangled exported symbols, and
+source/library equality.
+
+**Sanitizers, with instrumentation proved.** A fresh Clang **18.1.3**
+`-DTF_SANITIZE=address,undefined` build outside the repository compiled
+with **zero** project diagnostics. `nm -D` shows **25 `__asan*`** and **12
+`__ubsan*`** dynamic symbols alongside the **54** exported `tf_*` symbols,
+and the library **refuses to load** without the sanitizer runtime
+(`undefined symbol: __ubsan_vptr_type_cache`) — so the instrumentation is
+proved present rather than assumed. Under
+`halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1:detect_leaks=1`
+and `UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`: **24/24** sanitized
+CTests, and the **complete** Python suite green against the sanitized
+library with **zero AddressSanitizer and zero UndefinedBehaviorSanitizer
+diagnostics**. Python-level runs preload the ASan runtime (`LD_PRELOAD`)
+because the interpreter itself is not instrumented, so the claim covers
+the **native** library and the native test binaries. The sanitized `.so`
+was substituted into the package location only for the duration of the run
+and restored afterwards, with the original's SHA-256 verified identical;
+no sanitized library was left in the normal runtime location and the
+Windows DLL was never touched.
+
+**A negative control makes that zero mean something.** A test-only program
+— compiled outside the repository, never committed, and deleted afterwards
+— hands `tf_storage_copy_to` a host destination one element shorter than
+the storage it declares, which is a size the C ABI cannot validate because
+a raw host pointer carries none. It aborts with `ERROR: AddressSanitizer:
+heap-buffer-overflow`, `WRITE of size 8`, inside `copy_to_typed<double>`
+at `cpp/src/storage.cpp:520`, reached through `tf_storage_copy_to`. The
+same program with a correctly sized destination exits zero with no
+diagnostic, so the control discriminates rather than always firing. **No
+production failure API was added**, and the one documented allocation
+hook is unchanged.
+
+**LeakSanitizer, scope stated honestly.** With `detect_leaks=1` and **no
+suppression file** (`LSAN_OPTIONS` confirmed unset), a temporary and never
+committed workload drove one complete Phase-J lifecycle: the shipped J6
+program at both dtypes — reused rather than reimplemented, because a
+hand-written stand-in that forgot one intermediate would report a leak
+belonging to the workload rather than to TensorForge — plus the failure
+paths the public example deliberately does not contain: a failed delivery
+and its rollback, a checkpoint taken immediately after one resuming the
+**same candidate batch**, a superseded iterator, and a reentrant close.
+The native live-storage counter returned **exactly to baseline (0 → 0)** at
+every checkpoint. Running LSan over that *Python* process reports 771,784
+bytes in 693 allocations across 281 records, but **not one leak frame
+names `_tensorforge_cpp`, `tf_core_`, `tf_storage_`, or `tf::`** — every
+named site is CPython, libc, NumPy, `_ctypes`, or the ASan runtime itself.
+**No suppression file was added.**
+
+All **16** examples exit zero, the J8 harness passes every correctness
+gate in both `--smoke` and `--smoke --json`, the CI quick benchmark exits
+zero, and **no result file of any kind is written**.
+
+**GitHub Actions was green for the J8 commit this work started from.** The
+J9 tree is uncommitted, so its workflow run has not happened: a green
+GitHub Actions run for the J9 commit is the remaining **external**
+confirmation before merge, and nothing above stands in for it.
+
+**J8's benchmark measures; it does not gate.** Correctness runs before
+timing in every case and is exact — index tuples, plans, and permutations
+by equality, feature values in raw IEEE-754 bits within one dtype,
+targets by exact `int64` equality — with the length-8 configurations
+checked against the design's committed reference vectors as known
+answers. float32 and float64 are characterized **separately and are never
+divided by one another**; a case with no honest equivalent is labelled
+`native_only` and publishes **no ratio at all**; cold and warm
+permutation construction are separate cases and are never averaged;
+medians are reported with an interquartile range after warm-up; setup,
+per-repetition state reset, and every `close()` are outside the timer;
+and native live storage returns to **exactly** its baseline after a full
+run. **No speed is asserted, no threshold exists, no CI job runs it, and
+no result file of any kind is written.**
+
+**J7 uses only the fault-injection mechanism that already existed.** The
+deterministic thread-local allocation-failure arm
+(`tf_test_arm_alloc_failure` / `tf_fault_injection_available`) is the one
+documented exception §4.1 permits, and J7 arms it for exactly one
+allocation, disarms it in a `finally` *and* in an autouse fixture, and
+proves the identical call succeeds once it is disarmed. **No second arm,
+no new export, no C++ change, and no production Python fault-injection
+API was added.** Every other failure J7 injects is a monkeypatch of an
+already-private Python seam, and native live storage is asserted back to
+its exact baseline after every one.
+
+**J6 allocates no native storage that it does not release.** The example
+is an ordinary caller: it builds datasets, loaders, models, and
+optimizers, closes every delivered feature batch, logits tensor, loss,
+gradient, evaluation tensor, parameter, buffer, optimizer, loader, and
+dataset explicitly, and both the example's own reporting meter and the
+test suite's live-`NativeStorage` instrumentation confirm the count
+returns **exactly** to baseline across the whole two-dtype workflow —
+including the omitted-loader negative-control leg.
+
+**J5 allocates no native storage of its own either.** It builds models,
+optimizers, and loaders like any caller does, and every proof takes a
+live-`NativeStorage` baseline before the graphs exist and asserts the count
+returns exactly to it after every delivered feature batch, every staged
+checkpoint tensor, and both object graphs are closed explicitly — through
+a real save, a real load, a rejected save, a rejected load, and an
+injected delivery failure alike.
+
+**J4 allocates no native storage of its own.** Neither state method
+constructs a `NativeTensor`, and both are asserted against the same
+live-`NativeStorage` instrumentation J3 uses: a snapshot, a rejected load,
+a successful load, and a snapshot taken after `close()` each leave live
+storage exactly at its baseline. The batch traffic J4's resume proof
+generates is J3's traffic, unchanged — every remaining batch of an
+interrupted epoch is materialized through the same existing
+`NativeTensor.from_array` boundary, compared by raw bit pattern, and
+closed explicitly, with live storage returning exactly to baseline at the
+end of every restoration case.
+
+**J3 is the first Phase-J milestone that allocates native storage**, and
+that is worth recording precisely because it is still not a build change:
+every feature batch reaches the device through the existing
+`NativeTensor.from_array` boundary and the already-compiled
+`tf_storage_copy_from` path, so the code the loader runs is exactly the
+code Phase I shipped. What is new is the **traffic**: an allocate,
+transfer, and release cycle per batch, driven from Python. J3 asserts it
+with the repository's existing deterministic instrumentation rather than
+with a sanitizer — a live-`NativeStorage` set around every ownership and
+failure test, proving live storage returns **exactly** to its pre-call
+baseline after a whole epoch, after every injected failure position, and
+after an explicit caller close — and it exercises the shipped
+`tf_test_arm_alloc_failure` hook to prove that a real native allocation
+failure inside batch materialization consumes no batch position. A
+LeakSanitizer lifecycle over that traffic is J9's, where §22.4 puts it.
+
+J2 does exercise the built library, and that is worth recording precisely
+because it is *not* a build change: its cross-implementation gate predicts
+the shipped `tf_core_dropout_forward` kernel's keep/drop pattern from the
+Python derivation at 48 `(seed, call_index, p)` combinations of 4,096
+elements each, with a non-vacuity control proving a mutated constant,
+shift, or key breaks the prediction. That is how the phase proves one
+algorithm has not become two, and it re-runs on every platform the suite
+runs on — which is exactly where a two-implementation drift would appear.
+The phase plans no new C ABI export at any milestone, and
+needs none — a batch reaches native storage through the existing
+`NativeTensor.from_array` boundary, and the deterministic shuffle reuses
+the locked `tensorforge.splitmix64` derivation already compiled into
+`cpp/src/random.cpp` rather than adding a second one.
+
+**Phase I — Native Dtype Generalization and Float32 CPU Support — is
+complete (I0–I11), and the latest completed phase is Phase I.** Milestone
+I11 revalidated the whole dtype-general stack on every required platform
+and closed the phase. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
 was design, guardrail tests, and documentation reconciliation, and no
 runtime behavior at all.**
@@ -4353,8 +4566,11 @@ still no normalization operation, kernel, or C ABI export.
 Dropout and a native RNG sit **beyond** Phase F. They belong to Phase G,
 which has since closed.
 
-**Phase H — native CPU performance and runtime efficiency — is the
-latest *completed* phase.** Phase H is **complete**: milestones H0 through H10 have all landed, and it is the latest *completed* phase. H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
+**Phase H — native CPU performance and runtime efficiency — is
+complete.** Milestones H0 through H10 have all landed. (This paragraph read
+"is the latest *completed* phase" twice, which was accurate until Phase I
+closed at I11 and stale afterwards; it is repaired here rather than
+rewritten away. The latest completed phase is Phase I.) H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
 Reported as honestly as the wins. The controls held — the unchanged raw-buffer matmul at 0.99×, NumPy at 1.03×, storage allocation at 0.98×, and Dropout at 1.00× — and **`to_numpy` at 0.95× is the one reproducible regression**, attributed rather than smoothed over: its compiled traversal is byte-identical source measuring 0.975×–1.008×, so what changed is that H3's and H7's much cheaper wrapper no longer hides it. The remaining limitations are stated plainly: the gap to a tuned multi-threaded BLAS is **3.6×–9.3×** and widens with size; convolution is entirely scalar (0 packed-double instructions); `tf_core_narrow_backward` still walks the odometer, deliberately, because it executes **0 times** in every shipped training workload; and a small operation still costs a few microseconds because **60 % of that is the owning allocation and 19 % is building the result's Python ownership objects, against 12 % for the ctypes crossing** — an architectural floor rather than a defect. Every number is a local characterization of one machine, reported with its spread, and asserted by no test. Its contract is
 [native_cpu_performance_design.md](native_cpu_performance_design.md).

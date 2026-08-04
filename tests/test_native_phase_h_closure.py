@@ -589,12 +589,19 @@ def test_claude_md_states_current_facts_and_points_at_the_docs():
 
 def test_claude_md_is_comfortably_inside_the_project_memory_budget():
     """A soft structural bound, not a character-count assertion: the file
-    must stay well clear of the 150,000-character project-memory warning
-    threshold that motivated the H10 compaction. The generous limit here
-    exists to catch a regression back to a duplicated history, not to
-    police ordinary edits."""
+    must stay under the 150,000-character project-memory limit that
+    motivated the H10 compaction. The generous limit here exists to catch
+    a regression back to a duplicated history, not to police ordinary
+    edits — and deliberately **not** to push the file towards any smaller
+    preferred size. During an active phase, completeness and
+    implementation reliability outrank compaction, so this is the ceiling
+    and nothing below it is a target. What must not come back is
+    milestone *history* — transcripts, measurement tables, and
+    per-milestone reports — which
+    ``test_claude_md_does_not_duplicate_milestone_reports`` below checks
+    independently and which this change does not weaken."""
     size = len(AGENT_INSTRUCTIONS.read_text(encoding="utf-8"))
-    assert size < 120_000, (
+    assert size < 150_000, (
         f"CLAUDE.md has grown back to {size} characters; milestone history "
         f"belongs in docs/, not in project memory"
     )

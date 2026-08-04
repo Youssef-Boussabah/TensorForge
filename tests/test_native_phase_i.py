@@ -148,6 +148,23 @@ I7_DTYPE_CONSTRUCTORS = frozenset({
     "NativeBatchNorm2d",
 })
 
+# What a *later* phase legitimately added on the same rule, named separately
+# so the Phase-I statement above stays exactly what Phase I shipped. The
+# assertions below compare against the union, so they remain exact equalities
+# in both directions — a class that quietly gains a ``dtype`` argument still
+# fails, and so does one that loses it.
+#
+# ``NativeTensorDataset`` (Phase J, milestone J1) belongs here rather than
+# among the absences: it **does** own dtype-bearing numeric state — its
+# feature snapshot is materialized at the chosen dtype, which every batch it
+# produces then carries — so it takes the argument through the same shared
+# ``_native_dtype.normalize_module_dtype`` validator, keyword-only, defaulting
+# to ``None`` meaning float64, and infers nothing from the input array.
+POST_PHASE_I_DTYPE_CONSTRUCTORS = frozenset({
+    "NativeTensorDataset",
+})
+DTYPE_CONSTRUCTORS = I7_DTYPE_CONSTRUCTORS | POST_PHASE_I_DTYPE_CONSTRUCTORS
+
 
 def _constructors_with_a_dtype_argument():
     """Every exported ``tensorforge.experimental`` class whose constructor
@@ -1390,6 +1407,18 @@ def _changed_since(base):
 # unplanned new one.
 I9_ADDED_EXAMPLES = frozenset({"examples/native_float32_training.py"})
 
+# Examples added by **later phases**, after Phase I closed at I11. Phase I's
+# own example set is ``I9_ADDED_EXAMPLES`` and never grows; this second set
+# exists only because the check below is a *cumulative* diff against the I0
+# commit, which keeps seeing later work forever. Each entry names the
+# milestone that shipped it, so a later phase's example is attributed rather
+# than absorbed into Phase I's record — and every *other* path under
+# ``examples/``, including an edit to an existing file, still fails.
+POST_PHASE_I_EXAMPLES = frozenset({
+    "examples/native_minibatch_training.py",          # Phase J, milestone J6
+})
+assert not (I9_ADDED_EXAMPLES & POST_PHASE_I_EXAMPLES)
+
 # The runtime files I9 touches for **documentation only**. Each said
 # "float64/cpu only" in a module docstring — accurate through I8, and wrong
 # the moment the registry moved — so the sentence had to be corrected where
@@ -1413,6 +1442,19 @@ I9_DOCUMENTATION_ONLY = frozenset({
 # fails here, which is what makes that separation checkable rather than
 # merely intended.
 I10_ADDED_BENCHMARKS = frozenset({"benchmarks/benchmark_native_dtype.py"})
+
+# Benchmarks added by **later phases**, after Phase I closed at I11 — the
+# exact counterpart of ``POST_PHASE_I_EXAMPLES`` above, and for the same
+# reason: the check below is a *cumulative* diff against the I0 commit, so
+# it keeps seeing later work forever. Each entry names the milestone that
+# shipped it, so a later phase's harness is attributed rather than absorbed
+# into Phase I's record. Phase I's own benchmark set stays exactly I10's
+# one, and every *other* path under ``benchmarks/`` — including an edit to
+# an inherited file — still fails.
+POST_PHASE_I_BENCHMARKS = frozenset({
+    "benchmarks/benchmark_native_data_pipeline.py",   # Phase J, milestone J8
+})
+assert not (I10_ADDED_BENCHMARKS & POST_PHASE_I_BENCHMARKS)
 
 
 def test_the_phase_changed_no_ci_or_dependency_file():
@@ -1439,13 +1481,23 @@ def test_the_phase_changed_no_ci_or_dependency_file():
 
     Any *other* change under ``examples/`` or ``benchmarks/`` — including
     an edit to an existing one — still fails here.
+
+    The diff is **cumulative against the I0 commit**, so it keeps seeing
+    later phases' work indefinitely. ``POST_PHASE_I_EXAMPLES`` names those
+    additions explicitly, one entry per shipping milestone, rather than
+    relaxing the rule to a prefix or a count: Phase I's own example set
+    stays exactly I9's one, and an edit to any pre-existing example still
+    fails.
     """
     forbidden = []
     for path in _changed_since(I0_COMMIT):
-        if path.startswith("examples/") and path not in I9_ADDED_EXAMPLES:
+        if (path.startswith("examples/")
+                and path not in I9_ADDED_EXAMPLES
+                and path not in POST_PHASE_I_EXAMPLES):
             forbidden.append(path)
         if (path.startswith("benchmarks/")
-                and path not in I10_ADDED_BENCHMARKS):
+                and path not in I10_ADDED_BENCHMARKS
+                and path not in POST_PHASE_I_BENCHMARKS):
             forbidden.append(path)
         if path.startswith(".github/"):
             forbidden.append(path)
@@ -1457,7 +1509,8 @@ def test_the_phase_changed_no_ci_or_dependency_file():
     )
     # ...and the files those exemptions were written for really exist, so
     # an exemption cannot outlive its subject.
-    for allowed in I9_ADDED_EXAMPLES | I10_ADDED_BENCHMARKS:
+    for allowed in (I9_ADDED_EXAMPLES | I10_ADDED_BENCHMARKS
+                    | POST_PHASE_I_EXAMPLES | POST_PHASE_I_BENCHMARKS):
         assert (REPO_ROOT / allowed).is_file(), allowed
 
 
@@ -1561,6 +1614,7 @@ def _classify_benchmarks(observed):
         relative for relative in observed
         if relative not in I0_BENCHMARK_DIGESTS
         and relative not in I10_ADDED_BENCHMARKS
+        and relative not in POST_PHASE_I_BENCHMARKS
     )
     approved = sorted(
         relative for relative in observed
@@ -1601,6 +1655,12 @@ def test_the_phase_h_benchmark_harness_is_untouched():
     assert approved == sorted(I10_ADDED_BENCHMARKS), approved
     for relative in I10_ADDED_BENCHMARKS:
         assert (REPO_ROOT / relative).is_file(), relative
+    # A later phase's harness is **named**, not merely tolerated: each one
+    # must exist, so an exemption cannot outlive its subject and cannot be
+    # widened into a blanket "any new benchmark is fine".
+    for relative in POST_PHASE_I_BENCHMARKS:
+        assert (REPO_ROOT / relative).is_file(), relative
+    assert not (I10_ADDED_BENCHMARKS & POST_PHASE_I_BENCHMARKS)
     # The separation stated the other way round as well: the new harness
     # is a **new** file, and the Phase-H one still exists beside it.
     assert (REPO_ROOT / "benchmarks"
@@ -1828,12 +1888,16 @@ def test_the_frozen_benchmark_guard_detects_every_kind_of_drift(tmp_path):
     observed = _benchmark_digests(stage(genuine))
     assert observed[target] != poisoned[target]
 
-    # Nothing above touched the repository.
+    # Nothing above touched the repository: the live directory is still
+    # exactly the frozen inherited set, plus I10's one approved harness,
+    # plus each later phase's named one. Stated as an exact map rather
+    # than a count, so an edit to any inherited file would show up here
+    # even if the file count happened to match.
     assert _benchmark_digests(REPO_ROOT / "benchmarks") == {
         **I0_BENCHMARK_DIGESTS,
-        "benchmarks/benchmark_native_dtype.py": _content_digest(
-            (REPO_ROOT / "benchmarks"
-             / "benchmark_native_dtype.py").read_bytes()),
+        **{relative: _content_digest((REPO_ROOT / relative).read_bytes())
+           for relative in sorted(I10_ADDED_BENCHMARKS
+                                  | POST_PHASE_I_BENCHMARKS)},
     }
 
 
@@ -1946,8 +2010,26 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
         "src/tensorforge/experimental/native_sgd.py",
         "src/tensorforge/experimental/native_adam.py",
     } | I9_DOCUMENTATION_ONLY
+    # The diff runs from I0 to HEAD, so it necessarily also sees files a
+    # *later* phase added. Those are named explicitly and excluded rather than
+    # the Phase-I claim being loosened: what stays asserted is exactly "Phase I
+    # touched only the files its scope names", and a new *Phase-I* file would
+    # still fail here. ``native_dataset.py`` is Phase J milestone J1's, and
+    # that it is no part of Phase I is asserted by tests/test_native_phase_j.py.
+    LATER_PHASE_FILES = {
+        "src/tensorforge/experimental/native_dataset.py",   # Phase J, J1
+        "src/tensorforge/experimental/native_sampler.py",   # Phase J, J2
+        # Phase J, J2 — the private permutation derivation. It owns no
+        # dtype at all, which is why it is a *later phase's* file here and
+        # nowhere in the dtype inventories above.
+        "src/tensorforge/experimental/_native_permutation.py",
+        # Phase J, J3 — the mini-batch loader. It owns no dtype either:
+        # the batches it delivers carry the *dataset's*, so it takes no
+        # ``dtype`` argument and appears in no dtype inventory above.
+        "src/tensorforge/experimental/native_data_loader.py",
+    }
     changed = [path for path in _changed_since(I0_COMMIT)
-               if path.startswith("src/")]
+               if path.startswith("src/") and path not in LATER_PHASE_FILES]
     unexpected = [path for path in changed if path not in allowed]
     assert unexpected == [], (
         f"the phase changed more of the Python package than its scope "
@@ -2749,7 +2831,7 @@ def test_i2_moved_no_public_capability_at_all():
         assert absent not in exports, absent
     # I2 itself gave no constructor a dtype argument; the six that have one
     # are milestone I7's, and they are exactly the six.
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
 
 
 @needs_native
@@ -2995,6 +3077,21 @@ def test_the_float32_paths_are_exactly_the_families_landed_through_i7():
 F32_TRANSCENDENTAL_ULP = 1
 F32_TRANSCENDENTAL_ULP_VS_NUMPY = 2
 
+# The float64 half of the same statement, and not a new concession: it is
+# the bound ``tests/test_native_abi_boundary.py`` has enforced since it was
+# written, for the reason recorded there. ``exp`` and ``log`` are plain
+# ``std::exp``/``std::log`` (cpp/src/elementwise.cpp), which no toolchain
+# promises to round correctly, and they are deliberately excluded from the
+# templated traversals so they stay on the retained odometer exclusively.
+# Comparing TensorForge's libm against NumPy's bit-for-bit therefore tests
+# the platform rather than TensorForge — measured here at 200,000 inputs,
+# the shipped Windows UCRT and Linux glibc 2.39 results differ on 1,034
+# ``exp`` elements and 149 ``log`` elements and **never by more than one
+# representable step**, with each within one step of correctly rounded.
+# One step is the tightest bound that evidence supports; zero is the
+# platform-dependent claim that failed in Linux CI.
+F64_TRANSCENDENTAL_ULP = 1
+
 
 def _f32_ulp_distance(got, want):
     """Representable float32 steps between two finite arrays, elementwise.
@@ -3010,23 +3107,156 @@ def _f32_ulp_distance(got, want):
     return np.abs(monotone(got) - monotone(want))
 
 
-def _assert_transcendental(got, want, limit, label):
+def _f64_ulp_distance(got, want):
+    """Representable float64 steps between two finite arrays, elementwise.
+
+    The same reflection as ``_f32_ulp_distance``, one width up, with the
+    same semantics as ``tests/test_native_abi_boundary.py``'s scalar
+    ``_ulp_distance``: neighbouring floats are 1 apart, a value is 0 from
+    itself, and the count is exact across zero and across the
+    denormal/normal boundary.
+
+    The arithmetic is done in Python ``int`` rather than ``int64`` because
+    the *difference* between two monotone float64 keys can reach
+    ``2**64 - 2`` — representable as a Python integer and not as an
+    ``int64`` — so a vectorized subtraction would silently wrap on exactly
+    the pair a bound is most interested in. The arrays this runs on are
+    small, and exactness is the point.
+    """
+    def keys(values):
+        raw = np.ascontiguousarray(values, dtype=np.float64).view(np.int64)
+        return [(-(2 ** 63) - bits) if bits < 0 else bits
+                for bits in raw.reshape(-1).tolist()]
+    return [abs(a - b) for a, b in zip(keys(got), keys(want))]
+
+
+_ULP_DISTANCE = {"float32": _f32_ulp_distance, "float64": _f64_ulp_distance}
+
+
+def _assert_transcendental(got, want, limit, label, dtype="float32"):
     """NaN by position, infinities and zeros by exact bits, everything else
     within ``limit`` steps. The tolerance deliberately never covers a zero:
     a distance cannot see a zero's sign, and that is precisely the kind of
-    thing this suite exists to catch."""
-    assert got.dtype == np.float32 and want.dtype == np.float32, label
+    thing this suite exists to catch.
+
+    ``dtype`` selects the width the steps are counted in, and both
+    operands are required to be exactly that width — so a float32 result
+    is never compared against a float64 reference, at either setting.
+    """
+    floating = _DTYPE_BITS[dtype][2]
+    assert got.dtype == np.dtype(floating), (label, got.dtype)
+    assert want.dtype == np.dtype(floating), (label, want.dtype)
     assert np.array_equal(np.isnan(got), np.isnan(want)), f"{label}: NaN places"
     special = np.isnan(got) | np.isinf(got) | np.isinf(want) | (got == 0) \
         | (want == 0)
-    assert _same_bits(got[special], want[special], "float32"), (
+    assert _same_bits(got[special], want[special], dtype), (
         f"{label}: a special value is not exactly reproduced")
     ordinary = ~special
     if not ordinary.any():
         return 0
-    worst = int(_f32_ulp_distance(got[ordinary], want[ordinary]).max())
+    worst = int(max(_ULP_DISTANCE[dtype](got[ordinary], want[ordinary])))
     assert worst <= limit, f"{label}: {worst} ULP apart, over the {limit} bound"
     return worst
+
+
+# -- the ULP helpers' own contract, at both widths --------------------------
+#
+# These need no backend: they pin the measuring instrument *before* anything
+# is asserted with it, so "within one ULP" cannot quietly become "within
+# whatever the helper happens to accept". A bound that is never shown able
+# to fail is an unbounded tolerance wearing a number.
+
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+@pytest.mark.parametrize("case", ("equal", "neighbour_up", "neighbour_down",
+                                  "across_zero", "denormal_boundary",
+                                  "signed_zeros_are_one_number"))
+def test_the_ulp_distance_helpers_count_representable_steps(dtype, case):
+    """Symmetric, exact at the denormal boundary, correct across zero, and
+    blind to a zero's sign — which is why ``_assert_transcendental`` checks
+    zeros by raw bits instead of by distance."""
+    floating = _DTYPE_BITS[dtype][2]
+    tiny = floating(np.finfo(floating).smallest_subnormal)
+    smallest_normal = floating(np.finfo(floating).smallest_normal)
+    pairs = {
+        "equal": (floating(1.5), floating(1.5), 0),
+        "neighbour_up": (floating(1.0),
+                         np.nextafter(floating(1.0), floating(np.inf)), 1),
+        "neighbour_down": (floating(-1.0),
+                           np.nextafter(floating(-1.0), floating(-np.inf)), 1),
+        "across_zero": (tiny, -tiny, 2),
+        "denormal_boundary": (
+            np.nextafter(smallest_normal, floating(0)), smallest_normal, 1),
+        "signed_zeros_are_one_number": (floating(0.0), floating(-0.0), 0),
+    }
+    a, b, expected = pairs[case]
+    distance = _ULP_DISTANCE[dtype]
+    assert int(max(distance(np.array([a], dtype=floating),
+                            np.array([b], dtype=floating)))) == expected
+    assert int(max(distance(np.array([b], dtype=floating),
+                            np.array([a], dtype=floating)))) == expected
+
+
+@pytest.mark.parametrize("dtype", BOTH_DTYPES)
+def test_the_transcendental_assertion_enforces_the_stated_boundary(dtype):
+    """The negative control the one-ULP repair rests on. Exact equality
+    passes, one step passes at a one-step budget, **two steps fail**, and no
+    special value is ever absorbed by the tolerance."""
+    floating = _DTYPE_BITS[dtype][2]
+
+    def array(*values):
+        return np.array(values, dtype=floating)
+
+    one = array(1.0)
+    up = np.nextafter(floating(1.0), floating(np.inf))
+    two_up = np.nextafter(up, floating(np.inf))
+
+    # Exact equality passes, and reports a zero-wide budget.
+    assert _assert_transcendental(one, one, 1, "equal", dtype=dtype) == 0
+    # One representable step passes at limit 1, and reports it honestly.
+    assert _assert_transcendental(one, array(up), 1, "one step",
+                                  dtype=dtype) == 1
+    # Two steps do not. This is the assertion that keeps the bound a bound.
+    with pytest.raises(AssertionError, match="2 ULP apart"):
+        _assert_transcendental(one, array(two_up), 1, "two steps", dtype=dtype)
+    # ...and one step does not pass at a zero-step budget either, so the
+    # limit argument is genuinely load-bearing.
+    with pytest.raises(AssertionError, match="1 ULP apart"):
+        _assert_transcendental(one, array(up), 0, "exactness", dtype=dtype)
+
+    # Specials are never covered by the tolerance, however small it is.
+    with pytest.raises(AssertionError, match="NaN places"):
+        _assert_transcendental(array(np.nan), one, 1, "nan place", dtype=dtype)
+    with pytest.raises(AssertionError, match="NaN places"):
+        _assert_transcendental(one, array(np.nan), 1, "nan place", dtype=dtype)
+    with pytest.raises(AssertionError, match="special value"):
+        _assert_transcendental(array(0.0), array(-0.0), 1, "signed zero",
+                               dtype=dtype)
+    with pytest.raises(AssertionError, match="special value"):
+        _assert_transcendental(array(np.inf), array(-np.inf), 1, "inf sign",
+                               dtype=dtype)
+    with pytest.raises(AssertionError, match="special value"):
+        _assert_transcendental(array(np.inf), array(np.finfo(floating).max),
+                               1, "inf vs finite", dtype=dtype)
+    # A NaN in the *same* place on both sides is fine, and is not measured.
+    assert _assert_transcendental(array(np.nan, 1.0), array(np.nan, 1.0), 1,
+                                  "matching nan", dtype=dtype) == 0
+
+
+def test_the_transcendental_assertion_refuses_a_mixed_width_comparison():
+    """A float32 result is never compared against a float64 reference, at
+    either setting — the dtype claim is exact even where the value claim is
+    a bound."""
+    thirty_two = np.array([1.0], dtype=np.float32)
+    sixty_four = np.array([1.0], dtype=np.float64)
+    with pytest.raises(AssertionError):
+        _assert_transcendental(thirty_two, sixty_four, 1, "mixed",
+                               dtype="float32")
+    with pytest.raises(AssertionError):
+        _assert_transcendental(sixty_four, thirty_two, 1, "mixed",
+                               dtype="float64")
+    with pytest.raises(AssertionError):
+        _assert_transcendental(thirty_two, thirty_two, 1, "wrong width",
+                               dtype="float64")
 
 
 def _core(values, dtype):
@@ -3217,9 +3447,26 @@ def test_unary_operations_match_the_oracle_at_both_dtypes(dtype):
 
 
 @needs_native
-def test_float64_transcendentals_did_not_move():
-    """The float64 half of exp/log is unchanged by the generalization: it is
-    still bit-identical to NumPy's float64, which is what it was before I3.
+def test_float64_transcendentals_stay_within_the_measured_ulp_bound():
+    """The float64 half of exp/log is unchanged by the generalization — same
+    kernel structure, same dtype in and out, same retained-odometer path —
+    and it is held to the **measured** contract rather than to bit equality.
+
+    ``exp`` and ``log`` are plain ``std::exp`` and ``std::log``
+    (cpp/src/elementwise.cpp), and they remain the production operations at
+    both widths; H8 deliberately kept them off the templated traversals for
+    exactly this reason. Neither has a correctly-rounded cross-toolchain
+    guarantee, so **comparing TensorForge's libm against NumPy's
+    bit-for-bit tests the platform, not TensorForge** — it is the same
+    invalid oracle the ABI-boundary module retired, and it is the one that
+    failed in Linux CI while passing on the machine it was written on.
+
+    The established contract, unchanged and not widened here, is: ordinary
+    finite results within **one representable float64 step**, and specials
+    exact — NaN in the same places, infinities matching by sign, and both
+    signed zeros matching by raw bit pattern. The dtype claim stays exact
+    at every point, because the dtype is a fact the implementation does
+    specify.
     """
     values = _sample("float64", 64, seed=9)
     positive = np.abs(values) + 0.5
@@ -3229,7 +3476,16 @@ def test_float64_transcendentals_did_not_move():
         try:
             out = core.exp() if name == "exp" else core.log()
             try:
-                assert _same_bits(out.to_numpy(), oracle(source), "float64")
+                got = out.to_numpy()
+                # Exact, because these are specified: the operation stays at
+                # float64 in and float64 out, and narrows nothing.
+                assert out.dtype == "float64"
+                assert got.dtype == np.float64
+                assert got.shape == source.shape
+                _assert_transcendental(got, oracle(source),
+                                       F64_TRANSCENDENTAL_ULP,
+                                       f"float64 {name} vs numpy",
+                                       dtype="float64")
             finally:
                 out.close()
         finally:
@@ -3627,7 +3883,7 @@ def test_public_tensor_construction_opened_at_i9_and_not_before():
             built.close()
     # ...and the dtype-argument surface is still exactly the closed I7 set:
     # opening the registry gave no *new* class a dtype argument.
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
 
 
 def test_the_float32_elementwise_path_holds_no_hidden_float64():
@@ -5163,7 +5419,7 @@ def test_the_families_i8_owns_now_execute_at_float32():
         NativeAdam, NativeParameter, NativeSGD, native_checkpoint,
     )
 
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
     assert native_checkpoint._FORMAT_VERSION == I8_CHECKPOINT_VERSION
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
@@ -6308,7 +6564,7 @@ def test_i5_moved_no_public_capability_at_all():
     from tensorforge.experimental import NativeConv2d, NativeMaxPool2d
     assert "dtype" in inspect.signature(NativeConv2d).parameters
     assert "dtype" not in inspect.signature(NativeMaxPool2d).parameters
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
 
 
 # ===========================================================================
@@ -7781,7 +8037,7 @@ def test_i6_moved_no_public_capability_at_all():
                 if name.endswith(("_f32", "_f64", "_float32", "_float64"))]
     # I6 itself gave no constructor a dtype argument; the six that have one
     # are milestone I7's, and they are exactly the six.
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
 
 
 # ===========================================================================
@@ -7888,7 +8144,7 @@ def test_the_dtype_argument_surface_is_exactly_the_six_named_classes():
 
     import tensorforge.experimental as experimental
 
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
     for name in ("NativeReLU", "NativeFlatten", "NativeMaxPool2d",
                  "NativeSequential", "NativeDropout", "NativeMSELoss",
                  "NativeCrossEntropyLoss", "NativeGenerator", "NativeSGD",
@@ -9796,7 +10052,7 @@ def test_i7_moved_no_public_capability_at_all():
         assert absent not in exports, absent
     assert not [name for name in exports
                 if name.endswith(("_f32", "_f64", "_float32", "_float64"))]
-    assert _constructors_with_a_dtype_argument() == I7_DTYPE_CONSTRUCTORS
+    assert _constructors_with_a_dtype_argument() == DTYPE_CONSTRUCTORS
 
 
 @needs_native
