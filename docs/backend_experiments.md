@@ -81,8 +81,8 @@ repaired here rather than rewritten away. The latest completed phase is
 Phase I.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
-latest phase, and it is newly approved: milestones J0 through J7 have
-landed and J8 through J9 have not started.** It was approved *after* Phase
+latest phase, and it is newly approved: milestones J0 through J8 have
+landed and J9 has not started.** It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -108,16 +108,37 @@ file under `src/` or `cpp/` was touched. **J7 added no production code
 either**: its whole diff is `tests/test_native_data_hardening.py`, the
 narrow inventory edits that move it from absent to present in the four
 modules asserting its absence, and documentation; no file under `src/`,
-`cpp/`, or `.github/` was touched and no dependency changed. Its
+`cpp/`, or `.github/` was touched and no dependency changed. **J8 added
+no production code either, and no optimization**: its whole diff is
+`benchmarks/benchmark_native_data_pipeline.py`,
+`tests/test_native_data_benchmark.py`, the narrow inventory edits that
+move both from absent to present in the modules asserting their absence,
+and documentation; the benchmark inventory moved 8 → **9** and no file
+under `src/`, `cpp/`, or `.github/` was touched. Its
 architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md). Nothing
-on this page changed for any of the eight milestones: the library still
+on this page changed for any of the nine milestones: the library still
 exports **54** `tf_*` symbols, the CTest inventory is still **24**, and
 every capability registry, checkpoint version, and optimizer-state version
-is exactly what Phase I left. **J1 through J7 therefore required no
+is exactly what Phase I left. **J1 through J8 therefore required no
 native rebuild, no CTest run, and no sanitizer run**, and none is claimed
 for any of them — **J9 owns the complete final native and sanitizer
 matrix.**
+
+**J8's benchmark measures; it does not gate.** Correctness runs before
+timing in every case and is exact — index tuples, plans, and permutations
+by equality, feature values in raw IEEE-754 bits within one dtype,
+targets by exact `int64` equality — with the length-8 configurations
+checked against the design's committed reference vectors as known
+answers. float32 and float64 are characterized **separately and are never
+divided by one another**; a case with no honest equivalent is labelled
+`native_only` and publishes **no ratio at all**; cold and warm
+permutation construction are separate cases and are never averaged;
+medians are reported with an interquartile range after warm-up; setup,
+per-repetition state reset, and every `close()` are outside the timer;
+and native live storage returns to **exactly** its baseline after a full
+run. **No speed is asserted, no threshold exists, no CI job runs it, and
+no result file of any kind is written.**
 
 **J7 uses only the fault-injection mechanism that already existed.** The
 deterministic thread-local allocation-failure arm

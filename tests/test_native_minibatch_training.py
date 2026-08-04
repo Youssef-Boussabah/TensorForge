@@ -198,7 +198,7 @@ EXPECTED_NEXT_BATCH_AT_SPLIT = (17, 12, 20, 11, 15, 13)
 EXPECTED_FINAL_POSITION = (2, 2)
 
 EXPECTED_EXAMPLE_COUNT = 16
-EXPECTED_BENCHMARK_COUNT = 8
+EXPECTED_BENCHMARK_COUNT = 9        # 8 when J6 landed; J8 added exactly one
 EXPECTED_EXPERIMENTAL_EXPORTS = 25
 EXPECTED_ABI_EXPORTS = 54
 EXPECTED_CTESTS = 24
@@ -1578,9 +1578,13 @@ def test_the_example_inventory_grew_by_exactly_one():
                         for path in (REPO_ROOT / "benchmarks").glob("*.py")
                         if path.name != "__init__.py")
     assert len(benchmarks) == EXPECTED_BENCHMARK_COUNT, benchmarks
-    # J8 owns the data-pipeline benchmark, and it has not started.
-    assert "benchmark_native_data_pipeline.py" not in benchmarks
+    # J8 owns the data-pipeline benchmark, and it is named here rather than
+    # merely counted so J6's own delta to the benchmark inventory stays
+    # exactly zero.
+    assert "benchmark_native_data_pipeline.py" in benchmarks
     for name in benchmarks:
+        if name == "benchmark_native_data_pipeline.py":               # J8
+            continue
         assert "data_pipeline" not in name and "minibatch" not in name, name
 
 
@@ -1618,21 +1622,23 @@ def test_no_cpp_or_build_surface_mentions_the_new_example():
 
 
 def test_the_later_phase_j_milestones_are_still_absent():
-    """J8 and J9 have not started, and J6 anticipates neither.
+    """J9 has not started, and J6 anticipates it no more than it
+    anticipated J7 or J8.
 
-    J7's hardening matrix has since landed as its own module and is
-    asserted **present** here — the same "only the milestone that ships a
-    name may move it" split every other inventory in this repository
-    uses. What must stay true of *this* module is that the adversarial
-    work lives there and not here: J6 is the public-API example, and it
-    injects nothing.
+    J7's hardening matrix and J8's benchmark have since landed as their
+    own files and are asserted **present** here — the same "only the
+    milestone that ships a name may move it" split every other inventory
+    in this repository uses. What must stay true of *this* module is that
+    the adversarial work and the measurement both live there and not
+    here: J6 is the public-API example, it injects nothing, and it times
+    nothing.
     """
     assert (REPO_ROOT / "tests" / "test_native_data_hardening.py").exists()
-    for later in ("test_native_data_benchmark.py",
-                  "test_native_phase_j_closure.py"):
+    assert (REPO_ROOT / "tests" / "test_native_data_benchmark.py").exists()
+    assert (REPO_ROOT / "benchmarks"
+            / "benchmark_native_data_pipeline.py").exists()
+    for later in ("test_native_phase_j_closure.py",):
         assert not (REPO_ROOT / "tests" / later).exists(), later
-    assert not (REPO_ROOT / "benchmarks"
-                / "benchmark_native_data_pipeline.py").exists()
     # ...and this module contains none of J7's adversarial vocabulary: it
     # injects nothing, patches no private seam, and adds no failure hook.
     names = code_identifiers("tests/test_native_minibatch_training.py")

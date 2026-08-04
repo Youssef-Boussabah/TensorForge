@@ -2411,12 +2411,16 @@ def test_this_milestone_touched_no_cpp_cmake_or_abi_surface():
     cmake = (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8")
     assert cmake.count("add_test") == 24
     # 15 when J2 landed; 16 since **J6** added the one training example, and
-    # no other. The benchmarks are still J8's to move.
+    # no other. 8 benchmarks when J2 landed; 9 since **J8** added exactly
+    # one, named rather than merely counted.
     examples = sorted(path.name
                       for path in (REPO_ROOT / "examples").glob("*.py"))
     assert len(examples) == 16, examples
     assert "native_minibatch_training.py" in examples
-    assert len(list((REPO_ROOT / "benchmarks").glob("*.py"))) == 8
+    benchmarks = sorted(path.name
+                        for path in (REPO_ROOT / "benchmarks").glob("*.py"))
+    assert len(benchmarks) == 9, benchmarks
+    assert "benchmark_native_data_pipeline.py" in benchmarks
     for module in (SAMPLER_SOURCE, PERMUTATION_SOURCE):
         names = code_identifiers(module)
         assert not any(name.startswith("tf_") for name in names), module

@@ -5537,19 +5537,24 @@ def test_j7_added_no_public_name_module_example_or_benchmark():
     for absent in ("native_data_hardening.py", "native_data_benchmark.py",
                    "native_fault_injection.py", "native_data_workers.py"):
         assert not (PACKAGE / absent).exists(), absent
-    # J8's benchmark and J9's closure module have not started.
-    assert not (REPO_ROOT / "benchmarks"
-                / "benchmark_native_data_pipeline.py").exists()
-    assert not (REPO_ROOT / "tests"
-                / "test_native_data_benchmark.py").exists()
+    # The benchmark and its contract module are **J8's**, not J7's: they
+    # are named here rather than merely counted, so this check keeps
+    # stating which milestone contributed which artifact. J9's closure
+    # module has not started.
+    assert (REPO_ROOT / "benchmarks"
+            / "benchmark_native_data_pipeline.py").exists()
+    assert (REPO_ROOT / "tests" / "test_native_data_benchmark.py").exists()
     assert not (REPO_ROOT / "tests"
                 / "test_native_phase_j_closure.py").exists()
     examples = [path.name for path in (REPO_ROOT / "examples").glob("*.py")
                 if path.name != "__init__.py"]
     benchmarks = [path.name for path in (REPO_ROOT / "benchmarks").glob("*.py")
                   if path.name != "__init__.py"]
+    # 16 examples since J6; 8 benchmarks when J7 landed, and 9 since J8
+    # added exactly one. J7's own delta to both is still zero.
     assert len(examples) == 16, sorted(examples)
-    assert len(benchmarks) == 8, sorted(benchmarks)
+    assert len(benchmarks) == 9, sorted(benchmarks)
+    assert "benchmark_native_data_pipeline.py" in benchmarks
 
 
 def test_j7_moved_no_capability_schema_or_version():

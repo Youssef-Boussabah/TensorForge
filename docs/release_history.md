@@ -2326,10 +2326,10 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase J — deterministic native data pipeline and mini-batching (J0–J7 complete, in progress)
+### Phase J — deterministic native data pipeline and mini-batching (J0–J8 complete, in progress)
 
 **Phase J is the latest phase, it is newly approved, and milestones J0
-through J7 have landed.** J8 and J9 have not started, and **J8 is
+through J8 have landed.** J9 has not started, and **J9 is
 next**. **No version is claimed** — the native line stays experimental and
 is not production-ready, and this entry records milestones rather than a
 release.
@@ -2801,19 +2801,82 @@ neither of which can raise. J7 asserts that shape from the AST with its
 own negative control instead of manufacturing a failure the runtime
 cannot produce.
 
-**What still does not exist after J7**: automatic loader discovery in
-either direction, and the benchmark. No production pipeline module imports
-the checkpoint and no checkpoint module names a pipeline object — both
-asserted by source inspection, and by driving a real save and load with
-the loader's methods patched to record any call, which none fired. Those
-are J8 onward.
+**J8 shipped the data-pipeline characterization benchmark**,
+`benchmarks/benchmark_native_data_pipeline.py`, and — like J5, J6, and
+J7 — **added no production code, no public name, and no optimization**.
+Its whole diff is that harness, `tests/test_native_data_benchmark.py`,
+the narrow inventory edits landing it required, and documentation.
+
+It answers **four separate questions** rather than one blurred
+end-to-end number, because a single composed figure cannot say which
+layer dominates and "which layer dominates" is the only question §22.3
+would ever reopen the export count for: what immutable host dataset
+indexing costs, what deterministic batch planning costs, what
+deterministic shuffled-permutation construction costs, and what
+host→native batch materialization costs. A fifth family measures one
+whole `next(iterator)` delivery, labelled as the composition it is and
+never as a substitute for the four. Twenty cases run at float64 and
+float32 **separately**, and the two widths are **never divided by one
+another or ranked** — the only cross-dtype claim made anywhere is that
+equivalent sampler configurations plan the identical index sequence,
+which carries no dtype.
+
+Every gate is **exact and runs before the timing helper is reached**:
+index tuples, plans, and permutations by equality; feature values in raw
+IEEE-754 bits within one dtype; targets by exact `int64` equality; and
+dtype, shape, device, ownership, contiguity, freshness, and the
+read-only flag by identity. No `allclose`, no `pytest.approx`, and no
+tolerance appears in the harness at all. The length-8 configurations are
+**known-answer** checks against the design's own §8.9 committed vectors.
+A failed gate publishes no timing row, exits nonzero with clean stdout,
+and still releases everything the case allocated — proved by injecting a
+wrong index set, a wrong permutation, wrong feature bits, wrong targets,
+a wrong dtype, and a borrowed rather than owning batch, each with the
+timing helper spied on to prove it was never entered.
+
+Two reference labels exist and no more. The five host-only indexing
+cases publish a ratio against an independently written NumPy expression
+over the identical snapshot, indices, dtype, and output shape, with what
+the ratio means spelled out per case. **Everything else is
+`native_only` and publishes no ratio at all**: NumPy has no batch
+planner, its shuffle is a different algorithm under a different
+generator with a different contract, a materialization that allocates
+and transfers is not the same operation as a bare host gather, and a
+transactional handoff has no reference implementation.
+
+Cold and warm permutation construction are **separate cases, never
+averaged**: a cold case builds a fresh sampler per repetition so its
+cache is empty by construction, and the warm case's gate proves the
+timed call is a genuine hit because the sampler returns the *same tuple
+object* — both observable through the public surface alone. **No
+cache-control API exists and none was added.** Setup, per-repetition
+state reset, and every `close()` are outside the timer; every measured
+sample is retained; no outlier is removed and no timer overhead is
+subtracted; medians are published with an interquartile range beside
+p25, p75, the minimum, the maximum, and every raw sample.
+
+**No speed is asserted anywhere.** There is no duration, throughput,
+ratio, or memory threshold; no CI job runs or gates on the harness; and
+**no result file of any kind is written** — `--json` goes to stdout and
+the CLI has no `--save`, `--output`, `--baseline`, or `--compare` option
+to ask for one. The local measurements are one machine, one build, and
+one moment: they are recorded as observations in the design's §23.2 and
+**nothing in them meets §22.3's bar for reopening the export count**.
+
+**What still does not exist after J8**: automatic loader discovery in
+either direction, and the phase closure. No production pipeline module
+imports the checkpoint and no checkpoint module names a pipeline object —
+both asserted by source inspection, and by driving a real save and load
+with the loader's methods patched to record any call, which none fired.
+Those are J9.
 
 **No capability moved, and none will.** `SUPPORTED_DTYPES` is
 `("float64", "float32")`, `SUPPORTED_DEVICES` is `("cpu",)`, `UNSUPPORTED`
 is `("cuda", "amp")`, and `RAW_KERNEL_DTYPES` is `("float64",)`. The
 library exports **54** production `tf_*` symbols, the CTest inventory is
 **24**, the example inventory is **16** (15 through J5, plus J6's one),
-the benchmark inventory is **8** (J7 added neither), the native checkpoint is
+the benchmark inventory is **9** (8 through J7, plus J8's one), the
+native checkpoint is
 `tensorforge.native_checkpoint` version **3** with `(1, 2, 3)` accepted,
 and the in-memory optimizer state is version **1**. Phase J plans **no new
 C ABI export** at any milestone.

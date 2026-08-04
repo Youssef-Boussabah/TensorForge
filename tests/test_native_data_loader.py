@@ -331,10 +331,13 @@ def test_no_c_abi_or_build_surface_moved():
     benchmarks = [p.name for p in (REPO_ROOT / "benchmarks").glob("*.py")
                   if p.name != "__init__.py"]
     # 15 when J3 landed; 16 since **J6** added the one training example, and
-    # no other. The benchmarks are still J8's to move.
+    # no other. 8 benchmarks when J3 landed; 9 since **J8** added exactly
+    # one. Both artifacts are named rather than merely counted, so this
+    # check keeps stating which milestone contributed each.
     assert len(examples) == 16, sorted(examples)
     assert "native_minibatch_training.py" in examples
-    assert len(benchmarks) == 8, sorted(benchmarks)
+    assert len(benchmarks) == 9, sorted(benchmarks)
+    assert "benchmark_native_data_pipeline.py" in benchmarks
 
 
 # ===========================================================================
@@ -2254,16 +2257,17 @@ def test_no_capability_registry_or_version_moved():
 def test_no_example_or_benchmark_landed_for_this_milestone():
     """J3 shipped the loader itself and no artifact around it.
 
-    ``examples/native_minibatch_training.py`` arrived at **J6** and is
-    named here as the single permitted exception, so this check still fails
-    on any *other* data-pipeline example or benchmark — J8's benchmark
-    included — rather than being relaxed into a pattern that admits
-    anything."""
-    permitted = {"native_minibatch_training.py"}      # J6
+    ``examples/native_minibatch_training.py`` arrived at **J6** and
+    ``benchmarks/benchmark_native_data_pipeline.py`` at **J8**. Each is
+    named here as a permitted exception *in its own directory*, so this
+    check still fails on any other data-pipeline example or benchmark
+    rather than being relaxed into a pattern that admits anything."""
+    permitted = {"native_minibatch_training.py": "examples",          # J6
+                 "benchmark_native_data_pipeline.py": "benchmarks"}   # J8
     for directory in ("examples", "benchmarks"):
         for path in (REPO_ROOT / directory).glob("*.py"):
             if path.name in permitted:
-                assert directory == "examples", path.name
+                assert directory == permitted[path.name], path.name
                 continue
             assert "data_pipeline" not in path.name, path.name
             assert "minibatch" not in path.name, path.name

@@ -19,8 +19,8 @@ derivation (§3.2, §8), and continued at **J3**, which added the last of
 §3.1's three names, `NativeDataLoader` (§3.5, §3.6, §9, §10, §15, §17.3),
 over the permanently private `_NativeBatchIterator` and `_deliver_batch`.
 
-**Phase-J status: J0, J1, J2, J3, J4, J5, J6, and J7 complete; J8 through J9
-not started.** What exists today is the dataset, the sampler, the loader, the
+**Phase-J status: J0, J1, J2, J3, J4, J5, J6, J7, and J8 complete; J9 not
+started.** What exists today is the dataset, the sampler, the loader, the
 loader's own in-memory state, the caller-managed checkpoint-metadata
 workflow, and a worked training program over all of it: a finite
 host-backed dataset, a deterministic permutation and batch **planner** with
@@ -64,15 +64,27 @@ registry — and every injection and every parser carries its own
 non-vacuity control. **J7 found no production defect and changed no
 production code**: its whole diff is that test module, the narrow
 inventory edits landing it requires, and documentation. The example
-inventory stays **16**, benchmarks stay **8**, and
+inventory stays **16**, the benchmark inventory stayed at **8** through
+J7, and `tensorforge.experimental.__all__` stays at **25**.
+
+New at **J8**: `benchmarks/benchmark_native_data_pipeline.py`, the
+**data-pipeline benchmark** (§23's J8 row, and the outcome recorded in
+§23.2) — the local characterization of what each pipeline layer costs,
+with float32 and float64 measured **separately and never as a ratio of
+one to the other**, correctness gated **before** any timing, `native_only`
+cases publishing **no ratio**, and **no result file** of any kind. **J8
+changed no production code, added no public name, and shipped no
+optimization**: its whole diff is that harness,
+`tests/test_native_data_benchmark.py`, narrow inventory edits, and
+documentation. Benchmarks moved 8 → **9**; examples stay **16** and
 `tensorforge.experimental.__all__` stays at **25**.
 
-**No automatic loader discovery and no
-benchmark exists yet** — the per-dtype characterization is J8's, and
-**J8 is the next implementation milestone**. §14's statements about a
-*training* program describe shipped, executable evidence, and §14.1's
-failed-delivery leg is now J5's archive proof **and** J7's injection
-matrix rather than anything the public example does.
+**No automatic loader discovery exists yet**, and the phase closure has
+not started: **J9 is the next implementation milestone**. §14's
+statements about a *training* program describe shipped, executable
+evidence, and §14.1's failed-delivery leg is now J5's archive proof
+**and** J7's injection matrix rather than anything the public example
+does.
 
 Phase J is a **newly approved** direction. It was not part of the roadmap
 while Phases A–I were being built: the repository deliberately closed
@@ -3554,7 +3566,7 @@ neither of which can raise. J7 asserts that shape from the AST, with a
 negative control, instead of manufacturing a failure the runtime cannot
 produce.
 
-### J8 — Performance and transfer characterization — **not started**
+### J8 — Performance and transfer characterization — **complete**
 
 - **Entry:** J7 merged.
 - **Scope:** `benchmarks/benchmark_native_data_pipeline.py` — dataset
@@ -3572,7 +3584,7 @@ produce.
   separate, separately reviewed decision — and §22.3 governs the only one
   that could touch the ABI.
 - **Exit gate:** benchmarks 8 → **9**; no timing assertion anywhere in the
-  repository.
+  repository. **Met** — see §23.2.
 
 ### J9 — Integration and closure — **not started**
 
@@ -3605,6 +3617,107 @@ convenience**, and is recorded here because it constrains J1 and J2 rather
 than J0: the native runtime cannot represent a zero-element tensor, so
 empty datasets (§4.6) and zero-batch epochs (§7.5) are rejected at
 construction instead of being carried as degenerate states.
+
+### 23.2 J8 outcome — what was measured, and what was deliberately not
+
+**J8 is characterization only. It shipped no optimization, no production
+change, no public name, and no export.** Its whole diff is
+`benchmarks/benchmark_native_data_pipeline.py`,
+`tests/test_native_data_benchmark.py`, the narrow inventory edits landing
+them requires, and documentation. Nothing below may be turned into a
+threshold, a promise, or a justification for a runtime change: §22.3
+governs the only measurement-driven decision that could ever touch the
+ABI, and it is a **separately approved** milestone of its own, not
+something J8 may take.
+
+**Identity.** `BENCHMARK_NAME = "tensorforge.native_data_pipeline"`,
+`BENCHMARK_VERSION = "1.0"`, `SCHEMA_VERSION = 1`. These name the
+measurement payload; they are not package exports and no benchmark
+registry exists inside `tensorforge`.
+
+**The exact case inventory — 20 cases in five workload families, each
+run separately at float64 and float32.** The first four families are the
+four questions J8 undertook to answer, kept apart on purpose; the fifth
+is a composition and never a substitute for them.
+
+| Workload | Cases |
+|---|---|
+| `dataset_indexing` | `host_feature_gather_sequential`, `host_feature_gather_shuffled`, `host_feature_gather_duplicates`, `dataset_target_batch_sequential`, `dataset_target_batch_shuffled` |
+| `batch_planning` | `plan_sequential_exact`, `plan_sequential_short_final`, `plan_shuffled_reference`, `plan_shuffled_large`, `next_batch_indices_fresh`, `next_batch_indices_mid_epoch` |
+| `permutation_construction` | `permutation_cold_reference`, `permutation_cold_later_epoch`, `permutation_cold_large`, `permutation_cache_hit` |
+| `host_to_native_materialization` | `feature_batch_small`, `feature_batch_large`, `feature_batch_shuffled`, `feature_batch_image` |
+| `loader_delivery` | `loader_next_batch` |
+
+**Reference decisions, and why.** Exactly two reference labels exist,
+`numpy` and `native_only`, and every case declares one:
+
+- The five `dataset_indexing` cases are **host-only** — they allocate no
+  native storage at all — so an independently written NumPy expression
+  over the identical snapshot, indices, dtype, and output shape *is* an
+  honest same-operation reference, and each publishes a ratio together
+  with an explicit `ratio_meaning`. For the feature-gather cases the
+  reference is a second spelling of one NumPy gather, so the ratio is a
+  NumPy-internal observation and the payload says so rather than letting
+  it read as a TensorForge-versus-NumPy comparison. For the two
+  `target_batch` cases the reference is the same gather, copy, and
+  read-only publication written without the dataset's index validation,
+  so the ratio is exactly that validation and dispatch.
+- **Every other case is `native_only` and publishes no ratio at all.**
+  Planning has no NumPy counterpart, and inventing one would time code
+  the project does not ship. Permutation construction is a different
+  algorithm under a different generator with a different contract, so a
+  ratio would divide two operations that cannot produce the same answer.
+  Materialization allocates and transfers where a NumPy gather does not,
+  and §9's dividing rule refuses that comparison explicitly — which is
+  precisely why the gather alone is measured honestly in
+  `dataset_indexing` instead. Delivery is a transaction with no
+  reference implementation.
+
+**Correctness gates, all exact and all before timing.** Index tuples,
+plans, and permutations by equality; feature values by raw IEEE-754 bits
+**within one dtype**; targets by exact `int64` equality; dtype, shape,
+device, ownership, contiguity, freshness, and the read-only flag by
+identity. No `allclose`, no `pytest.approx`, and no tolerance appears
+anywhere in the harness — every operation this pipeline performs is a
+copy, a gather, or integer planning. The permutation and plan gates for
+the length-8 configurations are **known-answer** checks against §8.9's
+committed vectors; the larger configurations additionally prove the order
+is a permutation, is a pure function of `(seed, epoch, length)`, and is
+not the identity. A failed gate publishes no timing row, exits nonzero,
+leaves stdout clean, and still releases everything the case allocated.
+
+**Timing methodology.** `time.perf_counter_ns()`; one measured sample is
+exactly one call; datasets, samplers, loaders, index sets, iterators,
+restored positions, and cache warming are all built **outside** the
+measured region, per repetition where the call advances state; every
+native tensor is closed explicitly outside it. No sample is discarded, no
+outlier is removed, and no timer overhead is subtracted. The headline is
+the **median**; the spread is the **interquartile range**, published
+beside p25, p75, the minimum, the maximum, and every raw sample.
+Cold and warm permutation construction are **separate cases** and are
+never averaged: a cold case builds a fresh sampler per repetition so its
+cache is empty by construction, and the warm case's gate proves the timed
+call is a genuine hit because the sampler returns the *same tuple
+object*. No cache-control API exists and J8 added none.
+
+**What the local runs showed, as observations only.** On the development
+machine, planning and index inspection sit in the sub-microsecond to
+low-microsecond range; permutation construction is linear in the sample
+count and is the pipeline's one genuinely `O(samples)` per-epoch cost,
+while a cache hit is a few hundred nanoseconds; a `feature_batch` is
+dominated by the fixed per-call Python-and-ctypes cost at small batch
+sizes, which is the architectural floor Phase H already recorded rather
+than a defect; and one whole `next(iterator)` delivery is several times a
+bare `feature_batch`, which is what the composition case exists to show.
+**These are one machine, one build, and one moment.** They are not
+cross-machine comparable, they are not a contract, no threshold is
+derived from them, no CI job asserts one, and **no result file is
+written**. The two dtypes are never divided by one another and neither is
+ranked.
+
+**What J8 did not find.** Nothing in these measurements meets §22.3's bar
+for reopening the export count, and nothing in them is offered as
+justification for a runtime change. The answer there remains no.
 
 ---
 

@@ -474,7 +474,7 @@ in the stable Python framework — that does not make them native.
 - **automatic loader discovery, in either direction.** The newly approved
   **Phase J**
   ([native_data_pipeline_design.md](native_data_pipeline_design.md),
-  milestones **J0** through **J7** complete) deliberately does **not**
+  milestones **J0** through **J8** complete) deliberately does **not**
   build it, at any milestone: no checkpoint code imports, discovers,
   registers, or validates a Phase-J object, and no pipeline module imports
   checkpoint code. Carrying a loader position through an archive is the
@@ -1520,7 +1520,7 @@ float32 training and the exact float32 resume proof both passed, which is
 the same discipline that kept `dropout` in `UNSUPPORTED` from G3 through
 G9 while the operation and the module both already existed.
 
-## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0–J7 complete, J8–J9 not started)**
+## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0–J8 complete, J9 not started)**
 
 **Phase J is the latest phase, and it is newly approved.** The repository
 closed Phase I at I11 without committing to a successor; Phase J was
@@ -1679,11 +1679,32 @@ safe**: no Phase-J module contains a lock, none was added, and no test
 starts a thread. The example inventory stayed at **16**, the benchmarks
 at **8**, and `tensorforge.experimental.__all__` at **25**.
 
-**Everything else in this section is still unsupported.** There is **no
-automatic loader discovery and no benchmark.**
-Those are J8 onward; **J8 is next**.
+**J8 added no public name and no production code either**, and shipped
+the data-pipeline characterization benchmark,
+`benchmarks/benchmark_native_data_pipeline.py`, with its contract module
+`tests/test_native_data_benchmark.py`. It measures four layers as four
+separate questions — immutable host dataset indexing, deterministic batch
+planning, deterministic shuffled-permutation construction, and
+host→native batch materialization — beside one clearly separate composed
+`next(iterator)` delivery case. float32 and float64 are measured
+**separately and never as a ratio of one to the other**; correctness is
+gated exactly, with no tolerance anywhere, **before** the timing helper is
+reached; a case with no honest equivalent is labelled `native_only` and
+publishes **no ratio at all**; cold and warm permutation construction are
+separate cases and are never averaged; medians are reported with an
+interquartile range after warm-up; and setup, per-repetition state reset,
+and every `close()` stay outside the timer. **No speed is asserted, no
+threshold or CI timing job exists, no result file of any kind is written,
+and no optimization shipped** — a change motivated by a J8 measurement
+would be a separate, separately approved decision. The benchmark
+inventory moved 8 → **9**; the example inventory stayed at **16** and
+`tensorforge.experimental.__all__` at **25**.
 
-| Registry | Value at J0–J7 | Value expected at J9 |
+**Everything else in this section is still unsupported.** There is **no
+automatic loader discovery**, and the phase closure has not started.
+That is J9; **J9 is next**.
+
+| Registry | Value at J0–J8 | Value expected at J9 |
 |---|---|---|
 | `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
 | `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
@@ -1711,7 +1732,7 @@ The milestone ladder, with its current status:
 | **J5** | native checkpoint metadata integration | **complete** |
 | **J6** | deterministic mini-batch training example | **complete** |
 | **J7** | cross-cutting hardening | **complete** |
-| J8 | performance and transfer characterization | not started |
+| **J8** | performance and transfer characterization | **complete** |
 | J9 | integration and closure | not started |
 
 What J0 locked, so that later milestones inherit it: three eventual public

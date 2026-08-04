@@ -403,6 +403,8 @@ uv run python cpp/build.py --debug  # unoptimized, assertions on
 uv sync --group cpp                 # only if you have no C++ compiler
 uv run python scripts/smoke_cpp_backend.py
 uv run python examples/<name>.py    # all 16 run; see docs/examples.md
+uv run python benchmarks/benchmark_native_data_pipeline.py --smoke
+uv run python benchmarks/benchmark_native_data_pipeline.py --smoke --json
 ```
 
 `cpp/build.py` wraps the canonical CMake build (`cpp/CMakeLists.txt`), which
@@ -570,12 +572,12 @@ that changes the public API or the examples updates the matching document
   export**.
 - **J0** (contract), **J1** (dataset), **J2** (sampler), **J3** (loader),
   **J4** (loader state), **J5** (checkpoint metadata), **J6** (training
-  example), and **J7** (hardening matrix) are done; **J8 and J9 have not
-  started**, and **J8 is
-  next.** Each of J1–J3 added exactly one export — `NativeTensorDataset`,
-  `NativeBatchSampler`, `NativeDataLoader` — for **25** experimental names;
-  **J4, J5, J6, and J7 added none, and the count stays 25.** Examples are
-  **16** (J6 added one); benchmarks stay **8**.
+  example), **J7** (hardening matrix), and **J8** (benchmark) are done;
+  **J9 has not started**, and **J9 is next.** Each of J1–J3 added exactly
+  one export — `NativeTensorDataset`, `NativeBatchSampler`,
+  `NativeDataLoader` — for **25** experimental names; **J4–J8 added none,
+  and the count stays 25.** Examples are **16** (J6 added one);
+  benchmarks are **9** (J8 added one).
   The sampler is a **planner**: explicit `epoch`/`cursor`, pure planning, no
   native allocation, no `close()`, order a pure function of `(seed, epoch,
   length)` from the private `_native_permutation`.
@@ -704,10 +706,47 @@ that changes the public API or the examples updates the matching document
   claim.** No Phase-J module contains a lock, thread, queue, future, or
   async primitive; the objects join no lock order; external locking is
   the caller's job; **no test starts a thread**, and none may.
+- **J8 shipped `benchmarks/benchmark_native_data_pipeline.py` and
+  `tests/test_native_data_benchmark.py`, changed no production code, and
+  shipped no optimization.** Identity `tensorforge.native_data_pipeline` /
+  `"1.0"` / schema **1** — module constants, never package exports, and
+  there is no benchmark registry in the package. It answers **four
+  separate questions** and never blurs them into one: `dataset_indexing`,
+  `batch_planning`, `permutation_construction`,
+  `host_to_native_materialization`; `loader_delivery` is a fifth,
+  explicitly a **composition** and never a substitute for them. 20 cases,
+  run at each dtype **separately** — never a float32/float64 ratio,
+  ranking, or average; the one allowed cross-dtype claim is the
+  index/permutation sequence, which carries no dtype. Two reference labels
+  only: `numpy` (the five host-only indexing cases — same dtype, snapshot,
+  indices, and output shape, each stating its `ratio_meaning`) and
+  `native_only` (everything else — planning, permutation,
+  materialization, delivery — publishing **no ratio at all**, because
+  NumPy has no planner, has a different shuffle algorithm, and does no
+  allocation-plus-transfer). **Never divide a native case that allocates
+  by a NumPy case that does not.** Gates are exact and run **before** the
+  timing helper: tuples by equality, features by raw IEEE-754 bits within
+  one dtype, targets by exact `int64`, and
+  dtype/shape/device/ownership/contiguity/read-only by identity — **no
+  `allclose`, `approx`, `atol`, or `rtol` anywhere** — with the length-8
+  cases known answers against design §8.9. A failed gate publishes no
+  timing row, exits nonzero, keeps stdout clean, and still cleans up.
+  `time.perf_counter_ns`; one sample is one call; setup, per-repetition
+  state reset, cache warming, and every `close()` are **outside** the
+  timer; every sample retained, no outlier removed, no overhead
+  subtracted; median headline with an **interquartile range**. **Cold and
+  warm permutation construction are separate cases and are never
+  averaged** — cold builds a fresh sampler per repetition, warm is proved
+  a genuine hit because the sampler returns the *same tuple object*; no
+  cache-control API exists and none may be added. **No threshold, no CI
+  timing job, no result file, and no `--save`/`--output`/`--baseline`/
+  `--compare`.** Source scans over benchmark code must strip docstrings
+  and string literals first (AST), or they fail on the prose that
+  documents the prohibition.
 - **Still absent, and asserted absent**: loader discovery, any registry,
   imports in either direction between the checkpoint and pipeline modules,
-  a checkpoint field, version 4, and a
-  benchmark. Those are J8 onward.
+  a checkpoint field, and version 4. The phase closure and the final
+  native/sanitizer matrix are **J9's**.
 
 Beyond Phase J (not started): native integer tensors, further dtypes or
 devices, CUDA experiments. See `docs/roadmap.md`; never invent a phase it

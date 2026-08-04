@@ -152,6 +152,16 @@ I9_EXAMPLE = "examples/native_float32_training.py"
 I10_BENCHMARK = "benchmarks/benchmark_native_dtype.py"
 INHERITED_BENCHMARK_COUNT = 7
 
+# Benchmarks added by **later phases**, after Phase I closed — the exact
+# counterpart of ``POST_PHASE_I_EXAMPLES`` above. Each names the milestone
+# that shipped it, so Phase I's own benchmark delta stays exactly I10's
+# one and a later addition is attributed rather than absorbed.
+POST_PHASE_I_BENCHMARKS = {
+    "benchmark_native_data_pipeline.py": "J8",
+}
+CURRENT_BENCHMARK_COUNT = (INHERITED_BENCHMARK_COUNT + 1
+                           + len(POST_PHASE_I_BENCHMARKS))
+
 # The evidence I9 and I10 left, which closure must not let disappear. Each
 # entry is (path, minimum test count) — a floor rather than an equality, so
 # adding coverage is free while deleting it is not.
@@ -1294,11 +1304,20 @@ def test_every_example_is_a_tracked_source_file():
 
 
 def test_the_benchmark_inventory_is_the_inherited_set_plus_one():
+    """Phase I's own delta is **exactly one** benchmark, I10's. Later
+    phases' harnesses are named individually rather than folded into a
+    bumped literal, so that claim about Phase I stays checkable."""
     names = sorted(path.name for path in
                    (REPO_ROOT / "benchmarks").glob("*.py"))
-    assert len(names) == INHERITED_BENCHMARK_COUNT + 1, names
+    assert len(names) == CURRENT_BENCHMARK_COUNT, names
     assert "benchmark_native_dtype.py" in names
     assert "benchmark_native_cpu_performance.py" in names
+    for name in POST_PHASE_I_BENCHMARKS:
+        assert name in names, name
+    # Phase I's own contribution, stated apart from every later one.
+    inherited_plus_i10 = [name for name in names
+                          if name not in POST_PHASE_I_BENCHMARKS]
+    assert len(inherited_plus_i10) == INHERITED_BENCHMARK_COUNT + 1
 
 
 def test_the_phase_h_harness_case_inventory_is_still_pinned_as_history():

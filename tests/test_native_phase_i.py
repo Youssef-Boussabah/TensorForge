@@ -1443,6 +1443,19 @@ I9_DOCUMENTATION_ONLY = frozenset({
 # merely intended.
 I10_ADDED_BENCHMARKS = frozenset({"benchmarks/benchmark_native_dtype.py"})
 
+# Benchmarks added by **later phases**, after Phase I closed at I11 — the
+# exact counterpart of ``POST_PHASE_I_EXAMPLES`` above, and for the same
+# reason: the check below is a *cumulative* diff against the I0 commit, so
+# it keeps seeing later work forever. Each entry names the milestone that
+# shipped it, so a later phase's harness is attributed rather than absorbed
+# into Phase I's record. Phase I's own benchmark set stays exactly I10's
+# one, and every *other* path under ``benchmarks/`` — including an edit to
+# an inherited file — still fails.
+POST_PHASE_I_BENCHMARKS = frozenset({
+    "benchmarks/benchmark_native_data_pipeline.py",   # Phase J, milestone J8
+})
+assert not (I10_ADDED_BENCHMARKS & POST_PHASE_I_BENCHMARKS)
+
 
 def test_the_phase_changed_no_ci_or_dependency_file():
     """The phase's discipline, expressed as a cumulative diff assertion
@@ -1483,7 +1496,8 @@ def test_the_phase_changed_no_ci_or_dependency_file():
                 and path not in POST_PHASE_I_EXAMPLES):
             forbidden.append(path)
         if (path.startswith("benchmarks/")
-                and path not in I10_ADDED_BENCHMARKS):
+                and path not in I10_ADDED_BENCHMARKS
+                and path not in POST_PHASE_I_BENCHMARKS):
             forbidden.append(path)
         if path.startswith(".github/"):
             forbidden.append(path)
@@ -1496,7 +1510,7 @@ def test_the_phase_changed_no_ci_or_dependency_file():
     # ...and the files those exemptions were written for really exist, so
     # an exemption cannot outlive its subject.
     for allowed in (I9_ADDED_EXAMPLES | I10_ADDED_BENCHMARKS
-                    | POST_PHASE_I_EXAMPLES):
+                    | POST_PHASE_I_EXAMPLES | POST_PHASE_I_BENCHMARKS):
         assert (REPO_ROOT / allowed).is_file(), allowed
 
 
@@ -1600,6 +1614,7 @@ def _classify_benchmarks(observed):
         relative for relative in observed
         if relative not in I0_BENCHMARK_DIGESTS
         and relative not in I10_ADDED_BENCHMARKS
+        and relative not in POST_PHASE_I_BENCHMARKS
     )
     approved = sorted(
         relative for relative in observed
@@ -1640,6 +1655,12 @@ def test_the_phase_h_benchmark_harness_is_untouched():
     assert approved == sorted(I10_ADDED_BENCHMARKS), approved
     for relative in I10_ADDED_BENCHMARKS:
         assert (REPO_ROOT / relative).is_file(), relative
+    # A later phase's harness is **named**, not merely tolerated: each one
+    # must exist, so an exemption cannot outlive its subject and cannot be
+    # widened into a blanket "any new benchmark is fine".
+    for relative in POST_PHASE_I_BENCHMARKS:
+        assert (REPO_ROOT / relative).is_file(), relative
+    assert not (I10_ADDED_BENCHMARKS & POST_PHASE_I_BENCHMARKS)
     # The separation stated the other way round as well: the new harness
     # is a **new** file, and the Phase-H one still exists beside it.
     assert (REPO_ROOT / "benchmarks"
@@ -1867,12 +1888,16 @@ def test_the_frozen_benchmark_guard_detects_every_kind_of_drift(tmp_path):
     observed = _benchmark_digests(stage(genuine))
     assert observed[target] != poisoned[target]
 
-    # Nothing above touched the repository.
+    # Nothing above touched the repository: the live directory is still
+    # exactly the frozen inherited set, plus I10's one approved harness,
+    # plus each later phase's named one. Stated as an exact map rather
+    # than a count, so an edit to any inherited file would show up here
+    # even if the file count happened to match.
     assert _benchmark_digests(REPO_ROOT / "benchmarks") == {
         **I0_BENCHMARK_DIGESTS,
-        "benchmarks/benchmark_native_dtype.py": _content_digest(
-            (REPO_ROOT / "benchmarks"
-             / "benchmark_native_dtype.py").read_bytes()),
+        **{relative: _content_digest((REPO_ROOT / relative).read_bytes())
+           for relative in sorted(I10_ADDED_BENCHMARKS
+                                  | POST_PHASE_I_BENCHMARKS)},
     }
 
 
