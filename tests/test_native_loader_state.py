@@ -2335,26 +2335,27 @@ def test_no_c_abi_ctest_example_or_benchmark_surface_moved():
             assert artifact not in name, name
 
 
-def test_no_hardening_module_or_later_milestone_test_landed():
-    """J7's hardening module, J8's benchmark test, and J9's closure module
-    all belong to later milestones.
+def test_no_later_milestone_test_landed():
+    """J8's benchmark test and J9's closure module belong to later
+    milestones.
 
-    ``test_native_data_checkpoint.py`` moved out of this list at **J5** and
-    ``test_native_minibatch_training.py`` at **J6** — each in the milestone
+    ``test_native_data_checkpoint.py`` moved out of this list at **J5**,
+    ``test_native_minibatch_training.py`` at **J6**, and
+    ``test_native_data_hardening.py`` at **J7** — each in the milestone
     that shipped it, on the same "presence and absence are one split, and
-    only the milestone that ships a name may move it" discipline J4 applied
-    to the loader's two state methods. The absence half below is otherwise
-    untouched.
+    only the milestone that ships a name may move it" discipline J4
+    applied to the loader's two state methods. The absence half below is
+    otherwise untouched, and J7 shipped **no production module**.
     """
     assert (REPO_ROOT / "tests" / "test_native_data_checkpoint.py").exists()
     assert (REPO_ROOT / "tests"
             / "test_native_minibatch_training.py").exists()
-    for later in ("test_native_data_hardening.py",
-                  "test_native_data_benchmark.py",
+    assert (REPO_ROOT / "tests" / "test_native_data_hardening.py").exists()
+    for later in ("test_native_data_benchmark.py",
                   "test_native_phase_j_closure.py"):
         assert not (REPO_ROOT / "tests" / later).exists(), later
-    for later in ("_native_data_hardening.py", "native_loader_state.py",
-                  "native_data_state.py"):
+    for later in ("_native_data_hardening.py", "native_data_hardening.py",
+                  "native_loader_state.py", "native_data_state.py"):
         assert not (PACKAGE / later).exists(), later
 
 

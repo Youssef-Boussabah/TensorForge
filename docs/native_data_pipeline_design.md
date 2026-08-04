@@ -19,8 +19,8 @@ derivation (§3.2, §8), and continued at **J3**, which added the last of
 §3.1's three names, `NativeDataLoader` (§3.5, §3.6, §9, §10, §15, §17.3),
 over the permanently private `_NativeBatchIterator` and `_deliver_batch`.
 
-**Phase-J status: J0, J1, J2, J3, J4, J5, and J6 complete; J7 through J9 not
-started.** What exists today is the dataset, the sampler, the loader, the
+**Phase-J status: J0, J1, J2, J3, J4, J5, J6, and J7 complete; J8 through J9
+not started.** What exists today is the dataset, the sampler, the loader, the
 loader's own in-memory state, the caller-managed checkpoint-metadata
 workflow, and a worked training program over all of it: a finite
 host-backed dataset, a deterministic permutation and batch **planner** with
@@ -46,13 +46,33 @@ and no public name either**: its whole diff is that example,
 it requires, and documentation. The example inventory moved 15 → **16**;
 `tensorforge.experimental.__all__` stayed at **25**.
 
-**No automatic loader discovery, no hardening matrix, and no
-benchmark exists yet** — the adversarial injection matrix is J7's and the
-per-dtype characterization J8's, and **J7 is the next implementation
-milestone**. §14's statements about a *training* program now
-describe shipped, executable evidence; §14.1's failed-delivery leg remains
-J5's archive proof and J7's injection matrix rather than anything the
-public example does.
+New at **J7**: `tests/test_native_data_hardening.py`, the **adversarial
+hardening matrix** — the cross-cutting evidence that every §12.7, §15,
+§16, and §17 row holds under attack. It injects a failure at each §17.2
+construction row and each §17.3 iteration row, separating the host
+gather, the native allocation, the host→native transfer, and the target
+copy into four distinct injections; it makes the **commit step fail after
+the candidate position has really been applied**, not merely instead of
+applying it; it drives a `BaseException` through the same path; and it
+proves a **checkpoint taken immediately after a failed delivery** resumes
+the same candidate batch through a real version-3 archive into an
+entirely fresh object graph. Every rejection is followed by a complete
+before/after fingerprint of the observable world — dataset, sampler,
+loader, iterator, an unrelated parameter, buffer, optimizer, and
+registered generator, the filesystem, the global RNGs, and every
+registry — and every injection and every parser carries its own
+non-vacuity control. **J7 found no production defect and changed no
+production code**: its whole diff is that test module, the narrow
+inventory edits landing it requires, and documentation. The example
+inventory stays **16**, benchmarks stay **8**, and
+`tensorforge.experimental.__all__` stays at **25**.
+
+**No automatic loader discovery and no
+benchmark exists yet** — the per-dtype characterization is J8's, and
+**J8 is the next implementation milestone**. §14's statements about a
+*training* program describe shipped, executable evidence, and §14.1's
+failed-delivery leg is now J5's archive proof **and** J7's injection
+matrix rather than anything the public example does.
 
 Phase J is a **newly approved** direction. It was not part of the roadmap
 while Phases A–I were being built: the repository deliberately closed
@@ -3448,7 +3468,7 @@ locked rule — the §23 discipline is to record rather than rewrite:
    same candidate batch, and J7 owns the complete matrix. J6 neither
    weakens nor restates that proof.
 
-### J7 — Cross-cutting hardening — **not started**
+### J7 — Cross-cutting hardening — **complete**
 
 - **Entry:** J6 merged.
 - **Scope:** the adversarial matrix — malformed state at every field and
@@ -3470,6 +3490,69 @@ locked rule — the §23 discipline is to record rather than rewrite:
   precedent, where exactly one loader-validation gap was repaired and
   everything else was evidence.
 - **Exit gate:** every §12.7, §15, §16, and §17 row asserted.
+
+#### J7 outcome
+
+**No production defect was found, and no production code changed.** The
+whole diff is `tests/test_native_data_hardening.py`, the narrow inventory
+edits that move that file from absent to present in the four modules that
+asserted its absence, and documentation. Every §3 capability row, both
+state schemas, the checkpoint format and its accepted versions, the
+optimizer-state version, the 54 exports, the 24 CTests, the 16 examples,
+the 8 benchmarks, and the 25 experimental names are unchanged.
+
+What the matrix established, beyond re-asserting J3–J6:
+
+- **Every §17.2 construction row** by injection — validation before any
+  snapshot, a failure between the two snapshots, and a failure at the
+  digest — each proved to leave **no reference alive**, read from the
+  raised exception's own traceback rather than argued.
+- **Every §17.3 iteration row**, with the four Phase-2 failures kept
+  genuinely distinct: the **host gather** (nothing native reached), the
+  **native allocation** (the backend's own thread-local arm, disarmed in
+  a `finally`), the **host→native transfer** (the storage existed and
+  `from_array` closed it), and the **target copy** (the feature tensor
+  existed, was open, and was closed before the exception escaped).
+- **The commit step made to fail *after* the candidate was applied.** J3's
+  injection raises instead of the assignment and so exercises a rollback
+  from a position that never moved; J7's runs the assignment first, so the
+  restore path is exercised with a position that really did move. The
+  rollback's contracted **order** — restore, then clear, then close — is
+  observed directly.
+- **A `BaseException`** that is deliberately not an `Exception`, at both
+  the commit and the seam, proving the `finally` unconditional.
+- **The reentrancy matrix at three phases**, not two: claim, pending
+  (record published, position not yet applied), and committed. Every
+  refused operation raises `RuntimeError` while the original transaction
+  survives untouched, and malformed load arguments are provably not
+  inspected because the same arguments are a `TypeError` on an idle
+  loader.
+- **A checkpoint taken immediately after a failed delivery**, at both
+  dtypes, through a real version-3 archive, restored into an entirely
+  fresh and deliberately differently-configured graph, delivering the
+  exact failed candidate once with bit-identical features and targets.
+- **The §16 boundary asserted as a boundary**: no lock, thread, queue,
+  future, or async primitive exists in any Phase-J module (read from the
+  AST, so prose documenting the prohibition cannot satisfy it), the
+  objects join no lock order, and the documentation says so in terms a
+  parser checks — with a control proving the parser rejects a §16 that
+  dropped or reversed the statement. **No test starts a thread and none
+  claims a race is safe.**
+
+Two contracted exceptions to "nothing moved" are asserted **explicitly**
+rather than excluded quietly, because both are the never-reused rule
+doing its job: a **failed delivery advances the serial counter**, and a
+**failed iterator creation advances the participation-token counter**.
+Neither is ever handed out again.
+
+One structural fact was recorded rather than injected. There is no
+"failed after the claim was published but before Phase 2" position to
+test: `_claim_batch` writes `self._transaction` as its last statement
+before `return`, and the only statements between that return and
+`__next__`'s guarded block are a slot assignment and a local binding,
+neither of which can raise. J7 asserts that shape from the AST, with a
+negative control, instead of manufacturing a failure the runtime cannot
+produce.
 
 ### J8 — Performance and transfer characterization — **not started**
 

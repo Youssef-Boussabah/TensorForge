@@ -1618,9 +1618,17 @@ def test_no_cpp_or_build_surface_mentions_the_new_example():
 
 
 def test_the_later_phase_j_milestones_are_still_absent():
-    """J7, J8, and J9 have not started, and J6 anticipates none of them."""
-    for later in ("test_native_data_hardening.py",
-                  "test_native_data_benchmark.py",
+    """J8 and J9 have not started, and J6 anticipates neither.
+
+    J7's hardening matrix has since landed as its own module and is
+    asserted **present** here — the same "only the milestone that ships a
+    name may move it" split every other inventory in this repository
+    uses. What must stay true of *this* module is that the adversarial
+    work lives there and not here: J6 is the public-API example, and it
+    injects nothing.
+    """
+    assert (REPO_ROOT / "tests" / "test_native_data_hardening.py").exists()
+    for later in ("test_native_data_benchmark.py",
                   "test_native_phase_j_closure.py"):
         assert not (REPO_ROOT / "tests" / later).exists(), later
     assert not (REPO_ROOT / "benchmarks"

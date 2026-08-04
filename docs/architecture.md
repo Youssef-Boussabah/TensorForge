@@ -1066,8 +1066,8 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
-  the latest phase, and it is newly approved: milestones J0 through J6
-  have landed and J7 through J9 have not started.** Phase J was approved
+  the latest phase, and it is newly approved: milestones J0 through J7
+  have landed and J8 through J9 have not started.** Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1150,8 +1150,23 @@ explicit layer at a time:
   independently, with the batch-index sequence identical **across** dtypes
   and no numeric value compared between them. It composes public APIs
   only, and the example inventory moved 15 → **16**.
+  **J7 added no production code either** and shipped
+  `tests/test_native_data_hardening.py`, the cross-cutting adversarial
+  hardening matrix: every §12.7, §15, §16, and §17 row asserted by
+  injection, with the host gather, the native allocation, the host→native
+  transfer, and the target copy kept as four distinct failures; the
+  **commit step made to fail after the candidate position was really
+  applied**; a `BaseException` through the same unconditional rollback;
+  the reentrancy refusal matrix at all three transaction phases; and a
+  **checkpoint taken immediately after a failed delivery proved to resume
+  the same candidate batch** through a real version-3 archive into an
+  entirely fresh graph. Every rejection is followed by a complete
+  before/after fingerprint of the observable world, and every injection
+  and every parser has a non-vacuity control. **It found no production
+  defect**, and concurrency stays documented as unsupported rather than
+  tested as safe — no Phase-J module contains a lock and none was added.
   **No automatic loader discovery exists in either direction**, and there
-  is no hardening matrix and no benchmark; **J7 is next**. Its contract is
+  is no benchmark; **J8 is next**. Its contract is
   [native_data_pipeline_design.md](native_data_pipeline_design.md), and
   the architectural decisions it locks are the ones that would otherwise
   be re-argued in every later milestone: three eventual public names

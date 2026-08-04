@@ -474,7 +474,7 @@ in the stable Python framework — that does not make them native.
 - **automatic loader discovery, in either direction.** The newly approved
   **Phase J**
   ([native_data_pipeline_design.md](native_data_pipeline_design.md),
-  milestones **J0** through **J6** complete) deliberately does **not**
+  milestones **J0** through **J7** complete) deliberately does **not**
   build it, at any milestone: no checkpoint code imports, discovers,
   registers, or validates a Phase-J object, and no pipeline module imports
   checkpoint code. Carrying a loader position through an archive is the
@@ -1520,7 +1520,7 @@ float32 training and the exact float32 resume proof both passed, which is
 the same discipline that kept `dropout` in `UNSUPPORTED` from G3 through
 G9 while the operation and the module both already existed.
 
-## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0–J6 complete, J7–J9 not started)**
+## Phase J — deterministic native data pipeline and mini-batching, **in progress (J0–J7 complete, J8–J9 not started)**
 
 **Phase J is the latest phase, and it is newly approved.** The repository
 closed Phase I at I11 without committing to a successor; Phase J was
@@ -1656,11 +1656,34 @@ returns exactly to baseline, and a negative control that omits
 **public APIs only** and claims no timing. The example inventory moved 15
 → **16**; `tensorforge.experimental.__all__` stayed at **25**.
 
-**Everything else in this section is still unsupported.** There is **no
-automatic loader discovery, no hardening matrix, and no benchmark.**
-Those are J7 onward; **J7 is next**.
+**J7 added no public name and no production code either**, and shipped the
+cross-cutting adversarial hardening matrix,
+`tests/test_native_data_hardening.py`. It asserts every §12.7, §15, §16,
+and §17 row by injection rather than by argument: each
+dataset-construction row, each iteration row — with the host gather, the
+native allocation, the host→native transfer, and the target copy kept as
+**four distinct injections** — the **commit step made to fail after the
+candidate position was really applied**, a `BaseException` through the
+same unconditional rollback, the reentrancy refusal matrix at all three
+transaction phases, every abandonment position, both close orderings, and
+a **checkpoint taken immediately after a failed delivery proved to resume
+the same candidate batch** at both dtypes through a real version-3
+archive into an entirely fresh graph. Every rejection carries a complete
+before/after fingerprint of the observable world — including an unrelated
+`NativeParameter` with its version and gradient, a persistent buffer, a
+live optimizer, a registered `NativeGenerator`, the filesystem, both
+global RNGs, and every registry — and every injection and every parser
+has its own non-vacuity control. **It found no production defect.**
+Concurrency stays **documented as unsupported rather than tested as
+safe**: no Phase-J module contains a lock, none was added, and no test
+starts a thread. The example inventory stayed at **16**, the benchmarks
+at **8**, and `tensorforge.experimental.__all__` at **25**.
 
-| Registry | Value at J0–J6 | Value expected at J9 |
+**Everything else in this section is still unsupported.** There is **no
+automatic loader discovery and no benchmark.**
+Those are J8 onward; **J8 is next**.
+
+| Registry | Value at J0–J7 | Value expected at J9 |
 |---|---|---|
 | `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
 | `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
@@ -1687,7 +1710,7 @@ The milestone ladder, with its current status:
 | **J4** | loader state and mid-epoch resume | **complete** |
 | **J5** | native checkpoint metadata integration | **complete** |
 | **J6** | deterministic mini-batch training example | **complete** |
-| J7 | cross-cutting hardening | not started |
+| **J7** | cross-cutting hardening | **complete** |
 | J8 | performance and transfer characterization | not started |
 | J9 | integration and closure | not started |
 

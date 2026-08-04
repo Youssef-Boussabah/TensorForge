@@ -107,7 +107,7 @@ capability decision, never a side effect.
 | Accepted checkpoint versions | `(1, 2, 3)`; versions 1 and 2 stay float64-only |
 | In-memory optimizer state version | **1** |
 | Exported production `tf_*` symbols | **54** (Phase H closed at 52) |
-| Native CTests · examples · benchmarks | **24** · **15** · **8** |
+| Native CTests · examples · benchmarks | **24** · **16** · **8** |
 
 **Three dtype rows, three different questions**, and none may be reported as
 another: `SUPPORTED_DTYPES` is the **capability**; `backend_info()["dtype"]`
@@ -402,7 +402,7 @@ uv run python cpp/build.py          # build the native backend (Release)
 uv run python cpp/build.py --debug  # unoptimized, assertions on
 uv sync --group cpp                 # only if you have no C++ compiler
 uv run python scripts/smoke_cpp_backend.py
-uv run python examples/<name>.py    # all 15 run; see docs/examples.md
+uv run python examples/<name>.py    # all 16 run; see docs/examples.md
 ```
 
 `cpp/build.py` wraps the canonical CMake build (`cpp/CMakeLists.txt`), which
@@ -569,11 +569,12 @@ that changes the public API or the examples updates the matching document
   every §3 row is expected unchanged at J9, and it plans **no new C ABI
   export**.
 - **J0** (contract), **J1** (dataset), **J2** (sampler), **J3** (loader),
-  **J4** (loader state), **J5** (checkpoint metadata), and **J6** (training
-  example) are done; **J7 through J9 have not started**, and **J7 is
+  **J4** (loader state), **J5** (checkpoint metadata), **J6** (training
+  example), and **J7** (hardening matrix) are done; **J8 and J9 have not
+  started**, and **J8 is
   next.** Each of J1–J3 added exactly one export — `NativeTensorDataset`,
   `NativeBatchSampler`, `NativeDataLoader` — for **25** experimental names;
-  **J4, J5, and J6 added none, and the count stays 25.** Examples are
+  **J4, J5, J6, and J7 added none, and the count stays 25.** Examples are
   **16** (J6 added one); benchmarks stay **8**.
   The sampler is a **planner**: explicit `epoch`/`cursor`, pure planning, no
   native allocation, no `close()`, order a pure function of `(seed, epoch,
@@ -670,11 +671,43 @@ that changes the public API or the examples updates the matching document
   is bit equality, while the **one-ULP `exp`/`log` bound** is about
   comparing separate libm implementations across platforms — never conflate
   them or tighten the second.
+- **J7 shipped `tests/test_native_data_hardening.py` and changed no
+  production code** — no defect was found. Its durable rules, which J8
+  and J9 inherit: every rejection and every injected failure is followed
+  by a **complete before/after fingerprint of the observable world**
+  (dataset · sampler including its private transaction, participation,
+  and cache bookkeeping · loader · iterator · an unrelated
+  `NativeParameter` with version and gradient · a buffer · a live
+  optimizer · a registered `NativeGenerator` · the filesystem · both
+  global RNGs · every registry), and **every injection and every parser
+  has a non-vacuity control** — including the fingerprint itself, whose
+  every component is proved able to notice the change it exists for. The
+  four Phase-2 failures stay **four distinct injections** — host gather,
+  native allocation (the existing thread-local arm only, disarmed in a
+  `finally` *and* an autouse fixture), host→native transfer, target copy
+  — and none may be labelled as another. The **commit-step injection runs
+  the candidate assignment first and then raises**, which is what makes
+  it different from J3's; the rollback order is observed as restore →
+  clear record → close tensor. A `BaseException` proves the `finally`
+  unconditional. The reentrancy matrix runs at **three** phases (claim,
+  pending, committed). Two contracted counters — the transaction serial
+  and the participation token — legitimately advance on a *failed*
+  attempt because neither is ever reused, and that is asserted
+  explicitly rather than excluded quietly. Abandonment is proved by
+  explicit `close()`; **no assertion may depend on collection timing.**
+  The `live_storages` tracker installs itself outside `monkeypatch`, so a
+  mid-test `undo()` cannot silently disarm it. There is **no** "claim
+  published but Phase 2 not entered" failure position: `_claim_batch`
+  writes its record last, and that shape is asserted from the AST rather
+  than injected.
+- **Concurrency stays a documented boundary, never a tested safety
+  claim.** No Phase-J module contains a lock, thread, queue, future, or
+  async primitive; the objects join no lock order; external locking is
+  the caller's job; **no test starts a thread**, and none may.
 - **Still absent, and asserted absent**: loader discovery, any registry,
   imports in either direction between the checkpoint and pipeline modules,
-  a checkpoint field, version 4, an adversarial hardening matrix, and a
-  benchmark. Those are J7 onward. J7 owns failure injection at
-  `_deliver_batch`; the public example neither performs nor claims it.
+  a checkpoint field, version 4, and a
+  benchmark. Those are J8 onward.
 
 Beyond Phase J (not started): native integer tensors, further dtypes or
 devices, CUDA experiments. See `docs/roadmap.md`; never invent a phase it

@@ -1660,8 +1660,8 @@ moved, and no C ABI symbol was added.
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
 **Phase J — deterministic native data pipeline and mini-batching — is the
-latest phase, and it is newly approved: milestones J0 through J6 have
-landed, and J7 through J9 have not started.** Phase J was approved *after* Phase I
+latest phase, and it is newly approved: milestones J0 through J7 have
+landed, and J8 through J9 have not started.** Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -1780,8 +1780,35 @@ exactly to baseline, and a negative control that omits
 **only public APIs**, asserted by an AST scan with its own negative
 control, and claims and measures **no timing**.
 
-**No automatic loader discovery exists, and there is no hardening matrix
-and no benchmark**; those are J7 onward, and **J7 is next**. Its
+**J7** shipped `tests/test_native_data_hardening.py`, the cross-cutting
+adversarial hardening matrix, and **added no production code and no public
+name** — the fourth consecutive Phase-J milestone with a zero export
+delta, and one that **found no production defect**. Examples stayed at
+**16** and benchmarks at **8**. It asserts every §12.7, §15, §16, and §17
+row by injection: each dataset-construction row, proved to leave **no
+reference alive** by reading the raised exception's own traceback; each
+iteration row, with the host gather, the native allocation, the
+host→native transfer, and the target copy kept as **four distinct
+injections** so no failure is labelled as another; the **commit step made
+to fail after the candidate position was really applied**, which
+exercises the restore path with a position that genuinely moved; a
+`BaseException` through the same unconditional `finally`; the reentrancy
+refusal matrix at all **three** transaction phases; every abandonment
+position and every close ordering; and a **checkpoint taken immediately
+after a failed delivery, proved to resume the same candidate batch** at
+both dtypes through a real version-3 archive into an entirely fresh
+graph. Every rejection is followed by a complete before/after fingerprint
+of the observable world — dataset, sampler, loader, iterator, an
+unrelated `NativeParameter` with its version and gradient, a persistent
+buffer, a live optimizer, a registered `NativeGenerator`, the filesystem,
+both global RNGs, and every registry — and every injection and every
+parser carries its own non-vacuity control. **Concurrency remains
+documented as unsupported rather than tested as safe**: no lock exists in
+any Phase-J module, none was added, no test starts a thread, and external
+locking stays the caller's job.
+
+**No automatic loader discovery exists, and there is
+no benchmark**; that is J8, and **J8 is next**. Its
 architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md), which
 locks three eventual public names (`NativeTensorDataset`,

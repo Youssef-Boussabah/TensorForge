@@ -48,8 +48,8 @@ approved afterwards, so it must not be described as work that was already
 on the roadmap. Its architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md).
 
-**Milestones J0 through J6 have landed; J7 through J9 have not started,
-and J7 is next.** J0 was an architecture, contract, and documentation
+**Milestones J0 through J7 have landed; J8 through J9 have not started,
+and J8 is next.** J0 was an architecture, contract, and documentation
 milestone and **added no runtime behavior at all** — no dataset, sampler,
 or loader class, no helper module, no state serializer, no public export,
 no C++, no C ABI symbol, no example, no benchmark, and no checkpoint or
@@ -209,12 +209,35 @@ wrong first, and a negative control that omits the loader restoration
 alone is proved to diverge. It uses **only public APIs**, asserted by an
 AST scan with its own negative control.
 
-**What Phase J still does not have**, because J7 onward have not started:
-automatic loader discovery, the cross-cutting adversarial hardening
-matrix, and the benchmark. A loader's position can be serialized, carried
-through a checkpoint archive, restored exactly, and read in a worked
-example — but nothing discovers a loader for the caller, no benchmark
-ships, and Phase J is not finished.
+**J7 shipped the cross-cutting adversarial hardening matrix**,
+`tests/test_native_data_hardening.py`, and — like J5 and J6 — added **no
+production code and no public name**: the fourth consecutive Phase-J
+milestone with a zero export delta, and one that **found no production
+defect**. Examples stayed at **16** and benchmarks at **8**. It asserts
+every §12.7, §15, §16, and §17 row by injection rather than by argument:
+each construction row, each iteration row — with the host gather, the
+native allocation, the host→native transfer, and the target copy kept as
+four distinct injections — the **commit step made to fail after the
+candidate position was really applied**, a `BaseException` through the
+same unconditional rollback, the reentrancy refusal matrix at all three
+transaction phases, every abandonment position, the close ordering in
+both directions, and a **checkpoint taken immediately after a failed
+delivery proved to resume the same candidate batch** through a real
+version-3 archive into an entirely fresh graph. Every rejection is
+followed by a complete before/after fingerprint of the observable world —
+including an unrelated parameter, buffer, optimizer, and registered
+generator, the filesystem, both global RNGs, and every registry — and
+every injection and every parser has its own non-vacuity control.
+**Concurrency stays documented as unsupported rather than tested as
+safe**: no lock was added, no Phase-J module contains one, no test starts
+a thread, and external locking remains the caller's job.
+
+**What Phase J still does not have**, because J8 onward have not started:
+automatic loader discovery, the benchmark, and the phase closure. A
+loader's position can be serialized, carried through a checkpoint
+archive, restored exactly, read in a worked example, and relied on to
+consume nothing when a delivery fails — but nothing discovers a loader
+for the caller, no benchmark ships, and Phase J is not finished.
 
 What J0 resolved, so that later milestones inherit an unambiguous design
 rather than re-deriving one: the three eventual public names —
@@ -578,11 +601,13 @@ against real version-3 archives — a milestone that added no production
 code and left the checkpoint module unchanged — and at **J6** with the
 deterministic mini-batch training example and its exact
 interrupted-versus-uninterrupted proof, which added no production code
-either and took the example inventory from 15 to 16.
-**J7 through J9 are unstarted**, so the adversarial hardening matrix, the
-benchmark, and the phase closure remain promises — and nothing about them
-may be described as working until the milestone that ships it has landed.
-**J7, the cross-cutting hardening matrix, is next.**
+either and took the example inventory from 15 to 16, and at **J7** with
+the cross-cutting adversarial hardening matrix, which added no production
+code either and found no production defect.
+**J8 and J9 are unstarted**, so the benchmark and the phase closure remain
+promises — and nothing about them may be described as working until the
+milestone that ships it has landed.
+**J8, the performance and transfer characterization, is next.**
 
 What the existing documents still name as future work *beyond* Phase J, in
 no committed order, is: native integer tensors, further dtypes or devices

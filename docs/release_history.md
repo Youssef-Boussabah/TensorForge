@@ -2326,10 +2326,10 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase J — deterministic native data pipeline and mini-batching (J0–J6 complete, in progress)
+### Phase J — deterministic native data pipeline and mini-batching (J0–J7 complete, in progress)
 
 **Phase J is the latest phase, it is newly approved, and milestones J0
-through J6 have landed.** J7 through J9 have not started, and **J7 is
+through J7 have landed.** J8 and J9 have not started, and **J8 is
 next**. **No version is claimed** — the native line stays experimental and
 is not production-ready, and this entry records milestones rather than a
 release.
@@ -2723,22 +2723,97 @@ no CMake entry, no C ABI symbol, no benchmark, and no dependency, so **no
 native rebuild, CTest run, or sanitizer run was required and none is
 claimed**.
 
-**What still does not exist after J6**: automatic loader discovery in
-either direction, the cross-cutting adversarial hardening matrix, and the
-benchmark. No production pipeline module imports the checkpoint and no
-checkpoint module names a pipeline object — both asserted by source
-inspection, and by driving a real save and load with the loader's two
-methods patched to record any call, which neither fired. Those are J7
-onward. The failed-delivery leg in particular stays **J5's archive proof
-and J7's injection matrix**: the public example neither performs nor
-claims it.
+**J7 shipped the cross-cutting adversarial hardening matrix**,
+`tests/test_native_data_hardening.py`, and — like J5 and J6 — **added no
+production code and no public name**: the fourth consecutive Phase-J
+milestone with a zero export delta. Its whole diff is that test module,
+the narrow inventory edits that move it from absent to present in the
+four modules asserting its absence, and documentation. **It found no
+production defect**, and the report says so rather than manufacturing
+one.
+
+What it proves, and how. Every §17.2 **construction** row by injection —
+a validation failure before any snapshot, a failure between the two
+snapshots, and a failure at the digest — each with "**no reference
+survives**" read from the raised exception's own traceback rather than
+argued, the caller's arrays proved unchanged, and a retry producing the
+exact contracted identity. Every §17.3 **iteration** row, with the four
+Phase-2 failures kept genuinely distinct so none is ever labelled as
+another: the **host gather** (the host→native boundary provably never
+reached), the **native allocation** (the backend's existing thread-local
+arm, armed for exactly one allocation and disarmed in a `finally`), the
+**host→native transfer** (the storage existed — the peak is observed from
+inside the injection — and `from_array` closed it), and the **target
+copy** (the feature tensor existed, was open, was at the dataset's dtype,
+and was closed before the exception escaped). The **commit step made to
+fail after the candidate position was really applied**, which is the
+distinction from J3's injection: J3 raises *instead of* the assignment
+and so exercises a rollback from a position that never moved, while J7
+runs the assignment first, so the restore path runs against a position
+that genuinely did. The rollback's contracted **order** — restore, then
+clear the record, then close the tensor — observed directly. A
+`BaseException` that is deliberately not an `Exception`, at both the
+commit and the seam, proving the `finally` unconditional. The **§9.5
+reentrancy refusal matrix at all three transaction phases** — claim,
+pending, and committed — with malformed load arguments proved *not
+inspected*, because the identical arguments are a `TypeError` on an idle
+loader. Every abandonment position, every supersession and exhaustion
+outcome kept distinct, both close orderings, and the finalizer asserted
+as a fallback that is **invoked explicitly, never waited for**: no
+assertion in the module depends on collection timing. And the
+load-bearing one: a **checkpoint taken immediately after a failed
+delivery**, at float32 and float64, through a real version-3 archive,
+restored into an entirely fresh and deliberately differently-configured
+graph, delivering **exactly the batch the failed call was about to
+deliver**, once, with bit-identical features and targets.
+
+Every rejection in that matrix is followed by a **complete before/after
+fingerprint of the observable world**: the dataset with its identity and
+its ability to still materialize the next legal batch, the sampler with
+its six fields, its plan, its permutation, its cache key and its private
+transaction and participation bookkeeping, the loader, the iterator, an
+unrelated `NativeParameter` with its version and gradient, a persistent
+buffer, a live `NativeAdam`'s state, a registered `NativeGenerator`, the
+filesystem, both global RNGs, and every capability and schema registry.
+Every injection and every parser has its own non-vacuity control, and the
+fingerprint itself has one: each component is proved able to notice the
+change it exists to notice. Two contracted exceptions to "nothing moved"
+are asserted **explicitly** rather than excluded quietly, because both are
+the never-reused rule working: a failed delivery advances the serial
+counter, and a failed iterator creation advances the participation-token
+counter. Neither value is ever handed out again.
+
+**Concurrency is asserted as a boundary, not as a feature.** No Phase-J
+module contains a lock, thread, queue, future, or async primitive — read
+from the **AST**, so prose documenting the prohibition cannot satisfy the
+check — the objects join no lock order, and the design's §16 is parsed for
+"not thread-safe", "contains no lock", "external locking is required", and
+"undefined", with a control proving the parser rejects a §16 that dropped
+or reversed any of them. **No lock was added, no test starts a thread, and
+no test claims a race is safe.**
+
+One structural fact was **recorded rather than injected**: there is no
+"failed after the claim was published but before Phase 2" position to
+test, because `_claim_batch` writes its record as the last statement
+before `return` and the only statements between that return and
+`__next__`'s guarded block are a slot assignment and a local binding,
+neither of which can raise. J7 asserts that shape from the AST with its
+own negative control instead of manufacturing a failure the runtime
+cannot produce.
+
+**What still does not exist after J7**: automatic loader discovery in
+either direction, and the benchmark. No production pipeline module imports
+the checkpoint and no checkpoint module names a pipeline object — both
+asserted by source inspection, and by driving a real save and load with
+the loader's methods patched to record any call, which none fired. Those
+are J8 onward.
 
 **No capability moved, and none will.** `SUPPORTED_DTYPES` is
 `("float64", "float32")`, `SUPPORTED_DEVICES` is `("cpu",)`, `UNSUPPORTED`
 is `("cuda", "amp")`, and `RAW_KERNEL_DTYPES` is `("float64",)`. The
 library exports **54** production `tf_*` symbols, the CTest inventory is
 **24**, the example inventory is **16** (15 through J5, plus J6's one),
-the benchmark inventory is **8**, the native checkpoint is
+the benchmark inventory is **8** (J7 added neither), the native checkpoint is
 `tensorforge.native_checkpoint` version **3** with `(1, 2, 3)` accepted,
 and the in-memory optimizer state is version **1**. Phase J plans **no new
 C ABI export** at any milestone.

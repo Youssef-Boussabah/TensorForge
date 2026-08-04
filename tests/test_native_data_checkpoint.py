@@ -2191,10 +2191,12 @@ def test_j5_added_no_example_and_no_benchmark():
     assert "native_minibatch_training.py" in examples
     assert len(benchmarks) == 8, benchmarks
     assert "benchmark_native_data_pipeline.py" not in benchmarks
-    # J6 landed its own proof module; J7, J8, and J9 have not started.
+    # J6 landed its own proof module and J7 its hardening matrix — both
+    # test-only, and neither an example or a benchmark. J8 and J9 have not
+    # started.
     assert (REPO_ROOT / "tests"
             / "test_native_minibatch_training.py").exists()
-    assert not (REPO_ROOT / "tests" / "test_native_data_hardening.py").exists()
+    assert (REPO_ROOT / "tests" / "test_native_data_hardening.py").exists()
     assert not (REPO_ROOT / "tests" / "test_native_data_benchmark.py").exists()
     assert not (REPO_ROOT / "tests"
                 / "test_native_phase_j_closure.py").exists()

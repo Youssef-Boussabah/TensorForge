@@ -81,8 +81,8 @@ repaired here rather than rewritten away. The latest completed phase is
 Phase I.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
-latest phase, and it is newly approved: milestones J0 through J6 have
-landed and J7 through J9 have not started.** It was approved *after* Phase
+latest phase, and it is newly approved: milestones J0 through J7 have
+landed and J8 through J9 have not started.** It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -104,14 +104,31 @@ whole diff is one test module plus documentation, with
 no production code either**: its whole diff is
 `examples/native_minibatch_training.py`, one test module, narrow status
 edits, and documentation — the example inventory moved 15 → **16** and no
-file under `src/` or `cpp/` was touched. Its architecture contract is
+file under `src/` or `cpp/` was touched. **J7 added no production code
+either**: its whole diff is `tests/test_native_data_hardening.py`, the
+narrow inventory edits that move it from absent to present in the four
+modules asserting its absence, and documentation; no file under `src/`,
+`cpp/`, or `.github/` was touched and no dependency changed. Its
+architecture contract is
 [native_data_pipeline_design.md](native_data_pipeline_design.md). Nothing
-on this page changed for any of the seven milestones: the library still
+on this page changed for any of the eight milestones: the library still
 exports **54** `tf_*` symbols, the CTest inventory is still **24**, and
 every capability registry, checkpoint version, and optimizer-state version
-is exactly what Phase I left. **J1 through J6 therefore required no
+is exactly what Phase I left. **J1 through J7 therefore required no
 native rebuild, no CTest run, and no sanitizer run**, and none is claimed
-for any of them.
+for any of them — **J9 owns the complete final native and sanitizer
+matrix.**
+
+**J7 uses only the fault-injection mechanism that already existed.** The
+deterministic thread-local allocation-failure arm
+(`tf_test_arm_alloc_failure` / `tf_fault_injection_available`) is the one
+documented exception §4.1 permits, and J7 arms it for exactly one
+allocation, disarms it in a `finally` *and* in an autouse fixture, and
+proves the identical call succeeds once it is disarmed. **No second arm,
+no new export, no C++ change, and no production Python fault-injection
+API was added.** Every other failure J7 injects is a monkeypatch of an
+already-private Python seam, and native live storage is asserted back to
+its exact baseline after every one.
 
 **J6 allocates no native storage that it does not release.** The example
 is an ordinary caller: it builds datasets, loaders, models, and

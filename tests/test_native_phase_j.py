@@ -1,6 +1,6 @@
 """Phase-J contract guardrails (deterministic native data pipeline).
 
-**Phase J is newly approved, and milestones J0 through J6 have landed.**
+**Phase J is newly approved, and milestones J0 through J7 have landed.**
 J0 was an architecture, contract, documentation, and status milestone: it
 shipped ``docs/native_data_pipeline_design.md``, this module, and
 documentation, and **no runtime behavior at all**. **J1** shipped the
@@ -20,22 +20,28 @@ leaving the checkpoint module untouched. **J6** added no public name
 either, and no production code: it is
 ``examples/native_minibatch_training.py`` — the first end-user program to
 train through the pipeline — and its exact interrupted-versus-resumed
-proof, taking the example inventory from 15 to **16**. None of the six
-added C++, a C ABI symbol, a benchmark, or a checkpoint or
+proof, taking the example inventory from 15 to **16**. **J7** added no
+public name and no production code either: it is
+``tests/test_native_data_hardening.py``, the cross-cutting adversarial
+matrix that proves every §12.7, §15, §16, and §17 row under injection,
+with a complete before/after world fingerprint after every rejection and
+a non-vacuity control for every injection and every parser. None of the
+seven added C++, a C ABI symbol, a benchmark, or a checkpoint or
 optimizer-state change. Their own behavior is covered by
 ``tests/test_native_dataset.py``, ``tests/test_native_sampler.py``,
 ``tests/test_native_data_loader.py``,
 ``tests/test_native_loader_state.py``,
-``tests/test_native_data_checkpoint.py``, and
-``tests/test_native_minibatch_training.py``; what lives here is the
+``tests/test_native_data_checkpoint.py``,
+``tests/test_native_minibatch_training.py``, and
+``tests/test_native_data_hardening.py``; what lives here is the
 *phase* boundary.
 
-**J7 through J9 have not started**, so the adversarial hardening matrix,
-the benchmark, and the closure module are still asserted **absent**
-below. A caller can serialize where a loader stopped, carry it through an
-archive, restore it exactly, and now read a worked example doing exactly
-that — but nothing discovers a loader for them, no benchmark ships, and
-Phase J is not complete.
+**J8 and J9 have not started**, so the benchmark and the closure module
+are still asserted **absent** below. A caller can serialize where a
+loader stopped, carry it through an archive, restore it exactly, read a
+worked example doing exactly that, and rely on an adversarial matrix
+proving a failed delivery consumes nothing — but nothing discovers a
+loader for them, no benchmark ships, and Phase J is not complete.
 
 Three kinds of fact live here, and keeping them apart is the point of the
 module:
@@ -139,7 +145,7 @@ PRIVATE_LOADER_NAMES = ("_NativeBatchIterator", "_deliver_batch")
 # ladder parser below is driven from these rather than from a hard-coded
 # "only J0", so landing a milestone is a one-line change here and a
 # document edit — never a loosened checker.
-COMPLETE_MILESTONES = ("J0", "J1", "J2", "J3", "J4", "J5", "J6")
+COMPLETE_MILESTONES = ("J0", "J1", "J2", "J3", "J4", "J5", "J6", "J7")
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
 
@@ -255,16 +261,20 @@ def test_the_design_states_exactly_which_runtime_exists():
     # exact resume proof. Each moved out of this list and into the presence
     # checks below in the milestone that shipped it, rather than being
     # softened.
-    for absent in ("automatic loader discovery", "hardening matrix",
-                   "benchmark"):
+    for absent in ("automatic loader discovery", "benchmark"):
         assert re.search(rf"no {absent}", head, re.I), absent
     # ``head`` is emphasis-stripped, so these are the flattened spellings.
+    # "hardening matrix" moved from the absent list to this one at **J7**,
+    # in the milestone that shipped it — the same one-way split every other
+    # inventory in this repository uses.
     for present in ("loader state schema", "loader state_dict",
                     "exact in-memory mid-epoch loader restoration",
                     "caller-managed checkpoint-metadata workflow",
                     "real version-3 archive",
                     "deterministic native mini-batch training example",
-                    "exact interrupted-versus-uninterrupted training"):
+                    "exact interrupted-versus-uninterrupted training",
+                    "adversarial hardening matrix",
+                    "checkpoint taken immediately after a failed delivery"):
         assert present.lower() in head.lower(), present
     # ...and J5's defining negative: the archive did not grow.
     assert re.search(r"capture set did not grow", head, re.I), head[:1200]
@@ -403,10 +413,11 @@ def test_exactly_the_landed_milestones_are_marked_complete():
         assert re.search(r"\*\*complete\*\*", rows[name], re.I), rows[name]
     for name in UNSTARTED_MILESTONES:
         assert re.search(r"\*\*not started\*\*", rows[name], re.I), rows[name]
-    # J7 is the next implementation milestone, and nothing beyond it may be
-    # claimed under a J6 heading.
-    assert COMPLETE_MILESTONES == ("J0", "J1", "J2", "J3", "J4", "J5", "J6")
-    assert UNSTARTED_MILESTONES == ("J7", "J8", "J9")
+    # J8 is the next implementation milestone, and nothing beyond it may be
+    # claimed under a J7 heading.
+    assert COMPLETE_MILESTONES == ("J0", "J1", "J2", "J3", "J4", "J5", "J6",
+                                   "J7")
+    assert UNSTARTED_MILESTONES == ("J8", "J9")
 
 
 def test_the_ladder_checker_can_actually_fail():
@@ -454,7 +465,8 @@ def test_the_ladder_checker_can_actually_fail():
                 "### J3 — Native mini-batch loader",
                 "### J4 — Loader state and mid-epoch resume",
                 "### J5 — Native checkpoint metadata integration",
-                "### J6 — Deterministic mini-batch training example"):
+                "### J6 — Deterministic mini-batch training example",
+                "### J7 — Cross-cutting hardening"):
         understated = ladder.replace(f"{row} — **complete**",
                                      f"{row} — **not started**")
         assert understated != ladder, f"the {row!r} row was not found"
@@ -462,9 +474,9 @@ def test_the_ladder_checker_can_actually_fail():
         assert any(f"{milestone} is not marked complete" in reason
                    for reason in problems_for(understated))
     # Two rows swapped.
-    swapped = ladder.replace("### J7 — ", "@@SEVEN@@ ", 1)
-    swapped = swapped.replace("### J8 — ", "### J7 — ", 1)
-    swapped = swapped.replace("@@SEVEN@@ ", "### J8 — ", 1)
+    swapped = ladder.replace("### J8 — ", "@@EIGHT@@ ", 1)
+    swapped = swapped.replace("### J9 — ", "### J8 — ", 1)
+    swapped = swapped.replace("@@EIGHT@@ ", "### J9 — ", 1)
     assert any("out of order" in reason for reason in problems_for(swapped))
 
 
@@ -1145,15 +1157,19 @@ def test_the_example_and_benchmark_inventories_moved_by_exactly_j6s_example():
         assert "data_pipeline" not in name and "minibatch" not in name, name
 
 
-def test_the_j6_example_and_its_proof_exist_and_nothing_later_does():
-    """J6's two files moved from absence to presence, and only those two.
-    J7's hardening module, J8's benchmark and its test, and J9's closure
-    module are all still absent."""
+def test_the_j6_and_j7_artifacts_exist_and_nothing_later_does():
+    """J6's two files and J7's one moved from absence to presence, and
+    only those three. J8's benchmark and its test, and J9's closure
+    module, are all still absent.
+
+    J7 is **evidence**: its artifact is a test module, so it adds no
+    example, no benchmark, and no production file — which is exactly what
+    the counts below re-assert."""
     assert (REPO_ROOT / "examples" / "native_minibatch_training.py").is_file()
     assert (REPO_ROOT / "tests"
             / "test_native_minibatch_training.py").is_file()
-    for later in ("tests/test_native_data_hardening.py",
-                  "tests/test_native_data_benchmark.py",
+    assert (REPO_ROOT / "tests" / "test_native_data_hardening.py").is_file()
+    for later in ("tests/test_native_data_benchmark.py",
                   "tests/test_native_phase_j_closure.py",
                   "benchmarks/benchmark_native_data_pipeline.py"):
         assert not (REPO_ROOT / later).exists(), later
