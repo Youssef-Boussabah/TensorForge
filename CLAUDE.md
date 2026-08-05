@@ -158,24 +158,34 @@ never read the public promise off that last row.
 faster leaves every row above untouched.
 
 Not supported, and not a bug: float16/bfloat16, mixed precision, AMP, CUDA or
-any GPU backend, integer tensors, float32 raw kernels, distributed training,
-C++-side autograd, attention/Transformers. Automatic loader **discovery**
-does not exist either, at any milestone — see §12. Full dtype contract,
-evidence, and rejected alternatives:
+any GPU backend, integer **arithmetic**, float32 raw kernels, distributed
+training, C++-side autograd, attention/Transformers. Automatic loader
+**discovery** does not exist either, at any milestone — see §12. Full dtype
+contract, evidence, and rejected alternatives:
 `docs/native_dtype_float32_design.md`.
 
-Integer tensors are on that list **and are the subject of the newly
-approved Phase K**, whose contract is
-`docs/native_integer_tensors_design.md`. The two facts coexist, and K1
-sharpened rather than removed the distinction: **`int64` is an internal
-C++ representation, not a supported tensor dtype.** It is not in
-`SUPPORTED_DTYPES`, `normalize_dtype("int64")` raises, the Python dtype
-tables do not know the name, and **no supported wrapper or public Python
-API can allocate or wrap `int64` storage — only the raw private C ABI
-can, for isolation and barrier testing.** No public integer constructor,
-`argmax`, or index selection exists, and none may be described as existing
-until the milestone that ships it — K2 for the `INDEX_DTYPES` registry and
-the one public door, K3 and K4 for the operations (§12).
+Integer *tensors* are the subject of the newly approved Phase K, whose
+contract is `docs/native_integer_tensors_design.md`, and **K2 shipped
+one**. The distinction that row used to carry is now carried by the
+taxonomy instead, and it is sharper rather than weaker: **`int64` is an
+index/result dtype, not a supported compute dtype.** It is **not** in
+`SUPPORTED_DTYPES`, `normalize_dtype("int64")` raises permanently, and no
+generic constructor accepts it; it **is** in the separate
+`INDEX_DTYPES == ("int64",)` row, and
+**`NativeTensor.from_int64_array` is the one public construction and
+host-ingress door in the repository through which an `int64` buffer can
+come into existence** (it asks `cpp._normalize_index_dtype`, the
+`INDEX_DTYPES` registry gate, before inspecting its input or allocating) —
+public
+`NativeStorage(size, dtype="int64")` stays prohibited, and the Storage and
+Core ingress helpers stay underscore-private. An `int64` tensor supports
+metadata, the existing views (`reshape`/`transpose`/`T`/`narrow`),
+`contiguous_copy`, `close()`, and exact host inspection (`to_numpy`,
+`item`, `tolist`) — and **nothing else**. No integer arithmetic,
+reduction, autograd, parameter, buffer, optimizer state, or checkpoint
+entry exists; no `argmax` and no index selection exists; and none may be
+described as existing until the milestone that ships it — K3 and K4 for
+the operations (§12).
 
 ---
 
@@ -599,7 +609,7 @@ that changes the public API or the examples updates the matching document
   Record it that way rather than rewriting it: "the phase that came next"
   and "the phase that was always planned next" are different facts.
 - **Native line: Phase K — Native Integer Tensors and Indexing — is the
-  newly approved phase and is the latest phase, and only K0 and K1 have landed.**
+  newly approved phase and is the latest phase, and only K0, K1, and K2 have landed.**
   Authority
   `docs/native_integer_tensors_design.md`. **K0 is architecture, contract,
   status, and guardrails only and added no runtime behavior at all**: no
@@ -623,19 +633,41 @@ that changes the public API or the examples updates the matching document
   gained the guard **because** they can now record a rejection, and stay
   unhooked, so `_CHECKED_KERNELS` is unchanged at 36. CTests **24 → 25**;
   **no** C ABI symbol, public name, registry value, or version moved.
-  Every other §3 row is exactly what Phase J left.
-  **`int64` is not a supported native tensor dtype**, the Python dtype
-  tables do not know the name, **no supported wrapper or public Python API
-  can allocate or wrap `int64` storage — only the raw private C ABI can**,
-  no public integer constructor, `argmax`, or index selection exists, and
-  **K2 through K9 are
-  unstarted** — public construction begins at K2. The one public capability
-  change of the phase is a separate `INDEX_DTYPES == ("int64",)` row at
-  **K2**; **`SUPPORTED_DTYPES` never gains `int64`** and
-  `normalize_dtype("int64")` keeps raising, so no generic constructor
-  changes what it accepts at any milestone, and every reachability barrier
-  landed at **K1**, before an integer tensor can be constructed at all:
-  **prove first, then promise.** The phase's C ABI maximum is **56**
+  **K2 made the `int64` tensor publicly constructible, atomically, and
+  moved no other capability**: `_DTYPE_CODES` / `_DTYPE_ITEM_SIZES` /
+  `_DTYPE_NUMPY` gained `int64` (code **2**, 8 bytes, `numpy.int64`) and
+  `_CHECKED_HOST_ARRAYS` an entry **reusing** the existing
+  `_CHECKED_I64_ARRAY`; `INDEX_DTYPES == ("int64",)` and
+  `backend_info()["index_dtypes"]` appeared with `SUPPORTED_DTYPES`
+  **unmoved**; the Phase-I no-drift guard **generalized** to
+  `set(_DTYPE_CODES) == set(SUPPORTED_DTYPES) | set(INDEX_DTYPES)` rather
+  than being deleted; `_normalize_index_dtype` (no default, `None`
+  rejected) and the `_is_index_dtype` / `_is_tensor_dtype` /
+  `_require_tensor_dtype` predicates arrived; the private
+  `NativeStorage._from_int64_array` and
+  `NativeTensorCore._from_int64_array` exact ingress arrived, allocating
+  through the **zeroed** `_typed` so §27.3 holds and the H1 audit gains no
+  row; `NativeStorage.copy_from` split by role, so an index destination
+  requires an already-exact host array; `contiguous_copy`'s index arm
+  allocates zeroed while its floating arm keeps H1 uninitialized; and
+  **exactly two gates widened** — `NativeTensorCore.__init__` and
+  `NativeTensor.__init__`, from floating to floating-or-index. The public
+  delta is **three `NativeTensor` names** — `from_int64_array`, the one
+  public construction/host-ingress door, plus the dtype-general
+  host-inspection `item()` and `tolist()`, which construct nothing — and
+  **nothing else**: no C ABI symbol (still **54**), no
+  `__all__` change (still **25**), no CTest, example, benchmark, or version
+  change. Every other §3 row is exactly what Phase J left.
+  **`int64` is still not a supported native tensor dtype** — it is an
+  index/result dtype in its own row — `normalize_dtype("int64")` keeps
+  raising, **no generic constructor changed what it accepts**, and every
+  K1 barrier is re-proved against a real integer tensor in
+  `tests/test_native_int64_tensor.py`. No `argmax`, no index selection, no
+  integer arithmetic or reduction, no integer autograd, parameter, buffer,
+  optimizer state, or checkpoint entry, and no casting or promotion exists,
+  and **K3 through K9 are unstarted**. Every reachability barrier landed at
+  **K1**, one milestone before an integer tensor could be constructed at
+  all: **prove first, then promise.** The phase's C ABI maximum is **56**
   (54 + `argmax` at K3 + `index_select` at K4) and
   `experimental.__all__` stays at **25**
   throughout.

@@ -1661,7 +1661,7 @@ The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at 
 
 **Phase J — deterministic native data pipeline and mini-batching — is
 complete: milestones J0 through J9 have all landed, and J9 closed it.**
-**Phase K is the latest phase, and only K0 and K1 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after* Phase I
+**Phase K is the latest phase, and only K0, K1, and K2 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -2165,7 +2165,7 @@ benchmarked on its own; and the I0–I11 ladder, in which the public
 support registry changes at **I9** and at no earlier milestone.
 
 **Phase K — Native Integer Tensors and Indexing — is the newly approved
-successor, and only K0 and K1 have landed.** K0 is architecture, contract, status,
+successor, and only K0, K1, and K2 have landed.** K0 is architecture, contract, status,
 and guardrails, and it **added no runtime behavior at all**: no integer
 dtype or dtype code, no C++ enumerator, no kernel, no C ABI symbol, no
 public export, no capability-registry movement, no checkpoint or state
@@ -2185,12 +2185,35 @@ both optimizers, checkpoint entry validation, and every floating
 operation. It added no C ABI symbol, no public Python name, and no
 registry or version movement; the native CTest inventory went 24 → **25**.
 
-`int64` is **not**
-a supported native tensor dtype, the Python dtype tables do not know the
-name, **no supported wrapper or public Python API can allocate or wrap
-`int64` storage — only the raw private C ABI can, for isolation and
-barrier testing** — no public integer constructor, `argmax`, or index
-selection exists, and **K2 through K9 are unstarted**. Its contract is
+**K2 made the `int64` tensor publicly constructible, atomically, and moved
+no other capability.** The three Python dtype tables and the checked host
+binding learned `"int64"` (code 2, 8 bytes, `numpy.int64`, reusing the
+existing `int64` ndpointer object); `INDEX_DTYPES == ("int64",)` appeared
+beside an **unmoved** `SUPPORTED_DTYPES` and is reported as
+`backend_info()["index_dtypes"]`; the Phase-I no-drift guard was
+generalized to `set(_DTYPE_CODES) == set(SUPPORTED_DTYPES) |
+set(INDEX_DTYPES)` rather than deleted; the private exact ingress
+`NativeStorage._from_int64_array` / `NativeTensorCore._from_int64_array`
+arrived; and exactly two gates widened — `NativeTensorCore.__init__` and
+`NativeTensor.__init__`, from "floating" to "floating **or** index".
+**`NativeTensor.from_int64_array` is the one public API in the repository
+through which an `int64` buffer can come into existence**, beside the
+dtype-general `item()` and `tolist()`; it converts nothing, so a float
+array, an `int32` array, a `uint64` array, a `bool` array, an `object`
+array, a byte-swapped `>i8` array, a list, and a scalar are all rejected,
+while a non-contiguous exact-`int64` array is copied because layout
+normalization is not conversion. Views, copies, and exact host inspection
+work at `int64` through the machinery that already existed. K2 added no C
+ABI symbol (still 54), no experimental export (still 25), no CTest, no
+example, no benchmark, and no version change.
+
+`int64` is **still not**
+a supported native tensor dtype — it is an index/result dtype in its own
+registry, `normalize_dtype("int64")` keeps raising, and **no generic
+constructor changed what it accepts**. Every K1 barrier holds against a
+real integer tensor, and no public integer `argmax`, index selection,
+arithmetic, reduction, autograd, parameter, buffer, optimizer state, or
+checkpoint entry exists; **K3 through K9 are unstarted**. Its contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md),
 which locks one extended `NativeTensor` rather than a parallel integer
 class, `int64` as the only integer dtype and an exact non-differentiable
@@ -2200,7 +2223,7 @@ optimizer / buffer / checkpoint barriers enforced in Python **and**
 independently at the C ABI, complete `argmax` and forward-only
 `index_select` contracts, the Phase-J loader default left exactly as it
 is, **no checkpoint version change**, and a C ABI maximum of **56**. The
-**`SUPPORTED_DTYPES` never gains `int64`**: it remains the floating-compute registry permanently and `normalize_dtype("int64")` keeps raising, so **no generic constructor changes what it accepts at any milestone**. The one public registry movement of the phase is a separate `INDEX_DTYPES == ("int64",)` row, and it appears at **K2**, in the same commit as the public constructor and one milestone after every reachability barrier has landed at **K1**.
+**`SUPPORTED_DTYPES` never gains `int64`**: it remains the floating-compute registry permanently and `normalize_dtype("int64")` keeps raising, so **no generic constructor changes what it accepts at any milestone**. The one public registry movement of the phase is a separate `INDEX_DTYPES == ("int64",)` row, and it appeared at **K2**, in the same commit as the public constructor and one milestone after every reachability barrier had landed at **K1**.
 
 Beyond Phase K (**not started**, and nothing approved): further dtypes or
 devices, the CUDA runtime, AMP work, and Transformer/text and distributed

@@ -266,10 +266,18 @@ def test_the_checked_bindings_are_unchanged_ndpointers():
     assert cpp._CHECKED_F32_ARRAY is np.ctypeslib.ndpointer(
         dtype=np.float32, flags="C_CONTIGUOUS")
     assert cpp._CHECKED_F32_ARRAY._dtype_ == np.dtype(np.float32)
+    # Phase K, milestone K2: the int64 host-buffer entry deliberately
+    # **reuses the existing** ``_CHECKED_I64_ARRAY`` — the object the
+    # cross-entropy class labels already cross on — rather than building a
+    # second ndpointer from the same arguments. One binding cannot diverge
+    # from itself in what it accepts, which is the whole reason it is
+    # spelled as a reuse rather than as a second construction.
     assert cpp._CHECKED_HOST_ARRAYS == {
         "float64": cpp._CHECKED_F64_ARRAY,
         "float32": cpp._CHECKED_F32_ARRAY,
+        "int64": cpp._CHECKED_I64_ARRAY,
     }
+    assert cpp._CHECKED_HOST_ARRAYS["int64"] is cpp._CHECKED_I64_ARRAY
 
 
 @needs_native

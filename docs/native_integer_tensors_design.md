@@ -18,8 +18,8 @@ statements, and only the first is true here. Phase K was not part of the
 Phase-I roadmap, was not planned during Phase J, and did not exist before
 the branch that carries this document.
 
-**Phase-K status: K0 and K1 complete. K0 and K1 are the only completed
-Phase-K milestones. K2 through K9 are unstarted.**
+**Phase-K status: K0, K1, and K2 complete. K0, K1, and K2 are the only
+completed Phase-K milestones. K3 through K9 are unstarted.**
 
 **K0 adds no runtime behavior.** No integer dtype, no dtype code, no C++
 enumerator, no storage change, no kernel, no C ABI symbol, no ctypes
@@ -40,71 +40,97 @@ barrier, and nothing else.** What is now true internally: `TfDtype` /
 other handle-based export refuses an `int64` operand through the new
 hidden-visibility `tf::require_floating` guard.
 
-What is **not** true, and is asserted false by test: there is no public
-`int64` Python capability of any kind. The Python dtype tables
+What was **not** true at K1, and was asserted false by test then: there was
+no public `int64` Python capability of any kind. The Python dtype tables
 (`_DTYPE_CODES`, `_DTYPE_ITEM_SIZES`, `_DTYPE_NUMPY`,
-`_CHECKED_HOST_ARRAYS`) are **untouched at K1**, so **no supported
-TensorForge wrapper or public Python API can allocate or wrap `int64`
-storage at K1; only the raw private C ABI can represent it, for isolation
-and barrier testing.** **Public integer construction begins at K2**, in
-one commit with `INDEX_DTYPES`. K1 added **no** C ABI symbol, **no** public
-Python name, **no** registry value, and **no** version change; it added one
-native CTest (24 → **25**) and moved no other inventory.
+`_CHECKED_HOST_ARRAYS`) were **untouched at K1**, so no supported
+TensorForge wrapper or public Python API could allocate or wrap `int64`
+storage at K1; only the raw private C ABI could represent it, for isolation
+and barrier testing. K1 added **no** C ABI symbol, **no** public Python
+name, **no** registry value, and **no** version change; it added one native
+CTest (24 → **25**) and moved no other inventory.
 
-**`int64` is not a supported TensorForge native tensor dtype today.** The
+**K2 made the `int64` tensor publicly constructible, and it landed
+atomically** — splitting it would have opened exactly the window §32.1
+forbids. What is now true: the three Python dtype tables and the host
+binding know `"int64"`; `INDEX_DTYPES == ("int64",)` exists beside an
+**unmoved** `SUPPORTED_DTYPES` and is reported as
+`backend_info()["index_dtypes"]`; `NativeStorage._from_int64_array` and
+`NativeTensorCore._from_int64_array` are the private, exact,
+non-converting ingress; the `NativeTensorCore.__init__` and
+`NativeTensor.__init__` gates widened from "floating" to "floating **or**
+index" and to nothing else; and **`NativeTensor.from_int64_array` is the
+one public API in the repository through which an `int64` buffer can come
+into existence**, beside the dtype-general `item()` and `tolist()`. Views,
+copies, and host inspection work at `int64` through the machinery that
+already existed. K2 added **no** C ABI symbol, **no** experimental export,
+**no** CTest, **no** example, **no** benchmark, and **no** version change
+of any kind, and every barrier it could meet had already landed at K1.
+
+**`int64` is not a supported TensorForge native tensor dtype**, at K2 or
+ever. It is an **index/result** dtype, in a separate registry, and the
+distinction is the whole of the phase's taxonomy (§5.1). The compute
 boundary is exactly what Phase I established and Phase J left untouched,
-and K1 moved none of it either:
+and neither K1 nor K2 moved any of it:
 
-| Row | Value at K0 | Value at K1 |
-|---|---|---|
-| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
-| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
-| `UNSUPPORTED` | `("cuda", "amp")` | unchanged |
-| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged |
-| `normalize_dtype(None)` | `"float64"` | unchanged |
-| `normalize_dtype("int64")` | raises `ValueError` | unchanged |
-| `backend_info()["dtype"]` | `"float64"` | unchanged |
-| `backend_info()["stable_framework_integration"]` | `False` | unchanged |
-| `INDEX_DTYPES` | absent | absent — **K2** |
-| Python `_DTYPE_CODES` | `float64`, `float32` | unchanged |
-| C++ `TfDtype` | `FLOAT64`, `FLOAT32` | **+ `INT64 = 2`** |
-| Native checkpoint format · version · accepted | `tensorforge.native_checkpoint` · **3** · `(1, 2, 3)` | unchanged |
-| In-memory optimizer state version | **1** | unchanged |
-| Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` | unchanged |
-| Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` | unchanged |
-| Exported production `tf_*` symbols | **54** | **54** |
-| Experimental Python exports | **25** | **25** |
-| Native CTests · examples · benchmarks | **24** · **16** · **9** | **25** · **16** · **9** |
+| Row | Value at K0 | Value at K1 | Value at K2 |
+|---|---|---|---|
+| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged | unchanged |
+| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged | unchanged |
+| `UNSUPPORTED` | `("cuda", "amp")` | unchanged | unchanged |
+| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged | unchanged |
+| `normalize_dtype(None)` | `"float64"` | unchanged | unchanged |
+| `normalize_dtype("int64")` | raises `ValueError` | unchanged | unchanged |
+| `backend_info()["dtype"]` | `"float64"` | unchanged | unchanged |
+| `backend_info()["stable_framework_integration"]` | `False` | unchanged | unchanged |
+| `INDEX_DTYPES` | absent | absent | **`("int64",)`** |
+| Python `_DTYPE_CODES` | `float64`, `float32` | unchanged | **+ `int64: 2`** |
+| C++ `TfDtype` | `FLOAT64`, `FLOAT32` | **+ `INT64 = 2`** | unchanged |
+| Public integer constructor | absent | absent | **`NativeTensor.from_int64_array`** |
+| Native checkpoint format · version · accepted | `tensorforge.native_checkpoint` · **3** · `(1, 2, 3)` | unchanged | unchanged |
+| In-memory optimizer state version | **1** | unchanged | unchanged |
+| Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` | unchanged | unchanged |
+| Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` | unchanged | unchanged |
+| Exported production `tf_*` symbols | **54** | **54** | **54** |
+| Experimental Python exports | **25** | **25** | **25** |
+| Native CTests · examples · benchmarks | **24** · **16** · **9** | **25** · **16** · **9** | **25** · **16** · **9** |
 
-Every one of those rows is what Phase I and Phase J left, and **K0 moves
-none of them**. **`SUPPORTED_DTYPES` never gains `int64` — not in Phase K
-and not afterwards** (§5). It is, and permanently remains, the **floating
-compute** registry, and `normalize_dtype("int64")` keeps raising
-`ValueError` forever. What Phase K adds instead is one **separate, clearly
-named** public registry, `INDEX_DTYPES == ("int64",)`, reported beside it
-as `backend_info()["index_dtypes"]`, and it appears exactly once, at
-**K2**, in the same commit as the public integer constructor — never
-earlier. That ordering — **prove first, then promise** — is the rule Phase
-G used for `dropout` and Phase I used for `float32`, applied unchanged.
+**`SUPPORTED_DTYPES` never gains `int64` — not in Phase K and not
+afterwards** (§5). It is, and permanently remains, the **floating compute**
+registry, and `normalize_dtype("int64")` keeps raising `ValueError`
+forever. What Phase K added instead is one **separate, clearly named**
+public registry, `INDEX_DTYPES == ("int64",)`, and it appeared exactly
+once, at **K2**, in the same commit as the public integer constructor —
+never earlier. That ordering — **prove first, then promise** — is the rule
+Phase G used for `dropout` and Phase I used for `float32`, applied
+unchanged.
 
-The consequence is the property this contract is built around: **no
-existing generic constructor changes what it accepts, at any Phase-K
-milestone.** `NativeStorage(...)`, `NativeStorage.from_array`,
-`NativeTensorCore.from_array` / `zeros` / `full`, and
-`NativeTensor.from_array` / `zeros` / `full` all validate through
-`normalize_dtype`, which permanently rejects `"int64"` — so there is no
-milestone at which one of them could have been narrowed and was not (§5.4).
+The consequence is the property this contract is built around, and K2
+preserved it exactly: **no existing generic constructor changed what it
+accepts, at any Phase-K milestone.** `NativeStorage(...)`,
+`NativeStorage.from_array`, `NativeTensorCore.from_array` / `zeros` /
+`full`, and `NativeTensor.from_array` / `zeros` / `full` all validate
+through `normalize_dtype`, which permanently rejects `"int64"` — so there
+is no milestone at which one of them could have been narrowed and was not
+(§5.4), and the one integer door is a **new** name rather than a widened
+old one.
 
-Five things no document, comment, test, or status surface may say, because
+Four things no document, comment, test, or status surface may say, because
 none of them is true and the guardrails in `tests/test_native_phase_k.py`
 fail if one is written:
 
-- no native integer **tensor** exists — K1 shipped a *representation*, and
-  the two are not the same thing;
+- `int64` is a *supported* dtype — it is an **index/result** dtype in its
+  own registry, and `SUPPORTED_DTYPES` is the floating-compute registry;
 - no `argmax` is implemented;
 - no index selection is available;
-- Phase K is **not** complete;
-- no milestone after K1 has landed.
+- Phase K is **not** complete, and no milestone after K2 has landed.
+
+One thing that was on this list and has been **moved rather than deleted**:
+"no native integer tensor exists" was true through K1, because K1 shipped a
+*representation* and the two are not the same thing. K2 shipped the tensor,
+so the sentence is now false and the guardrail asserts its replacement —
+the tensor exists, is publicly constructible through exactly one door, and
+is still not a supported compute dtype.
 
 ---
 
@@ -117,7 +143,12 @@ behind a plain C ABI loaded with `ctypes`, with its own dtype-tagged
 storage, strided runtime, Python-managed autograd, modules, losses, a
 metric, optimizers, an explicit RNG, pickle-free checkpoints, and a
 deterministic data pipeline. It computes at **float64 and float32** and at
-no other width. It has no integer tensor of any kind.
+no other width, and it still does. **Before Phase K** it had no integer
+tensor of any kind — that is the baseline this contract was written
+against, and it is a statement about the pre-K1 runtime rather than about
+today's. K1 added the internal `int64` representation and K2 made the
+tensor publicly constructible; `int64` is an **index/result** dtype in its
+own registry and is still not a supported compute dtype (§5.1).
 
 ### 1.2 What Phase K is
 
@@ -154,20 +185,32 @@ why.
 
 ### 2.1 The concrete gap
 
-Three places in the shipped runtime say the same thing in different words.
+**This is the gap as it stood when K0 was written — before K1 — and it is
+recorded in the past tense because K2 closed the dtype half of it.** Three
+places in the shipped runtime said the same thing in different words.
 
-`src/tensorforge/experimental/native_metrics.py` states it most directly:
+`src/tensorforge/experimental/native_metrics.py` stated it most directly:
 `native_accuracy` materializes its logits through the public `to_numpy()`
-boundary and takes a NumPy `argmax`, **because there is no native integer
-dtype for an index-producing reduction to return**. The capability
-inventory in `src/tensorforge/backends/cpp.py` records the same fact beside
-`NATIVE_METRICS`. `NativeTensorDataset.target_batch` records the third
-form: class targets are host `int64` metadata at every width, and no native
-integer tensor exists, is needed, or is implied.
+boundary and takes a NumPy `argmax`, **because before K1 the runtime had
+no native integer dtype for an index-producing reduction to return**.
+The capability inventory in `src/tensorforge/backends/cpp.py` recorded the
+same fact beside `NATIVE_METRICS`. `NativeTensorDataset.target_batch`
+recorded the third form: class targets are host `int64` metadata at every
+width, and no native integer tensor existed, was needed, or was implied.
 
-None of those is a defect. Each is an accurate statement about a runtime
-whose only element types are `float` and `double`. Phase K exists to change
-the underlying fact rather than the wording.
+None of those was a defect. Each was an accurate statement about a runtime
+whose only element types were `float` and `double`. Phase K exists to
+change the underlying fact rather than the wording.
+
+**Where each of the three stands now.** K2 gave the runtime an exact
+`int64` index/result dtype, so the first two *reasons* expired while both
+*conclusions* stand, and §20.3 records the correction: `native_metrics.py`
+and the `NATIVE_METRICS` comment now say that a native `argmax` is absent
+because no milestone has shipped one — K3 owns it — rather than because
+its result type is inexpressible. The third is unchanged and stays
+unchanged: classification targets remain exact host-side label metadata
+under the Phase-E contract, and no Phase-K milestone widens cross-entropy
+or the data pipeline to accept a `NativeTensor` target (§19, §20.1–§20.2).
 
 ### 2.2 Why `int64` and why now
 
@@ -513,12 +556,36 @@ found it, and §33 forbids it.
 Two private tables exist and stay private. Neither is a public registry and
 neither is a generic dtype framework.
 
-- `_DTYPE_CODES` — **internally representable**. Gains `"int64": 2` at
+- `_DTYPE_CODES` — **internally representable**. Gained `"int64": 2` at
   **K2**, in the same commit as `INDEX_DTYPES`, so the two never disagree.
+  `_DTYPE_ITEM_SIZES` and `_DTYPE_NUMPY` moved with it, and
+  `_CHECKED_HOST_ARRAYS` gained an entry bound to the **already existing**
+  `_CHECKED_I64_ARRAY` object.
 - `_normalize_index_dtype(dtype)` — the private validator measured against
   the public `INDEX_DTYPES` tuple, with `normalize_dtype`'s exact
   canonicalization, `TypeError` for a non-string, and shape of
-  `ValueError`. Its only caller is the one integer construction door.
+  `ValueError`. It has **no default** and does not accept `None`: every
+  other dtype validator in the module treats `None` as `"float64"`, and an
+  index dtype has no such fallback to offer.
+  **It is the canonical registry gate for the phase's one fixed-format
+  construction door, and it has exactly one production caller**:
+  `NativeTensor.from_int64_array` asks it at §26.1 step 2a — after both
+  `requires_grad` checks and before the input is inspected, before
+  `NativeTensorCore._from_int64_array` is entered, and before anything is
+  allocated. The door names its dtype rather than accepting one, and that
+  name is still measured against the public registry, so `INDEX_DTYPES`
+  and the public door cannot disagree: a registry that stopped listing
+  `"int64"` would close the door at the same pre-allocation step every
+  other rejection uses. **No floating constructor calls it, at any layer**,
+  and it is not a second public registry, not a way around
+  `normalize_dtype`, and not a generic dtype framework.
+- `_is_index_dtype` / `_is_tensor_dtype` / `_require_tensor_dtype` — the
+  K2 predicates behind the one widened gate. `_is_tensor_dtype` is computed
+  from the two registries rather than stored as a third tuple, because a
+  derived value materialized once is a third thing that can drift from the
+  two it derives from. `_require_tensor_dtype` is asked at
+  `NativeTensorCore.__init__` and `NativeTensor.__init__` and **nowhere
+  else**; every other barrier still asks `_require_floating_dtype`.
 
 **No new floating validator is needed, and none is added.** Under B,
 `normalize_dtype` *is* the floating-compute validator, so every place that
@@ -556,9 +623,9 @@ accepted set never changes.
 | Path | Validator today | Phase-K resolution |
 |---|---|---|
 | `NativeStorage.__init__(size, dtype=…)` — public | `normalize_dtype` | **unchanged; rejects `int64` permanently.** Public storage construction stays floating-only (§5.5) |
-| `NativeStorage.__init__(…, _trusted_dtype=True)` | `_normalize_internal_dtype` | **accepts `int64` from K2** — the private allocation route |
+| `NativeStorage.__init__(…, _trusted_dtype=True)` | `_normalize_internal_dtype` | **accepts `int64` since K2** — the private allocation route |
 | `NativeStorage.from_array` | `normalize_dtype`, then `np.ascontiguousarray(values, dtype=…)` | **unchanged; rejects `int64` permanently.** It *casts*, so it may never be an integer ingress |
-| `NativeStorage._typed` | `_normalize_internal_dtype` | **accepts `int64` from K2** (allocation only) |
+| `NativeStorage._typed` | `_normalize_internal_dtype` | **accepts `int64` since K2** (allocation only) |
 | `NativeStorage._uninitialized` | `_normalize_internal_dtype` | **narrowed to `normalize_dtype` at K1** — no `int64` destination uses the uninitialized path (§27.3), and the H1 poison audit is left untouched |
 | `NativeStorage._typed_from_array` | `_normalize_internal_dtype` + cast | **narrowed to `normalize_dtype` at K1** — it casts |
 | `NativeStorage._from_int64_array` | — | **new at K2**, private: exact-dtype validation, `np.ascontiguousarray(values)` with **no** `dtype=` argument, allocation through the zeroed `_typed` |
@@ -566,7 +633,7 @@ accepted set never changes.
 | `NativeTensorCore.zeros` (public arm) | `normalize_dtype` | **unchanged; rejects `int64`** |
 | `NativeTensorCore.zeros(_trusted_dtype=True)` | `_normalize_internal_dtype` | **narrowed to `normalize_dtype` at K1** — its callers are `sum` and `narrow_backward`, both floating |
 | `NativeTensorCore.full` | `normalize_dtype` → `_typed_full` | **unchanged; rejects `int64`** |
-| `NativeTensorCore._typed` | `_normalize_internal_dtype` | **accepts `int64` from K2** |
+| `NativeTensorCore._typed` | `_normalize_internal_dtype` | **accepts `int64` since K2** |
 | `NativeTensorCore._uninitialized` | `_normalize_internal_dtype` | **narrowed to `normalize_dtype` at K1** |
 | `NativeTensorCore._typed_from_array` | `_normalize_internal_dtype` + cast | **narrowed to `normalize_dtype` at K1** |
 | `NativeTensorCore._typed_full` | `_normalize_internal_dtype`, fills through `tf_storage_fill(double)` | **narrowed to `normalize_dtype` at K1** — a `double` scalar is inexact above 2⁵³ |
@@ -788,20 +855,33 @@ array is the whole of destruction — its array new-expression creates a genuine
 `tf::dtype_is_int64` is added only if a call site needs it; the *rule* every
 kernel uses is `tf::require_floating` (§22.4), not a per-dtype predicate.
 
-### 7.3 The Python side at K1
+### 7.3 The Python side at K2
+
+**Corrected heading.** This section was written at K0 under the title *"The
+Python side at K1"*, which contradicted the header, §5.2, §32.1, and the
+K1 ladder row — all four of which say the Python dtype tables are
+**untouched at K1**, and all four of which are what K1 actually shipped.
+The work below is K2's and always was; K2 fixed the heading rather than the
+four statements that agreed with each other, and records the correction
+here rather than silently renumbering.
 
 `_DTYPE_CODES["int64"] = 2`, `_DTYPE_ITEM_SIZES["int64"] = 8`,
-`_DTYPE_NUMPY["int64"] = np.int64`, and a fourth entry in
+`_DTYPE_NUMPY["int64"] = np.int64`, and a **third** entry in
 `_CHECKED_HOST_ARRAYS` bound to
 `np.ctypeslib.ndpointer(dtype=np.int64, flags="C_CONTIGUOUS")` — which is
 the **already existing** `_CHECKED_I64_ARRAY` object, reused rather than
 rebuilt, so the class-label binding and the storage binding cannot diverge
-in what they accept.
+in what they accept. (K0 said "a fourth entry", counting the three
+`_CHECKED_*_ARRAY` objects rather than the two mapping entries; the table
+had two members before K2 and has three now.)
 
-`NativeStorage._typed(size, "int64")` becomes a legal private call. The
-public `NativeStorage(size, dtype=...)` constructor validates through
-`normalize_dtype`, which never accepts `"int64"` — so **public storage
-construction at `int64` is prohibited permanently** (§5.5).
+`NativeStorage._typed(size, "int64")` is a legal private call from K2 on,
+and is the **one** allocator that can produce an `int64` destination — for
+`_from_int64_array` and for the integer arm of `contiguous_copy`, and for
+nothing else. The public `NativeStorage(size, dtype=...)` constructor
+validates through `normalize_dtype`, which never accepts `"int64"` — so
+**public storage construction at `int64` is prohibited permanently**
+(§5.5).
 
 ### 7.4 Ownership, exactly as it already is
 
@@ -851,8 +931,14 @@ private**, neither exported, neither a supported way around the public
 validator, exactly the standing rule for the existing `_typed*` family.
 `NativeStorage` and `NativeTensorCore` gain **no public integer
 constructor at all**, so `NativeTensor.from_int64_array` is the one public
-name in the repository through which an `int64` buffer can come into
-existence.
+**construction door** in the repository through which an `int64` buffer
+can come into existence.
+
+That claim is about *construction*, and it is deliberately not a claim
+about the size of the public delta: K2 also adds the dtype-general
+host-inspection methods `NativeTensor.item()` and `NativeTensor.tolist()`,
+which construct nothing and work at every dtype a tensor may carry
+(§23.1). Three public names, one public door.
 
 ### 8.2 The strict input contract
 
@@ -944,10 +1030,9 @@ A closed tensor rejects before any transfer.
 
 ### 8.8 `item()` and `tolist()`
 
-Neither exists today. Both are introduced at **K2**, and both are
-introduced **dtype-general** rather than integer-only, because each has one
-meaning across every dtype and two half-implementations would be worse than
-one:
+Neither existed before K2. Both were introduced there, and both
+**dtype-general** rather than integer-only, because each has one meaning
+across every dtype and two half-implementations would be worse than one:
 
 - `item()` requires `numel == 1` at any rank; returns a built-in `int` for
   `int64` and a built-in `float` for `float32`/`float64` (the float32
@@ -1847,17 +1932,26 @@ exactly as it is. It is honest, it is documented as a reporting helper, and
 a native `argmax` does not oblige anyone to rewrite it in the same
 milestone.
 
-There is one **required documentation reconciliation** and K0 assigns it
-precisely: `native_metrics.py`'s module docstring and the `NATIVE_METRICS`
-comment in `backends/cpp.py` both currently state that there is no native
-`argmax` **because the runtime has no integer dtype**. That statement is
-accurate at K0 and becomes false at **K3**, so K3 must update both — and
-must update them to the *new* accurate statement ("a native `argmax`
-exists; this metric still reports through the host boundary, deliberately")
-rather than deleting the honesty.
+There is one **required documentation reconciliation**, and K0 assigned it
+to the wrong milestone. `native_metrics.py`'s module docstring and the
+`NATIVE_METRICS` comment in `backends/cpp.py` both stated that there is no
+native `argmax` **because the runtime has no integer dtype**. K0 recorded
+that this becomes false at **K3**, reasoning about the `argmax` half — but
+the sentence is a conjunction, and its *second* conjunct expired one
+milestone earlier: **K2 gave the runtime an exact `int64` index/result
+dtype**, so from K2 the stated reason is simply untrue.
 
-`tests/test_native_phase_k.py` asserts that the statement is accurate
-*today*; the K3 guardrails will assert the replacement.
+**K2 therefore corrected the reason and left the conclusion**, which is
+still accurate and stays accurate until K3: there is deliberately no native
+`argmax`, the dtype an index-producing reduction would return now exists,
+and the operation belongs to a later milestone. Both surfaces now say that.
+
+**K3 still owns the other half** and must update both again when `argmax`
+ships, to the statement K0 specified — "a native `argmax` exists; this
+metric still reports through the host boundary, deliberately" — rather than
+deleting the honesty. Recording the misassignment here rather than quietly
+re-dating it is the point: a contract that predicted the wrong milestone
+should say so.
 
 ### 20.4 Sequencing
 
@@ -2166,6 +2260,18 @@ than a shorthand:
 | K4 | `NativeTensor`, `NativeTensorCore` | `+ index_select(axis, indices)`; `TENSOR_CORE_OPS` gains `"index_select"` |
 | K5–K9 | none | no public name |
 
+**K2's row is three names, and exactly one of them is a door.**
+`from_int64_array` is the only public construction or host-ingress door —
+the one public API in the repository through which an `int64` buffer can
+come into existence. `item()` and `tolist()` are **dtype-general
+host-inspection** methods: they construct nothing, allocate no native
+storage, and behave identically at `float64`, `float32`, and `int64`. Both
+statements are true at once, and neither may be collapsed into the other:
+the row is **three names**, exactly **one** of which is a construction
+door, so the only singular claim that holds is the one about the *door*.
+`item` / `tolist` are not removed to make a shorter sentence work, and
+Storage and Core integer ingress stay private (§8.1, §23.4).
+
 ### 23.2 `tensorforge.experimental.__all__` stays at 25
 
 **Phase K adds no new public experimental name at any milestone.** Every
@@ -2264,6 +2370,14 @@ freezing prose.
 1. requested API route (`from_int64_array` versus a floating constructor
    with `dtype="int64"`);
 2. `requires_grad` type, then value;
+2a. the **index/result dtype authority** — `cpp._normalize_index_dtype`
+   measured against the public `INDEX_DTYPES` registry (§5.2). It is the
+   canonical registry gate for this fixed-format door, and it is asked
+   here: after both `requires_grad` checks, before the input is inspected,
+   before the private Core ingress is entered, and before anything is
+   allocated. A sub-step rather than a renumbering, because it is a
+   *registry* question asked of a constructor that carries no `dtype`
+   argument — not a new check on a caller's value;
 3. exact input type (`numpy.ndarray`, not a subclass);
 4. exact NumPy dtype including native byte order;
 5. rank and shape validity;
@@ -2516,9 +2630,9 @@ existing rule plus the ones this phase makes specific.
 
 ## 32. Final milestone ladder
 
-Ten milestones, **one purpose each**. K0 is complete; K1 through K9 are
-unstarted. No milestone combines two major operations, no milestone exists
-to preserve a numbering, and K9 is the closure.
+Ten milestones, **one purpose each**. K0, K1, and K2 are complete; K3
+through K9 are unstarted. No milestone combines two major operations, no
+milestone exists to preserve a numbering, and K9 is the closure.
 
 ### 32.1 The window proof — there is no unsafe intermediate state
 
@@ -2530,25 +2644,31 @@ across the ladder.
 
 **State after K0.** `int64` does not exist anywhere. Nothing to prove.
 
-**State after K1 — today.** An `int64` *buffer* can be allocated, but **no
-supported TensorForge wrapper or public Python API can allocate or wrap
-`int64` storage at K1; only the raw private C ABI can represent it, for
+**State after K1.** An `int64` *buffer* could be allocated, but **no
+supported TensorForge wrapper or public Python API could allocate or wrap
+`int64` storage at K1; only the raw private C ABI could represent it, for
 isolation and barrier testing** — a direct `tf_storage_create_typed(n, 2)`
-through `ctypes`. It cannot be reached from Python's own API surface,
-because `_DTYPE_CODES` has no `"int64"` entry, so `NativeStorage._typed`,
-`_uninitialized`, and the whole `_typed*` family reject the name before
-allocating. And even handed such a handle, nothing can be built over it:
-`NativeTensorCore`'s and `NativeTensor`'s constructors reject a
+through `ctypes`. It could not be reached from Python's own API surface,
+because `_DTYPE_CODES` had no `"int64"` entry, so `NativeStorage._typed`,
+`_uninitialized`, and the whole `_typed*` family rejected the name before
+allocating. And even handed such a handle, nothing could be built over it:
+`NativeTensorCore`'s and `NativeTensor`'s constructors rejected a
 non-floating storage or core.
-Meanwhile **every** barrier in §6.5 is already in place. So at K1 there is
-no `int64` tensor, no `int64` core, and no route to a parameter, a buffer,
-an optimizer, a graph, a checkpoint, or a floating kernel.
+Meanwhile **every** barrier in §6.5 was already in place. So at K1 there
+was no `int64` tensor, no `int64` core, and no route to a parameter, a
+buffer, an optimizer, a graph, a checkpoint, or a floating kernel.
 
-**State after K2.** An `int64` tensor exists and is publicly
-constructible — and every barrier it could meet landed **one milestone
-earlier** and is re-proved here against the real object. `INDEX_DTYPES`
-appears in the same commit, so the promise and the capability are never
-out of step in either direction.
+**State after K2 — today.** An `int64` tensor exists and is publicly
+constructible through exactly one door — and every barrier it could meet
+landed **one milestone earlier** and is re-proved against the real object
+in `tests/test_native_int64_tensor.py`. `INDEX_DTYPES` appeared in the same
+commit, so the promise and the capability were never out of step in either
+direction. Two gates widened and no others: `NativeTensorCore.__init__` and
+`NativeTensor.__init__`, from "floating" to "floating **or** index". Every
+generic constructor still rejects `"int64"`, `SUPPORTED_DTYPES` did not
+move, and the tensor is still refused by autograd, by `NativeParameter`, by
+`register_buffer` at both persistence values, by both optimizers, by
+checkpoint entry validation, and by every floating operation entry.
 
 **The specific windows this ordering closes**, each of which a more
 "natural" ladder would have opened:
@@ -2575,7 +2695,7 @@ than trusting the prose.
 |---|---|---|
 | **K0** | Architecture, taxonomy, API/ABI plan, and guardrails | **Complete.** This document, the status reconciliation, and `tests/test_native_phase_k.py`. Zero runtime. |
 | **K1** | `int64` representation **and every reachability barrier**, with the dtype reachable only through the C ABI | **Complete.** `tf::Dtype::Int64`, the transfer arms, `tf::require_floating` on every float-only export, the nine Python narrowings, every §6.5 barrier, `tests/test_native_integer_barriers.py`, and `cpp/tests/test_dtype_int64_storage.cpp`. No public name, no export, no registry movement. |
-| **K2** | The `int64` tensor: private storage ingress, construction, views, copies, host inspection, the one public door, and `INDEX_DTYPES` — **atomically** | *Unstarted.* |
+| **K2** | The `int64` tensor: private storage ingress, construction, views, copies, host inspection, the one public door, and `INDEX_DTYPES` — **atomically** | **Complete.** The three dtype tables and the host binding, `INDEX_DTYPES` and `backend_info()["index_dtypes"]`, the generalized no-drift invariant, `_normalize_index_dtype`, the private `_from_int64_array` pair, the two widened wrapper gates, `NativeTensor.from_int64_array` / `item()` / `tolist()`, and `tests/test_native_int64_tensor.py`. No export, no `__all__` change, no CTest, no example, no benchmark, no version change. |
 | **K3** | Native `argmax` | *Unstarted.* |
 | **K4** | `index_select`, forward only | *Unstarted.* |
 | **K5** | Compatibility proof — checkpoint, state, data pipeline, classification | *Unstarted.* |
@@ -2709,7 +2829,7 @@ no dependency.
   structural scans proving no floating entry and no float-only export
   escapes the audit).
 
-### K2 — The `int64` tensor, its public door, and `INDEX_DTYPES`
+### K2 — The `int64` tensor, its public door, and `INDEX_DTYPES` · complete
 
 **Layers:** `src/tensorforge/backends/cpp.py` (the three dtype tables, the
 host binding, `INDEX_DTYPES`, `_normalize_index_dtype`, `backend_info`,
@@ -2737,16 +2857,108 @@ would create exactly the window §32.1 forbids:
 - the **private** ingress helpers `NativeStorage._from_int64_array` and
   `NativeTensorCore._from_int64_array` — leading-underscore, unexported,
   and absent from the public delta;
-- §8 in full: **the one public door `NativeTensor.from_int64_array`**,
-  views and copies at `int64`, `to_numpy`, `item`, and `tolist`. It is the
-  **only** public name K2 adds, and the only public API in the repository
-  through which an `int64` buffer can be created.
+- §8 in full: **the one public construction door
+  `NativeTensor.from_int64_array`**, views and copies at `int64`,
+  `to_numpy`, `item`, and `tolist`.
+
+**The public API delta, stated exactly.** K2 adds **three** public
+`NativeTensor` method names — `from_int64_array`, `item`, and `tolist` —
+and the distinction between them is contractual, not cosmetic:
+
+- **`NativeTensor.from_int64_array` is the only public construction or
+  host-ingress door**: the one public API in the repository through which
+  an `int64` buffer can come into existence. That is a claim about
+  *construction*, and it is what "one door" means.
+- **`item` and `tolist` are dtype-general host-inspection methods.** They
+  construct nothing, allocate no native storage, and work identically at
+  `float64`, `float32`, and `int64`; they are public names K2 adds, and
+  they are not doors.
+- **Storage and Core integer ingress remain private.**
+  `NativeStorage._from_int64_array` and
+  `NativeTensorCore._from_int64_array` are leading-underscore, unexported,
+  and never appear in the public delta; neither class gains a **public**
+  `from_int64_array`, and no public integer constructor exists at either
+  lower layer.
+
+Describing the delta as a single **name** is therefore **wrong**, and no
+surface may do it: the only singular claim that holds is the one about the
+**construction door**. `item` and `tolist` are part of the delta and are
+not removed to make a shorter sentence true.
 
 Every K1 barrier is **re-proved against a real `int64` tensor object**, not
 merely against a dtype string.
 
 **No export. No `__all__` change. `SUPPORTED_DTYPES` unchanged — and it
 stays unchanged for the rest of the phase and afterwards.**
+
+**As landed.** One new test module and no new production module, example,
+benchmark, CTest, build option, or dependency. Everything above shipped in
+one commit, and the two facts a reader must not conflate — *"an integer
+tensor exists"* and *"`int64` is supported"* — stayed apart.
+
+- **Registries** — `INDEX_DTYPES = ("int64",)` beside an **unmoved**
+  `SUPPORTED_DTYPES`, reported as `backend_info()["index_dtypes"]`. The
+  union of the two is stated in prose and in `backend_info`'s docstring and
+  is deliberately **not** materialized as a fifth key. `_DTYPE_CODES`,
+  `_DTYPE_ITEM_SIZES`, and `_DTYPE_NUMPY` gained `int64` at code **2**, 8
+  bytes, `numpy.int64`, and `_CHECKED_HOST_ARRAYS` gained an entry bound to
+  the **already existing** `_CHECKED_I64_ARRAY` object. The Phase-I
+  no-drift guard was **generalized rather than deleted**, to
+  `set(_DTYPE_CODES) == set(SUPPORTED_DTYPES) | set(INDEX_DTYPES)`, and is
+  asserted as an exact equality rather than weakened to a subset check.
+- **Validators and predicates** — `_normalize_index_dtype` (no default,
+  `None` rejected, `TypeError` for a non-string), `_is_index_dtype`,
+  `_is_tensor_dtype` (computed from the two registries, never stored), and
+  `_require_tensor_dtype`. All private; none is exported.
+- **Exact ingress** — `_exact_host_array` is the shared validator:
+  `type(values) is np.ndarray`, then one `values.dtype != expected`
+  comparison that rejects every wrong width, both signedness errors,
+  `bool`, `object`, and a byte-swapped `>i8` array at once, then
+  non-empty. Only then `np.ascontiguousarray(values)` with **no** `dtype=`
+  argument — and **rank 0 is returned untouched**, because
+  `ascontiguousarray` promotes a 0-d array to shape `(1,)`, which would be
+  a silent rank change. `NativeStorage._from_int64_array` allocates through
+  the **zeroed** `_typed` (§27.3: no integer path uses the uninitialized
+  allocator, so the H1 audit table gains no row) and closes the storage on
+  any failure including `BaseException`;
+  `NativeTensorCore._from_int64_array` preserves the host shape exactly and
+  closes what it allocated if the view or wrapper construction fails.
+- **`copy_from` split by role** — the floating arm converts exactly as it
+  always has; an index destination requires an already-exact host array
+  through `_exact_host_array`. This is §8.3's *"integer ingress converts
+  nothing"* applied at the one other place an integer buffer can be
+  written, and it is why a `float64` array holding `[1.0, 2.0]` cannot
+  reach `int64` storage through any route.
+- **Two gates, and only two** — `NativeTensorCore.__init__` and
+  `NativeTensor.__init__` moved from `_require_floating_dtype` to
+  `_require_tensor_dtype`. Everything else still asks the floating
+  predicate, which is what keeps the unified object model safe.
+- **`contiguous_copy` destination** — the floating arm keeps its H1
+  uninitialized allocation and its poison test untouched; an index
+  destination takes the ordinary zeroed allocator.
+- **Public surface** — `NativeTensor.from_int64_array(values, *,
+  requires_grad=False)`, `NativeTensor.item()`, and
+  `NativeTensor.tolist()`. `requires_grad` is validated **first**, before
+  the array is examined and long before anything is allocated: a
+  non-`bool` raises `TypeError` and `True` raises `ValueError`. `item()`
+  and `tolist()` are dtype-general, built on `to_numpy()`, and return
+  built-in scalars with no NumPy scalar and no float intermediate.
+- **Proof** — `tests/test_native_int64_tensor.py`: the registry and table
+  invariants, exact construction at the signed extremes and beyond 2^53,
+  every rejection with its exception kind, host-mutation isolation, the
+  view/copy inventory with owner/borrower and idempotent-close behavior,
+  `to_numpy` / `item` / `tolist` exactness, the **complete K1 barrier
+  matrix re-driven against a real `NativeTensor.from_int64_array` result**
+  with a before/after fingerprint of the observable world after every
+  rejection, injected-failure cleanup at each allocating step, and the
+  absence half (no `argmax`, no `index_select`, 54 exports, 25 CTests, 25
+  experimental names).
+- **One K0 misassignment corrected** — §20.3's reconciliation of
+  `native_metrics.py` and the `NATIVE_METRICS` comment was assigned to K3,
+  but its *reason* clause ("the runtime has no integer dtype") expired at
+  K2. K2 corrected the reason and left the conclusion; K3 still owns the
+  `argmax` half. §7.3's heading was likewise corrected from K1 to K2, which
+  is the milestone the work it describes always belonged to.
 
 ### K3 — Native `argmax`
 
@@ -2881,10 +3093,16 @@ Phase K may be declared complete only when **every** item holds.
 3b. `tf_core_index_select` rejects a non-floating source, a non-floating
    destination, a source/destination dtype mismatch, and a non-`int64`
    index, and scans every index before writing anything (§22.9).
-3c. `NativeTensor.from_int64_array` is the **only** public integer
-   constructor; `NativeStorage._from_int64_array` and
+3c. `NativeTensor.from_int64_array` is the **only public construction or
+   host-ingress door** for an `int64` buffer, and it asks
+   `cpp._normalize_index_dtype` as its registry gate (§26.1 step 2a);
+   `NativeStorage._from_int64_array` and
    `NativeTensorCore._from_int64_array` are private and unexported, and
    public `NativeStorage(size, dtype="int64")` still raises.
+3d. The K2 public delta is **three** `NativeTensor` names —
+   `from_int64_array` (the one door) plus the dtype-general
+   host-inspection methods `item()` and `tolist()`, which construct
+   nothing — and no surface describes it as one name.
 4. `tensorforge.experimental.__all__` has exactly **25** names.
 5. Checkpoint format version **3** with `(1, 2, 3)` accepted; optimizer
    state version **1**; loader and sampler state version **1** with `(1,)`

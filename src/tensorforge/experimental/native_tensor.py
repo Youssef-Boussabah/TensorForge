@@ -70,10 +70,30 @@ the last action before returning, and every failure before that abandons
 it, so a failed forward consumes nothing. ``p == 0`` returns the input
 object itself and consumes nothing either.
 
+As of Phase K milestone K2, ``NativeTensor`` also carries the native line's
+**index/result dtype**. ``from_int64_array(values, *, requires_grad=False)``
+is the one public door through which an ``int64`` buffer can come into
+existence anywhere in the repository: it takes an exact ``numpy.int64``
+array and converts nothing — no dtype inference, no cast, no truncation, no
+widening, no byte swap, and no "it was integral anyway" allowance — so every
+value in ``[-(2**63), 2**63 - 1]`` survives, including the ones a float64
+detour would round. The resulting tensor uses the **same** ownership, view,
+copy, lifetime, and host-transfer machinery as a floating one:
+``reshape``/``transpose``/``T``/``narrow`` are still metadata-only borrowing
+views that cannot cast, ``contiguous_copy`` still allocates a fresh owning
+output, and ``to_numpy``/``item``/``tolist`` still return fresh independent
+host values. What it can never do is any of the roles Phase K fenced off at
+K1: it cannot require gradients, build a graph, accumulate one, become a
+``NativeParameter``, be registered as a buffer, be owned by an optimizer, be
+declared in a checkpoint archive, or enter any floating operation. There is
+no integer arithmetic, no integer reduction, no ``argmax``, no index
+selection, and no casting in either direction.
+
 NativeTensor is still **not** tensorforge.Tensor: the two autograd
 engines never mix, no conversion is implicit, and the framework frontend
 never imports this. Conversion crosses the native boundary only by
-explicit call: ``from_array`` enters, ``to_numpy`` exits, both as copies.
+explicit call: ``from_array`` and ``from_int64_array`` enter, ``to_numpy``
+/ ``item`` / ``tolist`` exit, all as copies.
 Lifetime is explicit — ``close()`` (or a ``with`` block) releases the
 native storage an owning tensor holds; a closed tensor rejects metadata,
 materialization, and gradient operations clearly rather than reading
@@ -91,17 +111,29 @@ class NativeTensor:
     lifetime story, and an opt-in Python-managed autograd graph.
 
     Create one with ``from_array`` / ``zeros`` / ``full`` (each owns the
-    core it wraps; pass ``requires_grad=True`` to track gradients). Read
+    core it wraps; pass ``requires_grad=True`` to track gradients), or —
+    since Phase K milestone K2 — with ``from_int64_array``, the one public
+    door to an exact, non-differentiable native ``int64`` tensor. Read
     ``shape`` / ``strides`` / ``ndim`` / ``numel`` / ``contiguous`` /
-    ``dtype`` / ``device`` for metadata; ``to_numpy()`` to materialize a
-    fresh float64 copy. For autograd read ``requires_grad`` / ``grad`` /
-    ``is_leaf`` and call ``backward()`` / ``zero_grad()`` / ``detach()``.
-    Release native memory with ``close()`` or a ``with`` block;
-    ``owns_core`` and ``closed`` report lifetime state.
+    ``dtype`` / ``device`` for metadata; ``to_numpy()`` / ``item()`` /
+    ``tolist()`` to materialize a fresh independent host copy. For autograd
+    read ``requires_grad`` / ``grad`` / ``is_leaf`` and call ``backward()``
+    / ``zero_grad()`` / ``detach()``. Release native memory with
+    ``close()`` or a ``with`` block; ``owns_core`` and ``closed`` report
+    lifetime state.
+
+    One class carries both roles deliberately (integer design §6): an
+    ``int64`` tensor shares every line of the ownership, view, copy,
+    lifetime, and host-transfer machinery, and is kept out of the roles it
+    has no meaning in by dtype checks rather than by a second class. It can
+    never require gradients, become a ``NativeParameter``, be registered as
+    a buffer, be owned by an optimizer, be declared in a checkpoint, or
+    enter a floating operation.
 
     Not tensorforge.Tensor — see the module docstring,
-    docs/native_tensor_wrapper_design.md, and
-    docs/native_autograd_design.md.
+    docs/native_tensor_wrapper_design.md,
+    docs/native_autograd_design.md, and
+    docs/native_integer_tensors_design.md.
     """
 
     __slots__ = (
@@ -136,21 +168,29 @@ class NativeTensor:
         / ``zeros`` / ``full`` constructors; this is the low-level entry
         point (see also the internal ``_from_core``).
 
-        **Phase K, milestone K1: the core must be floating** — the
-        wrapper-construction barrier of the integer design's §6.5 table,
-        one layer above ``NativeTensorCore.__init__``'s. The two are listed
-        as separate barriers rather than one because they have different
-        first authorities and different operands, and a single layer is a
-        single point of failure: a core assembled around a raw ``int64``
-        handle without running the Core constructor still cannot become a
-        ``NativeTensor``, and therefore still cannot reach autograd, a
-        parameter, a buffer, an optimizer, or an archive."""
+        **Phase K: the core must carry a dtype a native tensor may have** —
+        the wrapper-construction barrier of the integer design's §6.5
+        table, one layer above ``NativeTensorCore.__init__``'s. The two are
+        listed as separate barriers rather than one because they have
+        different first authorities and different operands, and a single
+        layer is a single point of failure.
+
+        K1 set this gate to *floating only*, which is what kept a raw
+        ``int64`` handle from becoming a tensor while the dtype existed
+        solely as a C ABI representation. **K2 widened it to "floating or
+        index"** and to nothing else, so a core produced by the private
+        integer ingress can be wrapped — and an ``int64`` tensor is
+        *still* refused by autograd, by ``NativeParameter``, by
+        ``register_buffer`` at both persistence values, by both optimizers,
+        by checkpoint entry validation, and by every floating operation
+        entry, because every one of those barriers asks the **floating**
+        predicate and none of them moved."""
         if not isinstance(core, cpp.NativeTensorCore):
             raise TypeError(
                 f"NativeTensor wraps a NativeTensorCore, got "
                 f"{type(core).__name__}"
             )
-        cpp._require_floating_dtype(core.dtype, "NativeTensor", role="core")
+        cpp._require_tensor_dtype(core.dtype, "NativeTensor", role="core")
         self._core = core
         self._owns_core = bool(owns_core)
         self._closed = False
@@ -305,6 +345,109 @@ class NativeTensor:
         return tensor
 
     @classmethod
+    def from_int64_array(cls, values, *, requires_grad=False):
+        """A contiguous native ``int64`` tensor holding an **exact** copy of
+        an exact ``int64`` NumPy array (Phase K, milestone K2; see
+        docs/native_integer_tensors_design.md §8).
+
+        **This is the one public API in the repository through which an
+        ``int64`` buffer can come into existence.** There is no ``dtype``
+        argument, deliberately: the dtype is in the name, so it cannot be
+        omitted, mistyped, or contradicted and no second authority exists.
+        ``from_array``, ``zeros``, and ``full`` all validate through
+        ``normalize_dtype`` and reject ``"int64"`` permanently, as does the
+        public ``NativeStorage`` constructor, so no generic constructor
+        changed what it accepts.
+
+        **Nothing converts.** ``values`` must be exactly a
+        ``numpy.ndarray`` — not a subclass, not a list, not a tuple, not a
+        scalar — of exactly ``numpy.int64`` in native byte order. A
+        ``float64`` array holding ``[1.0, 2.0]`` is rejected rather than
+        accepted as "integral anyway"; so are ``int32``, ``uint64``,
+        ``bool``, ``object``, and a byte-swapped ``>i8`` array. The
+        asymmetry against the *floating* ingress, which has always
+        converted, is the point (§8.3): a floating conversion is a rounding
+        whose error is bounded and familiar, while an integer one is either
+        a silent truncation or a silent reinterpretation. A **non-contiguous**
+        exact-``int64`` array *is* accepted and is copied into fresh
+        contiguous storage — rearranging where identical values live is
+        layout normalization, not a cast (§8.4).
+
+        Every value in ``[-(2**63), 2**63 - 1]`` survives exactly, including
+        the ones beyond float64's exact integer range, which is what makes
+        this a genuine integer boundary rather than a float64 detour.
+
+        The shape is preserved exactly, at any rank including 0. A
+        zero-element array is rejected, because the runtime cannot represent
+        zero-element storage — an inherited limitation reported honestly and
+        not worked around (§13.7).
+
+        ``requires_grad`` is keyword-only and may only be ``False``. It
+        exists rather than being omitted so that ``requires_grad=True``
+        explains that ``int64`` tensors are non-differentiable instead of
+        producing Python's generic unexpected-keyword ``TypeError``; a
+        non-``bool`` raises ``TypeError`` and ``True`` raises ``ValueError``,
+        both **before any native allocation**.
+
+        The dtype this constructor names is still measured against the
+        **public index/result registry** before anything else happens to
+        the input: ``cpp._normalize_index_dtype`` is the canonical registry
+        gate for this fixed-format door (§5.2), and it is asked at
+        §26.1 step 2a — after both ``requires_grad`` checks and before the
+        array is inspected, before the private Core ingress is entered, and
+        before any allocation. A door whose dtype is in its *name* still
+        answers to the registry rather than to itself.
+
+        The result is an owning gradient-free leaf: it owns fresh storage,
+        never aliases the caller's array (mutating it afterwards reaches
+        nothing), and **the caller closes it**. Any failure closes
+        everything it allocated, including under ``BaseException``, so live
+        storage returns exactly to baseline."""
+        # Argument validation first, before the array is even examined and
+        # long before anything is allocated (§26.1 steps 1-2, §26.2).
+        if not isinstance(requires_grad, bool):
+            raise TypeError(
+                f"requires_grad must be a bool, got "
+                f"{type(requires_grad).__name__}"
+            )
+        if requires_grad:
+            raise ValueError(
+                "from_int64_array cannot create a gradient-tracking tensor: "
+                "int64 tensors are non-differentiable, so requires_grad must "
+                "be False (gradients of integers are ill-defined)"
+            )
+        # The index/result dtype authority, asked here and only here
+        # (§26.1 step 2a). This constructor carries its dtype in its
+        # *name* rather than in an argument, which is what keeps a second
+        # authority from existing — but "the name says int64" is not the
+        # same statement as "int64 is a dtype the runtime may build a
+        # tensor at", and the second is the registry's to make. So the
+        # canonical gate is asked before the array is examined and long
+        # before anything is allocated: if ``cpp.INDEX_DTYPES`` ever
+        # stopped listing ``"int64"``, this door would close here, at the
+        # same pre-allocation step every other rejection uses, rather than
+        # allocating storage the widened wrapper gate would then refuse.
+        # There is deliberately no ``dtype=`` argument to pass the result
+        # to: it is the gate that matters, and the private ingress below
+        # names the one width it exists for.
+        cpp._normalize_index_dtype("int64")
+        core = cpp.NativeTensorCore._from_int64_array(values)
+        try:
+            # A published wrapper is already the gradient-free leaf this
+            # constructor promises: ``__init__`` sets ``_requires_grad =
+            # False`` on every new wrapper, and ``requires_grad=True`` was
+            # rejected above, so a second flag-setting step after the
+            # protected region would restate what construction guarantees
+            # and would run *outside* the cleanup that owns this core.
+            return cls._from_core(core)
+        except BaseException:
+            # The core is this call's to publish or to release; nothing else
+            # holds it yet, so a failed wrapper construction frees it here
+            # rather than leaving it to the ``__del__`` safety net.
+            core.close()
+            raise
+
+    @classmethod
     def _typed_from_array(cls, values, dtype, device="cpu"):
         """Private: a contiguous tensor at an **internally representable**
         dtype holding a copy of ``values`` (Phase I, milestone I8).
@@ -445,8 +588,13 @@ class NativeTensor:
 
     @property
     def dtype(self):
-        """The element type tag (``"float64"``), delegated to the core.
-        Rejected after close, like the other layout metadata."""
+        """The element type tag, delegated to the core: ``"float64"``,
+        ``"float32"``, or — for a tensor built by ``from_int64_array`` and
+        for the views and copies derived from it — ``"int64"``. A plain
+        canonical string, never a dtype object, and there is deliberately no
+        public ``is_integer`` / ``is_floating`` property beside it: this is
+        the one authority. Rejected after close, like the other layout
+        metadata."""
         return self._require_open().dtype
 
     @property
@@ -499,13 +647,68 @@ class NativeTensor:
     # -- conversion -------------------------------------------------------
 
     def to_numpy(self):
-        """Materialize into a fresh, independent float64 NumPy array.
+        """Materialize into a fresh, independent NumPy array of **exactly
+        this tensor's dtype**, in its logical shape and row-major logical
+        order.
 
-        The explicit *exit* boundary: the returned array shares no
-        mutable state with native storage. Raises RuntimeError if the
-        tensor has been closed.
+        The explicit *exit* boundary: the returned array owns its host
+        memory and shares no mutable state with native storage, so mutating
+        it cannot reach the tensor and closing the tensor cannot invalidate
+        it. Nothing is widened or reinterpreted on the way out — a float32
+        tensor gives a float32 array and an ``int64`` tensor gives an exact
+        ``numpy.int64`` array, including values beyond float64's exact
+        integer range. A non-contiguous view materializes in logical C
+        order. Raises RuntimeError if the tensor has been closed.
         """
         return self._require_open().to_numpy()
+
+    def item(self):
+        """The single element of a one-element tensor, as a **built-in
+        Python scalar** (Phase K, milestone K2; integer design §8.8).
+
+        ``int`` for an ``int64`` tensor — the complete signed 64-bit value,
+        exactly, with no float intermediate and no NumPy scalar — and
+        ``float`` for a ``float64`` or ``float32`` tensor, where the widening
+        to a Python float is exact. Introduced dtype-general rather than
+        integer-only because it has one meaning at every dtype, and two
+        half-implementations would be worse than one.
+
+        Requires ``numel == 1`` **at any rank**: a ``()``, a ``(1,)``, and a
+        ``(1, 1, 1)`` tensor all qualify. Any other element count raises
+        ``ValueError`` naming the actual count. A closed tensor rejects
+        before any transfer.
+
+        Built on ``to_numpy()`` — no new export, no second materialization
+        path — so it pays one full materialization of a one-element tensor,
+        which is exactly the cost of the transfer it needs. It builds no
+        graph, touches no gradient, parameter, or version counter, allocates
+        no native output, and retains nothing."""
+        core = self._require_open()
+        if core.numel != 1:
+            raise ValueError(
+                f"item() requires a tensor with exactly one element, got "
+                f"{core.numel} (shape {core.shape})"
+            )
+        # ``ndarray.item`` is what turns a NumPy scalar into a built-in one:
+        # an int64 element becomes a Python ``int`` and a float element a
+        # Python ``float``, with no intermediate of the other kind.
+        return core.to_numpy().item()
+
+    def tolist(self):
+        """This tensor's values as nested built-in Python containers, in its
+        logical shape (Phase K, milestone K2; integer design §8.8).
+
+        Exact Python ``int``s for an ``int64`` tensor and Python ``float``s
+        for the floating dtypes — never a NumPy scalar, and never through a
+        float intermediate. A rank-0 tensor returns the scalar itself,
+        matching ``numpy.ndarray.tolist``. A non-contiguous view follows
+        logical C order, because the materialization it is built on does.
+
+        Dtype-general for ``item()``'s reason, built on ``to_numpy()`` for
+        ``item()``'s reason, and it rejects a closed tensor before any
+        transfer. It builds no graph, touches no gradient, parameter, or
+        version counter, and retains nothing."""
+        return self._require_open().to_numpy().tolist()
 
     # -- forward compute (delegates to NativeTensorCore) ------------------
     #
@@ -861,7 +1064,11 @@ class NativeTensor:
         class axis is fixed at axis 1, so there is deliberately no ``axis``
         argument. ``targets`` is a one-dimensional sequence of integer
         class labels — a list/tuple of Python ints or a 1-D NumPy integer
-        array, **never** a NativeTensor (the runtime has no integer dtype).
+        array, **never** a NativeTensor. Classification targets remain
+        exact host-side label metadata under the Phase-E contract, and
+        Phase K milestone K2 — which gave the runtime an ``int64``
+        index/result dtype — did **not** widen cross-entropy to accept
+        ``NativeTensor`` targets.
         ``reduction`` is exactly ``"mean"`` or ``"sum"``. Returns a
         **scalar** NativeTensor (shape ``()``), so ``loss.backward()``
         works with the engine's existing default seed.
@@ -1257,15 +1464,29 @@ class NativeTensor:
         of this one's lifetime. Differentiable: the forward copies each
         logical element unchanged, so the backward passes the upstream
         gradient through as-is — gradients live at the logical shape,
-        making the parent's storage layout irrelevant."""
+        making the parent's storage layout irrelevant.
+
+        The destination core is allocated before either publication branch
+        is chosen, so it is this call's to publish or to release: every
+        exception after it exists — including a ``BaseException``, and
+        including a failure inside ``_from_op`` — closes it explicitly
+        rather than leaving it to the ``__del__`` safety net, so live
+        storage returns exactly to baseline. ``_from_op``'s own
+        non-differentiable rejection already closes the core it was handed;
+        core ``close()`` is idempotent, so the two cannot conflict."""
         out_core = self._require_open().contiguous_copy()
-        if not self._requires_grad:
-            return self._from_core(out_core)
+        try:
+            if not self._requires_grad:
+                return self._from_core(out_core)
 
-        def _backward(upstream):
-            self._accumulate_grad(upstream)
+            def _backward(upstream):
+                self._accumulate_grad(upstream)
 
-        return self._from_op(out_core, (self,), _backward, "contiguous_copy")
+            return self._from_op(out_core, (self,), _backward,
+                                 "contiguous_copy")
+        except BaseException:
+            out_core.close()
+            raise
 
     def conv2d(self, weight, bias=None, *, stride=1, padding=0):
         """2-D cross-correlation of this NCHW input against an OIHW
@@ -1676,9 +1897,20 @@ class NativeTensor:
         It returns an **owning copy** (a native contiguous
         materialization), sharing no storage with this tensor — so its
         lifetime is fully independent (no double-close, no dangling core)
-        and no NumPy round trip occurs. Rejected on a closed tensor."""
-        core = self._require_open()
-        return self._from_core(core.contiguous_copy())
+        and no NumPy round trip occurs. Rejected on a closed tensor.
+
+        The copy is allocated before the wrapper is published, so — exactly
+        as in ``contiguous_copy`` — a failed publication closes it
+        explicitly under every ``BaseException``, and only a successful
+        transfer of ownership returns. The dtype is whatever this tensor
+        carries, ``int64`` included: ``detach`` copies a value, so it is
+        dtype-preserving rather than dtype-choosing."""
+        out_core = self._require_open().contiguous_copy()
+        try:
+            return self._from_core(out_core)
+        except BaseException:
+            out_core.close()
+            raise
 
     def backward(self, gradient=None, retain_graph=False):
         """Run reverse-mode autodiff from this tensor back to the leaves.

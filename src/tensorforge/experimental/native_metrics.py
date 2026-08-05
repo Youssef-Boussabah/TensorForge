@@ -7,9 +7,18 @@ One function today: ``native_accuracy(logits, targets) -> float``.
 It is *not* native C++ compute, *not* a ``NativeTensorCore`` operation,
 *not* a differentiable ``NativeTensor`` operation, and *not* a module.
 There is no accuracy kernel, no C ABI export, and no ctypes symbol — E7
-added none — and there is deliberately no native ``argmax``: the native
-runtime has no integer dtype, so an index-producing native reduction
-would need one.
+added none — and there is deliberately no native ``argmax``.
+
+**The reason for that last clause changed at Phase K, milestone K2, and
+the clause did not.** Until K2 the sentence read "…because the native
+runtime has no integer dtype, so an index-producing native reduction would
+need one", which was accurate for the whole of Phases E through K1. K2
+gave the runtime an exact ``int64`` **index/result** dtype — so the dtype
+such a reduction would return now exists — while the reduction itself
+belongs to a later milestone. A native ``argmax`` is therefore *absent
+because nobody has shipped it*, not because the type system cannot express
+its result, and this helper will keep reporting through the host boundary
+deliberately even once it does.
 
 Because it is outside training, autograd, and native numerical
 execution, it is **allowed and required** to leave native memory through

@@ -10,21 +10,35 @@ one of them alone is misleading:
    ``tf_storage_create_typed(size, 2)`` through ``ctypes``, values in and
    out bit for bit, including ``INT64_MIN``, ``INT64_MAX``, and values
    beyond 2^53 where a floating detour would start rounding.
-2. **No supported TensorForge Python wrapper can be built over it.** Every
-   public constructor rejects ``"int64"`` by name; every private ``_typed*``
-   route rejects it because ``_DTYPE_CODES`` does not know the name at K1;
-   and a ``NativeStorage`` / ``NativeTensorCore`` / ``NativeTensor``
-   assembled around such a handle **without** its constructor is refused by
-   the next layer up.
+2. **No *generic* TensorForge constructor can be talked into it.** Every
+   public constructor rejects ``"int64"`` by name, permanently, and so does
+   every private converting or uninitialized route.
 3. **The raw int64 storage cannot enter a floating C++ compute export.**
    Every audited export rejects it at the ABI, independently of Python, and
    writes nothing when it does.
 
-Reaching fact 1 needs direct ``ctypes``: that is the *only* route to int64
-at this milestone, and using it here is what makes facts 2 and 3 testable
-against a genuine int64 handle rather than against a dtype string. The
-scaffolding is confined to this module, is loudly marked test-only, and
-introduces **no** production API — the milestone deliberately ships none.
+Reaching fact 1 needs direct ``ctypes``, and the scaffolding for it is
+confined to this module and loudly marked test-only.
+
+**What milestone K2 moved, and in which direction.** K1's reachability
+claim was stronger than the phase's permanent one: at K1 *nothing* in
+Python could name, allocate, or wrap ``int64``, because ``_DTYPE_CODES``
+had no entry and both wrapper constructors were floating-only. K2 opened
+exactly one door — the public ``NativeTensor.from_int64_array`` over the
+private ``_from_int64_array`` helpers, with ``INDEX_DTYPES`` appearing in
+the same commit — and widened exactly two gates,
+``NativeTensorCore.__init__`` and ``NativeTensor.__init__``, from "floating"
+to "floating **or** index". The assertions below moved with it, in **one**
+direction and without loosening a checker: what was "cannot exist" is now
+"exists only through the one named door", and everything else in the module
+— the exact ABI round trip, every generic constructor's rejection, every
+autograd/parameter/buffer/optimizer/checkpoint/operation barrier, and the
+C-side guard audit — is unchanged and still passing. The re-proof of those
+barriers against a **real** public ``int64`` tensor lives in
+``tests/test_native_int64_tensor.py``, which is K2's module; this one keeps
+driving them from the raw handle, because "a hand-assembled object at this
+tag is refused" and "the object the public door returns is refused" are two
+different claims and both are worth holding.
 
 Discipline this module inherits (integer design §30.2):
 
@@ -523,27 +537,72 @@ def test_normalize_dtype_still_rejects_int64():
         cpp.normalize_dtype("int64")
 
 
-def test_the_index_registry_does_not_exist_yet():
-    """``INDEX_DTYPES`` is K2's, in the same commit as the public
-    constructor. Its absence is the promise half of "prove first, then
-    promise"."""
-    for absent in ("INDEX_DTYPES", "COMPUTE_DTYPES", "INTEGER_DTYPES",
-                   "TENSOR_DTYPES"):
+def test_the_index_registry_arrived_at_k2_and_no_other_row_did():
+    """``INDEX_DTYPES`` appeared in the same commit as the public
+    constructor — the promise half of "prove first, then promise" — and it
+    is the **only** registry the phase adds.
+
+    This is the K1 absence assertion moved one direction: what it used to
+    prove absent it now proves present *and exact*, while the three names
+    that were never planned stay absent."""
+    assert cpp.INDEX_DTYPES == ("int64",)
+    assert cpp.backend_info()["index_dtypes"] == ("int64",)
+    # The floating registry did not move, and never will.
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
+    assert "int64" not in cpp.SUPPORTED_DTYPES
+    assert not set(cpp.INDEX_DTYPES) & set(cpp.SUPPORTED_DTYPES)
+    for absent in ("COMPUTE_DTYPES", "INTEGER_DTYPES", "TENSOR_DTYPES"):
         assert not hasattr(cpp, absent), absent
-    assert "index_dtypes" not in cpp.backend_info()
+    # ...and the union is not materialized as a fifth row that could drift.
+    for absent in ("compute_dtypes", "integer_dtypes", "tensor_dtypes",
+                   "all_dtypes"):
+        assert absent not in cpp.backend_info(), absent
 
 
-def test_the_python_dtype_tables_do_not_know_int64():
-    """The Phase-I no-drift invariant is still exactly true: the
-    representation table and the public registry accept the same set, so
-    nothing representable in Python is unpromised."""
-    assert set(cpp._DTYPE_CODES) == set(cpp.SUPPORTED_DTYPES)
-    assert "int64" not in cpp._DTYPE_CODES
-    assert "int64" not in cpp._DTYPE_ITEM_SIZES
-    assert "int64" not in cpp._DTYPE_NUMPY
-    assert "int64" not in cpp._CHECKED_HOST_ARRAYS
+def test_the_python_dtype_tables_learned_int64_and_nothing_else():
+    """The Phase-I no-drift invariant **generalized rather than lapsed**
+    (integer design §5.1).
+
+    Its purpose was that a representation table able to hold a dtype no
+    registry promises is exactly the drift to guard against. K2 kept that
+    guarantee over two registries instead of one, so the equality is still
+    exact — a subset check here would be strictly weaker and is deliberately
+    not used."""
+    assert set(cpp._DTYPE_CODES) == (set(cpp.SUPPORTED_DTYPES)
+                                     | set(cpp.INDEX_DTYPES))
+    assert cpp._DTYPE_CODES["int64"] == CODE_INT64
+    assert cpp._DTYPE_ITEM_SIZES["int64"] == 8
+    assert cpp._DTYPE_NUMPY["int64"] is np.int64
+    assert np.dtype(cpp._DTYPE_NUMPY["int64"]).itemsize == \
+        cpp._DTYPE_ITEM_SIZES["int64"]
+    # The four tables describe the same set, so none can gain an entry the
+    # others do not know about.
+    assert (set(cpp._DTYPE_CODES) == set(cpp._DTYPE_ITEM_SIZES)
+            == set(cpp._DTYPE_NUMPY) == set(cpp._CHECKED_HOST_ARRAYS))
+    # The host binding is the **existing** object, not a second ndpointer
+    # built from the same arguments: one binding cannot diverge from itself.
+    assert cpp._CHECKED_HOST_ARRAYS["int64"] is cpp._CHECKED_I64_ARRAY
+    # Representable, and still not a *compute* dtype.
+    assert cpp._normalize_internal_dtype("int64") == "int64"
     with pytest.raises(ValueError, match="int64"):
-        cpp._normalize_internal_dtype("int64")
+        cpp.normalize_dtype("int64")
+
+
+def test_the_index_dtype_validator_is_private_and_narrow():
+    """``_normalize_index_dtype`` measures against ``INDEX_DTYPES`` and
+    nothing else, has no default, and is not a second public registry."""
+    assert cpp._normalize_index_dtype("int64") == "int64"
+    for rejected in ("float64", "float32", "int32", "uint64", "Int64",
+                     " int64", "int64 ", "i8", ""):
+        with pytest.raises(ValueError):
+            cpp._normalize_index_dtype(rejected)
+    for bad_type in (None, 64, np.int64, np.dtype(np.int64), True):
+        with pytest.raises(TypeError):
+            cpp._normalize_index_dtype(bad_type)
+    # Private, and absent from every public surface.
+    assert "_normalize_index_dtype".startswith("_")
+    import tensorforge.experimental as experimental
+    assert "_normalize_index_dtype" not in experimental.__all__
 
 
 @needs_native
@@ -574,20 +633,27 @@ def test_every_public_constructor_rejects_int64_and_allocates_nothing():
 
 
 @needs_native
-def test_every_private_typed_constructor_rejects_int64_at_k1():
-    """The private ``_typed*`` family is **not** a way around the public
-    validator, and at K1 it cannot name int64 at all: ``_DTYPE_CODES`` has
-    no entry, so the internal validator refuses the string before any
-    allocation. Construction is K2's, and it is K2's atomically."""
+def test_every_converting_or_uninitialized_private_route_rejects_int64():
+    """The private family is **not** a way around the public validator, and
+    the split inside it is exact (integer design §5.4).
+
+    Every route below stays floating-only **permanently**, each for its own
+    reason rather than by a blanket rule: the ``_typed_from_array`` pair and
+    ``_typed_full`` take a ``dtype=`` through ``ascontiguousarray`` or a
+    ``double`` scalar and therefore **convert**, which for an integer
+    destination truncates silently; the ``_uninitialized`` pair and the
+    trusted arm of ``zeros`` are the H1 uninitialized-allocation audit's
+    paths, and no integer destination joins that audit (§27.3); and
+    ``_narrowed_to_dtype`` narrows a floating scalar to a floating element
+    type.
+
+    The two routes that K2 *did* open are deliberately absent from this
+    table and are asserted in the opposite direction below."""
     builders = {
-        "NativeStorage._typed":
-            lambda: cpp.NativeStorage._typed(4, "int64"),
         "NativeStorage._uninitialized":
             lambda: cpp.NativeStorage._uninitialized(4, dtype="int64"),
         "NativeStorage._typed_from_array":
             lambda: cpp.NativeStorage._typed_from_array([1, 2], "int64"),
-        "NativeTensorCore._typed":
-            lambda: cpp.NativeTensorCore._typed((2,), "int64"),
         "NativeTensorCore._uninitialized":
             lambda: cpp.NativeTensorCore._uninitialized((2,), dtype="int64"),
         "NativeTensorCore._typed_from_array":
@@ -613,49 +679,135 @@ def test_every_private_typed_constructor_rejects_int64_at_k1():
 
 
 @needs_native
-def test_no_public_int64_constructor_name_exists():
-    """The K2 names, absent. Read from the AST rather than by ``hasattr``
-    so a name defined but not yet reachable would still be caught."""
-    for module, class_name in (
-        ("src/tensorforge/experimental/native_tensor.py", "NativeTensor"),
-        ("src/tensorforge/backends/cpp.py", "NativeTensorCore"),
-        ("src/tensorforge/backends/cpp.py", "NativeStorage"),
-    ):
-        tree = ast.parse((REPO_ROOT / module).read_text(encoding="utf-8"))
-        defined = set()
-        for node in ast.walk(tree):
-            if isinstance(node, ast.ClassDef) and node.name == class_name:
-                defined = {child.name for child in node.body
-                           if isinstance(child, ast.FunctionDef)}
-        assert defined, (module, class_name)
-        for absent in ("from_int64_array", "_from_int64_array", "item",
-                       "tolist", "argmax", "index_select", "astype", "to",
-                       "long", "int"):
-            assert absent not in defined, (class_name, absent)
+def test_exactly_the_two_typed_allocators_gained_int64():
+    """The other half of the split, so the table above is proved to be a
+    *partition* rather than a list that happens to reject.
+
+    ``_typed`` at both layers is the one allocator that can produce an
+    ``int64`` destination — for the integer ingress and for the integer arm
+    of ``contiguous_copy`` — and it is zeroed, so no H1 audit row is
+    needed."""
+    storage = cpp.NativeStorage._typed(3, "int64")
+    try:
+        assert storage.dtype == "int64"
+        assert storage.size == 3
+        # Zeroed by the creator, exactly, so no integer fill is ever needed.
+        assert storage.to_numpy().dtype == np.dtype(np.int64)
+        assert storage.to_numpy().tolist() == [0, 0, 0]
+    finally:
+        storage.close()
+    core = cpp.NativeTensorCore._typed((2, 2), "int64")
+    try:
+        assert core.dtype == "int64" and core.shape == (2, 2)
+        assert core.to_numpy().tolist() == [[0, 0], [0, 0]]
+    finally:
+        core.close()
 
 
 @needs_native
-def test_a_raw_int64_handle_cannot_become_a_storage_core_or_tensor():
-    """Fact 2, against the real handle. Each layer is driven separately,
-    because each is a separate barrier with its own first authority."""
+def test_only_native_tensor_gained_a_public_integer_constructor():
+    """The one public door, and the private helpers under it. Read from the
+    AST rather than by ``hasattr`` so a name defined but not yet reachable
+    would still be seen.
+
+    This is the K1 absence assertion moved one direction: ``from_int64_array``
+    / ``item`` / ``tolist`` are now asserted **present on NativeTensor**, the
+    two ingress helpers **present and underscore-private**, and every name
+    that belongs to a later milestone or to no milestone at all stays
+    absent."""
+    def methods(module, class_name):
+        tree = ast.parse((REPO_ROOT / module).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ClassDef) and node.name == class_name:
+                return {child.name for child in node.body
+                        if isinstance(child, ast.FunctionDef)}
+        raise AssertionError((module, class_name))
+
+    tensor = methods("src/tensorforge/experimental/native_tensor.py",
+                     "NativeTensor")
+    core = methods("src/tensorforge/backends/cpp.py", "NativeTensorCore")
+    storage = methods("src/tensorforge/backends/cpp.py", "NativeStorage")
+
+    # Present: the public door and the two host-inspection methods.
+    for name in ("from_int64_array", "item", "tolist"):
+        assert name in tensor, name
+    # Present, and private: the ingress helpers under it.
+    assert "_from_int64_array" in core
+    assert "_from_int64_array" in storage
+    # Absent: a **public** spelling at either lower layer, which would make
+    # the single-door claim approximate rather than literal.
+    for layer, names in (("NativeTensorCore", core),
+                         ("NativeStorage", storage)):
+        assert "from_int64_array" not in names, layer
+        for absent in ("item", "tolist"):
+            assert absent not in names, (layer, absent)
+    # Absent everywhere: later milestones, and the conversions no milestone
+    # of this phase adds.
+    for names in (tensor, core, storage):
+        for absent in ("argmax", "index_select", "gather", "astype", "to",
+                       "long", "int", "cpu", "cuda"):
+            assert absent not in names, absent
+
+
+@needs_native
+def test_public_storage_construction_at_int64_is_still_prohibited():
+    """§5.5, which is what makes the single-door claim literal: the public
+    ``NativeStorage`` constructor and ``from_array`` reject ``"int64"``
+    permanently, so no public API other than
+    ``NativeTensor.from_int64_array`` can bring an ``int64`` buffer into
+    existence."""
     with unchanged_world():
-        # The storage layer: the public constructor never sees the handle,
-        # because it allocates its own — and it refuses the dtype outright.
         with pytest.raises(ValueError, match="int64"):
             cpp.NativeStorage(4, dtype="int64")
-        # The core layer, handed a genuine int64 storage.
-        with raw_int64_storage(4) as storage:
-            view = cpp.NativeTensorView._from_validated(
-                storage, (4,), (1,), 0
-            )
-            with pytest.raises(ValueError, match="int64"):
-                cpp.NativeTensorCore(storage, view)
-        # The tensor layer, handed a genuine int64 core.
-        with raw_int64_core((4,)) as core:
-            with pytest.raises(ValueError, match="int64"):
-                NativeTensor(core)
-            with pytest.raises(ValueError, match="int64"):
-                NativeTensor._from_core(core)
+        with pytest.raises(ValueError, match="int64"):
+            cpp.NativeStorage.from_array([1, 2], dtype="int64")
+
+
+@needs_native
+def test_the_wrapper_gates_widened_to_exactly_floating_or_index():
+    """The two gates K2 moved, and the proof that they moved by exactly one
+    dtype rather than becoming permissive.
+
+    The accepting half is driven from a **genuine raw handle**, so the gate
+    is shown to key on the storage's tag rather than on how the object was
+    built; the rejecting half uses a storage mislabelled with a dtype no
+    registry contains, which is the negative control that makes the
+    accepting half mean something."""
+    with raw_int64_storage(4) as storage:
+        view = cpp.NativeTensorView._from_validated(storage, (4,), (1,), 0)
+        # Accepted now — and built as a **borrowing** core, because the raw
+        # handle belongs to the context manager and an owning wrapper would
+        # destroy it a second time on cleanup.
+        core = cpp.NativeTensorCore(storage, view, owns_storage=False)
+        assert core.dtype == "int64"
+        tensor = NativeTensor(core, owns_core=False)
+        assert tensor.dtype == "int64"
+        assert tensor.requires_grad is False and tensor.is_leaf is True
+        tensor.close()
+        core.close()
+
+    # The negative control: a tag that is neither floating nor an index
+    # dtype is still refused by both gates, so the widening is a widening
+    # and not a removal.
+    real = cpp.NativeStorage(4, dtype="float64")
+    try:
+        assert not cpp._is_tensor_dtype("float16")
+        view = cpp.NativeTensorView._from_validated(real, (4,), (1,), 0)
+        real._dtype = "float16"            # test-only mislabelling
+        try:
+            with pytest.raises(ValueError, match="float16"):
+                cpp.NativeTensorCore(real, view, owns_storage=False)
+        finally:
+            real._dtype = "float64"
+        with raw_int64_core((4,)) as int_core:
+            int_core._storage._dtype = "float16"
+            try:
+                with pytest.raises(ValueError, match="float16"):
+                    NativeTensor(int_core, owns_core=False)
+            finally:
+                int_core._storage._dtype = "int64"
+    finally:
+        real.close()
 
 
 # ===========================================================================

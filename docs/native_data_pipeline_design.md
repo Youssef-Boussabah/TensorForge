@@ -284,8 +284,11 @@ deliberately stricter than `np.asarray(targets, dtype=np.int64)`, which
 would truncate `1.9` and reinterpret `True`.
 
 Two consequences Phase J inherits rather than re-decides: **targets are
-host metadata, never native tensors** (the runtime has no integer dtype),
-and **the number of classes is the model's fact, checked at every
+host metadata, never native tensors** — classification targets remain
+exact host-side label metadata under the Phase-E contract, and Phase K
+milestone K2, which gave the runtime an `int64` index/result dtype, did
+**not** widen cross-entropy to accept `NativeTensor` targets — and **the
+number of classes is the model's fact, checked at every
 `cross_entropy` call** — so the dataset must not become a second authority
 on it (§4.4).
 

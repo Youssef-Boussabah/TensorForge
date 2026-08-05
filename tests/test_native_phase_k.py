@@ -1,26 +1,38 @@
 """Phase-K contract guardrails (native integer tensors and indexing).
 
-**Phase K is newly approved, it was approved after Phase J closed, and K0
-and K1 are the milestones that have landed.** K0 was an architecture,
+**Phase K is newly approved, it was approved after Phase J closed, and K0,
+K1, and K2 are the milestones that have landed.** K0 was an architecture,
 contract, documentation, and status milestone: it shipped
 ``docs/native_integer_tensors_design.md``, this module, and the narrow
 status reconciliation a newly approved phase requires — and **no runtime
 behavior at all**.
 
-**K1 is the first milestone with runtime, and it is deliberately the
-narrowest one the phase could have**: the C++ side learns to *represent*
-``int64`` (a third dtype enumerator, an allocation and destruction arm, and
-an ``Int64`` arm on the four transfer boundaries), and everything else it
-adds is a **barrier**. No public Python name, no C ABI symbol, no registry
-movement, no checkpoint or optimizer-state or loader-state or
-sampler-state change, no example, no benchmark, and no dependency. The
-Python dtype tables are untouched, so **no supported TensorForge wrapper
-or public Python API can allocate or wrap int64 storage at K1; only the
-raw private C ABI can represent it, for isolation and barrier testing.**
+**K1 was the first milestone with runtime, and deliberately the narrowest
+one the phase could have**: the C++ side learned to *represent* ``int64``
+(a third dtype enumerator, an allocation and destruction arm, and an
+``Int64`` arm on the four transfer boundaries), and everything else it
+added was a **barrier**. No public Python name, no C ABI symbol, no
+registry movement, no checkpoint or optimizer-state or loader-state or
+sampler-state change, no example, no benchmark, and no dependency.
 
-Public integer construction begins at **K2**, which has not started, and
-so does ``INDEX_DTYPES``. ``SUPPORTED_DTYPES`` never gains ``int64`` at
-all.
+**K2 is where the integer tensor became publicly constructible**, and it
+landed atomically: the three Python dtype tables and the host binding
+learned ``int64``; ``INDEX_DTYPES == ("int64",)`` appeared beside an
+**unmoved** ``SUPPORTED_DTYPES``; the private ``_from_int64_array``
+ingress arrived at the storage and core layers; the two wrapper gates
+widened from "floating" to "floating **or** index"; and
+``NativeTensor.from_int64_array`` / ``item()`` / ``tolist()`` became the
+milestone's whole public delta. It added **no C ABI symbol** (still 54),
+**no experimental export** (still 25), no CTest, no example, no benchmark,
+and no version change of any kind. Every barrier it could meet had already
+landed at K1, one milestone earlier — the ordering §32.1 exists to
+guarantee.
+
+``SUPPORTED_DTYPES`` never gains ``int64`` at all, at this milestone or any
+other, and ``normalize_dtype("int64")`` keeps raising forever. **K3 through
+K9 are unstarted**: there is no ``argmax``, no index selection, no integer
+arithmetic or reduction, no integer autograd, parameter, buffer, optimizer,
+or checkpoint entry, and no casting or promotion.
 
 Three kinds of fact live here, and keeping them apart is the point of the
 module:
@@ -98,6 +110,14 @@ K0_CTEST_COUNT = 24
 K0_EXAMPLE_COUNT = 16
 K0_BENCHMARK_COUNT = 9
 
+# The **only** public registry movement in the whole phase (design §33),
+# written here independently of ``backends/cpp.py``. It appeared at K2, in
+# the same commit as the public constructor it promises, and it gains no
+# member at any later milestone.
+K2_INDEX_DTYPES = ("int64",)
+K2_ABI_INT64_CODE = 2
+K2_INT64_ITEM_SIZE = 8
+
 # The one inventory K1 moves, and the only one: the new native CTest that
 # proves the int64 representation and drives the floating-role barrier
 # table. Everything else in §33's row for K1 is identical to K0's.
@@ -134,10 +154,10 @@ K0_CPP_SOURCES = (
 # milestone moves its identifier from the second tuple to the first and
 # nowhere else, so the two together are always exactly ``MILESTONES``.
 MILESTONES = tuple(f"K{index}" for index in range(10))      # K0 ... K9
-COMPLETE_MILESTONES = ("K0", "K1")
+COMPLETE_MILESTONES = ("K0", "K1", "K2")
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
-assert len(UNSTARTED_MILESTONES) == 8
+assert len(UNSTARTED_MILESTONES) == 7
 
 # The ordering the phase turns on (design §32.1): every reachability
 # barrier lands at K1, and the first milestone at which an ``int64`` tensor
@@ -148,14 +168,21 @@ FIRST_CONSTRUCTION_MILESTONE = "K2"
 assert (MILESTONES.index(BARRIER_MILESTONE)
         < MILESTONES.index(FIRST_CONSTRUCTION_MILESTONE))
 
-# The eventual public names, and the milestone that adds each. **None of
-# them exists at K0**, and the absence half is what this module proves.
+# The phase's public names, and the milestone that adds each. They are
 # ``NativeTensor``/``NativeTensorCore`` methods rather than new classes, so
 # ``experimental.__all__`` never moves — see design §23.2.
-PLANNED_TENSOR_METHODS = {
+#
+# The split is the point, and an entry moves from the second dict to the
+# first when its milestone lands and never the other way (§37.2). K2
+# shipped three names, all on ``NativeTensor``; ``NativeTensorCore``
+# deliberately gained **no** public name, which is why the landed entries
+# carry the class they landed on.
+LANDED_TENSOR_METHODS = {
     "from_int64_array": "K2",
     "item": "K2",
     "tolist": "K2",
+}
+PLANNED_TENSOR_METHODS = {
     "argmax": "K3",
     "index_select": "K4",
 }
@@ -329,8 +356,13 @@ _PHASE_K_OVERCLAIMS = (
      r"\bargmax\b[^.]{0,40}" + _BECAME + _LANDED),
     ("index selection exists",
      r"\b(index[_ ]select|gather)\b[^.]{0,40}" + _BECAME + _LANDED),
-    ("a Phase-K milestone after K1 has landed",
-     r"\bK(?:[2-9]|10)\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
+    # The sentinel advances one milestone as each lands, and only then:
+    # it read K2-and-later while K1 was the newest, and moved to K3 when
+    # K2 shipped. Keeping the old bound would force every status surface to
+    # under-report the project, which is the mirror of the failure this
+    # scanner exists to catch.
+    ("a Phase-K milestone after K2 has landed",
+     r"\bK(?:[3-9]|10)\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
      + _DONE + r")"),
     ("Phase K is finished",
      r"\bPhase K\s+(is|was|has been)\s+" + _DONE),
@@ -548,7 +580,7 @@ def test_the_overclaim_scanner_can_actually_fail():
         "gather is available",
         "index_select has landed",
         "Phase K is complete",
-        "K2 has landed",
+        "K3 has landed",
         "K4 is shipped",
         "the checkpoint is now at version 4",
         "CUDA is supported",
@@ -556,13 +588,13 @@ def test_the_overclaim_scanner_can_actually_fail():
         "integer parameters are available",
     ):
         assert _overclaims(caught), caught
-    # ...and every accurate sentence a K1 surface must be able to write.
+    # ...and every accurate sentence a K2 surface must be able to write.
     for allowed in (
         "int64 is not a supported native tensor dtype",
-        "no native integer tensor exists",
-        "Phase K is newly approved and K0 and K1 are complete",
-        "K0 and K1 are the only completed Phase-K milestones",
-        "K2 through K9 are unstarted",
+        "Phase K is newly approved and K0, K1, and K2 are complete",
+        "K0, K1, and K2 are the only completed Phase-K milestones",
+        "K3 through K9 are unstarted",
+        "K2 is complete",
         "a future milestone may add argmax",
         "argmax is deliberately absent",
         "index_select would need one new export",
@@ -683,35 +715,43 @@ def test_the_design_presents_phase_k_as_newly_approved_after_phase_j():
 def test_the_design_states_what_has_landed_and_what_has_not():
     head = _head()
     assert re.search(r"K0 adds no runtime behavior", head, re.I), head[:800]
-    complete = " and ".join(COMPLETE_MILESTONES)
+    complete = ", ".join(COMPLETE_MILESTONES[:-1]) + \
+        f", and {COMPLETE_MILESTONES[-1]}"
     assert re.search(rf"{complete} are the only completed Phase-K "
-                     rf"milestones", head, re.I), head[:1600]
+                     rf"milestones", head, re.I), head[:1800]
     first_unstarted = UNSTARTED_MILESTONES[0]
     last = UNSTARTED_MILESTONES[-1]
     assert re.search(rf"{first_unstarted} through {last} are unstarted",
-                     head, re.I), head[:1600]
-    assert re.search(r"[Rr]untime capability begins at K1", head), head[:2000]
+                     head, re.I), head[:1800]
+    assert re.search(r"[Rr]untime capability begins at K1", head), head[:2200]
     # The claim that must be impossible to misread at every milestone
     # before K2, and after it: ``int64`` never joins the compute registry.
     assert re.search(r"int64 is not a supported TensorForge native tensor "
-                     r"dtype", head, re.I), head[:2400]
-    # ...and the exact scope of what K1 *did* open, in the header, because
-    # "the representation exists" and "a tensor exists" are the two things
-    # a reader must not conflate.
-    assert re.search(r"only the raw private C ABI can represent it", head,
-                     re.I), head[:2800]
-    assert re.search(r"[Pp]ublic integer construction[^.]{0,60}K2", head), \
-        head[:2800]
+                     r"dtype", head, re.I), head[:2600]
+    # ...and the exact scope of what K2 opened, in the header, because "one
+    # public door" and "a supported dtype" are the two things a reader must
+    # not conflate.
+    assert re.search(r"NativeTensor\.from_int64_array", head), head[:3200]
+    assert re.search(r"INDEX_DTYPES", head), head[:3200]
 
 
 def test_the_design_header_records_the_inherited_boundary_unmoved():
+    """The header carries the inherited compute boundary *and* says, in so
+    many words, that no milestone has moved it.
+
+    The wording names the milestones that have landed, so it advances as the
+    ladder does — the alternation below accepts every form the claim has
+    taken rather than freezing one. What it will never accept is the header
+    simply dropping the claim, which is the failure this guards."""
     head = _head()
     for value in ("float64", "float32", "cpu", "cuda", "amp",
                   "tensorforge.native_checkpoint",
                   "tensorforge.native_data_loader",
                   "tensorforge.native_sampler"):
         assert value.lower() in head.lower(), value
-    assert re.search(r"K0 moves none of them", head, re.I), head[:3000]
+    assert re.search(r"(moves|moved) none of (it|them)"
+                     r"|neither K1 nor K2 moved any of it", head,
+                     re.I), head[:3000]
 
 
 # ===========================================================================
@@ -727,31 +767,53 @@ def test_the_supported_dtype_registry_is_exactly_what_phase_j_left():
     assert cpp.normalize_device(None) == "cpu"
 
 
-def test_no_public_int64_promise_has_moved():
-    """The whole point of K0: `int64` is not promised anywhere."""
+def test_the_compute_registry_never_gained_int64_and_never_will():
+    """The permanent half of taxonomy B, and the one claim that is
+    identical at every Phase-K milestone: ``int64`` is a dtype a native
+    tensor may *carry*, never one the kernels *compute* at.
+
+    K2 added a **separate** row for it (asserted below) rather than
+    widening this one, so the sentences ``normalize_dtype`` prints and the
+    set every generic constructor validates against did not move."""
     assert "int64" not in cpp.SUPPORTED_DTYPES
     assert "int64" not in cpp.RAW_KERNEL_DTYPES
     with pytest.raises(ValueError):
         cpp.normalize_dtype("int64")
-    with pytest.raises(ValueError):
-        cpp._normalize_internal_dtype("int64")
-    # ...and no second dtype row has appeared ahead of its milestone.
-    for absent in ("INDEX_DTYPES", "COMPUTE_DTYPES", "INTEGER_DTYPES",
-                   "TENSOR_DTYPES"):
+    # ...and no registry other than the one the contract names has appeared.
+    for absent in ("COMPUTE_DTYPES", "INTEGER_DTYPES", "TENSOR_DTYPES"):
         assert not hasattr(cpp, absent), absent
 
 
-def test_backend_info_reports_the_same_three_dtype_rows_it_did_at_j9():
+def test_the_index_registry_is_exactly_what_k2_promised():
+    """The one public registry movement of the whole phase, asserted as an
+    exact value and written here independently of the module under test."""
+    assert cpp.INDEX_DTYPES == K2_INDEX_DTYPES
+    assert not set(cpp.INDEX_DTYPES) & set(cpp.SUPPORTED_DTYPES)
+    # Representable **and** promised — the Phase-I no-drift guarantee,
+    # generalized to two registries rather than deleted (design §5.1).
+    assert set(cpp._DTYPE_CODES) == set(K0_DTYPES) | set(K2_INDEX_DTYPES)
+    assert cpp._normalize_internal_dtype("int64") == "int64"
+    assert cpp._normalize_index_dtype("int64") == "int64"
+
+
+def test_backend_info_reports_four_dtype_rows_and_no_derived_fifth():
     info = cpp.backend_info()
     assert info["dtype"] == K0_DEFAULT_DTYPE
     assert info["device"] == "cpu"
     assert info["supported_dtypes"] == K0_DTYPES
+    assert info["index_dtypes"] == K2_INDEX_DTYPES
     assert info["supported_devices"] == K0_DEVICES
     assert info["raw_kernel_dtypes"] == K0_RAW_KERNEL_DTYPES
     assert info["unsupported"] == K0_UNSUPPORTED
     assert info["stable_framework_integration"] is False
-    for absent in ("index_dtypes", "compute_dtypes", "integer_dtypes"):
-        assert absent not in info, (absent, "the index row belongs to K2")
+    # The default is still the default: no omitted dtype selects an index
+    # dtype, at any constructor.
+    assert info["dtype"] not in info["index_dtypes"]
+    # The union is stated in prose, never materialized as a fifth key that
+    # could drift from the two it derives from (design §5.1).
+    for absent in ("compute_dtypes", "integer_dtypes", "tensor_dtypes",
+                   "all_dtypes", "dtypes"):
+        assert absent not in info, absent
 
 
 def test_no_operation_inventory_grew_an_integer_entry():
@@ -879,29 +941,32 @@ def test_no_future_version_constant_or_integer_field_was_reserved():
 # none is a native integer tensor, and a scan that rejected them would
 # reject the code Phase K must not disturb.
 
-def test_the_two_dtype_authorities_are_exactly_one_milestone_apart():
-    """The K1 asymmetry, stated as an assertion rather than as prose.
+def test_the_two_dtype_authorities_agree_again_after_k2():
+    """The K1 asymmetry, closed exactly where the ladder said it would be.
 
-    The C++ side **represents** three dtypes; the Python side **knows**
-    two. That gap is the whole of the milestone's safety argument: the
-    representation exists so the barriers can be proved against it, and it
-    is unreachable from Python because ``_DTYPE_CODES`` has no entry, so
-    ``NativeStorage._typed``, ``_uninitialized``, and the entire ``_typed*``
-    family reject the name before allocating anything.
+    At K1 the C++ side **represented** three dtypes while the Python side
+    **knew** two, and that gap was the whole of that milestone's safety
+    argument: the representation existed so the barriers could be proved
+    against it, and it was unreachable from Python because ``_DTYPE_CODES``
+    had no entry. **K2 closed the gap in one commit**, together with
+    ``INDEX_DTYPES`` and the public constructor, so the promise and the
+    capability were never out of step in either direction.
 
-    The gap closes at **K2**, in one commit, together with ``INDEX_DTYPES``
-    — so the promise and the capability are never out of step in either
-    direction."""
-    # The Python half: two, and the Phase-I no-drift invariant intact.
-    assert set(cpp._DTYPE_CODES) == set(K0_DTYPES)
-    assert set(cpp._DTYPE_ITEM_SIZES) == set(K0_DTYPES)
-    assert set(cpp._DTYPE_NUMPY) == set(K0_DTYPES)
-    assert set(cpp._CHECKED_HOST_ARRAYS) == set(K0_DTYPES)
+    Both halves are asserted as exact sets, so a *fourth* dtype appearing on
+    either side would fail here rather than be absorbed."""
+    # The Python half: three now, with the tables in step with each other
+    # and with the two registries.
+    expected = set(K0_DTYPES) | set(K2_INDEX_DTYPES)
+    assert set(cpp._DTYPE_CODES) == expected
+    assert set(cpp._DTYPE_ITEM_SIZES) == expected
+    assert set(cpp._DTYPE_NUMPY) == expected
+    assert set(cpp._CHECKED_HOST_ARRAYS) == expected
     assert _dict_literal_keys("src/tensorforge/backends/cpp.py",
-                              "_DTYPE_CODES") == set(K0_DTYPES)
-    assert set(cpp._DTYPE_CODES) == set(cpp.SUPPORTED_DTYPES)
-    with pytest.raises(ValueError):
-        cpp._normalize_internal_dtype("int64")
+                              "_DTYPE_CODES") == expected
+    assert set(cpp._DTYPE_CODES) == (set(cpp.SUPPORTED_DTYPES)
+                                     | set(cpp.INDEX_DTYPES))
+    assert cpp._DTYPE_CODES["int64"] == K2_ABI_INT64_CODE
+    assert cpp._DTYPE_ITEM_SIZES["int64"] == K2_INT64_ITEM_SIZE
 
     # The C++ half: three, with the two floating codes exactly where they
     # were and int64 on the code the Phase-I comment reserved.
@@ -918,18 +983,30 @@ def test_the_two_dtype_authorities_are_exactly_one_milestone_apart():
     assert "require_floating" in header
 
 
-def test_no_python_object_can_be_built_over_int64_storage():
-    """The K1 reachability claim, driven rather than described. The public
-    constructors reject the name; the private ones cannot spell it."""
+def test_no_generic_constructor_accepts_int64_at_any_milestone():
+    """The property the whole contract is built around (design §5.4,
+    §5.5), driven rather than described: **no existing generic constructor
+    changed what it accepts, at any Phase-K milestone**.
+
+    Under taxonomy B every one of these validates through
+    ``normalize_dtype``, whose accepted set never moves, so there is no
+    milestone at which one of them could have been narrowed and was not.
+    The converting and uninitialized private routes are here for the same
+    reason — each stays floating-only permanently, for a reason of its
+    own — and the two routes K2 *did* open are deliberately absent from
+    this list and asserted separately."""
     for build in (
         lambda: cpp.NativeStorage(4, dtype="int64"),
         lambda: cpp.NativeStorage.from_array([1, 2], dtype="int64"),
-        lambda: cpp.NativeStorage._typed(4, "int64"),
         lambda: cpp.NativeStorage._uninitialized(4, dtype="int64"),
+        lambda: cpp.NativeStorage._typed_from_array([1, 2], "int64"),
         lambda: cpp.NativeTensorCore.from_array([1, 2], dtype="int64"),
         lambda: cpp.NativeTensorCore.zeros((2,), dtype="int64"),
+        lambda: cpp.NativeTensorCore.zeros((2,), dtype="int64",
+                                           _trusted_dtype=True),
         lambda: cpp.NativeTensorCore.full((2,), 1, dtype="int64"),
-        lambda: cpp.NativeTensorCore._typed((2,), "int64"),
+        lambda: cpp.NativeTensorCore._uninitialized((2,), dtype="int64"),
+        lambda: cpp.NativeTensorCore._typed_from_array([1, 2], "int64"),
         lambda: cpp.NativeTensorCore._typed_full((2,), 1, "int64"),
     ):
         with pytest.raises(ValueError):
@@ -946,22 +1023,40 @@ def test_no_integer_runtime_module_exists():
             banned
 
 
-def test_no_public_integer_constructor_or_index_operation_exists():
+def test_exactly_one_public_integer_constructor_exists_and_no_index_operation():
+    """The K2 public delta, in both directions and at all three layers.
+
+    Present: ``from_int64_array``, ``item``, and ``tolist`` on
+    ``NativeTensor``, plus the underscore-private ``_from_int64_array`` at
+    the core and storage layers. Absent: any **public** integer constructor
+    at either lower layer — which is what makes "one public door" literal —
+    and every K3/K4 operation."""
     tensor_methods = _defined_names(
         "src/tensorforge/experimental/native_tensor.py", "NativeTensor")
     core_methods = _defined_names("src/tensorforge/backends/cpp.py",
                                   "NativeTensorCore")
     storage_methods = _defined_names("src/tensorforge/backends/cpp.py",
                                      "NativeStorage")
+    for name, milestone in LANDED_TENSOR_METHODS.items():
+        assert name in tensor_methods, f"{name} landed at {milestone}"
+        # ...and only on NativeTensor: the Core's K2 row reads "no public
+        # name", and the storage layer gains nothing public either.
+        assert name not in core_methods, (name, "NativeTensorCore")
+        assert name not in storage_methods, (name, "NativeStorage")
     for name, milestone in PLANNED_TENSOR_METHODS.items():
         assert name not in tensor_methods, f"{name} belongs to {milestone}"
         assert name not in core_methods, f"{name} belongs to {milestone}"
-    for absent in ("from_int64_array", "int64", "as_int64", "to_int64"):
+    # The private ingress helpers exist, are private, and are at both
+    # lower layers — the shape §8.1 requires.
+    for names, layer in ((core_methods, "NativeTensorCore"),
+                         (storage_methods, "NativeStorage")):
+        assert "_from_int64_array" in names, layer
+    for absent in ("int64", "as_int64", "to_int64"):
         assert absent not in storage_methods, absent
-    # ...and the module-level factory shape is absent too.
+    # ...and the module-level factory shape for a later milestone is absent.
     module = _code_only(_module_source(
         "src/tensorforge/experimental/native_tensor.py"))
-    for banned in ("from_int64_array", "argmax", "index_select", "tolist"):
+    for banned in ("argmax", "index_select", "gather"):
         assert banned not in module, banned
 
 
@@ -1686,7 +1781,7 @@ def test_the_latest_phase_forms_can_actually_fail():
 def test_every_editable_status_surface_names_k_as_the_current_phase(surface):
     text = _flat(_read(surface))
     assert _phase_letters(_LATEST_PHASE_FORM, text) == {"K"}, surface
-    assert re.search(r"only K0 and K1 have landed", text, re.I), surface
+    assert re.search(r"only K0, K1, and K2 have landed", text, re.I), surface
 
 
 @pytest.mark.parametrize("surface", EDITABLE_STATUS_SURFACES)
@@ -1714,11 +1809,17 @@ def test_the_production_docstring_was_repaired_at_k1():
     assert _phase_letters(_LATEST_COMPLETED_FORM, text) == {"J"}
     assert not re.search(r"Phase J[^.;]{0,80}?\bis the latest phase\b", text,
                          re.I)
-    # ...and it records what K1 actually did, including the half a reader
-    # would otherwise get wrong.
+    # ...and it records what each landed milestone actually did, including
+    # the halves a reader would otherwise get wrong.
     assert re.search(r"K1[^.]{0,200}(barrier|representation)", text, re.I)
-    assert re.search(r"no public integer", text, re.I), \
-        "the module does not state that no public integer capability exists"
+    assert re.search(r"\bK2\b.{0,1500}from_int64_array", text, re.I), \
+        "the module does not record K2's one public door"
+    assert "INDEX_DTYPES" in text
+    # The absence half, which is what keeps "an integer tensor exists" from
+    # being read as "int64 is supported".
+    assert re.search(r"not a supported native tensor dtype", text, re.I)
+    for absent in ("argmax", "integer arithmetic"):
+        assert absent in text.lower(), absent
 
 
 def test_no_production_module_carries_a_stale_latest_phase_claim():
@@ -1905,12 +2006,13 @@ def test_the_roadmap_current_status_paragraph_is_accurate():
     assert re.search(r"Python line is (?:\*\*)?complete at v3\.0", text, re.I)
     assert re.search(r"Phases A through J", text)
     assert re.search(r"Phase K[^.;]{0,90}?(current|latest) phase", text, re.I)
-    assert re.search(r"only K0 and K1 have landed", text, re.I)
+    assert re.search(r"only K0, K1, and K2 have landed", text, re.I)
     assert re.search(r"Phase J is the latest completed phase", text, re.I)
     # ...and the Phase-K section states the absence half.
-    assert re.search(r"K2 through K9 are unstarted", text, re.I)
+    assert re.search(r"K3 through K9 are unstarted", text, re.I)
     assert re.search(r"design, documentation, and guardrails only", text, re.I)
-    assert re.search(r"no public integer capability exists yet", text, re.I)
+    assert re.search(r"no argmax", text, re.I)
+    assert re.search(r"not a supported native tensor dtype", text, re.I)
     assert f"docs/{PHASE_K_DESIGN_NAME}" in _read("docs/roadmap.md") or \
         PHASE_K_DESIGN_NAME in _read("docs/roadmap.md")
 
@@ -1951,7 +2053,336 @@ def test_the_k2_summary_does_not_call_all_python_construction_private():
 
 
 # ===========================================================================
-# 12. CLAUDE.md size policy — the existing ceiling, and nothing stricter
+# 12. The K2 public delta — three public names, exactly one public door
+# ===========================================================================
+#
+# The two claims are different and both are true, so neither may be written
+# as the other:
+#
+#   * K2 adds **three** public ``NativeTensor`` method names —
+#     ``from_int64_array``, ``item``, and ``tolist``;
+#   * ``NativeTensor.from_int64_array`` is the **only public construction
+#     or host-ingress door** — the one public API through which an
+#     ``int64`` buffer can come into existence.
+#
+# ``item`` and ``tolist`` are dtype-general host *inspection*: they
+# construct nothing, so they are names in the delta and are not doors.
+# Collapsing the delta into "one public name" understates it, and it is
+# what these guardrails exist to catch.
+
+# A quantified claim about a public *name*. Deliberately narrow: "no public
+# name" (K1's and K5–K9's honest rows) does not match, and neither does
+# "no new public experimental name" — only a claim that some **single**
+# public name is the whole of a delta.
+_SINGULAR_PUBLIC_NAME = re.compile(
+    r"\b(only|one|single|sole|exactly one|just one)\s+(new\s+)?public\s+"
+    r"(python\s+)?names?\b", re.I)
+
+# A *public* integer constructor at a layer that must only have a private
+# one. The leading boundary keeps ``NativeStorage._from_int64_array`` —
+# the real, private helper — from matching its own name.
+_PUBLIC_LOWER_DOOR = re.compile(
+    r"\b(NativeStorage|NativeTensorCore)\.from_int64_array\b")
+
+# Public method names that would be a second construction door.
+_DOOR_MARKERS = ("_from_int64_array", "_normalize_index_dtype")
+
+
+def _public_integer_doors():
+    """Every **public** method, at any of the three layers, that reaches
+    the integer construction machinery.
+
+    Read from the AST: a method is a door when its body calls the private
+    integer ingress or the index registry gate. ``NativeStorage.copy_from``
+    is deliberately not a door — it writes into storage that only a door
+    could have created — so ``_exact_host_array`` is not a marker."""
+    doors = set()
+    for relative, class_names in (
+        ("src/tensorforge/experimental/native_tensor.py", ("NativeTensor",)),
+        ("src/tensorforge/backends/cpp.py",
+         ("NativeTensorCore", "NativeStorage")),
+    ):
+        tree = ast.parse(_module_source(relative))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ClassDef) or node.name not in class_names:
+                continue
+            for child in node.body:
+                if not isinstance(child, (ast.FunctionDef,
+                                          ast.AsyncFunctionDef)):
+                    continue
+                if child.name.startswith("_"):
+                    continue
+                for call in ast.walk(child):
+                    if not isinstance(call, ast.Call):
+                        continue
+                    func = call.func
+                    name = (func.attr if isinstance(func, ast.Attribute)
+                            else func.id if isinstance(func, ast.Name)
+                            else None)
+                    if name in _DOOR_MARKERS:
+                        doors.add(f"{node.name}.{child.name}")
+    return doors
+
+
+def test_the_public_delta_scanners_can_actually_fail():
+    """Negative controls, on temporary strings, for all three arms."""
+    # Arm 1: the singular-name claim is caught in every ordinary shape...
+    for offender in ("It is the only public name K2 adds",
+                     "K2 adds exactly one public name",
+                     "the single public Python name",
+                     "just one new public name"):
+        assert _SINGULAR_PUBLIC_NAME.search(offender), offender
+    # ...and the honest rows are not.
+    for honest in ("K1 | none | no public name",
+                   "Phase K adds no new public experimental name",
+                   "K2 adds three public NativeTensor method names",
+                   "the one public construction door",
+                   "the only public construction or host-ingress door"):
+        assert not _SINGULAR_PUBLIC_NAME.search(honest), honest
+    # Arm 2: a public lower-layer door is caught, the private one is not.
+    assert _PUBLIC_LOWER_DOOR.search("use NativeStorage.from_int64_array(x)")
+    assert _PUBLIC_LOWER_DOOR.search("NativeTensorCore.from_int64_array")
+    for private in ("NativeStorage._from_int64_array",
+                    "NativeTensorCore._from_int64_array",
+                    "NativeTensor.from_int64_array"):
+        assert not _PUBLIC_LOWER_DOOR.search(private), private
+    # Arm 3: the AST door-finder really finds a door, and really ignores a
+    # private helper and a public method that is not one.
+    source = ("class NativeTensor:\n"
+              "    def from_int64_array(cls, v):\n"
+              "        return cpp.NativeTensorCore._from_int64_array(v)\n"
+              "    def _private_door(cls, v):\n"
+              "        return cpp.NativeTensorCore._from_int64_array(v)\n"
+              "    def to_numpy(self):\n        return 1\n")
+    found = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.ClassDef):
+            continue
+        for child in node.body:
+            if (isinstance(child, ast.FunctionDef)
+                    and not child.name.startswith("_")
+                    and any(isinstance(call, ast.Call)
+                            and isinstance(call.func, ast.Attribute)
+                            and call.func.attr in _DOOR_MARKERS
+                            for call in ast.walk(child))):
+                found.add(f"{node.name}.{child.name}")
+    assert found == {"NativeTensor.from_int64_array"}, found
+
+
+def test_the_design_never_describes_the_k2_delta_as_a_single_public_name():
+    """Arm 1 over the authority itself. The design may say "one public
+    **door**" as often as it likes; it may not say the delta is one public
+    **name**, because `item` and `tolist` are in it too."""
+    offenders = _SINGULAR_PUBLIC_NAME.findall(_flat(_design()))
+    assert offenders == [], offenders
+
+
+def _milestone_record(milestone):
+    """The body of one ``### Kn — …`` milestone record, up to the next one.
+
+    Subsection-scoped rather than section-scoped, so a claim about K2 must
+    live in K2's record and cannot be satisfied by K3's."""
+    text = _design()
+    marker = f"\n### {milestone} —"
+    assert marker in text, f"the design has no {milestone} record"
+    body = text.split(marker, 1)[1]
+    following = re.search(r"\n### K\d+ [—-]", body)
+    return body[:following.start()] if following else body
+
+
+def test_the_design_states_the_three_names_and_the_one_door_distinction():
+    """The distinction is written down, in the delta table and in the
+    milestone record, rather than merely not-contradicted."""
+    api = _flat(_section(_design(), 23))
+    for name in LANDED_TENSOR_METHODS:
+        assert name in api, name
+    lowered = api.lower()
+    assert "construction door" in lowered or "host-ingress door" in lowered
+    assert "host-inspection" in lowered or "host inspection" in lowered
+    # The milestone record says the same thing, in its own words.
+    record = _flat(_milestone_record(FIRST_CONSTRUCTION_MILESTONE))
+    assert "three" in record.lower(), record[:200]
+    for name in LANDED_TENSOR_METHODS:
+        assert name in record, name
+    assert "only public construction or host-ingress door" in record.lower()
+    # ...and the exit gate carries it too, so closure cannot restate the
+    # delta more narrowly than the milestone did.
+    gate = _flat(_section(_design(), 34)).lower()
+    assert "only public construction or host-ingress door" in gate
+    assert "item()" in gate and "tolist()" in gate
+
+
+def test_no_public_storage_or_core_integer_constructor_appears_anywhere():
+    """Arm 2, structurally and in prose. The design must never promise a
+    public lower-layer door; the source must never define one."""
+    assert _PUBLIC_LOWER_DOOR.findall(_flat(_design())) == []
+    core_methods = _defined_names("src/tensorforge/backends/cpp.py",
+                                  "NativeTensorCore")
+    storage_methods = _defined_names("src/tensorforge/backends/cpp.py",
+                                     "NativeStorage")
+    for methods, layer in ((core_methods, "NativeTensorCore"),
+                           (storage_methods, "NativeStorage")):
+        assert "_from_int64_array" in methods, layer      # the private one
+        public = {name for name in methods if not name.startswith("_")}
+        for name in public:
+            lowered = name.lower()
+            for banned in ("int64", "integer", "index"):
+                assert banned not in lowered, (layer, name)
+
+
+def test_exactly_one_public_construction_door_exists():
+    """Arm 3. A second public door would make "the one public API through
+    which an `int64` buffer can come into existence" false, however
+    carefully each door was written."""
+    assert _public_integer_doors() == {"NativeTensor.from_int64_array"}, \
+        sorted(_public_integer_doors())
+
+
+def test_item_and_tolist_are_part_of_the_delta_and_are_not_removed():
+    """The correction is a *wording* correction: nothing is deleted to make
+    a shorter sentence true."""
+    tensor_methods = _defined_names(
+        "src/tensorforge/experimental/native_tensor.py", "NativeTensor")
+    for name in ("item", "tolist", "from_int64_array"):
+        assert name in tensor_methods, name
+    assert set(LANDED_TENSOR_METHODS) == {"from_int64_array", "item",
+                                          "tolist"}
+
+
+# ===========================================================================
+# 13. No live surface explains behavior by an absent integer dtype
+# ===========================================================================
+#
+# K2 gave the runtime a real `int64` index/result dtype, so two long-true
+# *reasons* expired even though both *conclusions* stand:
+#
+#   * classification targets remain exact host-side label metadata under
+#     the Phase-E contract — because K2 did not widen cross-entropy, not
+#     because the runtime cannot express an integer;
+#   * native `argmax` is absent — because no milestone has shipped one,
+#     not because its result type is inexpressible.
+#
+# A clearly time-bound historical statement ("at Phase E the runtime had no
+# integer dtype") is honest and is allowed; a present-tense runtime
+# limitation is not. Scoped to production source and current-status
+# documentation: `examples/` and `tests/` are held to their own modules'
+# rules and are not rewritten here.
+
+LIVE_REASON_SURFACES = (
+    "src/tensorforge/backends/cpp.py",
+    "src/tensorforge/experimental/native_tensor.py",
+    "src/tensorforge/experimental/native_metrics.py",
+    "src/tensorforge/experimental/native_cross_entropy_loss.py",
+    "README.md",
+    "CLAUDE.md",
+    "docs/roadmap.md",
+    "docs/project_summary.md",
+    "docs/architecture.md",
+    "docs/release_history.md",
+    "docs/native_support_matrix.md",
+    "docs/native_integer_tensors_design.md",
+    "docs/native_classification_design.md",
+    "docs/native_data_pipeline_design.md",
+)
+
+# The expired reason, in the shapes it is actually written in.
+_ABSENT_INTEGER_DTYPE = r"no\s+(?:native\s+|public\s+)?(?:integer|int64)\s+dtype"
+
+# The two conclusions it may no longer explain. Each arm reads both
+# directions, because "targets … no integer dtype" and "no integer dtype …
+# for targets" are the same claim written two ways.
+_STALE_REASONS = (
+    ("cross-entropy targets are host metadata because of an absent "
+     "integer dtype",
+     r"\b(targets?|labels?|cross[- ]entropy)\b[^.]{0,120}" +
+     _ABSENT_INTEGER_DTYPE
+     + r"|" + _ABSENT_INTEGER_DTYPE +
+     r"[^.]{0,120}\b(targets?|labels?|cross[- ]entropy)\b"),
+    ("native argmax is absent because of an absent integer dtype",
+     r"\bargmax\b[^.]{0,120}" + _ABSENT_INTEGER_DTYPE
+     + r"|" + _ABSENT_INTEGER_DTYPE + r"[^.]{0,120}\bargmax\b"),
+)
+
+# What makes a statement honestly historical. A milestone label alone is
+# enough ("K0 adds no integer dtype" is a delta, not a limitation), as is
+# an explicit past framing or a quotation of the sentence that expired.
+_TIME_BOUND = re.compile(
+    r"\b(at\s+Phase\s+[A-J]\b|before\s+Phase\s+K|before\s+K[0-9]|"
+    r"prior\s+to\s+K[0-9]|until\s+K[0-9]|through\s+K[0-9]|up\s+to\s+K[0-9]|"
+    r"K[0-9]\s+(adds?|added|recorded|is|was)|used\s+to|no\s+longer|"
+    r"expired|historical|formerly|previously|was\s+accurate|"
+    r"the\s+sentence\s+read|now\s+exists|has\s+changed|changed\s+at|"
+    r"corrected)\b", re.I)
+
+
+def _stale_reasons(text):
+    """Every expired-reason sentence in one body, ignoring the ones an
+    explicit time bound makes honest."""
+    flat = _flat(text)
+    found = []
+    for label, pattern in _STALE_REASONS:
+        for match in re.finditer(pattern, flat, re.I):
+            window = flat[max(0, match.start() - 220):match.end() + 220]
+            if not _TIME_BOUND.search(window):
+                found.append((label, match.group(0)))
+    return found
+
+
+def test_the_stale_reason_scanner_can_actually_fail():
+    """Negative control: the scanner catches each expired reason, in both
+    directions, and clears the time-bound forms."""
+    for offender in (
+        "Targets are not native tensors (the runtime has no integer dtype)",
+        "the runtime has no integer dtype, so targets stay host metadata",
+        "there is no native argmax: the runtime has no integer dtype",
+        "no integer dtype exists for an argmax to return",
+    ):
+        assert _stale_reasons(offender), offender
+    for honest in (
+        "At Phase E the runtime had no integer dtype, so targets are host "
+        "metadata",
+        "Before Phase K there was no integer dtype for an argmax to return",
+        "K0 adds no integer dtype, no dtype code, and no kernel",
+        "Until K2 the sentence read \"the runtime has no integer dtype\", "
+        "which was accurate for argmax then",
+        "Classification targets remain exact host-side label metadata "
+        "under the Phase-E contract",
+        "The integer result dtype now exists, but native argmax remains "
+        "intentionally absent until K3",
+    ):
+        assert _stale_reasons(honest) == [], (honest, _stale_reasons(honest))
+    # ...and the scanner is not simply inert: an unrelated absence sentence
+    # is neither caught nor needed.
+    assert _stale_reasons("The native runtime has no CUDA backend.") == []
+
+
+@pytest.mark.parametrize("surface", LIVE_REASON_SURFACES)
+def test_no_live_surface_blames_an_absent_integer_dtype(surface):
+    found = _stale_reasons(_read(surface))
+    assert found == [], (surface, found[:3])
+
+
+def test_the_current_reasons_are_written_down_where_they_belong():
+    """The other half: the correct reason really is stated, so the scan
+    above passes because the text was fixed rather than deleted."""
+    targets = "Classification targets remain exact host-side label metadata"
+    for surface in ("src/tensorforge/backends/cpp.py",
+                    "src/tensorforge/experimental/native_tensor.py",
+                    "docs/native_support_matrix.md"):
+        flat = _flat(_read(surface)).lower()
+        assert targets.lower() in flat, surface
+        assert "did not widen cross-entropy" in flat or \
+               "not widen cross-entropy" in flat, surface
+    argmax = _flat(_read("docs/native_support_matrix.md")).lower()
+    assert "integer result dtype now exists" in argmax
+    assert "remains intentionally absent until k3" in argmax
+    # ...and the production metric surface keeps its corrected wording.
+    metrics = _flat(_read("src/tensorforge/experimental/native_metrics.py"))
+    assert "absent because nobody has shipped it" in metrics.lower()
+
+
+# ===========================================================================
+# 14. CLAUDE.md size policy — the existing ceiling, and nothing stricter
 # ===========================================================================
 
 def test_claude_md_stays_below_the_project_ceiling():

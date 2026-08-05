@@ -1165,9 +1165,14 @@ def test_the_typed_creators_and_the_i2_raw_kernel_registry_are_declared():
     assert not [name for name in cpp.RAW_KERNELS
                 if name.endswith(("_f32", "_f64"))]
     # Internal representability is wider than both — that gap is the whole
-    # point of the registry existing now rather than at I0.
-    assert set(cpp._DTYPE_CODES) == {"float64", "float32"}
+    # point of the registry existing now rather than at I0. It was I1-I8's
+    # float32 gap, it closed at I9, and **Phase K milestone K2 reopened it**
+    # with ``int64``, which is representable and is deliberately not a
+    # *compute* dtype. The relation this asserts — raw kernels ⊂
+    # representable — is the durable one and holds at every milestone.
+    assert set(cpp._DTYPE_CODES) == {"float64", "float32", "int64"}
     assert set(cpp.RAW_KERNEL_DTYPES) < set(cpp._DTYPE_CODES)
+    assert set(cpp.SUPPORTED_DTYPES) < set(cpp._DTYPE_CODES)
 
 
 def test_the_cpp_storage_struct_is_dtype_tagged():
@@ -2050,6 +2055,14 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
         # validator this phase introduced, which is why the file changed at
         # all.
         "src/tensorforge/experimental/native_module.py",
+        # Phase K, K2 — a documentation-only reconciliation, and the
+        # narrowest kind. The module docstring explained the absence of a
+        # native ``argmax`` by saying the runtime has no integer dtype; K2
+        # gave the runtime an ``int64`` **index/result** dtype, so the
+        # *reason* became false while the absence stayed true. No code
+        # changed, the metric still reports through the host boundary, it
+        # owns no dtype, and it appears in no dtype inventory above.
+        "src/tensorforge/experimental/native_metrics.py",
     }
     changed = [path for path in _changed_since(I0_COMMIT)
                if path.startswith("src/") and path not in LATER_PHASE_FILES]
@@ -2143,12 +2156,20 @@ def _create_typed(size, code, zero_initialize=True):
 
 def test_the_python_dtype_tables_agree_with_the_frozen_abi_codes():
     """One authority per side of the boundary, agreeing by construction
-    because the codes are the same integers."""
+    because the codes are the same integers.
+
+    The two Phase-I codes are **frozen** and neither moved when Phase K
+    milestone K2 gave the tables their third entry — ``"int64": 2``, the
+    code the Phase-I header comment reserved for a future dtype. The entry
+    is asserted here rather than merely tolerated, so a table that gained a
+    *fourth* name would still fail this."""
     assert cpp._DTYPE_CODES == {"float64": DTYPE_CODE_FLOAT64,
-                                "float32": DTYPE_CODE_FLOAT32}
-    assert cpp._DTYPE_ITEM_SIZES == {"float64": 8, "float32": 4}
+                                "float32": DTYPE_CODE_FLOAT32,
+                                "int64": 2}
+    assert cpp._DTYPE_ITEM_SIZES == {"float64": 8, "float32": 4, "int64": 8}
     assert cpp._DTYPE_NUMPY["float64"] is np.float64
     assert cpp._DTYPE_NUMPY["float32"] is np.float32
+    assert cpp._DTYPE_NUMPY["int64"] is np.int64
     # The three tables describe the same set of dtypes, so none can gain a
     # value the others do not know about.
     assert (set(cpp._DTYPE_CODES) == set(cpp._DTYPE_ITEM_SIZES)
@@ -2166,11 +2187,19 @@ def test_the_dtype_tables_stayed_private_when_the_promise_caught_up():
     That is the durable half of the original claim. "Wider" was a fact
     about eight milestones, and it stopped being one when the registry
     moved; "private, and never a public dtype object" is a fact about the
-    design and does not lapse. The two sets agreeing is asserted here
-    rather than assumed, because a representation table that could hold a
-    dtype the registry does not is exactly the drift this guards."""
+    design and does not lapse.
+
+    The no-drift guarantee this exists for — *nothing representable is
+    unpromised* — is asserted here rather than assumed. **Phase K milestone
+    K2 generalized it rather than deleting it**: the representation table
+    now equals the union of the floating-compute registry and the
+    index/result registry, which is the same guarantee over two rows
+    instead of one. It is written as an exact equality on purpose; a subset
+    check would be strictly weaker and would let a fourth representable
+    name in unnoticed."""
     assert "float32" in cpp._DTYPE_CODES
-    assert set(cpp._DTYPE_CODES) == set(cpp.SUPPORTED_DTYPES)
+    assert set(cpp._DTYPE_CODES) == (set(cpp.SUPPORTED_DTYPES)
+                                     | set(cpp.INDEX_DTYPES))
     assert "float32" not in cpp.UNSUPPORTED
     for name in ("_DTYPE_CODES", "_DTYPE_ITEM_SIZES", "_DTYPE_NUMPY"):
         assert name.startswith("_"), name

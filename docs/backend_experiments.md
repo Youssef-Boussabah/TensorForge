@@ -82,7 +82,7 @@ Phase J.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
 complete: milestones J0 through J9 have all landed and J9 closed it.**
-**Phase K is the latest phase, and only K0 and K1 have landed.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
+**Phase K is the latest phase, and only K0, K1, and K2 have landed.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -203,6 +203,47 @@ LeakSanitizer lifecycle is claimed for this milestone; the Clang
 ASan/UBSan matrix and the Windows/Linux equality proof belong to **K9**,
 where §32's ladder puts them. No result file of any kind was written and
 no benchmark was added.
+
+### K2 — the public `int64` tensor, with no native rebuild required
+
+**K2 changed no C++ and no CMake, so no native rebuild, no CTest run, and
+no sanitizer run was required or is claimed.** The library is byte-identical
+to the one K1 built: still exactly **54** exported `tf_*` symbols, still
+**25** registered CTests, and the `Int64` arms and the
+`tf::require_floating` audit exactly as K1 left them. That is the point of
+the ladder's ordering — K1 spent the C++ budget on the representation and
+the barriers, so K2 is a Python milestone that consumes them.
+
+**Why no rebuild is honest here rather than convenient.** Everything K2
+needs on the native side already exists and was already proved: allocation
+at code 2 through `tf_storage_create_typed`, destruction through
+`tf_storage_destroy`, exact transfer through `tf_storage_copy_from` /
+`tf_storage_copy_to` / `tf_storage_materialize`, and exact strided
+materialization through `tf_core_contiguous_copy`, which keeps
+`require_matching_dtype` so an `int64`↔floating copy stays an invalid
+*request*. K2 added no ctypes declaration either: `_host_pointer` chooses
+its checked binding from `_CHECKED_HOST_ARRAYS` by the storage's own tag,
+so the new `int64` entry is a table row rather than a new argument slot.
+
+**What K2 changed, in Python only.** The three dtype tables and the host
+binding; `INDEX_DTYPES` and `backend_info()["index_dtypes"]` beside an
+unmoved `SUPPORTED_DTYPES`; the generalized no-drift invariant
+`set(_DTYPE_CODES) == set(SUPPORTED_DTYPES) | set(INDEX_DTYPES)`;
+`_normalize_index_dtype` and the `_is_index_dtype` / `_is_tensor_dtype` /
+`_require_tensor_dtype` predicates; the private exact ingress
+`NativeStorage._from_int64_array` and
+`NativeTensorCore._from_int64_array`; a role split in
+`NativeStorage.copy_from` so an index destination converts nothing; a
+zeroed destination for `contiguous_copy`'s index arm, leaving the H1
+uninitialized path and its poison test untouched; the two widened wrapper
+gates; and the public `NativeTensor.from_int64_array` / `item()` /
+`tolist()`.
+
+**Windows evidence.** The full `uv run pytest` suite green on the K1
+library, plus `scripts/smoke_cpp_backend.py`. No Linux or WSL run, no
+sanitizer run, and no LeakSanitizer lifecycle is claimed for this
+milestone either — those belong to **K9**. No result file of any kind was
+written and no benchmark was added.
 
 ### J9 — the Phase-J closure matrix
 

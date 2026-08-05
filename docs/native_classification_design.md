@@ -839,10 +839,20 @@ same property `sqrt`/`reciprocal`/`maxpool2d` already have.
 
 ## 6. Target contract
 
-The native runtime has **no integer dtype**, and Phase E deliberately
-does not add one (a public integer `NativeTensor` is a much larger
-change: storage, ABI, dtype normalization, promotion rules). So
+**At Phase E** the native runtime had **no integer dtype**, and Phase E
+deliberately did not add one (a public integer `NativeTensor` is a much
+larger change: storage, ABI, dtype normalization, promotion rules). So
 classification targets are **not** `NativeTensor`s.
+
+**That reason is historical; the contract is not.** Phase K added a
+native `int64` **index/result** dtype — the representation at K1 and the
+publicly constructible tensor at K2 — and deliberately did **not** widen
+cross-entropy. Classification targets remain **exact host-side label
+metadata** under this contract, at every Phase-K milestone, and no
+Phase-K milestone touches the cross-entropy Core path or
+`native_cross_entropy_loss.py` (see
+[native_integer_tensors_design.md](native_integer_tensors_design.md)
+§20.1–§20.2). Everything below is unchanged and stays unchanged.
 
 **Targets are accepted as Python or NumPy integer data and immediately
 converted to an independently owned contiguous `int64` copy.** That copy
@@ -967,9 +977,12 @@ notes:
 - **It is not native compute, and nothing claims otherwise.** There is
   no accuracy kernel, no C ABI export, no ctypes symbol, no
   `NativeTensorCore` method, and no autograd node — E7 changed no C++
-  file at all. There is deliberately no native `argmax` either: the
-  runtime has no integer dtype for an index-producing reduction to
-  return.
+  file at all. There is deliberately no native `argmax` either. (**At
+  Phase E** the reason was that the runtime had no integer dtype for an
+  index-producing reduction to return. The integer result dtype now
+  exists — Phase K, K2 — but native `argmax` remains intentionally absent
+  until K3, and this helper will keep reporting through the host boundary
+  deliberately even once it lands.)
 - **One shared target validator.** The metric calls the *same* private
   `_prepare_class_targets` helper the E5 Core forward calls, so the
   accepted and rejected forms of §6 are identical at both call sites by
