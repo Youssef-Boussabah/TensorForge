@@ -1246,6 +1246,12 @@ def test_storage_owns_a_genuine_typed_array_under_cpp17():
     assert re.search(r"create_typed_storage\s*<\s*double\s*>", source), (
         "storage.cpp never instantiates the allocation body for double"
     )
+    # Phase K, milestone K1: the same one body, a third instantiation. It
+    # is asserted here rather than in a Phase-K module because the C++17
+    # array-lifetime argument this test exists for is what licenses it.
+    assert re.search(r"create_typed_storage\s*<\s*std::int64_t\s*>", source), (
+        "storage.cpp never instantiates the allocation body for int64"
+    )
 
     # 3. Type-correct array ownership across the metadata allocation.
     assert re.search(r"std::unique_ptr\s*<\s*T\s*\[\s*\]\s*>", source), (
@@ -1254,7 +1260,12 @@ def test_storage_owns_a_genuine_typed_array_under_cpp17():
     )
 
     # 4. Destruction is a centralized, dtype-matched delete[] — one
-    #    switch, both dtypes, each applied to its own element type.
+    #    switch, **every** representable dtype, each applied to its own
+    #    element type. Phase K, milestone K1 added ``std::int64_t`` as a
+    #    third representable element type on exactly the terms this
+    #    guardrail states, so it is checked here rather than exempted: the
+    #    rule is "one array new-expression per dtype, one matching
+    #    delete[] per dtype, and no delete[] outside the one switch".
     destroy = re.search(r"void\s+destroy_storage_data\s*\(.*?\n\}", source,
                         re.S)
     assert destroy, "storage.cpp has no central destroy_storage_data"
@@ -1263,8 +1274,12 @@ def test_storage_owns_a_genuine_typed_array_under_cpp17():
                      body), "float32 storage is not released as float[]"
     assert re.search(r"delete\s*\[\s*\]\s*static_cast\s*<\s*double\s*\*\s*>",
                      body), "float64 storage is not released as double[]"
-    # ...and nowhere else duplicates it.
-    assert len(re.findall(r"delete\s*\[\s*\]", source)) == 2, (
+    assert re.search(
+        r"delete\s*\[\s*\]\s*static_cast\s*<\s*std::int64_t\s*\*\s*>", body
+    ), "int64 storage is not released as std::int64_t[]"
+    # ...and nowhere else duplicates it: exactly one delete[] per arm of
+    # the one switch, and nothing outside it.
+    assert len(re.findall(r"delete\s*\[\s*\]", source)) == 3, (
         "a delete[] exists outside the central destroy_storage_data switch"
     )
 
@@ -2027,6 +2042,14 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
         # the batches it delivers carry the *dataset's*, so it takes no
         # ``dtype`` argument and appears in no dtype inventory above.
         "src/tensorforge/experimental/native_data_loader.py",
+        # Phase K, K1 — the buffer reachability barrier. Registering a
+        # buffer is a *state* decision, not a dtype decision: the module
+        # gained no ``dtype`` argument, owns no dtype-bearing state of its
+        # own, and appears in none of the dtype inventories above. It reads
+        # a tensor's existing dtype through the same shared private
+        # validator this phase introduced, which is why the file changed at
+        # all.
+        "src/tensorforge/experimental/native_module.py",
     }
     changed = [path for path in _changed_since(I0_COMMIT)
                if path.startswith("src/") and path not in LATER_PHASE_FILES]
@@ -2193,7 +2216,15 @@ def test_typed_storage_can_be_created_and_destroyed_at_both_dtypes():
 
 @needs_native
 def test_an_unknown_dtype_code_raises_value_error_and_allocates_nothing():
-    for code in (-1, 2, 3, 99, 2 ** 31 - 1):
+    """Code **2 is no longer here**: Phase K, milestone K1 gave it to
+    ``int64`` as the internal representation, taking exactly the code the
+    Phase-I header comment reserved for a future dtype. It moved from this
+    list to a positive assertion in the Phase-K modules rather than being
+    dropped, so the total coverage of the code space did not shrink — 3 and
+    every neighbour of the representable range are still rejected here, and
+    a representable code is still never *supported* merely by being
+    representable."""
+    for code in (-1, 3, 4, 99, 2 ** 31 - 1):
         for zero in (True, False):
             with pytest.raises(ValueError, match="dtype"):
                 _create_typed(16, code, zero)
@@ -8265,30 +8296,37 @@ def test_every_state_owning_constructor_rejects_everything_else(
 @needs_native
 def test_the_module_dtype_validator_is_a_strict_delegate():
     """Design §12.2: *no constructor invents its own dtype validation*. The
-    shared helper is a delegate over the internal normalizer, so the module
+    shared helper is a delegate with no rule of its own, so the module
     surface and the storage layer cannot disagree about what a dtype is —
     asserted by comparing both functions' answers, and both functions'
-    exception types and messages, over the same inputs."""
+    exception types and messages, over the same inputs.
+
+    **Which** function it delegates to moved at Phase K, milestone K1, from
+    the internal representation table to ``cpp.normalize_dtype``, the
+    floating-compute validator (integer design §5.4). The property this
+    test exists for is unchanged and is checked against the new delegate:
+    that the helper adds nothing and subtracts nothing. The narrowing is
+    also asserted directly here — the helper must now agree with the
+    *public* validator and must **not** agree with the representation
+    table the moment those two differ, which is what keeps a trainable
+    integer parameter impossible."""
     from tensorforge.experimental import _native_dtype
 
     assert _native_dtype.MODULE_DTYPES == ("float64", "float32")
     for good in (None, "float64", "float32"):
         assert (_native_dtype.normalize_module_dtype(good)
-                == cpp._normalize_internal_dtype(good))
+                == cpp.normalize_dtype(good))
     for bad in ("f4", "Float32", "cuda", "", np.float32, 4, True):
         with pytest.raises(BaseException) as helper:
             _native_dtype.normalize_module_dtype(bad)
         with pytest.raises(BaseException) as direct:
-            cpp._normalize_internal_dtype(bad)
+            cpp.normalize_dtype(bad)
         assert type(helper.value) is type(direct.value), bad
         assert str(helper.value) == str(direct.value), bad
-    # It is **not** the public validator and must not become one, even now
-    # that the two accept the same set. Through I8 the difference was
-    # visible — the public registry refused ``"float32"`` outright — and at
-    # I9 it stopped being visible without stopping being real: they remain
-    # separate functions measured against separate tables, and the delegate
-    # answers "what may a module be constructed at?" rather than "what does
-    # TensorForge support?".
+    # It is still **not** the public validator itself, and must not become
+    # one: it stays a separate function answering "what may a module be
+    # constructed at?", which is a different question from "what does
+    # TensorForge support?" even while the two have the same answer.
     assert (_native_dtype.normalize_module_dtype
             is not cpp.normalize_dtype)
     assert set(_native_dtype.MODULE_DTYPES) == set(cpp.SUPPORTED_DTYPES)

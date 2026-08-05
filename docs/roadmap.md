@@ -38,20 +38,39 @@ the experimental native line has completed **Phases A through J** — the
 last of them, the deterministic native data pipeline and mini-batching,
 closed at milestone J9, so **Phase J is the latest completed phase**.
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and only K0 has landed.** Each phase's record is in its own design
+and only K0 and K1 have landed.** Each phase's record is in its own design
 document; the sections above are the narrative.
 
-## The current phase — Phase K, K0 complete
+## The current phase — Phase K, K0 and K1 complete
 
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and K0 is complete.** **K1 through K9 are unstarted.** K0 added
-**design, documentation, and guardrails only** — no integer dtype, no
-kernel, no C ABI symbol, no public export, no registry or version
-movement — so **no runtime capability exists yet**: `int64` is not a
-native tensor dtype, and there is no native integer storage, no `argmax`,
-and no index selection. Runtime capability begins at K1. Its architecture
-contract is
+and K0 and K1 are complete.** **K2 through K9 are unstarted.** Its
+architecture contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md).
+
+**K0** added **design, documentation, and guardrails only** — no integer
+dtype, no kernel, no C ABI symbol, no public export, no registry or
+version movement. Runtime capability began at K1.
+
+**K1** added the internal `int64` **representation** and **every**
+reachability barrier, and nothing else. Internally, the C++ dtype model
+gained a third enumerator at code 2, storage can allocate and destroy
+genuine `std::int64_t[]` buffers, and the four transfer boundaries move
+integer values bit for bit; every other handle-based export refuses an
+`int64` operand at the ABI through the new `tf::require_floating` guard,
+and the Python side gained the matching barriers in front of autograd,
+parameters, buffers, both optimizers, checkpoint entries, wrapper
+construction, and every floating operation.
+
+**No public integer capability exists yet.** The Python dtype tables were
+deliberately left untouched at K1, so **no supported TensorForge wrapper
+or public Python API can allocate or wrap `int64` storage; only the raw
+private C ABI can represent it, for isolation and barrier testing.**
+`int64` is not a supported native tensor dtype, `normalize_dtype("int64")`
+still raises, `INDEX_DTYPES` does not exist, and there is no public
+integer constructor, no `argmax`, and no index selection. Public
+construction begins at **K2**, in the same commit as `INDEX_DTYPES` —
+prove first, then promise.
 
 ## The latest completed phase — Phase J, complete
 
@@ -665,23 +684,43 @@ is true here.
 
 **Phase K — Native Integer Tensors and Indexing** is that newly approved
 successor. It has its own design contract
-([native_integer_tensors_design.md](native_integer_tensors_design.md),
-milestone **K0**), and **K0 is the only milestone that has landed**. K0 is
+([native_integer_tensors_design.md](native_integer_tensors_design.md)),
+and **K0 and K1 have landed**. K0 is
 architecture, contract, status reconciliation, and guardrails, and it
 **added no runtime behavior at all**: no integer dtype or dtype code, no
 C++ enumerator, no kernel, no C ABI symbol, no ctypes declaration, no
 public export, no capability-registry movement, no checkpoint,
 optimizer-state, loader-state, or sampler-state change, no example, no
-benchmark, no CTest, and no dependency. Every registry row is exactly what
+benchmark, no CTest, and no dependency.
+
+**K1 added the internal `int64` representation and every reachability
+barrier, and no public capability at all.** The C++ dtype model gained a
+third enumerator at code 2; `create_storage` and `destroy_storage_data`
+gained an `Int64` arm; `tf_storage_copy_from`, `tf_storage_copy_to`,
+`tf_storage_materialize`, and `tf_core_contiguous_copy` move integer
+values bit for bit; and **32** float-only exports gained the
+hidden-visibility `tf::require_floating` guard, which runs ahead of the
+operand-agreement guard so a mixed float/integer call is refused as a role
+error. On the Python side, nine trusted dtype paths were narrowed from the
+representation table to the floating registry, and every §6.5 barrier
+landed: wrapper construction, autograd (`_from_op`, `backward`,
+`_accumulate_grad`), `NativeParameter`, `register_buffer` at **both**
+`persistent` values, both optimizers, checkpoint entry validation, and
+every floating operation entry. It added **no** C ABI symbol, **no**
+public Python name, and **no** registry or version movement; the native
+CTest inventory went from 24 to **25**.
+
+Every registry row is still exactly what
 Phase J left: `SUPPORTED_DTYPES == ("float64", "float32")`,
 `SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED == ("cuda", "amp")`,
 `RAW_KERNEL_DTYPES == ("float64",)`, **54** exported `tf_*` symbols, **25**
-experimental names, **24** native CTests, **16** examples, and **9**
-benchmarks.
+experimental names, **16** examples, and **9** benchmarks.
 
-**`int64` is not a supported native tensor dtype**, no native integer
-storage exists, no native `argmax` exists, no index selection exists, and
-**K1 through K9 are unstarted** — runtime capability begins at K1. What
+**`int64` is not a supported native tensor dtype**, no *public* native
+integer storage exists — only the raw private C ABI can represent it, for
+isolation and barrier testing — no native `argmax` exists, no index
+selection exists, and
+**K2 through K9 are unstarted**. What
 K0 decides is the architecture: one extended `NativeTensor` rather than a
 parallel integer class, `int64` as an exact non-differentiable
 index/result dtype and the only integer dtype in the phase, one strict
@@ -710,10 +749,11 @@ one public registry movement of the phase is a separate
 commit as the public constructor: *prove first, then promise*, the rule
 Phase G used for `dropout` and Phase I for `float32`.
 
-**The ladder is ordered so that no unsafe window exists.** Every
+**The ladder is ordered so that no unsafe window exists, and K1 is where
+that ordering was paid for.** Every
 reachability barrier — autograd, parameters, optimizers, module buffers,
 checkpoint entries, every floating operation, and mixed float/integer
-requests — lands at **K1**, while `int64` is reachable only through a
+requests — landed at **K1**, while `int64` is reachable only through a
 direct C ABI call and no Python object can be built over it. The first
 milestone at which an integer tensor can be constructed is **K2**, one
 milestone later, and every barrier is re-proved there against the real

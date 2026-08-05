@@ -1933,7 +1933,8 @@ def test_j8_touched_no_cpp_cmake_abi_or_ci_surface():
                                 source.read_text(encoding="utf-8"), re.S))
     assert len(names) == 54, sorted(names)
     cmake = (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8")
-    assert len(re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)) == 24
+    # Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
+    assert len(re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)) == 25
     for relative in ("cpp/CMakeLists.txt", "cpp/build.py", "pyproject.toml",
                      ".github/workflows/tests.yml"):
         text = (REPO_ROOT / relative).read_text(encoding="utf-8")

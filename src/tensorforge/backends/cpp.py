@@ -794,16 +794,36 @@ def _normalize_internal_dtype(dtype):
     bits out?" is not "does TensorForge promise this dtype?", and the next
     dtype the runtime learned to represent would separate them again.
 
-    **This is not a public bypass and must not become one.** It is reachable
-    only from the private ``_typed`` constructors, from the private
-    uninitialized allocators, and from the checkpoint staging path, whose
-    ``dtype`` argument is always either the ``"float64"`` default, a
-    canonical tag read off a storage that was validated when it was
-    created, or a dtype a version-3 archive declared and the loader has
-    already verified against the stored payload. Every public constructor —
-    ``NativeStorage``, ``NativeTensorCore.zeros`` / ``.full`` /
-    ``.from_array``, and everything layered on them — keeps calling
-    ``normalize_dtype``.
+    **This is not a public bypass and must not become one**, and Phase K,
+    milestone K1 narrowed what reaches it (integer design §5.4). After K1
+    the only family that can hand this validator a dtype ``normalize_dtype``
+    would reject is the **private trusted/typed storage allocation family**
+    — ``NativeStorage.__init__(..., _trusted_dtype=True)`` and the two
+    ``_typed`` allocators layered on it, ``NativeStorage._typed`` and
+    ``NativeTensorCore._typed``. That is deliberate: it is the family K2
+    will use to allocate **exact** ``int64`` storage behind one public door,
+    and its ``dtype`` is never a caller's request but the ``"float64"``
+    default or a canonical tag read off a storage that was validated when
+    it was created. (``NativeTensorCore.zeros(_trusted_dtype=True)`` still
+    reaches this function, but only after ``normalize_dtype`` has already
+    accepted the dtype at K1, so its hatch marks trust without widening
+    anything.)
+
+    Everything else moved to ``normalize_dtype`` at K1 and stays there:
+    every generic public constructor (``NativeStorage``,
+    ``NativeTensorCore.zeros`` / ``.full`` / ``.from_array`` and everything
+    layered on them, which never used this validator), the private
+    **uninitialized** floating destinations (``NativeStorage._uninitialized``,
+    ``NativeTensorCore._uninitialized``) and the trusted zeroed arm of
+    ``NativeTensorCore.zeros``, the **converting** typed-array ingress
+    (``_typed_from_array`` at both layers, which casts and so would truncate
+    silently) together with ``_typed_full``, the scalar narrowing
+    ``_narrowed_to_dtype``, the module dtype validator
+    (``_native_dtype.normalize_module_dtype``), and checkpoint entry
+    validation (``native_checkpoint._validated_entry_dtype``). Nine
+    narrowings in all — seven constructor/backend and two state-validation —
+    each behavior-preserving on the day it landed and preventive from the
+    milestone the representation table learns a third name.
 
     That gap between internal capability and public promise was the
     deliberate rollout pattern (design §27), the same one Phase G used for
@@ -818,6 +838,55 @@ def _normalize_internal_dtype(dtype):
         raise ValueError(
             f"unsupported dtype {dtype!r}; the native runtime represents "
             f"{tuple(_DTYPE_CODES)}"
+        )
+    return dtype
+
+
+def _is_floating_dtype(dtype):
+    """True when ``dtype`` is a **floating compute** dtype (Phase K,
+    milestone K1; see docs/native_integer_tensors_design.md §5.1).
+
+    The Python half of ``tf::dtype_is_floating``, and the one predicate
+    every reachability barrier in the native line asks. It answers exactly
+    one question — *may kernels do arithmetic at this width?* — measured
+    against ``SUPPORTED_DTYPES``, which under Phase K's taxonomy **is** the
+    floating-compute registry and permanently is.
+
+    It takes an already-canonical tag (one read off a live storage, or one
+    a validator has returned) and is total: anything that is not a member
+    is not floating, including ``None`` and a non-string. It never
+    canonicalizes, never raises, and is not a validator — use
+    ``normalize_dtype`` for a caller's *request* and this for a *role*
+    decision about a dtype that already exists."""
+    return dtype in SUPPORTED_DTYPES
+
+
+def _require_floating_dtype(dtype, where, role="storage"):
+    """Reject a non-floating dtype at a floating-only boundary (Phase K,
+    milestone K1).
+
+    The single Python authority behind every §6.5 barrier — autograd,
+    parameters, buffers, optimizers, checkpoint entries, wrapper
+    construction, and every floating operation entry — so the accepted set,
+    the exception kind, and the shape of the message cannot drift between
+    them. ``where`` names the rejecting operation and ``role`` names the
+    operand's part in it, because "this tensor is int64" and "this
+    *source* is int64" are different reports.
+
+    Raises ``ValueError``, always **before** the caller allocates, mutates,
+    registers, or publishes anything. It is deliberately *not* a
+    restatement of the C ABI's ``tf::require_floating``: that guard is a
+    second, independent authority at the trust boundary, and neither may
+    be removed because the other exists.
+
+    Returns the dtype unchanged, so a call site can read as an assertion or
+    as a pass-through."""
+    if not _is_floating_dtype(dtype):
+        raise ValueError(
+            f"{where}: the {role} dtype must be a floating compute dtype "
+            f"{SUPPORTED_DTYPES}, got {dtype!r} (the native runtime performs "
+            f"no casting or promotion, and integer values are not "
+            f"differentiable, trainable, or persistable state)"
         )
     return dtype
 
@@ -845,8 +914,16 @@ def _narrowed_to_dtype(value, dtype):
 
     Not a cast of a tensor, and not a public conversion surface — a
     ``double`` argument being converted to the element type is exactly what
-    §7.4 already specifies for every scalar primitive."""
-    return float(_DTYPE_NUMPY[_normalize_internal_dtype(dtype)](value))
+    §7.4 already specifies for every scalar primitive.
+
+    **Narrowed at Phase K, milestone K1** from ``_normalize_internal_dtype``
+    to ``normalize_dtype`` (integer design §5.4). It narrows a *floating*
+    scalar to a *floating* element type; narrowing one through an integer
+    NumPy type would truncate rather than round, which is not what any
+    caller of this means. Behavior-preserving on the day it landed, because
+    the two tables accepted the same set then — and preventive from the
+    milestone the representation table learns a third name."""
+    return float(_DTYPE_NUMPY[normalize_dtype(dtype)](value))
 
 
 def normalize_device(device="cpu"):
@@ -1195,11 +1272,13 @@ def _load_library():
 # No C++ exception may cross the extern "C" boundary. Each fallible
 # native function clears a thread-local error slot on entry and, on any
 # exception, records a status code plus message there and returns a
-# benign value instead of unwinding. A ctypes ``errcheck`` hook on every
-# such function reads the slot after the call and raises the matching
-# Python exception, so a native failure surfaces as a normal exception at
-# the call site with useful context — never a crash or a silently wrong
-# result.
+# benign value instead of unwinding. A ctypes ``errcheck`` hook on each
+# guarded function **listed in ``_CHECKED_KERNELS``** reads the slot after
+# the call and raises the matching Python exception, so a native failure
+# surfaces as a normal exception at the call site with useful context —
+# never a crash or a silently wrong result. Two guarded functions are
+# deliberately outside that list (``tf_storage_fill`` and
+# ``tf_storage_scale``); the tuple below records why.
 # ---------------------------------------------------------------------------
 
 # TfStatus codes (kept in sync with cpp/include/tf_internal.h) mapped to
@@ -1211,12 +1290,32 @@ _STATUS_EXCEPTIONS = {
     3: RuntimeError,  # TF_ERROR_RUNTIME
 }
 
-# The exported functions that participate in the error contract — every
-# function that clears-on-entry and may set the slot. The unguarded
-# storage/legacy kernels (destroy, size, fill, scale, copy, the raw
-# elementwise/matmul kernels) never allocate, so they neither clear nor
-# set the slot and must NOT carry the hook, or a stale code from an
-# earlier call could be misread as their own failure.
+# The guarded exported functions whose failures are surfaced
+# **automatically**: each clears the error slot on entry, may set it, and
+# carries the ctypes ``errcheck`` hook attached below, so a native
+# rejection becomes a Python exception at the call site.
+#
+# The genuinely unguarded storage/legacy kernels (destroy, size, the two
+# flat host transfers, the raw elementwise/matmul kernels) neither
+# allocate nor validate, so they neither clear nor set the slot and must
+# NOT carry the hook — a stale code from an earlier call would be misread
+# as their own failure.
+#
+# **Two guarded functions are deliberately absent from this tuple**, and
+# that is the one exception to "every guarded function carries the hook":
+# ``tf_storage_fill`` and ``tf_storage_scale``. Both became guarded at
+# Phase K, milestone K1 because they now ask ``tf::require_floating`` and
+# so can *record* a rejection — a function that may write the slot has to
+# clear it on entry, or a code it recorded could be misread later. They
+# stay **unhooked** on purpose: H7 made each of them one native call
+# rather than two, and no supported Python path can reach the rejection,
+# because every wrapper above them validates the dtype first —
+# ``NativeStorage.fill`` through ``_require_floating_dtype``, and
+# ``NativeTensorCore.mean`` (the only ``tf_storage_scale`` caller) through
+# ``_require_floating_operand``. A direct C caller reads the outcome from
+# ``tf_last_error_code()`` instead. Hooking them would buy no correctness
+# and would cost every fill and every mean a second native call, so they
+# stay out; see docs/native_abi_error_contract.md.
 _CHECKED_KERNELS = (
     "tf_storage_create",
     # Phase H (H1). The uninitialized constructor reports failure exactly
@@ -1563,14 +1662,25 @@ class NativeStorage:
         storage — so the poison is in place before the real kernel runs
         without the runtime itself owning any poison control.
 
-        Its ``dtype`` is trusted (Phase I, milestone I2): every caller
-        passes either the ``"float64"`` default or a canonical tag read off
-        a live storage, and a derived allocation must be able to match its
-        source's dtype by construction rather than by re-asking the public
-        registry for permission that source already has.
+        **Phase K, milestone K1 narrowed its validator** from the internal
+        representation table to ``normalize_dtype`` (integer design §5.4,
+        §27.3), so this path is floating-only permanently. The reason is
+        the H1 audit itself: every row of it is a floating destination with
+        a floating poison pattern and a floating negative control, and an
+        integer destination arriving here would join that audit without a
+        row and without a poison test. **No integer path uses uninitialized
+        allocation**, at any Phase-K milestone, and that is a decision
+        rather than an omission — the permission is available to a later
+        milestone that measures a reason to take it.
+
+        The narrowing was behavior-preserving on the day it landed (the two
+        tables accepted the same set then) and preventive afterwards. Its
+        ``dtype`` had been trusted since Phase I, milestone I2, on the
+        argument that a derived allocation must be able to match its
+        source's dtype; that argument survives unchanged for **floating**
+        sources, which are the only sources this helper now serves.
         """
-        return cls(size, dtype=dtype, device=device, _zero_initialize=False,
-                   _trusted_dtype=True)
+        return cls(size, dtype=dtype, device=device, _zero_initialize=False)
 
     @classmethod
     def _typed(cls, size, dtype, device="cpu", *, zero_initialize=True):
@@ -1614,8 +1724,15 @@ class NativeStorage:
         (through ``_typed(..., zero_initialize=False)``, which is the same
         call) would leave this path un-poisonable, and Phase I, milestone I7
         put ``NativeParameter`` construction on it.
+
+        **Phase K, milestone K1 narrowed its validator** to
+        ``normalize_dtype`` (integer design §5.4). The reason is the
+        ``dtype=`` argument two lines below: this helper **casts** its host
+        input to the requested element type, and a cast to an integer type
+        truncates silently rather than rounding. Integer ingress converts
+        nothing, so it can never be this path.
         """
-        canonical = _normalize_internal_dtype(dtype)
+        canonical = normalize_dtype(dtype)
         array = np.ascontiguousarray(
             values, dtype=_DTYPE_NUMPY[canonical]).ravel()
         storage = cls._uninitialized(int(array.size), dtype=canonical,
@@ -1698,8 +1815,17 @@ class NativeStorage:
         return self._handle
 
     def fill(self, value):
-        """Set every element to ``value``."""
-        self._lib.tf_storage_fill(self._require_open(), float(value))
+        """Set every element to ``value``.
+
+        **Floating-only, permanently** (Phase K, milestone K1; integer
+        design §22.5). The scalar crosses the C ABI as a ``double``, which
+        represents every integer in [-(2^53), 2^53] exactly and no integer
+        outside it — so this is not an exact integer primitive and may not
+        become one. A non-floating storage is rejected here, before the
+        native call, and ``tf_storage_fill`` refuses it independently."""
+        handle = self._require_open()
+        _require_floating_dtype(self._dtype, "NativeStorage.fill")
+        self._lib.tf_storage_fill(handle, float(value))
 
     def copy_from(self, values):
         """Copy ``values`` into the storage.
@@ -2098,6 +2224,17 @@ class NativeTensorCore:
         ``view`` must describe ``storage``. With ``owns_storage=True``
         this core's close() releases the storage; view operations pass
         False so shared storage is never freed by a view.
+
+        **Phase K, milestone K1: the storage must be floating.** This is
+        the wrapper-construction barrier of the integer design's §6.5
+        table, and it is what makes the unified object model safe while
+        ``int64`` exists only as a raw C ABI representation: a handle
+        obtained through ``tf_storage_create_typed(size, 2)`` cannot have a
+        core built over it, so it cannot reach an operation, a graph, a
+        parameter, a buffer, an optimizer, or an archive. The gate is on
+        the *storage's* tag rather than on a caller's argument, because a
+        core has no dtype of its own — it reads its storage's, which is the
+        single authority (§7.1).
         """
         if not isinstance(storage, NativeStorage):
             raise TypeError(
@@ -2105,6 +2242,7 @@ class NativeTensorCore:
             )
         if not isinstance(view, NativeTensorView) or view._storage is not storage:
             raise ValueError("view must be a NativeTensorView over the given storage")
+        _require_floating_dtype(storage.dtype, "NativeTensorCore")
         self._storage = storage
         self._view = view
         self._owns_storage = bool(owns_storage)
@@ -2154,8 +2292,18 @@ class NativeTensorCore:
         able to match its operand. It defaults to ``False``, so **every
         public caller is validated by ``normalize_dtype``**; since I9 that
         admits ``"float32"`` too, which is a decision about the public
-        registry and not about this hatch."""
+        registry and not about this hatch.
+
+        **Phase K, milestone K1 narrowed the trusted arm too** (integer
+        design §5.4): both arms now validate against ``normalize_dtype``
+        before the storage is asked for anything, so the hatch still marks
+        *"this dtype came off a live storage"* — a trust statement worth
+        keeping visible — without selecting a wider table. Its two callers
+        are ``sum`` and ``narrow_backward``, both floating accumulators, so
+        a zeroed integer output has no caller here and must not become
+        reachable by inheriting a lower primitive's trust."""
         dims = _as_shape(shape)  # validates shape by the v0.7 rules
+        dtype = normalize_dtype(dtype)  # K1: floating on both arms
         storage = NativeStorage(
             _numel_checked(dims), dtype=dtype, device=device,
             _trusted_dtype=_trusted_dtype,
@@ -2187,8 +2335,16 @@ class NativeTensorCore:
         an operation's freshly allocated output must be able to match its
         operand's dtype. A **public** constructor that reaches this helper
         validates publicly first — see ``full`` below.
+
+        **Phase K, milestone K1 narrowed it to ``normalize_dtype``**
+        (integer design §5.4), inherited from ``NativeStorage._uninitialized``
+        and restated here explicitly so the narrowing is one call site's
+        property rather than an accident of delegation. No integer
+        destination uses the uninitialized path at any Phase-K milestone
+        (§27.3), so the H1 audit table and its poison tests are untouched.
         """
         dims = _as_shape(shape)  # validates shape by the v0.7 rules
+        dtype = normalize_dtype(dtype)  # K1: floating destinations only
         storage = NativeStorage._uninitialized(
             _numel_checked(dims), dtype=dtype, device=device
         )
@@ -2217,8 +2373,14 @@ class NativeTensorCore:
         ``values``, with the array's shape preserved (Phase I, I2).
 
         The typed counterpart of ``from_array``; see ``_typed`` for why it
-        is private."""
-        canonical = _normalize_internal_dtype(dtype)
+        is private.
+
+        **Phase K, milestone K1 narrowed its validator** to
+        ``normalize_dtype`` for ``NativeStorage._typed_from_array``'s
+        reason (integer design §5.4): the ``dtype=`` argument below makes
+        this a converting ingress, and converting a float to an integer
+        truncates silently. Integer ingress converts nothing."""
+        canonical = normalize_dtype(dtype)
         array = np.ascontiguousarray(values, dtype=_DTYPE_NUMPY[canonical])
         storage = NativeStorage._typed_from_array(array, canonical,
                                                   device=device)
@@ -2262,8 +2424,19 @@ class NativeTensorCore:
         both widths. ``float(value)`` is evaluated **before** the
         allocation, so a bad value allocates nothing; a failed fill closes
         the tensor.
+
+        **Phase K, milestone K1 narrowed its validator** to
+        ``normalize_dtype`` (integer design §5.4, §8.6), inherited through
+        ``_uninitialized`` and restated here because the reason is this
+        method's own: the scalar crosses the ABI as a ``double``, which
+        represents every integer in [-(2^53), 2^53] exactly and no integer
+        outside it. An integer ``full`` would therefore be silently
+        inexact above 2^53, and shipping an exact ``zeros`` beside an
+        inexact ``full`` is precisely the asymmetric front door the phase
+        refuses. ``tf_storage_fill`` re-refuses it at the C ABI.
         """
         fill_value = float(value)  # reject a bad value before allocating
+        dtype = normalize_dtype(dtype)  # K1: the double scalar is floating
         tensor = cls._uninitialized(shape, dtype=dtype, device=device)
         try:
             tensor._storage.fill(fill_value)
@@ -2433,6 +2606,9 @@ class NativeTensorCore:
         exactly `numel` elements, so no element survives unwritten. A
         failed kernel closes the output rather than returning it."""
         self._require_open()
+        # K1: the floating-role barrier. Rejected before the output is
+        # allocated and before any kernel runs (design §6.5).
+        self._require_floating_operand("relu")
         out = NativeTensorCore._uninitialized(
             self.shape, dtype=self.dtype, device=self.device
         )
@@ -2467,6 +2643,9 @@ class NativeTensorCore:
         destination's ``numel`` elements exactly once. A failed kernel
         closes the output."""
         self._require_open()
+        # K1: the floating-role barrier. Rejected before the output is
+        # allocated and before any kernel runs (design §6.5).
+        self._require_floating_operand(odometer_name.removeprefix("tf_core_"))
         out = NativeTensorCore._uninitialized(
             self.shape, dtype=self.dtype, device=self.device
         )
@@ -2622,6 +2801,9 @@ class NativeTensorCore:
         their Policy-B ownership and failure cleanup provably in step
         rather than as two copies that could drift."""
         self._require_open()
+        # K1: the floating-role barrier. Rejected before the output is
+        # allocated and before any kernel runs (design §6.5).
+        self._require_floating_operand(kernel_name.removeprefix("tf_core_"))
         # Validate/normalize the axis first — nothing is allocated if this
         # raises. _normalize_axis rejects bool/non-int/out-of-range and
         # every axis on a rank-0 shape.
@@ -2741,6 +2923,9 @@ class NativeTensorCore:
         differentiable ``NativeTensor.cross_entropy`` is milestone E6 and
         does not exist yet."""
         self._require_open()
+        # K1: the floating-role barrier. Rejected before the output is
+        # allocated and before any kernel runs (design §6.5).
+        self._require_floating_operand("cross_entropy_forward")
         if self.ndim != 2:
             raise ValueError(
                 f"cross_entropy_forward requires 2-D (batch_size, "
@@ -2969,13 +3154,44 @@ class NativeTensorCore:
             raise
         return out
 
+    def _require_floating_operand(self, operation):
+        """Reject a non-floating operand at a floating-only operation
+        entry (Phase K, milestone K1; integer design §6.5, §26.3).
+
+        The Core-layer half of the operation barrier, and the reason it is
+        one method rather than a check per kernel: every arithmetic entry
+        asks the same question, in the same place in its own validation
+        order — **after** the closed-state gate and **before** the output
+        is allocated or any kernel is called. So a rejection leaves both
+        operands, their storage, their metadata, and the native
+        live-storage count exactly as it found them.
+
+        It is not a restatement of ``tf::require_floating``: that guard is
+        an independent second authority at the C ABI, and neither may be
+        removed because the other exists. This one exists so the failure is
+        a named Python ``ValueError`` at the call site rather than a status
+        code from a kernel the caller never meant to reach.
+
+        The entries that take **two** operands ask through
+        ``_require_matching_metadata`` instead, which checks both."""
+        _require_floating_dtype(self.dtype, operation, role="operand")
+
     def _require_matching_metadata(self, other, op_name):
         """Both operands of a binary/matmul op must share dtype and
         device; there is no implicit promotion and no automatic device
         move (see docs/native_dtype_device_metadata_design.md §8). Raises
-        ValueError naming both dtype/device pairs on a mismatch. With only
-        float64/cpu constructible today this guard cannot yet fire, but it
-        is the enforced contract native autograd (Phase B) builds on."""
+        ValueError naming both dtype/device pairs on a mismatch.
+
+        **Phase K, milestone K1** put the floating-role check here too, and
+        deliberately **first**: an integer operand is a *role* error rather
+        than a mismatch, so a mixed float/integer request must be reported
+        as "this operation is floating-only" rather than as two dtypes that
+        disagree — the same ordering ``tf::require_floating`` takes ahead of
+        ``tf::require_matching_dtype`` at the C ABI (integer design §12.4,
+        §22.4). Both operands are checked, in operand order, so the message
+        names the one that is actually wrong."""
+        _require_floating_dtype(self.dtype, op_name, role="operand")
+        _require_floating_dtype(other.dtype, op_name, role="operand")
         if self.dtype != other.dtype or self.device != other.device:
             raise ValueError(
                 f"{op_name} requires matching dtype and device, got "
@@ -3206,6 +3422,9 @@ class NativeTensorCore:
         the write strides, the validation, and the ownership contract are
         exactly what they were, and there is no path selector to pass."""
         self._require_open()
+        # K1: the floating-role barrier. Rejected before the output is
+        # allocated and before any kernel runs (design §6.5).
+        self._require_floating_operand("sum")
         # self.shape is already validated; axis and keepdims are the
         # caller-supplied half and are still fully validated here.
         out_shape = _reduce_shape_checked(self.shape, axis, keepdims)
@@ -3291,6 +3510,9 @@ class NativeTensorCore:
         itself accumulates in the tensor's own dtype, with no widening
         intermediate anywhere."""
         self._require_open()
+        # K1: the floating-role barrier. Rejected before the output is
+        # allocated and before any kernel runs (design §6.5).
+        self._require_floating_operand("mean")
         result = self.sum(axis=axis, keepdims=keepdims)
         # Same cleanup boundary as ``sum``'s: the summed output is already
         # allocated, so a failure in the count or in the in-place scale must
@@ -3684,6 +3906,9 @@ class NativeTensorCore:
         any failure every object this method allocated is closed, the
         caller's input is untouched, and no partial result is returned."""
         self._require_open()
+        # K1: the floating-role barrier. Rejected before the output is
+        # allocated and before any kernel runs (design §6.5).
+        self._require_floating_operand("maxpool2d_forward")
         if self.ndim != 4:
             raise ValueError(
                 f"maxpool2d_forward requires a 4-D NCHW input, got shape "
@@ -3799,6 +4024,9 @@ class NativeTensorCore:
         anywhere. Neither operand is mutated, and a failure closes the
         output and leaks no temporary."""
         self._require_open()
+        # K1: the floating-role barrier. Rejected before the output is
+        # allocated and before any kernel runs (design §6.5).
+        self._require_floating_operand("maxpool2d_backward")
         if not isinstance(winners, NativeTensorCore):
             raise TypeError(
                 f"maxpool2d_backward requires a NativeTensorCore winner "
@@ -3995,6 +4223,9 @@ class NativeTensorCore:
         today. The empty case is proved at the kernel and ABI layers,
         where it is reachable."""
         self._require_open()
+        # K1: the floating-role barrier. Rejected before the output is
+        # allocated and before any kernel runs (design §6.5).
+        self._require_floating_operand("dropout_forward")
         # Phase I, milestone I7: the hard float64 gate that stood here since
         # G2 is gone — and it was the **last** of the five §2.3 gates (I5
         # opened the two pooling ones, I6 the two cross-entropy ones). The
@@ -4182,6 +4413,9 @@ class NativeTensorCore:
         non-``dim`` extents equal to the original's, and
         ``start + length <= original_shape[dim]``."""
         self._require_open()
+        # K1: the floating-role barrier. Rejected before the output is
+        # allocated and before any kernel runs (design §6.5).
+        self._require_floating_operand("narrow_backward")
         original = _as_shape(original_shape)  # validates positive-int dims
         ndim = len(original)
         for name, value in (("dim", dim), ("start", start)):

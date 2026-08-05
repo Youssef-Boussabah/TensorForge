@@ -1,17 +1,26 @@
 """Phase-K contract guardrails (native integer tensors and indexing).
 
 **Phase K is newly approved, it was approved after Phase J closed, and K0
-is the only milestone that has landed.** K0 is an architecture, contract,
-documentation, and status milestone: it shipped
+and K1 are the milestones that have landed.** K0 was an architecture,
+contract, documentation, and status milestone: it shipped
 ``docs/native_integer_tensors_design.md``, this module, and the narrow
 status reconciliation a newly approved phase requires — and **no runtime
-behavior at all**. No integer dtype, no dtype code, no C++ enumerator, no
-kernel, no C ABI symbol, no ctypes declaration, no ``NativeTensorCore``
-method, no ``NativeTensor`` operation, no public export, no
-capability-registry movement, no checkpoint or optimizer-state or
-loader-state or sampler-state change, no example, no benchmark, no CTest,
-and no dependency. Runtime capability begins at **K1**, which has not
-started.
+behavior at all**.
+
+**K1 is the first milestone with runtime, and it is deliberately the
+narrowest one the phase could have**: the C++ side learns to *represent*
+``int64`` (a third dtype enumerator, an allocation and destruction arm, and
+an ``Int64`` arm on the four transfer boundaries), and everything else it
+adds is a **barrier**. No public Python name, no C ABI symbol, no registry
+movement, no checkpoint or optimizer-state or loader-state or
+sampler-state change, no example, no benchmark, and no dependency. The
+Python dtype tables are untouched, so **no supported TensorForge wrapper
+or public Python API can allocate or wrap int64 storage at K1; only the
+raw private C ABI can represent it, for isolation and barrier testing.**
+
+Public integer construction begins at **K2**, which has not started, and
+so does ``INDEX_DTYPES``. ``SUPPORTED_DTYPES`` never gains ``int64`` at
+all.
 
 Three kinds of fact live here, and keeping them apart is the point of the
 module:
@@ -89,6 +98,29 @@ K0_CTEST_COUNT = 24
 K0_EXAMPLE_COUNT = 16
 K0_BENCHMARK_COUNT = 9
 
+# The one inventory K1 moves, and the only one: the new native CTest that
+# proves the int64 representation and drives the floating-role barrier
+# table. Everything else in §33's row for K1 is identical to K0's.
+K1_CTEST_COUNT = 25
+assert K1_CTEST_COUNT == K0_CTEST_COUNT + 1
+
+# The C++ dtype enumerators after K1. ``int64`` takes code 2 — the code the
+# Phase-I header comment reserved for a future dtype — and neither floating
+# code moves. Written here independently of the header.
+K1_ABI_DTYPE_CODES = {"FLOAT64": 0, "FLOAT32": 1, "INT64": 2}
+K1_SCOPED_DTYPES = {"Float64", "Float32", "Int64"}
+
+# The exports that carry the K1 floating-role guard, and the ones that do
+# not. Written down as a count rather than a list here because the *names*
+# are audited by tests/test_native_integer_barriers.py against the live
+# source; what this module pins is that the split exists and that its two
+# halves add up to the unchanged export inventory.
+K1_GUARDED_EXPORTS = 32
+K1_GENERALIZED_TRANSFERS = (
+    "tf_storage_copy_from", "tf_storage_copy_to", "tf_storage_materialize",
+    "tf_core_contiguous_copy",
+)
+
 # The production C++ translation units at K0. An integer kernel would have
 # to live somewhere, and "somewhere" is a new file or an existing one; this
 # pins the file set and the export inventory pins the contents.
@@ -102,10 +134,10 @@ K0_CPP_SOURCES = (
 # milestone moves its identifier from the second tuple to the first and
 # nowhere else, so the two together are always exactly ``MILESTONES``.
 MILESTONES = tuple(f"K{index}" for index in range(10))      # K0 ... K9
-COMPLETE_MILESTONES = ("K0",)
+COMPLETE_MILESTONES = ("K0", "K1")
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
-assert len(UNSTARTED_MILESTONES) == 9
+assert len(UNSTARTED_MILESTONES) == 8
 
 # The ordering the phase turns on (design §32.1): every reachability
 # barrier lands at K1, and the first milestone at which an ``int64`` tensor
@@ -297,8 +329,8 @@ _PHASE_K_OVERCLAIMS = (
      r"\bargmax\b[^.]{0,40}" + _BECAME + _LANDED),
     ("index selection exists",
      r"\b(index[_ ]select|gather)\b[^.]{0,40}" + _BECAME + _LANDED),
-    ("a Phase-K milestone after K0 has landed",
-     r"\bK(?:[1-9]|10)\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
+    ("a Phase-K milestone after K1 has landed",
+     r"\bK(?:[2-9]|10)\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
      + _DONE + r")"),
     ("Phase K is finished",
      r"\bPhase K\s+(is|was|has been)\s+" + _DONE),
@@ -516,7 +548,7 @@ def test_the_overclaim_scanner_can_actually_fail():
         "gather is available",
         "index_select has landed",
         "Phase K is complete",
-        "K1 has landed",
+        "K2 has landed",
         "K4 is shipped",
         "the checkpoint is now at version 4",
         "CUDA is supported",
@@ -524,13 +556,13 @@ def test_the_overclaim_scanner_can_actually_fail():
         "integer parameters are available",
     ):
         assert _overclaims(caught), caught
-    # ...and every accurate sentence a K0 surface must be able to write.
+    # ...and every accurate sentence a K1 surface must be able to write.
     for allowed in (
         "int64 is not a supported native tensor dtype",
         "no native integer tensor exists",
-        "Phase K is newly approved and K0 is complete",
-        "K0 is the only completed Phase-K milestone",
-        "K1 through K9 are unstarted",
+        "Phase K is newly approved and K0 and K1 are complete",
+        "K0 and K1 are the only completed Phase-K milestones",
+        "K2 through K9 are unstarted",
         "a future milestone may add argmax",
         "argmax is deliberately absent",
         "index_select would need one new export",
@@ -648,19 +680,28 @@ def test_the_design_presents_phase_k_as_newly_approved_after_phase_j():
         assert denial.lower() in head.lower(), denial
 
 
-def test_the_design_states_k0_is_zero_runtime_and_the_only_milestone_done():
+def test_the_design_states_what_has_landed_and_what_has_not():
     head = _head()
     assert re.search(r"K0 adds no runtime behavior", head, re.I), head[:800]
-    assert re.search(r"K0 is the only completed Phase-K milestone", head,
-                     re.I), head[:1200]
+    complete = " and ".join(COMPLETE_MILESTONES)
+    assert re.search(rf"{complete} are the only completed Phase-K "
+                     rf"milestones", head, re.I), head[:1600]
     first_unstarted = UNSTARTED_MILESTONES[0]
     last = UNSTARTED_MILESTONES[-1]
     assert re.search(rf"{first_unstarted} through {last} are unstarted",
-                     head, re.I), head[:1200]
-    assert re.search(r"[Rr]untime capability begins at K1", head), head[:1600]
-    # The claim that must be impossible to misread at K0.
+                     head, re.I), head[:1600]
+    assert re.search(r"[Rr]untime capability begins at K1", head), head[:2000]
+    # The claim that must be impossible to misread at every milestone
+    # before K2, and after it: ``int64`` never joins the compute registry.
     assert re.search(r"int64 is not a supported TensorForge native tensor "
-                     r"dtype", head, re.I), head[:2000]
+                     r"dtype", head, re.I), head[:2400]
+    # ...and the exact scope of what K1 *did* open, in the header, because
+    # "the representation exists" and "a tensor exists" are the two things
+    # a reader must not conflate.
+    assert re.search(r"only the raw private C ABI can represent it", head,
+                     re.I), head[:2800]
+    assert re.search(r"[Pp]ublic integer construction[^.]{0,60}K2", head), \
+        head[:2800]
 
 
 def test_the_design_header_records_the_inherited_boundary_unmoved():
@@ -766,11 +807,16 @@ def test_the_experimental_export_list_is_still_twenty_five():
         assert hasattr(experimental, name), name
 
 
-def test_the_ctest_example_and_benchmark_inventories_are_unmoved():
+def test_the_ctest_example_and_benchmark_inventories_match_the_ladder():
+    """K1 moves exactly one inventory — the native CTest count, by one —
+    and nothing else. Examples and benchmarks belong to K6 and K8."""
     cmake = _read("cpp/CMakeLists.txt")
-    assert len(re.findall(r"^\s*add_test\(", cmake, re.M)) == K0_CTEST_COUNT
+    assert len(re.findall(r"^\s*add_test\(", cmake, re.M)) == K1_CTEST_COUNT
     assert len(list((REPO_ROOT / "cpp" / "tests").glob("*.cpp"))) == \
-        K0_CTEST_COUNT
+        K1_CTEST_COUNT
+    assert (REPO_ROOT / "cpp" / "tests"
+            / "test_dtype_int64_storage.cpp").is_file()
+    assert "dtype_int64_storage" in cmake
     assert len(list((REPO_ROOT / "examples").glob("*.py"))) == \
         K0_EXAMPLE_COUNT
     assert len(list((REPO_ROOT / "benchmarks").glob("*.py"))) == \
@@ -833,23 +879,61 @@ def test_no_future_version_constant_or_integer_field_was_reserved():
 # none is a native integer tensor, and a scan that rejected them would
 # reject the code Phase K must not disturb.
 
-def test_no_integer_dtype_code_exists_on_either_side_of_the_abi():
-    """The two dtype authorities, both still two-valued."""
+def test_the_two_dtype_authorities_are_exactly_one_milestone_apart():
+    """The K1 asymmetry, stated as an assertion rather than as prose.
+
+    The C++ side **represents** three dtypes; the Python side **knows**
+    two. That gap is the whole of the milestone's safety argument: the
+    representation exists so the barriers can be proved against it, and it
+    is unreachable from Python because ``_DTYPE_CODES`` has no entry, so
+    ``NativeStorage._typed``, ``_uninitialized``, and the entire ``_typed*``
+    family reject the name before allocating anything.
+
+    The gap closes at **K2**, in one commit, together with ``INDEX_DTYPES``
+    — so the promise and the capability are never out of step in either
+    direction."""
+    # The Python half: two, and the Phase-I no-drift invariant intact.
     assert set(cpp._DTYPE_CODES) == set(K0_DTYPES)
     assert set(cpp._DTYPE_ITEM_SIZES) == set(K0_DTYPES)
     assert set(cpp._DTYPE_NUMPY) == set(K0_DTYPES)
+    assert set(cpp._CHECKED_HOST_ARRAYS) == set(K0_DTYPES)
     assert _dict_literal_keys("src/tensorforge/backends/cpp.py",
                               "_DTYPE_CODES") == set(K0_DTYPES)
+    assert set(cpp._DTYPE_CODES) == set(cpp.SUPPORTED_DTYPES)
+    with pytest.raises(ValueError):
+        cpp._normalize_internal_dtype("int64")
 
+    # The C++ half: three, with the two floating codes exactly where they
+    # were and int64 on the code the Phase-I comment reserved.
     header = _read("cpp/include/tf_internal.h")
     enum_body = header.split("enum TfDtype {", 1)[1].split("};", 1)[0]
-    assert set(re.findall(r"TF_DTYPE_(\w+)", enum_body)) == \
-        {"FLOAT64", "FLOAT32"}
+    codes = dict(re.findall(r"TF_DTYPE_(\w+)\s*=\s*(\d+)", enum_body))
+    assert {name: int(value) for name, value in codes.items()} == \
+        K1_ABI_DTYPE_CODES
     scoped = header.split("enum class Dtype", 1)[1].split("};", 1)[0]
-    assert set(re.findall(r"^\s*(\w+)\s*=", scoped, re.M)) == \
-        {"Float64", "Float32"}
-    assert "TF_DTYPE_INT64" not in header
-    assert "Int64" not in scoped
+    assert set(re.findall(r"^\s*(\w+)\s*=", scoped, re.M)) == K1_SCOPED_DTYPES
+    # ...and the role predicate exists, because the enumerator is only safe
+    # to add if every float-only export can ask about it.
+    assert "dtype_is_floating" in header
+    assert "require_floating" in header
+
+
+def test_no_python_object_can_be_built_over_int64_storage():
+    """The K1 reachability claim, driven rather than described. The public
+    constructors reject the name; the private ones cannot spell it."""
+    for build in (
+        lambda: cpp.NativeStorage(4, dtype="int64"),
+        lambda: cpp.NativeStorage.from_array([1, 2], dtype="int64"),
+        lambda: cpp.NativeStorage._typed(4, "int64"),
+        lambda: cpp.NativeStorage._uninitialized(4, dtype="int64"),
+        lambda: cpp.NativeTensorCore.from_array([1, 2], dtype="int64"),
+        lambda: cpp.NativeTensorCore.zeros((2,), dtype="int64"),
+        lambda: cpp.NativeTensorCore.full((2,), 1, dtype="int64"),
+        lambda: cpp.NativeTensorCore._typed((2,), "int64"),
+        lambda: cpp.NativeTensorCore._typed_full((2,), 1, "int64"),
+    ):
+        with pytest.raises(ValueError):
+            build()
 
 
 def test_no_integer_runtime_module_exists():
@@ -895,17 +979,51 @@ def test_no_casting_or_promotion_operation_exists():
 def test_no_integer_kernel_exists_in_the_native_sources():
     """Read the C++ as code-ish text: the exports are the surface, and the
     templated kernels are named. A comment mentioning int64 metadata is
-    legitimate and is not what this looks for."""
+    legitimate and is not what this looks for.
+
+    **The list shrank at K1, in one direction only.** ``Dtype::Int64``,
+    ``TF_DTYPE_INT64``, and ``require_floating`` moved from "absent" to
+    "present" because the milestone ships them, and each is now asserted
+    *present* below rather than merely no longer banned — the §37.2 rule
+    that an entry moves between the two lists and nothing is loosened to
+    let it. What stays banned is what stays absent: an integer **kernel**.
+    ``argmax`` is K3's and ``index_select`` is K4's, and no integer
+    arithmetic, reduction, or comparison exists at any Phase-K milestone."""
+    sources = {}
     for path in sorted((REPO_ROOT / "cpp" / "src").glob("*.cpp")):
         text = path.read_text(encoding="utf-8")
         # Strip // and /* */ comments so prose cannot trip the scan.
         code = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
-        code = re.sub(r"//[^\n]*", " ", code)
-        for banned in ("argmax", "index_select", "Dtype::Int64",
-                       "TF_DTYPE_INT64", "require_floating",
-                       "storage_typed<std::int64_t>",
-                       "storage_typed<int64_t>"):
-            assert banned not in code, (path.name, banned)
+        sources[path.name] = re.sub(r"//[^\n]*", " ", code)
+    for name, code in sources.items():
+        for banned in ("argmax", "index_select", "embedding",
+                       "int64_add", "int64_sum", "int64_multiply"):
+            assert banned not in code, (name, banned)
+    # ``gather`` and ``scatter`` are deliberately **not** banned: Conv2d has
+    # carried ``conv2d_prefers_gather`` and a scatter-shaped backward since
+    # Phase D, and neither is an index operation. Banning them would reject
+    # code Phase K must not disturb — the narrowness this module exists for.
+    assert "prefers_gather" in sources["conv2d.cpp"]
+    # The present half, so the shrinking is proved to be a move rather than
+    # a hole: the representation lives in storage.cpp, the transfers carry
+    # it, and the barrier is applied in every compute unit.
+    assert "Dtype::Int64" in sources["storage.cpp"]
+    assert "std::int64_t" in sources["storage.cpp"]
+    assert "Dtype::Int64" in sources["elementwise.cpp"]   # contiguous_copy
+    for unit in ("elementwise.cpp", "matmul.cpp", "reduction.cpp",
+                 "classification.cpp", "conv2d.cpp", "pooling.cpp",
+                 "random.cpp", "storage.cpp"):
+        assert "require_floating" in sources[unit], unit
+    guarded = set()
+    for code in sources.values():
+        guarded.update(re.findall(
+            r'tf::require_floating\(\s*"(tf_[a-z0-9_]+)"', code))
+    assert len(guarded) == K1_GUARDED_EXPORTS, sorted(guarded)
+    # ...and the four deliberately generalized transfer boundaries are NOT
+    # guarded, because a floating-role guard there would refuse the
+    # value-transfer primitive the phase is built on.
+    for transfer in K1_GENERALIZED_TRANSFERS:
+        assert transfer not in guarded, transfer
 
 
 def test_the_existing_host_int64_metadata_is_untouched_and_still_legitimate():
@@ -1494,15 +1612,22 @@ def test_every_status_surface_says_k0_is_architecture_only(surface):
 
 
 # ===========================================================================
-# 10a. Current-phase reconciliation, and the one scoped exception
+# 10a. Current-phase reconciliation — and the exception is gone
 # ===========================================================================
 #
 # The failure this section exists for: a repository where Phase K has
-# opened but every status surface still calls Phase J "the latest phase",
-# so a reader cannot tell which phase is current. K0 cannot repair
-# ``src/tensorforge/experimental/__init__.py`` — that is production source
-# — so exactly one surface is allowed to lag, and these tests prove the
-# exception is *one* surface rather than a hole in the checking.
+# opened but a status surface still calls Phase J "the latest phase", so a
+# reader cannot tell which phase is current. K0 could not repair
+# ``src/tensorforge/experimental/__init__.py`` — that is production source,
+# and K0 changed none — so exactly one surface was allowed to lag, with the
+# repair assigned to K1 in writing.
+#
+# **K1 performed that repair, so the exemption is removed rather than
+# retained.** The production module is now an ordinary editable status
+# surface, held to the identical rule as every other one, and
+# ``test_no_stale_latest_phase_exemption_survives`` proves that no scoped
+# exception is left anywhere — an exemption that outlived its reason is
+# exactly the shape of a guardrail that stopped guarding.
 
 # Editable surfaces that state *current* status. Every one of these must
 # name K as latest and J as latest completed.
@@ -1514,10 +1639,12 @@ EDITABLE_STATUS_SURFACES = (
     "docs/native_support_matrix.md",
     "docs/architecture.md",
     "docs/backend_experiments.md",
+    # Repaired at K1, the first Phase-K milestone that edits the package.
+    "src/tensorforge/experimental/__init__.py",
 )
 
-# The one surface K0 may not touch, and the milestone that repairs it.
-STALE_PRODUCTION_SURFACE = "src/tensorforge/experimental/__init__.py"
+# The surface K0 could not touch, and the milestone that repaired it.
+REPAIRED_PRODUCTION_SURFACE = "src/tensorforge/experimental/__init__.py"
 STALE_REPAIR_MILESTONE = "K1"
 
 # Both orders of each claim: the sentence form ("Phase K … is the current
@@ -1559,7 +1686,7 @@ def test_the_latest_phase_forms_can_actually_fail():
 def test_every_editable_status_surface_names_k_as_the_current_phase(surface):
     text = _flat(_read(surface))
     assert _phase_letters(_LATEST_PHASE_FORM, text) == {"K"}, surface
-    assert re.search(r"only K0 has landed", text, re.I), surface
+    assert re.search(r"only K0 and K1 have landed", text, re.I), surface
 
 
 @pytest.mark.parametrize("surface", EDITABLE_STATUS_SURFACES)
@@ -1575,41 +1702,74 @@ def test_no_editable_status_surface_calls_j_the_latest_phase(surface):
     assert named <= {"K"}, (surface, sorted(named))
 
 
-def test_the_production_docstring_is_the_only_allowed_stale_surface():
-    """The exception is exactly one file, and it really is still stale — a
-    check that would start failing the moment K1 repairs it, which is the
-    point: the exemption cannot outlive its reason."""
-    stale = _phase_letters(_LATEST_PHASE_FORM, _flat(_read(STALE_PRODUCTION_SURFACE)))
-    assert stale == {"J"}, (STALE_PRODUCTION_SURFACE, sorted(stale))
-    # ...and no other production module carries the same stale claim.
+def test_the_production_docstring_was_repaired_at_k1():
+    """The repair K1 owns, asserted directly on the file it names.
+
+    This is the same check the K0 exemption existed to defer, inverted:
+    the module must now name Phase K as current and Phase J as the latest
+    completed one, and it must not still say the thing the exemption
+    covered."""
+    text = _flat(_read(REPAIRED_PRODUCTION_SURFACE))
+    assert _phase_letters(_LATEST_PHASE_FORM, text) == {"K"}, text[:200]
+    assert _phase_letters(_LATEST_COMPLETED_FORM, text) == {"J"}
+    assert not re.search(r"Phase J[^.;]{0,80}?\bis the latest phase\b", text,
+                         re.I)
+    # ...and it records what K1 actually did, including the half a reader
+    # would otherwise get wrong.
+    assert re.search(r"K1[^.]{0,200}(barrier|representation)", text, re.I)
+    assert re.search(r"no public integer", text, re.I), \
+        "the module does not state that no public integer capability exists"
+
+
+def test_no_production_module_carries_a_stale_latest_phase_claim():
+    """Every module in the package, with **no** file exempt."""
     package = REPO_ROOT / "src" / "tensorforge"
     offenders = []
     for path in package.rglob("*.py"):
         if "__pycache__" in path.parts:
             continue
-        relative = path.relative_to(REPO_ROOT).as_posix()
-        if relative == STALE_PRODUCTION_SURFACE:
-            continue
         named = _phase_letters(_LATEST_PHASE_FORM,
                                _flat(path.read_text(encoding="utf-8")))
         if named - {"K"}:
-            offenders.append((relative, sorted(named)))
+            offenders.append((path.relative_to(REPO_ROOT).as_posix(),
+                              sorted(named)))
     assert offenders == [], offenders
 
 
-def test_the_design_assigns_the_production_docstring_repair_to_k1():
-    """The exception is only defensible because a milestone owns it. The
-    design must name the exact file, the reason K0 could not touch it, and
-    the milestone that does."""
+def test_no_stale_latest_phase_exemption_survives():
+    """The exemption itself is gone, in both places that carried it.
+
+    An exemption that outlives its reason is a guardrail that has stopped
+    guarding, so its **removal** is asserted rather than assumed: the
+    scoped surface set in ``tests/test_docs.py`` must no longer exist, and
+    no status surface may be skipped by this module either."""
+    docs_source = _read("tests/test_docs.py")
+    assert "_STALE_LATEST_PHASE_SURFACES" not in docs_source, (
+        "the K0-only stale-docstring exemption is still in test_docs.py"
+    )
+    # The production module is now an ordinary editable status surface.
+    assert REPAIRED_PRODUCTION_SURFACE in EDITABLE_STATUS_SURFACES
+    # ...and test_docs.py checks it like every other surface.
+    assert REPAIRED_PRODUCTION_SURFACE in docs_source
+
+
+def test_the_design_records_the_production_docstring_repair_as_k1_work():
+    """The repair was only defensible because a milestone owned it in
+    writing. The design must still name the exact file, the reason K0 could
+    not touch it, and the milestone that did — the record of *why* the
+    exemption was legitimate outlives the exemption."""
     ladder = _design()
     start = ladder.index(f"### {STALE_REPAIR_MILESTONE} — ")
     following = re.search(r"\n### K\d+ — ", ladder[start + 5:])
     body = _flat(ladder[start:start + 5 + following.start()] if following
                  else ladder[start:])
-    assert STALE_PRODUCTION_SURFACE in body, body[:200]
+    assert REPAIRED_PRODUCTION_SURFACE in body, body[:200]
     assert "latest phase" in body
     assert "no production source at all" in body
-    assert "_LATEST_PHASE" in body
+    # ...and it records that the exemption was **removed** rather than
+    # carried forward, naming the file that held it.
+    assert "tests/test_docs.py" in body
+    assert re.search(r"removed rather than retained", body), body[:400]
 
 
 # ===========================================================================
@@ -1745,12 +1905,12 @@ def test_the_roadmap_current_status_paragraph_is_accurate():
     assert re.search(r"Python line is (?:\*\*)?complete at v3\.0", text, re.I)
     assert re.search(r"Phases A through J", text)
     assert re.search(r"Phase K[^.;]{0,90}?(current|latest) phase", text, re.I)
-    assert re.search(r"only K0 has landed", text, re.I)
+    assert re.search(r"only K0 and K1 have landed", text, re.I)
     assert re.search(r"Phase J is the latest completed phase", text, re.I)
     # ...and the Phase-K section states the absence half.
-    assert re.search(r"K1 through K9 are unstarted", text, re.I)
+    assert re.search(r"K2 through K9 are unstarted", text, re.I)
     assert re.search(r"design, documentation, and guardrails only", text, re.I)
-    assert re.search(r"no runtime capability exists yet", text, re.I)
+    assert re.search(r"no public integer capability exists yet", text, re.I)
     assert f"docs/{PHASE_K_DESIGN_NAME}" in _read("docs/roadmap.md") or \
         PHASE_K_DESIGN_NAME in _read("docs/roadmap.md")
 

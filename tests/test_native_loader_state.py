@@ -2316,7 +2316,8 @@ def test_no_c_abi_ctest_example_or_benchmark_surface_moved():
     for name in sorted(names):
         assert not forbidden.search(name), name
     cmake = (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8")
-    assert len(re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)) == 24
+    # Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
+    assert len(re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)) == 25
     examples = [p.name for p in (REPO_ROOT / "examples").glob("*.py")
                 if p.name != "__init__.py"]
     benchmarks = [p.name for p in (REPO_ROOT / "benchmarks").glob("*.py")

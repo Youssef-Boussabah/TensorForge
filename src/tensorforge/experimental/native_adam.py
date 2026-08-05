@@ -175,6 +175,7 @@ import math
 import numbers
 
 from ..backends import cpp
+from ._native_dtype import require_floating_state_dtype
 from ._native_state_lock import state_transaction
 from .native_optimizer_state import (
     FORMAT_VERSION,
@@ -459,6 +460,18 @@ class NativeAdam:
                 raise RuntimeError(
                     f"parameters[{position}] has been closed"
                 )
+            # Phase K, milestone K1: the direct per-parameter floating
+            # check, stated rather than inherited (integer design §6.5) —
+            # see NativeSGD for why a transitively closed barrier is still
+            # written down. It runs before **any** moment buffer is
+            # allocated, so a refused optimizer leaves live storage exactly
+            # at baseline; Adam's moments are built at each parameter's own
+            # dtype, so a non-floating parameter would otherwise mean a
+            # non-floating moment and non-floating optimizer state.
+            require_floating_state_dtype(
+                entry.dtype, f"NativeAdam parameters[{position}]",
+                role="parameter",
+            )
             if id(entry) in seen:
                 continue  # identity dedup: aliases share one state entry
             seen.add(id(entry))

@@ -963,7 +963,7 @@ required platform, added the closure guardrails, and reconciled the status
 surfaces. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
-Phase J, below, is complete (J0–J9). **Phase K is the latest phase, and only K0 has landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J moved no
+Phase J, below, is complete (J0–J9). **Phase K is the latest phase, and only K0 and K1 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J moved no
 row in this document at any milestone.
 
 **Since milestone I9, `float32` and `float64` are both supported native
@@ -1520,7 +1520,7 @@ G9 while the operation and the module both already existed.
 
 ## Phase J — deterministic native data pipeline and mini-batching, **complete (J0–J9)**
 
-**Phase J is complete.** **Phase K is the latest phase, and only K0 has landed.** **Phase J is the latest completed phase**, and it remains complete. It was newly approved
+**Phase J is complete.** **Phase K is the latest phase, and only K0 and K1 have landed.** **Phase J is the latest completed phase**, and it remains complete. It was newly approved
 when it opened: the repository closed Phase I at I11 without committing to
 a successor, and Phase J was approved afterwards, so nothing here describes
 pre-existing roadmap work.
@@ -1772,10 +1772,10 @@ the existing validated `metadata` channel — which needs no new checkpoint
 field, no new version, and no coupling between the checkpoint runtime and
 the pipeline.
 
-## Phase K — native integer tensors and indexing, **K0 complete, runtime unstarted**
+## Phase K — native integer tensors and indexing, **K0 and K1 complete, public capability unstarted**
 
 **Phase K is newly approved**, after Phase J closed at J9 without a
-committed successor, and **K0 is the only milestone that has landed**. Its
+committed successor, and **K0 and K1 have landed**. Its
 authoritative contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md).
 
@@ -1787,25 +1787,54 @@ module, no public export, no capability-registry value, no checkpoint
 field or version, no optimizer-state version, no loader- or sampler-state
 version, no example, no benchmark, no CTest, and no dependency.
 
-| Registry | Value at J9 | Value at K0 |
-|---|---|---|
-| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
-| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
-| `UNSUPPORTED` | `("cuda", "amp")` | unchanged |
-| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged |
-| `normalize_dtype(None)` · `backend_info()["dtype"]` | `"float64"` | unchanged |
-| Native checkpoint format | version **3**, accepted `(1, 2, 3)` | unchanged |
-| In-memory optimizer state format | version **1** | unchanged |
-| Loader state · sampler state | version **1**, accepted `(1,)` | unchanged |
-| Exported production `tf_*` symbols | **54** | unchanged |
-| `tensorforge.experimental.__all__` | **25** | unchanged |
-| Native CTests · examples · benchmarks | **24** · **16** · **9** | unchanged |
+**K1 added the internal `int64` representation and every reachability
+barrier, and it moved exactly one row in this document — the CTest
+count.**
 
-**What is *not* supported, and is not a bug at K0.** `int64` is not a
-native tensor dtype. There is no native integer storage, no integer
+*Now supported internally, and only internally:* a third C++ dtype
+enumerator at ABI code **2** (`TF_DTYPE_INT64` / `tf::Dtype::Int64`);
+allocation and destruction of genuine `std::int64_t[]` storage through the
+existing `tf_storage_create_typed` / `tf_storage_create_uninitialized_typed`
+pair; **exact, bit-for-bit** transfer through `tf_storage_copy_from`,
+`tf_storage_copy_to`, `tf_storage_materialize`, and
+`tf_core_contiguous_copy`, at the signed extremes and beyond 2⁵³; and a
+complete floating/autograd/state reachability barrier — `tf::require_floating`
+on **32** float-only exports at the C ABI, and the matching Python
+barriers in front of wrapper construction, autograd, parameters, buffers
+at **both** `persistent` values, both optimizers, checkpoint entry
+validation, and every floating operation entry.
+
+*Still unsupported publicly, and asserted so by test:* `int64` Python
+tensors, `INDEX_DTYPES`, any integer constructor, integer views or copies,
+integer `item()` / `tolist()`, `argmax`, `index_select`, integer
+arithmetic, integer reductions, integer autograd, integer parameters or
+buffers, integer checkpoint entries, promotion or casting, CUDA, and AMP.
+
+| Registry | Value at J9 | Value at K0 | Value at K1 |
+|---|---|---|---|
+| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged | unchanged |
+| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged | unchanged |
+| `UNSUPPORTED` | `("cuda", "amp")` | unchanged | unchanged |
+| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged | unchanged |
+| `normalize_dtype(None)` · `backend_info()["dtype"]` | `"float64"` | unchanged | unchanged |
+| `normalize_dtype("int64")` | raises `ValueError` | unchanged | unchanged |
+| `INDEX_DTYPES` | absent | absent | absent — **K2** |
+| Python `_DTYPE_CODES` | `float64`, `float32` | unchanged | unchanged |
+| C++ `TfDtype` | `FLOAT64`, `FLOAT32` | unchanged | **+ `INT64 = 2`** |
+| Native checkpoint format | version **3**, accepted `(1, 2, 3)` | unchanged | unchanged |
+| In-memory optimizer state format | version **1** | unchanged | unchanged |
+| Loader state · sampler state | version **1**, accepted `(1,)` | unchanged | unchanged |
+| Exported production `tf_*` symbols | **54** | unchanged | unchanged |
+| `tensorforge.experimental.__all__` | **25** | unchanged | unchanged |
+| Native CTests · examples · benchmarks | **24** · **16** · **9** | unchanged | **25** · **16** · **9** |
+
+**What is *not* supported, and is not a bug at K1.** `int64` is not a
+native tensor dtype. There is no *public* native integer storage — only
+the raw private C ABI can represent it, for isolation and barrier testing
+— no integer
 tensor, no integer construction, no `item()` or `tolist()`, no native
-`argmax`, and no index selection — and **K1 through K9 are unstarted**,
-so nothing on the list below exists yet. Runtime capability begins at K1.
+`argmax`, and no index selection — and **K2 through K9 are unstarted**,
+so nothing on the list below exists yet. Public construction begins at K2.
 
 **What the contract decides**, so that a later milestone implements rather
 than re-argues it: one extended `NativeTensor` rather than a parallel

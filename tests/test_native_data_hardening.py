@@ -5623,11 +5623,12 @@ def test_j7_left_the_native_artifacts_untouched():
     """No C++, no CMake, no CTest, and no ABI change: the counts are read
     from the real files."""
     sources = sorted((REPO_ROOT / "cpp" / "tests").glob("test_*.cpp"))
-    assert len(sources) == 24, [path.name for path in sources]
+    # Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
+    assert len(sources) == 25, [path.name for path in sources]
     registered = re.findall(
         r"add_test\s*\(\s*NAME\s+(\w+)",
         (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8"))
-    assert len(registered) == 24 == len(set(registered)), registered
+    assert len(registered) == 25 == len(set(registered)), registered
     exported = set()
     for source in sorted((REPO_ROOT / "cpp" / "src").glob("*.cpp")):
         text = source.read_text(encoding="utf-8")

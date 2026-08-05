@@ -2326,17 +2326,17 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase K — native integer tensors and indexing (K0, architecture only)
+### Phase K — native integer tensors and indexing (K0–K1)
 
-**Phase K is newly approved, and K0 is the only milestone that has
+**Phase K is newly approved, and K0 and K1 have
 landed.** **No version is claimed** — the native line
-stays experimental and is not production-ready, and this entry records a
-milestone rather than a release.
+stays experimental and is not production-ready, and this entry records
+milestones rather than a release.
 
 Phase K was approved **after** Phase J closed at J9. The repository
 deliberately finished Phase J without committing to a successor, so Phase K
 is not carried-over roadmap work and must not be described as though it
-were. **K1 through K9 are unstarted**, and work beyond Phase K would
+were. **K2 through K9 are unstarted**, and work beyond Phase K would
 require a separately approved phase with its own design contract.
 
 **K0 added no runtime behavior at all.** No integer dtype, no dtype code,
@@ -2345,15 +2345,68 @@ ctypes declaration, no `NativeTensorCore` method, no `NativeTensor`
 operation, no module, no optimizer change, no public export, no
 capability-registry value, no checkpoint field or version, no
 optimizer-state version, no loader- or sampler-state version, no example,
-no benchmark, no CTest, no build option, and no dependency. `int64` is
-**not** a supported native tensor dtype, and there is no native integer
-storage, no native `argmax`, and no index selection. Every registry and
-inventory is exactly what Phase J left: `SUPPORTED_DTYPES ==
+no benchmark, no CTest, no build option, and no dependency.
+
+**K1 added the internal `int64` representation and every reachability
+barrier, and no public capability at all.**
+
+*What became true internally.* `TfDtype` / `tf::Dtype` gained a third
+enumerator at ABI code **2** — the code the Phase-I frozen-codes comment
+reserved for a future dtype — with arms in `dtype_from_code`,
+`dtype_item_size`, `dtype_name`, `create_storage`, and
+`destroy_storage_data`, plus two `static_assert`s pinning exact 8-byte
+width and two's-complement representation. Storage allocates and destroys
+genuine `std::int64_t[]` buffers through the existing typed creators.
+`tf_storage_copy_from`, `tf_storage_copy_to`, `tf_storage_materialize`,
+and `tf_core_contiguous_copy` gained an `Int64` arm each and move integer
+values **bit for bit** — same-type assignment, no arithmetic — proved
+across `INT64_MIN`, `INT64_MAX`, both sides of the 32-bit range, and
+2⁵³ + 1, where a floating detour would start rounding.
+
+*What became impossible.* A new hidden-visibility `tf::require_floating`
+guards **32** float-only exports at the C ABI, applied **before**
+`require_matching_dtype` so a mixed float/integer call is refused as a
+role error rather than as a tag mismatch. `tf_storage_fill` and
+`tf_storage_scale` gained the exception guard **because** they can now
+record a rejection, and stayed unhooked, so `_CHECKED_KERNELS` is
+unchanged at **36**. On the Python side, nine trusted dtype paths were
+narrowed from `_normalize_internal_dtype` to `normalize_dtype`, and every
+§6.5 barrier landed: `NativeTensorCore.__init__`, `NativeTensor.__init__`,
+`_from_op` (which closes the core **and** the saved resources it was
+handed before raising), `backward`, `_accumulate_grad`,
+`NativeParameter`, `NativeModule.register_buffer` at **both** `persistent`
+values, both optimizers, `_validated_entry_dtype`, `NativeStorage.fill`,
+and every floating operation entry.
+
+*What is still absent, publicly.* `int64` is
+**not** a supported native tensor dtype, the Python dtype tables do not
+know the name, and **no supported TensorForge wrapper or public Python API
+can allocate or wrap `int64` storage — only the raw private C ABI can, for
+isolation and barrier testing.** There is no public integer constructor,
+no integer view or copy, no integer `item()` or `tolist()`, no `argmax`,
+no index selection, no integer arithmetic or reduction, no integer
+autograd, no integer parameter or buffer, no integer checkpoint entry, no
+promotion or casting, and no `INDEX_DTYPES`.
+
+Every registry and
+inventory is exactly what Phase J left, with one exception:
+`SUPPORTED_DTYPES ==
 ("float64", "float32")`, `SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED ==
 ("cuda", "amp")`, `RAW_KERNEL_DTYPES == ("float64",)`, **54** exported
-`tf_*` symbols, **25** experimental names, **24** native CTests, **16**
+`tf_*` symbols, **25** experimental names, **16**
 examples, **9** benchmarks, checkpoint version **3** with `(1, 2, 3)`
-accepted, and optimizer, loader, and sampler state at version **1**.
+accepted, and optimizer, loader, and sampler state at version **1** — and
+the native CTest inventory moved **24 → 25**
+(`cpp/tests/test_dtype_int64_storage.cpp`), the phase's only inventory
+change so far.
+
+K1 also performed the one status reconciliation K0 could not: the
+`tensorforge.experimental` module docstring had knowingly lagged one phase
+behind because K0 changed no production source at all, and K1 is the first
+milestone that edits the package. The scoped exemption that covered it was
+**removed** rather than carried forward, and its absence is now asserted
+directly — an exemption that outlives its reason is a guardrail that has
+stopped guarding.
 
 What K0 shipped is `docs/native_integer_tensors_design.md` — the
 authoritative Phase-K contract — `tests/test_native_phase_k.py`, and the

@@ -729,4 +729,44 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME dtype_dropout COMMAND test_dtype_dropout)
+
+  # The int64 representation and the floating-role barriers (Phase K,
+  # milestone K1). Like test_dtype_storage this target links **every**
+  # kernel translation unit, and for the same reason: a third of what it
+  # proves is that an int64 handle is rejected by every export that
+  # computes, and each compute unit has its own validation front end.
+  # Unlike that target it drives **every** audited export rather than a
+  # representative of each, as a table whose size is committed, so an
+  # export cannot be added to the library and silently left out of the
+  # audit.
+  #
+  # Deliberately complementary rather than a superset: test_dtype_storage
+  # keeps the I1 float32 contract, test_typed_transfer keeps I2's boundary
+  # set, and this one proves what K1 opened — the third element type, its
+  # exact bit-for-bit transfer at the signed extremes and beyond 2^53, the
+  # one compute-family export generalized to it, and the barrier in front
+  # of all the others, with a valid floating call beside it as the
+  # non-vacuity control.
+  add_executable(test_dtype_int64_storage
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_dtype_int64_storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/elementwise.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/matmul.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/reduction.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/classification.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/pooling.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/random.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_dtype_int64_storage PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_dtype_int64_storage PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_dtype_int64_storage PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_dtype_int64_storage PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME dtype_int64_storage COMMAND test_dtype_int64_storage)
 endif()

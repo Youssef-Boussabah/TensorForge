@@ -57,24 +57,36 @@ enum TfStatus {
 // storage's dtype because Python asked for it at creation.
 //
 // The codes are **frozen** in exactly the sense the TfStatus codes are:
-// their meaning never changes, and a hypothetical future dtype (not in
-// Phase I) would take 2. float64 is 0 so that the untyped compatibility
-// creators pass a code they could equally have defaulted to.
+// their meaning never changes. float64 is 0 so that the untyped
+// compatibility creators pass a code they could equally have defaulted to,
+// and **2 is int64**, taking exactly the code the Phase-I comment here
+// reserved for a future dtype (Phase K, milestone K1; see
+// docs/native_integer_tensors_design.md §7.2).
+//
+// ``int64`` is an **internal representation only** at K1. It is not a
+// supported TensorForge tensor dtype: the Python dtype tables do not know
+// the name, no Python constructor can allocate or wrap it, and every
+// floating operation rejects it through ``require_floating`` below. The
+// only thing that can produce int64 storage at this milestone is a direct
+// ``tf_storage_create_typed(size, 2)`` call across the raw C ABI, which
+// exists so the barriers can be proved against a genuine int64 handle.
 // ---------------------------------------------------------------------------
 
 enum TfDtype {
     TF_DTYPE_FLOAT64 = 0,
     TF_DTYPE_FLOAT32 = 1,
+    TF_DTYPE_INT64 = 2,
 };
 
 namespace tf {
 
 // The internal form. Scoped, fixed-width, and constructible only through
-// ``dtype_from_code`` or one of the two enumerators — so an unvalidated
+// ``dtype_from_code`` or one of the three enumerators — so an unvalidated
 // integer can never become a Dtype.
 enum class Dtype : std::int32_t {
     Float64 = TF_DTYPE_FLOAT64,
     Float32 = TF_DTYPE_FLOAT32,
+    Int64 = TF_DTYPE_INT64,
 };
 
 // The platform assumptions the whole dtype model rests on, stated and
@@ -88,6 +100,18 @@ static_assert(std::numeric_limits<double>::is_iec559,
 static_assert(std::numeric_limits<float>::is_iec559,
               "TensorForge requires IEEE-754 binary32 float");
 
+// Phase K, milestone K1: the integer assumptions, stated and checked for
+// exactly the reason the floating ones are (design §13.1). ``std::int64_t``
+// is an exact-width type, so the standard already requires 8 bytes, no
+// padding bits, and two's-complement representation — asserting it anyway
+// turns a toolchain where that fails into a build error rather than a
+// wrong stored value. The second assertion is the two's-complement
+// statement written as an observable identity: -1 is the all-ones pattern.
+static_assert(sizeof(std::int64_t) == 8,
+              "TensorForge requires an 8-byte std::int64_t");
+static_assert(static_cast<std::int64_t>(-1) == ~static_cast<std::int64_t>(0),
+              "TensorForge requires two's-complement std::int64_t");
+
 // ABI code -> internal dtype. Total, noexcept, and allocation-free:
 // every unknown code returns false — never a default, never a clamp,
 // never an assertion — and leaves ``out`` exactly as the caller left it,
@@ -96,6 +120,7 @@ inline bool dtype_from_code(std::int32_t code, Dtype& out) noexcept {
     switch (code) {
         case TF_DTYPE_FLOAT64: out = Dtype::Float64; return true;
         case TF_DTYPE_FLOAT32: out = Dtype::Float32; return true;
+        case TF_DTYPE_INT64: out = Dtype::Int64; return true;
         default: return false;
     }
 }
@@ -108,16 +133,19 @@ inline bool dtype_from_code(std::int32_t code, Dtype& out) noexcept {
 inline std::size_t dtype_item_size(Dtype dtype) noexcept {
     switch (dtype) {
         case Dtype::Float32: return sizeof(float);
+        case Dtype::Int64: return sizeof(std::int64_t);
         case Dtype::Float64: break;
     }
     return sizeof(double);
 }
 
-// The canonical name, matching SUPPORTED_DTYPES exactly. For error
-// messages; never parsed, never compared, never dispatched on.
+// The canonical name. For error messages; never parsed, never compared,
+// never dispatched on. ``"int64"`` is a *representation* name here and is
+// deliberately **not** a member of SUPPORTED_DTYPES on the Python side.
 inline const char* dtype_name(Dtype dtype) noexcept {
     switch (dtype) {
         case Dtype::Float32: return "float32";
+        case Dtype::Int64: return "int64";
         case Dtype::Float64: break;
     }
     return "float64";
@@ -129,6 +157,21 @@ inline bool dtype_is_float32(Dtype dtype) noexcept {
 
 inline bool dtype_is_float64(Dtype dtype) noexcept {
     return dtype == Dtype::Float64;
+}
+
+// Phase K, milestone K1: the **role** predicate every float-only export
+// asks, rather than a per-dtype test (design §7.2). Written as a switch
+// with no ``default:`` so a dtype added without deciding whether kernels
+// may do arithmetic at it is a compile-time diagnostic, not a silent
+// "yes" — which is exactly how a third enumerator could otherwise have
+// been read as a ``double``.
+inline bool dtype_is_floating(Dtype dtype) noexcept {
+    switch (dtype) {
+        case Dtype::Float32:
+        case Dtype::Float64: return true;
+        case Dtype::Int64: break;
+    }
+    return false;
 }
 
 // Checked ``numel x itemsize`` — the **one** element-to-byte conversion
@@ -217,8 +260,9 @@ bool should_fail_alloc() noexcept;
 //   * ``data`` is **untyped**. There is no ``double*`` member, no union of
 //     typed pointers, and no second pointer: a union would let the tag and
 //     the pointer disagree about what the buffer holds, and a ``void*``
-//     cannot. It points at a genuine ``float[size]`` or ``double[size]``
-//     array object, created by an ordinary array new-expression in
+//     cannot. It points at a genuine ``float[size]``, ``double[size]``, or
+//     — since Phase K, milestone K1 — ``std::int64_t[size]`` array object,
+//     created by an ordinary array new-expression in
 //     storage.cpp and type-erased **after** creation — which is what makes
 //     the kernels' ``data[i]`` and ``data + i`` well-defined across the
 //     whole allocation under C++17.
@@ -339,6 +383,60 @@ inline bool require_float64(
             std::snprintf(message, sizeof message,
                           "%s: this operation is float64-only in the current "
                           "runtime; got %s storage",
+                          operation, dtype_name(dtype));
+            set_error(TF_ERROR_INVALID, message);
+            return false;
+        }
+    }
+    return true;
+}
+
+// Phase K, milestone K1: the dtype-**role** guard, and the reason a third
+// enumerator is safe to add (design §22.4).
+//
+// Every dtype dispatch in this runtime has the shape
+// ``case Float32: … ; case Float64: break;`` followed by a ``double``
+// fallthrough, so a handle carrying a *third* tag would be read as a
+// ``double`` if the compile-time exhaustiveness diagnostic were ever
+// ignored. Phase K does not rely on that warning: **every export that has
+// not been generalized to int64 asks this guard first**, so an int64
+// handle reaching an arithmetic export is rejected by a check, at the ABI,
+// independently of Python and independently of anyone reading a warning.
+//
+// The division of labour between the three guards, stated once:
+//
+//   * ``require_float64``  — "this operation has not been generalized to
+//     any second width"; the pre-Phase-I default rule, retained.
+//   * ``require_floating`` — "this operation computes, and computing is a
+//     floating-only capability"; **both** float widths pass, int64 does
+//     not. Applied **before** ``require_matching_dtype`` so a mixed
+//     float/int call is refused as "this operation is floating-only"
+//     rather than as a tag mismatch, which is the honest report: an
+//     integer operand is a *role* error, never a promotion opportunity.
+//   * ``require_matching_dtype`` — "its operands must agree".
+//
+// Same contract as the other two: total, noexcept, allocation-free, and a
+// function of the storage tags alone. Null handles **pass**, so each
+// export keeps its own null validation, message, and ordering. On
+// rejection it has already recorded TF_ERROR_INVALID naming the operation
+// and the offending dtype, and the caller must return **without touching
+// any destination**.
+inline bool require_floating(
+    const char* operation, std::initializer_list<const void*> handles
+) noexcept {
+    for (const void* handle : handles) {
+        if (handle == nullptr) {
+            continue;
+        }
+        const Dtype dtype = as_storage(handle)->dtype;
+        if (!dtype_is_floating(dtype)) {
+            // Bounded stack buffer: recording a rejection must not itself
+            // allocate, and snprintf truncates rather than overflowing.
+            char message[192];
+            std::snprintf(message, sizeof message,
+                          "%s: this operation is floating-only; got %s "
+                          "storage (the native runtime performs no casting "
+                          "or promotion)",
                           operation, dtype_name(dtype));
             set_error(TF_ERROR_INVALID, message);
             return false;

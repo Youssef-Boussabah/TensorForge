@@ -105,6 +105,7 @@ import math
 import numbers
 
 from ..backends import cpp
+from ._native_dtype import require_floating_state_dtype
 from ._native_state_lock import state_transaction
 from .native_optimizer_state import (
     FORMAT_VERSION,
@@ -174,6 +175,19 @@ class NativeSGD:
                 raise RuntimeError(
                     f"parameters[{position}] has been closed"
                 )
+            # Phase K, milestone K1: the direct per-parameter floating
+            # check (integer design §6.5). Both optimizers already accept
+            # only ``NativeParameter``, and a parameter cannot be
+            # non-floating, so this barrier is **transitively** closed
+            # already — it is stated directly anyway, because a barrier
+            # that holds only because another one does is a barrier that
+            # disappears the day the other is relaxed. Rejected here,
+            # before anything is stored, so a refused optimizer allocates
+            # no state and touches no parameter.
+            require_floating_state_dtype(
+                entry.dtype, f"NativeSGD parameters[{position}]",
+                role="parameter",
+            )
             if id(entry) in seen:
                 continue  # identity dedup: aliases update once
             seen.add(id(entry))

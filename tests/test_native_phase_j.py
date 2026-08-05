@@ -115,7 +115,8 @@ J0_CHECKPOINT_VERSIONS = (1, 2, 3)
 J0_OPTIMIZER_STATE_VERSION = 1
 
 J0_EXPORT_COUNT = 54
-J0_CTEST_COUNT = 24
+# Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
+J0_CTEST_COUNT = 25
 J0_EXAMPLE_COUNT = 15
 J0_BENCHMARK_COUNT = 8
 

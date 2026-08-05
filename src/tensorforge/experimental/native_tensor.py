@@ -134,12 +134,23 @@ class NativeTensor:
     def __init__(self, core, owns_core=True):
         """Wrap an existing NativeTensorCore. Prefer the ``from_array``
         / ``zeros`` / ``full`` constructors; this is the low-level entry
-        point (see also the internal ``_from_core``)."""
+        point (see also the internal ``_from_core``).
+
+        **Phase K, milestone K1: the core must be floating** — the
+        wrapper-construction barrier of the integer design's §6.5 table,
+        one layer above ``NativeTensorCore.__init__``'s. The two are listed
+        as separate barriers rather than one because they have different
+        first authorities and different operands, and a single layer is a
+        single point of failure: a core assembled around a raw ``int64``
+        handle without running the Core constructor still cannot become a
+        ``NativeTensor``, and therefore still cannot reach autograd, a
+        parameter, a buffer, an optimizer, or an archive."""
         if not isinstance(core, cpp.NativeTensorCore):
             raise TypeError(
                 f"NativeTensor wraps a NativeTensorCore, got "
                 f"{type(core).__name__}"
             )
+        cpp._require_floating_dtype(core.dtype, "NativeTensor", role="core")
         self._core = core
         self._owns_core = bool(owns_core)
         self._closed = False
@@ -194,7 +205,33 @@ class NativeTensor:
         differentiable ops (v2.2) and the autograd tests use it, and it
         stays private so arbitrary graph building is never a public
         surface. The graph lives here, at the NativeTensor layer — the
-        core and the C++ kernels remain autograd-unaware."""
+        core and the C++ kernels remain autograd-unaware.
+
+        **Phase K, milestone K1: a non-differentiable result cannot become
+        a graph node.** This is the structural backstop of the integer
+        design's §6.5 table and the reason the unified object model is safe
+        against operations written *after* this milestone: no future
+        operation can accidentally produce a differentiable integer result,
+        because the single graph-construction entry refuses to build one.
+        It is a raise rather than an assertion, and it **closes the core it
+        was handed** before raising — the core is this call's to publish or
+        to release, so a rejected graph leaks nothing and live storage
+        returns exactly to baseline. Differentiability is asked as its own
+        question (§5.3), through the one floating predicate, rather than
+        inferred from the parents."""
+        if not cpp._is_floating_dtype(core.dtype):
+            # This call was handed the core and the saved state; nothing
+            # else can free either, so a rejection releases both before it
+            # propagates — exactly what the no-graph branch below does with
+            # ``graph_resources`` when no parent requires grad.
+            for resource in graph_resources:
+                resource.close()
+            core.close()
+            raise ValueError(
+                f"a native autograd graph node must have a differentiable "
+                f"dtype {cpp.SUPPORTED_DTYPES}, got {core.dtype!r} for "
+                f"operation {op!r} (gradients of integers are ill-defined)"
+            )
         node = cls._from_core(core, owns_core=owns_core)
         if any(p._requires_grad for p in parents):
             node._requires_grad = True
@@ -1587,8 +1624,23 @@ class NativeTensor:
         grad is dropped (the Python Tensor does the same). Only a
         NativeTensor gradient is accepted, and a closed tensor rejects
         accumulation (so a ``backward`` reaching a closed graph node
-        raises rather than reading freed storage)."""
+        raises rather than reading freed storage).
+
+        **Phase K, milestone K1: a non-differentiable tensor never
+        accumulates a gradient**, and says so rather than dropping the
+        contribution silently. The distinction matters: a *frozen*
+        parameter legitimately drops contributions (that is what
+        ``requires_grad=False`` means), while a non-differentiable dtype is
+        a request that can never be satisfied at all. Checked before the
+        ``requires_grad`` drop and before any allocation, so a rejection
+        changes no gradient anywhere."""
         self._require_open()
+        if not cpp._is_floating_dtype(self.dtype):
+            raise RuntimeError(
+                f"a native tensor of dtype {self.dtype!r} cannot accumulate "
+                f"a gradient: gradients exist only at the differentiable "
+                f"dtypes {cpp.SUPPORTED_DTYPES}"
+            )
         if not self._requires_grad:
             return
         if not isinstance(grad, NativeTensor):
@@ -1696,6 +1748,18 @@ class NativeTensor:
                 f"retain_graph must be a bool, got {type(retain_graph).__name__}"
             )
         self._require_open()
+        # Phase K, milestone K1: the differentiable-dtype gate, before the
+        # graph is walked, before the seed is built, and before any
+        # gradient is allocated or changed (integer design §9.2). A
+        # non-differentiable output is a different failure from one that
+        # merely does not track gradients, and reports as one.
+        if not cpp._is_floating_dtype(self.dtype):
+            raise RuntimeError(
+                f"backward() called on a tensor of dtype {self.dtype!r}: "
+                f"reverse-mode autodiff runs only at the differentiable "
+                f"dtypes {cpp.SUPPORTED_DTYPES} (gradients of integers are "
+                f"ill-defined)"
+            )
         if not self._requires_grad:
             raise RuntimeError(
                 "backward() called on a tensor that does not require grad"

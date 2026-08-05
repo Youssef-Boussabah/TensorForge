@@ -51,9 +51,19 @@
 // runtime is allowed to decide either.
 //
 // No per-element destruction is needed, and that is a property of the
-// types rather than an assumption: ``float`` and ``double`` are trivially
-// destructible, which is ``static_assert``ed beside the allocation.
+// types rather than an assumption: ``float``, ``double``, and
+// ``std::int64_t`` are trivially destructible, which is
+// ``static_assert``ed beside the allocation.
+//
+// Phase K, milestone K1 added ``std::int64_t`` as a third element type on
+// exactly these terms and no others: the same array new-expression, the
+// same RAII ordering, the same checked ``numel x itemsize``, the same
+// ``delete[]`` mirror. It is an **internal representation**, reachable
+// only through ``tf_storage_create_typed(size, 2)`` across the raw C ABI —
+// no Python constructor knows the name — and every kernel that computes
+// rejects it through ``tf::require_floating``.
 
+#include <cstdint>
 #include <memory>
 #include <type_traits>
 
@@ -198,6 +208,13 @@ void* create_storage(int64_t size, Dtype dtype, bool zero_initialize) {
     switch (dtype) {
         case Dtype::Float32:
             return create_typed_storage<float>(size, dtype, zero_initialize);
+        case Dtype::Int64:
+            // Phase K, K1. The same templated body: an ``std::int64_t``
+            // is trivially destructible, so the existing static_assert
+            // holds unchanged, and value-initialization gives exact
+            // integer zeros rather than an approximation of them.
+            return create_typed_storage<std::int64_t>(size, dtype,
+                                                      zero_initialize);
         case Dtype::Float64:
             break;
     }
@@ -223,6 +240,9 @@ void destroy_storage_data(Storage* storage) noexcept {
         case Dtype::Float32:
             delete[] static_cast<float*>(storage->data);
             return;
+        case Dtype::Int64:
+            delete[] static_cast<std::int64_t*>(storage->data);
+            return;
         case Dtype::Float64:
             delete[] static_cast<double*>(storage->data);
             return;
@@ -242,10 +262,10 @@ void* create_storage_typed(int64_t size, int32_t dtype_code,
                            bool zero_initialize) {
     Dtype dtype;
     if (!tf::dtype_from_code(dtype_code, dtype)) {
-        char message[128];
+        char message[160];
         std::snprintf(message, sizeof message,
-                      "unknown dtype code %d; supported codes are 0 (float64) "
-                      "and 1 (float32)",
+                      "unknown dtype code %d; representable codes are 0 "
+                      "(float64), 1 (float32), and 2 (int64)",
                       static_cast<int>(dtype_code));
         tf::set_error(TF_ERROR_INVALID, message);
         return nullptr;
@@ -391,13 +411,22 @@ TF_EXPORT int64_t tf_storage_size(const void* handle) {
 // inside the loop, where a compiler would be free to keep the operand in
 // binary64 and make every multiply a mixed-precision one.
 //
-// Both keep their existing error-contract classification: they do **not**
-// clear the thread-local slot on entry and they do **not** carry the Python
-// errcheck hook. H7 kept them hookless precisely so they cost one native call
-// rather than two, and neither can fail: with every dtype now valid there is
-// nothing left for either to reject, so neither writes to the error slot at
-// all — which is what an unhooked export should do, and is exactly where
-// ``copy_from`` and ``copy_to`` arrived at I2.
+// **Phase K, milestone K1 makes both floating-only, explicitly.** A scalar
+// crosses this boundary as a ``double``, which represents every integer in
+// [-(2^53), 2^53] exactly and no integer outside it — so neither is an exact
+// integer primitive and neither may ever become one (design §22.5). Both
+// therefore ask ``tf::require_floating`` before reading the buffer, and an
+// int64 handle is rejected with TF_ERROR_INVALID and **nothing written**.
+// int64 storage is exact-zeroed by its creator and needs no fill.
+//
+// That check is why both gained the exception guard at K1. They still do
+// **not** carry the Python errcheck hook — H7 kept them hookless precisely
+// so they cost one native call rather than two, and ``_CHECKED_KERNELS`` is
+// unchanged — but a function that can now record an error must clear the
+// slot on entry, or a code it recorded could go stale. The guard is what
+// gives them that clear-on-entry, so the "unguarded functions never touch
+// the slot" rule stays exactly true: these two are no longer unguarded.
+// Neither can throw, so the catch blocks are unreachable by construction.
 // ---------------------------------------------------------------------------
 
 namespace {
@@ -429,28 +458,42 @@ void scale_typed(void* handle, double factor) {
 }  // namespace
 
 TF_EXPORT void tf_storage_fill(void* handle, double value) {
+    TF_GUARD_BEGIN
+    if (!tf::require_floating("tf_storage_fill", {handle})) {
+        return;  // nothing read, nothing written
+    }
     switch (tf::storage_dtype(handle)) {  // ONE dispatch, per call
         case Dtype::Float32:
             fill_typed<float>(handle, value);
             return;
+        case Dtype::Int64:
+            return;  // unreachable: rejected by require_floating above
         case Dtype::Float64:
             break;
     }
     fill_typed<double>(handle, value);
+    TF_GUARD_END_VOID()
 }
 
 // Multiply every element by a scalar factor, in place — a small storage
 // primitive alongside fill, used by the mean reduction to scale a freshly
 // summed output by 1/count at the tensor's own dtype.
 TF_EXPORT void tf_storage_scale(void* handle, double factor) {
+    TF_GUARD_BEGIN
+    if (!tf::require_floating("tf_storage_scale", {handle})) {
+        return;  // nothing read, nothing written
+    }
     switch (tf::storage_dtype(handle)) {  // ONE dispatch, per call
         case Dtype::Float32:
             scale_typed<float>(handle, factor);
             return;
+        case Dtype::Int64:
+            return;  // unreachable: rejected by require_floating above
         case Dtype::Float64:
             break;
     }
     scale_typed<double>(handle, factor);
+    TF_GUARD_END_VOID()
 }
 
 // ---------------------------------------------------------------------------
@@ -565,10 +608,30 @@ void materialize_typed(
 
 }  // namespace
 
+// Phase K, milestone K1: the three transfer boundaries gain an ``Int64``
+// arm and nothing else. **Transfer is the one thing that generalizes to
+// int64 at this milestone**, and it does so for the reason it generalized
+// to float32 at I2: every transfer is a same-type assignment between two
+// objects, so it performs no arithmetic, has no operand roles to choose
+// between, and reproduces its source's object representation exactly. At
+// int64 that exactness is the whole point — every value in
+// [-(2^63), 2^63 - 1] survives the round trip bit for bit.
+//
+// Nothing here casts, widens, narrows, reinterprets, or guesses: the
+// storage tag selects one instantiation, and a ``T`` is only ever assigned
+// from a ``T``. A host buffer whose element type disagrees with the
+// storage tag is the *caller's* contract violation, and the Python wrapper
+// re-checks it per call through ``_host_pointer``; there is no int64 host
+// binding in that table at K1, which is one of the reasons no Python
+// object can reach these arms.
+
 TF_EXPORT void tf_storage_copy_from(void* handle, const void* src) {
     switch (tf::storage_dtype(handle)) {  // ONE dispatch, per call
         case Dtype::Float32:
             copy_from_typed<float>(handle, src);
+            return;
+        case Dtype::Int64:
+            copy_from_typed<std::int64_t>(handle, src);
             return;
         case Dtype::Float64:
             break;
@@ -580,6 +643,9 @@ TF_EXPORT void tf_storage_copy_to(const void* handle, void* dst) {
     switch (tf::storage_dtype(handle)) {  // ONE dispatch, per call
         case Dtype::Float32:
             copy_to_typed<float>(handle, dst);
+            return;
+        case Dtype::Int64:
+            copy_to_typed<std::int64_t>(handle, dst);
             return;
         case Dtype::Float64:
             break;
@@ -597,6 +663,10 @@ TF_EXPORT void tf_storage_materialize(
         case Dtype::Float32:
             materialize_typed<float>(handle, dst, shape, strides, offset,
                                      ndim);
+            return;
+        case Dtype::Int64:
+            materialize_typed<std::int64_t>(handle, dst, shape, strides,
+                                            offset, ndim);
             return;
         case Dtype::Float64:
             break;

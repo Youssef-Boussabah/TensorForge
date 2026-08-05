@@ -1661,7 +1661,7 @@ The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at 
 
 **Phase J — deterministic native data pipeline and mini-batching — is
 complete: milestones J0 through J9 have all landed, and J9 closed it.**
-**Phase K is the latest phase, and only K0 has landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after* Phase I
+**Phase K is the latest phase, and only K0 and K1 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -2165,13 +2165,32 @@ benchmarked on its own; and the I0–I11 ladder, in which the public
 support registry changes at **I9** and at no earlier milestone.
 
 **Phase K — Native Integer Tensors and Indexing — is the newly approved
-successor, and only K0 has landed.** K0 is architecture, contract, status,
+successor, and only K0 and K1 have landed.** K0 is architecture, contract, status,
 and guardrails, and it **added no runtime behavior at all**: no integer
 dtype or dtype code, no C++ enumerator, no kernel, no C ABI symbol, no
 public export, no capability-registry movement, no checkpoint or state
-version change, no example, no benchmark, and no CTest. `int64` is **not**
-a supported native tensor dtype, no native `argmax` or index selection
-exists, and **K1 through K9 are unstarted**. Its contract is
+version change, no example, no benchmark, and no CTest.
+
+**K1 added the internal `int64` representation and every reachability
+barrier, and no public capability at all.** The C++ dtype model gained a
+third enumerator at code 2; storage allocates and destroys genuine
+`std::int64_t[]` buffers; the four transfer boundaries move integer values
+bit for bit at the signed extremes and beyond 2⁵³; and the 32 float-only
+exports gained the hidden-visibility `tf::require_floating` guard, applied
+ahead of the operand-agreement guard so a mixed float/integer call is
+refused as a role error. On the Python side, nine trusted dtype paths were
+narrowed to the floating registry and every barrier landed — wrapper
+construction, autograd, parameters, buffers at both `persistent` values,
+both optimizers, checkpoint entry validation, and every floating
+operation. It added no C ABI symbol, no public Python name, and no
+registry or version movement; the native CTest inventory went 24 → **25**.
+
+`int64` is **not**
+a supported native tensor dtype, the Python dtype tables do not know the
+name, **no supported wrapper or public Python API can allocate or wrap
+`int64` storage — only the raw private C ABI can, for isolation and
+barrier testing** — no public integer constructor, `argmax`, or index
+selection exists, and **K2 through K9 are unstarted**. Its contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md),
 which locks one extended `NativeTensor` rather than a parallel integer
 class, `int64` as the only integer dtype and an exact non-differentiable

@@ -82,7 +82,7 @@ Phase J.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
 complete: milestones J0 through J9 have all landed and J9 closed it.**
-**Phase K is the latest phase, and only K0 has landed.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
+**Phase K is the latest phase, and only K0 and K1 have landed.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -125,6 +125,84 @@ native rebuild, no CTest run, and no sanitizer run**, and none is claimed
 for any of them — **J9 ran the complete final native and sanitizer
 matrix**, recorded below and in
 [native_data_pipeline_design.md](native_data_pipeline_design.md) §23.3.
+
+### K1 — the `int64` representation and the barrier matrix
+
+**K1 is the first Phase-K milestone that changes `cpp/`**, so it is the
+first that required a native rebuild and a CTest run, and both were done.
+It added **no C ABI export** — the library still exports exactly **54**
+`tf_*` symbols, with the source inventory and the built export table
+equal — and moved the CTest inventory **24 → 25**
+(`cpp/tests/test_dtype_int64_storage.cpp`).
+
+**What changed in C++.** `TfDtype` / `tf::Dtype` gained a third
+enumerator, `INT64`, at ABI code **2** — the code the Phase-I frozen-codes
+comment had reserved for a future dtype — with arms in
+`dtype_from_code`, `dtype_item_size`, `dtype_name`, `create_storage`
+(`create_typed_storage<std::int64_t>`, the existing
+trivially-destructible `static_assert` holding unchanged), and
+`destroy_storage_data`. Every one of those switches still has **no
+`default:`**, so a fourth enumerator without an arm remains a
+compile-time diagnostic rather than a runtime surprise. Two new
+`static_assert`s pin the assumptions the model rests on: exact 8-byte
+width, and two's-complement representation written as the observable
+identity `(int64_t)-1 == ~(int64_t)0`.
+
+**Transfer is exact, and it is the only compute-family generalization.**
+`tf_storage_copy_from`, `tf_storage_copy_to`, `tf_storage_materialize`,
+and `tf_core_contiguous_copy` gained an `Int64` arm each. All four are
+same-type assignment, so they perform no arithmetic and reproduce their
+source's object representation exactly; the CTest checks that as raw bytes
+rather than by comparing values, across `INT64_MIN`, `INT64_MAX`, both
+sides of the 32-bit range, and 2⁵³ + 1 — the smallest positive integer a
+`float64` cannot hold, so a value surviving it is what distinguishes an
+exact integer transfer from one that took a floating detour.
+`require_matching_dtype` still applies to `tf_core_contiguous_copy`, so an
+`int64`↔floating copy is an invalid *request* rather than a conversion.
+
+**Everything else is a barrier.** A new hidden-visibility
+`tf::require_floating` — total, `noexcept`, allocation-free, a function of
+the storage tags alone — is applied to **32** exports: 17 elementwise, 1
+matmul, 2 reduction, 4 classification, 3 conv2d, 2 pooling, 1 random, and
+the two scalar storage primitives. It runs **before**
+`require_matching_dtype` everywhere, so a mixed float/integer call is
+reported as "this operation is floating-only" rather than as a tag
+mismatch: an integer operand is a *role* error, never a promotion
+opportunity. The phase does not rely on the compiler's exhaustiveness
+warning to catch a third tag reaching a `double` fallthrough; it relies on
+a check.
+
+**One error-contract adjustment, and its reason.** `tf_storage_fill` and
+`tf_storage_scale` gained `TF_GUARD_BEGIN` / `TF_GUARD_END_VOID()`
+**because** they can now record a rejection — a `double` scalar is not an
+exact integer primitive, so both are floating-only permanently — and a
+function that writes the thread-local slot must clear it on entry or a
+code it recorded could go stale. They remain **unhooked** on the Python
+side, so `_CHECKED_KERNELS` is unchanged at **36** and their per-call
+boundary cost is exactly what H7 left. The "unguarded functions never
+touch the error slot" rule stays true because these two are no longer
+unguarded; a CTest drives the clear-on-entry behavior directly.
+
+**Windows evidence.** MSVC 19.44.35228.0, configured and built
+out-of-source **outside the repository** with `-DTF_BUILD_TESTS=ON`:
+clean configure, clean build, **zero** project CMake, compiler, and linker
+warnings, and **25/25** CTests green in Release. The new CTest links every
+kernel translation unit — as `test_dtype_storage` does, and for the same
+reason — and drives **every** audited export rather than a representative
+of each, as a table whose size is committed in the source, so an export
+cannot be added to the library and silently left out of the audit. Each
+row asserts the same four things: the call returns, it records
+`TF_ERROR_INVALID`, the message names the export and the offending dtype,
+and the destination is **byte-for-byte unchanged**. A valid float64 call
+over the identical operands sits beside it as the non-vacuity control,
+without which "every row rejected" would also describe a library that
+rejected everything.
+
+**What K1 does not claim.** No Linux or WSL run, no sanitizer run, and no
+LeakSanitizer lifecycle is claimed for this milestone; the Clang
+ASan/UBSan matrix and the Windows/Linux equality proof belong to **K9**,
+where §32's ladder puts them. No result file of any kind was written and
+no benchmark was added.
 
 ### J9 — the Phase-J closure matrix
 

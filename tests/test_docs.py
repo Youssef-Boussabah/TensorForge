@@ -6808,17 +6808,19 @@ CURRENT_STATUS_SURFACES = (
 # and closes.
 _LATEST_PHASE = "K"
 _LATEST_COMPLETED_PHASE = "J"
-# The **one** surface allowed to lag, and only because K0 may not touch
-# production source: this module's docstring still calls Phase J the latest
-# phase, and repairing it is assigned to K1 (the first Phase-K milestone
-# that edits the package). The exemption is scoped to this one file **and
-# to the "latest phase" form alone** — every other surface, and every other
-# form on this surface, is still checked — and
-# tests/test_native_phase_k.py proves both that it is the only stale
-# surface and that the Phase-K design assigns exactly this repair to K1.
-_STALE_LATEST_PHASE_SURFACES = frozenset({
-    "src/tensorforge/experimental/__init__.py",
-})
+# **There is no exempt surface.** For the length of K0 exactly one was
+# allowed to lag — ``src/tensorforge/experimental/__init__.py``, whose
+# docstring still called Phase J the latest phase, because K0 changed no
+# production source at all and that module is production source. The
+# exemption was scoped to that one file and to the "latest phase" form
+# alone, and the repair was assigned in writing to K1, the first Phase-K
+# milestone that edits the package.
+#
+# **K1 performed the repair, so the exemption is removed rather than
+# carried forward**: every surface below is now checked in every form, with
+# no skip list at all. ``tests/test_native_phase_k.py`` asserts the
+# removal directly, because an exemption that outlives its reason is a
+# guardrail that has quietly stopped guarding.
 # Deliberately scoped to Phase G. H0 also shipped, but ``H0`` is a short
 # token that sits a few words away from the legitimately *unstarted*
 # H1-H10 rows in the support matrix's ladder table, so a proximity scan
@@ -6892,8 +6894,6 @@ def test_only_the_newest_phase_is_called_the_latest_phase():
     for surface in CURRENT_STATUS_SURFACES:
         text = _status_text(surface)
         for expected, is_latest_form, pattern in forms:
-            if is_latest_form and surface in _STALE_LATEST_PHASE_SURFACES:
-                continue  # the one scoped exception, this form only
             named = {match.group(1).upper()
                      for match in pattern.finditer(text)}
             assert named <= {expected}, (

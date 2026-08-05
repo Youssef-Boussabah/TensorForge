@@ -236,8 +236,15 @@ void test_code_conversion_accepts_exactly_the_two_known_codes() {
 void test_code_conversion_rejects_every_unknown_code_without_writing() {
     // Both directions, the neighbours of the valid range, and the extremes:
     // an unknown code must never clamp to a default or produce a dtype.
+    //
+    // Code **2 left this list at Phase K, milestone K1**, when it became
+    // the int64 representation — the code the frozen-codes comment in
+    // tf_internal.h had reserved for a future dtype all along. It moved to
+    // a positive assertion in test_dtype_int64_storage.cpp rather than
+    // being dropped, so the coverage of the code space did not shrink: 3
+    // and every other neighbour of the representable range are still here.
     const std::int32_t unknown[] = {
-        -1, -2, -1000, 2, 3, 8, 64, 1 << 20,
+        -1, -2, -1000, 3, 4, 8, 64, 1 << 20,
         std::numeric_limits<std::int32_t>::min(),
         std::numeric_limits<std::int32_t>::max(),
     };
@@ -444,9 +451,14 @@ void test_the_untyped_creators_still_produce_float64() {
 }
 
 void test_unknown_dtype_codes_are_rejected() {
+    // Code **2 left this list at Phase K, milestone K1**, when it became
+    // the int64 representation. Both typed creators now accept it, which
+    // test_dtype_int64_storage.cpp asserts positively; every other unknown
+    // code — including 3, the new first neighbour above the representable
+    // range — is still rejected here, so the coverage did not shrink.
     char message[256];
     const std::int32_t unknown[] = {
-        -1, -2, 2, 3, 99,
+        -1, -2, 3, 4, 99,
         std::numeric_limits<std::int32_t>::min(),
         std::numeric_limits<std::int32_t>::max(),
     };

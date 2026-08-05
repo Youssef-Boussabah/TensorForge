@@ -198,6 +198,13 @@ TF_EXPORT void tf_core_dropout_forward(
     // ``double*`` would overrun it by a factor of two. Nothing below writes
     // to either destination before the dispatch, so a rejected call leaves
     // both byte-for-byte unchanged.
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_dropout_forward",
+            {input_handle, output_handle, mask_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype(
             "tf_core_dropout_forward",
             {input_handle, output_handle, mask_handle})) {

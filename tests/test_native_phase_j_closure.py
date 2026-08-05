@@ -144,7 +144,8 @@ FINAL_SAMPLER_STATE_VERSION = 1
 FINAL_SAMPLER_STATE_VERSIONS = (1,)
 
 # Inventories, **as Phase J closed on them**.
-FINAL_CTEST_COUNT = 24
+# Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
+FINAL_CTEST_COUNT = 25
 FINAL_EXAMPLE_COUNT = 16
 FINAL_BENCHMARK_COUNT = 9
 FINAL_EXPERIMENTAL_EXPORTS = 25

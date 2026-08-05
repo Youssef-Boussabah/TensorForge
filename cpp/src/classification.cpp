@@ -308,6 +308,13 @@ TF_EXPORT void tf_core_softmax_forward(
     // mixed-dtype and otherwise malformed reports the dtype. There is no
     // promotion and no narrowing, so a float32 source with a float64
     // destination is an invalid request, not a conversion opportunity.
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_softmax_forward",
+            {src_handle, dst_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype(
             "tf_core_softmax_forward",
             {src_handle, dst_handle})) {
@@ -341,6 +348,13 @@ TF_EXPORT void tf_core_log_softmax_forward(
     int64_t outer, int64_t axis_length, int64_t inner) {
     TF_GUARD_BEGIN
     // Same dtype rule and same ordering as the softmax export above.
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_log_softmax_forward",
+            {src_handle, dst_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype(
             "tf_core_log_softmax_forward",
             {src_handle, dst_handle})) {
@@ -392,6 +406,13 @@ TF_EXPORT void tf_core_cross_entropy_forward(
     // loss, and the saved probabilities. The target span is not among them
     // — it is host int64 metadata, so there is no target dtype to check, no
     // target dtype to dispatch on, and nothing is ever inferred from it.
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_cross_entropy_forward",
+            {logits_handle, loss_handle, probabilities_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype(
             "tf_core_cross_entropy_forward",
             {logits_handle, loss_handle, probabilities_handle})) {
@@ -478,6 +499,13 @@ TF_EXPORT void tf_core_cross_entropy_backward(
     // neither the agreement check nor the dispatch. The logits are not a
     // parameter of this export at all, so there is no fourth handle here
     // and never could be.
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_cross_entropy_backward",
+            {probabilities_handle, upstream_handle, grad_logits_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype(
             "tf_core_cross_entropy_backward",
             {probabilities_handle, upstream_handle, grad_logits_handle})) {

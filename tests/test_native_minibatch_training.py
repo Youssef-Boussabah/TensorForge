@@ -201,7 +201,8 @@ EXPECTED_EXAMPLE_COUNT = 16
 EXPECTED_BENCHMARK_COUNT = 9        # 8 when J6 landed; J8 added exactly one
 EXPECTED_EXPERIMENTAL_EXPORTS = 25
 EXPECTED_ABI_EXPORTS = 54
-EXPECTED_CTESTS = 24
+# Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
+EXPECTED_CTESTS = 25
 
 
 # ===========================================================================

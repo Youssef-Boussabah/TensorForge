@@ -220,6 +220,11 @@ TF_EXPORT void tf_core_sum(
     int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_sum", {src_handle, dst_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_sum", {src_handle, dst_handle})) {
         return;
     }
@@ -275,6 +280,13 @@ TF_EXPORT void tf_core_narrow_backward(
     int64_t u_offset, int64_t out_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_narrow_backward",
+            {upstream_handle, dst_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype(
             "tf_core_narrow_backward", {upstream_handle, dst_handle})) {
         return;

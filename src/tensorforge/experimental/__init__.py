@@ -309,8 +309,8 @@ guardrails in ``tests/test_native_phase_i_closure.py``, and the final
 inventory reconciliation — adding no capability at all.
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
-the latest phase and is complete: milestones J0 through J9 have all
-landed, and J9 closed it.** Its contract is
+complete: milestones J0 through J9 have all landed, and J9 closed it, so
+Phase J is the latest completed phase.** Its contract is
 ``docs/native_data_pipeline_design.md`` (milestone **J0**: architecture,
 contract, and documentation only, adding no runtime behavior).
 **Milestone J1** adds ``NativeTensorDataset`` below — the finite,
@@ -397,6 +397,43 @@ optimization; and J9 the permanent closure guardrails.
 object is thread-safe, none contains a lock, thread, queue, future, or
 async primitive, and none joins the process-wide state-replacement lock
 order. One thread at a time; external locking is the caller's job.
+
+**Phase K — Native Integer Tensors and Indexing — is the current phase,
+and only K0 and K1 have landed.** Its contract is
+``docs/native_integer_tensors_design.md``. Phase K was approved **after**
+Phase J closed at J9 without a committed successor, so it is not
+carried-over roadmap work; **K2 through K9 are unstarted**.
+
+**K0** was architecture, contract, status, and guardrails only, and added
+no runtime behavior at all. **K1 added the internal ``int64``
+representation and every reachability barrier, and no public capability at
+all.** Internally the C++ dtype model gained a third enumerator at ABI
+code 2, storage allocates and destroys genuine ``std::int64_t[]`` buffers,
+and the four transfer boundaries move integer values **bit for bit**;
+every other handle-based export refuses an ``int64`` operand at the ABI
+through ``tf::require_floating``, applied ahead of the operand-agreement
+guard so a mixed float/integer call is a **role** error rather than a tag
+mismatch. On this side, nine trusted dtype paths were narrowed from the
+representation table to the floating registry, and every barrier landed —
+wrapper construction, autograd (``_from_op``, ``backward``,
+``_accumulate_grad``), ``NativeParameter``, ``register_buffer`` at **both**
+``persistent`` values, both optimizers, checkpoint entry validation, and
+every floating operation entry. K1 added no C ABI symbol, no public
+Python name, and no registry or version movement.
+
+**No public integer capability exists yet**, deliberately. The Python
+dtype tables are untouched, so **no supported TensorForge wrapper or
+public Python API can allocate or wrap ``int64`` storage; only the raw
+private C ABI can represent it, for isolation and barrier testing.**
+``int64`` is not a supported native tensor dtype,
+``cpp.normalize_dtype("int64")`` still raises, ``INDEX_DTYPES`` does not
+exist, and there is no public integer constructor, no integer view or
+copy, no integer ``item()`` or ``tolist()``, no ``argmax``, no index
+selection, no integer arithmetic or reduction, no integer autograd, no
+integer parameter or buffer, no integer checkpoint entry, and no
+promotion or casting. Public construction begins at **K2**, in the same
+commit as ``INDEX_DTYPES`` — prove first, then promise. ``__all__`` stays
+at **25** names for the whole phase.
 
 ``NativeGenerator`` (Phase G, milestone G1) is the Python half of the
 phase's central split — random state is Python-managed, and the native

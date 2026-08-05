@@ -1457,13 +1457,17 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     # dtype-Dropout test, last of the family and on the same terms: it
     # drives the *existing* G2 kernel at a second element type, plus the
     # cross-dtype drop-pattern identity and the narrow-once scale witness.
-    assert len(ctests) == 24
+    # Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
+    assert len(ctests) == 25
     phase_i = {"test_dtype_storage.cpp", "test_typed_transfer.cpp",
                "test_dtype_elementwise.cpp",
                "test_dtype_reduction_matmul.cpp", "test_dtype_cnn.cpp",
                "test_dtype_classification.cpp", "test_dtype_dropout.cpp"}
     assert phase_i <= set(ctests)
-    assert len([name for name in ctests if name not in phase_i]) == 17
+    phase_k = {"test_dtype_int64_storage.cpp"}
+    assert phase_k <= set(ctests)
+    assert len([name for name in ctests
+                if name not in phase_i | phase_k]) == 17
     assert "test_conv2d_execution.cpp" in ctests
     assert "test_storage_allocation.cpp" in ctests
     assert "test_matmul.cpp" in ctests

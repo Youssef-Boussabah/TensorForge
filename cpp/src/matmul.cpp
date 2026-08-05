@@ -105,6 +105,13 @@ TF_EXPORT void tf_core_matmul(
     int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_matmul",
+            {a_handle, b_handle, dst_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype(
             "tf_core_matmul", {a_handle, b_handle, dst_handle})) {
         return;

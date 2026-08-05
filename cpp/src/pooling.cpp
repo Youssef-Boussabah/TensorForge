@@ -232,6 +232,13 @@ TF_EXPORT void tf_core_maxpool2d_forward(
     // *value* handles must agree, and the winner buffer must be float64 at
     // every value dtype (design §13.3). A call that is both mixed-dtype and
     // otherwise malformed reports the dtype.
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_maxpool2d_forward",
+            {input_handle, output_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_maxpool2d_forward",
                                     {input_handle, output_handle})) {
         return;
@@ -373,6 +380,13 @@ TF_EXPORT void tf_core_maxpool2d_backward(
     // gradient destination must agree, and the winner buffer must be
     // float64 at every value dtype (design §13.3) — it is index metadata,
     // not a numeric operand, so it takes no part in the value dispatch.
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_maxpool2d_backward",
+            {grad_output_handle, grad_input_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_maxpool2d_backward",
                                     {grad_output_handle, grad_input_handle})) {
         return;

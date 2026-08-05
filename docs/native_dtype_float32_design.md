@@ -2807,6 +2807,18 @@ inheriting rather than rediscovering:
    leaves the code in the slot and the next guarded call clears it on
    entry, so it can never be misattributed.
 
+   **Superseded in part at Phase K, milestone K1**, and recorded rather
+   than rewritten: `tf_storage_fill` and `tf_storage_scale` are now
+   **guarded** (`TF_GUARD_BEGIN` / `TF_GUARD_END_VOID()`), because
+   `tf::require_floating` gave them a rejection of their own to record and
+   a function that writes the slot must clear it on entry. They stay
+   **unhooked** and `_CHECKED_KERNELS` is still 36, so the H7 per-call cost
+   is unchanged and the reasoning above still holds for them; only the word
+   "unguarded" no longer does. `tf_storage_copy_from` and
+   `tf_storage_copy_to` remain unguarded and unhooked exactly as stated.
+   See `docs/native_abi_error_contract.md` and
+   `docs/native_integer_tensors_design.md` §27.
+
 One **new failure mode** arrived exactly as §4.1 predicted: a byte-count
 overflow is now `TF_ERROR_INVALID`, rejected by arithmetic before any
 allocator is asked, where the implicit `new double[count]` sizing it

@@ -814,12 +814,24 @@ def _validated_entry_dtype(declared, version, entry_path, where):
 
     Two rules, in order (design §16.4, §16.5):
 
-    1. it must be a string the native runtime actually represents —
-       ``cpp._normalize_internal_dtype`` is the authority, so this file
-       keeps no dtype table of its own and cannot drift from the storage
-       layer;
+    1. it must be a **floating compute** dtype — ``cpp.normalize_dtype`` is
+       the authority, so this file keeps no dtype table of its own and
+       cannot drift from the storage layer;
     2. in a version-1 or version-2 archive it must additionally be exactly
        ``"float64"``, because those formats *are* float64 by definition.
+
+    Rule 1 measured against ``cpp._normalize_internal_dtype`` — the
+    **representation** table — until **Phase K, milestone K1 narrowed it**
+    to the public floating registry (docs/native_integer_tensors_design.md
+    §5.4, §21.2). The narrowing is behavior-preserving (no archive any
+    shipped code could write has ever contained a non-floating entry, and
+    the two validators accepted the same set on the day it landed) and it
+    is the layer that makes a hand-written archive unable to declare an
+    integer model, buffer, or optimizer entry. It is **one of three
+    independent layers**, not the only one: a parameter cannot be
+    non-floating, a buffer cannot be non-floating, and an archive entry
+    cannot declare it — each with a different first authority and a
+    different error, because a single layer is a single point of failure.
 
     Returns the canonical dtype string. Raises a checkpoint ``ValueError``
     naming the field, the value, and what was expected — before anything
@@ -831,12 +843,12 @@ def _validated_entry_dtype(declared, version, entry_path, where):
             f"{type(declared).__name__}",
         )
     try:
-        canonical = cpp._normalize_internal_dtype(declared)
+        canonical = cpp.normalize_dtype(declared)
     except (TypeError, ValueError) as error:
         _checkpoint_error(
             where,
             f"{entry_path}['dtype'] is {declared!r}, which is not a dtype "
-            f"the native runtime represents: {error}",
+            f"a native checkpoint entry may declare: {error}",
             cause=error,
         )
     if version in _FLOAT64_ONLY_VERSIONS and canonical != "float64":
