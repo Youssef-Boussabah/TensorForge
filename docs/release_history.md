@@ -2326,9 +2326,61 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
+### Phase K — native integer tensors and indexing (K0, architecture only)
+
+**Phase K is newly approved, and K0 is the only milestone that has
+landed.** **No version is claimed** — the native line
+stays experimental and is not production-ready, and this entry records a
+milestone rather than a release.
+
+Phase K was approved **after** Phase J closed at J9. The repository
+deliberately finished Phase J without committing to a successor, so Phase K
+is not carried-over roadmap work and must not be described as though it
+were. **K1 through K9 are unstarted**, and work beyond Phase K would
+require a separately approved phase with its own design contract.
+
+**K0 added no runtime behavior at all.** No integer dtype, no dtype code,
+no C++ enumerator, no storage change, no kernel, no C ABI symbol, no
+ctypes declaration, no `NativeTensorCore` method, no `NativeTensor`
+operation, no module, no optimizer change, no public export, no
+capability-registry value, no checkpoint field or version, no
+optimizer-state version, no loader- or sampler-state version, no example,
+no benchmark, no CTest, no build option, and no dependency. `int64` is
+**not** a supported native tensor dtype, and there is no native integer
+storage, no native `argmax`, and no index selection. Every registry and
+inventory is exactly what Phase J left: `SUPPORTED_DTYPES ==
+("float64", "float32")`, `SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED ==
+("cuda", "amp")`, `RAW_KERNEL_DTYPES == ("float64",)`, **54** exported
+`tf_*` symbols, **25** experimental names, **24** native CTests, **16**
+examples, **9** benchmarks, checkpoint version **3** with `(1, 2, 3)`
+accepted, and optimizer, loader, and sampler state at version **1**.
+
+What K0 shipped is `docs/native_integer_tensors_design.md` — the
+authoritative Phase-K contract — `tests/test_native_phase_k.py`, and the
+status reconciliation a newly approved phase requires. The contract
+resolves the architecture so a later milestone implements rather than
+re-argues it: **one extended `NativeTensor`** rather than a parallel
+integer tensor class, chosen over a separate public index tensor and an
+internal-only result and defended by naming, per row, the authority and
+the milestone that prevents each way the unified model could go wrong;
+storage keeps owning the dtype and views keep inheriting it; **`int64` is
+the only integer dtype in the phase** and is an exact, non-differentiable
+index/result dtype; a strict `numpy.ndarray`-only construction door with
+no dtype inference, no numeric cast, no truncation, no widening, and no
+byte-swapping; integer autograd, parameters, optimizer ownership, module
+buffers, and checkpoint entries barred in Python **and** independently at
+the C ABI; a complete `argmax` contract (first-occurrence ties,
+signed-zero ties, NaN propagation as a deliberate TensorForge rule, no
+graph ever, and **no `max` exposed beside it**); a forward-only
+`index_select` whose indices are all bounds-checked **before** the
+destination is allocated; the Phase-J delivery contract left untouched;
+**no checkpoint version change**; and a C ABI budget of exactly **+2**
+symbols for a **phase maximum of 56**. The one public capability change —
+**`SUPPORTED_DTYPES` never gains `int64`**: it remains the floating-compute registry permanently and `normalize_dtype("int64")` keeps raising, so **no generic constructor changes what it accepts at any milestone**. The one public registry movement of the phase is a separate `INDEX_DTYPES == ("int64",)` row, and it appears at **K2**, in the same commit as the public constructor and one milestone after every reachability barrier has landed at **K1**: *prove first, then promise*.
+
 ### Phase J — deterministic native data pipeline and mini-batching (J0–J9, complete)
 
-**Phase J is the latest phase and it is complete: milestones J0 through
+**Phase J is complete: milestones J0 through
 J9 have all landed, and J9 closed it.** **No version is claimed** — the
 native line stays experimental and is not production-ready, and this entry
 records milestones rather than a release.
@@ -2336,8 +2388,10 @@ records milestones rather than a release.
 Phase J was approved **after** Phase I closed at I11. The repository
 deliberately finished Phase I without committing to a successor, so Phase J
 is not carried-over roadmap work and must not be described as though it
-were. **No successor phase is defined**: work beyond Phase J requires a
-separately approved phase with its own design contract.
+were. This entry continued "**No successor phase is defined**" for as long
+as it was true — Phase J closed at J9 without one, on the same discipline —
+and **Phase K was approved afterwards**, recorded in its own entry below
+rather than folded back into this one.
 
 **Across the whole phase, no capability moved.** `SUPPORTED_DTYPES`,
 `SUPPORTED_DEVICES`, `UNSUPPORTED`, and `RAW_KERNEL_DTYPES` are exactly

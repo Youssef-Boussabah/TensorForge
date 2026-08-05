@@ -33,16 +33,31 @@ example; LayerNorm as the batch-independent normalization; optional
 RNG state in checkpoints for bit-exact dropout resume; and a
 release-readiness pass over docs and guardrail tests.
 
-**Where things stand after H10.** The Python line is complete at v3.0, and
-the experimental native line has completed **Phases A through H** — the
-last of them, native CPU performance and runtime efficiency, closed at
-milestone H10. Each phase's record is in its own design document; the
-sections above are the narrative.
+**Where things stand now.** The Python line is **complete at v3.0**, and
+the experimental native line has completed **Phases A through J** — the
+last of them, the deterministic native data pipeline and mini-batching,
+closed at milestone J9, so **Phase J is the latest completed phase**.
+**Phase K — Native Integer Tensors and Indexing — is the current phase,
+and only K0 has landed.** Each phase's record is in its own design
+document; the sections above are the narrative.
 
-## The latest phase — Phase J, complete
+## The current phase — Phase K, K0 complete
 
-**Phase J — Deterministic Native Data Pipeline and Mini-Batching — is the
-latest phase, and it is complete.** It was **newly approved** when it
+**Phase K — Native Integer Tensors and Indexing — is the current phase,
+and K0 is complete.** **K1 through K9 are unstarted.** K0 added
+**design, documentation, and guardrails only** — no integer dtype, no
+kernel, no C ABI symbol, no public export, no registry or version
+movement — so **no runtime capability exists yet**: `int64` is not a
+native tensor dtype, and there is no native integer storage, no `argmax`,
+and no index selection. Runtime capability begins at K1. Its architecture
+contract is
+[native_integer_tensors_design.md](native_integer_tensors_design.md).
+
+## The latest completed phase — Phase J, complete
+
+**Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
+complete, and Phase J is the latest completed phase.** It was **newly
+approved** when it
 opened: the repository deliberately closed Phase I at I11 without
 committing to a successor, and Phase J was approved afterwards, so it must
 not be described as work that was already on the roadmap. Its architecture
@@ -310,10 +325,11 @@ so are the **54** exported `tf_*` symbols, the 24 native CTests, checkpoint
 version **3** with `(1, 2, 3)` accepted, and the in-memory optimizer state
 version **1**. The phase plans no new C ABI export at all.
 
-## The latest completed phase — Phase I, complete
+## Earlier completed phase — Phase I
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is
-complete (I0–I11), and the latest completed phase is Phase I.** Milestone
+complete (I0–I11); Phase J closed after it, so the latest completed phase
+is Phase J.** Milestone
 I11 revalidated the whole dtype-general stack on Windows Release and Debug,
 on a Linux CI-equivalent, and under Clang ASan/UBSan and LeakSanitizer,
 reconciled every status surface, and closed the phase. Its architecture
@@ -639,15 +655,85 @@ and no optimization either and took the benchmark inventory from 8 to 9.
 and at **J9** with the integration and closure milestone, which added no
 production code either and closed the phase.
 
-**Phase J is complete, and no milestone remains in it. No successor phase
-is defined.** What the existing documents name as *possible* future work,
-in no committed order and with nothing approved, is: native integer
-tensors, further dtypes or devices beyond the two Phase I delivers, and
-CUDA experiments. None of them has started, none is scheduled, and each
-would require a **separately approved** phase with its own design contract
-before any of it may be described as begun.
-Each would be a *capability* phase with its own design contract, and each
-is deliberately outside everything shipped so far.
+**Phase J is complete, and no milestone remains in it. Phase K is the
+approved successor.** That paragraph read "no successor phase is defined"
+for as long as it was true — Phase J closed at J9 without one,
+deliberately — and Phase K was approved afterwards. It is recorded that way
+rather than rewritten, because "the phase that came next" and "the phase
+that was always planned next" are different facts, and only the first one
+is true here.
+
+**Phase K — Native Integer Tensors and Indexing** is that newly approved
+successor. It has its own design contract
+([native_integer_tensors_design.md](native_integer_tensors_design.md),
+milestone **K0**), and **K0 is the only milestone that has landed**. K0 is
+architecture, contract, status reconciliation, and guardrails, and it
+**added no runtime behavior at all**: no integer dtype or dtype code, no
+C++ enumerator, no kernel, no C ABI symbol, no ctypes declaration, no
+public export, no capability-registry movement, no checkpoint,
+optimizer-state, loader-state, or sampler-state change, no example, no
+benchmark, no CTest, and no dependency. Every registry row is exactly what
+Phase J left: `SUPPORTED_DTYPES == ("float64", "float32")`,
+`SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED == ("cuda", "amp")`,
+`RAW_KERNEL_DTYPES == ("float64",)`, **54** exported `tf_*` symbols, **25**
+experimental names, **24** native CTests, **16** examples, and **9**
+benchmarks.
+
+**`int64` is not a supported native tensor dtype**, no native integer
+storage exists, no native `argmax` exists, no index selection exists, and
+**K1 through K9 are unstarted** — runtime capability begins at K1. What
+K0 decides is the architecture: one extended `NativeTensor` rather than a
+parallel integer class, `int64` as an exact non-differentiable
+index/result dtype and the only integer dtype in the phase, one strict
+`numpy.ndarray`-only construction door with no dtype inference and no
+numeric cast, integer autograd/parameter/optimizer/buffer/checkpoint
+barriers enforced in Python **and** independently at the C ABI, a complete
+`argmax` contract (lowest-index ties, an exact case-by-case NaN rule in
+which the **lowest-indexed** NaN is returned whatever the other values
+are, signed zeros tying, no `max` exposed, no graph ever) and a complete
+forward-only `index_select` contract (rank-1 `int64` indices, negatives
+rejected, every index bounds-checked **before** the destination is
+allocated, duplicates and order preserved), the Phase-J loader default
+left exactly as it is, **no checkpoint version change**, and a C ABI
+budget of **+2** symbols with a phase maximum of **56**.
+
+**The dtype taxonomy is settled, and it is the narrow one.**
+`SUPPORTED_DTYPES` **remains the floating-compute registry permanently**
+and never gains `int64`; `normalize_dtype("int64")` keeps raising; and
+therefore **not one generic constructor changes what it accepts at any
+milestone** — `NativeStorage`, `NativeStorage.from_array`,
+`NativeTensorCore.from_array`/`zeros`/`full`, and
+`NativeTensor.from_array`/`zeros`/`full` all keep rejecting the dtype by
+name, and public `NativeStorage(size, dtype="int64")` is prohibited. The
+one public registry movement of the phase is a separate
+`INDEX_DTYPES == ("int64",)` row, and it appears at **K2**, in the same
+commit as the public constructor: *prove first, then promise*, the rule
+Phase G used for `dropout` and Phase I for `float32`.
+
+**The ladder is ordered so that no unsafe window exists.** Every
+reachability barrier — autograd, parameters, optimizers, module buffers,
+checkpoint entries, every floating operation, and mixed float/integer
+requests — lands at **K1**, while `int64` is reachable only through a
+direct C ABI call and no Python object can be built over it. The first
+milestone at which an integer tensor can be constructed is **K2**, one
+milestone later, and every barrier is re-proved there against the real
+object.
+
+The ladder is K0 through K9: the contract (K0), the `int64`
+representation and **every** reachability barrier (K1), the integer
+tensor with its construction, ownership, views, host inspection, public
+door, and `INDEX_DTYPES` — atomically (K2), `argmax` (K3),
+`index_select` forward (K4), the compatibility proof (K5), the end-to-end
+example and exact proof (K6), adversarial hardening (K7), benchmark
+characterization (K8), and cross-platform validation and closure (K9).
+
+Beyond Phase K, what the existing documents name as *possible* future work,
+in no committed order and with nothing approved, is: further dtypes or
+devices beyond the two Phase I delivers, and CUDA experiments. Neither has
+started, neither is scheduled, and each would require a **separately
+approved** phase with its own design contract before any of it may be
+described as begun. Each would be a *capability* phase, and each is
+deliberately outside everything shipped so far.
 
 Two things Phase H recorded are worth carrying forward as *inputs* to
 whichever comes next, rather than as work items in themselves:
@@ -2044,7 +2130,7 @@ here; what remains is expansion on its own terms:
     framework change.
   - **Phase H — Native CPU Performance and Runtime Efficiency — is
     complete.**
-    Milestones H0 through H10 have all landed. (This entry read "is the latest *completed* phase" twice, which was accurate until Phase I closed at I11 and stale afterwards; it is repaired here rather than rewritten away. The latest completed phase is Phase I.) H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, the convolution kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**. Its
+    Milestones H0 through H10 have all landed. (This entry read "is the latest *completed* phase" twice, which was accurate until Phase I closed at I11 and stale afterwards; it is repaired here rather than rewritten away. The latest completed phase is Phase J.) H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, the convolution kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**. Its
     architecture contract is
     [native_cpu_performance_design.md](native_cpu_performance_design.md).
     **H0 is architecture, profiling, and baseline work: nothing was made

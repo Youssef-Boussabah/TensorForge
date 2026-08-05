@@ -1066,8 +1066,8 @@ explicit layer at a time:
   value, checkpoint field, or checkpoint version moved, and no convolution
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
-  the latest phase, and it is complete: milestones J0 through J9 have all
-  landed and J9 closed it.** Phase J was approved
+  complete: milestones J0 through J9 have all landed and J9 closed it.**
+  **Phase K is the latest phase, and only K0 has landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1182,8 +1182,48 @@ explicit layer at a time:
   **J9 closed the phase**, adding no production code, no public name,
   and no export: it shipped the permanent closure guardrails in
   `tests/test_native_phase_j_closure.py`, re-ran the complete validation
-  matrix, and reconciled every inventory. **Phase J is complete, no
-  milestone remains, and no successor phase is defined.**
+  matrix, and reconciled every inventory. **Phase J is complete and no
+  milestone remains.** That sentence continued "and no successor phase is
+  defined" for as long as it was true; **Phase K was approved
+  afterwards**, and the successor is recorded below rather than folded
+  into Phase J's record.
+- **Phase K — Native Integer Tensors and Indexing — is the newly approved
+  phase, and K0 is the only milestone that has landed.** **K0 added no
+  runtime behavior at all**: no integer dtype or dtype code, no C++
+  enumerator, no kernel, no C ABI symbol, no ctypes declaration, no public
+  export, no capability-registry movement, no checkpoint or state version
+  change, no example, no benchmark, and no CTest — the export inventory is
+  still **54**, `experimental.__all__` still **25**, the CTest inventory
+  still **24**, and `SUPPORTED_DTYPES` still `("float64", "float32")`.
+  `int64` is **not** a supported native tensor dtype, no native integer
+  storage, `argmax`, or index selection exists, and **K1 through K9 are
+  unstarted**. Its contract is
+  [native_integer_tensors_design.md](native_integer_tensors_design.md),
+  and the architectural decisions it locks are the ones that would
+  otherwise be re-argued in every later milestone: **one extended
+  `NativeTensor`** rather than a parallel integer class, chosen over a
+  separate public index tensor and an internal-only result because the
+  alternatives would duplicate storage ownership, view ownership, close
+  semantics, host transfer, and failure cleanup without preventing
+  anything the dtype checks do not; storage keeps owning the dtype and
+  views keep inheriting it; `int64` is an **exact, non-differentiable
+  index/result dtype** and the only integer dtype in the phase; one strict
+  `numpy.ndarray`-only construction door with no dtype inference, no
+  numeric cast, and no byte-swapping; integer autograd, parameters,
+  optimizer state, buffers, and checkpoint entries barred in Python **and**
+  independently at the C ABI, so the unified class cannot leak an integer
+  into model state; `argmax` returning a fresh owning `int64` tensor with
+  first-occurrence ties, NaN propagation, signed-zero ties, no graph ever,
+  and **no `max` exposed beside it**; a forward-only `index_select` whose
+  rank-1 `int64` indices are all bounds-checked **before** the destination
+  is allocated and whose duplicates and order are preserved exactly; the
+  Phase-J loader default `(NativeTensor, numpy.int64)` left untouched;
+  **no checkpoint version change**; and a C ABI budget of exactly **+2**
+  symbols with a phase maximum of **56**. The one public capability change,
+  is a separate `INDEX_DTYPES == ("int64",)` row at **K2**;
+  **`SUPPORTED_DTYPES` never gains `int64`**, so no generic constructor
+  changes what it accepts at any milestone, and every reachability barrier
+  lands at **K1**, before an integer tensor can be constructed.
   **No automatic loader discovery exists in either direction**, at any
   milestone. Its contract is
   [native_data_pipeline_design.md](native_data_pipeline_design.md), and

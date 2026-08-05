@@ -1256,10 +1256,15 @@ def test_every_phase_j_artifact_exists_and_nothing_later_does():
     # J9's closure module, which owns the closed boundary this module
     # deliberately stops short of.
     assert (REPO_ROOT / "tests" / "test_native_phase_j_closure.py").is_file()
-    # ...and nothing belonging to a phase nobody approved.
+    # ...and nothing belonging to a phase nobody approved. The J10 entry is
+    # permanent — this ladder ran J0-J9 and ended there — while the
+    # phase-letter entries are a moving sentinel: they named Phase K until
+    # Phase K was **separately approved after this phase closed**, and its
+    # K0 artifacts now legitimately exist (see
+    # tests/test_native_phase_k.py, which owns that phase's boundary).
     for invented in ("tests/test_native_phase_j10.py",
-                     "tests/test_native_phase_k.py",
-                     "docs/native_phase_k_design.md"):
+                     "tests/test_native_phase_l.py",
+                     "docs/native_phase_l_design.md"):
         assert not (REPO_ROOT / invented).exists(), invented
     # The example is an example: it adds no public name and no production
     # module, and its model class stays an implementation detail of it.
@@ -1654,7 +1659,18 @@ def test_no_status_surface_claims_a_capability_phase_j_never_delivered():
 
 def test_no_status_surface_claims_a_milestone_beyond_the_closed_ladder():
     """Closure is not permission to promise a successor. Work after Phase J
-    requires a separately approved phase, and no surface may name one."""
+    requires a separately approved phase, and no surface may name an
+    *unapproved* one.
+
+    The invented-milestone half is permanent: there is no J10, and there
+    never will be. The phase-name half is a moving sentinel, and it moved
+    once — ``Phase K`` was **separately approved after this phase closed**,
+    and its K0 contract now exists, so naming it is a status update rather
+    than an invention. ``Phase L`` takes its place as the phase that does
+    not exist. What may not be claimed for Phase K is a *capability*, and
+    that half is checked against the live registry, the live source, and
+    the built library by tests/test_native_phase_k.py — a stronger check
+    than a phase-name scan, exactly as for Phase J itself."""
     for surface in ("README.md", "CLAUDE.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
@@ -1664,7 +1680,7 @@ def test_no_status_surface_claims_a_milestone_beyond_the_closed_ladder():
         text = _read(surface)
         for match in re.finditer(r"\bJ1[0-9]\b", text):
             raise AssertionError(f"{surface} names {match.group(0)}")
-        assert not re.search(r"\bPhase K\b", _flat(text), re.I), surface
+        assert not re.search(r"\bPhase L\b", _flat(text), re.I), surface
 
 
 def test_the_completion_scanner_can_actually_fail():

@@ -625,13 +625,25 @@ def test_every_status_surface_marks_phase_j_complete(surface):
 
 @pytest.mark.parametrize("surface", STATUS_SURFACES + ("CLAUDE.md",))
 def test_no_status_surface_invents_a_phase_after_j(surface):
-    """Closure is not permission to name the next phase. A J10, a Phase K,
-    or a committed successor would be a roadmap promise nobody approved."""
+    """Closure is not permission to *invent* the next phase. A J10, an
+    unapproved successor, or a committed promise about one would be a
+    roadmap entry nobody approved.
+
+    The J10 half is permanent: this ladder ran J0-J9 and ended there. The
+    phase-name half is a moving sentinel. It banned ``Phase K``, which was
+    accurate protection right up until it stopped being: Phase K (native
+    integer tensors and indexing) was **separately approved after this
+    phase closed**, and its K0 architecture contract now exists, so naming
+    it is a status update rather than an invention — and keeping the ban
+    would force every status surface to under-report the project. ``Phase
+    L`` takes its place. What may not be claimed for Phase K is a
+    *capability*, which tests/test_native_phase_k.py checks against the
+    live registry, the live source, and the built library."""
     text = _read(surface)
     for match in re.finditer(r"\bJ1[0-9]\b", text):
         raise AssertionError(f"{surface} names {match.group(0)}")
     flat = _flat(text)
-    for pattern in (r"\bPhase K\b",
+    for pattern in (r"\bPhase L\b",
                     r"\bthe next phase (is|will be)\b[^.;]{0,40}?\b\w"):
         offender = re.search(pattern, flat, re.I)
         assert offender is None, f"{surface}: {offender.group(0)!r}"

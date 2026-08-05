@@ -32,20 +32,21 @@ DOCS = (
     "native_data_pipeline_design.md",
 )
 
-# The native line's phase ladder, oldest to newest. Phases A-I are all
-# complete; Phase I (native dtype generalization and float32 CPU support)
-# is the latest *completed* phase, closed at milestone I11. Phase J
-# (deterministic native data pipeline and mini-batching) is the current
-# phase: it has begun at milestone J0, which is architecture-contract and
-# documentation work only and shipped no runtime behavior and no
-# capability. Nothing after J exists.
+# The native line's phase ladder, oldest to newest. Phases A-J are all
+# complete; Phase J (deterministic native data pipeline and mini-batching)
+# is the latest *completed* phase, closed at milestone J9. Phase K (native
+# integer tensors and indexing) is the current phase: it has begun at
+# milestone K0, which is architecture-contract and documentation work only
+# and shipped no runtime behavior and no capability. Nothing after K
+# exists.
 #
-# Phase J was appended when J0 landed, on exactly the terms Phase I was
-# appended when I0 landed: naming a phase becomes accurate the moment its
-# design contract exists, while claiming a *capability* for it does not —
-# and that half is checked against the live registry by
-# tests/test_native_phase_j.py rather than by a phase-name scan.
-NATIVE_PHASE_LADDER = "ABCDEFGHIJ"
+# Phase K was appended when K0 landed, on exactly the terms Phase J was
+# appended when J0 landed and Phase I when I0 landed: naming a phase
+# becomes accurate the moment its design contract exists, while claiming a
+# *capability* for it does not — and that half is checked against the live
+# registry by tests/test_native_phase_k.py rather than by a phase-name
+# scan.
+NATIVE_PHASE_LADDER = "ABCDEFGHIJK"
 
 EXAMPLE_FILES = (
     "train_linear_regression.py",
@@ -2458,14 +2459,16 @@ def test_status_docs_agree_on_the_phase_sequence():
     (native dtype generalization and float32 CPU support) opened with
     milestone I0 on the same terms again, and **Phase J** (deterministic
     native data pipeline and mini-batching) opened with milestone J0 on
-    the same terms once more: naming it is correct, claiming it delivered
-    a capability is not, and Phase K is still invented."""
+    the same terms once more, and **Phase K** (native integer tensors and
+    indexing) opened with milestone K0 on the same terms again: naming it
+    is correct, claiming it delivered a capability is not, and Phase L is
+    still invented."""
     for surface in PHASE_STATUS_DOCS:
         text = _status_text(surface)
         assert "Phase E" in text and "Phase F" in text, surface
-        # Phase J is the newest phase; nothing later may be named.
-        assert "Phase K" not in text, f"{surface} names Phase K"
-    # The phase sequence is A..I with no gaps: the set of phases a
+        # Phase K is the newest phase; nothing later may be named.
+        assert "Phase L" not in text, f"{surface} names Phase L"
+    # The phase sequence is A..K with no gaps: the set of phases a
     # document names must be a contiguous prefix-suffix of that ladder,
     # never a set that skips one. (Ordering *within* a document is not
     # pinned — the support matrix legitimately leads with the newest
@@ -2481,10 +2484,12 @@ def test_status_docs_agree_on_the_phase_sequence():
             f"{surface} skips a phase: names {named}, expected the "
             f"contiguous run {list(span)}"
         )
-        # The newest phase named must be J — no document may stop at I
-        # and thereby imply Phase I is still the current phase.
-        assert named[-1] == "J", (
-            f"{surface} stops at Phase {named[-1]}; Phase J is current"
+        # The newest phase named must be K — no document may stop at J
+        # and thereby imply Phase J is still the current phase. The
+        # sentinel advances one letter as each phase opens, exactly as it
+        # did at I0 and J0.
+        assert named[-1] == "K", (
+            f"{surface} stops at Phase {named[-1]}; Phase K is current"
         )
 
 
@@ -2933,11 +2938,21 @@ def test_the_phase_f_closure_claims_no_later_phase():
     # library by tests/test_native_phase_j.py and
     # tests/test_native_phase_j_closure.py.
     #
-    # ``Phase K`` takes its place as the successor that does not exist —
-    # and unlike its predecessors it is not a placeholder for approved
-    # work: no phase after J has been approved, so naming one as begun or
+    # ``Phase K`` took its place, and **left this list in turn when
+    # milestone K0 opened that phase**, on exactly those terms again: Phase
+    # K (native integer tensors and indexing) was separately approved after
+    # Phase J closed at J9, and K0 shipped
+    # docs/native_integer_tensors_design.md and its guardrails, so "Phase K
+    # has begun" is now simply true. What may not be claimed for Phase K is
+    # a *capability* — an integer tensor, an argmax, an index selection —
+    # and that half is checked against the live registry, the live source,
+    # and the built library by tests/test_native_phase_k.py.
+    #
+    # ``Phase L`` takes its place as the successor that does not exist —
+    # and, like ``Phase K`` before K0, it is not a placeholder for approved
+    # work: no phase after K has been approved, so naming one as begun or
     # complete would be an invention rather than a status update.
-    later = (r"(Phase K|CUDA (phase|runtime|"
+    later = (r"(Phase L|CUDA (phase|runtime|"
              r"backend)|AMP (phase|path)|Tensor Core"
              r"|distributed (phase|training)|float16|bfloat16)")
     # Negated or explicitly-future forms are the honest ones.
@@ -4237,11 +4252,17 @@ _PHASE_G_OVERCLAIMS = (
     # float32-support (I9), and Phase-I-complete (I11) entries were each
     # retired the moment their premise expired.
     #
-    # ``Phase K`` takes its place as the successor that does not exist.
-    # What may not be claimed for Phase J is a *capability*, and that half
-    # is checked against the live registry, the live source, and the
-    # experimental exports by tests/test_native_phase_j.py — a stronger
-    # check than a phase-name scan, exactly as for Phase I.
+    # ``Phase K`` took its place, and **was retired from this entry in turn
+    # when milestone K0 opened that phase**, on exactly the terms every
+    # predecessor was retired at H0, I0, and J0. Phase K (native integer
+    # tensors and indexing) was separately approved after Phase J closed at
+    # J9, and K0 shipped docs/native_integer_tensors_design.md and its
+    # guardrails, so naming it is accurate. ``Phase L`` takes its place as
+    # the successor that does not exist. What may not be claimed for Phase
+    # K is a *capability*, and that half is checked against the live
+    # registry, the live source, and the experimental exports by
+    # tests/test_native_phase_k.py — a stronger check than a phase-name
+    # scan, exactly as for Phase I and Phase J.
     #
     # ``float32`` also left the "a phase has begun" arm with it — a
     # float32 phase really has begun — but it did *not* simply disappear:
@@ -4260,7 +4281,7 @@ _PHASE_G_OVERCLAIMS = (
     # tests/test_native_phase_i.py, which scans the design document
     # itself rather than normalized prose.
     ("a later phase has begun",
-     r"\bPhase[- ]K\b|\bG11\b|\bH12\b"
+     r"\bPhase[- ]L\b|\bG11\b|\bH12\b"
      r"|(CUDA|AMP)[^.]{0,40}\b(phase|milestone)\b[^.]{0,40}"
      r"\b(has|have|is|are)\s+(begun|started|shipped|landed|complete)\b"),
     # **Retired at I9**, on the same terms as the checkpoint-v2 and
@@ -4399,10 +4420,11 @@ def test_no_surface_overclaims_what_phase_g_has_shipped():
     for detected in (
         "the saved mask is persisted to the checkpoint",
         "the checkpoint captures data-loader state and is restored",
-        # Retired with the ``Phase J`` arm at J0 and replaced by the next
-        # successor, so this control keeps testing what the entry now bans
-        # rather than what it used to.
-        "Phase K has begun",
+        # Retired with the ``Phase J`` arm at J0, and again with the
+        # ``Phase K`` arm at K0, each time replaced by the next successor —
+        # so this control keeps testing what the entry now bans rather than
+        # what it used to.
+        "Phase L has begun",
         "float16 is supported",
         "bfloat16 is now available",
         "the backend supports integer tensors",
@@ -6776,12 +6798,27 @@ CURRENT_STATUS_SURFACES = (
 # the same terms: I0 is the architecture contract, its guardrails, and
 # documentation, so it closed nothing and Phase H stayed the latest
 # *completed* phase while Phase I was the latest phase. I11 then closed
-# Phase I and merged them again, and **Phase J opening at J0 has split
-# them a third time**, on the identical terms. The pair therefore tracks
-# two facts that are routinely different, and the values move one letter
-# at a time as each phase opens and closes.
-_LATEST_PHASE = "J"
-_LATEST_COMPLETED_PHASE = "I"
+# Phase I and merged them again, and J0 split them a third time. J9 then
+# closed Phase J and merged them once more, and **Phase K opening at K0
+# has split them a fourth time**, on the identical terms: K0 is the
+# architecture contract, its guardrails, and documentation, so it closed
+# nothing. **Phase K is therefore the current/latest phase and Phase J is
+# the latest completed one.** The pair tracks two facts that are routinely
+# different, and the values move one letter at a time as each phase opens
+# and closes.
+_LATEST_PHASE = "K"
+_LATEST_COMPLETED_PHASE = "J"
+# The **one** surface allowed to lag, and only because K0 may not touch
+# production source: this module's docstring still calls Phase J the latest
+# phase, and repairing it is assigned to K1 (the first Phase-K milestone
+# that edits the package). The exemption is scoped to this one file **and
+# to the "latest phase" form alone** — every other surface, and every other
+# form on this surface, is still checked — and
+# tests/test_native_phase_k.py proves both that it is the only stale
+# surface and that the Phase-K design assigns exactly this repair to K1.
+_STALE_LATEST_PHASE_SURFACES = frozenset({
+    "src/tensorforge/experimental/__init__.py",
+})
 # Deliberately scoped to Phase G. H0 also shipped, but ``H0`` is a short
 # token that sits a few words away from the legitimately *unstarted*
 # H1-H10 rows in the support matrix's ladder table, so a proximity scan
@@ -6825,23 +6862,38 @@ def test_only_the_newest_phase_is_called_the_latest_phase():
     # not be conflated: Phase J is the latest phase (it opened at J0),
     # and Phase I is the latest *completed* one (J0 shipped no runtime
     # behavior and closed nothing).
+    # Both orders of each claim. The heading forms ("The current phase —
+    # Phase K", "The latest completed phase — Phase J") say exactly the same
+    # thing as the sentence forms and must be scanned too, or a document can
+    # carry a stale heading over corrected body prose and still pass.
     forms = (
-        (_LATEST_PHASE,
-         re.compile(r"Phase ([A-J])\b[^.;]{0,60}?\bis the latest phase\b",
+        (_LATEST_PHASE, True,
+         re.compile(r"Phase ([A-K])\b[^.;]{0,60}?\bis the latest phase\b",
                     re.I)),
-        (_LATEST_PHASE,
+        (_LATEST_PHASE, True,
          re.compile(r"(?<!completed )latest (?:native )?phase is Phase "
-                    r"([A-J])\b", re.I)),
-        (_LATEST_COMPLETED_PHASE,
-         re.compile(r"latest completed (?:native )?phase is Phase ([A-J])\b",
+                    r"([A-K])\b", re.I)),
+        (_LATEST_PHASE, True,
+         re.compile(r"The (?:current|latest) (?:native )?phase [—-] "
+                    r"Phase ([A-K])\b", re.I)),
+        (_LATEST_PHASE, True,
+         re.compile(r"Phase ([A-K])\b[^.;]{0,60}?\bis the current phase\b",
                     re.I)),
-        (_LATEST_COMPLETED_PHASE,
-         re.compile(r"Phase ([A-J])\b[^.;]{0,60}?\bis the latest completed\b",
+        (_LATEST_COMPLETED_PHASE, False,
+         re.compile(r"latest completed (?:native )?phase is Phase ([A-K])\b",
                     re.I)),
+        (_LATEST_COMPLETED_PHASE, False,
+         re.compile(r"Phase ([A-K])\b[^.;]{0,60}?\bis the latest completed\b",
+                    re.I)),
+        (_LATEST_COMPLETED_PHASE, False,
+         re.compile(r"The latest completed (?:native )?phase [—-] "
+                    r"Phase ([A-K])\b", re.I)),
     )
     for surface in CURRENT_STATUS_SURFACES:
         text = _status_text(surface)
-        for expected, pattern in forms:
+        for expected, is_latest_form, pattern in forms:
+            if is_latest_form and surface in _STALE_LATEST_PHASE_SURFACES:
+                continue  # the one scoped exception, this form only
             named = {match.group(1).upper()
                      for match in pattern.finditer(text)}
             assert named <= {expected}, (

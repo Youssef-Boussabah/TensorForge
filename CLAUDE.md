@@ -164,6 +164,14 @@ does not exist either, at any milestone — see §12. Full dtype contract,
 evidence, and rejected alternatives:
 `docs/native_dtype_float32_design.md`.
 
+Integer tensors are on that list **and are the subject of the newly
+approved Phase K**, whose K0 contract is
+`docs/native_integer_tensors_design.md`. The two facts coexist: a contract
+is not an implementation. `int64` is not in `SUPPORTED_DTYPES`, no native
+integer storage, `argmax`, or index selection exists, and none may be
+described as existing until the milestone that ships it — K2 for the
+`INDEX_DTYPES` registry, K3 and K4 for the operations (§12).
+
 ---
 
 ## 4. Core invariants
@@ -555,6 +563,7 @@ that changes the public API or the examples updates the matching document
 | **Phase F** normalization & buffers · **Phase G** RNG & Dropout | `docs/native_normalization_design.md`, `docs/native_rng_dropout_design.md` |
 | **Phase H** CPU performance · **Phase I** dtype & float32 | `docs/native_cpu_performance_design.md`, `docs/native_dtype_float32_design.md` |
 | **Phase J** data pipeline & mini-batching | `docs/native_data_pipeline_design.md` |
+| **Phase K** native integer tensors & indexing | `docs/native_integer_tensors_design.md` |
 
 ---
 
@@ -563,8 +572,9 @@ that changes the public API or the examples updates the matching document
 - **Stable Python line: complete at v3.0**, feature-frozen.
 - **Native line: Phases A–I are complete** — CPU runtime (A) through dtype
   generalization and float32 CPU support (I); per-phase subjects are in the
-  §11 map and `docs/release_history.md`. **Phase I** (I0–I11) is the latest
-  completed phase; its one public capability change, float32 joining
+  §11 map and `docs/release_history.md`. **Phase I** (I0–I11) is complete
+  and closed the dtype work; Phase J closed after it, so **Phase J is the
+  latest completed phase**. Phase I's one public capability change, float32 joining
   `SUPPORTED_DTYPES`, landed only after the integrated exact-resume proof
   passed. That ordering is the rule: **prove first, then promise.**
 - **Native line: Phase J is complete (J0–J9)** — Deterministic Native Data
@@ -578,10 +588,36 @@ that changes the public API or the examples updates the matching document
   **16** examples, and **9** benchmarks. Per-milestone records live in
   `docs/native_data_pipeline_design.md` §23 and `docs/release_history.md`;
   what follows here are the rules that outlive them.
-- **No Phase-J milestone remains, and no successor phase is defined.**
-  Further work — native integer tensors, further dtypes or devices, CUDA
-  experiments — requires a **separately approved** phase with its own design
-  contract. See `docs/roadmap.md`; never invent a phase it does not define.
+- **No Phase-J milestone remains.** That sentence read "and no successor
+  phase is defined" for as long as it was true — Phase J closed at J9
+  without one, deliberately — and **Phase K was approved afterwards**.
+  Record it that way rather than rewriting it: "the phase that came next"
+  and "the phase that was always planned next" are different facts.
+- **Native line: Phase K — Native Integer Tensors and Indexing — is the
+  newly approved phase and is the latest phase, and only K0 has landed.**
+  Authority
+  `docs/native_integer_tensors_design.md`. **K0 is architecture, contract,
+  status, and guardrails only and added no runtime behavior at all**: no
+  integer dtype or dtype code, no C++ enumerator, no kernel, no C ABI
+  symbol, no ctypes declaration, no public export, no registry movement,
+  no checkpoint/optimizer/loader/sampler version change, no example, no
+  benchmark, no CTest, and no dependency. Every §3 row is exactly what
+  Phase J left. **`int64` is not a supported native tensor dtype**, no
+  native `argmax` or index selection exists, and **K1 through K9 are
+  unstarted** — runtime capability begins at K1. The one public capability
+  change of the phase is a separate `INDEX_DTYPES == ("int64",)` row at
+  **K2**; **`SUPPORTED_DTYPES` never gains `int64`** and
+  `normalize_dtype("int64")` keeps raising, so no generic constructor
+  changes what it accepts at any milestone, and every reachability barrier
+  lands at **K1**, before an integer tensor can be constructed at all:
+  **prove first, then promise.** The phase's C ABI maximum is **56**
+  (54 + `argmax` at K3 + `index_select` at K4) and
+  `experimental.__all__` stays at **25**
+  throughout.
+- Further work beyond Phase K — further dtypes or devices, CUDA
+  experiments — requires a **separately approved** phase with its own
+  design contract. See `docs/roadmap.md`; never invent a phase or a
+  milestone it does not define.
 
 ### The native data pipeline — the rules that govern it
 

@@ -957,13 +957,13 @@ asserted by no test.
 
 ## Phase I — native dtype generalization and float32 CPU support, **complete (I0–I11)**
 
-**Phase I is complete: milestones I0 through I11 have all landed, and the
-latest completed phase is Phase I.** I11 revalidated the stack across every
+**Phase I is complete: milestones I0 through I11 have all landed; Phase J closed after it, so the
+latest completed phase is Phase J.** I11 revalidated the stack across every
 required platform, added the closure guardrails, and reconciled the status
 surfaces. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
-Phase J, below, is the latest phase and is complete (J0–J9); it moved no
+Phase J, below, is complete (J0–J9). **Phase K is the latest phase, and only K0 has landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J moved no
 row in this document at any milestone.
 
 **Since milestone I9, `float32` and `float64` are both supported native
@@ -1520,7 +1520,7 @@ G9 while the operation and the module both already existed.
 
 ## Phase J — deterministic native data pipeline and mini-batching, **complete (J0–J9)**
 
-**Phase J is the latest phase, and it is complete.** It was newly approved
+**Phase J is complete.** **Phase K is the latest phase, and only K0 has landed.** **Phase J is the latest completed phase**, and it remains complete. It was newly approved
 when it opened: the repository closed Phase I at I11 without committing to
 a successor, and Phase J was approved afterwards, so nothing here describes
 pre-existing roadmap work.
@@ -1706,8 +1706,10 @@ reconciled every inventory.
 
 **Everything else in this section is permanently unsupported.** There is
 **no automatic loader discovery**, in either direction, and none may be
-added. **Phase J is complete, no milestone remains, and no successor phase
-is defined** — further work requires a separately approved phase.
+added. **Phase J is complete and no milestone remains.** That sentence
+continued "and no successor phase is defined" for as long as it was true;
+**Phase K was approved afterwards**, and is recorded in its own section
+below rather than folded into this one.
 
 | Registry | Value at J0 | Value at J9 (final) |
 |---|---|---|
@@ -1769,6 +1771,76 @@ loader whose position the **caller** can serialize and hand back through
 the existing validated `metadata` channel — which needs no new checkpoint
 field, no new version, and no coupling between the checkpoint runtime and
 the pipeline.
+
+## Phase K — native integer tensors and indexing, **K0 complete, runtime unstarted**
+
+**Phase K is newly approved**, after Phase J closed at J9 without a
+committed successor, and **K0 is the only milestone that has landed**. Its
+authoritative contract is
+[native_integer_tensors_design.md](native_integer_tensors_design.md).
+
+**K0 is architecture, contract, status reconciliation, and guardrails, and
+it moved nothing in this document.** It added no integer dtype, no dtype
+code, no C++ enumerator, no kernel, no C ABI symbol, no ctypes
+declaration, no `NativeTensorCore` method, no `NativeTensor` operation, no
+module, no public export, no capability-registry value, no checkpoint
+field or version, no optimizer-state version, no loader- or sampler-state
+version, no example, no benchmark, no CTest, and no dependency.
+
+| Registry | Value at J9 | Value at K0 |
+|---|---|---|
+| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged |
+| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged |
+| `UNSUPPORTED` | `("cuda", "amp")` | unchanged |
+| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged |
+| `normalize_dtype(None)` · `backend_info()["dtype"]` | `"float64"` | unchanged |
+| Native checkpoint format | version **3**, accepted `(1, 2, 3)` | unchanged |
+| In-memory optimizer state format | version **1** | unchanged |
+| Loader state · sampler state | version **1**, accepted `(1,)` | unchanged |
+| Exported production `tf_*` symbols | **54** | unchanged |
+| `tensorforge.experimental.__all__` | **25** | unchanged |
+| Native CTests · examples · benchmarks | **24** · **16** · **9** | unchanged |
+
+**What is *not* supported, and is not a bug at K0.** `int64` is not a
+native tensor dtype. There is no native integer storage, no integer
+tensor, no integer construction, no `item()` or `tolist()`, no native
+`argmax`, and no index selection — and **K1 through K9 are unstarted**,
+so nothing on the list below exists yet. Runtime capability begins at K1.
+
+**What the contract decides**, so that a later milestone implements rather
+than re-argues it: one extended `NativeTensor` rather than a parallel
+integer tensor class (a separate class would duplicate storage ownership,
+view ownership, `close()` semantics, host transfer, and failure cleanup
+without preventing anything the dtype checks do not); storage keeps owning
+the dtype and views keep inheriting it; **`int64` is the only integer
+dtype in the phase** — `int32`, `int16`, `int8`, every unsigned width,
+`bool`, complex, `float16`, and `bfloat16` are all deferred and rejected —
+and it is an **exact, non-differentiable index/result dtype**; one strict
+`numpy.ndarray`-only construction door with **no dtype inference, no
+numeric cast, no truncation, no widening, and no byte-swapping**, where a
+non-contiguous exact-`int64` array is copied because layout normalization
+is not conversion; integer autograd, parameters, optimizer ownership,
+module buffers, and checkpoint entries barred in Python **and**
+independently at the C ABI; a complete `argmax` contract (floating input,
+`int64` output, `axis`/`keepdims`, first-occurrence ties, signed-zero
+ties, **NaN propagates and wins**, no graph ever, and **no `max` exposed
+beside it**); a forward-only `index_select` (rank-1 `int64` indices,
+negatives rejected rather than wrapped, **every index bounds-checked
+before the destination is allocated**, duplicates and order preserved, and
+a source that requires grad rejected rather than silently detached); the
+Phase-J delivery contract `(NativeTensor, numpy.int64)` left exactly as it
+is; **no checkpoint version change and no version 4**; and a C ABI budget
+of exactly **+2** symbols — `tf_core_argmax` at K3 and
+`tf_core_index_select` at K4 — for a **phase maximum of 56**.
+
+**The one public registry movement of the phase is assigned to K2**, and
+it is **not** `SUPPORTED_DTYPES`: that row remains the floating-compute
+registry permanently and never gains `int64`, so every generic constructor
+keeps rejecting the dtype by name and none of them changes at any
+milestone. What appears instead is a separate `INDEX_DTYPES ==
+("int64",)` row beside it, in the same commit as the public constructor
+and one milestone after every reachability barrier has landed at **K1**. Until then this section's table is the answer: *prove first, then
+promise*, the rule Phase G used for `dropout` and Phase I for `float32`.
 
 ## How to build and verify
 

@@ -549,7 +549,7 @@ only.
 complete.** Milestones H0 through H10 have all landed. (This paragraph read
 "is the latest *completed* phase" twice, which was accurate until Phase I
 closed at I11 and stale afterwards; it is repaired here rather than
-rewritten away. The latest completed phase is Phase I.) H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
+rewritten away. The latest completed phase is Phase J.) H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
 Reported as honestly as the wins. The controls held — the unchanged raw-buffer matmul at 0.99×, NumPy at 1.03×, storage allocation at 0.98×, and Dropout at 1.00× — and **`to_numpy` at 0.95× is the one reproducible regression**, attributed rather than smoothed over: its compiled traversal is byte-identical source measuring 0.975×–1.008×, so what changed is that H3's and H7's much cheaper wrapper no longer hides it. The remaining limitations are stated plainly: the gap to a tuned multi-threaded BLAS is **3.6×–9.3×** and widens with size; convolution is entirely scalar (0 packed-double instructions); `tf_core_narrow_backward` still walks the odometer, deliberately, because it executes **0 times** in every shipped training workload; and a small operation still costs a few microseconds because **60 % of that is the owning allocation and 19 % is building the result's Python ownership objects, against 12 % for the ctypes crossing** — an architectural floor rather than a defect. Every number is a local characterization of one machine, reported with its spread, and asserted by no test. H0 is an
 architecture, profiling, and baseline milestone and **nothing was made
@@ -1659,9 +1659,9 @@ moved, and no C ABI symbol was added.
 
 The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at H7 (a milestone dropped on evidence), and extended at H9 (a slot reassigned), and H0's separate H11 closure slot was **not needed** because H10 carried closure itself. A memory pool, scratch allocation, SIMD, threading/OpenMP, and BLAS were **all finally rejected at H10, with measurements** — the disassembly showed elementwise, matmul, and reduction are already auto-vectorized; a CNN step's 198 native calls have a **1.20 µs median** with only two above 1 ms; and BLAS is **not bit-identical** (3.553e-15 at 64³), which would break every exact-resume proof. The criteria that would reopen each are recorded rather than an answer invented. Every number is a local characterization of one machine, reported with its spread, and asserted by no test.
 
-**Phase J — deterministic native data pipeline and mini-batching — is the
-latest phase, and it is complete: milestones J0 through J9 have all
-landed, and J9 closed it.** Phase J was approved *after* Phase I
+**Phase J — deterministic native data pipeline and mini-batching — is
+complete: milestones J0 through J9 have all landed, and J9 closed it.**
+**Phase K is the latest phase, and only K0 has landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -1839,8 +1839,10 @@ no export: it shipped the permanent closure guardrails in
 matrix — Windows Release and Debug, a Linux CI-equivalent, Clang
 ASan/UBSan with a detector negative control, and a LeakSanitizer lifecycle
 over the whole pipeline — and reconciled every inventory. **Phase J is
-complete and no milestone remains; no successor phase is defined, and
-further work requires a separately approved one.**
+complete and no milestone remains.** That sentence continued "no successor
+phase is defined" for as long as it was true — Phase J closed without one,
+deliberately — and **Phase K was approved afterwards**, which is recorded
+here rather than rewritten away.
 
 **No automatic loader discovery exists**, at any milestone, and none may
 be added. Its architecture contract is
@@ -2162,9 +2164,27 @@ them; every Phase-H float64 optimization preserved and each dtype
 benchmarked on its own; and the I0–I11 ladder, in which the public
 support registry changes at **I9** and at no earlier milestone.
 
-Beyond Phase I (**not started**, and no successor phase is defined): more
-activations/math, data loaders, native integer tensors, then the CUDA
-runtime, further dtypes and AMP work, and Transformer/text and distributed
+**Phase K — Native Integer Tensors and Indexing — is the newly approved
+successor, and only K0 has landed.** K0 is architecture, contract, status,
+and guardrails, and it **added no runtime behavior at all**: no integer
+dtype or dtype code, no C++ enumerator, no kernel, no C ABI symbol, no
+public export, no capability-registry movement, no checkpoint or state
+version change, no example, no benchmark, and no CTest. `int64` is **not**
+a supported native tensor dtype, no native `argmax` or index selection
+exists, and **K1 through K9 are unstarted**. Its contract is
+[native_integer_tensors_design.md](native_integer_tensors_design.md),
+which locks one extended `NativeTensor` rather than a parallel integer
+class, `int64` as the only integer dtype and an exact non-differentiable
+index/result one, a strict `numpy.ndarray`-only construction door with no
+dtype inference and no numeric cast, integer autograd / parameter /
+optimizer / buffer / checkpoint barriers enforced in Python **and**
+independently at the C ABI, complete `argmax` and forward-only
+`index_select` contracts, the Phase-J loader default left exactly as it
+is, **no checkpoint version change**, and a C ABI maximum of **56**. The
+**`SUPPORTED_DTYPES` never gains `int64`**: it remains the floating-compute registry permanently and `normalize_dtype("int64")` keeps raising, so **no generic constructor changes what it accepts at any milestone**. The one public registry movement of the phase is a separate `INDEX_DTYPES == ("int64",)` row, and it appears at **K2**, in the same commit as the public constructor and one milestone after every reachability barrier has landed at **K1**.
+
+Beyond Phase K (**not started**, and nothing approved): further dtypes or
+devices, the CUDA runtime, AMP work, and Transformer/text and distributed
 experiments. See
 [roadmap.md](roadmap.md) and
 [release_history.md](release_history.md) for the full arc.
