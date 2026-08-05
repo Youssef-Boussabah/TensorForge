@@ -118,6 +118,12 @@ PHASE_I_ADDED_EXPORTS = (
 )
 FINAL_EXPORT_COUNT = PHASE_H_EXPORT_COUNT + len(PHASE_I_ADDED_EXPORTS)  # 54
 
+# Symbols added by **later phases**, after Phase I closed — the exact
+# counterpart of ``POST_PHASE_I_EXAMPLES`` below, and for the same reason.
+# Phase K, milestone K3 added the argmax forward.
+POST_PHASE_I_EXPORTS = {"tf_core_argmax": "K3"}
+CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(POST_PHASE_I_EXPORTS)  # 55
+
 # Frozen ABI dtype codes and the one item-size authority's answers. Written
 # here independently of the module under test, so a silent renumbering
 # fails rather than propagating.
@@ -134,9 +140,15 @@ FINAL_OPTIMIZER_STATE_VERSION = 1
 
 # Inventories, **as Phase I closed on them**. These are historical: they
 # record what I11 left, not what the tree happens to hold today.
-# Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
-FINAL_CTEST_COUNT = 25
+FINAL_CTEST_COUNT = 24
 FINAL_EXAMPLE_COUNT = 15
+
+# Native CTests added *after* Phase I closed, each mapped to the milestone
+# that shipped it — the same split ``POST_PHASE_I_EXAMPLES`` uses below.
+# Phase K, milestone K1 added the int64 storage target and milestone K3 the
+# argmax one.
+POST_PHASE_I_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3"}
+CURRENT_CTEST_COUNT = FINAL_CTEST_COUNT + len(POST_PHASE_I_CTESTS)  # 26
 MILESTONES = tuple(f"I{index}" for index in range(12))   # I0 ... I11
 
 # Examples added *after* Phase I closed, each mapped to the milestone that
@@ -680,13 +692,18 @@ def test_the_private_typed_constructors_stayed_private():
 # ===========================================================================
 
 def test_the_source_exports_exactly_fifty_four_symbols():
-    """Stated as arithmetic rather than as a bare number, so the two facts
-    stay separable: Phase H closed at 52, Phase I added exactly two."""
+    """Stated as arithmetic rather than as a bare number, so the facts stay
+    separable: Phase H closed at 52, Phase I added exactly two, and every
+    symbol beyond that belongs to a named later milestone."""
     exports = _source_exports()
-    assert len(exports) == FINAL_EXPORT_COUNT, sorted(exports)
+    assert len(exports) == CURRENT_EXPORT_COUNT, sorted(exports)
     for name in PHASE_I_ADDED_EXPORTS:
         assert name in exports, name
-    assert len(exports - set(PHASE_I_ADDED_EXPORTS)) == PHASE_H_EXPORT_COUNT
+    for name, milestone in POST_PHASE_I_EXPORTS.items():
+        assert name in exports, (name, milestone)
+    phase_i = exports - set(POST_PHASE_I_EXPORTS)
+    assert len(phase_i) == FINAL_EXPORT_COUNT, sorted(phase_i)
+    assert len(phase_i - set(PHASE_I_ADDED_EXPORTS)) == PHASE_H_EXPORT_COUNT
 
 
 def test_the_two_phase_i_symbols_are_the_only_typed_creators():
@@ -817,8 +834,14 @@ def _registered_ctests():
 
 
 def test_the_ctest_inventory_is_exactly_twenty_four_unique_targets():
+    """Phase I closed at 24, and every target the live tree carries beyond
+    that belongs to a named later milestone."""
     names = _registered_ctests()
-    assert len(names) == FINAL_CTEST_COUNT, names
+    assert len(names) == CURRENT_CTEST_COUNT, names
+    for name, milestone in POST_PHASE_I_CTESTS.items():
+        assert name in names, (name, milestone)
+    assert len([n for n in names
+                if n not in POST_PHASE_I_CTESTS]) == FINAL_CTEST_COUNT, names
     assert len(set(names)) == len(names), "a CTest name is registered twice"
     # Every registered test has a source file, and every source file is
     # registered — so a target cannot be added or orphaned unnoticed.

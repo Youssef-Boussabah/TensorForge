@@ -35,12 +35,16 @@
 //      That claim is checked as a **table**, one row per audited export,
 //      covering every compute translation unit rather than a representative
 //      of each: elementwise, matmul, reduction, classification, conv2d,
-//      pooling, random, and the two scalar storage primitives. Each row
+//      pooling, random, indexing, and the two scalar storage primitives.
+//      Each row
 //      asserts the same four things — the call returns, it records
 //      ``TF_ERROR_INVALID``, the message names the export and the offending
 //      dtype, and **the destination is byte-for-byte unchanged** — and the
 //      table's own size is asserted against a committed count, so an export
 //      cannot be added to the library and silently left out of the audit.
+//      Phase K, milestone K3 exercised exactly that mechanism: the
+//      ``tf_core_argmax`` it added joined this table in the same commit, on
+//      its **source** role, and took the committed count from 32 to 33.
 //
 //      The negative control is beside it: the same destination, the same
 //      arguments, a **float64** source, and the call succeeds with the
@@ -237,6 +241,14 @@ TF_EXPORT void tf_core_dropout_forward(
     void* output_handle, void* mask_handle,
     std::int64_t count, std::uint64_t seed, std::uint64_t call_index,
     double p);
+
+// -- indexing (Phase K, K3) -------------------------------------------------
+// Audited here for its **source** role only. Its destination is int64 by
+// design, which is exactly why it needs its own CTest (test_argmax.cpp) and
+// why no row below may probe an argmax destination.
+TF_EXPORT void tf_core_argmax(
+    const void* src_handle, std::int64_t src_offset, void* dst_handle,
+    std::int64_t outer, std::int64_t axis_length, std::int64_t inner);
 
 // -- error accessors --------------------------------------------------------
 TF_EXPORT int tf_last_error_code();
@@ -625,12 +637,20 @@ void test_float32_and_float64_storage_are_unchanged() {
 // 3. The floating-role barrier, as an auditable table
 // ===========================================================================
 
-// One row per float-only handle-based export. The count is committed so an
-// export added to the library cannot silently skip the audit: K1 audits 32
-// exports — every handle-based export except ``tf_core_contiguous_copy``,
-// which is a transfer and is generalized instead, and the three transfer
-// boundaries, which are generalized for the same reason.
-const std::size_t kAuditedExportCount = 32;
+// One row per handle-based export whose **source** role is floating-only.
+// The count is committed so an export added to the library cannot silently
+// skip the audit: K1 audited 32 — every handle-based export except
+// ``tf_core_contiguous_copy``, which is a transfer and is generalized
+// instead, and the three transfer boundaries, which are generalized for the
+// same reason.
+//
+// **K3 took it to 33**, which is the mechanism working rather than a
+// weakening: the milestone added ``tf_core_argmax``, whose source is
+// floating-only exactly like every row above it, so it joined the table in
+// the same commit that created it. Its *destination* is int64 by design and
+// is therefore governed by ``tf::require_index`` and proved in
+// test_argmax.cpp; no row here probes an argmax destination, and none may.
+const std::size_t kAuditedExportCount = 33;
 
 struct Case {
     const char* name;
@@ -740,6 +760,15 @@ std::vector<Case> build_audit(const Operands& o) {
         // -- random ------------------------------------------------------
         {"tf_core_dropout_forward", [=] {
             tf_core_dropout_forward(i64, 0, dst, f64, 4, 1, 1, 0.5); }},
+        // -- indexing (Phase K, K3) --------------------------------------
+        //    Probed on its **source**, which is the handle the floating-role
+        //    rule governs. Its destination is int64 *by design* and is
+        //    checked by tf::require_index in test_argmax.cpp instead — the
+        //    reason this export could not simply inherit the row shape
+        //    above. The float64 ``dst`` passed here is the destination every
+        //    row must leave untouched, and this row leaves it untouched
+        //    because the source check rejects first.
+        {"tf_core_argmax", [=] { tf_core_argmax(i64, 0, dst, 4, 1, 1); }},
         // -- the two scalar storage primitives ---------------------------
         //    Probed on the *destination* handle, because that is their only
         //    handle: a double scalar is not an exact integer primitive.

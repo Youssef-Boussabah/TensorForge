@@ -1661,7 +1661,7 @@ The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at 
 
 **Phase J — deterministic native data pipeline and mini-batching — is
 complete: milestones J0 through J9 have all landed, and J9 closed it.**
-**Phase K is the latest phase, and only K0, K1, and K2 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after* Phase I
+**Phase K is the latest phase, and only K0 through K3 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -2165,7 +2165,7 @@ benchmarked on its own; and the I0–I11 ladder, in which the public
 support registry changes at **I9** and at no earlier milestone.
 
 **Phase K — Native Integer Tensors and Indexing — is the newly approved
-successor, and only K0, K1, and K2 have landed.** K0 is architecture, contract, status,
+successor, and only K0 through K3 have landed.** K0 is architecture, contract, status,
 and guardrails, and it **added no runtime behavior at all**: no integer
 dtype or dtype code, no C++ enumerator, no kernel, no C ABI symbol, no
 public export, no capability-registry movement, no checkpoint or state
@@ -2213,7 +2213,7 @@ registry, `normalize_dtype("int64")` keeps raising, and **no generic
 constructor changed what it accepts**. Every K1 barrier holds against a
 real integer tensor, and no public integer `argmax`, index selection,
 arithmetic, reduction, autograd, parameter, buffer, optimizer state, or
-checkpoint entry exists; **K3 through K9 are unstarted**. Its contract is
+checkpoint entry exists; **K4 through K9 are unstarted**. Its contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md),
 which locks one extended `NativeTensor` rather than a parallel integer
 class, `int64` as the only integer dtype and an exact non-differentiable

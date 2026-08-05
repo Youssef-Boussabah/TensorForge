@@ -182,6 +182,26 @@ TENSOR_CORE_OPS = (
     # "dropout" as a *capability* name stayed in UNSUPPORTED through G9
     # and left it at the G10 closure (design §19).
     "dropout_forward",         # G2
+    # Phase K native argmax at the Core layer (K3) — the graph-unaware
+    # wrapper over the exported tf_core_argmax kernel, with Policy-B
+    # copy-then-compute for a non-contiguous input, exactly the
+    # softmax/log_softmax shape.
+    #
+    # It is the **one** operation in this tuple whose result carries a
+    # different dtype from its operand: a floating input produces an
+    # ``int64`` index tensor, at every input dtype, which is the point of
+    # the operation rather than a cast. It is deliberately **not** in
+    # AUTOGRAD_OPS and never will be — the derivative of an index with
+    # respect to a value does not exist — so unlike conv2d, maxpool2d,
+    # cross_entropy, and dropout there is no differentiable NativeTensor
+    # operation of the same name above it: ``NativeTensor.argmax`` is the
+    # same non-differentiable capability, one layer up, and both spellings
+    # return a plain leaf even when the input requires grad.
+    #
+    # There is no ``max``, no ``max_with_indices``, and no tuple return: a
+    # kernel that finds the position of a maximum necessarily knows the
+    # maximum, and Phase K does not expose it (design §17.10).
+    "argmax",                  # K3
 )
 
 # Operations the NativeTensor autograd layer (Phase B) differentiates.
@@ -339,9 +359,17 @@ NATIVE_LOSSES = ("NativeMSELoss", "NativeCrossEntropyLoss")
 # This comment used to end "and the native runtime has no integer dtype
 # for an index-producing reduction to return", which was accurate until
 # Phase K, milestone K2 gave the runtime an exact `int64` index/result
-# dtype. The absence it records is unchanged and the reason is not: a
-# native `argmax` is absent because no milestone has shipped one, not
-# because its result type is inexpressible.
+# dtype, and it then recorded that a native `argmax` was absent because no
+# milestone had shipped one.
+#
+# **Phase K, milestone K3 shipped one.** A native `argmax` now exists — as
+# `NativeTensorCore.argmax` / `NativeTensor.argmax` over the `tf_core_argmax`
+# export — and `native_accuracy` still reports through the explicit host
+# boundary above, **deliberately**. Rewriting it would not make it a native
+# runtime operation, a differentiable operation, or a module; it would make
+# a reporting helper's one honest NumPy round trip harder to see, and it
+# would still need an integer equality reduction that no milestone ships.
+# So the metric stays exactly where it is, and stays exactly as honest.
 NATIVE_METRICS = ("native_accuracy",)
 
 NATIVE_OPTIMIZERS = ("NativeSGD", "NativeAdam")
@@ -1479,6 +1507,26 @@ def _load_library():
         ctypes.c_double,                   # p
     ]
     library.tf_core_dropout_forward.restype = None
+    # argmax (Phase K, K3): the exported wrapper over the templated search
+    # in indexing.cpp. **Contiguous storage only** (Policy-B
+    # copy-then-compute happens at the Core layer), with only the source
+    # carrying an offset — the destination is caller-allocated at offset 0 —
+    # and the three trailing int64s are the (outer, axis_length, inner)
+    # decomposition of the searched axis, exactly as the two fused
+    # classification forwards take it. A **full** reduction is expressed as
+    # (1, numel, 1), so one symbol covers both cases and there is no mode
+    # flag to pass.
+    #
+    # The one call shape in the whole ABI whose source and destination
+    # dtypes deliberately **differ**: a floating source produces an int64
+    # index destination. Nothing here declares that — the handles carry
+    # their own dtypes and the export checks each role — which is precisely
+    # why the declaration looks like every other one.
+    library.tf_core_argmax.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # source handle, offset
+        ctypes.c_void_p,                   # destination handle (int64)
+    ] + [ctypes.c_int64] * 3
+    library.tf_core_argmax.restype = None
 
     _configure_error_contract(library)
     return library
@@ -1597,6 +1645,17 @@ _CHECKED_KERNELS = (
     # arguments. There is deliberately no backward export — that gradient
     # is the existing `multiply` over the saved mask.
     "tf_core_dropout_forward",
+    # Phase K, K3: the argmax forward. Self-validating like the Phase-E
+    # exports — null handles, a non-floating source, a non-int64
+    # destination, a non-positive extent, an overflowing product, a negative
+    # offset, a span exceeding its storage, a destination that does not hold
+    # exactly `outer * inner` indices, and source/destination aliasing are
+    # all rejected with ValueError through this hook, and a rejected call
+    # leaves the destination byte-for-byte unchanged. A NaN or an infinity
+    # among the source values is a *value* with an exact answer, never an
+    # error. There is deliberately no backward export: an index has no
+    # derivative.
+    "tf_core_argmax",
 )
 
 
@@ -1950,12 +2009,30 @@ class NativeStorage:
         statements that should not be spelled the same way.
 
         **Phase K, milestone K2 made that width difference real again**:
-        this is the one allocator that can produce ``int64`` storage, and
-        its only integer caller is ``_from_int64_array`` below, behind the
-        single public door. The public constructor rejects ``"int64"``
-        permanently (§5.5), so the hatch now grants exactly one width the
-        public constructor does not — which is precisely why it is private
-        and why it stays that way.
+        this is the one allocator that can produce ``int64`` storage. The
+        public constructor rejects ``"int64"`` permanently (§5.5), so the
+        hatch grants exactly one width the public constructor does not —
+        which is precisely why it is private and why it stays that way.
+
+        **Its integer uses are bounded and enumerated**, and the list has
+        grown once. At K2 the only one was ``_from_int64_array`` below; K3
+        added the ``argmax`` destination, so the current set is:
+
+        * **exact ``int64`` host ingress** — ``_from_int64_array`` below,
+          behind the single public door ``NativeTensor.from_int64_array``;
+        * **``int64`` contiguous copying and materialization** through the
+          Core layer — ``NativeTensorCore._typed``'s index arm, which
+          ``NativeTensorCore.contiguous_copy`` uses for an integer source;
+        * **the K3 ``argmax`` destination**, again through
+          ``NativeTensorCore._typed``, which is the only route by which an
+          *operation* allocates integer storage.
+
+        That list is the current inventory rather than a closed one: a later
+        milestone may add a caller, and adding one is a milestone decision
+        recorded here, never a silent reuse. What does **not** change with
+        it: this stays private, no general integer allocator is exposed, no
+        public constructor accepts ``"int64"``, every integer allocation is
+        zero-initialized, and nothing casts or promotes.
         """
         return cls(size, dtype=dtype, device=device,
                    _zero_initialize=zero_initialize, _trusted_dtype=True)
@@ -2685,10 +2762,28 @@ class NativeTensorCore:
         for the same reason: it was how the internal float32 paths were
         reached and tested while ``"float32"`` was still unsupported, and
         since Phase K milestone K2 it is the one allocator that can produce
-        an ``int64`` destination — for ``_from_int64_array`` below and for
-        the integer arm of ``contiguous_copy``, and for nothing else. Shape
-        validation, storage ownership, the contiguous view, and ``close()``
-        semantics are ``zeros``'s exactly.
+        an ``int64`` destination. Shape validation, storage ownership, the
+        contiguous view, and ``close()`` semantics are ``zeros``'s exactly.
+
+        **Its exact integer callers**, which is a list that has grown once
+        and is recorded rather than approximated:
+
+        * ``_from_int64_array`` below — exact host ingress, behind the one
+          public door ``NativeTensor.from_int64_array`` (K2);
+        * the **index arm of ``contiguous_copy``** — integer copying and
+          strided materialization, which is a value transfer rather than an
+          operation (K2);
+        * the **``argmax`` destination** — the first and so far only
+          *operation* that allocates integer storage (K3).
+
+        A later milestone may add a caller; doing so is a milestone decision
+        that updates this list, never a silent reuse. Nothing else about the
+        helper moves with it: it stays private, no general integer allocator
+        is exposed, ``NativeTensorCore.zeros``/``full``/``from_array`` still
+        reject ``"int64"`` through ``normalize_dtype``, every integer
+        destination is **zero-initialized** (§27.3, so the H1
+        uninitialized-allocation audit gains no row), and nothing casts or
+        promotes.
 
         A failed view or wrapper construction closes the storage this call
         allocated, so a rejected core leaks nothing."""
@@ -3927,6 +4022,151 @@ class NativeTensorCore:
             result.close()
             raise
         return result
+
+    # -- index-producing reduction (Phase K, K3) ------------------------
+
+    def argmax(self, axis=None, keepdims=False):
+        """The position of a maximum along ``axis`` (``None`` = over every
+        element), as a fresh owning contiguous **``int64``** tensor (Phase K,
+        milestone K3; see docs/native_integer_tensors_design.md §17).
+
+        The input is floating — ``float64`` or ``float32`` — open, and of any
+        rank including 0; an ``int64`` input is rejected, because ``argmax``
+        is a *floating* reduction that **produces** an index rather than an
+        integer operation. The output dtype is ``"int64"`` at both input
+        dtypes and does not depend on the input's, which is the point.
+
+        Shapes come from the existing ``reduce_shape`` authority, so they are
+        ``sum``'s and ``mean``'s exactly: ``axis=None`` gives ``()``, or
+        ``(1,) * ndim`` with ``keepdims=True``; an explicit ``axis`` removes
+        that axis, or leaves it as 1 with ``keepdims=True``. A negative axis
+        is normalized by the existing ``_normalize_axis_checked`` first, so a
+        ``bool``, a float, a string, and every out-of-range value raise
+        exactly as they do at the other reductions, and a rank-0 input with
+        **any** explicit axis is out of range.
+
+        **The index a result holds.** With ``axis=None`` it is the logical
+        flat row-major index over the whole tensor — the order ``to_numpy()``
+        produces. With an explicit ``axis`` it is the position along that
+        axis, in ``[0, shape[axis])``, computed independently for every
+        output position, so a NaN in one run never reaches another.
+
+        **The value rule is normative and exact** (design §17.5): scanning a
+        run left to right from ``run[0]``, a strict ``>`` displaces the
+        incumbent and a NaN displaces any non-NaN incumbent, but nothing
+        displaces an incumbent NaN. So equal maxima give the **lowest**
+        index; ``+0.0`` and ``-0.0`` tie, because IEEE comparison does not
+        order them; an all-``-inf`` run gives 0; several NaNs give the
+        **first**; a NaN beats every finite value and either infinity; and a
+        length-1 run gives 0. No NaN payload, sign, or signalling bit is ever
+        inspected, and no compatibility with any other library is claimed.
+
+        The C ABI is **contiguous-only**, so a non-contiguous input is
+        materialized into a private contiguous copy (Policy B) that is closed
+        the moment the native call returns; an already-contiguous input is
+        passed through with its offset. The answers are identical either way,
+        which is a consequence rather than a coincidence:
+        ``contiguous_copy`` reproduces logical order exactly, so the kernel
+        sees the same values in the same order.
+
+        Validation order, and a caller with several invalid arguments gets
+        the **first** of these deterministically (design §17.6): closed
+        tensor, then a non-floating dtype, then the non-empty invariant, then
+        the axis, then ``keepdims``, then the output shape and count — all of
+        it **before anything is allocated**.
+
+        The result owns fresh storage at offset 0, aliases nothing, survives
+        this tensor's ``close()``, and is **the caller's to close**. A failed
+        allocation or native call closes everything this call allocated,
+        including under ``BaseException``, so live storage returns exactly to
+        baseline.
+
+        Graph-unaware, like every Core op — and unlike every other one, its
+        NativeTensor-level sibling is graph-unaware too: an index has no
+        derivative, so ``NativeTensor.argmax`` returns a plain leaf even when
+        its input requires grad."""
+        self._require_open()
+        # K1's floating-role barrier, in the position every operation entry
+        # puts it: after the closed-state gate and before anything is
+        # allocated (design §6.5, §17.6 step 2).
+        self._require_floating_operand("argmax")
+        dims = self.shape
+        # §17.6 step 3. Zero-size dimensions are not representable —
+        # ``_as_shape`` rejects them at every construction — so this is a
+        # permanent non-case rather than a reachable rejection. It is stated
+        # anyway, because the kernel below initializes each run from its
+        # element 0 unconditionally and is entitled to say why it may.
+        if _numel_checked(dims) < 1:
+            raise RuntimeError(
+                "argmax requires a non-empty tensor; the native runtime "
+                "cannot represent zero-size dimensions"
+            )
+        # **The axis is validated before ``keepdims``**, which is K3's
+        # contract (§17.6 steps 4-6) and the one respect in which this
+        # differs from calling ``reduce_shape`` directly: that helper checks
+        # ``keepdims`` first. So the two caller-supplied arguments are
+        # validated here, in the contractual order, and the shared shape
+        # authority is then asked with arguments it can only accept — one
+        # shape authority, and K3's error precedence.
+        normalized = None if axis is None else _normalize_axis_checked(axis,
+                                                                       dims)
+        if not isinstance(keepdims, bool):
+            raise TypeError(f"keepdims must be a bool, got {keepdims!r}")
+        out_shape = _reduce_shape_checked(dims, normalized, keepdims)
+        # The (outer, axis_length, inner) decomposition the export takes, in
+        # arbitrary-precision Python ints so nothing can wrap here; the C ABI
+        # re-proves every product in int64 anyway. A **full** reduction is
+        # (1, numel, 1), so one export covers both cases.
+        if normalized is None:
+            outer, axis_length, inner = 1, self.numel, 1
+        else:
+            outer = 1
+            for extent in dims[:normalized]:
+                outer *= extent
+            axis_length = dims[normalized]
+            inner = 1
+            for extent in dims[normalized + 1:]:
+                inner *= extent
+        # §17.6 step 7: one index per output position. The identity holds by
+        # construction for every reduction ``reduce_shape`` can describe, and
+        # it is the destination capacity the export re-proves as an exact
+        # equality, so a disagreement here would be a defect rather than a
+        # caller error.
+        if _numel_checked(out_shape) != outer * inner:
+            raise RuntimeError(
+                f"argmax derived {outer * inner} indices for an output of "
+                f"shape {out_shape}"
+            )
+        temporaries = []
+        try:
+            source = (
+                self if self.contiguous else self._contiguous_temp(temporaries)
+            )
+            # Zero-initialized, deliberately (design §27.3): no int64 path
+            # takes the H1 uninitialized allocator, so the uninitialized
+            # audit table gains no row and needs no integer poison pattern —
+            # a decision made in favour of one extra pass over an output the
+            # kernel immediately overwrites in full.
+            out = NativeTensorCore._typed(out_shape, "int64",
+                                          device=self.device)
+            try:
+                self._storage._lib.tf_core_argmax(
+                    source._storage._require_open(), source.offset,
+                    out._storage._require_open(),
+                    outer, axis_length, inner,
+                )
+            except BaseException:
+                # The native call failed (e.g. an injected allocation
+                # failure): discard the freshly allocated destination so a
+                # failed search returns no half-built tensor.
+                out.close()
+                raise
+            return out
+        finally:
+            # Close the private contiguous copy exactly once, whether the
+            # call succeeded or raised — the caller's input is untouched.
+            for temp in temporaries:
+                temp.close()
 
     # -- convolution (Phase D, D3: forward-only Core wrapper) ------------
 

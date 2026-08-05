@@ -323,9 +323,9 @@ def test_no_c_abi_or_build_surface_moved():
     for source in sorted((REPO_ROOT / "cpp" / "src").glob("*.cpp")):
         names.update(re.findall(r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
                                 source.read_text(encoding="utf-8"), re.S))
-    assert len(names) == 54, sorted(names)
+    assert len(names) == 55, sorted(names)
     cmake = (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8")
-    assert len(re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)) == 25
+    assert len(re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)) == 26
     examples = [p.name for p in (REPO_ROOT / "examples").glob("*.py")
                 if p.name != "__init__.py"]
     benchmarks = [p.name for p in (REPO_ROOT / "benchmarks").glob("*.py")

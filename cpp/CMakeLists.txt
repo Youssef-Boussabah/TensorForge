@@ -731,7 +731,9 @@ if(TF_BUILD_TESTS)
   add_test(NAME dtype_dropout COMMAND test_dtype_dropout)
 
   # The int64 representation and the floating-role barriers (Phase K,
-  # milestone K1). Like test_dtype_storage this target links **every**
+  # milestone K1; the audit extended at K3, which is what an export added
+  # to the library must do). Like test_dtype_storage this target links
+  # **every**
   # kernel translation unit, and for the same reason: a third of what it
   # proves is that an int64 handle is rejected by every export that
   # computes, and each compute unit has its own validation front end.
@@ -757,6 +759,7 @@ if(TF_BUILD_TESTS)
     "${CMAKE_CURRENT_SOURCE_DIR}/src/pooling.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/conv2d.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/random.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/indexing.cpp"
     "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
   target_include_directories(test_dtype_int64_storage PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/include")
@@ -769,4 +772,39 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME dtype_int64_storage COMMAND test_dtype_int64_storage)
+
+  # Native argmax (Phase K, milestone K3): compiles the new indexing source
+  # unit directly, so it reaches the hidden templated tf::argmax_contiguous
+  # at BOTH instantiations and the hidden tf::require_index role guard,
+  # beside the exported tf_core_argmax wrapper they live inside. storage.cpp
+  # supplies the typed Storage handles the export takes; error.cpp the
+  # thread-local slot the guarded wrapper records into.
+  #
+  # Deliberately complementary rather than a superset: test_dtype_int64_storage
+  # keeps K1's representation, transfer, and floating-role barrier table,
+  # while this one proves what K3 opened — the normative value rule row by
+  # row (unique maximum, equal maxima, both signed zeros, all -inf, repeated
+  # +inf, one NaN, several NaNs, NaN against either infinity, NaN at index 0,
+  # a length-1 run) at both source widths **separately**, the full and
+  # per-axis decompositions of one block, the complete rejection matrix with
+  # the destination byte-for-byte unchanged after every row, and — the claim
+  # no structural check can make — a **floating source with an int64
+  # destination succeeding**, which a require_floating or a
+  # require_matching_dtype on that destination would have rejected.
+  add_executable(test_argmax
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_argmax.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/indexing.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_argmax PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_argmax PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_argmax PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_argmax PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME argmax COMMAND test_argmax)
 endif()

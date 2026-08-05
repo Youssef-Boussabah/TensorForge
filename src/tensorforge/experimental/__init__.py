@@ -399,10 +399,10 @@ async primitive, and none joins the process-wide state-replacement lock
 order. One thread at a time; external locking is the caller's job.
 
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and only K0, K1, and K2 have landed.** Its contract is
+and only K0 through K3 have landed.** Its contract is
 ``docs/native_integer_tensors_design.md``. Phase K was approved **after**
 Phase J closed at J9 without a committed successor, so it is not
-carried-over roadmap work; **K3 through K9 are unstarted**.
+carried-over roadmap work; **K4 through K9 are unstarted**.
 
 **K0** was architecture, contract, status, and guardrails only, and added
 no runtime behavior at all. **K1 added the internal ``int64``
@@ -455,8 +455,38 @@ float64's exact integer range. Views (``reshape``/``transpose``/``T``/
 existed. K2 added no C ABI symbol, no experimental export, no CTest, no
 example, no benchmark, and no version change.
 
+**K3 shipped the phase's first operation and its first C ABI symbol:
+native ``argmax``.** ``NativeTensor.argmax(axis=None, keepdims=False)``
+and ``NativeTensorCore.argmax(axis=None, keepdims=False)`` search a
+**floating** tensor at either dtype, at any rank including 0, contiguous or
+not, and return a fresh owning contiguous **``int64``** tensor — the one
+operation in the runtime whose result dtype differs from its operand's,
+which is exactly what an index is. Shapes come from the existing
+``cpp.reduce_shape`` authority and axes from the existing
+``cpp._normalize_axis_checked``, so ``axis``/``keepdims`` behave as they do
+at ``sum`` and ``mean``, with the axis validated **before** ``keepdims``.
+The value rule is exact rather than adjectival: equal maxima give the
+**lowest** index, ``+0.0`` and ``-0.0`` tie, an all-``-inf`` run gives 0,
+and the **first** NaN wins against every finite value and either infinity,
+with no NaN payload, sign, or signalling bit ever inspected. A
+non-contiguous input is materialized through Policy-B copy-then-compute, so
+the answers are identical either way.
+
+**The result is never a graph node, even from a gradient-tracking input** —
+the derivative of an index with respect to a value does not exist — so
+``"argmax"`` joined ``cpp.TENSOR_CORE_OPS`` and deliberately **not**
+``cpp.AUTOGRAD_OPS``, and the result is a plain leaf with no parents, no
+backward, and no operation name. K3 took the exported ``tf_*`` inventory
+from 54 to **55** (``tf_core_argmax``, against a phase maximum of 56) and
+the native CTests from 25 to **26**; it moved no registry, no version, no
+example, and no benchmark, and it shipped **no ``max``**: a kernel that
+finds the position of a maximum necessarily knows the maximum, and the
+phase deliberately does not expose it.
+
 **``int64`` is still not a supported native tensor dtype**, and the
-distinction is the point: it is an **index/result** dtype in its own
+distinction is the point — K3 is where it earns itself, because an
+operation now *produces* ``int64`` without ``int64`` ever becoming a dtype
+a kernel computes at. It is an **index/result** dtype in its own
 registry, ``cpp.normalize_dtype("int64")`` still raises, and no generic
 constructor changed what it accepts — public ``NativeStorage(size,
 dtype="int64")`` stays prohibited, and there is no public
@@ -466,9 +496,11 @@ real integer tensor: it can never require gradients, build or enter an
 autograd graph, accumulate one, become a ``NativeParameter``, be
 registered as a buffer at either persistence value, be owned by
 ``NativeSGD`` or ``NativeAdam``, be declared in a checkpoint archive, or
-enter any floating operation. There is no ``argmax``, no index selection,
-no integer arithmetic or reduction, no integer optimizer state, and no
-promotion or casting — prove first, then promise. ``__all__`` stays at
+enter any floating operation. There is no ``max``, no ``argmin``, no index
+selection, no integer arithmetic or reduction, no integer optimizer state,
+and no promotion or casting — prove first, then promise. ``native_accuracy``
+still reports through its explicit ``to_numpy()`` host boundary,
+deliberately. ``__all__`` stays at
 **25** names for the whole phase, because every new capability is a
 method on an existing class.
 

@@ -38,13 +38,13 @@ the experimental native line has completed **Phases A through J** — the
 last of them, the deterministic native data pipeline and mini-batching,
 closed at milestone J9, so **Phase J is the latest completed phase**.
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and only K0, K1, and K2 have landed.** Each phase's record is in its own
+and only K0 through K3 have landed.** Each phase's record is in its own
 design document; the sections above are the narrative.
 
-## The current phase — Phase K, K0, K1, and K2 complete
+## The current phase — Phase K, K0 through K3 complete
 
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and K0, K1, and K2 are complete.** **K3 through K9 are unstarted.** Its
+and K0 through K3 are complete.** **K4 through K9 are unstarted.** Its
 architecture contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md).
 
@@ -97,10 +97,32 @@ constructor changed what it accepts**. Every K1 barrier holds against a
 real integer tensor — it cannot require gradients, build or enter a graph,
 become a `NativeParameter`, be registered as a buffer at either
 persistence value, be owned by either optimizer, be declared in a
-checkpoint archive, or enter any floating operation. There is no `argmax`,
-no index selection, no integer arithmetic or reduction, and no casting or
-promotion; those belong to later milestones or to no milestone at all —
-prove first, then promise.
+checkpoint archive, or enter any floating operation.
+
+**K3** added the phase's first operation and its first C ABI symbol:
+native `argmax`. `NativeTensor.argmax(axis=None, keepdims=False)` and
+`NativeTensorCore.argmax(axis=None, keepdims=False)` search a **floating**
+tensor at either dtype, at any rank including 0, contiguous or not, and
+return a fresh owning contiguous **`int64`** tensor — the first operation
+whose result dtype differs from its operand's, which is exactly what an
+index is. Shapes and axes come from the existing `reduce_shape` and
+`_normalize_axis_checked` authorities, so `axis`/`keepdims` behave as they
+do at `sum` and `mean`. The value rule is exact rather than adjectival:
+equal maxima give the **lowest** index, `+0.0` and `-0.0` tie, an
+all-`-inf` run gives 0, and the **first** NaN wins against every finite
+value and either infinity. The result is a plain leaf **even when the input
+requires gradients** — an index has no derivative — so `"argmax"` joined
+`TENSOR_CORE_OPS` and deliberately not `AUTOGRAD_OPS`. Exports went
+54 → **55** and native CTests 25 → **26**; nothing else moved.
+
+**`int64` is still not a supported native tensor dtype** after all of that,
+and K3 is where the distinction earns itself: an operation now *produces*
+`int64` without `int64` ever becoming a dtype a kernel computes at. There
+is **no `max`** beside the `argmax` — a kernel that finds the position of a
+maximum necessarily knows the maximum, and the phase deliberately does not
+expose it — and **no index selection**, no `argmin`, no integer arithmetic
+or reduction, and no casting or promotion; those belong to later milestones
+or to no milestone at all — prove first, then promise.
 
 ## The latest completed phase — Phase J, complete
 
@@ -763,15 +785,18 @@ no CTest, no example, no benchmark, and no version change.
 Every compute registry row is still exactly what
 Phase J left: `SUPPORTED_DTYPES == ("float64", "float32")`,
 `SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED == ("cuda", "amp")`,
-`RAW_KERNEL_DTYPES == ("float64",)`, **54** exported `tf_*` symbols, **25**
-experimental names, **16** examples, and **9** benchmarks.
+`RAW_KERNEL_DTYPES == ("float64",)`, **25**
+experimental names, **16** examples, and **9** benchmarks. The exported
+`tf_*` symbol count was **54** through K2 and is **55** from K3, against a
+phase maximum of 56.
 
 **`int64` is not a supported native tensor dtype** — it is an
 index/result dtype in its own registry, and no generic constructor accepts
-it — no native `argmax` exists, no index selection exists, no integer
-arithmetic or reduction exists, no integer autograd, parameter, buffer,
-optimizer state, or checkpoint entry exists, and
-**K3 through K9 are unstarted**. What
+it. A native `argmax` exists from **K3**; **no `max`** exists beside it and
+none is planned, no index selection exists yet, no `argmin` exists, no
+integer arithmetic or reduction exists, no integer autograd, parameter,
+buffer, optimizer state, or checkpoint entry exists, and
+**K4 through K9 are unstarted**. What
 K0 decides is the architecture: one extended `NativeTensor` rather than a
 parallel integer class, `int64` as an exact non-differentiable
 index/result dtype and the only integer dtype in the phase, one strict
@@ -1633,12 +1658,14 @@ here; what remains is expansion on its own terms:
     model state). ``native_accuracy(logits, targets) -> float`` is a
     deliberately **reporting-only** helper, and the honesty of that label
     is the point: there is no accuracy kernel, no C ABI export, no Core
-    method, no autograd node, and no native ``argmax``. (**At Phase E**
-    the runtime had no integer dtype for one to return. The integer
-    result dtype now exists — Phase K, K2 — but native ``argmax``
-    remains intentionally absent until K3, and this helper will keep
-    reporting through the host boundary deliberately even once it
-    lands.) It validates rank-2 logits and
+    method, and no autograd node. (**At Phase E** the runtime had no
+    integer dtype for an index-producing reduction to return. The integer
+    result dtype arrived at Phase K, K2, and a **native ``argmax``
+    arrived at K3** — and this helper still reports through the host
+    boundary, deliberately: rewriting it over the native ``argmax`` would
+    still need an integer *equality* reduction that no milestone ships, so
+    it would materialize to the host anyway, one operation later, with its
+    one explicit conversion harder to see.) It validates rank-2 logits and
     targets through the *same* private preparer the cross-entropy forward
     uses — so the strict accepted/rejected matrix is identical at both
     call sites by construction — then materializes the logits **once**

@@ -200,9 +200,13 @@ EXPECTED_FINAL_POSITION = (2, 2)
 EXPECTED_EXAMPLE_COUNT = 16
 EXPECTED_BENCHMARK_COUNT = 9        # 8 when J6 landed; J8 added exactly one
 EXPECTED_EXPERIMENTAL_EXPORTS = 25
-EXPECTED_ABI_EXPORTS = 54
-# Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
-EXPECTED_CTESTS = 25
+# Phase K moved both of these, and the numbers are updated rather than the
+# assertions relaxed: K1 added the int64 storage CTest (24 -> 25), and K3
+# added the argmax export (54 -> 55) and its CTest (25 -> 26). J6 itself
+# still adds neither, which is what this module's claim has always been,
+# and an unrecorded addition still fails an exact equality.
+EXPECTED_ABI_EXPORTS = 55
+EXPECTED_CTESTS = 26
 
 
 # ===========================================================================

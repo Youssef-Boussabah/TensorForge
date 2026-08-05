@@ -115,10 +115,21 @@ J0_CHECKPOINT_VERSIONS = (1, 2, 3)
 J0_OPTIMIZER_STATE_VERSION = 1
 
 J0_EXPORT_COUNT = 54
-# Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
-J0_CTEST_COUNT = 25
+J0_CTEST_COUNT = 24
 J0_EXAMPLE_COUNT = 15
 J0_BENCHMARK_COUNT = 8
+
+# Native artifacts added by **later phases**, after Phase J closed, each
+# mapped to the milestone that shipped it — the same attribution
+# ``PHASE_J_EXAMPLES`` and ``PHASE_J_BENCHMARKS`` below use, and for the same
+# reason: a bumped literal absorbs later growth into Phase J's record, while
+# a named map keeps every addition attributed and still fails on an
+# unrecorded one. Phase K, milestone K1 added the int64 storage CTest, and
+# milestone K3 added the argmax export and its CTest.
+POST_PHASE_J_EXPORTS = {"tf_core_argmax": "K3"}
+POST_PHASE_J_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3"}
+CURRENT_EXPORT_COUNT = J0_EXPORT_COUNT + len(POST_PHASE_J_EXPORTS)   # 55
+CURRENT_CTEST_COUNT = J0_CTEST_COUNT + len(POST_PHASE_J_CTESTS)      # 26
 
 # The artifacts Phase J has shipped so far, each mapped to the milestone
 # that added it. J0-J5 added none; **J6** added exactly one example and
@@ -1186,8 +1197,16 @@ def _source_exports():
 
 
 def test_the_source_still_exports_exactly_fifty_four_symbols():
+    """Phase J added no C ABI symbol at any milestone. Measured against the
+    live source with later phases' additions removed, each of which is named
+    with the milestone that shipped it — so Phase J's claim stays exactly
+    true and later growth is recorded rather than absorbed."""
     names = _source_exports()
-    assert len(names) == J0_EXPORT_COUNT, sorted(names)
+    assert len(names) == CURRENT_EXPORT_COUNT, sorted(names)
+    assert len(names - set(POST_PHASE_J_EXPORTS)) == J0_EXPORT_COUNT, \
+        sorted(names)
+    for name, milestone in POST_PHASE_J_EXPORTS.items():
+        assert name in names, (name, milestone)
     # And no data-pipeline symbol appeared: the phase plans none.
     forbidden = re.compile(
         r"^tf_(dataset|sampler|loader|batch|shuffle|permut|gather)", re.I)
@@ -1204,9 +1223,16 @@ def test_the_built_library_exports_exactly_what_the_source_declares():
 
 
 def test_the_ctest_inventory_is_still_exactly_twenty_four():
+    """Phase J registered no native CTest. Same attribution as the export
+    claim above: the later targets are named with the milestone that added
+    them and subtracted, rather than dissolved into a larger literal."""
     cmake = _read("cpp/CMakeLists.txt")
     names = re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)
-    assert len(names) == J0_CTEST_COUNT, names
+    assert len(names) == CURRENT_CTEST_COUNT, names
+    for name, milestone in POST_PHASE_J_CTESTS.items():
+        assert name in names, (name, milestone)
+    assert len([n for n in names
+                if n not in POST_PHASE_J_CTESTS]) == J0_CTEST_COUNT, names
     assert len(set(names)) == len(names), "a CTest name is registered twice"
     sources = {path.stem for path in
                sorted((REPO_ROOT / "cpp" / "tests").glob("test_*.cpp"))}

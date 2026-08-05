@@ -82,7 +82,8 @@ Phase J.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
 complete: milestones J0 through J9 have all landed and J9 closed it.**
-**Phase K is the latest phase, and only K0, K1, and K2 have landed.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
+**Phase K is the latest phase, and only K0 through K3 have landed;
+K4 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -244,6 +245,59 @@ library, plus `scripts/smoke_cpp_backend.py`. No Linux or WSL run, no
 sanitizer run, and no LeakSanitizer lifecycle is claimed for this
 milestone either — those belong to **K9**. No result file of any kind was
 written and no benchmark was added.
+
+### K3 — native `argmax`, the phase's first export
+
+**K3 is the second Phase-K milestone that changes `cpp/`**, so it required
+a native rebuild and a CTest run, and both were done. It added the phase's
+**first C ABI export** — `tf_core_argmax`, taking the library from **54**
+to **55** exported `tf_*` symbols against the phase maximum of 56, with the
+source inventory and the built export table equal — and moved the CTest
+inventory **25 → 26** (`cpp/tests/test_argmax.cpp`).
+
+**What changed in C++.** Two new files, and no existing kernel file gained
+a line of compute. `cpp/include/tf_indexing_internal.h` carries the
+templated `tf::argmax_contiguous` traversal — one template over the source
+element type, instantiated at `float` and `double`, with the destination
+fixed at `std::int64_t` because an index is `int64` at every source width —
+and `tf::require_index`, the **index-role** dtype guard that completes the
+family beside `require_float64`, `require_floating`, and
+`require_matching_dtype`. `cpp/src/indexing.cpp` carries the guarded export
+alone. It is a separate translation unit rather than a section of
+`reduction.cpp` deliberately: `tf_core_sum` accumulates *values* into a
+destination through per-axis write strides and has no notion of a position,
+while this searches for a position and writes a different dtype.
+
+**The dtype asymmetry, which is the milestone.** `tf_core_argmax` is the
+one export whose source and destination dtypes deliberately **differ**: the
+source must be floating and the destination must be exactly `int64`. It
+therefore applies `tf::require_floating` to the source and
+`tf::require_index` to the destination, and applies **neither**
+`require_floating` **nor** `require_matching_dtype` to that destination,
+because either would reject every valid call. Its single dispatch is on the
+**source** dtype alone. The `Int64` arm of that switch is written out
+rather than defaulted so a future dtype without an instantiation stays a
+compile-time diagnostic; it is unreachable, because the source role check
+rejected it three steps earlier.
+
+**Validation, in the committed order.** Null handles, source floating,
+destination `int64`, positive extents, checked products, offset sign,
+source span containment, an **exact** destination element count of
+`outer * inner`, aliasing, then execute — and a rejection at any step
+leaves the destination byte-for-byte unchanged, which the CTest asserts
+after every row of its matrix. The aliasing check is a deliberate backstop
+that the two role checks already make unreachable, since one storage
+carries one dtype; it is retained because the C ABI validates independently
+of what another check happens to imply.
+
+**Windows evidence.** Fresh out-of-source **Release** and **Debug** builds
+outside the repository, with zero project compiler, linker, and CMake
+warnings and the full **26**-test CTest suite green in each; the source and
+built export inventories both **55** and equal; the full `uv run pytest`
+suite green; and `scripts/smoke_cpp_backend.py`. No Linux or WSL run, no
+sanitizer run, and no LeakSanitizer lifecycle is claimed for this milestone
+— those belong to **K9**. No result file of any kind was written and no
+benchmark was added.
 
 ### J9 — the Phase-J closure matrix
 

@@ -1117,12 +1117,21 @@ def test_docs_present_the_reporting_only_accuracy_metric():
     assert "native_accuracy" not in cpp.NATIVE_MODULES
     assert "native_accuracy" not in cpp.NATIVE_LOSSES
     assert cpp.backend_info()["native_metrics"] == cpp.NATIVE_METRICS
-    # No native surface was invented for it.
+    # No native surface was invented for **the metric**. A native ``argmax``
+    # does exist since Phase K milestone K3, and this metric deliberately
+    # still does not use one: the design's reconciliation says exactly that,
+    # and the two sentences are asserted together so neither can drift.
     assert not hasattr(NativeTensor, "native_accuracy")
-    assert not hasattr(NativeTensor, "argmax")
-    assert not hasattr(cpp.NativeTensorCore, "argmax")
-    for absent in ("tf_core_accuracy", "tf_core_argmax"):
+    for absent in ("tf_core_accuracy",):
         assert absent not in cpp._CHECKED_KERNELS, absent
+    assert hasattr(NativeTensor, "argmax")
+    assert re.search(r"native\s+`?argmax`?[^.]{0,200}(exists|now exists)",
+                     section, re.I), (
+        "the design no longer records that a native argmax exists"
+    )
+    assert re.search(r"(host|to_numpy)[^.]{0,200}deliberate", lowered), (
+        "the design no longer records that the host boundary is deliberate"
+    )
     assert callable(native_accuracy)
     # The support matrix says the same thing.
     matrix = _status_text("docs/native_support_matrix.md")
@@ -4784,10 +4793,15 @@ def test_g2_core_inventory_is_exactly_one_operation_and_one_abi_symbol():
     from tensorforge.backends import cpp
     from tensorforge.experimental import native_checkpoint
 
-    # Exactly one new Core op, appended last, and no sibling smuggled in.
+    # Exactly one new Core op, appended in G2's own position, and no sibling
+    # smuggled in. It is no longer the *last* entry — Phase K milestone K3
+    # appended ``"argmax"`` after it — so the claim is checked as "the last
+    # entry G2 could see", which is what it always meant.
     dropout_ops = [name for name in cpp.TENSOR_CORE_OPS if "dropout" in name]
     assert dropout_ops == ["dropout_forward"], dropout_ops
-    assert cpp.TENSOR_CORE_OPS[-1] == "dropout_forward"
+    post_g2_ops = ("argmax",)   # Phase K, K3
+    assert [name for name in cpp.TENSOR_CORE_OPS
+            if name not in post_g2_ops][-1] == "dropout_forward"
 
     # Exactly one new C ABI symbol, and it is checked (so native failures
     # become Python exceptions rather than silent wrong results).

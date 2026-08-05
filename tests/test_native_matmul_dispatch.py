@@ -1094,10 +1094,11 @@ def test_optimizer_updates_after_matmul_gradients_are_reproducible(
 # ==========================================================================
 
 # H2 adds no exported symbol: Phase H's surface is exactly what H1 left.
-# The live library exports two more — Phase I milestone I1's typed storage
-# creators — so the Phase-H claim is checked against the Phase-H subset.
+# The live library exports three more — Phase I milestone I1's two typed
+# storage creators and Phase K milestone K3's argmax forward — so the
+# Phase-H claim is checked against the Phase-H subset.
 PHASE_H_TF_EXPORTS = 52
-EXPECTED_TF_EXPORTS = 54
+EXPECTED_TF_EXPORTS = 55
 
 # Names that would constitute a runtime dispatch control. None may exist
 # in the shipped library or the installed Python backend.

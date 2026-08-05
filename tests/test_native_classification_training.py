@@ -1120,7 +1120,9 @@ def test_e8_adds_no_capability_inventory_entry():
                        "dataset"):
             assert not [n for n in inventory if banned in n.lower()], banned
     # No accuracy/argmax kernel or export appeared.
-    for absent in ("tf_core_accuracy", "tf_core_argmax", "tf_core_train_step"):
+    # (``tf_core_argmax`` left this list at Phase K milestone K3, which
+    # shipped it. E8 still added no export of any kind.)
+    for absent in ("tf_core_accuracy", "tf_core_train_step"):
         assert absent not in cpp._CHECKED_KERNELS, absent
 
 

@@ -78,16 +78,18 @@ CURRENT_UNSUPPORTED = tuple(name for name in FINAL_UNSUPPORTED
                             if name not in PHASE_I_ADDED_DTYPES)
 CURRENT_DEVICES = FINAL_DEVICES                                # never moved
 # ...and what the live source holds **now**. Phase H closed at 52; Phase I
-# milestone I1 added the two typed storage creators, taking the current
-# inventory to 54. The two numbers are different facts about different
-# moments and are deliberately kept apart: FINAL_EXPORT_COUNT is Phase H's
-# closure, which is history and does not move again, while
-# CURRENT_EXPORT_COUNT is what the tree exports today.
+# milestone I1 added the two typed storage creators and Phase K milestone
+# K3 added the argmax forward, taking the current inventory to 55. The
+# numbers are facts about different moments and are deliberately kept
+# apart: FINAL_EXPORT_COUNT is Phase H's closure, which is history and does
+# not move again, while CURRENT_EXPORT_COUNT is what the tree exports today.
 PHASE_I_ADDED_EXPORTS = (
     "tf_storage_create_typed",
     "tf_storage_create_uninitialized_typed",
 )
-CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(PHASE_I_ADDED_EXPORTS)  # 54
+PHASE_K_ADDED_EXPORTS = ("tf_core_argmax",)
+CURRENT_EXPORT_COUNT = (FINAL_EXPORT_COUNT + len(PHASE_I_ADDED_EXPORTS)
+                        + len(PHASE_K_ADDED_EXPORTS))  # 55
 # The same history/today split the export counts above use, for the same
 # reason: Phase H closed at checkpoint version 2 and that is a fact about
 # Phase H which does not move again, while Phase I milestone I8 added the
@@ -328,17 +330,18 @@ def _source_exports():
 
 
 def test_the_source_exports_exactly_the_current_symbol_count():
-    """The live inventory is Phase H's closure plus exactly the symbols
-    Phase I has added so far, and nothing else.
+    """The live inventory is Phase H's closure plus exactly the symbols the
+    phases after it have added, and nothing else.
 
     Stated as arithmetic rather than as a bare number so that the two
     facts stay separable: if a milestone adds an unplanned export, the
     count fails; if it removes one of Phase H's, the difference fails."""
     exports = _source_exports()
     assert len(exports) == CURRENT_EXPORT_COUNT, sorted(exports)
-    for name in PHASE_I_ADDED_EXPORTS:
+    for name in PHASE_I_ADDED_EXPORTS + PHASE_K_ADDED_EXPORTS:
         assert name in exports, name
-    assert len(exports - set(PHASE_I_ADDED_EXPORTS)) == FINAL_EXPORT_COUNT
+    assert len(exports - set(PHASE_I_ADDED_EXPORTS)
+               - set(PHASE_K_ADDED_EXPORTS)) == FINAL_EXPORT_COUNT
 
 
 def test_the_one_symbol_phase_h_added_is_present_and_is_the_only_new_one():

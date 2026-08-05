@@ -130,6 +130,15 @@ FLOAT32_SUPPORT_MILESTONE = "I9"
 PHASE_J_ADDED_EXPORTS = ()
 FINAL_EXPORT_COUNT = PHASE_I_EXPORT_COUNT + len(PHASE_J_ADDED_EXPORTS)  # 54
 
+# Symbols and CTests added by **later phases**, after Phase J closed, each
+# mapped to the milestone that shipped it. Phase J's own record does not
+# move; the live tree's is derived from it plus these, so an unrecorded
+# addition still fails an exact equality. Phase K, milestone K1 added the
+# int64 storage CTest, and milestone K3 the argmax export and its CTest.
+POST_PHASE_J_EXPORTS = {"tf_core_argmax": "K3"}
+POST_PHASE_J_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3"}
+CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(POST_PHASE_J_EXPORTS)  # 55
+
 # Serialization — four separate authorities, none of which moved.
 FINAL_CHECKPOINT_FORMAT = "tensorforge.native_checkpoint"
 FINAL_CHECKPOINT_VERSION = 3
@@ -144,8 +153,7 @@ FINAL_SAMPLER_STATE_VERSION = 1
 FINAL_SAMPLER_STATE_VERSIONS = (1,)
 
 # Inventories, **as Phase J closed on them**.
-# Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
-FINAL_CTEST_COUNT = 25
+FINAL_CTEST_COUNT = 24
 FINAL_EXAMPLE_COUNT = 16
 FINAL_BENCHMARK_COUNT = 9
 FINAL_EXPERIMENTAL_EXPORTS = 25
@@ -906,12 +914,17 @@ def test_the_closure_milestone_added_no_public_name_of_its_own():
 # ===========================================================================
 
 def test_the_source_exports_exactly_fifty_four_symbols():
-    """Stated as arithmetic rather than as a bare number, so the two facts
-    stay separable: Phase I closed at 54, and Phase J added none."""
+    """Stated as arithmetic rather than as a bare number, so the facts stay
+    separable: Phase I closed at 54, Phase J added none, and every symbol
+    the live source carries beyond that belongs to a named later
+    milestone."""
     exports = _source_exports()
-    assert len(exports) == FINAL_EXPORT_COUNT, sorted(exports)
+    assert len(exports) == CURRENT_EXPORT_COUNT, sorted(exports)
     assert PHASE_J_ADDED_EXPORTS == ()
-    assert len(exports) == PHASE_I_EXPORT_COUNT
+    for name, milestone in POST_PHASE_J_EXPORTS.items():
+        assert name in exports, (name, milestone)
+    assert len(exports - set(POST_PHASE_J_EXPORTS)) == FINAL_EXPORT_COUNT
+    assert len(exports - set(POST_PHASE_J_EXPORTS)) == PHASE_I_EXPORT_COUNT
 
 
 def test_no_pipeline_shaped_c_abi_symbol_was_added():
@@ -963,8 +976,13 @@ def _registered_ctests():
 
 
 def test_the_ctest_inventory_is_exactly_twenty_four_unique_targets():
+    """Phase J registered none, and every target the live tree carries
+    beyond its 24 belongs to a named later milestone."""
     names = _registered_ctests()
-    assert len(names) == FINAL_CTEST_COUNT, names
+    for name, milestone in POST_PHASE_J_CTESTS.items():
+        assert name in names, (name, milestone)
+    assert len([n for n in names
+                if n not in POST_PHASE_J_CTESTS]) == FINAL_CTEST_COUNT, names
     assert len(set(names)) == len(names), "a CTest name is registered twice"
     # Every registered test has a source file, and every source file is
     # registered — so a target cannot be added or orphaned unnoticed.
@@ -2482,7 +2500,7 @@ def test_the_current_tree_inventory_checks_need_no_repository_at_all(tmp_path):
     for source in sorted(staging.glob("*.cpp")):
         names.update(re.findall(r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
                                 source.read_text(encoding="utf-8"), re.S))
-    assert len(names) == FINAL_EXPORT_COUNT
+    assert len(names) == CURRENT_EXPORT_COUNT
     assert names == _source_exports()
 
     # ...and a deliberately mutated copy is still caught there, so the
@@ -2495,7 +2513,7 @@ def test_the_current_tree_inventory_checks_need_no_repository_at_all(tmp_path):
     for source in sorted(staging.glob("*.cpp")):
         mutated.update(re.findall(r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
                                   source.read_text(encoding="utf-8"), re.S))
-    assert len(mutated) == FINAL_EXPORT_COUNT + 1
+    assert len(mutated) == CURRENT_EXPORT_COUNT + 1
     assert "tf_invented_symbol" in mutated
 
 

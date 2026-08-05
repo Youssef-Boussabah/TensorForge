@@ -1412,16 +1412,25 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     tests/test_native_matmul_dispatch.py,
     tests/test_native_copy_transfer.py, and
     tests/test_native_reduction_dispatch.py."""
+    # Phase K, milestone K3 added ``indexing.cpp`` and
+    # ``tf_indexing_internal.h`` — the phase's own translation unit for the
+    # index-producing and index-consuming operations, and the first source
+    # file added since Phase E. It is listed here rather than absorbed,
+    # because the claim this test makes is about **Phase H**: Phase H added
+    # no translation unit, and it still has not.
     sources = sorted(p.name for p in (REPO_ROOT / "cpp" / "src").glob("*.cpp"))
     assert sources == [
         "classification.cpp", "conv2d.cpp", "elementwise.cpp", "error.cpp",
+        "indexing.cpp",  # Phase K, K3
         "matmul.cpp", "pooling.cpp", "random.cpp", "reduction.cpp",
         "storage.cpp",
     ]
     headers = sorted(p.name for p in (REPO_ROOT / "cpp" / "include").glob("*.h"))
     assert headers == [
         "tf_classification_internal.h", "tf_conv2d_internal.h",
-        "tf_copy_internal.h", "tf_elementwise_internal.h", "tf_internal.h",
+        "tf_copy_internal.h", "tf_elementwise_internal.h",
+        "tf_indexing_internal.h",  # Phase K, K3
+        "tf_internal.h",
         "tf_matmul_internal.h", "tf_pooling_internal.h",
         "tf_random_internal.h", "tf_reduction_internal.h",
     ]
@@ -1458,13 +1467,14 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     # drives the *existing* G2 kernel at a second element type, plus the
     # cross-dtype drop-pattern identity and the narrow-once scale witness.
     # Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
-    assert len(ctests) == 25
+    assert len(ctests) == 26
     phase_i = {"test_dtype_storage.cpp", "test_typed_transfer.cpp",
                "test_dtype_elementwise.cpp",
                "test_dtype_reduction_matmul.cpp", "test_dtype_cnn.cpp",
                "test_dtype_classification.cpp", "test_dtype_dropout.cpp"}
     assert phase_i <= set(ctests)
-    phase_k = {"test_dtype_int64_storage.cpp"}
+    phase_k = {"test_dtype_int64_storage.cpp",   # K1
+               "test_argmax.cpp"}                # K3
     assert phase_k <= set(ctests)
     assert len([name for name in ctests
                 if name not in phase_i | phase_k]) == 17
@@ -1474,7 +1484,12 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     assert "test_contiguous_copy.cpp" in ctests
     assert "test_sum_reduction.cpp" in ctests
     assert "test_elementwise_traversal.cpp" in ctests
-    assert cpp._CHECKED_KERNELS[-1] == "tf_core_dropout_forward"
+    # H0 added no hooked kernel, so the tuple still ends with the last
+    # entry it could see once the later phases' additions — Phase K
+    # milestone K3's argmax forward — are removed.
+    post_h0_kernels = ("tf_core_argmax",)
+    assert [name for name in cpp._CHECKED_KERNELS
+            if name not in post_h0_kernels][-1] == "tf_core_dropout_forward"
     # H1 added exactly one checked ABI symbol, and it is an allocator
     # rather than a kernel: it takes the identical errcheck hook as the
     # zero-initializing constructor beside it.

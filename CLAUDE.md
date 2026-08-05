@@ -108,9 +108,9 @@ capability decision, never a side effect.
 | In-memory optimizer state version | **1** |
 | Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` |
 | Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` |
-| Exported production `tf_*` symbols | **54** (Phase H closed at 52) |
+| Exported production `tf_*` symbols | **55** (Phase H closed at 52; Phase I added 2 at I1; Phase K added `tf_core_argmax` at K3, against a phase maximum of 56) |
 | Experimental Python exports | **25** |
-| Native CTests · examples · benchmarks | **24** · **16** · **9** |
+| Native CTests · examples · benchmarks | **26** · **16** · **9** (24 at Phase K's start; K1 and K3 each added one CTest) |
 
 **Three dtype rows, three different questions**, and none may be reported as
 another: `SUPPORTED_DTYPES` is the **capability**; `backend_info()["dtype"]`
@@ -183,9 +183,20 @@ metadata, the existing views (`reshape`/`transpose`/`T`/`narrow`),
 `contiguous_copy`, `close()`, and exact host inspection (`to_numpy`,
 `item`, `tolist`) — and **nothing else**. No integer arithmetic,
 reduction, autograd, parameter, buffer, optimizer state, or checkpoint
-entry exists; no `argmax` and no index selection exists; and none may be
-described as existing until the milestone that ships it — K3 and K4 for
-the operations (§12).
+entry exists.
+
+**`int64` is also a *result* dtype, and K3 is where that became
+observable**: `NativeTensor.argmax` / `NativeTensorCore.argmax` take a
+**floating** tensor and return a fresh owning `int64` one, over the
+`tf_core_argmax` export. That is the one operation in the runtime whose
+result dtype differs from its operand's, it is **not** differentiable —
+`"argmax"` is in `TENSOR_CORE_OPS` and never in `AUTOGRAD_OPS`, and its
+result is a plain leaf even from a gradient-tracking input — and it is
+still not a widening of the compute registry: nothing computes *at*
+`int64`. **No `max`, no `max_with_indices`, no tuple return, and no
+`argmin` exists**, permanently for `max` (§17.10) and pending a milestone
+for the rest. **No index selection exists** and none may be described as
+existing until K4 ships it (§12).
 
 ---
 
@@ -609,7 +620,7 @@ that changes the public API or the examples updates the matching document
   Record it that way rather than rewriting it: "the phase that came next"
   and "the phase that was always planned next" are different facts.
 - **Native line: Phase K — Native Integer Tensors and Indexing — is the
-  newly approved phase and is the latest phase, and only K0, K1, and K2 have landed.**
+  newly approved phase and is the latest phase, and only K0 through K3 have landed.**
   Authority
   `docs/native_integer_tensors_design.md`. **K0 is architecture, contract,
   status, and guardrails only and added no runtime behavior at all**: no
@@ -662,10 +673,30 @@ that changes the public API or the examples updates the matching document
   index/result dtype in its own row — `normalize_dtype("int64")` keeps
   raising, **no generic constructor changed what it accepts**, and every
   K1 barrier is re-proved against a real integer tensor in
-  `tests/test_native_int64_tensor.py`. No `argmax`, no index selection, no
+  `tests/test_native_int64_tensor.py`.
+  **K3 shipped the phase's first operation and its first C ABI symbol —
+  native `argmax` — and moved nothing else**: the new
+  `cpp/src/indexing.cpp` and `cpp/include/tf_indexing_internal.h` carry the
+  templated `tf::argmax_contiguous` traversal and the `tf::require_index`
+  role guard; `tf_core_argmax` validates in §22.8's order and applies
+  **neither** `require_floating` **nor** `require_matching_dtype` to its
+  `int64` destination, because either would reject every valid call, so its
+  single dispatch is on the **source** dtype alone; `NativeTensorCore.argmax`
+  validates the axis **before** `keepdims` and then asks the shared
+  `reduce_shape` authority, materializes a non-contiguous input through
+  Policy-B, and allocates a **zeroed** `int64` destination (§27.3);
+  `NativeTensor.argmax` wraps it as a plain leaf and never calls `_from_op`.
+  `"argmax"` joined `TENSOR_CORE_OPS` and `tf_core_argmax` joined
+  `_CHECKED_KERNELS` (36 → **37**); exports **54 → 55**, CTests **25 → 26**,
+  and the K1 barrier audit **32 → 33** on argmax's *source* role. The §20.3
+  reconciliation landed with it: `native_accuracy` keeps its explicit
+  `to_numpy()` host round trip, **deliberately**. `AUTOGRAD_OPS`,
+  `__all__`, every registry, every version, the 16 examples, and the 9
+  benchmarks are unmoved.
+  No `max`, no `argmin`, no index selection, no
   integer arithmetic or reduction, no integer autograd, parameter, buffer,
   optimizer state, or checkpoint entry, and no casting or promotion exists,
-  and **K3 through K9 are unstarted**. Every reachability barrier landed at
+  and **K4 through K9 are unstarted**. Every reachability barrier landed at
   **K1**, one milestone before an integer tensor could be constructed at
   all: **prove first, then promise.** The phase's C ABI maximum is **56**
   (54 + `argmax` at K3 + `index_select` at K4) and

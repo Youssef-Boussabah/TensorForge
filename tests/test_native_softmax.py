@@ -1109,7 +1109,12 @@ def test_native_softmax_scope_boundaries_hold():
     it is no longer listed as absent here.)"""
     x = NativeTensor.from_array(VALUES)
     core = cpp.NativeTensorCore.from_array(VALUES)
-    for absent in ("max", "argmax", "amax",
+    # (``argmax`` left this list at Phase K milestone K3, which shipped it
+    # as a general index-producing reduction. ``max`` and ``amax`` stay
+    # banned and always will: a kernel that finds the position of a
+    # maximum necessarily knows the maximum, and Phase K deliberately does
+    # not expose it — design §17.10.)
+    for absent in ("max", "amax",
                    "divide", "sigmoid", "tanh"):
         assert not hasattr(x, absent), absent
         assert not hasattr(core, absent), absent

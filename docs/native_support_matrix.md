@@ -518,8 +518,15 @@ in the stable Python framework — that does not make them native.
   smoothing, soft/one-hot targets, and `reduction="none"` on the native
   line; top-k, per-class, confusion-matrix, streaming, or stateful
   metrics; a `NativeSoftmax`/`NativeLogSoftmax` module; and a native
-  `argmax` — the integer result dtype now exists (Phase K, K2), but
-  native `argmax` remains intentionally absent until K3
+  `max`, `max_with_indices`, or `argmin`.
+  *(A native `argmax` **left this list at Phase K, milestone K3**, which
+  shipped it as `NativeTensor.argmax` / `NativeTensorCore.argmax` over the
+  `tf_core_argmax` export — the integer result dtype had arrived one
+  milestone earlier at K2. `native_accuracy` still reports through its
+  explicit `to_numpy()` host boundary deliberately, and `max` is declined
+  **permanently** rather than deferred: a kernel that finds the position of
+  a maximum necessarily knows the maximum, and Phase K does not expose
+  it.)*
 - `BatchNorm3d`, `InstanceNorm`, `GroupNorm`, `RMSNorm`, synchronized or
   distributed BatchNorm, a fused normalization kernel, a functional
   `batch_norm`, and a `NativeTensor.batch_norm` operation — none is in
@@ -968,7 +975,7 @@ required platform, added the closure guardrails, and reconciled the status
 surfaces. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
-Phase J, below, is complete (J0–J9). **Phase K is the latest phase, and only K0, K1, and K2 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J moved no
+Phase J, below, is complete (J0–J9). **Phase K is the latest phase, and only K0 through K3 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J moved no
 row in this document at any milestone.
 
 **Since milestone I9, `float32` and `float64` are both supported native
@@ -1525,7 +1532,7 @@ G9 while the operation and the module both already existed.
 
 ## Phase J — deterministic native data pipeline and mini-batching, **complete (J0–J9)**
 
-**Phase J is complete.** **Phase K is the latest phase, and only K0, K1, and K2 have landed.** **Phase J is the latest completed phase**, and it remains complete. It was newly approved
+**Phase J is complete.** **Phase K is the latest phase, and only K0 through K3 have landed.** **Phase J is the latest completed phase**, and it remains complete. It was newly approved
 when it opened: the repository closed Phase I at I11 without committing to
 a successor, and Phase J was approved afterwards, so nothing here describes
 pre-existing roadmap work.
@@ -1874,11 +1881,11 @@ supported native tensor dtype**: it is an **index/result** dtype, in its
 own registry, and the two rows answer two different questions — at what
 dtypes the kernels *compute*, and what dtypes a native tensor may *carry*
 as exact integer data. No omitted `dtype` ever selects it, no generic
-constructor accepts it, and no kernel computes at it. There is no native
-`argmax`, no index selection, no integer arithmetic or reduction, no
-integer autograd, parameter, buffer, optimizer state, or checkpoint entry,
-and no casting or promotion in either direction — and **K3 through K9 are
-unstarted**, so nothing on the list below exists yet.
+constructor accepts it, and no kernel computes at it.
+
+**K3 shipped the phase's first operation and its first C ABI symbol: native `argmax`.** `NativeTensor.argmax(axis=None, keepdims=False)` and `NativeTensorCore.argmax(axis=None, keepdims=False)` search a **floating** tensor at either dtype, at any rank including 0, contiguous or not, and return a fresh owning contiguous **`int64`** tensor — the one operation in the runtime whose result dtype differs from its operand's, which is what an index is. Shapes come from the existing `reduce_shape` authority and axes from the existing `_normalize_axis_checked`, with the axis validated **before** `keepdims`; the value rule is exact rather than adjectival — equal maxima give the **lowest** index, `+0.0` and `-0.0` tie, an all-`-inf` run gives 0, and the **first** NaN wins against every finite value and either infinity. The result is a plain leaf **even when the input requires gradients**, because an index has no derivative, so `"argmax"` joined `TENSOR_CORE_OPS` and deliberately not `AUTOGRAD_OPS`. Exports went **54 → 55** (`tf_core_argmax`, against a phase maximum of 56) and native CTests **25 → 26**; `__all__`, every registry, every version, the examples, and the benchmarks are unmoved, and **no `max` was shipped beside it**.
+
+There is **no `max`**, no `max_with_indices`, no `argmin`, no index selection, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion, and **K4 through K9 are unstarted**.
 
 **What the contract decides**, so that a later milestone implements rather
 than re-argues it: one extended `NativeTensor` rather than a parallel

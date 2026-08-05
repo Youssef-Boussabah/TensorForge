@@ -2385,7 +2385,7 @@ def test_the_export_inventory_is_still_exactly_fifty_four():
         text = path.read_text(encoding="utf-8")
         declared |= set(re.findall(r"TF_EXPORT[^(;]*?\b(tf_[a-z0-9_]+)\s*\(",
                                    text))
-    assert len(declared) == 54, sorted(declared)
+    assert len(declared) == 55, sorted(declared)
     assert "tf_storage_create_typed" in declared
     assert "tf_storage_create_uninitialized_typed" in declared
     # No per-dtype compute symbol, no cast symbol, no dtype query.

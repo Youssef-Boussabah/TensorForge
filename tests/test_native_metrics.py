@@ -30,10 +30,13 @@ is not built. Cleanup is explicit via close().
 Selector: python -m pytest -q -k native_metrics
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
 import tensorforge
+import tensorforge.experimental.native_metrics
 from tensorforge.backends import cpp
 from tensorforge.experimental import (NativeCrossEntropyLoss, NativeParameter,
                                       NativeTensor, native_accuracy)
@@ -641,18 +644,32 @@ def test_native_metrics_names_are_publicly_exported():
 @needs_native
 def test_native_accuracy_is_not_a_kernel_core_or_autograd_operation():
     """The honest claim: this is Python + NumPy over one explicit
-    conversion, not native compute."""
+    conversion, not native compute.
+
+    **A native ``argmax`` exists since Phase K milestone K3, and this metric
+    still does not use one** — which is the point rather than an oversight.
+    So the check below is the one that stayed true: no *accuracy* operation
+    exists at any layer, and the metric's own implementation still takes the
+    explicit host round trip, proved directly against its source."""
     x = NativeTensor.from_array(LOGITS)
     core = cpp.NativeTensorCore.from_array(LOGITS)
-    for absent in ("native_accuracy", "accuracy", "argmax"):
+    for absent in ("native_accuracy", "accuracy"):
         assert not hasattr(x, absent), absent
         assert not hasattr(core, absent), absent
-    # No ABI symbol exists for it, checked or otherwise.
+    # No accuracy ABI symbol exists, checked or otherwise.
     library = cpp._require_library()
-    for symbol in ("tf_core_accuracy", "tf_core_argmax", "tf_native_accuracy"):
+    for symbol in ("tf_core_accuracy", "tf_native_accuracy"):
         assert symbol not in cpp._CHECKED_KERNELS, symbol
         assert not hasattr(library, symbol) or getattr(
             library, symbol, None) is None, symbol
+    # ...and the metric still reports through the documented host boundary,
+    # read from the code rather than from the prose that describes it.
+    source = (Path(tensorforge.experimental.native_metrics.__file__)
+              .read_text(encoding="utf-8"))
+    body = source.split("def native_accuracy(", 1)[1]
+    assert "logits.to_numpy()" in body
+    assert "np.argmax(values, axis=1)" in body
+    assert ".argmax(" not in body.replace("np.argmax(", "")
     core.close()
     x.close()
 
@@ -660,7 +677,12 @@ def test_native_accuracy_is_not_a_kernel_core_or_autograd_operation():
 @needs_native
 def test_native_accuracy_scope_boundaries_hold():
     """E7's metric is accuracy only: no top-k, no per-class, no confusion
-    matrix, no streaming or stateful metric, and no native argmax."""
+    matrix, and no streaming or stateful metric.
+
+    E7 also added no native ``argmax``, and Phase K milestone K3 shipping one
+    changed nothing here: the metric's inventory is still one name, and
+    ``int64`` is still not a supported native tensor dtype — it is an
+    index/result dtype in its own registry, which is a different row."""
     import tensorforge.experimental as experimental
 
     for absent in ("native_top_k_accuracy", "native_per_class_accuracy",
@@ -669,7 +691,8 @@ def test_native_accuracy_scope_boundaries_hold():
                    "native_f1"):
         assert not hasattr(experimental, absent), absent
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
-    # No integer tensors appeared to support an index-producing reduction.
+    # The compute registry never gained an integer dtype, and no generic
+    # constructor accepts one.
     assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
     with pytest.raises(ValueError):
         cpp.NativeTensorCore.zeros((2, 2), dtype="int64")

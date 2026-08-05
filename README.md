@@ -500,7 +500,7 @@ and nothing asserts that it does.
 
 **Phase J — a deterministic native data pipeline and mini-batching — is
 complete: milestones J0 through J9 have all landed, and J9 closed it.**
-**Phase K is the latest phase, and only K0, K1, and K2 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after*
+**Phase K is the latest phase, and only K0 through K3 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after*
 Phase I closed at I11 rather than having been on the earlier roadmap. **J0 was
 architecture, contract, and documentation work only, and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -778,9 +778,14 @@ barrier still holds against a real integer tensor: it cannot require
 gradients, build or enter a graph, accumulate one, become a
 `NativeParameter`, be registered as a buffer at either persistence value,
 be owned by either optimizer, be declared in a checkpoint archive, or enter
-any floating operation. There is no `argmax`, no index selection, no
-integer arithmetic or reduction, and no casting or promotion, and **K3
-through K9 are unstarted**. What K0 shipped is
+any floating operation.
+
+**K3 shipped the phase's first operation and its first C ABI symbol: native `argmax`.** `NativeTensor.argmax(axis=None, keepdims=False)` and `NativeTensorCore.argmax(axis=None, keepdims=False)` search a **floating** tensor at either dtype, at any rank including 0, contiguous or not, and return a fresh owning contiguous **`int64`** tensor — the one operation in the runtime whose result dtype differs from its operand's, which is what an index is. Shapes come from the existing `reduce_shape` authority and axes from the existing `_normalize_axis_checked`, with the axis validated **before** `keepdims`; the value rule is exact rather than adjectival — equal maxima give the **lowest** index, `+0.0` and `-0.0` tie, an all-`-inf` run gives 0, and the **first** NaN wins against every finite value and either infinity. The result is a plain leaf **even when the input requires gradients**, because an index has no derivative, so `"argmax"` joined `TENSOR_CORE_OPS` and deliberately not `AUTOGRAD_OPS`. Exports went **54 → 55** (`tf_core_argmax`, against a phase maximum of 56) and native CTests **25 → 26**; `__all__`, every registry, every version, the examples, and the benchmarks are unmoved, and **no `max` was shipped beside it**.
+
+**`int64` is still not a supported native tensor dtype** after all
+of that, and K3 is where the distinction earns itself: an operation
+now *produces* `int64` without `int64` ever becoming a dtype a kernel
+computes at. There is **no `max`**, no `max_with_indices`, no `argmin`, no index selection, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion, and **K4 through K9 are unstarted**. What K0 shipped is
 [docs/native_integer_tensors_design.md](docs/native_integer_tensors_design.md)
 and its contract guardrails, which decide the architecture rather than
 survey it: **one extended `NativeTensor`** rather than a parallel integer

@@ -85,9 +85,36 @@ output, and ``to_numpy``/``item``/``tolist`` still return fresh independent
 host values. What it can never do is any of the roles Phase K fenced off at
 K1: it cannot require gradients, build a graph, accumulate one, become a
 ``NativeParameter``, be registered as a buffer, be owned by an optimizer, be
-declared in a checkpoint archive, or enter any floating operation. There is
-no integer arithmetic, no integer reduction, no ``argmax``, no index
-selection, and no casting in either direction.
+declared in a checkpoint archive, or enter any floating operation.
+
+As of Phase K milestone K3, ``argmax(axis=None, keepdims=False)`` joins that
+surface, and it is the first operation in the runtime whose **result dtype
+differs from its operand's**. It accepts a **floating** input only —
+``float64`` or ``float32``, at any rank including 0, contiguous or not — and
+returns a fresh owning contiguous **``int64``** index tensor, over the
+``tf_core_argmax`` export. ``axis``/``keepdims`` behave exactly as they do at
+``sum`` and ``mean``, because the same shape and axis authorities answer for
+all three; the value rule is committed and exact (lowest index on a tie,
+signed zeros tying, and a **first-NaN** rule under which a NaN beats every
+finite value and either infinity).
+
+Producing an ``int64`` result is emphatically **not** the same as making
+``int64`` a compute dtype, and the distinction is the phase's whole
+taxonomy. Nothing computes *at* ``int64``: an integer tensor still has no
+arithmetic of any kind, and — including an ``argmax`` result — still cannot
+itself enter a reduction, ``argmax`` included, because every such entry
+demands a floating operand. ``SUPPORTED_DTYPES`` does not move, and
+``cpp.normalize_dtype("int64")`` still raises.
+
+An ``argmax`` result is an ordinary ``int64`` tensor, so every K1 barrier
+applies to it unchanged: it is excluded from autograd (it is a plain leaf
+**even when the input requires gradients**, because the derivative of an
+index with respect to a value does not exist), from ``NativeParameter``,
+from module buffers at both persistence values, from both optimizers, and
+from checkpoint archives. And there is still no ``max``, no
+``max_with_indices``, no ``argmin``, no ``index_select``, no promotion, and
+no casting in either direction — ``max`` permanently, the rest pending a
+milestone that has not landed.
 
 NativeTensor is still **not** tensorforge.Tensor: the two autograd
 engines never mix, no conversion is implicit, and the framework frontend
@@ -1333,6 +1360,52 @@ class NativeTensor:
             self._accumulate_grad(contribution)
 
         return self._from_op(out_core, (self,), _backward, "mean")
+
+    def argmax(self, axis=None, keepdims=False):
+        """The position of a maximum along ``axis`` (``None`` = over every
+        element), as a fresh owning **``int64``** NativeTensor (Phase K,
+        milestone K3; see docs/native_integer_tensors_design.md §17).
+
+        Delegates to ``NativeTensorCore.argmax``, which owns the contract:
+        floating input at either dtype and any rank including 0, an
+        ``int64`` input rejected, ``axis``/``keepdims`` validated in that
+        order through the existing reduction authorities, the shape derived
+        through ``reduce_shape``, the flat row-major index for ``axis=None``
+        and the position along the axis otherwise, Policy-B
+        copy-then-compute for a non-contiguous input, and the exact NaN,
+        equal-maxima, signed-zero, and infinity rules of §17.5.
+
+        **The result is never a graph node, even when this tensor requires
+        gradients** — ``requires_grad is False``, ``grad is None``,
+        ``is_leaf is True``, no parents, no backward callback, no operation
+        name, and no graph resources. This is the one place ``argmax``
+        differs from every other operation on a gradient-tracking tensor,
+        and it is correct: the derivative of an index with respect to a
+        value does not exist. ``"argmax"`` is therefore in
+        ``TENSOR_CORE_OPS`` and deliberately **not** in ``AUTOGRAD_OPS``.
+        This tensor's own graph, gradient, storage, and metadata are
+        untouched, and it stays open and fully usable.
+
+        The result owns fresh storage, aliases nothing, survives this
+        tensor's ``close()``, and is **the caller's to close**. The
+        destination core is produced before the wrapper is built, so it is
+        this call's to publish or to release: a failure in publication —
+        including a ``BaseException`` — closes it explicitly rather than
+        leaving it to the ``__del__`` safety net, and live storage returns
+        exactly to baseline.
+
+        There is deliberately no ``max``, no ``argmin``, and no tuple
+        return (design §17.10, §11.5)."""
+        out_core = self._require_open().argmax(axis=axis, keepdims=keepdims)
+        try:
+            # Never ``_from_op``: an ``int64`` result is not differentiable,
+            # so there is no graph to build and no parent to record — and
+            # ``_from_op`` would refuse to build one anyway, which is the
+            # structural backstop rather than the mechanism.
+            return self._from_core(out_core)
+        except BaseException:
+            out_core.close()
+            raise
 
     def _binary_forward(self, op_name, other):
         """Shared plumbing for the binary compute ops: require self and

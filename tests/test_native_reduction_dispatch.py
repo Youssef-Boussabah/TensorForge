@@ -2121,7 +2121,12 @@ def test_the_internal_header_is_not_part_of_the_ctypes_surface():
     for name in ("reduce_prefers_contiguous_blocks", "sum_contiguous_blocks",
                  "sum_generic_strided"):
         assert f"library.{name}" not in text, name
-    assert cpp._CHECKED_KERNELS[-1] == "tf_core_dropout_forward"
+    # H6 added no hooked kernel, so the tuple still ends with the last entry
+    # that existed when it landed once the later phases' additions — Phase K
+    # milestone K3's argmax forward — are removed.
+    post_h6 = ("tf_core_argmax",)
+    assert [name for name in cpp._CHECKED_KERNELS
+            if name not in post_h6][-1] == "tf_core_dropout_forward"
     # ``tf_core_sum`` was already an errcheck-hooked kernel before H6 and
     # still is exactly one entry; the inventory did not grow.
     assert cpp._CHECKED_KERNELS.count("tf_core_sum") == 1

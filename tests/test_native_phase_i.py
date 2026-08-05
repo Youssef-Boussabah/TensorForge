@@ -108,7 +108,16 @@ I8_CHECKPOINT_VERSIONS = (1, 2, 3)
 
 # What I1 added, and the only thing it added to the ABI. The count is
 # arithmetic over the inherited baseline so the two cannot drift apart.
-I1_EXPORT_COUNT = I0_EXPORT_COUNT + 2  # 54, and it does not move again
+I1_EXPORT_COUNT = I0_EXPORT_COUNT + 2  # 54, for the whole of Phase I
+
+# Symbols added by **later phases**, after Phase I closed, each mapped to
+# the milestone that shipped it. Keeping the split explicit is what stops
+# later growth from being absorbed into Phase I's record: every
+# "this milestone added no export" claim below is a claim about Phase I,
+# it is still exactly true, and it is measured against the live source
+# with these removed rather than against a number that quietly moved.
+POST_PHASE_I_EXPORTS = {"tf_core_argmax": "K3"}
+CURRENT_EXPORT_COUNT = I1_EXPORT_COUNT + len(POST_PHASE_I_EXPORTS)  # 55
 
 # The ABI dtype codes, frozen. Written here independently of the module
 # under test so a silent renumbering fails rather than propagating.
@@ -1104,10 +1113,17 @@ def test_the_production_export_count_is_now_fifty_four():
     arithmetic over Phase H's 52 so that an unplanned addition and a
     silent removal both fail, rather than cancelling out."""
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT, sorted(exports)
+    assert len(exports) == CURRENT_EXPORT_COUNT, sorted(exports)
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT, \
+        sorted(exports)
     for planned in PLANNED_NEW_EXPORTS:
         assert planned in exports, f"{planned} is missing from the source"
-    assert len(exports - set(PLANNED_NEW_EXPORTS)) == I0_EXPORT_COUNT
+    assert len(exports - set(PLANNED_NEW_EXPORTS)
+               - set(POST_PHASE_I_EXPORTS)) == I0_EXPORT_COUNT
+    # ...and every later symbol really is a later phase's, named with the
+    # milestone that shipped it, so growth is recorded rather than absorbed.
+    for name, milestone in POST_PHASE_I_EXPORTS.items():
+        assert name in exports, (name, milestone)
     # 54 is the count for the **whole** phase: no later milestone adds a
     # symbol, so any per-operation or per-dtype export is a contract
     # violation wherever it appears.
@@ -2883,7 +2899,7 @@ def test_i2_moved_no_public_capability_at_all():
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I2 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_storage_copy_from_typed", "tf_storage_copy_to_typed",
                    "tf_storage_materialize_typed",
                    "tf_core_contiguous_copy_f32", "tf_storage_dtype",
@@ -4058,7 +4074,8 @@ def test_the_elementwise_exports_use_the_matching_dtype_guard():
         assert "require_float64" not in body, name
     # ...and the export count did not move: generalization ships inside the
     # symbols Python already declares.
-    assert len(_source_exports()) == I1_EXPORT_COUNT
+    assert len(_source_exports()
+               - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
 
 
 @needs_native
@@ -4074,7 +4091,7 @@ def test_i3_moved_no_public_capability_at_all():
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I3 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_core_add_f32", "tf_core_relu_f32", "tf_core_add_float32",
                    "tf_core_multiply_f64", "tf_storage_dtype",
                    "tf_storage_cast", "tf_dtype_item_size"):
@@ -5419,7 +5436,8 @@ def test_the_generalized_reduction_and_matmul_exports_carry_one_dispatch():
         assert "require_float64" not in body, name
     # ...and the export count did not move: generalization ships inside the
     # symbols Python already declares.
-    assert len(_source_exports()) == I1_EXPORT_COUNT
+    assert len(_source_exports()
+               - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
 
 
 @needs_native
@@ -5586,7 +5604,7 @@ def test_i4_moved_no_public_capability_at_all():
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I4 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_core_sum_f32", "tf_core_matmul_f32",
                    "tf_core_narrow_backward_f32", "tf_storage_fill_f32",
                    "tf_storage_scale_typed", "tf_core_sum_typed",
@@ -6610,7 +6628,7 @@ def test_i5_moved_no_public_capability_at_all():
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I5 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_core_conv2d_forward_f32", "tf_core_maxpool2d_f32",
                    "tf_core_conv2d_forward_typed", "tf_storage_winners",
                    "tf_core_maxpool2d_forward_f32"):
@@ -8087,7 +8105,7 @@ def test_i6_moved_no_public_capability_at_all():
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I6 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_core_softmax_forward_f32", "tf_core_softmax_typed",
                    "tf_core_cross_entropy_forward_f32",
                    "tf_core_cross_entropy_targets", "tf_storage_create_int64",
@@ -9338,7 +9356,7 @@ def test_normalization_still_adds_no_kernel_export_or_numpy_compute():
         assert name not in experimental.__all__, name
     exports = _source_exports()
     assert not [name for name in exports if "norm" in name.lower()]
-    assert len(exports) == I1_EXPORT_COUNT
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for relative in ("src/tensorforge/experimental/native_batchnorm.py",
                      "src/tensorforge/experimental/native_layernorm.py"):
         source = _read(relative)
@@ -10111,7 +10129,7 @@ def test_i7_moved_no_public_capability_at_all():
             == I8_CHECKPOINT_VERSIONS)
 
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I7 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_core_dropout_forward_f32", "tf_core_dropout_typed",
                    "tf_core_dropout_backward", "tf_core_layer_norm",
                    "tf_core_batch_norm", "tf_storage_cast",

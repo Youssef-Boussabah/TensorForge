@@ -743,10 +743,14 @@ def test_only_native_tensor_gained_a_public_integer_constructor():
             assert absent not in names, (layer, absent)
     # Absent everywhere: later milestones, and the conversions no milestone
     # of this phase adds.
+    # (``argmax`` left this list at K3, which shipped it on NativeTensor
+    # **and** NativeTensorCore; the storage layer still gains nothing,
+    # which is what this test is about.)
     for names in (tensor, core, storage):
-        for absent in ("argmax", "index_select", "gather", "astype", "to",
+        for absent in ("index_select", "gather", "astype", "to",
                        "long", "int", "cpu", "cuda"):
             assert absent not in names, absent
+    assert "argmax" not in storage
 
 
 @needs_native
@@ -1184,13 +1188,13 @@ def test_every_floating_only_export_carries_the_c_side_guard():
             r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(", code, re.S))
         guarded.update(re.findall(
             r'tf::require_floating\(\s*"(tf_[a-z0-9_]+)"', code))
-    assert len(exports) == 54, sorted(exports)
+    assert len(exports) == 55, sorted(exports)
     missing = sorted(exports - guarded - generalized)
     assert missing == [], missing
     # ...and every guarded name really is an export, so a typo in a guard
     # would be caught rather than silently satisfying the rule.
     assert guarded <= exports, sorted(guarded - exports)
-    assert len(guarded) == 32, sorted(guarded)
+    assert len(guarded) == 33, sorted(guarded)
 
 
 def test_the_export_guard_scanner_can_actually_fail():
@@ -1380,7 +1384,7 @@ def test_fill_and_scale_are_guarded_unhooked_and_validated_in_python():
     # which is otherwise exactly what it was (36 names, Phase H's count).
     for name in GUARDED_BUT_UNHOOKED:
         assert name not in cpp._CHECKED_KERNELS, name
-    assert len(cpp._CHECKED_KERNELS) == 36
+    assert len(cpp._CHECKED_KERNELS) == 37
     # Non-vacuity: a genuinely hooked storage export is in the tuple, so the
     # assertion above is about these two rather than about an empty registry.
     assert "tf_storage_materialize" in cpp._CHECKED_KERNELS
@@ -1485,18 +1489,24 @@ def test_the_guarded_but_unhooked_scanner_can_actually_fail():
 # 7. K2 and later remain unstarted
 # ===========================================================================
 
-def test_no_k3_or_k4_operation_name_exists_anywhere():
+def test_no_k4_or_later_operation_name_exists_anywhere():
+    """``tf_core_argmax`` left this list at K3, which shipped it, and is
+    asserted present in its one legitimate inventory instead."""
     exports = set()
     for path in sorted((REPO_ROOT / "cpp" / "src").glob("*.cpp")):
         exports.update(re.findall(
             r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
             path.read_text(encoding="utf-8"), re.S))
-    for absent in ("tf_core_argmax", "tf_core_index_select"):
+    assert "tf_core_argmax" in exports
+    for absent in ("tf_core_index_select", "tf_core_max",
+                   "tf_core_argmin"):
         assert absent not in exports, absent
     for inventory in (cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,
                       cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS):
-        for banned in ("argmax", "index_select", "gather", "int64"):
+        for banned in ("index_select", "gather", "int64"):
             assert not [n for n in inventory if banned in n.lower()], banned
+    assert cpp.TENSOR_CORE_OPS.count("argmax") == 1
+    assert "argmax" not in cpp.AUTOGRAD_OPS
 
 
 def test_the_experimental_export_list_is_still_twenty_five():

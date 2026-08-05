@@ -977,12 +977,18 @@ notes:
 - **It is not native compute, and nothing claims otherwise.** There is
   no accuracy kernel, no C ABI export, no ctypes symbol, no
   `NativeTensorCore` method, and no autograd node — E7 changed no C++
-  file at all. There is deliberately no native `argmax` either. (**At
-  Phase E** the reason was that the runtime had no integer dtype for an
-  index-producing reduction to return. The integer result dtype now
-  exists — Phase K, K2 — but native `argmax` remains intentionally absent
-  until K3, and this helper will keep reporting through the host boundary
-  deliberately even once it lands.)
+  file at all. (**At Phase E** there was deliberately no native `argmax`
+  either, because the runtime had no integer dtype for an index-producing
+  reduction to return. The integer result dtype arrived at Phase K, K2,
+  and a **native `argmax` now exists** — Phase K, K3 — and this helper
+  still reports through the host boundary, **deliberately**: rewriting it
+  over the native `argmax` would still need an integer *equality*
+  reduction to compare predictions against targets, which no milestone
+  ships, so the metric would materialize to the host anyway, one operation
+  later and one allocation heavier, with its single explicit conversion
+  harder to see. The absence being recorded here is now `native_accuracy`'s
+  own choice rather than the type system's limitation, and that is a
+  stronger statement, not a weaker one.)
 - **One shared target validator.** The metric calls the *same* private
   `_prepare_class_targets` helper the E5 Core forward calls, so the
   accepted and rejected forms of §6 are identical at both call sites by

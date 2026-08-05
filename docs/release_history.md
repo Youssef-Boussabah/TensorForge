@@ -2328,9 +2328,9 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase K — native integer tensors and indexing (K0–K2)
+### Phase K — native integer tensors and indexing (K0–K3)
 
-**Phase K is newly approved, and K0, K1, and K2 have
+**Phase K is newly approved, and K0, K1, K2, and K3 have
 landed.** **No version is claimed** — the native line
 stays experimental and is not production-ready, and this entry records
 milestones rather than a release.
@@ -2338,7 +2338,7 @@ milestones rather than a release.
 Phase K was approved **after** Phase J closed at J9. The repository
 deliberately finished Phase J without committing to a successor, so Phase K
 is not carried-over roadmap work and must not be described as though it
-were. **K3 through K9 are unstarted**, and work beyond Phase K would
+were. **K4 through K9 are unstarted**, and work beyond Phase K would
 require a separately approved phase with its own design contract.
 
 **K0 added no runtime behavior at all.** No integer dtype, no dtype code,
@@ -2428,33 +2428,80 @@ for the floating dtypes) and `NativeTensor.tolist()`. `requires_grad` is
 validated **first**, before the array is examined: a non-`bool` raises
 `TypeError` and `True` raises `ValueError`, both before any allocation.
 
+**K3 shipped the phase's first operation and its first C ABI symbol:
+native `argmax`.** `NativeTensor.argmax(axis=None, keepdims=False)` and
+`NativeTensorCore.argmax(axis=None, keepdims=False)` search a **floating**
+tensor at either dtype, at any rank including 0, contiguous or not, and
+return a **fresh owning contiguous `int64` tensor** — the first operation
+in the runtime whose result dtype differs from its operand's, which is the
+whole point of an index. Shapes come from the existing `reduce_shape`
+authority and axes from the existing `_normalize_axis_checked`, so
+`axis`/`keepdims` behave exactly as they do at `sum` and `mean`; the axis
+is validated **before** `keepdims`, which is K3's own error precedence.
+
+Behind them is one new export, `tf_core_argmax`, in the new
+`cpp/src/indexing.cpp` beside `cpp/include/tf_indexing_internal.h`. Its
+source must be floating and its destination must be exactly `int64`, and it
+applies **neither** `tf::require_floating` **nor**
+`tf::require_matching_dtype` to that destination — either would reject
+every valid call — so it carries a dedicated `tf::require_index` role guard
+instead. The value rule is normative and exact rather than adjectival:
+scanning each run from `run[0]`, a strict `>` displaces the incumbent and a
+NaN displaces any non-NaN incumbent, but nothing displaces an incumbent
+NaN. Equal maxima therefore give the **lowest** index, `+0.0` and `-0.0`
+tie, an all-`-inf` run gives 0, several NaNs give the **first**, a NaN beats
+every finite value and either infinity, and a length-1 run gives 0 — proved
+row by row at float32 and float64 **separately**, in
+`tests/test_native_argmax.py` and in the new `argmax` CTest. No NaN
+payload, sign, or signalling bit is ever inspected, and no compatibility
+with any other library is claimed.
+
+`"argmax"` joined `TENSOR_CORE_OPS` and **deliberately did not join
+`AUTOGRAD_OPS`**: the derivative of an index with respect to a value does
+not exist, so the result is a plain leaf — no parents, no backward, no
+operation name — **even when the input requires gradients**, which is the
+one place `argmax` differs from every other operation on a
+gradient-tracking tensor. K3 shipped **no `max`**: a kernel that finds the
+position of a maximum necessarily knows the maximum, and Phase K
+deliberately does not expose it.
+
 *What is still absent, publicly.* `int64` is **still not** a supported
 native tensor dtype — it is an index/result dtype in a separate registry,
 `normalize_dtype("int64")` keeps raising, **no generic constructor changed
 what it accepts**, and public `NativeStorage(size, dtype="int64")` stays
 prohibited. There is no public `NativeStorage.from_int64_array` or
-`NativeTensorCore.from_int64_array`, no `argmax`, no index selection, no
-integer arithmetic or reduction, no integer autograd, parameter, buffer,
-optimizer state, or checkpoint entry, and no promotion or casting.
+`NativeTensorCore.from_int64_array`, no `max`, no `argmin`, no index
+selection, no integer arithmetic or reduction, no integer autograd,
+parameter, buffer, optimizer state, or checkpoint entry, and no promotion
+or casting. `native_accuracy` deliberately still reports through its
+explicit `to_numpy()` host boundary: rewriting it over the native `argmax`
+would still need an integer *equality* reduction that no milestone ships.
 
 Every registry and
-inventory is exactly what Phase J left, with two exceptions — the CTest
-count at K1 and `INDEX_DTYPES` at K2:
+inventory is exactly what Phase J left, with four exceptions — the CTest
+count at K1, `INDEX_DTYPES` at K2, and the export count and CTest count
+again at K3:
 `SUPPORTED_DTYPES ==
 ("float64", "float32")`, `SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED ==
-("cuda", "amp")`, `RAW_KERNEL_DTYPES == ("float64",)`, **54** exported
-`tf_*` symbols, **25** experimental names, **16**
+("cuda", "amp")`, `RAW_KERNEL_DTYPES == ("float64",)`, **25** experimental
+names, **16**
 examples, **9** benchmarks, checkpoint version **3** with `(1, 2, 3)`
-accepted, and optimizer, loader, and sampler state at version **1** — and
+accepted, and optimizer, loader, and sampler state at version **1** — while
 the native CTest inventory moved **24 → 25** at K1
-(`cpp/tests/test_dtype_int64_storage.cpp`).
+(`cpp/tests/test_dtype_int64_storage.cpp`) and **25 → 26** at K3
+(`cpp/tests/test_argmax.cpp`), and the exported `tf_*` symbol count moved
+**54 → 55** at K3 (`tf_core_argmax`), against a phase maximum of **56**.
 
 K2 also corrected two K0 misassignments rather than re-dating them: §20.3
 had assigned the `native_metrics.py` / `NATIVE_METRICS` reconciliation
 wholly to K3, but its *reason* clause ("the runtime has no integer dtype")
 expired at K2, so K2 fixed the reason and left the still-true conclusion
 for K3; and §7.3's heading read "The Python side at K1" while describing
-work the header, §5.2, §32.1, and the K1 ladder row all place at K2.
+work the header, §5.2, §32.1, and the K1 ladder row all place at K2. **K3
+performed the other half of that reconciliation**, updating both surfaces
+to the statement K0 specified — a native `argmax` exists, and this metric
+still reports through the host boundary deliberately — rather than deleting
+the honesty.
 
 K1 also performed the one status reconciliation K0 could not: the
 `tensorforge.experimental` module docstring had knowingly lagged one phase

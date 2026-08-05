@@ -317,7 +317,7 @@ def test_native_cross_entropy_core_layer_stays_graph_unaware():
     assert hasattr(experimental, "NativeCrossEntropyLoss")
     assert hasattr(experimental, "native_accuracy")
     assert not hasattr(experimental, "NativeNLLLoss")
-    for absent in ("native_accuracy", "accuracy", "argmax"):
+    for absent in ("native_accuracy", "accuracy"):
         assert not hasattr(core, absent), absent
     # No graph-resource or expected-version machinery was wired up for
     # cross-entropy: the Core forward builds no node at all.
@@ -1768,7 +1768,12 @@ def test_native_cross_entropy_scope_boundaries_hold():
 
     x = NativeTensor.from_array(LOGITS)
     core = cpp.NativeTensorCore.from_array(LOGITS)
-    for absent in ("max", "argmax", "amax", "divide", "gather",
+    # (``argmax`` left this list at Phase K milestone K3, which shipped it
+    # as a general index-producing reduction. ``max`` and ``amax`` stay
+    # banned and always will: a kernel that finds the position of a
+    # maximum necessarily knows the maximum, and Phase K deliberately does
+    # not expose it — design §17.10.)
+    for absent in ("max", "amax", "divide", "gather",
                    "scatter", "sigmoid", "tanh", "nll_loss", "one_hot",
                    "binary_cross_entropy"):
         assert not hasattr(x, absent), absent

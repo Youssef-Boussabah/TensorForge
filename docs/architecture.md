@@ -1067,7 +1067,7 @@ explicit layer at a time:
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
   complete: milestones J0 through J9 have all landed and J9 closed it.**
-  **Phase K is the latest phase, and only K0, K1, and K2 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved
+  **Phase K is the latest phase, and only K0 through K3 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1226,10 +1226,20 @@ explicit layer at a time:
   moved **24 → 25** at K1, the phase's only inventory change so far.
   `int64` is **still not** a supported native tensor dtype — it is an
   index/result dtype in its own registry, `normalize_dtype("int64")` keeps
-  raising, and no generic constructor changed what it accepts — and no
-  public integer `argmax`, index selection, arithmetic, reduction,
-  autograd, parameter, buffer, optimizer state, or checkpoint entry
-  exists, with **K3 through K9
+  raising, and no generic constructor changed what it accepts. **K3
+  shipped the phase's first operation and its first C ABI symbol —
+  native `argmax`**: `NativeTensor.argmax` / `NativeTensorCore.argmax`
+  take a floating tensor at either dtype and return a fresh owning
+  contiguous `int64` one, over the new `tf_core_argmax` export in the
+  new `cpp/src/indexing.cpp`, with the axis validated before
+  `keepdims`, shapes from the existing `reduce_shape` authority,
+  Policy-B copy-then-compute for a non-contiguous input, and a result
+  that is a plain leaf **even from a gradient-tracking input** —
+  `"argmax"` is in `TENSOR_CORE_OPS` and deliberately not in
+  `AUTOGRAD_OPS`. Exports moved **54 → 55** and CTests **25 → 26**.
+  No public integer `max`, `argmin`, index selection, arithmetic,
+  reduction, autograd, parameter, buffer, optimizer state, or
+  checkpoint entry exists, and **K4 through K9 are
   unstarted**. Its contract is
   [native_integer_tensors_design.md](native_integer_tensors_design.md),
   and the architectural decisions it locks are the ones that would

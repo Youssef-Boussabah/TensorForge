@@ -326,8 +326,12 @@ def test_e8_added_no_capability_inventory_entry():
             offenders = [name for name in info[inventory]
                          if banned in name.lower()]
             assert offenders == [], (inventory, banned, offenders)
-    # No accuracy/argmax/training C ABI symbol was invented for the proof.
-    for absent in ("tf_core_accuracy", "tf_core_argmax", "tf_core_train_step"):
+    # No accuracy or training C ABI symbol was invented for the proof.
+    # (``tf_core_argmax`` is deliberately absent from this list: Phase K
+    # milestone K3 shipped it as a general index-producing reduction, which
+    # is unrelated to E8's proof — that milestone added no export, and the
+    # metric it proves still takes the host round trip.)
+    for absent in ("tf_core_accuracy", "tf_core_train_step"):
         assert absent not in cpp._CHECKED_KERNELS, absent
     # The proof persists nothing new: still float64/cpu, still separate.
     assert info["supported_dtypes"] == ("float64", "float32")
