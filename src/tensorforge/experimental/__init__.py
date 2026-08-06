@@ -399,10 +399,16 @@ async primitive, and none joins the process-wide state-replacement lock
 order. One thread at a time; external locking is the caller's job.
 
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and only K0 through K4 have landed.** Its contract is
+and only K0 through K5 have landed.** Its contract is
 ``docs/native_integer_tensors_design.md``. Phase K was approved **after**
 Phase J closed at J9 without a committed successor, so it is not
-carried-over roadmap work; **K5 through K9 are unstarted**.
+carried-over roadmap work; **K6 through K9 are unstarted**. **K5 added no
+production code**: it is the compatibility proof
+(``tests/test_native_integer_compatibility.py``), showing that K1 through
+K4 left the checkpoint, the optimizer, loader, and sampler states, the
+Phase-J delivery contract, the classification stack, and deterministic
+training and resume exactly where they were. This paragraph is the only
+thing in this package it changed.
 
 **K0** was architecture, contract, status, and guardrails only, and added
 no runtime behavior at all. **K1 added the internal ``int64``

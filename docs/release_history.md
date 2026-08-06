@@ -2328,9 +2328,9 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase K — native integer tensors and indexing (K0–K4)
+### Phase K — native integer tensors and indexing (K0–K5)
 
-**Phase K is newly approved, and K0 through K4 have
+**Phase K is newly approved, and K0 through K5 have
 landed.** **No version is claimed** — the native line
 stays experimental and is not production-ready, and this entry records
 milestones rather than a release.
@@ -2338,7 +2338,7 @@ milestones rather than a release.
 Phase K was approved **after** Phase J closed at J9. The repository
 deliberately finished Phase J without committing to a successor, so Phase K
 is not carried-over roadmap work and must not be described as though it
-were. **K5 through K9 are unstarted**, and work beyond Phase K would
+were. **K6 through K9 are unstarted**, and work beyond Phase K would
 require a separately approved phase with its own design contract.
 
 **K0 added no runtime behavior at all.** No integer dtype, no dtype code,
@@ -2531,10 +2531,101 @@ its explicit `to_numpy()` host boundary: rewriting it over the native
 `argmax` would still need an integer *equality* reduction that no
 milestone ships.
 
+**K5 is the compatibility proof, and it added zero production code.** Its
+whole deliverable is one new test module,
+`tests/test_native_integer_compatibility.py`, plus the status
+reconciliation a landed milestone requires; the only file it touches under
+`src/` is the package docstring's Phase-K status sentence, which carries no
+capability. It exists because K1 through K4 had to be shown *not* to have
+disturbed anything, and a proof spread across the modules that own each
+operation would never have been the same claim.
+
+*What it proves, driven end to end rather than at the unit level K1's and
+K2's modules already own.* **No archive can declare an `int64` entry**,
+from both sides: every archive a real `save_native_checkpoint` writes
+carries floating entries only — parameters, persistent buffers, optimizer
+parameter metadata, and both Adam moment families — at float64 and float32
+independently; and a controlled malformed copy of a *real* archive that
+declares `int64` at a **parameter**, a **persistent-buffer**, an
+**optimizer-moment**, or an **optimizer-parameter** entry is rejected by
+the real parser **before** any destination is published, leaving values,
+versions, gradients, moments, counters, generator states, and every object
+identity byte-identical, and without allocating a single `int64` storage —
+watched at the allocator rather than inferred. The checkpoint format and
+version (`tensorforge.native_checkpoint`, **3**, accepting `(1, 2, 3)`),
+the in-memory optimizer-state version (**1**), and the loader and sampler
+state versions (**1**, accepting `(1,)`) are exactly what Phase J left, and
+**no version-4 constant is written, reserved, or accepted** — proved by
+sweeping the checkpoint module's own version constants rather than by
+reading one of them. A **version-1** archive still loads under its legacy
+rules (no generator section, bare-list moments); versions 1 and 2 keep
+their float64-only interpretation, with a float32 entry and an `int64`
+entry refused for *different* reasons because they are two rules; and
+versions 4, 5, 0, −1 and the malformed spellings all reject through the
+established path.
+
+Parameters, buffers at **both** persistence values, and both optimizers
+still refuse a real `int64` tensor from K2's public door, each rejection
+followed by a before/after fingerprint; a live optimizer's state is
+floating at every position and an `int64` declared in its parameter
+metadata is refused as a mismatch against the live parameter — a second,
+separate authority from the archive's entry validator; and a standalone
+index tensor beside a model is an ordinary attribute, absent from
+`state_dict()` and from the archive. The data pipeline still delivers a
+floating `NativeTensor` feature batch and a read-only host
+`numpy.ndarray` target batch of dtype `int64` at both feature widths, the
+target proved to be read-only host metadata and not a native tensor
+(and not a NumPy scalar), with ordering and
+batching still the sampler's plan and **no option anywhere** — on the
+dataset, the sampler, the loader, or its private iterator, whose
+`__next__` takes `self` alone — able to request a native label. Explicit
+caller conversion through `NativeTensor.from_int64_array` accepts the
+delivered read-only array, preserves every value exactly, is independent of
+its source, and is consumed by `index_select` — and the result is still
+refused as a parameter, a buffer, a cross-entropy target, and a checkpoint
+entry.
+
+`NativeCrossEntropyLoss` accepts and refuses exactly the host forms it did,
+with every accepted form producing a **bit-identical** loss so the accepted
+set is one contract rather than several that agree numerically, correct
+values and gradients at each width against a host oracle, bit-identical
+repeat calls, and a native `int64` target refused by three separate routes
+— the explicit door, a fresh `argmax` result, and a view of one — each at
+the same shared host boundary. `native_accuracy` still succeeds with
+`NativeTensor.argmax`, `NativeTensor.index_select`, and both
+`NativeTensorCore` counterparts **patched to raise**, which is only
+possible if it calls none of them; it materializes through `to_numpy()`
+exactly once, allocates no `int64` storage, builds no graph, mutates
+neither operand, and reproduces NumPy's tie and exceptional-value results
+against a **NumPy oracle** rather than against the native rule the design
+declines to call equivalent.
+
+Finally, a real classifier — trainable parameters, persistent BatchNorm
+buffers, a shared and an owned generator, Adam — trains a fixed schedule
+that crosses an epoch boundary, is interrupted **genuinely mid-epoch** with
+batches still owed, saved through the real checkpoint with the loader state
+as ordinary caller metadata, and resumed into an entirely fresh object
+graph **proved different before the load**. The uninterrupted and resumed
+runs agree bit for bit in every parameter, buffer, optimizer moment,
+counter, scalar, generator state, loader and sampler state, and in every
+per-step logits, loss, gradient, `argmax` index vector, and `index_select`
+selection — independently at float64 and float32, each dtype compared only
+against itself, through `uint32`/`uint64` views and never a tolerance —
+while the evaluation path `logits.argmax(axis=1)` followed by
+`logits.detach().index_select(1, predictions)` runs at fixed points on both
+sides of the interruption. The omitted-loader-state leg is proved to
+diverge, and an otherwise identical control that omits the indexing calls
+ends in a bit-identical trainable state, which is what proves the two
+operations consume no RNG draw, mutate no model, optimizer, or pipeline
+state, create no graph edge, and cannot change what a checkpoint would
+contain.
+
+**The proof found one real defect, and the chronology is part of the record.** Driving the two module registration routes with a deliberately forged `NativeParameter` — the only way to reach them, because the public constructor refuses an `int64` tensor — showed that `save_native_checkpoint` trusted whatever dtype live state reported, so the **writer** could emit an archive declaring an `int64` entry that its own loader then refused. That was a pre-existing gap in the writer, not something Phase K introduced and not reachable through any public API, and it was repaired in a **separate checkpoint-hardening change committed before K5**: a save-side persisted-dtype authority asking the same `cpp.normalize_dtype` question the loader asks, applied in `_validate_model`'s preflight and again at `_coherent_snapshot`'s serialization seam, with its own regression in `tests/test_native_checkpoint.py`. No format, field, version, capability, registry, export, CTest, example, or benchmark moved; the forged parameter is test-only and never supported public usage; and K5 itself remains the test-and-documentation compatibility milestone.
+
 Every registry and
 inventory is exactly what Phase J left, with five exceptions — the CTest
 count at K1, `INDEX_DTYPES` at K2, the export count and CTest count again
-at K3, and both again at K4:
+at K3, and both again at K4, with **K5 moving none of them**:
 `SUPPORTED_DTYPES ==
 ("float64", "float32")`, `SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED ==
 ("cuda", "amp")`, `RAW_KERNEL_DTYPES == ("float64",)`, **25** experimental

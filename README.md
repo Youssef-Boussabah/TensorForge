@@ -500,7 +500,7 @@ and nothing asserts that it does.
 
 **Phase J — a deterministic native data pipeline and mini-batching — is
 complete: milestones J0 through J9 have all landed, and J9 closed it.**
-**Phase K is the latest phase, and only K0 through K4 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after*
+**Phase K is the latest phase, and only K0 through K5 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after*
 Phase I closed at I11 rather than having been on the earlier roadmap. **J0 was
 architecture, contract, and documentation work only, and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -788,7 +788,31 @@ any floating operation.
 of that, and K3 and K4 are where the distinction earns itself: one
 operation now *produces* `int64` and another *consumes* it as a role
 operand, without `int64` ever becoming a dtype a kernel computes at.
-There is **no `max`**, no `max_with_indices`, no `argmin`, no general `gather`, no `scatter`, no embedding lookup, no `index_select` backward, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion, and **K5 through K9 are unstarted**. What K0 shipped is
+There is **no `max`**, no `max_with_indices`, no `argmin`, no general `gather`, no `scatter`, no embedding lookup, no `index_select` backward, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion, and **K6 through K9 are unstarted**.
+
+**K5 is the compatibility proof, and it added zero production code** —
+one new test module, `tests/test_native_integer_compatibility.py`. It
+shows against the live tree that no checkpoint archive can declare an
+`int64` entry at any entry role or accepted version; that the checkpoint
+format and version, the optimizer-state version, and the loader and
+sampler state versions are all exactly what Phase J left; that
+parameters, buffers, and both optimizers still refuse a real `int64`
+tensor; that the data pipeline still delivers a floating `NativeTensor`
+feature batch and a read-only host `numpy.ndarray` target batch of dtype
+`int64`, and gained no option that would convert a
+label; that a caller may convert delivered targets explicitly through
+`NativeTensor.from_int64_array` and feed them to `index_select` with no
+pipeline change; that `NativeCrossEntropyLoss` and `native_accuracy` are
+behaviorally unchanged (the metric proved not to call the native `argmax`
+or `index_select` at all); and that a real classifier trains,
+checkpoints, and resumes **bit-identically** at float64 and float32 while
+`argmax` and a detached `index_select` run beside the training path.
+Exports stayed 56, CTests 27, examples 16, benchmarks 9, and
+`experimental.__all__` 25.
+
+**The proof found one real defect, and the chronology is part of the record.** Driving the two module registration routes with a deliberately forged `NativeParameter` — the only way to reach them, because the public constructor refuses an `int64` tensor — showed that `save_native_checkpoint` trusted whatever dtype live state reported, so the **writer** could emit an archive declaring an `int64` entry that its own loader then refused. That was a pre-existing gap in the writer, not something Phase K introduced and not reachable through any public API, and it was repaired in a **separate checkpoint-hardening change committed before K5**: a save-side persisted-dtype authority asking the same `cpp.normalize_dtype` question the loader asks, applied in `_validate_model`'s preflight and again at `_coherent_snapshot`'s serialization seam, with its own regression in `tests/test_native_checkpoint.py`. No format, field, version, capability, registry, export, CTest, example, or benchmark moved; the forged parameter is test-only and never supported public usage; and K5 itself remains the test-and-documentation compatibility milestone.
+
+What K0 shipped is
 [docs/native_integer_tensors_design.md](docs/native_integer_tensors_design.md)
 and its contract guardrails, which decide the architecture rather than
 survey it: **one extended `NativeTensor`** rather than a parallel integer

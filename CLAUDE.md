@@ -110,7 +110,7 @@ capability decision, never a side effect.
 | Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` |
 | Exported production `tf_*` symbols | **56** (Phase H closed at 52; Phase I added 2 at I1; Phase K added `tf_core_argmax` at K3 and `tf_core_index_select` at K4, reaching its phase maximum of 56) |
 | Experimental Python exports | **25** |
-| Native CTests · examples · benchmarks | **27** · **16** · **9** (24 at Phase K's start; K1, K3, and K4 each added one CTest) |
+| Native CTests · examples · benchmarks | **27** · **16** · **9** (24 at Phase K's start; K1, K3, and K4 each added one CTest; K5 added none) |
 
 **Three dtype rows, three different questions**, and none may be reported as
 another: `SUPPORTED_DTYPES` is the **capability**; `backend_info()["dtype"]`
@@ -639,7 +639,7 @@ that changes the public API or the examples updates the matching document
   Record it that way rather than rewriting it: "the phase that came next"
   and "the phase that was always planned next" are different facts.
 - **Native line: Phase K — Native Integer Tensors and Indexing — is the
-  newly approved phase and is the latest phase, and only K0 through K4 have landed.**
+  newly approved phase and is the latest phase, and only K0 through K5 have landed.**
   Authority
   `docs/native_integer_tensors_design.md`. **K0 is architecture, contract,
   status, and guardrails only and added no runtime behavior at all**: no
@@ -744,11 +744,55 @@ that changes the public API or the examples updates the matching document
   audit **33 → 34** on index_select's *source* and *destination* roles.
   `AUTOGRAD_OPS`, `__all__`, every registry, every version, the 16
   examples, and the 9 benchmarks are unmoved.
+  **K5 is the compatibility proof and added zero production code**: one
+  new module, `tests/test_native_integer_compatibility.py`, plus status
+  reconciliation. It proves against the live tree that no archive can
+  declare an `int64` entry at a parameter, persistent-buffer,
+  optimizer-moment, or optimizer-parameter entry at any accepted version
+  — rejecting **before** publication and without allocating an `int64`
+  storage, and now from **both** directions, the writer refusing to emit
+  such an entry as well as the loader refusing to accept one; that the
+  checkpoint format/version/accepted set, the
+  optimizer-state version, and the loader and sampler state versions are
+  exactly what Phase J left, with **no version-4 constant written,
+  reserved, or accepted**; that parameters, both buffer kinds, and both
+  optimizers still refuse a real `int64` tensor; that Phase J still
+  delivers a floating `NativeTensor` feature batch and a read-only host
+  `numpy.ndarray` target batch of dtype `int64`, and gained no option able
+  to request a native label; that explicit caller conversion through
+  `from_int64_array` works on a delivered batch with no pipeline change;
+  that `NativeCrossEntropyLoss` is unchanged and `native_accuracy` calls
+  neither native operation (proved by patching both to raise); and that a
+  real classifier trains, checkpoints, and resumes **bit-identically** at
+  both widths while `argmax` and a detached `index_select` run beside the
+  training path, with an observational control proving that evaluation
+  indexing moves no trainable state. Exports **56**, CTests **27**,
+  examples **16**, benchmarks **9**, and `__all__` **25** are all
+  unmoved; the only file it touches under `src/` is the package
+  docstring's Phase-K status sentence, which carries no capability.
+  **The proof found one real defect, and the chronology matters**: driving
+  the two module registration routes with a deliberately forged
+  `NativeParameter` showed that `save_native_checkpoint` trusted whatever
+  dtype live state reported, so it could **write** an archive declaring an
+  `int64` entry that its own loader then refused. That was a pre-existing
+  gap in the *writer*, not something Phase K introduced and not reachable
+  through any public API — the parameter constructor and `register_buffer`
+  remain the supported authorities, and neither registration route carries
+  a second dtype check. It was repaired in a **separate**
+  checkpoint-hardening change committed **before** K5, which added a
+  save-side persisted-dtype authority
+  (`_canonical_persisted_dtype` / `_validated_persisted_dtype`) asking the
+  same `cpp.normalize_dtype` question the loader asks, applied in
+  `_validate_model`'s preflight and again at `_coherent_snapshot`'s
+  serialization seam, with its own regression in
+  `tests/test_native_checkpoint.py`. **No format, field, version,
+  capability, registry, export, CTest, example, or benchmark moved**, and
+  K5 itself stays the test-and-documentation milestone it is.
   No `max`, no `argmin`, no general `gather`, no `scatter`, no embedding
   lookup, no `index_select` backward, no
   integer arithmetic or reduction, no integer autograd, parameter, buffer,
   optimizer state, or checkpoint entry, and no casting or promotion exists,
-  and **K5 through K9 are unstarted**. Every reachability barrier landed at
+  and **K6 through K9 are unstarted**. Every reachability barrier landed at
   **K1**, one milestone before an integer tensor could be constructed at
   all: **prove first, then promise.** The phase's C ABI maximum is **56**
   (54 + `argmax` at K3 + `index_select` at K4), which K4 reached, and
