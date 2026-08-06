@@ -1381,9 +1381,9 @@ PHASE_I_TYPED_CREATORS = (
     "tf_storage_create_typed",
     "tf_storage_create_uninitialized_typed",
 )
-PHASE_K_ADDED_EXPORTS = ("tf_core_argmax",)
+PHASE_K_ADDED_EXPORTS = ("tf_core_argmax", "tf_core_index_select")
 POST_PHASE_H_EXPORTS = PHASE_I_TYPED_CREATORS + PHASE_K_ADDED_EXPORTS
-EXPECTED_TF_EXPORTS = PHASE_H_TF_EXPORTS + len(POST_PHASE_H_EXPORTS)  # 55
+EXPECTED_TF_EXPORTS = PHASE_H_TF_EXPORTS + len(POST_PHASE_H_EXPORTS)  # 56
 
 
 def phase_h_export_names(exported):

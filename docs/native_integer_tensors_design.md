@@ -18,8 +18,8 @@ statements, and only the first is true here. Phase K was not part of the
 Phase-I roadmap, was not planned during Phase J, and did not exist before
 the branch that carries this document.
 
-**Phase-K status: K0, K1, K2, and K3 complete. K0, K1, K2, and K3 are the
-only completed Phase-K milestones. K4 through K9 are unstarted.**
+**Phase-K status: K0 through K4 complete. K0 through K4 are the
+only completed Phase-K milestones. K5 through K9 are unstarted.**
 
 **K0 adds no runtime behavior.** No integer dtype, no dtype code, no C++
 enumerator, no storage change, no kernel, no C ABI symbol, no ctypes
@@ -84,37 +84,65 @@ the result is a plain leaf even when the input requires grad. The exports
 went 54 → **55** and the native CTests 25 → **26**; nothing else moved, and
 `max` was **not** shipped (§17.10).
 
-**`int64` is not a supported TensorForge native tensor dtype**, at K3 or
-ever. It is an **index/result** dtype, in a separate registry, and the
-distinction is the whole of the phase's taxonomy (§5.1). K3 is where that
-distinction earns itself: an operation now *produces* `int64` without
-`int64` ever becoming a dtype a kernel computes at. The compute boundary is
-exactly what Phase I established and Phase J left untouched, and no Phase-K
-milestone has moved any of it:
+**K4 shipped the phase's one index-*consuming* operation and its second and
+final C ABI symbol: native `index_select`, forward only.**
+`NativeTensor.index_select(axis, indices)` and
+`NativeTensorCore.index_select(axis, indices)` take a **floating** source at
+either dtype, any rank ≥ 1, contiguous or not, together with a rank-1
+`int64` index tensor, and return a **fresh owning contiguous** tensor of the
+**source's** dtype whose selected axis has `indices.numel` positions. It is
+`argmax`'s mirror image: that one produces an index from values, this one
+consumes one and produces values. Behind them is one new export,
+`tf_core_index_select`, whose source and destination are floating and must
+**agree** — the one place in the phase `tf::require_matching_dtype` is used,
+and never across the floating/index boundary — and whose separate index
+handle must be exactly `int64` (§22.9). Duplicates and order are preserved
+exactly, negative and out-of-range indices are **rejected rather than
+wrapped**, the complete bounds scan runs in Python *and* independently in
+C++ before the first destination element is written, and values cross by
+**object representation**, so both signed zeros, both infinities,
+subnormals, and every NaN payload survive bit for bit. `"index_select"`
+joined `TENSOR_CORE_OPS` and **deliberately did not join `AUTOGRAD_OPS`**: a
+source with `requires_grad=True` is **rejected with a message naming
+`detach()`** rather than silently detached, because the backward is a
+scatter-add with its own contract and its own milestone and a graph-free
+result from a gradient-tracking source would be a silent gradient hole
+(§18.9). The exports went 55 → **56** — the phase maximum — and the native
+CTests 26 → **27**; nothing else moved, and no general `gather`, `scatter`,
+or embedding lookup was shipped (§18.1).
 
-| Row | Value at K0 | Value at K1 | Value at K2 | Value at K3 |
-|---|---|---|---|---|
-| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged | unchanged | unchanged |
-| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged | unchanged | unchanged |
-| `UNSUPPORTED` | `("cuda", "amp")` | unchanged | unchanged | unchanged |
-| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged | unchanged | unchanged |
-| `normalize_dtype(None)` | `"float64"` | unchanged | unchanged | unchanged |
-| `normalize_dtype("int64")` | raises `ValueError` | unchanged | unchanged | unchanged |
-| `backend_info()["dtype"]` | `"float64"` | unchanged | unchanged | unchanged |
-| `backend_info()["stable_framework_integration"]` | `False` | unchanged | unchanged | unchanged |
-| `INDEX_DTYPES` | absent | absent | **`("int64",)`** | unchanged |
-| Python `_DTYPE_CODES` | `float64`, `float32` | unchanged | **+ `int64: 2`** | unchanged |
-| C++ `TfDtype` | `FLOAT64`, `FLOAT32` | **+ `INT64 = 2`** | unchanged | unchanged |
-| Public integer constructor | absent | absent | **`NativeTensor.from_int64_array`** | unchanged |
-| `TENSOR_CORE_OPS` | Phase-J set | unchanged | unchanged | **+ `"argmax"`** |
-| `AUTOGRAD_OPS` | Phase-J set | unchanged | unchanged | unchanged |
-| Native checkpoint format · version · accepted | `tensorforge.native_checkpoint` · **3** · `(1, 2, 3)` | unchanged | unchanged | unchanged |
-| In-memory optimizer state version | **1** | unchanged | unchanged | unchanged |
-| Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` | unchanged | unchanged | unchanged |
-| Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` | unchanged | unchanged | unchanged |
-| Exported production `tf_*` symbols | **54** | **54** | **54** | **55** |
-| Experimental Python exports | **25** | **25** | **25** | **25** |
-| Native CTests · examples · benchmarks | **24** · **16** · **9** | **25** · **16** · **9** | **25** · **16** · **9** | **26** · **16** · **9** |
+**`int64` is not a supported TensorForge native tensor dtype**, at K4 or
+ever. It is an **index/result** dtype, in a separate registry, and the
+distinction is the whole of the phase's taxonomy (§5.1). K3 and K4 are where
+that distinction earns itself: one operation now *produces* `int64` and
+another *consumes* it as a role operand, without `int64` ever becoming a
+dtype a kernel computes at. The compute boundary is exactly what Phase I
+established and Phase J left untouched, and no Phase-K milestone has moved
+any of it:
+
+| Row | Value at K0 | Value at K1 | Value at K2 | Value at K3 | Value at K4 |
+|---|---|---|---|---|---|
+| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged | unchanged | unchanged | unchanged |
+| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged | unchanged | unchanged | unchanged |
+| `UNSUPPORTED` | `("cuda", "amp")` | unchanged | unchanged | unchanged | unchanged |
+| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged | unchanged | unchanged | unchanged |
+| `normalize_dtype(None)` | `"float64"` | unchanged | unchanged | unchanged | unchanged |
+| `normalize_dtype("int64")` | raises `ValueError` | unchanged | unchanged | unchanged | unchanged |
+| `backend_info()["dtype"]` | `"float64"` | unchanged | unchanged | unchanged | unchanged |
+| `backend_info()["stable_framework_integration"]` | `False` | unchanged | unchanged | unchanged | unchanged |
+| `INDEX_DTYPES` | absent | absent | **`("int64",)`** | unchanged | unchanged |
+| Python `_DTYPE_CODES` | `float64`, `float32` | unchanged | **+ `int64: 2`** | unchanged | unchanged |
+| C++ `TfDtype` | `FLOAT64`, `FLOAT32` | **+ `INT64 = 2`** | unchanged | unchanged | unchanged |
+| Public integer constructor | absent | absent | **`NativeTensor.from_int64_array`** | unchanged | unchanged |
+| `TENSOR_CORE_OPS` | Phase-J set | unchanged | unchanged | **+ `"argmax"`** | **+ `"index_select"`** |
+| `AUTOGRAD_OPS` | Phase-J set | unchanged | unchanged | unchanged | unchanged |
+| Native checkpoint format · version · accepted | `tensorforge.native_checkpoint` · **3** · `(1, 2, 3)` | unchanged | unchanged | unchanged | unchanged |
+| In-memory optimizer state version | **1** | unchanged | unchanged | unchanged | unchanged |
+| Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged |
+| Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged |
+| Exported production `tf_*` symbols | **54** | **54** | **54** | **55** | **56** |
+| Experimental Python exports | **25** | **25** | **25** | **25** | **25** |
+| Native CTests · examples · benchmarks | **24** · **16** · **9** | **25** · **16** · **9** | **25** · **16** · **9** | **26** · **16** · **9** | **27** · **16** · **9** |
 
 **`SUPPORTED_DTYPES` never gains `int64` — not in Phase K and not
 afterwards** (§5). It is, and permanently remains, the **floating compute**
@@ -144,10 +172,11 @@ fail if one is written:
   own registry, and `SUPPORTED_DTYPES` is the floating-compute registry;
 - a `max`, a `max_with_indices`, or an `argmin` exists — none does, and
   `max` is declined **permanently** by §17.10 rather than deferred;
-- index selection is available;
-- Phase K is **not** complete, and no milestone after K3 has landed.
+- a general `gather`, a `scatter`, a `scatter_add`, an embedding lookup, or
+  an `index_select` **backward** exists — none does (§18.1, §18.9, §35);
+- Phase K is **not** complete, and no milestone after K4 has landed.
 
-Two things that were on this list and have been **moved rather than
+Three things that were on this list and have been **moved rather than
 deleted**, which is the discipline the list exists to demonstrate:
 
 - "no native integer tensor exists" was true through K1, because K1 shipped
@@ -161,6 +190,11 @@ deleted**, which is the discipline the list exists to demonstrate:
   project, which is the mirror of the failure the ban existed to catch — so
   the entry moved, and what replaced it is the narrower claim K3 did not
   earn.
+- "index selection is available" was true as a prohibition through K3 and is
+  false from **K4**, which shipped `index_select`. The entry moved for
+  `argmax`'s reason, and what replaced it is the narrower claim K4 did not
+  earn: the general `gather`, the `scatter`, the embedding, and the
+  **backward**, none of which exists.
 
 ---
 
@@ -2668,7 +2702,7 @@ existing rule plus the ones this phase makes specific.
 
 ## 32. Final milestone ladder
 
-Ten milestones, **one purpose each**. K0, K1, and K2 are complete; K3
+Ten milestones, **one purpose each**. K0 through K4 are complete; K5
 through K9 are unstarted. No milestone combines two major operations, no
 milestone exists to preserve a numbering, and K9 is the closure.
 
@@ -2735,7 +2769,7 @@ than trusting the prose.
 | **K1** | `int64` representation **and every reachability barrier**, with the dtype reachable only through the C ABI | **Complete.** `tf::Dtype::Int64`, the transfer arms, `tf::require_floating` on every float-only export, the nine Python narrowings, every §6.5 barrier, `tests/test_native_integer_barriers.py`, and `cpp/tests/test_dtype_int64_storage.cpp`. No public name, no export, no registry movement. |
 | **K2** | The `int64` tensor: private storage ingress, construction, views, copies, host inspection, the one public door, and `INDEX_DTYPES` — **atomically** | **Complete.** The three dtype tables and the host binding, `INDEX_DTYPES` and `backend_info()["index_dtypes"]`, the generalized no-drift invariant, `_normalize_index_dtype`, the private `_from_int64_array` pair, the two widened wrapper gates, `NativeTensor.from_int64_array` / `item()` / `tolist()`, and `tests/test_native_int64_tensor.py`. No export, no `__all__` change, no CTest, no example, no benchmark, no version change. |
 | **K3** | Native `argmax` — the phase's first operation and its first C ABI symbol | **Complete.** `cpp/include/tf_indexing_internal.h` (the templated traversal and the `tf::require_index` role guard), `cpp/src/indexing.cpp` (`tf_core_argmax`), one CTest (25 → **26**), the ctypes declaration and errcheck hook, `NativeTensorCore.argmax`, `NativeTensor.argmax`, `"argmax"` in `TENSOR_CORE_OPS`, the §20.3 reconciliation, and `tests/test_native_argmax.py`. Exports 54 → **55**. `AUTOGRAD_OPS`, `__all__`, every registry, every version, the examples, and the benchmarks are unmoved, and no `max` was shipped. |
-| **K4** | `index_select`, forward only | *Unstarted.* |
+| **K4** | `index_select`, forward only — the phase's one index-*consuming* operation and its second and final C ABI symbol | **Complete.** `tf::index_select_contiguous` beside K3's traversal in the same internal header, `tf_core_index_select` beside `tf_core_argmax` in the same translation unit, one CTest (26 → **27**), the ctypes declaration and errcheck hook, `NativeTensorCore.index_select`, `NativeTensor.index_select` with the `requires_grad` rejection naming `detach()`, `"index_select"` in `TENSOR_CORE_OPS`, and `tests/test_native_index_select.py`. Exports 55 → **56**, the phase maximum. `AUTOGRAD_OPS`, `__all__`, every registry, every version, the examples, and the benchmarks are unmoved, and no `gather`, `scatter`, embedding, or backward was shipped. |
 | **K5** | Compatibility proof — checkpoint, state, data pipeline, classification | *Unstarted.* |
 | **K6** | End-to-end integration example and exact proof | *Unstarted.* |
 | **K7** | Adversarial hardening | *Unstarted.* |
@@ -3052,13 +3086,76 @@ no backward export, no `AUTOGRAD_OPS` entry, no benchmark, no example, no
 registry or version movement, and no change to `native_accuracy`'s runtime
 behavior (§20.3).
 
-### K4 — `index_select`, forward only
+### K4 — `index_select`, forward only · complete
 
-**Layers:** the same two C++ files, `cpp/CMakeLists.txt`,
-`backends/cpp.py`, `native_tensor.py`.
+**Layers:** the same two C++ files (`cpp/include/tf_indexing_internal.h`,
+`cpp/src/indexing.cpp`), `cpp/CMakeLists.txt` (the source list is a glob, so
+only the CTest registration was edited), `backends/cpp.py` (declaration,
+`_CHECKED_KERNELS`, `TENSOR_CORE_OPS`, `_require_index_dtype`,
+`_is_axis_int` / `_require_axis_int`, `NativeTensorCore.index_select`), and
+`native_tensor.py` (`NativeTensor.index_select`).
 
 **ABI +1 → 56 — the phase maximum.** CTests +1 → 27. `AUTOGRAD_OPS`
 unchanged.
+
+**What landed, precisely.**
+
+- **The traversal**, `tf::index_select_contiguous`, one template over the
+  *value* element type — the source and the destination together, which is
+  sound because they are proved to agree — added **beside**
+  `argmax_contiguous` rather than by generalizing it. The index pointer is
+  always `std::int64_t` and is never a template parameter. It copies whole
+  `inner`-element slices with `std::memcpy`, so every element crosses by
+  **object representation**: it reads no value, performs no arithmetic,
+  compares nothing, and therefore cannot canonicalize a signalling NaN or
+  normalize a signed zero the way a floating assignment would be permitted
+  to. It is `noexcept`, allocation-free, has no dtype branch inside the
+  loop, and writes only inside `[0, outer * index_count * inner)`.
+- **The export**, `tf_core_index_select`, guarded with
+  `TF_GUARD_BEGIN`/`TF_GUARD_END_VOID()` and validating in §22.9's order:
+  three null handles, source floating, destination floating,
+  source/destination dtypes matching, index exactly `int64`, four positive
+  extents, both checked products, both offset signs, the source span, the
+  index span, an **exact** destination element count of
+  `outer * index_count * inner`, the representability of one slice's byte
+  count, both aliasing pairs, then the **complete** index bounds scan, then
+  one dispatch on the **source** dtype alone. `tf::require_matching_dtype`
+  is used here and only here, and only across the floating pair.
+- **Its own validator**, `index_select_argument_error`, file-local and
+  separate from K3's `argument_error`: three handles, two offsets, four
+  extents, and two aliasing pairs are a different list, and one function
+  covering both would have needed a mode flag. The two exports share only
+  the operation-independent primitives — checked multiplication and
+  addition, span containment, and the error-recording helper.
+- **The Core operation**, which validates in §18.6's order — axis *type*,
+  index operand *type*, source open, index open, source floating, index
+  `int64`, axis range through the shared `_normalize_axis_checked`
+  authority, index rank exactly 1, the **complete** bounds scan, then the
+  output shape and count — with **everything before the allocation step
+  allocating nothing**, proved by an allocator probe rather than by
+  inspection. It materializes a non-contiguous source *or* index through
+  Policy B as two separate temporaries, allocates a **zeroed** floating
+  destination (§27.3), and closes every temporary in reverse allocation
+  order and the destination under `BaseException`.
+- **The tensor method**, which owns the one rule the Core cannot: a source
+  with `requires_grad=True` is **rejected** with a message naming
+  `detach()`, never silently detached. It wraps the Core result as a plain
+  leaf and never calls `_from_op`.
+- **Two small shared validators** on the Python side, each a sibling of an
+  existing one rather than a new authority: `_require_index_dtype` (the
+  Python half of `tf::require_index`) and `_require_axis_int`, which asks
+  the **type** half of `_normalize_axis_checked`'s question on its own so
+  that the type and the range can be reported at different points in one
+  validation order. `_is_axis_int` is the single predicate both ask, so the
+  accepted axis domain — Python `int`, NumPy integer scalar, `bool`
+  rejected — cannot drift between them.
+
+**What did not land, and why it is worth saying:** no general `gather`, no
+`scatter`, no `scatter_add`, no embedding lookup, no `__getitem__` or
+`__setitem__`, no advanced, boolean, or multi-axis indexing, no backward
+export, no `AUTOGRAD_OPS` entry, no `argmin`, no `max`, no benchmark, no
+example, and no registry or version movement. The gradient's contract is
+already fixed by §18.9 for the separately approved phase that ships it.
 
 ### K5 — Compatibility proof
 

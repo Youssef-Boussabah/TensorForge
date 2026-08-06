@@ -807,4 +807,41 @@ if(TF_BUILD_TESTS)
   endif()
 
   add_test(NAME argmax COMMAND test_argmax)
+
+  # Native index_select (Phase K, milestone K4): compiles the same indexing
+  # source unit directly, so it reaches the hidden templated
+  # tf::index_select_contiguous at BOTH instantiations beside the exported
+  # tf_core_index_select wrapper they live inside. storage.cpp supplies the
+  # typed Storage handles the export takes; error.cpp the thread-local slot
+  # the guarded wrapper records into.
+  #
+  # Deliberately complementary rather than a superset: test_dtype_int64_storage
+  # keeps K1's representation, transfer, and floating-role barrier table,
+  # test_argmax keeps K3's normative value rule, and this one proves what K4
+  # opened — exact slice selection at both value widths **separately** with
+  # duplicates, reversed order, nonzero source and index offsets, and
+  # outer/inner decompositions; **raw-bit** preservation of signed zeros,
+  # infinities, subnormals, and distinct NaN payloads through the memcpy
+  # copy; the complete rejection matrix (including an int64 source, an int64
+  # destination, a float32/float64 mismatch, a floating index, and both
+  # aliasing pairs) with the destination byte-for-byte unchanged after every
+  # row; and the claim that most needs driving rather than asserting — the
+  # complete C-side index scan rejecting a bad index that follows several
+  # valid ones **without writing anything at all**.
+  add_executable(test_index_select
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_index_select.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/indexing.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/storage.cpp"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/error.cpp")
+  target_include_directories(test_index_select PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  if(NOT MSVC)
+    target_compile_options(test_index_select PRIVATE -Wall -Wextra)
+  endif()
+  if(TF_SANITIZE AND NOT MSVC)
+    target_compile_options(test_index_select PRIVATE ${_tf_sanitize_flags})
+    target_link_options(test_index_select PRIVATE ${_tf_sanitize_flags})
+  endif()
+
+  add_test(NAME index_select COMMAND test_index_select)
 endif()

@@ -1067,7 +1067,7 @@ explicit layer at a time:
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
   complete: milestones J0 through J9 have all landed and J9 closed it.**
-  **Phase K is the latest phase, and only K0 through K3 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved
+  **Phase K is the latest phase, and only K0 through K4 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1237,9 +1237,28 @@ explicit layer at a time:
   that is a plain leaf **even from a gradient-tracking input** —
   `"argmax"` is in `TENSOR_CORE_OPS` and deliberately not in
   `AUTOGRAD_OPS`. Exports moved **54 → 55** and CTests **25 → 26**.
-  No public integer `max`, `argmin`, index selection, arithmetic,
+  **K4 shipped the phase's one index-*consuming* operation and its
+  second and final C ABI symbol — native `index_select`, forward
+  only**: `NativeTensor.index_select(axis, indices)` /
+  `NativeTensorCore.index_select(axis, indices)` take a floating source
+  and a rank-1 `int64` index tensor and return a fresh owning contiguous
+  tensor of the **source's** dtype, over the new `tf_core_index_select`
+  export in the **same** translation unit — K4 added no second indexing
+  unit and its traversal sits beside K3's rather than generalizing it.
+  Duplicates and order are preserved exactly, negative and out-of-range
+  indices reject rather than wrap, every index is scanned completely in
+  Python *and* again at the C ABI before anything is written, values
+  cross by object representation so every NaN payload and both signed
+  zeros survive, and a non-contiguous source *or* index is materialized
+  through Policy-B. A source with `requires_grad=True` is **rejected**
+  with a message naming `detach()` rather than silently detached, so
+  `"index_select"` is in `TENSOR_CORE_OPS` and deliberately not in
+  `AUTOGRAD_OPS`. Exports moved **55 → 56** — the phase maximum — and
+  CTests **26 → 27**.
+  No public integer `max`, `argmin`, general `gather`, `scatter`,
+  embedding lookup, `index_select` backward, arithmetic,
   reduction, autograd, parameter, buffer, optimizer state, or
-  checkpoint entry exists, and **K4 through K9 are
+  checkpoint entry exists, and **K5 through K9 are
   unstarted**. Its contract is
   [native_integer_tensors_design.md](native_integer_tensors_design.md),
   and the architectural decisions it locks are the ones that would

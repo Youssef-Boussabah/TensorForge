@@ -1098,7 +1098,7 @@ def test_optimizer_updates_after_matmul_gradients_are_reproducible(
 # storage creators and Phase K milestone K3's argmax forward — so the
 # Phase-H claim is checked against the Phase-H subset.
 PHASE_H_TF_EXPORTS = 52
-EXPECTED_TF_EXPORTS = 55
+EXPECTED_TF_EXPORTS = 56
 
 # Names that would constitute a runtime dispatch control. None may exist
 # in the shipped library or the installed Python backend.

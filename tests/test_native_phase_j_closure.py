@@ -134,10 +134,12 @@ FINAL_EXPORT_COUNT = PHASE_I_EXPORT_COUNT + len(PHASE_J_ADDED_EXPORTS)  # 54
 # mapped to the milestone that shipped it. Phase J's own record does not
 # move; the live tree's is derived from it plus these, so an unrecorded
 # addition still fails an exact equality. Phase K, milestone K1 added the
-# int64 storage CTest, and milestone K3 the argmax export and its CTest.
-POST_PHASE_J_EXPORTS = {"tf_core_argmax": "K3"}
-POST_PHASE_J_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3"}
-CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(POST_PHASE_J_EXPORTS)  # 55
+# int64 storage CTest, milestone K3 the argmax export and its CTest, and
+# milestone K4 the index_select export and its CTest.
+POST_PHASE_J_EXPORTS = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
+POST_PHASE_J_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3",
+                       "index_select": "K4"}
+CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(POST_PHASE_J_EXPORTS)  # 56
 
 # Serialization — four separate authorities, none of which moved.
 FINAL_CHECKPOINT_FORMAT = "tensorforge.native_checkpoint"

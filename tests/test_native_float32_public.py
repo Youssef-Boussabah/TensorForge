@@ -852,7 +852,7 @@ def test_the_export_count_did_not_move_at_i9():
         text = path.read_text(encoding="utf-8")
         names.update(re.findall(r"TF_EXPORT[^;{]*?\b(tf_[A-Za-z0-9_]+)\s*\(",
                                 text))
-    assert len(names) == 55, sorted(names)
+    assert len(names) == 56, sorted(names)
     for name in names:
         assert not name.endswith("_f32"), name
         assert "float32" not in name, name

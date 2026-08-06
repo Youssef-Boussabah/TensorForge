@@ -110,12 +110,15 @@ K0_CTEST_COUNT = 24
 K0_EXAMPLE_COUNT = 16
 K0_BENCHMARK_COUNT = 9
 
-# What the live tree holds after K3, derived from K0's inventory plus the
+# What the live tree holds after K4, derived from K0's inventory plus the
 # additions each milestone is on record for, so an unrecorded addition fails
 # an exact equality rather than being absorbed into a bumped literal.
-K3_EXPORT_COUNT = K0_EXPORT_COUNT + 1                       # 55
-K3_CTEST_COUNT = K0_CTEST_COUNT + 2                         # 26
-K3_GUARDED_EXPORTS = 33     # K1's 32, plus argmax's floating **source**
+K4_EXPORT_COUNT = K0_EXPORT_COUNT + 2                       # 56
+K4_CTEST_COUNT = K0_CTEST_COUNT + 3                         # 27
+# K1's 32, plus one **export** per Phase-K operation with a floating role to
+# guard: argmax's source at K3, and index_select's source and destination at
+# K4 — two calls in one export, so the audit's per-export count moves by one.
+K4_GUARDED_EXPORTS = 34
 
 # The **only** public registry movement in the whole phase (design §33),
 # written here independently of ``backends/cpp.py``. It appeared at K2, in
@@ -129,8 +132,10 @@ K2_INT64_ITEM_SIZE = 8
 # proves the int64 representation and drives the floating-role barrier
 # table. Everything else in §33's row for K1 is identical to K0's.
 K1_CTEST_COUNT = 25
+K3_CTEST_COUNT = 26
 assert K1_CTEST_COUNT == K0_CTEST_COUNT + 1
 assert K3_CTEST_COUNT == K1_CTEST_COUNT + 1   # K3's argmax target, and only it
+assert K4_CTEST_COUNT == K3_CTEST_COUNT + 1   # K4's index_select target
 
 # The C++ dtype enumerators after K1. ``int64`` takes code 2 — the code the
 # Phase-I header comment reserved for a future dtype — and neither floating
@@ -160,18 +165,21 @@ K0_CPP_SOURCES = (
 # ...and the one the phase adds, at K3, with the internal header beside it.
 # Deliberately its own unit rather than a section of reduction.cpp: `argmax`
 # searches for a position and writes a different dtype, which is not what
-# `tf_core_sum` does (design §32, K3's layer list).
+# `tf_core_sum` does (design §32, K3's layer list). **K4 extended that unit
+# rather than adding a second one**, so the file set is K3's exactly and
+# only the export count inside it moved.
 K3_CPP_SOURCES = ("indexing.cpp",)
 K3_CPP_HEADER = "tf_indexing_internal.h"
+INDEXING_EXPORTS = ("tf_core_argmax", "tf_core_index_select")
 
 # The whole Phase-K ladder, and the split that carries the phase. A
 # milestone moves its identifier from the second tuple to the first and
 # nowhere else, so the two together are always exactly ``MILESTONES``.
 MILESTONES = tuple(f"K{index}" for index in range(10))      # K0 ... K9
-COMPLETE_MILESTONES = ("K0", "K1", "K2", "K3")
+COMPLETE_MILESTONES = ("K0", "K1", "K2", "K3", "K4")
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
-assert len(UNSTARTED_MILESTONES) == 6
+assert len(UNSTARTED_MILESTONES) == 5
 
 # The ordering the phase turns on (design §32.1): every reachability
 # barrier lands at K1, and the first milestone at which an ``int64`` tensor
@@ -196,24 +204,29 @@ LANDED_TENSOR_METHODS = {
     "item": "K2",
     "tolist": "K2",
     "argmax": "K3",
-}
-PLANNED_TENSOR_METHODS = {
     "index_select": "K4",
 }
+# Empty since K4: the phase's whole public delta has landed, and K5 through
+# K9 add **no public name** (design §23.1). The map stays rather than being
+# deleted, so a milestone that invented one would still have to move it here
+# first.
+PLANNED_TENSOR_METHODS = {}
 # K3's one name is the phase's first that lands on **both** layers:
 # ``NativeTensorCore.argmax`` is a public Core operation, unlike K2's
-# construction door, whose Core and storage helpers stayed private.
-CORE_METHODS_BY_MILESTONE = {"argmax": "K3"}
+# construction door, whose Core and storage helpers stayed private. K4's
+# ``index_select`` is the second and last.
+CORE_METHODS_BY_MILESTONE = {"argmax": "K3", "index_select": "K4"}
 
-# The eventual C ABI delta, and its maximum. Phase K adds exactly two
-# symbols and no milestone may exceed 56 (design §22.3). An entry moves from
-# the planned map to the landed one when its milestone ships, and never back.
-LANDED_EXPORTS = {"tf_core_argmax": "K3"}
-PLANNED_EXPORTS = {"tf_core_index_select": "K4"}
+# The C ABI delta, and its maximum. Phase K adds exactly two symbols and no
+# milestone may exceed 56 (design §22.3). An entry moves from the planned
+# map to the landed one when its milestone ships, and never back — and with
+# K4 the planned map is empty, so the phase is at its committed ceiling.
+LANDED_EXPORTS = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
+PLANNED_EXPORTS = {}
 PHASE_K_MAX_EXPORTS = 56
 assert (K0_EXPORT_COUNT + len(LANDED_EXPORTS) + len(PLANNED_EXPORTS)
         == PHASE_K_MAX_EXPORTS)
-assert K0_EXPORT_COUNT + len(LANDED_EXPORTS) == K3_EXPORT_COUNT
+assert K0_EXPORT_COUNT + len(LANDED_EXPORTS) == K4_EXPORT_COUNT
 
 # ``CLAUDE.md``'s only size policy. The project ceiling, not a new target.
 CLAUDE_MD_CEILING = 150_000
@@ -395,15 +408,22 @@ _PHASE_K_OVERCLAIMS = (
     # which is the substring-ban failure mode this module exists to avoid.
     ("max is shipped beside argmax",
      r"\b(max_with_indices|max)\b[^.]{0,30}" + _BECAME + _LANDED),
-    ("index selection exists",
-     r"\b(index[_ ]select|gather)\b[^.]{0,40}" + _BECAME + _LANDED),
+    # ``index_select`` left this tuple at K4, which shipped it — the second
+    # entry ever removed, and removed for ``argmax``'s reason rather than
+    # exempted: a scanner that bans an accurate sentence forces every status
+    # surface to lie. What remains banned is the general ``gather`` the
+    # phase permanently declines (§18.1), and the embedding and scatter
+    # §35 keeps outside it.
+    ("a general gather or scatter exists",
+     r"\b(gather|scatter|scatter[_ ]add|embedding)\b[^.]{0,40}"
+     + _BECAME + _LANDED),
     # The sentinel advances one milestone as each lands, and only then:
     # it read K2-and-later while K1 was the newest, moved to K3 when K2
-    # shipped, and moved to K4 when K3 did. Keeping the old bound would
-    # force every status surface to under-report the project, which is the
-    # mirror of the failure this scanner exists to catch.
-    ("a Phase-K milestone after K3 has landed",
-     r"\bK(?:[4-9]|10)\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
+    # shipped, to K4 when K3 did, and to K5 when K4 did. Keeping the old
+    # bound would force every status surface to under-report the project,
+    # which is the mirror of the failure this scanner exists to catch.
+    ("a Phase-K milestone after K4 has landed",
+     r"\bK(?:[5-9]|10)\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
      + _DONE + r")"),
     ("Phase K is finished",
      r"\bPhase K\s+(is|was|has been)\s+" + _DONE),
@@ -630,30 +650,35 @@ def test_the_overclaim_scanner_can_actually_fail():
         "max is implemented",
         "max_with_indices is now available",
         "gather is available",
-        "index_select has landed",
+        "a general gather has landed",
+        "scatter_add is implemented",
+        "embedding is now supported",
         "Phase K is complete",
-        "K4 has landed",
-        "K5 is shipped",
+        "K5 has landed",
+        "K6 is shipped",
         "the checkpoint is now at version 4",
         "CUDA is supported",
         "integer gradients are supported",
         "integer parameters are available",
     ):
         assert _overclaims(caught), caught
-    # ...and every accurate sentence a K3 surface must be able to write.
+    # ...and every accurate sentence a K4 surface must be able to write.
     for allowed in (
         "int64 is not a supported native tensor dtype",
-        "Phase K is newly approved and K0 through K3 are complete",
-        "K0, K1, K2, and K3 are the only completed Phase-K milestones",
-        "K4 through K9 are unstarted",
-        "K3 is complete",
+        "Phase K is newly approved and K0 through K4 are complete",
+        "K0 through K4 are the only completed Phase-K milestones",
+        "K5 through K9 are unstarted",
+        "K4 is complete",
         "a native argmax is implemented",
         "argmax is available at both floating dtypes",
-        "a future milestone may add index_select",
-        "index_select would need one new export",
+        "index_select has landed, forward only",
+        "index_select is implemented and consumes an int64 index tensor",
+        "a future milestone may add the index_select backward",
         "max is deliberately not shipped",
         "a native max, max_with_indices, or argmin",
         "there is no max_with_indices and none is planned",
+        "there is no general gather and none is planned",
+        "no scatter or embedding exists",
         "integer gradients are prohibited",
         "integer parameters are rejected before allocation",
         "CUDA remains unsupported",
@@ -771,10 +796,15 @@ def test_the_design_presents_phase_k_as_newly_approved_after_phase_j():
 def test_the_design_states_what_has_landed_and_what_has_not():
     head = _head()
     assert re.search(r"K0 adds no runtime behavior", head, re.I), head[:800]
-    complete = ", ".join(COMPLETE_MILESTONES[:-1]) + \
+    # Both shapes of the same claim: the enumeration the header used while
+    # the completed set was short, and the range form it takes once the list
+    # would be unreadable. The **bounds** are what is checked either way, so
+    # a header naming the wrong last milestone still fails.
+    enumerated = ", ".join(COMPLETE_MILESTONES[:-1]) + \
         f", and {COMPLETE_MILESTONES[-1]}"
-    assert re.search(rf"{complete} are the only completed Phase-K "
-                     rf"milestones", head, re.I), head[:1800]
+    ranged = f"{COMPLETE_MILESTONES[0]} through {COMPLETE_MILESTONES[-1]}"
+    assert re.search(rf"({enumerated}|{ranged}) are the only completed "
+                     rf"Phase-K milestones", head, re.I), head[:1800]
     first_unstarted = UNSTARTED_MILESTONES[0]
     last = UNSTARTED_MILESTONES[-1]
     assert re.search(rf"{first_unstarted} through {last} are unstarted",
@@ -875,19 +905,20 @@ def test_backend_info_reports_four_dtype_rows_and_no_derived_fifth():
 
 def test_no_operation_inventory_grew_an_unplanned_entry():
     """The absence half of the inventory claim, and it narrowed by exactly
-    one name at K3 rather than being loosened.
+    one name at K3 and one more at K4 rather than being loosened.
 
-    ``"argmax"`` is now a legitimate ``TENSOR_CORE_OPS`` member, so it is
-    asserted **present there and absent everywhere else** below — including
-    ``AUTOGRAD_OPS``, which it never joins at any milestone. Every other
-    banned name is still banned in every inventory, ``TENSOR_CORE_KERNELS``
-    stays frozen, and no inventory gained an integer *dtype* entry."""
+    ``"argmax"`` and ``"index_select"`` are legitimate ``TENSOR_CORE_OPS``
+    members, so each is asserted **present there and absent everywhere
+    else** below — including ``AUTOGRAD_OPS``, which neither joins at any
+    milestone. Every other banned name is still banned in every inventory,
+    ``TENSOR_CORE_KERNELS`` stays frozen, and no inventory gained an integer
+    *dtype* entry."""
     for inventory in (cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS,
                       cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,
                       cpp.NATIVE_MODULES, cpp.NATIVE_LOSSES,
                       cpp.NATIVE_METRICS, cpp.NATIVE_OPTIMIZERS,
                       cpp.STATE_SUPPORT):
-        for banned in ("argmin", "index_select", "gather",
+        for banned in ("argmin", "gather",
                        "scatter", "embedding", "int64", "integer", "cast",
                        "astype", "promote"):
             assert not [name for name in inventory
@@ -899,12 +930,14 @@ def test_no_operation_inventory_grew_an_unplanned_entry():
                       cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS):
         for banned in ("max", "amax", "max_with_indices"):
             assert banned not in inventory, (banned, inventory)
-    # The one name K3 added, in exactly one inventory and exactly once.
-    assert cpp.TENSOR_CORE_OPS.count("argmax") == 1
-    assert "argmax" not in cpp.AUTOGRAD_OPS
-    assert "argmax" not in cpp.TENSOR_CORE_KERNELS
-    assert "argmax" not in cpp.RAW_KERNELS
-    assert "argmax" not in cpp.NATIVE_METRICS
+    # The two names the phase added, each in exactly one inventory and
+    # exactly once.
+    for landed in ("argmax", "index_select"):
+        assert cpp.TENSOR_CORE_OPS.count(landed) == 1, landed
+        assert landed not in cpp.AUTOGRAD_OPS, landed
+        assert landed not in cpp.TENSOR_CORE_KERNELS, landed
+        assert landed not in cpp.RAW_KERNELS, landed
+        assert landed not in cpp.NATIVE_METRICS, landed
     assert cpp.NATIVE_METRICS == ("native_accuracy",)
 
 
@@ -914,24 +947,33 @@ def test_no_operation_inventory_grew_an_unplanned_entry():
 
 def test_the_source_export_inventory_is_k0_plus_the_landed_symbols():
     """K0's 54 plus exactly the symbols the landed milestones are on record
-    for — one, at K3 — and the phase maximum is still 56."""
+    for — two, at K3 and K4 — which is the phase maximum of 56."""
     exports = _source_exports()
-    assert len(exports) == K3_EXPORT_COUNT, sorted(exports)
+    assert len(exports) == K4_EXPORT_COUNT, sorted(exports)
     for name, milestone in LANDED_EXPORTS.items():
         assert name in exports, f"{name} landed at {milestone}"
     assert len(exports - set(LANDED_EXPORTS)) == K0_EXPORT_COUNT
     assert len(exports) <= PHASE_K_MAX_EXPORTS
+    # The ceiling is reached, so it is now also the floor of what a further
+    # symbol would break: the phase's remaining milestones add none.
+    assert len(exports) == PHASE_K_MAX_EXPORTS
+    assert PLANNED_EXPORTS == {}
 
 
-def test_the_planned_export_does_not_exist_yet():
+def test_no_unplanned_export_exists():
     exports = _source_exports()
     for name, milestone in PLANNED_EXPORTS.items():
         assert name not in exports, f"{name} belongs to {milestone}"
-    assert not [name for name in exports
-                if "index" in name or "gather" in name]
-    # ...and the shapes K3 was most tempted to add beside its one symbol.
+    # The only ``index``-named export is K4's, and no ``gather`` exists.
+    assert [name for name in exports if "index" in name] == \
+        ["tf_core_index_select"]
+    assert not [name for name in exports if "gather" in name]
+    # ...and the shapes K3 and K4 were most tempted to add beside their two
+    # symbols.
     for banned in ("tf_core_max", "tf_core_argmin", "tf_core_max_with_indices",
-                   "tf_core_argmax_backward", "tf_storage_dtype"):
+                   "tf_core_argmax_backward", "tf_core_index_select_backward",
+                   "tf_core_scatter", "tf_core_scatter_add",
+                   "tf_core_embedding", "tf_storage_dtype"):
         assert banned not in exports, banned
 
 
@@ -941,15 +983,15 @@ def test_the_built_library_exports_the_same_inventory():
     """The source inventory and the built library must agree — the standing
     ABI-discipline rule, re-asserted at the phase boundary.
 
-    This is also the stale-artifact guard: a library built before K3 would
-    export 54 and would fail here rather than quietly satisfying the Python
-    tests that call the new symbol."""
+    This is also the stale-artifact guard: a library built before K4 would
+    export 55 (before K3, 54) and would fail here rather than quietly
+    satisfying the Python tests that call the new symbols."""
     storage_tests = pytest.importorskip("test_native_storage_allocation")
     _, names = storage_tests.exported_names(cpp._LIBRARY_PATH)
     if names is None:
         pytest.skip("this image format is not parsed here")
     exported = sorted(name for name in names if name.startswith("tf_"))
-    assert len(exported) == K3_EXPORT_COUNT, exported
+    assert len(exported) == K4_EXPORT_COUNT, exported
     assert set(exported) == _source_exports()
     for name in LANDED_EXPORTS:
         assert name in exported, name
@@ -965,16 +1007,18 @@ def test_the_experimental_export_list_is_still_twenty_five():
 
 
 def test_the_ctest_example_and_benchmark_inventories_match_the_ladder():
-    """Two milestones have moved an inventory, each by exactly one CTest —
-    K1's int64 storage target and K3's argmax target — and nothing else.
-    Examples and benchmarks belong to K6 and K8 and have not moved."""
+    """Three milestones have moved an inventory, each by exactly one CTest —
+    K1's int64 storage target, K3's argmax target, and K4's index_select
+    target — and nothing else. Examples and benchmarks belong to K6 and K8
+    and have not moved."""
     cmake = _read("cpp/CMakeLists.txt")
-    assert len(re.findall(r"^\s*add_test\(", cmake, re.M)) == K3_CTEST_COUNT
+    assert len(re.findall(r"^\s*add_test\(", cmake, re.M)) == K4_CTEST_COUNT
     assert len(list((REPO_ROOT / "cpp" / "tests").glob("*.cpp"))) == \
-        K3_CTEST_COUNT
-    for name in ("test_dtype_int64_storage.cpp", "test_argmax.cpp"):
+        K4_CTEST_COUNT
+    for name in ("test_dtype_int64_storage.cpp", "test_argmax.cpp",
+                 "test_index_select.cpp"):
         assert (REPO_ROOT / "cpp" / "tests" / name).is_file(), name
-    for target in ("dtype_int64_storage", "argmax"):
+    for target in ("dtype_int64_storage", "argmax", "index_select"):
         assert f"add_test(NAME {target} " in cmake, target
     assert len(list((REPO_ROOT / "examples").glob("*.py"))) == \
         K0_EXAMPLE_COUNT
@@ -983,7 +1027,8 @@ def test_the_ctest_example_and_benchmark_inventories_match_the_ladder():
 
 
 def test_the_production_cpp_translation_units_are_k0s_plus_the_indexing_unit():
-    """K0's nine, plus the one K3 adds and its internal header.
+    """K0's nine, plus the one K3 adds and its internal header — and **K4
+    added no second one**, which is the claim this now also carries.
 
     The file set is pinned because an integer kernel has to live somewhere,
     and the export inventory pins the contents. K3's unit is listed by name
@@ -994,14 +1039,16 @@ def test_the_production_cpp_translation_units_are_k0s_plus_the_indexing_unit():
     assert present == tuple(sorted(K0_CPP_SOURCES + K3_CPP_SOURCES))
     headers = {path.name for path in (REPO_ROOT / "cpp" / "include").glob("*.h")}
     assert K3_CPP_HEADER in headers
-    # The internal header carries no ABI declaration: the export is defined,
-    # with its TF_EXPORT marker, in the .cpp beside it.
+    # The internal header carries no ABI declaration: both exports are
+    # defined, with their TF_EXPORT markers, in the .cpp beside it.
     header_code = _cpp_code_only(_read(f"cpp/include/{K3_CPP_HEADER}"))
     assert "TF_EXPORT" not in header_code
-    assert "tf_core_argmax" not in header_code
+    for name in INDEXING_EXPORTS:
+        assert name not in header_code, name
     unit = _read("cpp/src/indexing.cpp")
-    assert "TF_EXPORT void tf_core_argmax(" in unit
-    assert _cpp_code_only(unit).count("TF_EXPORT") == 1
+    for name in INDEXING_EXPORTS:
+        assert f"TF_EXPORT void {name}(" in unit, name
+    assert _cpp_code_only(unit).count("TF_EXPORT") == len(INDEXING_EXPORTS)
 
 
 # ===========================================================================
@@ -1143,7 +1190,7 @@ def test_exactly_one_public_integer_constructor_exists_and_no_index_operation():
     ``NativeTensor``, plus the underscore-private ``_from_int64_array`` at
     the core and storage layers. Absent: any **public** integer constructor
     at either lower layer — which is what makes "one public door" literal —
-    and every K3/K4 operation."""
+    and every operation no Phase-K milestone has shipped."""
     tensor_methods = _defined_names(
         "src/tensorforge/experimental/native_tensor.py", "NativeTensor")
     core_methods = _defined_names("src/tensorforge/backends/cpp.py",
@@ -1158,8 +1205,8 @@ def test_exactly_one_public_integer_constructor_exists_and_no_index_operation():
             # K2's three names are NativeTensor's alone: the Core's K2 row
             # reads "no public name", and its integer ingress stays private.
             assert name not in core_methods, (name, "NativeTensorCore")
-    # K3's one name is on **both** public layers, which is the row §23.1
-    # gives it and the one respect in which it differs from K2's.
+    # K3's and K4's names are on **both** public layers, which is the row
+    # §23.1 gives each and the one respect in which they differ from K2's.
     for name, milestone in CORE_METHODS_BY_MILESTONE.items():
         assert name in core_methods, f"{name} landed at {milestone}"
         assert name in tensor_methods, f"{name} landed at {milestone}"
@@ -1178,7 +1225,8 @@ def test_exactly_one_public_integer_constructor_exists_and_no_index_operation():
     # as is the ``max`` §17.10 permanently declines.
     module = _code_only(_module_source(
         "src/tensorforge/experimental/native_tensor.py"))
-    for banned in ("index_select", "gather", "argmin", "max_with_indices"):
+    for banned in ("gather", "scatter", "embedding", "argmin",
+                   "max_with_indices"):
         assert banned not in module, banned
     for banned in ("max", "amax"):
         assert banned not in tensor_methods and banned not in core_methods, \
@@ -1201,27 +1249,31 @@ def test_no_integer_kernel_exists_in_the_native_sources():
     templated kernels are named. A comment mentioning int64 metadata is
     legitimate and is not what this looks for.
 
-    **The list shrank at K1 and again at K3, in one direction only.**
-    ``Dtype::Int64``, ``TF_DTYPE_INT64``, and ``require_floating`` moved from
-    "absent" to "present" at K1, and ``argmax`` did at K3, because those
-    milestones ship them — and each is asserted *present* below rather than
-    merely no longer banned, the §37.2 rule that an entry moves between the
-    two lists and nothing is loosened to let it. What stays banned is what
-    stays absent: an integer **arithmetic** kernel. ``index_select`` is K4's,
-    and no integer addition, reduction, or comparison exists at any Phase-K
-    milestone — nor does the ``max`` §17.10 declines."""
+    **The list shrank at K1, at K3, and again at K4, in one direction
+    only.** ``Dtype::Int64``, ``TF_DTYPE_INT64``, and ``require_floating``
+    moved from "absent" to "present" at K1, ``argmax`` did at K3, and
+    ``index_select`` did at K4, because those milestones ship them — and
+    each is asserted *present* below rather than merely no longer banned,
+    the §37.2 rule that an entry moves between the two lists and nothing is
+    loosened to let it. What stays banned is what stays absent: an integer
+    **arithmetic** kernel, and the general gather, scatter, and embedding
+    §18.1 keeps outside the phase. No integer addition, reduction, or
+    comparison exists at any Phase-K milestone — nor does the ``max``
+    §17.10 declines."""
     sources = {}
     for path in sorted((REPO_ROOT / "cpp" / "src").glob("*.cpp")):
         sources[path.name] = _cpp_code_only(
             path.read_text(encoding="utf-8"))
     for name, code in sources.items():
-        for banned in ("index_select", "embedding", "argmin",
-                       "max_with_indices",
+        for banned in ("embedding", "argmin", "max_with_indices",
                        "int64_add", "int64_sum", "int64_multiply"):
             assert banned not in code, (name, banned)
-    # ``argmax`` lives in exactly one translation unit, and nowhere else.
-    carriers = [name for name, code in sources.items() if "argmax" in code]
-    assert carriers == list(K3_CPP_SOURCES), carriers
+    # Both Phase-K operations live in exactly one translation unit, and
+    # nowhere else.
+    for operation in ("argmax", "index_select"):
+        carriers = [name for name, code in sources.items()
+                    if operation in code]
+        assert carriers == list(K3_CPP_SOURCES), (operation, carriers)
     # ``gather`` and ``scatter`` are deliberately **not** banned: Conv2d has
     # carried ``conv2d_prefers_gather`` and a scatter-shaped backward since
     # Phase D, and neither is an index operation. Banning them would reject
@@ -1237,17 +1289,22 @@ def test_no_integer_kernel_exists_in_the_native_sources():
                  "classification.cpp", "conv2d.cpp", "pooling.cpp",
                  "random.cpp", "storage.cpp", "indexing.cpp"):
         assert "require_floating" in sources[unit], unit
-    # K3's unit asks the **index-role** guard too, on its destination, and
-    # asks neither require_floating nor require_matching_dtype about it —
-    # either would reject every valid call (design §22.8).
+    # K3's export asks the **index-role** guard on its destination and asks
+    # neither require_floating nor require_matching_dtype about it — either
+    # would reject every valid call (design §22.8). K4's asks require_index
+    # on its separate index handle and require_matching_dtype across its
+    # floating source/destination pair, which is the one place in the phase
+    # that guard is used (§22.9) — so the unit carries both, and the tests
+    # that separate the two exports' bodies live in
+    # tests/test_native_index_select.py.
     assert "require_index" in sources["indexing.cpp"]
-    assert "require_matching_dtype" not in sources["indexing.cpp"]
+    assert "require_matching_dtype" in sources["indexing.cpp"]
     guarded = set()
     for code in sources.values():
         guarded.update(re.findall(
             r'tf::require_floating\(\s*"(tf_[a-z0-9_]+)"', code))
-    assert len(guarded) == K3_GUARDED_EXPORTS, sorted(guarded)
-    assert guarded - {"tf_core_argmax"} == guarded - set(LANDED_EXPORTS)
+    assert len(guarded) == K4_GUARDED_EXPORTS, sorted(guarded)
+    assert set(LANDED_EXPORTS) <= guarded, sorted(LANDED_EXPORTS)
     assert len(guarded - set(LANDED_EXPORTS)) == K1_GUARDED_EXPORTS
     # ...and the four deliberately generalized transfer boundaries are NOT
     # guarded, because a floating-role guard there would refuse the
@@ -1925,10 +1982,10 @@ _UNSTARTED_CLAIM = re.compile(
 
 def test_the_landed_and_unstarted_claim_forms_can_actually_fail():
     """Negative controls for both, on temporary strings."""
-    assert _LANDED_CLAIM.search("only K0 through K3 have landed")
-    assert not _LANDED_CLAIM.search("only K0 through K2 have landed")
-    assert _UNSTARTED_CLAIM.search("K4 through K9 are unstarted")
-    assert not _UNSTARTED_CLAIM.search("K3 through K9 are unstarted")
+    assert _LANDED_CLAIM.search("only K0 through K4 have landed")
+    assert not _LANDED_CLAIM.search("only K0 through K3 have landed")
+    assert _UNSTARTED_CLAIM.search("K5 through K9 are unstarted")
+    assert not _UNSTARTED_CLAIM.search("K4 through K9 are unstarted")
 
 
 @pytest.mark.parametrize("surface", EDITABLE_STATUS_SURFACES)
@@ -2170,9 +2227,11 @@ def test_the_roadmap_current_status_paragraph_is_accurate():
     # ...and the Phase-K section states the absence half.
     assert _UNSTARTED_CLAIM.search(text)
     assert re.search(r"design, documentation, and guardrails only", text, re.I)
-    # The presence half K3 earned, and the absence half it did not touch.
+    # The presence half K3 and K4 earned, and the absence half neither
+    # touched.
     assert re.search(r"native\s+`?argmax`?", text, re.I)
-    assert re.search(r"no index selection", text, re.I)
+    assert re.search(r"`?index_select`?", text, re.I)
+    assert re.search(r"no general\s+`?gather`?", text, re.I)
     assert re.search(r"no\s+`?max`?\b", text, re.I)
     assert re.search(r"not a supported native tensor dtype", text, re.I)
     assert f"docs/{PHASE_K_DESIGN_NAME}" in _read("docs/roadmap.md") or \
@@ -2388,8 +2447,15 @@ def test_no_public_storage_or_core_integer_constructor_appears_anywhere():
         public = {name for name in methods if not name.startswith("_")}
         for name in public:
             lowered = name.lower()
-            for banned in ("int64", "integer", "index"):
+            for banned in ("int64", "integer"):
                 assert banned not in lowered, (layer, name)
+            # ``index`` is banned as a **constructor** name rather than as a
+            # substring: K4's ``index_select`` is an operation, not a door,
+            # and the Core legitimately carries it (§23.1). What must never
+            # appear is a lower-layer name that *constructs* from indices.
+            if "index" in lowered:
+                assert name == "index_select", (layer, name)
+                assert layer == "NativeTensorCore", (layer, name)
 
 
 def test_exactly_one_public_construction_door_exists():

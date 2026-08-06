@@ -2048,11 +2048,18 @@ def test_h6_added_no_exported_symbol():
     assert len(h1.phase_h_export_names(exported)) == h1.PHASE_H_TF_EXPORTS
     assert "tf_core_sum" in exported
     assert "tf_core_narrow_backward" in exported
-    # Nothing reduction-dispatch-flavored was added.
+    # Nothing reduction-dispatch-flavored was added. ``select`` is matched
+    # as a **path-selector** spelling rather than as a bare substring: Phase
+    # K milestone K4's ``tf_core_index_select`` is an *operation* that
+    # selects slices by index, not a control that selects a traversal, and a
+    # bare substring ban would reject the very name the phase shipped.
     for banned in ("reduce_prefers", "reduction_mode", "set_reduction",
-                   "block_size", "traversal", "prefers", "select",
+                   "block_size", "traversal", "prefers",
+                   "select_path", "path_select", "kernel_select",
                    "sum_generic", "sum_contiguous"):
         assert not [n for n in exported if banned in n.lower()], banned
+    assert [n for n in exported if "select" in n.lower()] == \
+        ["tf_core_index_select"]
 
 
 @needs_native
@@ -2123,8 +2130,9 @@ def test_the_internal_header_is_not_part_of_the_ctypes_surface():
         assert f"library.{name}" not in text, name
     # H6 added no hooked kernel, so the tuple still ends with the last entry
     # that existed when it landed once the later phases' additions — Phase K
-    # milestone K3's argmax forward — are removed.
-    post_h6 = ("tf_core_argmax",)
+    # milestone K3's argmax forward and milestone K4's index_select forward
+    # — are removed.
+    post_h6 = ("tf_core_argmax", "tf_core_index_select")
     assert [name for name in cpp._CHECKED_KERNELS
             if name not in post_h6][-1] == "tf_core_dropout_forward"
     # ``tf_core_sum`` was already an errcheck-hooked kernel before H6 and

@@ -1898,7 +1898,15 @@ def test_the_operation_audit_covers_every_public_floating_tensor_entry():
                # int64 result, so it belongs in the audited set rather
                # than the dtype-general one: it rejects an int64
                # operand exactly like every name beside it.
-               "argmax"}
+               "argmax",
+               # Phase K, K4. A **floating** entry that *consumes* an
+               # int64 operand, and it belongs here for the same reason:
+               # its **source** is a floating role and rejects an int64
+               # tensor exactly like every name beside it. That its
+               # second operand is required to be int64 is a separate
+               # question, asked by a separate authority, and does not
+               # make the entry dtype-general.
+               "index_select"}
     unclassified = public - dtype_general - audited
     assert unclassified == set(), sorted(unclassified)
     # ...and every audited name really is a method, so a typo in the set
@@ -2211,12 +2219,11 @@ def test_the_c_abi_export_inventory_did_not_move_at_k2():
     the later milestone's one addition removed and named, so K2's claim
     stays exactly true rather than being restated as a larger number."""
     exports = _source_exports()
-    later = {"tf_core_argmax": "K3"}
+    later = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
     for name, milestone in later.items():
         assert name in exports, (name, milestone)
     assert len(exports - set(later)) == 54, sorted(exports)
-    for absent in ("tf_core_index_select",
-                   "tf_core_gather", "tf_storage_dtype"):
+    for absent in ("tf_core_gather", "tf_core_scatter", "tf_storage_dtype"):
         assert absent not in exports, absent
 
 
@@ -2232,11 +2239,11 @@ def test_the_export_scanner_can_actually_fail():
 
 def test_the_ctest_example_and_benchmark_inventories_did_not_move_at_k2():
     """K2 registered no CTest and added no example or benchmark. The
-    CTest total carries K3's argmax target, which is named and
-    subtracted rather than absorbed; examples and benchmarks belong to
-    K6 and K8 and have not moved at all."""
+    CTest total carries K3's argmax target and K4's index_select target,
+    each named and subtracted rather than absorbed; examples and benchmarks
+    belong to K6 and K8 and have not moved at all."""
     cmake = (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8")
-    later_ctests = {"argmax": "K3"}
+    later_ctests = {"argmax": "K3", "index_select": "K4"}
     registered = re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)
     for name, milestone in later_ctests.items():
         assert name in registered, (name, milestone)
@@ -2260,27 +2267,30 @@ def test_the_experimental_export_list_is_still_twenty_five():
         assert absent not in experimental.__all__, absent
 
 
-def test_no_k4_or_later_operation_exists_on_any_surface():
-    """``argmax`` left this list at K3, which shipped it, and it is
-    asserted **present** in its one legitimate place instead — the
-    §37.2 rule that an entry moves between the two lists and nothing is
-    loosened to let it. Everything K3 did *not* ship is still banned,
-    including the ``max`` §17.10 permanently declines."""
+def test_no_k5_or_later_operation_exists_on_any_surface():
+    """``argmax`` left this list at K3 and ``index_select`` at K4, each
+    shipped by the milestone that owns it, and each is asserted
+    **present** in its one legitimate place instead — the §37.2 rule that
+    an entry moves between the two lists and nothing is loosened to let
+    it. Everything neither milestone shipped is still banned, including
+    the ``max`` §17.10 permanently declines."""
     for owner in (NativeTensor, cpp.NativeTensorCore, cpp.NativeStorage):
-        for absent in ("argmin", "index_select", "gather", "max", "amax",
+        for absent in ("argmin", "gather", "max", "amax",
                        "scatter", "take", "nonzero", "sort", "argsort",
                        "topk", "unique", "where", "bincount", "cumsum"):
             assert not hasattr(owner, absent), (owner.__name__, absent)
-    assert hasattr(NativeTensor, "argmax")
-    assert hasattr(cpp.NativeTensorCore, "argmax")
-    assert not hasattr(cpp.NativeStorage, "argmax")
+    for present in ("argmax", "index_select"):
+        assert hasattr(NativeTensor, present), present
+        assert hasattr(cpp.NativeTensorCore, present), present
+        assert not hasattr(cpp.NativeStorage, present), present
     for inventory in (cpp.TENSOR_CORE_OPS, cpp.AUTOGRAD_OPS,
                       cpp.RAW_KERNELS, cpp.TENSOR_CORE_KERNELS):
-        for banned in ("index_select", "gather", "int64",
-                       "integer"):
+        for banned in ("gather", "int64", "integer"):
             assert not [n for n in inventory if banned in n.lower()], banned
     assert cpp.TENSOR_CORE_OPS.count("argmax") == 1
+    assert cpp.TENSOR_CORE_OPS.count("index_select") == 1
     assert "argmax" not in cpp.AUTOGRAD_OPS
+    assert "index_select" not in cpp.AUTOGRAD_OPS
 
 
 def test_no_casting_or_promotion_surface_appeared():

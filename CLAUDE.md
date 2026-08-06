@@ -108,9 +108,9 @@ capability decision, never a side effect.
 | In-memory optimizer state version | **1** |
 | Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` |
 | Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` |
-| Exported production `tf_*` symbols | **55** (Phase H closed at 52; Phase I added 2 at I1; Phase K added `tf_core_argmax` at K3, against a phase maximum of 56) |
+| Exported production `tf_*` symbols | **56** (Phase H closed at 52; Phase I added 2 at I1; Phase K added `tf_core_argmax` at K3 and `tf_core_index_select` at K4, reaching its phase maximum of 56) |
 | Experimental Python exports | **25** |
-| Native CTests · examples · benchmarks | **26** · **16** · **9** (24 at Phase K's start; K1 and K3 each added one CTest) |
+| Native CTests · examples · benchmarks | **27** · **16** · **9** (24 at Phase K's start; K1, K3, and K4 each added one CTest) |
 
 **Three dtype rows, three different questions**, and none may be reported as
 another: `SUPPORTED_DTYPES` is the **capability**; `backend_info()["dtype"]`
@@ -181,7 +181,8 @@ public
 Core ingress helpers stay underscore-private. An `int64` tensor supports
 metadata, the existing views (`reshape`/`transpose`/`T`/`narrow`),
 `contiguous_copy`, `close()`, and exact host inspection (`to_numpy`,
-`item`, `tolist`) — and **nothing else**. No integer arithmetic,
+`item`, `tolist`) — plus the **role** it fills in K4's `index_select`, and
+**nothing else**. No integer arithmetic,
 reduction, autograd, parameter, buffer, optimizer state, or checkpoint
 entry exists.
 
@@ -195,8 +196,26 @@ result is a plain leaf even from a gradient-tracking input — and it is
 still not a widening of the compute registry: nothing computes *at*
 `int64`. **No `max`, no `max_with_indices`, no tuple return, and no
 `argmin` exists**, permanently for `max` (§17.10) and pending a milestone
-for the rest. **No index selection exists** and none may be described as
-existing until K4 ships it (§12).
+for the rest.
+
+**`int64` is also an *operand role*, and K4 is where that became
+observable**: `NativeTensor.index_select(axis, indices)` /
+`NativeTensorCore.index_select(axis, indices)` take a **floating** source
+and a **rank-1 `int64`** index tensor and return a fresh owning contiguous
+tensor of the **source's** dtype, over the `tf_core_index_select` export.
+The index operand is a role, never an arithmetic operand: nothing computes
+at `int64` here either, and `require_matching_dtype` is applied across the
+floating source/destination pair and **never** across the floating/index
+boundary. Duplicates and order are preserved exactly, negative and
+out-of-range indices reject rather than wrap, the complete bounds scan runs
+in Python and independently in C++ before anything is written, and values
+cross by **object representation** so every NaN payload and both signed
+zeros survive. It is **forward only**: a `requires_grad=True` source is
+rejected with a message naming `detach()`, `"index_select"` is in
+`TENSOR_CORE_OPS` and never in `AUTOGRAD_OPS`. **No general `gather`, no
+`scatter`, no `scatter_add`, no embedding lookup, no `__getitem__`, no
+advanced/boolean/multi-axis indexing, and no `index_select` backward
+exists**, and none may be described as existing (§12).
 
 ---
 
@@ -620,7 +639,7 @@ that changes the public API or the examples updates the matching document
   Record it that way rather than rewriting it: "the phase that came next"
   and "the phase that was always planned next" are different facts.
 - **Native line: Phase K — Native Integer Tensors and Indexing — is the
-  newly approved phase and is the latest phase, and only K0 through K3 have landed.**
+  newly approved phase and is the latest phase, and only K0 through K4 have landed.**
   Authority
   `docs/native_integer_tensors_design.md`. **K0 is architecture, contract,
   status, and guardrails only and added no runtime behavior at all**: no
@@ -693,13 +712,46 @@ that changes the public API or the examples updates the matching document
   `to_numpy()` host round trip, **deliberately**. `AUTOGRAD_OPS`,
   `__all__`, every registry, every version, the 16 examples, and the 9
   benchmarks are unmoved.
-  No `max`, no `argmin`, no index selection, no
+  **K4 shipped the phase's one index-*consuming* operation and its second
+  and final C ABI symbol — native `index_select`, forward only — and moved
+  nothing else**: `tf::index_select_contiguous` joined the same internal
+  header **beside** `argmax_contiguous` rather than generalizing it, and
+  copies whole `inner`-element slices with `std::memcpy`, so every element
+  crosses by **object representation** and no value is ever read;
+  `tf_core_index_select` joined the same translation unit and validates in
+  §22.9's order, applying `require_floating` to the source **and** the
+  destination and then `require_matching_dtype` across that pair — the one
+  place in the phase that guard is used, and never across the
+  floating/index boundary — plus `require_index` on the separate index
+  handle and a **complete** C-side bounds scan before the first destination
+  element is written; its own file-local `index_select_argument_error`
+  stays separate from K3's validator (§22.10).
+  `NativeTensorCore.index_select` validates in §18.6's order with the
+  complete Python bounds scan **before any allocation**, materializes a
+  non-contiguous source *or* index through Policy-B as two separate
+  temporaries closed in reverse order, and allocates a **zeroed** floating
+  destination (§27.3); `NativeTensor.index_select` owns the graph rule and
+  **rejects a `requires_grad=True` source with a message naming
+  `detach()`** rather than detaching silently, wrapping the result as a
+  plain leaf and never calling `_from_op`. Two shared private validators
+  arrived beside the existing family — `_require_index_dtype` (the Python
+  half of `tf::require_index`) and `_require_axis_int` over the extracted
+  `_is_axis_int` predicate, so the axis type and the axis range can be
+  reported at different points in one order without a second copy of the
+  domain. `"index_select"` joined `TENSOR_CORE_OPS` and
+  `tf_core_index_select` joined `_CHECKED_KERNELS` (37 → **38**); exports
+  **55 → 56** (the phase maximum), CTests **26 → 27**, and the K1 barrier
+  audit **33 → 34** on index_select's *source* and *destination* roles.
+  `AUTOGRAD_OPS`, `__all__`, every registry, every version, the 16
+  examples, and the 9 benchmarks are unmoved.
+  No `max`, no `argmin`, no general `gather`, no `scatter`, no embedding
+  lookup, no `index_select` backward, no
   integer arithmetic or reduction, no integer autograd, parameter, buffer,
   optimizer state, or checkpoint entry, and no casting or promotion exists,
-  and **K4 through K9 are unstarted**. Every reachability barrier landed at
+  and **K5 through K9 are unstarted**. Every reachability barrier landed at
   **K1**, one milestone before an integer tensor could be constructed at
   all: **prove first, then promise.** The phase's C ABI maximum is **56**
-  (54 + `argmax` at K3 + `index_select` at K4) and
+  (54 + `argmax` at K3 + `index_select` at K4), which K4 reached, and
   `experimental.__all__` stays at **25**
   throughout.
 - Further work beyond Phase K — further dtypes or devices, CUDA

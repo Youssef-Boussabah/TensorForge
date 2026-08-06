@@ -202,6 +202,34 @@ TENSOR_CORE_OPS = (
     # kernel that finds the position of a maximum necessarily knows the
     # maximum, and Phase K does not expose it (design §17.10).
     "argmax",                  # K3
+    # Phase K native index_select at the Core layer (K4) — the graph-unaware
+    # wrapper over the exported tf_core_index_select kernel, with Policy-B
+    # copy-then-compute for a non-contiguous source **or** a non-contiguous
+    # index operand, the same shape softmax/log_softmax/argmax take.
+    #
+    # ``argmax``'s mirror image, and the pair is deliberate: that one
+    # *produces* an index from floating values, this one *consumes* one and
+    # produces floating values of the source's own dtype. So unlike argmax
+    # its result dtype is its operand's, and the operand whose dtype differs
+    # is the rank-1 ``int64`` index tensor — a **role** operand, never an
+    # arithmetic one, so nothing here casts, promotes, or computes at int64.
+    #
+    # **Forward only, and a gradient-tracking source is rejected rather than
+    # silently detached** (design §18.9). The backward is a scatter-add with
+    # its own accumulation-order and duplicate-index contract and its own C
+    # ABI export, which Phase K's budget does not spend; returning a
+    # graph-free result from a gradient-tracking source would be a silent
+    # gradient hole. That rule lives one layer up, on
+    # ``NativeTensor.index_select``, because a Core operation carries no
+    # graph metadata to consult. Like argmax it is deliberately **not** in
+    # AUTOGRAD_OPS, and there is no differentiable NativeTensor operation of
+    # the same name above it.
+    #
+    # It copies: the result is a fresh owning contiguous tensor and is never
+    # a view (design §15.2). There is no ``gather``, no ``scatter``, no
+    # ``embedding``, no ``take``, no ``__getitem__``, and no multi-axis or
+    # boolean indexing.
+    "index_select",            # K4
 )
 
 # Operations the NativeTensor autograd layer (Phase B) differentiates.
@@ -1049,6 +1077,40 @@ def _is_tensor_dtype(dtype):
     return _is_floating_dtype(dtype) or _is_index_dtype(dtype)
 
 
+def _require_index_dtype(dtype, where, role="index operand"):
+    """Reject a non-index dtype at an **index-operand** boundary (Phase K,
+    milestone K4; integer design §12.4, §18.3).
+
+    The Python half of ``tf::require_index``, and the third member of the
+    family: ``_require_floating_dtype`` asks "may kernels compute at this
+    width?", ``_require_tensor_dtype`` asks "may a native tensor carry it at
+    all?", and this one asks "is this operand an **index**?" — which is
+    exactly ``INDEX_DTYPES``, and nothing else.
+
+    It is applied **instead of**, never beside, the floating guard on the
+    operand it governs: an index operand is a *role*, so a floating index is
+    a role error rather than a promotion opportunity, and
+    ``_require_matching_metadata`` must never be asked about the
+    source/index pair. ``role`` names the operand's part in the call for
+    ``_require_floating_dtype``'s reason.
+
+    Raises ``ValueError``, always **before** the caller allocates or
+    mutates anything, and it is not a restatement of the C ABI's
+    ``tf::require_index``: that guard is a second, independent authority at
+    the trust boundary, and neither may be removed because the other exists.
+
+    Returns the dtype unchanged, so a call site can read as an assertion or
+    as a pass-through."""
+    if not _is_index_dtype(dtype):
+        raise ValueError(
+            f"{where}: the {role} dtype must be an index dtype "
+            f"{INDEX_DTYPES}, got {dtype!r} (an index operand is a role "
+            f"rather than an arithmetic operand, and the native runtime "
+            f"performs no casting or promotion)"
+        )
+    return dtype
+
+
 def _require_tensor_dtype(dtype, where, role="storage"):
     """Reject a dtype no native tensor may carry (Phase K, milestone K2).
 
@@ -1527,6 +1589,29 @@ def _load_library():
         ctypes.c_void_p,                   # destination handle (int64)
     ] + [ctypes.c_int64] * 3
     library.tf_core_argmax.restype = None
+    # index_select (Phase K, K4): the exported wrapper over the templated
+    # gather in indexing.cpp. **Contiguous storage only** (Policy-B
+    # copy-then-compute happens at the Core layer) — and here *two* operands
+    # carry an offset, because either a narrowed source or a narrowed rank-1
+    # index view is an ordinary thing to select with, while the destination
+    # is caller-allocated at offset 0. The four trailing int64s are the
+    # (outer, axis_length, index_count, inner) decomposition of the selected
+    # axis: the source's extent along it is ``axis_length`` and the
+    # destination's is ``index_count``, which is the whole of the shape
+    # change.
+    #
+    # Three handles, three dtype roles, and **no dtype crosses this
+    # boundary**: the source and destination are floating and must agree,
+    # the index is exactly int64, and each handle carries its own tag for
+    # the export to check. That asymmetry is why the declaration looks like
+    # every other one — a ``c_void_p`` says "a storage handle", never which
+    # dtype it holds.
+    library.tf_core_index_select.argtypes = [
+        ctypes.c_void_p, ctypes.c_int64,   # source handle, offset
+        ctypes.c_void_p, ctypes.c_int64,   # index handle (int64), offset
+        ctypes.c_void_p,                   # destination handle (floating)
+    ] + [ctypes.c_int64] * 4
+    library.tf_core_index_select.restype = None
 
     _configure_error_contract(library)
     return library
@@ -1656,6 +1741,20 @@ _CHECKED_KERNELS = (
     # error. There is deliberately no backward export: an index has no
     # derivative.
     "tf_core_argmax",
+    # Phase K, K4: the index_select forward. Self-validating like the
+    # Phase-E exports, over a longer list because it has three handles —
+    # null handles, a non-floating source or destination, a source/
+    # destination dtype mismatch, a non-int64 index operand, a non-positive
+    # extent, an overflowing product, a negative offset, a span exceeding
+    # its storage, a destination that does not hold exactly
+    # `outer * index_count * inner` values, and either aliasing pair are all
+    # rejected with ValueError through this hook. So is **every**
+    # out-of-range or negative index, scanned completely before the first
+    # destination element is written, which is what makes a rejected call
+    # leave the destination byte-for-byte unchanged rather than partly
+    # gathered. There is deliberately no backward export: that gradient is a
+    # scatter-add with its own contract and its own milestone.
+    "tf_core_index_select",
 )
 
 
@@ -2033,6 +2132,14 @@ class NativeStorage:
         it: this stays private, no general integer allocator is exposed, no
         public constructor accepts ``"int64"``, every integer allocation is
         zero-initialized, and nothing casts or promotes.
+
+        **K4 added a caller and no integer use.** ``index_select``'s
+        destination is *floating* — it carries its source's dtype, which is
+        the whole difference between an index-consuming and an
+        index-producing operation — so it reaches this helper for the
+        ordinary derived-allocation reason and the enumeration above is
+        exactly what K3 left. Its **index operand** allocates nothing here:
+        the caller already owns it.
         """
         return cls(size, dtype=dtype, device=device,
                    _zero_initialize=zero_initialize, _trusted_dtype=True)
@@ -2784,6 +2891,13 @@ class NativeTensorCore:
         destination is **zero-initialized** (§27.3, so the H1
         uninitialized-allocation audit gains no row), and nothing casts or
         promotes.
+
+        **K4 added a caller and no integer use.** ``index_select`` allocates
+        its destination here, but that destination is *floating* — it
+        carries its source's dtype — so the integer enumeration above is
+        exactly what K3 left. It is a zeroed allocation for §27.3's reason
+        rather than the H1 uninitialized one, which is why it comes here and
+        not to ``_uninitialized``.
 
         A failed view or wrapper construction closes the storage this call
         allocated, so a rejected core leaks nothing."""
@@ -4166,6 +4280,207 @@ class NativeTensorCore:
             # Close the private contiguous copy exactly once, whether the
             # call succeeded or raised — the caller's input is untouched.
             for temp in temporaries:
+                temp.close()
+
+    # -- index-consuming selection (Phase K, K4) ------------------------
+
+    def index_select(self, axis, indices):
+        """The slices ``indices`` names along ``axis``, as a fresh owning
+        contiguous tensor of **this tensor's dtype** (Phase K, milestone K4;
+        see docs/native_integer_tensors_design.md §18).
+
+        ``argmax``'s mirror image. This tensor is the floating source —
+        ``float64`` or ``float32``, open, rank ≥ 1, any layout — and
+        ``indices`` is a **rank-1 ``int64`` NativeTensorCore**, open, any
+        layout, whose every value must lie in ``[0, shape[axis])``. There is
+        no host-array, list, tuple, or Python-``int`` form: a caller holding
+        host indices builds the tensor explicitly through
+        ``NativeTensor.from_int64_array``, one visible conversion rather
+        than a hidden one.
+
+        The output shape is this tensor's with ``axis`` replaced by
+        ``indices.numel`` — one axis changes size and nothing else — and its
+        dtype is **this tensor's**, preserved exactly. It **copies**: the
+        result owns fresh contiguous storage at offset 0, shares storage
+        with neither operand, survives either operand's ``close()``, and is
+        **the caller's to close**. It is never a view and is never described
+        as one (design §15.2).
+
+        **Duplicates and order are preserved exactly** (§13.5): the output's
+        *j*-th slice along the selected axis is this tensor's slice at
+        ``indices[j]``, for every *j*, with no sorting, deduplication,
+        normalization, wrapping, or clamping. Values cross by **object
+        representation** — the kernel copies bytes and reads no value — so
+        both signed zeros, both infinities, subnormals, and every NaN
+        payload arrive unchanged, and a repeated index produces independent
+        copies rather than shared storage.
+
+        **A negative index is rejected, never wrapped** (§14.2). An
+        ``int64`` tensor may legitimately hold negative values; using one as
+        a position is a different question, and in this phase the index data
+        is usually *computed* — a negative value in it is a defect upstream,
+        and wrapping would turn that defect into a plausible wrong answer at
+        the far end of a training run.
+
+        Validation order, and a caller with several invalid arguments gets
+        the **first** of these deterministically (§18.6): the axis's type,
+        then the index operand's type, then this tensor's closed state, then
+        the index tensor's, then this tensor's floating dtype, then the
+        index tensor's ``int64`` dtype, then the axis's range, then the
+        index rank, then **the complete index bounds scan**, then the output
+        shape and count — all of it **before anything is allocated**. The
+        scan is deliberately complete rather than incremental (§14.4): a
+        check folded into the copy would leave a partly written destination
+        behind when it rejected. The C ABI scans every index again as a
+        **second** authority; neither may be removed because the other
+        exists.
+
+        The C ABI is **contiguous-only**, so a non-contiguous source *or* a
+        non-contiguous index view is materialized into a private contiguous
+        copy (Policy B) that is closed the moment the native call returns,
+        while an already-contiguous operand is passed through with its own
+        offset. The answers are identical either way, because
+        ``contiguous_copy`` reproduces logical order exactly.
+
+        The destination is **zero-initialized** through the private typed
+        allocator (§27.3): no Phase-K path takes the H1 uninitialized
+        allocator, so the uninitialized-allocation audit gains no row — a
+        deliberate choice over a provable optimization, since this kernel
+        does overwrite every destination element. A failed allocation or
+        native call closes everything this call allocated, including under
+        ``BaseException``, so live storage returns exactly to baseline.
+
+        Graph-unaware, like every Core op. The rule that a
+        gradient-tracking source is **rejected** rather than silently
+        detached lives one layer up, on ``NativeTensor.index_select``, for
+        the reason it must: a Core has no graph metadata to consult."""
+        # §18.6 step 1: the axis's *type*, before either operand is examined
+        # — its range is step 7, once the shape is known to be readable.
+        _require_axis_int(axis, "index_select")
+        # Step 2: the index operand's type.
+        if not isinstance(indices, NativeTensorCore):
+            raise TypeError(
+                f"index_select requires a NativeTensorCore index operand, "
+                f"got {type(indices).__name__}"
+            )
+        # Steps 3 and 4: the source's closed state, then the index's.
+        self._require_open()
+        indices._require_open()
+        # Step 5: K1's floating-role barrier on the **source**, in the
+        # position every operation entry puts it — after the closed-state
+        # gate and before anything is allocated (design §6.5).
+        self._require_floating_operand("index_select")
+        # Step 6: the index operand's role. Asked with the index authority
+        # rather than the floating one, and never through
+        # ``_require_matching_metadata``: the two operands are *meant* to
+        # carry different dtypes, so agreement is not the question (§12.4).
+        _require_index_dtype(indices.dtype, "index_select")
+        dims = self.shape
+        # Step 7: the axis's range, through the one shared authority. A
+        # rank-0 source has no axis at all, so every axis is out of range
+        # here — which is the rejection, rather than a separate rank check.
+        normalized = _normalize_axis_checked(axis, dims)
+        # Step 8: rank exactly 1. A rank-0 index tensor is refused because
+        # the output rank would be ambiguous (does the axis vanish or become
+        # 1?) and a caller wanting one position uses ``narrow``, which is
+        # metadata-only; rank >= 2 is refused because it implies an
+        # output-shape rule this phase has not contracted (§13.6).
+        if indices.ndim != 1:
+            raise ValueError(
+                f"index_select requires a rank-1 index tensor, got shape "
+                f"{indices.shape} (rank {indices.ndim})"
+            )
+        axis_length = dims[normalized]
+        index_count = indices.numel
+        # Step 9: the **complete** bounds scan, over the index tensor's own
+        # logical order — so an offset or strided view is scanned in exactly
+        # the order the kernel will read it, because the materialization
+        # below reproduces that order. This is host *inspection* of an
+        # already-native index tensor, through the exact ``int64`` exit
+        # boundary; it is not a second input form and no host array can
+        # enter here. It allocates no native storage, which is the property
+        # §13.11 requires of every step before the destination exists.
+        index_values = indices.to_numpy()
+        offenders = np.nonzero(
+            (index_values < 0) | (index_values >= axis_length))[0]
+        if offenders.size:
+            position = int(offenders[0])
+            raise ValueError(
+                f"index_select: index {int(index_values[position])} at "
+                f"position {position} is outside the selectable range "
+                f"[0, {axis_length}) for axis {normalized} of shape {dims}"
+            )
+        # Step 10: the output shape, and the (outer, axis_length,
+        # index_count, inner) decomposition the export takes — in
+        # arbitrary-precision Python ints so nothing can wrap here; the C ABI
+        # re-proves every product in int64 anyway.
+        out_shape = dims[:normalized] + (index_count,) + dims[normalized + 1:]
+        outer = 1
+        for extent in dims[:normalized]:
+            outer *= extent
+        inner = 1
+        for extent in dims[normalized + 1:]:
+            inner *= extent
+        output_count = outer * index_count * inner
+        # §18.6 step 11, the *caller-facing* half: the element count crossing
+        # the ABI must be representable as an int64 storage size. It is asked
+        # here rather than left to the allocator because this is the one
+        # operation whose output can be **larger** than its source — the index
+        # tensor may repeat a position arbitrarily often, so
+        # ``index_count`` is bounded by nothing the source's own
+        # representability already proved. Python's arbitrary-precision ints
+        # mean the product above cannot wrap, so the question is asked exactly
+        # once, on the whole value, before anything is allocated.
+        if output_count > _INT64_MAX:
+            raise ValueError(
+                f"index_select output element count {output_count} exceeds "
+                f"the signed int64 range the native runtime addresses"
+            )
+        # A **separate** question, and deliberately a different error type:
+        # the identity holds by construction for every shape this operation
+        # can describe, and it is the destination capacity the export
+        # re-proves as an exact equality, so a disagreement here would be a
+        # defect rather than a caller error. It is not, and may not be read
+        # as, the representability check above.
+        if _numel_checked(out_shape) != output_count:
+            raise RuntimeError(
+                f"index_select derived {output_count} values "
+                f"for an output of shape {out_shape}"
+            )
+        temporaries = []
+        try:
+            source = (
+                self if self.contiguous else self._contiguous_temp(temporaries)
+            )
+            index_source = (
+                indices if indices.contiguous
+                else indices._contiguous_temp(temporaries)
+            )
+            # Zero-initialized, deliberately (design §27.3): no Phase-K path
+            # takes the H1 uninitialized allocator, so the uninitialized
+            # audit table gains no row.
+            out = NativeTensorCore._typed(out_shape, self.dtype,
+                                          device=self.device)
+            try:
+                self._storage._lib.tf_core_index_select(
+                    source._storage._require_open(), source.offset,
+                    index_source._storage._require_open(),
+                    index_source.offset,
+                    out._storage._require_open(),
+                    outer, axis_length, index_count, inner,
+                )
+            except BaseException:
+                # The native call failed (e.g. an injected allocation
+                # failure): discard the freshly allocated destination so a
+                # failed selection returns no half-built tensor.
+                out.close()
+                raise
+            return out
+        finally:
+            # Close the private contiguous copies exactly once each, in
+            # reverse allocation order, whether the call succeeded or
+            # raised — both callers' operands are untouched.
+            for temp in reversed(temporaries):
                 temp.close()
 
     # -- convolution (Phase D, D3: forward-only Core wrapper) ------------
@@ -5759,12 +6074,43 @@ def _normalize_axis(axis, shape):
     return _normalize_axis_checked(axis, _as_shape(shape))
 
 
+def _is_axis_int(axis):
+    """True when ``axis`` has the exact type a reduction axis may have — a
+    Python ``int`` or a NumPy integer scalar, and **never** a ``bool``.
+
+    Extracted at Phase K, milestone K4 so that the **type** half and the
+    **range** half of the axis question can be asked at different points in
+    one validation order (integer design §18.6 puts the type at step 1, as a
+    ``TypeError``, and the range at step 8, as a ``ValueError``) without a
+    second copy of the predicate that could drift from this one.
+    ``_normalize_axis_checked`` below asks it and then answers the range
+    question, exactly as it always did; the accepted domain is unchanged."""
+    return isinstance(axis, (int, np.integer)) and not isinstance(axis, bool)
+
+
+def _require_axis_int(axis, where):
+    """The **type** half of ``_normalize_axis_checked``, asked on its own
+    (Phase K, milestone K4).
+
+    ``index_select`` validates its axis's type before it has looked at its
+    index operand at all, and its range only after both operands' dtypes
+    are known — so it needs the two halves separately, and asks the same
+    predicate for both. ``axis=None`` is *not* accepted here: unlike a
+    reduction, a selection has no "every axis" meaning.
+
+    Raises ``TypeError`` naming the rejecting operation, and returns the
+    axis unchanged so a call site can read as an assertion."""
+    if not _is_axis_int(axis):
+        raise TypeError(f"{where}: axis must be an int, got {axis!r}")
+    return axis
+
+
 def _normalize_axis_checked(axis, dims):
     """``_normalize_axis`` over an already-validated shape tuple. The
     ``axis`` itself is still fully validated — it is the caller-supplied
     half of this pair and is never assumed."""
     ndim = len(dims)
-    if not isinstance(axis, (int, np.integer)) or isinstance(axis, bool):
+    if not _is_axis_int(axis):
         raise TypeError(f"axis must be None or an int, got {axis!r}")
     value = int(axis)
     normalized = value + ndim if value < 0 else value

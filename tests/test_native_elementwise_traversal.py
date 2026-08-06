@@ -922,7 +922,7 @@ def test_exp_and_log_still_produce_numpys_values():
 # storage creators and Phase K milestone K3's argmax forward — so the
 # Phase-H claim is checked against the Phase-H subset.
 PHASE_H_TF_EXPORTS = 52
-EXPECTED_TF_EXPORTS = 55
+EXPECTED_TF_EXPORTS = 56
 
 FORBIDDEN_NAMES = (
     "tf_elementwise_set_path", "tf_elementwise_select",

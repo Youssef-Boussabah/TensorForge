@@ -82,8 +82,8 @@ Phase J.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
 complete: milestones J0 through J9 have all landed and J9 closed it.**
-**Phase K is the latest phase, and only K0 through K3 have landed;
-K4 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
+**Phase K is the latest phase, and only K0 through K4 have landed;
+K5 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper

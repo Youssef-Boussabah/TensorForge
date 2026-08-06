@@ -1997,9 +1997,11 @@ def test_no_native_address_is_exposed_by_any_public_api():
 @needs_native
 def test_the_exported_symbol_count_is_unchanged_apart_from_phase_i():
     """H7 added no C ABI symbol, and the symbols added since are the two
-    typed storage creators of Phase I milestone I1 and the argmax forward of
-    Phase K milestone K3 — so the library exports 55: Phase H's 52 plus
-    exactly those three, each attributed to the milestone that shipped it."""
+    typed storage creators of Phase I milestone I1, the argmax forward of
+    Phase K milestone K3, and the index_select forward of milestone K4 — so
+    the library exports 56: Phase H's 52 plus exactly those four, each
+    attributed to the milestone that shipped it. 56 is also Phase K's
+    committed maximum."""
     source_exports = set()
     for path in sorted((REPO_ROOT / "cpp" / "src").glob("*.cpp")):
         source_exports.update(
@@ -2007,10 +2009,10 @@ def test_the_exported_symbol_count_is_unchanged_apart_from_phase_i():
                        path.read_text(encoding="utf-8")))
     typed_creators = {"tf_storage_create_typed",
                       "tf_storage_create_uninitialized_typed"}
-    later_exports = {"tf_core_argmax"}
+    later_exports = {"tf_core_argmax", "tf_core_index_select"}
     assert typed_creators <= source_exports
     assert later_exports <= source_exports
-    assert len(source_exports) == 55
+    assert len(source_exports) == 56
     assert len(source_exports - typed_creators - later_exports) == 52
     library = cpp._require_library()
     for name in source_exports:
@@ -2028,10 +2030,11 @@ def test_h7_changed_no_capability_dtype_device_or_checkpoint_value():
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     # 34 at Phase-H closure, plus the two Phase-I typed creators, which
     # report failure through the identical hook rather than inventing a
-    # second convention. Nothing else joined: I1 deliberately left the
+    # second convention, plus the two Phase-K indexing forwards (argmax at
+    # K3, index_select at K4). Nothing else joined: I1 deliberately left the
     # unguarded storage primitives (fill, scale, copy_from, copy_to)
     # hookless, so their per-call boundary cost is exactly what H7 left.
-    assert len(cpp._CHECKED_KERNELS) == 37
+    assert len(cpp._CHECKED_KERNELS) == 38
     for name in ("tf_storage_create_typed",
                  "tf_storage_create_uninitialized_typed"):
         assert name in cpp._CHECKED_KERNELS, name
@@ -2204,7 +2207,7 @@ def test_the_inventory_arithmetic_adds_up():
     bindings, so a future change cannot leave the design's table stale
     without failing here.
 
-    55 exports = 22 with at least one array position + 31 that carry only
+    56 exports = 22 with at least one array position + 32 that carry only
     storage handles and integers + 2 test-only hooks; and 54 array
     positions = 32 trusted + 22 checked.
 
@@ -2212,7 +2215,10 @@ def test_the_inventory_arithmetic_adds_up():
     made observable: its ``tf_core_argmax`` takes two storage handles and
     four ``int64`` scalars and no array at all, so it moved the export total
     to 55 and the handle-only column from 30 to 31 while leaving the array
-    position tally at 54 exactly where it was.
+    position tally at 54 exactly where it was. Milestone K4 did the same
+    again — ``tf_core_index_select`` takes three storage handles and six
+    ``int64`` scalars and no array — moving the export total to 56 and the
+    handle-only column to 32 with the array tally still at 54.
 
     Phase I milestone I1 moved the handle-only column from 26 to 28: its
     two typed creators take an int64 element count and an int32 dtype code
@@ -2243,8 +2249,8 @@ def test_the_inventory_arithmetic_adds_up():
             test_only += 1
         else:
             handle_only += 1
-    assert (with_arrays, handle_only, test_only) == (22, 31, 2)
-    assert with_arrays + handle_only + test_only == 55
+    assert (with_arrays, handle_only, test_only) == (22, 32, 2)
+    assert with_arrays + handle_only + test_only == 56
     assert (trusted_positions, checked_positions) == (32, 22)
     assert trusted_positions + checked_positions == 54
     # Thirteen of the 22 array-carrying exports have a trusted position —

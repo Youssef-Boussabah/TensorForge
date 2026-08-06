@@ -4794,12 +4794,13 @@ def test_g2_core_inventory_is_exactly_one_operation_and_one_abi_symbol():
     from tensorforge.experimental import native_checkpoint
 
     # Exactly one new Core op, appended in G2's own position, and no sibling
-    # smuggled in. It is no longer the *last* entry — Phase K milestone K3
-    # appended ``"argmax"`` after it — so the claim is checked as "the last
-    # entry G2 could see", which is what it always meant.
+    # smuggled in. It is no longer the *last* entry — Phase K milestones K3
+    # and K4 appended ``"argmax"`` and ``"index_select"`` after it — so the
+    # claim is checked as "the last entry G2 could see", which is what it
+    # always meant.
     dropout_ops = [name for name in cpp.TENSOR_CORE_OPS if "dropout" in name]
     assert dropout_ops == ["dropout_forward"], dropout_ops
-    post_g2_ops = ("argmax",)   # Phase K, K3
+    post_g2_ops = ("argmax", "index_select")   # Phase K, K3 and K4
     assert [name for name in cpp.TENSOR_CORE_OPS
             if name not in post_g2_ops][-1] == "dropout_forward"
 

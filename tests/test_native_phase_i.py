@@ -116,8 +116,8 @@ I1_EXPORT_COUNT = I0_EXPORT_COUNT + 2  # 54, for the whole of Phase I
 # "this milestone added no export" claim below is a claim about Phase I,
 # it is still exactly true, and it is measured against the live source
 # with these removed rather than against a number that quietly moved.
-POST_PHASE_I_EXPORTS = {"tf_core_argmax": "K3"}
-CURRENT_EXPORT_COUNT = I1_EXPORT_COUNT + len(POST_PHASE_I_EXPORTS)  # 55
+POST_PHASE_I_EXPORTS = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
+CURRENT_EXPORT_COUNT = I1_EXPORT_COUNT + len(POST_PHASE_I_EXPORTS)  # 56
 
 # The ABI dtype codes, frozen. Written here independently of the module
 # under test so a silent renumbering fails rather than propagating.

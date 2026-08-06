@@ -1466,15 +1466,16 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     # dtype-Dropout test, last of the family and on the same terms: it
     # drives the *existing* G2 kernel at a second element type, plus the
     # cross-dtype drop-pattern identity and the narrow-once scale witness.
-    # Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
-    assert len(ctests) == 26
+    # Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I; milestone K3 took it to 26 (cpp/tests/test_argmax.cpp) and milestone K4 to 27 (cpp/tests/test_index_select.cpp). The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
+    assert len(ctests) == 27
     phase_i = {"test_dtype_storage.cpp", "test_typed_transfer.cpp",
                "test_dtype_elementwise.cpp",
                "test_dtype_reduction_matmul.cpp", "test_dtype_cnn.cpp",
                "test_dtype_classification.cpp", "test_dtype_dropout.cpp"}
     assert phase_i <= set(ctests)
     phase_k = {"test_dtype_int64_storage.cpp",   # K1
-               "test_argmax.cpp"}                # K3
+               "test_argmax.cpp",                # K3
+               "test_index_select.cpp"}          # K4
     assert phase_k <= set(ctests)
     assert len([name for name in ctests
                 if name not in phase_i | phase_k]) == 17
@@ -1486,8 +1487,9 @@ def test_h0_adds_no_kernel_or_abi_declaration():
     assert "test_elementwise_traversal.cpp" in ctests
     # H0 added no hooked kernel, so the tuple still ends with the last
     # entry it could see once the later phases' additions — Phase K
-    # milestone K3's argmax forward — are removed.
-    post_h0_kernels = ("tf_core_argmax",)
+    # milestone K3's argmax forward and milestone K4's index_select forward
+    # — are removed.
+    post_h0_kernels = ("tf_core_argmax", "tf_core_index_select")
     assert [name for name in cpp._CHECKED_KERNELS
             if name not in post_h0_kernels][-1] == "tf_core_dropout_forward"
     # H1 added exactly one checked ABI symbol, and it is an allocator

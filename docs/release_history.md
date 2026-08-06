@@ -2328,9 +2328,9 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase K — native integer tensors and indexing (K0–K3)
+### Phase K — native integer tensors and indexing (K0–K4)
 
-**Phase K is newly approved, and K0, K1, K2, and K3 have
+**Phase K is newly approved, and K0 through K4 have
 landed.** **No version is claimed** — the native line
 stays experimental and is not production-ready, and this entry records
 milestones rather than a release.
@@ -2338,7 +2338,7 @@ milestones rather than a release.
 Phase K was approved **after** Phase J closed at J9. The repository
 deliberately finished Phase J without committing to a successor, so Phase K
 is not carried-over roadmap work and must not be described as though it
-were. **K4 through K9 are unstarted**, and work beyond Phase K would
+were. **K5 through K9 are unstarted**, and work beyond Phase K would
 require a separately approved phase with its own design contract.
 
 **K0 added no runtime behavior at all.** No integer dtype, no dtype code,
@@ -2465,22 +2465,76 @@ gradient-tracking tensor. K3 shipped **no `max`**: a kernel that finds the
 position of a maximum necessarily knows the maximum, and Phase K
 deliberately does not expose it.
 
+**K4 shipped the phase's one index-*consuming* operation and its second
+and final C ABI symbol: native `index_select`, forward only.**
+`NativeTensor.index_select(axis, indices)` and
+`NativeTensorCore.index_select(axis, indices)` take a **floating** source
+at either dtype, any rank ≥ 1, contiguous or not, together with a rank-1
+**`int64`** index tensor, and return a **fresh owning contiguous** tensor
+of the **source's** dtype whose selected axis has `indices.numel`
+positions. It is `argmax`'s mirror image — that one produces an index from
+values, this one consumes one and produces values — and the two compose
+directly, which is why `index_select` rather than a general `gather` is
+the primitive the phase chose. There is exactly one index input form: a
+native `int64` tensor. A NumPy array, a list, a tuple, a Python `int`, and
+a floating tensor are all rejected, and a caller with host indices goes
+through `from_int64_array` first, one visible conversion instead of a
+hidden one.
+
+Behind them is one new export, `tf_core_index_select`, in the **same**
+translation unit and internal header K3 created — K4 added no second
+indexing unit. Its templated traversal `tf::index_select_contiguous` sits
+**beside** `argmax_contiguous` rather than generalizing it, and copies
+whole `inner`-element slices with `std::memcpy`: it reads no value,
+performs no arithmetic, and therefore moves every element by **object
+representation**, so both signed zeros, both infinities, subnormals, and
+every NaN payload and signalling bit arrive unchanged. Its source and
+destination are floating and must **agree** — the one place in the phase
+`tf::require_matching_dtype` is used, and never across the floating/index
+boundary — while the separate index handle takes `tf::require_index`. Its
+own file-local validator stays separate from K3's: three handles, two
+offsets, four extents, and two aliasing pairs are a different list, and
+one function covering both would have needed a mode flag.
+
+Index validation is **complete and precedes every write**, in both
+authorities. Python scans every value before the destination is allocated
+at all, reporting the offending value and its zero-based logical position;
+the C ABI scans the whole span again independently before the first
+destination element is written, and neither may be removed because the
+other exists. Negative indices are **rejected rather than wrapped**:
+index data in this phase is usually *computed*, so a negative value is a
+defect upstream, and wrapping would turn it into a plausible wrong answer
+at the far end of a training run. Duplicates and order are preserved
+exactly.
+
+`"index_select"` joined `TENSOR_CORE_OPS` and **deliberately did not join
+`AUTOGRAD_OPS`**. It is **forward only**: a source with
+`requires_grad=True` is **rejected**, with a message naming `detach()`,
+rather than silently detached — the backward is a scatter-add with its own
+accumulation-order and duplicate-index contract and its own export, which
+this phase's ABI budget does not spend, and a graph-free result from a
+gradient-tracking source would be a silent gradient hole. The contract
+that future backward must meet is already fixed in the design's §18.9.
+
 *What is still absent, publicly.* `int64` is **still not** a supported
 native tensor dtype — it is an index/result dtype in a separate registry,
 `normalize_dtype("int64")` keeps raising, **no generic constructor changed
 what it accepts**, and public `NativeStorage(size, dtype="int64")` stays
 prohibited. There is no public `NativeStorage.from_int64_array` or
-`NativeTensorCore.from_int64_array`, no `max`, no `argmin`, no index
-selection, no integer arithmetic or reduction, no integer autograd,
-parameter, buffer, optimizer state, or checkpoint entry, and no promotion
-or casting. `native_accuracy` deliberately still reports through its
-explicit `to_numpy()` host boundary: rewriting it over the native `argmax`
-would still need an integer *equality* reduction that no milestone ships.
+`NativeTensorCore.from_int64_array`, no `max`, no `argmin`, no general
+`gather`, no `scatter` or `scatter_add`, no embedding lookup, no
+`__getitem__` and no advanced, boolean, or multi-axis indexing, no
+`index_select` backward, no integer arithmetic or reduction, no integer
+autograd, parameter, buffer, optimizer state, or checkpoint entry, and no
+promotion or casting. `native_accuracy` deliberately still reports through
+its explicit `to_numpy()` host boundary: rewriting it over the native
+`argmax` would still need an integer *equality* reduction that no
+milestone ships.
 
 Every registry and
-inventory is exactly what Phase J left, with four exceptions — the CTest
-count at K1, `INDEX_DTYPES` at K2, and the export count and CTest count
-again at K3:
+inventory is exactly what Phase J left, with five exceptions — the CTest
+count at K1, `INDEX_DTYPES` at K2, the export count and CTest count again
+at K3, and both again at K4:
 `SUPPORTED_DTYPES ==
 ("float64", "float32")`, `SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED ==
 ("cuda", "amp")`, `RAW_KERNEL_DTYPES == ("float64",)`, **25** experimental
@@ -2488,9 +2542,11 @@ names, **16**
 examples, **9** benchmarks, checkpoint version **3** with `(1, 2, 3)`
 accepted, and optimizer, loader, and sampler state at version **1** — while
 the native CTest inventory moved **24 → 25** at K1
-(`cpp/tests/test_dtype_int64_storage.cpp`) and **25 → 26** at K3
-(`cpp/tests/test_argmax.cpp`), and the exported `tf_*` symbol count moved
-**54 → 55** at K3 (`tf_core_argmax`), against a phase maximum of **56**.
+(`cpp/tests/test_dtype_int64_storage.cpp`), **25 → 26** at K3
+(`cpp/tests/test_argmax.cpp`), and **26 → 27** at K4
+(`cpp/tests/test_index_select.cpp`), and the exported `tf_*` symbol count
+moved **54 → 55** at K3 (`tf_core_argmax`) and **55 → 56** at K4
+(`tf_core_index_select`) — the phase maximum of **56**, now reached.
 
 K2 also corrected two K0 misassignments rather than re-dating them: §20.3
 had assigned the `native_metrics.py` / `NATIVE_METRICS` reconciliation

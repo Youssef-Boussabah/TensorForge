@@ -975,7 +975,7 @@ required platform, added the closure guardrails, and reconciled the status
 surfaces. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
-Phase J, below, is complete (J0–J9). **Phase K is the latest phase, and only K0 through K3 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J moved no
+Phase J, below, is complete (J0–J9). **Phase K is the latest phase, and only K0 through K4 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J moved no
 row in this document at any milestone.
 
 **Since milestone I9, `float32` and `float64` are both supported native
@@ -1532,7 +1532,7 @@ G9 while the operation and the module both already existed.
 
 ## Phase J — deterministic native data pipeline and mini-batching, **complete (J0–J9)**
 
-**Phase J is complete.** **Phase K is the latest phase, and only K0 through K3 have landed.** **Phase J is the latest completed phase**, and it remains complete. It was newly approved
+**Phase J is complete.** **Phase K is the latest phase, and only K0 through K4 have landed.** **Phase J is the latest completed phase**, and it remains complete. It was newly approved
 when it opened: the repository closed Phase I at I11 without committing to
 a successor, and Phase J was approved afterwards, so nothing here describes
 pre-existing roadmap work.
@@ -1848,14 +1848,17 @@ array), `item()` (a built-in `int`, complete signed 64-bit value, no float
 intermediate), and `tolist()` (nested built-in containers with Python
 `int` leaves).
 
-*Still unsupported, and asserted so by test:* `int64` in
+*Still unsupported at K2, and asserted so by test then:* `int64` in
 `SUPPORTED_DTYPES`, `normalize_dtype("int64")`, an `int64` route through
 any generic constructor, public `NativeStorage(size, dtype="int64")`, a
 public `NativeStorage.from_int64_array` or
 `NativeTensorCore.from_int64_array`, `argmax`, `index_select`, integer
 arithmetic, integer reductions, integer autograd, integer parameters or
 buffers, integer optimizer state, integer checkpoint entries, promotion or
-casting, CUDA, and AMP.
+casting, CUDA, and AMP. Two entries have since **moved rather than been
+deleted**: `argmax` left the list at **K3** and `index_select` at **K4**,
+each shipped by the milestone that owns it and each recorded above. Every
+other entry is still unsupported today.
 
 | Registry | Value at J9 | Value at K0 | Value at K1 | Value at K2 |
 |---|---|---|---|---|
@@ -1885,7 +1888,9 @@ constructor accepts it, and no kernel computes at it.
 
 **K3 shipped the phase's first operation and its first C ABI symbol: native `argmax`.** `NativeTensor.argmax(axis=None, keepdims=False)` and `NativeTensorCore.argmax(axis=None, keepdims=False)` search a **floating** tensor at either dtype, at any rank including 0, contiguous or not, and return a fresh owning contiguous **`int64`** tensor — the one operation in the runtime whose result dtype differs from its operand's, which is what an index is. Shapes come from the existing `reduce_shape` authority and axes from the existing `_normalize_axis_checked`, with the axis validated **before** `keepdims`; the value rule is exact rather than adjectival — equal maxima give the **lowest** index, `+0.0` and `-0.0` tie, an all-`-inf` run gives 0, and the **first** NaN wins against every finite value and either infinity. The result is a plain leaf **even when the input requires gradients**, because an index has no derivative, so `"argmax"` joined `TENSOR_CORE_OPS` and deliberately not `AUTOGRAD_OPS`. Exports went **54 → 55** (`tf_core_argmax`, against a phase maximum of 56) and native CTests **25 → 26**; `__all__`, every registry, every version, the examples, and the benchmarks are unmoved, and **no `max` was shipped beside it**.
 
-There is **no `max`**, no `max_with_indices`, no `argmin`, no index selection, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion, and **K4 through K9 are unstarted**.
+**K4 shipped the phase's one index-*consuming* operation and its second and final C ABI symbol: native `index_select`, forward only.** `NativeTensor.index_select(axis, indices)` and `NativeTensorCore.index_select(axis, indices)` take a **floating** source at either dtype, any rank ≥ 1, contiguous or not, together with a **rank-1 `int64`** index tensor — never a NumPy array, a list, a tuple, or a Python `int`; a caller with host indices goes through `from_int64_array` first — and return a fresh owning contiguous tensor of the **source's** dtype whose selected axis has `indices.numel` positions. It is `argmax`'s mirror image, and the two compose directly. Duplicates and order are preserved exactly, negative and out-of-range indices are **rejected rather than wrapped**, the complete bounds scan runs in Python *and* independently in C++ before the first destination element is written, and values cross by **object representation**, so signed zeros, infinities, subnormals, and NaN payloads survive bit for bit. It is **forward only**: a source with `requires_grad=True` is rejected with a message naming `detach()` rather than silently detached, so `"index_select"` joined `TENSOR_CORE_OPS` and deliberately not `AUTOGRAD_OPS`. Exports went **55 → 56** (`tf_core_index_select` — the phase maximum, now reached) and native CTests **26 → 27**; `__all__`, every registry, every version, the examples, and the benchmarks are unmoved.
+
+There is **no `max`**, no `max_with_indices`, no `argmin`, no general `gather`, no `scatter`, no `scatter_add`, no embedding lookup, no `__getitem__` or advanced/boolean/multi-axis indexing, no `index_select` backward, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion, and **K5 through K9 are unstarted**.
 
 **What the contract decides**, so that a later milestone implements rather
 than re-argues it: one extended `NativeTensor` rather than a parallel

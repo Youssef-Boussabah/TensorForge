@@ -13,9 +13,11 @@
 // ---------------------------------------------------------------------------
 // Phase K, milestone K3: `argmax`, the phase's one index-*producing*
 // operation (docs/native_integer_tensors_design.md §17).
+// Phase K, milestone K4: `index_select`, the phase's one index-*consuming*
+// operation (design §18).
 // ---------------------------------------------------------------------------
 //
-// Two things live here, and they have **different** futures — which is
+// Three things live here, and they have **different** futures — which is
 // worth stating, because "shared header" is not the same claim as "shared
 // code":
 //
@@ -26,9 +28,15 @@
 //     specific index-producing traversal**: it searches a run for the
 //     position of a maximum and writes one index per output position.
 //     Nothing about it generalizes to selecting *by* index, and no later
-//     milestone is expected to reuse it — K4's ``index_select`` gathers,
-//     which is a different traversal over a different operand set with a
-//     different destination dtype, and it will define and validate its own.
+//     milestone reuses it — K4's ``index_select`` gathers, which is a
+//     different traversal over a different operand set with a different
+//     destination dtype, and it defines and validates its own below.
+//   * ``tf::index_select_contiguous`` — **K4's own traversal**, added
+//     beside the first rather than by generalizing it. It reads no value,
+//     compares nothing, and copies whole ``inner``-element slices by object
+//     representation; ``argmax_contiguous`` reads every value and writes an
+//     index of another dtype. One routine doing both would have needed a
+//     mode argument neither contract has.
 //   * ``tf::require_index`` — the **index-role** dtype guard. It is a
 //     genuinely different question from ``tf::require_floating``, and
 //     applying either in the other's place would reject every valid call:
@@ -37,7 +45,8 @@
 //     one asks a question any index operand raises — "is this handle
 //     exactly ``int64``?" — so it is the piece expected to stay useful to
 //     K4, whose index operand needs the same answer about a different
-//     handle in a different role.
+//     handle in a different role. K4 shipped and does exactly that: it is
+//     the one declaration here with two callers.
 //
 // What the file and this header therefore are is the **common
 // architectural home** for the phase's indexing operations, in the sense
@@ -46,15 +55,19 @@
 // A later milestone adding an operation here still owns its own traversal,
 // its own ABI argument list, and its own validation.
 //
-// The output element type is **not** a template parameter and never becomes
-// one. An index is an ``std::int64_t`` at every source width — that is the
-// whole point of the operation — so widening the template would invent a
-// degree of freedom the contract does not have.
+// ``argmax``'s output element type is **not** a template parameter and never
+// becomes one. An index is an ``std::int64_t`` at every source width — that
+// is the whole point of the operation — so widening the template would
+// invent a degree of freedom the contract does not have. ``index_select``'s
+// index operand is the mirror image: always ``std::int64_t``, never a
+// template parameter, while its value template covers the source and the
+// destination together, because those two dtypes must agree.
 #pragma once
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 
 #include "tf_internal.h"  // tf::Dtype, tf::Storage, dtype_name, set_error
 
@@ -177,6 +190,70 @@ inline void argmax_contiguous(
                 }
             }
             dst[o * inner + i] = best_index;
+        }
+    }
+}
+
+// The slices an index tensor names, gathered along one axis of a row-major
+// CONTIGUOUS block of element type ``T`` (Phase K, milestone K4; design
+// §18). Same ``(outer, axis_length, inner)`` decomposition the traversal
+// above takes, plus the ``index_count`` the selected axis becomes: the
+// source element (o, k, i) lives at ``o * axis_length * inner + k * inner +
+// i`` and the destination element (o, j, i) at
+// ``o * index_count * inner + j * inner + i``, so one (o, j) pair names one
+// contiguous run of ``inner`` elements at each end.
+//
+// ``src`` and ``indices`` already point at their first elements (the caller
+// adds each storage offset); ``dst`` is caller-allocated storage of ``T``
+// holding exactly ``outer * index_count * inner`` elements, every one of
+// which is written.
+//
+// **Preconditions, all of them established by the caller** — this routine
+// re-checks nothing and cannot fail: the three storages carry the dtypes
+// their roles require, the destination aliases neither operand, every span
+// lies inside its storage, every extent is positive, every product is
+// representable, ``inner * sizeof(T)`` is representable as a ``size_t``,
+// and **every** ``indices[j]`` is already known to lie in
+// ``[0, axis_length)``. That last one is the load-bearing precondition:
+// §14.4 requires the complete bounds scan to happen *before* the first
+// destination element is written, so checking each index as it is used —
+// the obvious implementation — is exactly what this must not do.
+//
+// **Order and duplicates are preserved exactly** (design §13.5). The
+// destination's j-th slice is the source's ``indices[j]``-th slice, for
+// every j, with no sorting, no deduplication, no normalization, no
+// wrapping, and no clamping. A repeated index copies the same source slice
+// again into an independent destination position.
+//
+// **Values cross by object representation, not by assignment.** The copy is
+// ``std::memcpy`` over a trivially copyable ``T``, so every bit of every
+// element arrives unchanged: both signed zeros, both infinities,
+// subnormals, and every NaN payload and signalling bit. A floating
+// assignment would be permitted by IEEE-754 to canonicalize a signalling
+// NaN, and this operation performs no arithmetic and must therefore change
+// nothing. Source and destination are distinct storages (the export proves
+// it), so the regions never overlap and ``memcpy`` rather than ``memmove``
+// is the right primitive.
+//
+// noexcept, allocation-free, no floating arithmetic, no value ever
+// inspected, no dtype branch inside the loop, and it writes only inside
+// ``[0, outer * index_count * inner)`` — so, like the traversal above, the
+// result is a fixed function of the shape metadata and the index values
+// alone and is identical on every platform (design §29.5).
+template <class T>
+inline void index_select_contiguous(
+    const T* src, const std::int64_t* indices, T* dst,
+    std::int64_t outer, std::int64_t axis_length,
+    std::int64_t index_count, std::int64_t inner) noexcept {
+    const std::size_t slice_bytes =
+        static_cast<std::size_t>(inner) * sizeof(T);
+    for (std::int64_t o = 0; o < outer; ++o) {
+        const std::int64_t source_plane = o * axis_length * inner;
+        const std::int64_t destination_plane = o * index_count * inner;
+        for (std::int64_t j = 0; j < index_count; ++j) {
+            std::memcpy(dst + destination_plane + j * inner,
+                        src + source_plane + indices[j] * inner,
+                        slice_bytes);
         }
     }
 }

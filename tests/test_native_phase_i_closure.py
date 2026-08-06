@@ -121,8 +121,8 @@ FINAL_EXPORT_COUNT = PHASE_H_EXPORT_COUNT + len(PHASE_I_ADDED_EXPORTS)  # 54
 # Symbols added by **later phases**, after Phase I closed — the exact
 # counterpart of ``POST_PHASE_I_EXAMPLES`` below, and for the same reason.
 # Phase K, milestone K3 added the argmax forward.
-POST_PHASE_I_EXPORTS = {"tf_core_argmax": "K3"}
-CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(POST_PHASE_I_EXPORTS)  # 55
+POST_PHASE_I_EXPORTS = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
+CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(POST_PHASE_I_EXPORTS)  # 56
 
 # Frozen ABI dtype codes and the one item-size authority's answers. Written
 # here independently of the module under test, so a silent renumbering
@@ -145,10 +145,11 @@ FINAL_EXAMPLE_COUNT = 15
 
 # Native CTests added *after* Phase I closed, each mapped to the milestone
 # that shipped it — the same split ``POST_PHASE_I_EXAMPLES`` uses below.
-# Phase K, milestone K1 added the int64 storage target and milestone K3 the
-# argmax one.
-POST_PHASE_I_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3"}
-CURRENT_CTEST_COUNT = FINAL_CTEST_COUNT + len(POST_PHASE_I_CTESTS)  # 26
+# Phase K, milestone K1 added the int64 storage target, milestone K3 the
+# argmax one, and milestone K4 the index_select one.
+POST_PHASE_I_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3",
+                       "index_select": "K4"}
+CURRENT_CTEST_COUNT = FINAL_CTEST_COUNT + len(POST_PHASE_I_CTESTS)  # 27
 MILESTONES = tuple(f"I{index}" for index in range(12))   # I0 ... I11
 
 # Examples added *after* Phase I closed, each mapped to the milestone that

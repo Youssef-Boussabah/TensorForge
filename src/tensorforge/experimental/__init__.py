@@ -399,10 +399,10 @@ async primitive, and none joins the process-wide state-replacement lock
 order. One thread at a time; external locking is the caller's job.
 
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and only K0 through K3 have landed.** Its contract is
+and only K0 through K4 have landed.** Its contract is
 ``docs/native_integer_tensors_design.md``. Phase K was approved **after**
 Phase J closed at J9 without a committed successor, so it is not
-carried-over roadmap work; **K4 through K9 are unstarted**.
+carried-over roadmap work; **K5 through K9 are unstarted**.
 
 **K0** was architecture, contract, status, and guardrails only, and added
 no runtime behavior at all. **K1 added the internal ``int64``
@@ -483,10 +483,47 @@ example, and no benchmark, and it shipped **no ``max``**: a kernel that
 finds the position of a maximum necessarily knows the maximum, and the
 phase deliberately does not expose it.
 
+**K4 shipped the phase's one index-*consuming* operation and its second
+and final C ABI symbol: native ``index_select``, forward only.**
+``NativeTensor.index_select(axis, indices)`` and
+``NativeTensorCore.index_select(axis, indices)`` take a **floating**
+source at either dtype, any rank ≥ 1, contiguous or not, together with a
+rank-1 **``int64``** index tensor, and return a fresh owning contiguous
+tensor of the **source's** dtype whose selected axis has ``indices.numel``
+positions. It is ``argmax``'s mirror image, and the two compose directly.
+There is exactly one index input form: a native ``int64`` tensor — never a
+NumPy array, a list, a tuple, or a Python ``int``, so a caller with host
+indices goes through ``from_int64_array`` first, one visible conversion
+instead of a hidden one.
+
+Duplicates and order are preserved **exactly**: the output's *j*-th slice
+is the source's slice at ``indices[j]``, with no sorting, deduplication,
+normalization, wrapping, or clamping. Negative and out-of-range indices
+are **rejected**, and every index is scanned completely — in Python before
+anything is allocated, and again independently at the C ABI before the
+first destination element is written. Values cross by **object
+representation**, so both signed zeros, both infinities, subnormals, and
+every NaN payload survive bit for bit. A non-contiguous source *or* index
+is materialized through Policy-B copy-then-compute, so the answers are
+identical either way.
+
+**It is forward only, and it says so.** A source with
+``requires_grad=True`` is **rejected** with a message naming
+``detach()``, never silently detached: the backward is a scatter-add with
+its own contract and its own milestone, and a graph-free result from a
+gradient-tracking source would be a silent gradient hole. So
+``"index_select"`` joined ``cpp.TENSOR_CORE_OPS`` and deliberately **not**
+``cpp.AUTOGRAD_OPS``, the result is a plain leaf, and the index tensor
+never receives a gradient. K4 took the exported ``tf_*`` inventory from 55
+to **56** (``tf_core_index_select`` — the phase maximum, now reached) and
+the native CTests from 26 to **27**; it moved no registry, no version, no
+example, and no benchmark.
+
 **``int64`` is still not a supported native tensor dtype**, and the
-distinction is the point — K3 is where it earns itself, because an
-operation now *produces* ``int64`` without ``int64`` ever becoming a dtype
-a kernel computes at. It is an **index/result** dtype in its own
+distinction is the point — K3 and K4 are where it earns itself, because
+one operation now *produces* ``int64`` and another *consumes* it as a
+**role** operand, without ``int64`` ever becoming a dtype a kernel
+computes at. It is an **index/result** dtype in its own
 registry, ``cpp.normalize_dtype("int64")`` still raises, and no generic
 constructor changed what it accepts — public ``NativeStorage(size,
 dtype="int64")`` stays prohibited, and there is no public
@@ -496,8 +533,10 @@ real integer tensor: it can never require gradients, build or enter an
 autograd graph, accumulate one, become a ``NativeParameter``, be
 registered as a buffer at either persistence value, be owned by
 ``NativeSGD`` or ``NativeAdam``, be declared in a checkpoint archive, or
-enter any floating operation. There is no ``max``, no ``argmin``, no index
-selection, no integer arithmetic or reduction, no integer optimizer state,
+enter any floating operation — including as an ``index_select`` *source*,
+which is a floating role. There is no ``max``, no ``argmin``, no general
+``gather``, no ``scatter``, no embedding lookup, no ``index_select``
+backward, no integer arithmetic or reduction, no integer optimizer state,
 and no promotion or casting — prove first, then promise. ``native_accuracy``
 still reports through its explicit ``to_numpy()`` host boundary,
 deliberately. ``__all__`` stays at

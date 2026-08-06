@@ -1575,11 +1575,12 @@ def test_h4_added_no_c_abi_symbol():
     # H4's claim is about Phase H, so it is measured against Phase H's own
     # surface of 52. The three extra symbols in the source belong to later
     # phases: Phase I's two typed storage creators at milestone I1, and
-    # Phase K's argmax forward at milestone K3.
+    # Phase K's argmax forward at milestone K3 and its index_select forward at
+    # milestone K4.
     phase_i_creators = {"tf_storage_create_typed",
                         "tf_storage_create_uninitialized_typed"}
-    phase_k_exports = {"tf_core_argmax"}
-    assert len(exported) == 55, sorted(exported)
+    phase_k_exports = {"tf_core_argmax", "tf_core_index_select"}
+    assert len(exported) == 56, sorted(exported)
     assert len(exported - phase_i_creators - phase_k_exports) == 52, \
         sorted(exported)
     for banned in ("tf_core_adam", "tf_core_sgd", "tf_core_optimizer",

@@ -87,9 +87,9 @@ PHASE_I_ADDED_EXPORTS = (
     "tf_storage_create_typed",
     "tf_storage_create_uninitialized_typed",
 )
-PHASE_K_ADDED_EXPORTS = ("tf_core_argmax",)
+PHASE_K_ADDED_EXPORTS = ("tf_core_argmax", "tf_core_index_select")
 CURRENT_EXPORT_COUNT = (FINAL_EXPORT_COUNT + len(PHASE_I_ADDED_EXPORTS)
-                        + len(PHASE_K_ADDED_EXPORTS))  # 55
+                        + len(PHASE_K_ADDED_EXPORTS))  # 56
 # The same history/today split the export counts above use, for the same
 # reason: Phase H closed at checkpoint version 2 and that is a fact about
 # Phase H which does not move again, while Phase I milestone I8 added the

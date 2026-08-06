@@ -1661,7 +1661,7 @@ The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at 
 
 **Phase J — deterministic native data pipeline and mini-batching — is
 complete: milestones J0 through J9 have all landed, and J9 closed it.**
-**Phase K is the latest phase, and only K0 through K3 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after* Phase I
+**Phase K is the latest phase, and only K0 through K4 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -2165,7 +2165,7 @@ benchmarked on its own; and the I0–I11 ladder, in which the public
 support registry changes at **I9** and at no earlier milestone.
 
 **Phase K — Native Integer Tensors and Indexing — is the newly approved
-successor, and only K0 through K3 have landed.** K0 is architecture, contract, status,
+successor, and only K0 through K4 have landed.** K0 is architecture, contract, status,
 and guardrails, and it **added no runtime behavior at all**: no integer
 dtype or dtype code, no C++ enumerator, no kernel, no C ABI symbol, no
 public export, no capability-registry movement, no checkpoint or state
@@ -2207,13 +2207,34 @@ work at `int64` through the machinery that already existed. K2 added no C
 ABI symbol (still 54), no experimental export (still 25), no CTest, no
 example, no benchmark, and no version change.
 
+**K3 shipped native `argmax` and K4 shipped native `index_select`, forward
+only — the phase's two operations and its two C ABI symbols.** `argmax`
+takes a **floating** tensor at either dtype and any rank and returns a
+fresh owning contiguous **`int64`** index tensor, over `tf_core_argmax`,
+with an exact value rule (lowest index on a tie, signed zeros tying, a
+first-NaN rule) and no `max` beside it. `index_select` is its mirror image:
+a **floating** source and a rank-1 **`int64`** index tensor in, a fresh
+owning contiguous tensor of the **source's** dtype out, over
+`tf_core_index_select`, preserving duplicates and order exactly, rejecting
+negative and out-of-range indices rather than wrapping them, scanning every
+index completely in Python *and* independently in C++ before writing
+anything, and copying values by **object representation** so signed zeros,
+infinities, subnormals, and NaN payloads survive bit for bit. It is
+**forward only**: a source with `requires_grad=True` is rejected with a
+message naming `detach()`, never silently detached. Neither operation is in
+`AUTOGRAD_OPS`. Exports went 54 → **55** → **56**, the phase maximum, and
+native CTests 25 → **26** → **27**; no registry, version, example, or
+benchmark moved at either milestone.
+
 `int64` is **still not**
 a supported native tensor dtype — it is an index/result dtype in its own
 registry, `normalize_dtype("int64")` keeps raising, and **no generic
 constructor changed what it accepts**. Every K1 barrier holds against a
-real integer tensor, and no public integer `argmax`, index selection,
+real integer tensor, and no integer
 arithmetic, reduction, autograd, parameter, buffer, optimizer state, or
-checkpoint entry exists; **K4 through K9 are unstarted**. Its contract is
+checkpoint entry exists, nor any `max`, `argmin`, general `gather`,
+`scatter`, embedding lookup, or `index_select` backward;
+**K5 through K9 are unstarted**. Its contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md),
 which locks one extended `NativeTensor` rather than a parallel integer
 class, `int64` as the only integer dtype and an exact non-differentiable

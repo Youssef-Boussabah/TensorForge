@@ -205,8 +205,8 @@ EXPECTED_EXPERIMENTAL_EXPORTS = 25
 # added the argmax export (54 -> 55) and its CTest (25 -> 26). J6 itself
 # still adds neither, which is what this module's claim has always been,
 # and an unrecorded addition still fails an exact equality.
-EXPECTED_ABI_EXPORTS = 55
-EXPECTED_CTESTS = 26
+EXPECTED_ABI_EXPORTS = 56
+EXPECTED_CTESTS = 27
 
 
 # ===========================================================================

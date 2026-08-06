@@ -111,9 +111,32 @@ applies to it unchanged: it is excluded from autograd (it is a plain leaf
 **even when the input requires gradients**, because the derivative of an
 index with respect to a value does not exist), from ``NativeParameter``,
 from module buffers at both persistence values, from both optimizers, and
-from checkpoint archives. And there is still no ``max``, no
-``max_with_indices``, no ``argmin``, no ``index_select``, no promotion, and
-no casting in either direction — ``max`` permanently, the rest pending a
+from checkpoint archives.
+
+As of Phase K milestone K4, ``index_select(axis, indices)`` completes the
+pair, and it is ``argmax``'s mirror image: it **consumes** an index rather
+than producing one. The source is floating and the result carries the
+source's dtype, while ``indices`` is a rank-1 ``int64`` NativeTensor — a
+**role** operand, never an arithmetic one, and never a host array, a list,
+a tuple, or a Python ``int``; a caller with host indices goes through
+``from_int64_array`` first. The result is a fresh owning contiguous copy
+whose selected axis has ``indices.numel`` positions, never a view.
+Duplicates and order are preserved exactly, negative and out-of-range
+indices are rejected rather than wrapped, and values cross by object
+representation, so signed zeros, infinities, subnormals, and NaN payloads
+survive bit for bit.
+
+``index_select`` is **forward only** in this phase: a source with
+``requires_grad=True`` is rejected with a message naming ``detach()``,
+because its backward is a scatter-add with its own contract and its own
+milestone, and silently detaching would be a gradient hole. Neither
+operation is in ``AUTOGRAD_OPS``, and the index tensor never receives a
+gradient.
+
+And there is still no ``max``, no ``max_with_indices``, no ``argmin``, no
+general ``gather``, no ``scatter``, no embedding lookup, no
+``__getitem__``, no advanced or boolean indexing, no promotion, and no
+casting in either direction — ``max`` permanently, the rest pending a
 milestone that has not landed.
 
 NativeTensor is still **not** tensorforge.Tensor: the two autograd
@@ -1402,6 +1425,104 @@ class NativeTensor:
             # so there is no graph to build and no parent to record — and
             # ``_from_op`` would refuse to build one anyway, which is the
             # structural backstop rather than the mechanism.
+            return self._from_core(out_core)
+        except BaseException:
+            out_core.close()
+            raise
+
+    def index_select(self, axis, indices):
+        """The slices ``indices`` names along ``axis``, as a fresh owning
+        **floating** NativeTensor of this tensor's dtype (Phase K, milestone
+        K4; see docs/native_integer_tensors_design.md §18).
+
+        ``indices`` is an ``int64`` NativeTensor of rank exactly 1 — never a
+        NumPy array, a list, a tuple, or a Python ``int``. A caller holding
+        host indices constructs one explicitly through
+        ``NativeTensor.from_int64_array``: one visible conversion instead of
+        a hidden one, and the operation's own name never has to describe a
+        second input form.
+
+        Delegates to ``NativeTensorCore.index_select``, which owns the rest
+        of the contract: floating source at either dtype and any rank ≥ 1,
+        an axis normalized by the existing reduction authority (negatives
+        included), the index rank and the complete bounds scan, negative and
+        out-of-range indices rejected rather than wrapped, duplicates and
+        order preserved exactly, Policy-B copy-then-compute for a
+        non-contiguous source *or* index, and values copied by **object
+        representation** so both signed zeros, both infinities, subnormals,
+        and every NaN payload arrive unchanged.
+
+        **The source may not require gradients, and a gradient-tracking one
+        is rejected rather than silently detached** (§18.9). This is the
+        rule this layer owns, and it is the reason the method exists here at
+        all rather than only on the Core. Phase K ships ``index_select``
+        forward only: its backward is a scatter-add into a zeroed source
+        with its own accumulation-order and duplicate-index contract and its
+        own C ABI export, which this phase's budget does not spend.
+        Returning a graph-free result from a gradient-tracking source would
+        be a silent gradient hole — the forward would work, the loss would
+        train, and one path's gradients would simply be missing — so the
+        call raises ``ValueError`` and names ``detach()``. A caller who
+        genuinely wants a detached selection writes
+        ``source.detach().index_select(axis, indices)`` and says so.
+
+        **The result is never a graph node**: ``requires_grad is False``,
+        ``grad is None``, ``is_leaf is True``, no parents, no backward
+        callback, no operation name, and no graph resources.
+        ``"index_select"`` is therefore in ``TENSOR_CORE_OPS`` and
+        deliberately **not** in ``AUTOGRAD_OPS``. The index tensor is a role
+        operand and never receives a gradient, at this milestone or any
+        later one.
+
+        The result owns fresh contiguous storage at offset 0, aliases
+        neither operand, survives either operand's ``close()``, and is **the
+        caller's to close**. It is a copy and is never a view (§15.2). The
+        destination core is produced before the wrapper is built, so it is
+        this call's to publish or to release: a failure in publication —
+        including a ``BaseException`` — closes it explicitly rather than
+        leaving it to the ``__del__`` safety net, and live storage returns
+        exactly to baseline.
+
+        There is deliberately no general ``gather``, no ``scatter``, no
+        ``embedding``, no ``__getitem__``, and no advanced, boolean, or
+        multi-axis indexing (design §18.1, §35)."""
+        # §18.6 steps 1 and 2: both argument *types*, before this tensor's
+        # closed state is consulted. Getting this order wrong would report a
+        # closed tensor for a call that was malformed in its arguments.
+        cpp._require_axis_int(axis, "index_select")
+        if not isinstance(indices, NativeTensor):
+            raise TypeError(
+                f"NativeTensor.index_select requires a NativeTensor index "
+                f"operand, got {type(indices).__name__}"
+            )
+        # Steps 3 and 4: this tensor's lifetime gate, then the index's.
+        core = self._require_open()
+        index_core = indices._require_open()
+        # Steps 5 and 6: each operand against the dtype its **role**
+        # requires. Asked here as well as inside the Core because the
+        # gradient rule below sits between them and the Core's own checks,
+        # and a caller must not be told about ``detach()`` for a call whose
+        # operands were the wrong dtype in the first place.
+        cpp._require_floating_dtype(core.dtype, "index_select", role="source")
+        cpp._require_index_dtype(index_core.dtype, "index_select")
+        # Step 7: the graph rule this layer owns. Never a silent detach.
+        if self._requires_grad:
+            raise ValueError(
+                "index_select is forward only in this phase, so its source "
+                "may not require gradients: its backward is a scatter-add "
+                "with its own contract and its own milestone, and returning "
+                "a graph-free result here would be a silent gradient hole. "
+                "Call source.detach().index_select(axis, indices) if a "
+                "detached selection is what you want."
+            )
+        out_core = core.index_select(axis, index_core)
+        try:
+            # Never ``_from_op``: this result is a plain leaf, so there is
+            # no graph to build and no parent to record. The source is
+            # already known not to require grad, so ``_from_op`` would have
+            # produced a leaf anyway — the mechanism here is simply that no
+            # graph is built, and the rejection above is what makes that
+            # honest rather than silent.
             return self._from_core(out_core)
         except BaseException:
             out_core.close()

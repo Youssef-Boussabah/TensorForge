@@ -124,12 +124,14 @@ J0_BENCHMARK_COUNT = 8
 # ``PHASE_J_EXAMPLES`` and ``PHASE_J_BENCHMARKS`` below use, and for the same
 # reason: a bumped literal absorbs later growth into Phase J's record, while
 # a named map keeps every addition attributed and still fails on an
-# unrecorded one. Phase K, milestone K1 added the int64 storage CTest, and
-# milestone K3 added the argmax export and its CTest.
-POST_PHASE_J_EXPORTS = {"tf_core_argmax": "K3"}
-POST_PHASE_J_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3"}
-CURRENT_EXPORT_COUNT = J0_EXPORT_COUNT + len(POST_PHASE_J_EXPORTS)   # 55
-CURRENT_CTEST_COUNT = J0_CTEST_COUNT + len(POST_PHASE_J_CTESTS)      # 26
+# unrecorded one. Phase K, milestone K1 added the int64 storage CTest,
+# milestone K3 added the argmax export and its CTest, and milestone K4 the
+# index_select export and its CTest.
+POST_PHASE_J_EXPORTS = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
+POST_PHASE_J_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3",
+                       "index_select": "K4"}
+CURRENT_EXPORT_COUNT = J0_EXPORT_COUNT + len(POST_PHASE_J_EXPORTS)   # 56
+CURRENT_CTEST_COUNT = J0_CTEST_COUNT + len(POST_PHASE_J_CTESTS)      # 27
 
 # The artifacts Phase J has shipped so far, each mapped to the milestone
 # that added it. J0-J5 added none; **J6** added exactly one example and

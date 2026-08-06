@@ -88,15 +88,22 @@ needs_native = pytest.mark.skipif(
 FLOATING_DTYPES = ("float64", "float32")
 INDEX_DTYPE = "int64"
 K3_EXPORT = "tf_core_argmax"
-K3_EXPORT_COUNT = 55
-K3_CTEST_COUNT = 26
-K3_CHECKED_KERNELS = 37
+# The **live** inventories, not K3's: these are repository-wide totals that
+# a later milestone legitimately moves, and Phase K milestone K4 moved each
+# of them by exactly one when it shipped ``tf_core_index_select``. What is
+# K3's and stays K3's is that ``tf_core_argmax`` is *in* the inventory, and
+# that is asserted separately below.
+LIVE_EXPORT_COUNT = 56
+LIVE_CTEST_COUNT = 27
+LIVE_CHECKED_KERNELS = 38
 EXPERIMENTAL_EXPORTS = 25
 
 # The operations K3 did **not** ship, at any layer. ``max`` is permanent
-# (§17.10); the rest are later milestones' or no milestone's.
+# (§17.10); the rest are no milestone's. ``index_select`` left this tuple
+# at **K4**, which shipped it — an entry moves between the present and
+# absent lists when its milestone lands, and is never loosened away.
 ABSENT_OPERATIONS = ("max", "amax", "max_with_indices", "argmin",
-                     "index_select", "gather", "scatter", "take", "topk",
+                     "gather", "scatter", "take", "topk",
                      "sort", "argsort", "nonzero", "where", "bincount",
                      "cumsum")
 
@@ -397,6 +404,14 @@ def test_both_layers_gained_argmax_and_only_argmax():
     for owner in (NativeTensor, cpp.NativeTensorCore, cpp.NativeStorage):
         for absent in ABSENT_OPERATIONS:
             assert not hasattr(owner, absent), (owner.__name__, absent)
+    # K4's ``index_select`` is the one name that left ABSENT_OPERATIONS, and
+    # it landed on exactly the two layers ``argmax`` did — asserted present
+    # here rather than merely no longer banned, so the move is proved to be
+    # a move (§37.2). Its own contract lives in
+    # tests/test_native_index_select.py.
+    assert hasattr(NativeTensor, "index_select")
+    assert hasattr(cpp.NativeTensorCore, "index_select")
+    assert not hasattr(cpp.NativeStorage, "index_select")
 
 
 def test_the_signature_matches_the_repositorys_reduction_spelling():
@@ -432,11 +447,14 @@ def test_argmax_joined_exactly_one_inventory():
     assert cpp.backend_info()["autograd_ops"] == cpp.AUTOGRAD_OPS
 
 
-def test_the_source_export_inventory_is_fifty_five():
+def test_the_source_export_inventory_carries_the_argmax_symbol():
     exports = _source_exports()
-    assert len(exports) == K3_EXPORT_COUNT, sorted(exports)
+    assert len(exports) == LIVE_EXPORT_COUNT, sorted(exports)
     assert K3_EXPORT in exports
-    for absent in ("tf_core_index_select", "tf_core_max", "tf_core_argmin",
+    # K4's symbol is present beside it, and 56 is Phase K's committed
+    # maximum — so a third indexing export would fail here.
+    assert "tf_core_index_select" in exports
+    for absent in ("tf_core_max", "tf_core_argmin",
                    "tf_core_max_with_indices", "tf_core_argmax_backward",
                    "tf_storage_dtype"):
         assert absent not in exports, absent
@@ -445,14 +463,15 @@ def test_the_source_export_inventory_is_fifty_five():
 @needs_native
 def test_the_built_library_exports_the_same_inventory():
     """Source and built library must agree, which is also the stale-artifact
-    guard: a library built before K3 exports 54 and fails here rather than
-    silently satisfying the tests that call the new symbol."""
+    guard: a library built before K3 exports 54 (before K4, 55) and fails
+    here rather than silently satisfying the tests that call the new
+    symbols."""
     storage_tests = pytest.importorskip("test_native_storage_allocation")
     _, names = storage_tests.exported_names(cpp._LIBRARY_PATH)
     if names is None:
         pytest.skip("this image format is not parsed here")
     exported = sorted(name for name in names if name.startswith("tf_"))
-    assert len(exported) == K3_EXPORT_COUNT, exported
+    assert len(exported) == LIVE_EXPORT_COUNT, exported
     assert set(exported) == _source_exports()
     assert K3_EXPORT in exported
 
@@ -468,16 +487,16 @@ def test_the_export_is_declared_and_carries_the_error_hook():
     assert function.restype is None
     assert K3_EXPORT in cpp._CHECKED_KERNELS
     assert cpp._CHECKED_KERNELS.count(K3_EXPORT) == 1
-    assert len(cpp._CHECKED_KERNELS) == K3_CHECKED_KERNELS
+    assert len(cpp._CHECKED_KERNELS) == LIVE_CHECKED_KERNELS
     assert function.errcheck is not None
 
 
-def test_the_ctest_inventory_moved_by_exactly_one():
+def test_the_argmax_ctest_target_is_registered_exactly_once():
     cmake = (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8")
     registered = re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)
-    assert len(registered) == K3_CTEST_COUNT, registered
+    assert len(registered) == LIVE_CTEST_COUNT, registered
     assert len(set(registered)) == len(registered)
-    assert "argmax" in registered
+    assert registered.count("argmax") == 1
     sources = {path.stem for path in
                (REPO_ROOT / "cpp" / "tests").glob("test_*.cpp")}
     assert sources == {f"test_{name}" for name in registered}
@@ -1487,8 +1506,12 @@ def test_no_max_or_second_output_was_smuggled_in():
         encoding="utf-8")
     code = re.sub(r"//[^\n]*", " ",
                   re.sub(r"/\*.*?\*/", " ", unit, flags=re.S))
-    # Exactly one export, and its signature has one destination handle.
-    assert code.count("TF_EXPORT") == 1
+    # ``argmax``'s signature still has exactly one destination handle and no
+    # second output. The unit now carries two exports — K4 added
+    # ``tf_core_index_select`` beside it, which is the phase's committed
+    # maximum — so the count is asserted at two and the *signature* claim is
+    # read from argmax's own declaration.
+    assert code.count("TF_EXPORT") == 2
     signature = code.split("TF_EXPORT void tf_core_argmax(", 1)[1].split(")")[0]
     assert signature.count("void* dst_handle") == 1
     assert signature.count("void*") == 2      # one const source, one dest
@@ -1500,7 +1523,7 @@ def test_no_max_or_second_output_was_smuggled_in():
     core_source = _code_only(
         (REPO_ROOT / "src" / "tensorforge" / "backends" / "cpp.py"
          ).read_text(encoding="utf-8"))
-    for banned in ("argmin", "index_select", "max_with_indices"):
+    for banned in ("argmin", "max_with_indices"):
         assert banned not in tensor_source, banned
         assert banned not in core_source, banned
 
@@ -1795,8 +1818,14 @@ def test_the_tensor_module_docstring_records_the_k3_operation():
     assert re.search(r"no arithmetic|has no arithmetic", text)
     assert re.search(r"cannot[^.]{0,80}enter a reduction", text)
     # The operations that still do not exist.
-    for absent in ("max", "argmin", "index_select", "promotion", "casting"):
+    for absent in ("max", "argmin", "promotion", "casting"):
         assert absent in text, absent
+    # ``index_select`` left that list at K4, which shipped it, so the
+    # docstring must record it as a **capability** rather than as an
+    # absence — the §37.2 move, asserted in both directions.
+    assert "index_select" in text
+    assert "k4" in text
+    assert not re.search(r"no\s+index_select", text), text[:400]
     # ...and the exclusions an argmax result inherits.
     for role in ("autograd", "parameter", "buffer", "optimizer", "checkpoint"):
         assert role in text, role
@@ -1867,14 +1896,27 @@ def test_the_indexing_header_does_not_promise_a_shared_traversal():
 
 def test_the_alias_comment_does_not_promise_a_shared_validator():
     """`argument_error` is file-local to K3's export. The comment beside the
-    alias check must say so rather than describe itself as K4 groundwork."""
+    alias check must say so rather than describe itself as K4 groundwork —
+    and now that K4 has landed, the claim is checked in either tense, so the
+    record can say what actually happened without the guardrail forcing a
+    stale future tense."""
     flat = _flat_cpp_comments("cpp/src/indexing.cpp")
     assert not re.search(r"a later milestone reusing this validator", flat)
     assert "defense in depth" in flat
-    assert re.search(r"k4 will validate its abi independently"
-                     r"|validate its abi independently", flat)
+    assert re.search(r"k4 (will validate|validates) its abi independently"
+                     r"|validates? its abi independently", flat)
     # ...and it points at the contract that gives K4 its own order.
     assert "22.9" in flat
+    # The structural half of the same claim, read from the code: K4 really
+    # did define its own validator rather than reuse this one.
+    code = re.sub(r"//[^\n]*", " ",
+                  re.sub(r"/\*.*?\*/", " ",
+                         (REPO_ROOT / "cpp" / "src" / "indexing.cpp"
+                          ).read_text(encoding="utf-8"), flags=re.S))
+    argmax_body = code.split("TF_EXPORT void tf_core_argmax(", 1)[1].split(
+        "TF_EXPORT void tf_core_index_select(", 1)[0]
+    assert "index_select_argument_error" not in argmax_body
+    assert "index_select_argument_error" in code
 
 
 def test_k3_added_no_benchmark_timing_or_performance_control():
