@@ -180,8 +180,15 @@ SAMPLER_VERSIONS = (1,)
 EXPORT_COUNT = 56
 CTEST_COUNT = 27
 EXPERIMENTAL_EXPORTS = 25
-EXAMPLE_COUNT = 16
 BENCHMARK_COUNT = 9
+
+# The example inventory K5 left at 16, plus exactly the examples later
+# milestones added, each named. Keeping the split explicit is what stops
+# later growth from being absorbed into K5's record: K5's own example delta
+# is zero and always will have been, whatever the tree grows to afterwards.
+K5_EXAMPLE_COUNT = 16
+POST_K5_EXAMPLES = {"native_integer_indexing.py": "K6"}
+EXAMPLE_COUNT = K5_EXAMPLE_COUNT + len(POST_K5_EXAMPLES)
 
 MANIFEST_ROOT_KEYS = {"format", "format_version", "model", "optimizer",
                       "generators", "metadata"}
@@ -2771,9 +2778,16 @@ def test_no_operation_inventory_moved_at_k5():
             assert banned not in inventory, (banned, inventory)
 
 
-def test_no_k6_or_later_surface_exists():
-    """K5 is a proof, so every later milestone's deliverable must still be
-    absent: no example, no benchmark, no CTest, no export, no public name."""
+def test_no_k7_or_later_surface_exists():
+    """K5 is a proof, so no *capability* a later milestone might ship may be
+    present: no new operation, no benchmark, no CTest, no export, no public
+    name.
+
+    Through K5 this guard also asserted K6's example **absent**, because it
+    had not started. That premise expired when K6 landed, and what replaces
+    it is the durable half: K6's example is named and subtracted rather than
+    absorbed, so the count still fails on an *unrecorded* example, and the
+    benchmark inventory K8 owns is still asserted empty of integer work."""
     for owner in (NativeTensor, cpp.NativeTensorCore, cpp.NativeStorage):
         for absent in ("argmin", "gather", "scatter", "scatter_add",
                        "embedding", "max", "amax", "take", "topk", "sort",
@@ -2790,8 +2804,19 @@ def test_no_k6_or_later_surface_exists():
                         (REPO_ROOT / "benchmarks").glob("*.py"))
     assert len(examples) == EXAMPLE_COUNT, examples
     assert len(benchmarks) == BENCHMARK_COUNT, benchmarks
-    assert not [name for name in examples if "integer" in name], examples
+    for name, milestone in POST_K5_EXAMPLES.items():
+        assert name in examples, (name, milestone)
+    assert len([name for name in examples
+                if name not in POST_K5_EXAMPLES]) == K5_EXAMPLE_COUNT
+    assert not [name for name in examples
+                if "integer" in name and name not in POST_K5_EXAMPLES], (
+        examples)
     assert not [name for name in benchmarks if "integer" in name], benchmarks
+    # K7's, K8's, and K9's own modules are still absent.
+    for absent in ("test_native_integer_hardening.py",
+                   "test_native_integer_benchmark.py",
+                   "test_native_phase_k_closure.py"):
+        assert not (REPO_ROOT / "tests" / absent).exists(), absent
 
 
 def test_the_c_abi_and_ctest_inventories_did_not_move_at_k5():

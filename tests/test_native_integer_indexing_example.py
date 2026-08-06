@@ -1,15 +1,16 @@
-"""The J6 deterministic native mini-batch training example, and its exact
+"""The K6 end-to-end native integer indexing example, and its exact
 interrupted-versus-uninterrupted proof.
 
-Milestone **J6** is the first end-user program that trains a native model
-through the Phase-J pipeline — ``NativeTensorDataset`` ->
-``NativeBatchSampler`` -> ``NativeDataLoader`` — instead of a hand-indexed
-array, and the first native proof in which the **shuffled batch order**
-itself survives an interruption. It adds **no runtime capability**: no
-kernel, no C ABI export, no module, no checkpoint field or version, no
-public package export, and no line of ``src/``. Its whole diff is
-``examples/native_minibatch_training.py``, this module, the narrow status
-edits the landing requires, and documentation.
+Milestone **K6** is the first end-user program in which the native runtime's
+**integer** side carries real work: a deterministic classifier trains over
+the Phase-J pipeline, and at fixed evaluation points its logits become
+native ``int64`` prediction indices through ``NativeTensor.argmax`` (K3)
+which are then **consumed** by ``NativeTensor.index_select`` (K4) over a
+detached, graph-free copy of the same logits. It adds **no runtime
+capability**: no kernel, no C ABI export, no module, no checkpoint field or
+version, no public package export, and no executable line of ``src/``. Its
+whole diff is ``examples/native_integer_indexing.py``, this module, the
+narrow inventory and status edits the landing requires, and documentation.
 
 What is asserted here:
 
@@ -22,39 +23,40 @@ What is asserted here:
 * the host dataset is deterministic, non-degenerate, built at an explicit
   dtype from exactly representable binary fractions, and identical in
   logical value across the two dtypes;
-* the schedule is genuinely non-vacuous: shuffle is on, the exercised
-  orders are non-identity and mutually distinct, and the interruption
-  lands **strictly inside** an epoch with batches still owed;
-* the committed batch plan is pinned as **literal expected values**,
-  written on the test side, so a change to the derivation, the seed, the
-  batch size, or the epoch schedule fails here rather than silently
-  redefining the proof;
-* one delivered batch is one completed step, ``next_step`` is not off by
-  one, and no delivery happens between the loader snapshot and the save;
-* the resumed run is built from an **entirely fresh** graph that is proved
-  to differ in every family *before* the load, and to reproduce the
-  uninterrupted run **exactly** afterwards;
+* the committed batch plan is pinned as **literal expected values** written
+  on the test side, and the interruption lands **strictly inside** an epoch
+  with batches still owed and evaluations on **both** sides of it;
+* the ``argmax`` results really are ``int64`` plain leaves that own fresh
+  contiguous storage, and the ``index_select`` results really are
+  source-dtype, owning, contiguous, and graph-free;
+* ``index_select`` is **axis selection, not a per-row gather** — the whole
+  ``(batch, batch)`` result is recomputed here from the recorded logits and
+  checked column by column, the diagonal is checked against each example's
+  own predicted-class logit, and duplicate predicted classes are proved to
+  produce identical columns in their original order;
+* the resumed run reproduces the uninterrupted one **exactly** — every
+  prediction index by exact integer equality, every floating value by raw
+  IEEE-754 bits;
 * the negative controls really fail: omitting the loader restoration
-  diverges, the bit helper separates signed zeros and adjacent values, and
-  the training-state claims are backed by state that actually moved;
+  diverges, the bit helper separates signed zeros and adjacent values, the
+  storage tracker notices a deliberately retained tensor, and the training
+  claims are backed by state that actually moved;
 * native live storage returns **exactly** to its baseline;
 * the inventories move by exactly one example and nothing else.
 
-**Every equality here is exact**, over raw IEEE-754 bit patterns — a
-``uint32`` view at float32 and a ``uint64`` view at float64. Never a
-tolerance, never ``allclose``, never ``pytest.approx``, and **never a
-comparison between the two dtypes**: each is proved only against itself.
-The one cross-dtype claim is the **batch-index sequence**, which is
-dtype-independent by construction.
+**Every equality here is exact.** Prediction indices are compared as
+Python integers and are never converted to a floating value; floating
+values are compared over raw bit patterns — a ``uint32`` view at float32
+and a ``uint64`` view at float64. Never a tolerance, never ``allclose``,
+never ``pytest.approx``, and **never a numeric comparison between the two
+dtypes**: each is proved only against itself. Whether the two widths happen
+to predict the same classes is reported by the example as an *observation*
+and is deliberately not required here.
 
-**J7 is not started and is not anticipated here.** The adversarial
-matrix — malformed state at every field, allocation failure at every row,
-injection at the private delivery seam, reentrancy, and concurrency — is
-J7's, and this module deliberately contains none of it: the example stays
-entirely on public APIs and injects nothing. J5 already proved, through a
-real archive, that a **failed** delivery consumes nothing and resumes from
-the same candidate batch; that proof is untouched and is not restated
-here.
+**K7, K8, and K9 are not started and are not anticipated here.** The
+adversarial injection matrix is K7's, the benchmark is K8's, and the phase
+closure is K9's; this module contains none of them, and asserts that none
+of their artifacts exists.
 """
 import ast
 import gc
@@ -70,7 +72,6 @@ from tensorforge.backends import cpp
 from tensorforge.experimental import (
     NativeBatchSampler,
     NativeDataLoader,
-    NativeDropout,
     NativeGenerator,
     NativeModule,
     NativeTensor,
@@ -80,28 +81,27 @@ from tensorforge.experimental import (
 )
 from tensorforge.experimental import native_checkpoint, native_optimizer_state
 
-from examples.native_minibatch_training import (
-    ALIAS_GENERATOR_KEY,
+from examples.native_integer_indexing import (
     BATCHES_PER_EPOCH,
     BATCH_SIZE,
-    CANONICAL_GENERATOR_KEY,
+    CLASS_AXIS,
     DEFAULT_LR,
-    DROPOUT_CALLS_PER_STEP,
     DROP_LAST,
-    EXPECTED_GENERATOR_ALIASES,
+    EVAL_STEPS,
+    EXERCISED_EPOCHS,
     FEATURES,
     FRESH_BATCH_SIZE,
     FRESH_LR,
     FRESH_SAMPLER_SEED,
     FRESH_SHUFFLE,
     HIDDEN,
-    HIDDEN_DROPOUT_NAME,
+    INDEX_DTYPE,
     LOADER_KEY,
-    MIXING_DROPOUT_NAME,
     NEXT_STEP_KEY,
     NUM_CLASSES,
     REQUIRED,
     REQUIRED_CROSS_DTYPE,
+    REQUIRED_INDEXING,
     REQUIRED_SCHEDULE,
     REQUIRED_TRAINING,
     RUN_DTYPES,
@@ -111,9 +111,8 @@ from examples.native_minibatch_training import (
     SPLIT_STEP,
     TOTAL_STEPS,
     TRAINING_KEY,
-    NativeMiniBatchClassifier,
+    NativeIndexingClassifier,
     advance_loader,
-    alias_topology,
     bits,
     build_dataset,
     build_features,
@@ -123,21 +122,22 @@ from examples.native_minibatch_training import (
     build_optimizer,
     build_targets,
     cross_dtype_facts,
+    evaluate_indexing,
     failed_checks,
     failed_cross_dtype_checks,
-    generator_state,
     host_arrays,
+    index_values,
     main,
     model_facts,
     optimizer_facts,
     run_dtype_proof,
     run_omitted_loader_control,
     run_uninterrupted,
-    train,
+    train_steps,
 )
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-EXAMPLE_RELATIVE = "examples/native_minibatch_training.py"
+EXAMPLE_RELATIVE = "examples/native_integer_indexing.py"
 EXAMPLE = REPO_ROOT / EXAMPLE_RELATIVE
 
 needs_native = pytest.mark.skipif(
@@ -158,21 +158,21 @@ pytestmark = needs_native
 # of quietly redefining the proof.
 
 EXPECTED_PERMUTATIONS = (
-    (14, 12, 2, 0, 21, 15, 19, 16, 7, 3, 4, 9,
-     10, 6, 11, 8, 5, 22, 17, 18, 20, 1, 13, 23),
-    (4, 5, 2, 6, 1, 14, 17, 12, 20, 11, 15, 13,
-     23, 16, 22, 7, 21, 3, 10, 18, 0, 19, 8, 9),
-    (17, 2, 5, 1, 13, 22, 18, 3, 12, 21, 9, 10,
-     14, 16, 7, 0, 23, 15, 20, 6, 19, 4, 11, 8),
+    (17, 5, 15, 0, 7, 20, 11, 21, 2, 19, 16, 10,
+     22, 23, 1, 18, 13, 9, 8, 6, 4, 12, 14, 3),
+    (19, 7, 4, 22, 6, 12, 10, 2, 21, 14, 3, 13,
+     5, 18, 11, 17, 0, 1, 9, 8, 23, 20, 16, 15),
+    (19, 14, 1, 17, 16, 4, 20, 12, 23, 7, 11, 22,
+     13, 10, 6, 2, 0, 15, 3, 18, 5, 8, 9, 21),
 )
 
 EXPECTED_PLANS = (
-    ((14, 12, 2, 0, 21, 15), (19, 16, 7, 3, 4, 9),
-     (10, 6, 11, 8, 5, 22), (17, 18, 20, 1, 13, 23)),
-    ((4, 5, 2, 6, 1, 14), (17, 12, 20, 11, 15, 13),
-     (23, 16, 22, 7, 21, 3), (10, 18, 0, 19, 8, 9)),
-    ((17, 2, 5, 1, 13, 22), (18, 3, 12, 21, 9, 10),
-     (14, 16, 7, 0, 23, 15), (20, 6, 19, 4, 11, 8)),
+    ((17, 5, 15, 0, 7, 20), (11, 21, 2, 19, 16, 10),
+     (22, 23, 1, 18, 13, 9), (8, 6, 4, 12, 14, 3)),
+    ((19, 7, 4, 22, 6, 12), (10, 2, 21, 14, 3, 13),
+     (5, 18, 11, 17, 0, 1), (9, 8, 23, 20, 16, 15)),
+    ((19, 14, 1, 17, 16, 4), (20, 12, 23, 7, 11, 22),
+     (13, 10, 6, 2, 0, 15), (3, 18, 5, 8, 9, 21)),
 )
 
 # Ten steps: all four batches of epoch 0, all four of epoch 1, then the
@@ -194,23 +194,32 @@ EXPECTED_POSITIONS_AFTER = (
 
 # The saved position, and the batch the archive therefore describes.
 EXPECTED_SPLIT_POSITION = (1, 1)
-EXPECTED_NEXT_BATCH_AT_SPLIT = (17, 12, 20, 11, 15, 13)
+EXPECTED_NEXT_BATCH_AT_SPLIT = (10, 2, 21, 14, 3, 13)
 EXPECTED_FINAL_POSITION = (2, 2)
 
-# 16 when J6 landed; Phase K, milestone K6 added exactly one
-# (examples/native_integer_indexing.py). The number is updated rather than
-# the assertion relaxed: J6's own example delta is still exactly one, and an
-# unrecorded example still fails an exact equality.
+# The inventories after K6: one more example than Phase J closed with, and
+# nothing else moved. 56 exports and 27 CTests are the phase maximum K4
+# reached; `__all__` stays at 25 for the whole phase.
 EXPECTED_EXAMPLE_COUNT = 17
-EXPECTED_BENCHMARK_COUNT = 9        # 8 when J6 landed; J8 added exactly one
+EXPECTED_BENCHMARK_COUNT = 9
 EXPECTED_EXPERIMENTAL_EXPORTS = 25
-# Phase K moved both of these, and the numbers are updated rather than the
-# assertions relaxed: K1 added the int64 storage CTest (24 -> 25), and K3
-# added the argmax export (54 -> 55) and its CTest (25 -> 26). J6 itself
-# still adds neither, which is what this module's claim has always been,
-# and an unrecorded addition still fails an exact equality.
 EXPECTED_ABI_EXPORTS = 56
 EXPECTED_CTESTS = 27
+
+# The raw-bit view each dtype is read through, on the test side, so the
+# reconstruction below never borrows the example's own table.
+_BIT_VIEW = {"float64": np.uint64, "float32": np.uint32}
+_HOST_VIEW = {"float64": np.float64, "float32": np.float32}
+
+
+def from_bits(values, dtype, shape):
+    """Rebuild a host array from the raw bit patterns a proof recorded.
+
+    The test's own inverse of ``bits()``, written independently so the
+    column and diagonal checks below are recomputed from the recorded data
+    rather than read back out of the example's booleans."""
+    raw = np.asarray(values, dtype=_BIT_VIEW[dtype])
+    return raw.view(_HOST_VIEW[dtype]).reshape(shape)
 
 
 # ===========================================================================
@@ -291,9 +300,12 @@ def test_importing_the_example_runs_no_training():
     assert guards == 1, "the example has no single __main__ guard"
 
 
-def test_train_and_main_are_importable_callables():
-    assert callable(train)
-    assert callable(main)
+def test_the_public_helpers_are_importable_callables():
+    for helper in (train_steps, main, run_uninterrupted, run_dtype_proof,
+                   evaluate_indexing, build_model, build_loss,
+                   build_optimizer, build_dataset, build_loader,
+                   host_arrays, index_values):
+        assert callable(helper), helper
 
 
 def test_the_main_guard_calls_main():
@@ -302,7 +314,7 @@ def test_the_main_guard_calls_main():
     assert source.rstrip().endswith("main()")
 
 
-def test_the_script_runs_successfully_and_reports_both_dtypes(tmp_path):
+def test_the_script_runs_successfully_and_reports_both_dtypes():
     """The CLI contract, end to end in a **subprocess** so nothing this
     session did can influence it."""
     result = subprocess.run(
@@ -312,13 +324,22 @@ def test_the_script_runs_successfully_and_reports_both_dtypes(tmp_path):
     assert result.returncode == 0, result.stdout[-4000:] + result.stderr[-4000:]
     out = result.stdout
     for dtype in RUN_DTYPES:
-        assert (f"exact deterministic mini-batch resume at {dtype}: yes"
+        assert (f"exact native integer indexing resume at {dtype}: yes"
                 in out), out[-3000:]
     assert "FAILED" not in out, out[-3000:]
-    # The closing claim, and the honest boundaries beside it.
-    assert "deterministic native mini-batch training + exact interrupted" in out
-    assert "version 3" in out
-    assert "no cross-object atomicity" in out
+    # The claims the milestone owes a reader, as stable fragments rather
+    # than a frozen transcript.
+    for fragment in (
+        "native argmax produced int64 predictions",
+        "index_select",
+        "per-row gather",
+        "read-only host int64 target",
+        "version 3",
+        "no cross-object atomicity",
+        "no timing or performance is claimed or measured anywhere",
+        "native argmax + index_select evaluation with exact interrupted",
+    ):
+        assert fragment in out, (fragment, out[-3000:])
     # The lifecycle line is checked as an *equality between the two numbers*
     # rather than as a literal, so it stays a real claim without turning the
     # console text into an exact contract.
@@ -363,7 +384,7 @@ _TIMING_IDENTIFIERS = ("time", "timeit", "perf_counter", "monotonic",
 
 
 def test_the_example_claims_and_measures_no_timing():
-    """A training example is not a benchmark. J8 owns performance
+    """An integration example is not a benchmark. K8 owns performance
     characterization, and nothing here may assert, print, or even measure a
     duration."""
     offenders = _TIMING_CLAIM.findall(EXAMPLE.read_text(encoding="utf-8"))
@@ -376,8 +397,8 @@ def test_the_example_claims_and_measures_no_timing():
 def test_the_timing_scanner_can_actually_fail():
     """Negative control: the scanner must catch real timing claims, and must
     pass the sentences the example has to be able to write."""
-    for detected in ("the step took 12.5 ms",
-                     "a 3.4x faster loader",
+    for detected in ("the argmax took 12.5 ms",
+                     "a 3.4x faster index_select",
                      "measured throughput was high",
                      "elapsed time per epoch",
                      "2 seconds per epoch"):
@@ -403,7 +424,7 @@ def code_identifiers(relative):
     that was meant — docstrings and comments carry no identifier.
 
     **Keyword-argument names are collected too**, and that is load-bearing
-    rather than thorough: several of the private seams J6 forbids are only
+    rather than thorough: several of the private seams K6 forbids are only
     ever *reachable* as a keyword — ``_trusted_dtype=True`` is passed, never
     named — so a scanner that read only ``Name`` and ``Attribute`` nodes
     would be blind to exactly the constructs it exists to catch."""
@@ -448,13 +469,19 @@ def assigned_attributes(relative):
     return written
 
 
-# Every private runtime seam the J6 contract forbids the example to touch:
-# the private typed constructors, the permutation derivation, the whole §9.4
-# transaction, the state-assignment and validation seams, the committed
-# position fields, and the private checkpoint/loader/sampler constants.
+# Every private runtime seam the K6 contract forbids the example to touch:
+# the private typed and integer constructors, the index-registry gate and
+# the private dtype validators, the permutation derivation, the whole
+# five-phase delivery transaction, the state-assignment and validation
+# seams, the committed position fields, the private checkpoint/loader/
+# sampler constants, and the fault-injection hook K7 owns.
 PROHIBITED_PRIVATE_NAMES = (
     "_typed_from_array", "_typed_zeros", "_typed_full", "_from_core",
     "_trusted_dtype", "_normalize_internal_dtype", "normalize_module_dtype",
+    "_from_int64_array", "_normalize_index_dtype", "_require_index_dtype",
+    "_is_index_dtype", "_is_tensor_dtype", "_require_tensor_dtype",
+    "_require_axis_int", "_is_axis_int", "_validated_entry_dtype",
+    "_canonical_persisted_dtype", "_validated_persisted_dtype",
     "_native_permutation", "_deliver_batch", "_NativeBatchIterator",
     "_claim_batch", "_publish_pending", "_commit_pending",
     "_rollback_pending", "_complete_pending", "_release_undelivered",
@@ -466,16 +493,17 @@ PROHIBITED_PRIVATE_NAMES = (
     "_validate_dataset_identity", "_validated_indices", "_fingerprint",
     "_hash_values", "_prepare_class_targets", "_validated_metadata",
     "_FORMAT", "_FORMAT_VERSION", "_SUPPORTED_FORMAT_VERSIONS",
-    "_STATE_FIELDS", "_DTYPE_NUMPY", "_require_library",
-    "_reserve_call", "_commit_call", "_abandon_call",
+    "_STATE_FIELDS", "_DTYPE_CODES", "_DTYPE_NUMPY", "_DTYPE_ITEM_SIZES",
+    "_require_library", "_reserve_call", "_commit_call", "_abandon_call",
     "_native_state_lock", "state_transaction", "_validate_uint64",
     "_require_exact_int", "_require_exact_keys",
+    "tf_core_argmax", "tf_core_index_select",
     "tf_test_arm_alloc_failure", "fault_injection_available",
 )
 
 
 def test_the_example_names_no_prohibited_private_runtime_api():
-    """J6 composes public behavior; it creates none. Every seam above is a
+    """K6 composes public behavior; it creates none. Every seam above is a
     private runtime detail, and executable example code may not read, call,
     patch, or assign one."""
     names = code_identifiers(EXAMPLE_RELATIVE)
@@ -494,7 +522,8 @@ def test_the_example_assigns_no_private_runtime_state():
                       "_drop_last", "_sampler", "_dataset", "_iterator",
                       "_transaction", "_txn_serial", "_features", "_targets",
                       "_closed", "_token", "_to_yield", "_superseded",
-                      "_calls", "_grad", "_version"):
+                      "_calls", "_grad", "_version", "_storage", "_view",
+                      "_core"):
         assert forbidden not in written, forbidden
 
 
@@ -504,10 +533,11 @@ def test_the_private_api_scanner_can_actually_fail():
     scanner stopped matching rather than that the example is clean."""
     planted = (
         "import numpy\n"
-        "def go(loader, tensor):\n"
+        "def go(loader, tensor, values):\n"
         "    loader.sampler._epoch = 3\n"
         "    loader.sampler._cursor = 0\n"
         "    native_data_loader._deliver_batch(record)\n"
+        "    cpp.NativeStorage._from_int64_array(values)\n"
         "    return NativeTensor._from_core(tensor, _trusted_dtype=True)\n"
     )
     tree = ast.parse(planted)
@@ -522,8 +552,10 @@ def test_the_private_api_scanner_can_actually_fail():
             # is never spelled as a Name or an Attribute anywhere.
             named.add(node.arg)
     for expected in ("_epoch", "_cursor", "_deliver_batch", "_from_core",
-                     "_trusted_dtype"):
+                     "_from_int64_array", "_trusted_dtype"):
         assert expected in named, expected
+    assert sorted(name for name in PROHIBITED_PRIVATE_NAMES
+                  if name in named) != []
 
     written = set()
     for node in ast.walk(tree):
@@ -539,11 +571,12 @@ def test_the_private_api_scanner_can_actually_fail():
     assert "_epoch" not in code_identifiers(EXAMPLE_RELATIVE)
     assert "_epoch" not in assigned_attributes(EXAMPLE_RELATIVE)
     # The scanner is not vacuously empty: it really does see the example's
-    # own public vocabulary.
+    # own public vocabulary, including both Phase-K operations.
     real = code_identifiers(EXAMPLE_RELATIVE)
     for present in ("NativeDataLoader", "next_batch_indices", "state_dict",
                     "load_state_dict", "save_native_checkpoint",
-                    "load_native_checkpoint", "feature_batch"):
+                    "load_native_checkpoint", "argmax", "index_select",
+                    "detach", "tolist", "to_numpy"):
         assert present in real, present
 
 
@@ -554,30 +587,40 @@ def test_the_example_imports_only_public_surfaces():
     imported."""
     tree = ast.parse(EXAMPLE.read_text(encoding="utf-8"))
     modules = set()
+    imported = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             modules.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom):
             modules.add(node.module or "")
+            if node.module == "tensorforge.experimental":
+                imported.update(alias.name for alias in node.names)
     assert modules == {"gc", "os", "tempfile", "numpy",
                        "tensorforge.backends", "tensorforge.experimental"}, (
         sorted(modules))
+    # Every name taken from the experimental package is an exported one.
+    import tensorforge.experimental as experimental
+
+    assert imported, "the example imports nothing from the public package"
+    assert imported <= set(experimental.__all__), sorted(
+        imported - set(experimental.__all__))
 
 
 def test_the_example_adds_no_public_export():
-    """J6's export delta is zero. The example's own model class is an
+    """K6's export delta is zero. The example's own model class is an
     example implementation detail and must never become a public name."""
     import tensorforge
     import tensorforge.experimental as experimental
 
     assert len(experimental.__all__) == EXPECTED_EXPERIMENTAL_EXPORTS
     assert len(set(experimental.__all__)) == len(experimental.__all__)
-    for invented in ("NativeMiniBatchClassifier", "NativeMiniBatchTrainer",
-                     "native_minibatch_training", "train", "NativeTrainer"):
+    for invented in ("NativeIndexingClassifier", "native_integer_indexing",
+                     "evaluate_indexing", "native_argmax", "gather",
+                     "NativeIndexer"):
         assert invented not in experimental.__all__, invented
         assert invented not in tensorforge.__all__, invented
-    assert not hasattr(experimental, "NativeMiniBatchClassifier")
-    assert not hasattr(tensorforge, "NativeMiniBatchClassifier")
+    assert not hasattr(experimental, "NativeIndexingClassifier")
+    assert not hasattr(tensorforge, "NativeIndexingClassifier")
 
 
 # ===========================================================================
@@ -588,9 +631,11 @@ def test_the_example_adds_no_public_export():
 # Everything the example is allowed to ask NumPy for: building the host
 # dataset at an explicit width, reading raw bits back after an explicit
 # ``to_numpy()``, and reporting. Every entry is a host-boundary or
-# inspection operation; none of them is arithmetic.
+# inspection operation; none of them is arithmetic — and ``argmax`` is
+# deliberately **not** in the set, because the whole point of K6 is that the
+# prediction indices come from the *native* operation.
 ALLOWED_NUMPY_ATTRIBUTES = {
-    "asarray", "ascontiguousarray", "argmax", "ndarray",
+    "asarray", "ascontiguousarray", "arange", "diagonal", "ndarray",
     "float64", "float32", "uint64", "uint32", "int64",
 }
 
@@ -607,17 +652,18 @@ def numpy_attributes(relative):
     return used
 
 
-def test_numpy_never_replaces_the_native_training_computation():
+def test_numpy_never_replaces_the_native_computation():
     """The standing tripwire, in its source-structure half: NumPy may build
     the host dataset, read bits back, and report — it may not compute a
-    forward, an activation, a normalization, a Dropout mask, a cross
-    entropy, a backward, or a parameter update."""
+    forward, an activation, a cross entropy, a backward, a parameter update,
+    or **an argmax**."""
     used = numpy_attributes(EXAMPLE_RELATIVE)
     assert used, "the scanner found no numpy use at all — it is not reading"
     unexpected = sorted(used - ALLOWED_NUMPY_ATTRIBUTES)
     assert unexpected == [], unexpected
-    for arithmetic in ("dot", "matmul", "einsum", "exp", "log", "maximum",
-                       "mean", "var", "std", "sqrt", "tanh", "clip", "where",
+    for arithmetic in ("argmax", "argmin", "take", "argsort", "sort", "dot",
+                       "matmul", "einsum", "exp", "log", "maximum", "mean",
+                       "var", "std", "sqrt", "tanh", "clip", "where",
                        "power", "divide", "multiply", "add", "subtract",
                        "random", "default_rng", "seed", "shuffle",
                        "permutation", "softmax"):
@@ -625,27 +671,29 @@ def test_numpy_never_replaces_the_native_training_computation():
 
 
 def test_the_numpy_scanner_can_actually_fail():
-    """Negative control: a planted NumPy forward must be detected."""
+    """Negative control: a planted NumPy forward and a planted NumPy argmax
+    must both be detected."""
     planted = ("import numpy as np\n"
                "def forward(x, w):\n"
-               "    return np.maximum(np.matmul(x, w), 0.0)\n")
+               "    return np.argmax(np.matmul(x, w), axis=1)\n")
     tree = ast.parse(planted)
     used = {node.attr for node in ast.walk(tree)
             if isinstance(node, ast.Attribute)
             and isinstance(node.value, ast.Name) and node.value.id == "np"}
-    assert {"matmul", "maximum"} <= used
-    assert sorted(used - ALLOWED_NUMPY_ATTRIBUTES) == ["matmul", "maximum"]
+    assert {"matmul", "argmax"} <= used
+    assert sorted(used - ALLOWED_NUMPY_ATTRIBUTES) == ["argmax", "matmul"]
 
 
-def test_the_training_step_really_runs_the_native_operations(monkeypatch):
-    """The tripwire's **runtime** half: one real training step is proved to
-    drive the native matmul, the native fused cross entropy, and the native
-    backward. If NumPy had replaced any of them, the corresponding counter
-    would still read zero.
+def test_the_evaluation_really_runs_the_two_native_integer_operations(
+        monkeypatch):
+    """The tripwire's **runtime** half: one real evaluation is proved to
+    drive ``NativeTensor.argmax`` and ``NativeTensor.index_select``. If a
+    host round trip had replaced either, the corresponding counter would
+    still read zero.
 
     The counters are the non-vacuity control on themselves: each is asserted
-    zero before the step and nonzero after."""
-    counts = {"matmul": 0, "cross_entropy": 0, "backward": 0}
+    zero before the call and nonzero after."""
+    counts = {"argmax": 0, "index_select": 0, "detach": 0}
     originals = {name: getattr(NativeTensor, name) for name in counts}
 
     def counted(name):
@@ -661,34 +709,33 @@ def test_the_training_step_really_runs_the_native_operations(monkeypatch):
         monkeypatch.setattr(NativeTensor, name, counted(name))
 
     dataset = build_dataset("float64")
-    loader = model = optimizer = None
+    loader = model = None
     try:
         loader, _sampler = build_loader(dataset)
         model = build_model("float64")
-        optimizer = build_optimizer(model)
-        assert counts == {"matmul": 0, "cross_entropy": 0, "backward": 0}
-        versions_before = [parameter.version
-                           for parameter in model.parameters()]
-        train(model, optimizer, build_loss(), loader, "float64",
-              start_step=0, stop_step=1)
-        assert counts["matmul"] > 0, counts
-        assert counts["cross_entropy"] > 0, counts
-        assert counts["backward"] > 0, counts
-        # ...and the update really landed on the parameters.
-        versions_after = [parameter.version for parameter in model.parameters()]
-        assert all(after > before for before, after
-                   in zip(versions_before, versions_after))
+        assert counts == {"argmax": 0, "index_select": 0, "detach": 0}
+        iterator = iter(loader)
+        try:
+            features, _targets = next(iterator)
+        finally:
+            iterator.close()
+        logits = model(features)
+        try:
+            record = evaluate_indexing(logits, "float64")
+        finally:
+            logits.close()
+            features.close()
+        assert counts["argmax"] == 1, counts
+        assert counts["index_select"] == 1, counts
+        assert counts["detach"] == 1, counts
+        assert record["prediction_dtype"] == INDEX_DTYPE
     finally:
         if loader is not None:
             loader.close()
         dataset.close()
-        if optimizer is not None:
-            optimizer.close()
         if model is not None:
             for parameter in model.parameters():
                 parameter.close()
-            for buffer in model.buffers():
-                buffer.close()
 
 
 # ===========================================================================
@@ -711,12 +758,13 @@ def test_the_host_dataset_is_deterministic_and_independently_contained():
 def test_the_host_dataset_has_the_contracted_dimensions_and_classes():
     features, targets = build_features(), build_targets()
     assert len(features) == SAMPLES == 24
-    assert all(len(row) == FEATURES == 6 for row in features)
+    assert all(len(row) == FEATURES == 5 for row in features)
     assert len(targets) == SAMPLES
-    assert set(targets) == set(range(NUM_CLASSES)) == {0, 1, 2}
+    assert set(targets) == set(range(NUM_CLASSES)) == {0, 1, 2, 3}
+    assert NUM_CLASSES >= 3, "the task must have at least three classes"
     # Every class occurs several times, so no class is a singleton.
     for label in range(NUM_CLASSES):
-        assert targets.count(label) == SAMPLES // NUM_CLASSES == 8
+        assert targets.count(label) == SAMPLES // NUM_CLASSES == 6
     # ...and the task is not degenerate: the rows are genuinely different.
     distinct = {tuple(row) for row in features}
     assert len(distinct) == SAMPLES, len(distinct)
@@ -739,7 +787,6 @@ def test_the_host_arrays_physically_match_the_requested_dtype():
         assert features.dtype == np.dtype(dtype)
         assert targets.dtype == np.int64
         assert targets.ndim == 1
-        assert not np.issubdtype(targets.dtype, np.bool_)
         assert features.shape == (SAMPLES, FEATURES)
 
 
@@ -767,11 +814,8 @@ def test_the_dataset_is_constructed_with_an_explicit_dtype():
             assert dataset.samples == SAMPLES
             assert dataset.feature_shape == (FEATURES,)
             assert dataset.device == "cpu"
-            assert len(dataset.fingerprint) == 64
         finally:
             dataset.close()
-    # The rule the example depends on, asserted directly against the
-    # constructor: the NumPy dtype does not select the native one.
     features, targets = host_arrays("float32")
     inferred = NativeTensorDataset(features, targets)
     try:
@@ -791,28 +835,6 @@ def test_the_dataset_construction_reads_no_file_clock_or_random_source():
         assert forbidden not in names, forbidden
 
 
-def test_construction_does_not_mutate_the_host_arrays_afterwards():
-    """The dataset takes unconditional snapshots, so nothing the example
-    does to its own arrays afterwards can reach a batch."""
-    features, targets = host_arrays("float64")
-    dataset = NativeTensorDataset(features, targets, dtype="float64")
-    try:
-        before = dataset.fingerprint
-        first = dataset.feature_batch((0, 1))
-        original = bits(first.to_numpy(), "float64")
-        first.close()
-        features[0, 0] = -12345.0
-        targets[0] = 2
-        assert dataset.fingerprint == before
-        again = dataset.feature_batch((0, 1))
-        try:
-            assert bits(again.to_numpy(), "float64") == original
-        finally:
-            again.close()
-    finally:
-        dataset.close()
-
-
 # ===========================================================================
 # 5. The sampler and the loader — the committed plan
 # ===========================================================================
@@ -828,7 +850,6 @@ def test_the_loader_is_shuffled_at_the_committed_configuration():
         assert sampler.drop_last is False is DROP_LAST
         assert sampler.epoch == 0 and sampler.cursor == 0
         assert sampler.batches_per_epoch == BATCHES_PER_EPOCH == 4
-        assert sampler.remaining == BATCHES_PER_EPOCH
         assert isinstance(loader, NativeDataLoader)
         assert isinstance(sampler, NativeBatchSampler)
     finally:
@@ -863,6 +884,7 @@ def test_the_exercised_orders_are_non_identity_and_mutually_distinct():
         assert sorted(order) == list(identity)      # a real permutation
         assert order != identity
     assert len(set(EXPECTED_PERMUTATIONS)) == len(EXPECTED_PERMUTATIONS)
+    assert len(EXPECTED_PERMUTATIONS) == EXERCISED_EPOCHS == 3
 
 
 def test_the_split_is_genuinely_mid_epoch_with_batches_still_owed():
@@ -876,6 +898,17 @@ def test_the_split_is_genuinely_mid_epoch_with_batches_still_owed():
     assert TOTAL_STEPS - SPLIT_STEP > 1, "the resumed suffix must be multi-step"
     # The run crosses at least one epoch boundary.
     assert len({epoch for epoch, _ in EXPECTED_POSITIONS_BEFORE}) >= 2
+
+
+def test_the_evaluation_schedule_straddles_the_interruption():
+    """K6's own scheduling requirement: the integer evaluation runs on both
+    sides of the checkpoint, so the resumed run has to reproduce indexing it
+    did not itself compute the first half of."""
+    assert sorted(EVAL_STEPS) == list(EVAL_STEPS), "eval steps must be sorted"
+    assert len(set(EVAL_STEPS)) == len(EVAL_STEPS)
+    assert all(0 <= step < TOTAL_STEPS for step in EVAL_STEPS)
+    assert [step for step in EVAL_STEPS if step < SPLIT_STEP]
+    assert [step for step in EVAL_STEPS if step >= SPLIT_STEP]
 
 
 def test_the_delivered_rows_match_the_publicly_planned_indices():
@@ -903,7 +936,6 @@ def test_the_delivered_rows_match_the_publicly_planned_indices():
                     features.close()
         finally:
             iterator.close()
-        # Four deliveries is one whole epoch, canonicalized immediately.
         assert (sampler.epoch, sampler.cursor) == (1, 0)
     finally:
         if loader is not None:
@@ -911,38 +943,11 @@ def test_the_delivered_rows_match_the_publicly_planned_indices():
         dataset.close()
 
 
-def test_repeated_epoch_iteration_continues_at_the_canonical_position():
-    """One iterator is one epoch. A new iterator over the *same* loader
-    continues at the canonical next-epoch position, with nothing reset and
-    no epoch or cursor incremented by hand."""
-    dataset = build_dataset("float64")
-    loader = None
-    try:
-        loader, sampler = build_loader(dataset)
-        delivered = []
-        for epoch in range(2):
-            iterator = iter(loader)
-            try:
-                while True:
-                    try:
-                        features, _ = next(iterator)
-                    except StopIteration:
-                        break
-                    delivered.append(features)
-            finally:
-                iterator.close()
-            assert (sampler.epoch, sampler.cursor) == (epoch + 1, 0)
-        assert len(delivered) == 2 * BATCHES_PER_EPOCH
-        for features in delivered:
-            features.close()
-    finally:
-        if loader is not None:
-            loader.close()
-        dataset.close()
-
-
-def test_every_delivered_target_batch_carries_the_exact_contracted_flags(
+def test_every_delivered_target_batch_stays_read_only_host_int64(
         uninterrupted):
+    """The Phase-J delivery contract, unchanged by Phase K: the targets are
+    a read-only host ``numpy.ndarray`` of dtype ``int64``, never a native
+    tensor, and never what ``argmax`` produced."""
     for step in uninterrupted["steps"]:
         targets = step["targets"]
         assert targets["dtype"] == "int64"
@@ -955,7 +960,7 @@ def test_every_delivered_target_batch_carries_the_exact_contracted_flags(
                                      for index in step["indices"]]
 
 
-def test_every_delivered_feature_batch_is_owning_contiguous_and_typed(
+def test_every_delivered_feature_batch_is_owning_contiguous_and_floating(
         uninterrupted):
     for step in uninterrupted["steps"]:
         features = step["features"]
@@ -968,69 +973,28 @@ def test_every_delivered_feature_batch_is_owning_contiguous_and_typed(
         assert len(features["bits"]) == BATCH_SIZE * FEATURES
 
 
-def test_the_training_loop_closes_every_delivered_feature_batch(
-        live_storages):
-    """Explicit ``close()`` is the contract, not the collector: a run's
-    delivered batches are all released by the loop that received them."""
-    gc.collect()
-    baseline = len(live_storages)
-    run_uninterrupted("float64")
-    gc.collect()
-    assert len(live_storages) == baseline
-
-
 # ===========================================================================
-# 6. The model
+# 6. The model, loss, and optimizer
 # ===========================================================================
 
-def test_the_model_is_a_meaningful_stateful_native_classifier():
+def test_the_model_is_a_real_public_native_classifier():
     model = build_model("float64")
     try:
         assert isinstance(model, NativeModule)
         names = [name for name, _ in model.named_parameters()]
-        # Three affine layers, an affine BatchNorm, and an affine LayerNorm.
         assert names == ["hidden.weight", "hidden.bias",
-                         "batch_norm.gamma", "batch_norm.beta",
-                         "mixing.weight", "mixing.bias",
-                         "layer_norm.weight", "layer_norm.bias",
                          "output.weight", "output.bias"], names
-        buffers = [name for name, _ in model.named_buffers()]
-        assert buffers == ["batch_norm.running_mean",
-                           "batch_norm.running_var"], buffers
-        # A final logits layer with at least three classes.
+        # Deliberately no buffers and no registered generator: K6's subject
+        # is the indexing, and the example never claims state it lacks.
+        assert list(model.named_buffers()) == []
+        assert list(model.named_generators()) == []
         weight = dict(model.named_parameters())["output.weight"]
         assert tuple(weight.shape) == (HIDDEN, NUM_CLASSES)
-        assert NUM_CLASSES >= 3
         assert tuple(dict(model.named_parameters())["hidden.weight"].shape) == (
             FEATURES, HIDDEN)
     finally:
         for parameter in model.parameters():
             parameter.close()
-        for buffer in model.buffers():
-            buffer.close()
-
-
-def test_two_dropout_layers_share_exactly_one_generator():
-    model = build_model("float64")
-    try:
-        first = getattr(model, HIDDEN_DROPOUT_NAME)
-        second = getattr(model, MIXING_DROPOUT_NAME)
-        assert isinstance(first, NativeDropout)
-        assert isinstance(second, NativeDropout)
-        assert first.generator is second.generator
-        assert isinstance(first.generator, NativeGenerator)
-        topology = alias_topology(model)
-        assert topology["shared"] is True
-        assert topology["canonical_keys"] == [CANONICAL_GENERATOR_KEY]
-        assert topology["aliases"] == EXPECTED_GENERATOR_ALIASES
-        assert CANONICAL_GENERATOR_KEY != ALIAS_GENERATOR_KEY
-        # One generator object, reached by two registered paths.
-        assert len(list(model.named_generators())) == 1
-    finally:
-        for parameter in model.parameters():
-            parameter.close()
-        for buffer in model.buffers():
-            buffer.close()
 
 
 def test_the_loss_is_the_native_fused_cross_entropy():
@@ -1046,8 +1010,8 @@ def test_the_optimizer_is_native_adam_with_nontrivial_state(uninterrupted):
     assert state["optimizer"] == "NativeAdam"
     assert state["format_version"] == 1
     assert state["lr"] == DEFAULT_LR
-    assert len(state["m"]) == len(state["v"]) == 10
-    assert state["step_counts"] == [TOTAL_STEPS] * 10
+    assert len(state["m"]) == len(state["v"]) == 4
+    assert state["step_counts"] == [TOTAL_STEPS] * 4
     assert all(moment["device"] == "cpu" for moment in state["m"])
     assert all(moment["dtype"] == "float64" for moment in state["m"])
 
@@ -1061,7 +1025,6 @@ def test_the_uninterrupted_run_takes_exactly_one_batch_per_step(
     steps = uninterrupted["steps"]
     assert len(steps) == TOTAL_STEPS
     assert [step["step"] for step in steps] == list(range(TOTAL_STEPS))
-    # One delivery advanced the position exactly once, every time.
     for index, step in enumerate(steps):
         assert (step["epoch_before"], step["cursor_before"]) == (
             EXPECTED_POSITIONS_BEFORE[index])
@@ -1081,13 +1044,7 @@ def test_the_uninterrupted_batch_sequence_is_the_committed_one(uninterrupted):
 def test_the_uninterrupted_run_advances_every_state_family(uninterrupted):
     initial = uninterrupted["initial"]
     assert uninterrupted["parameters"] != initial["parameters"]
-    for name, facts in uninterrupted["parameters"].items():
-        if "running_" in name:
-            assert facts["bits"] != initial["buffers"][name], name
-    assert uninterrupted["generator"]["calls"] == (
-        TOTAL_STEPS * DROPOUT_CALLS_PER_STEP)
-    assert initial["generator"]["calls"] == 0
-    assert uninterrupted["optimizer"]["step_counts"] == [TOTAL_STEPS] * 10
+    assert uninterrupted["optimizer"]["step_counts"] == [TOTAL_STEPS] * 4
     assert any(any(pattern != 0 for pattern in moment["bits"])
                for moment in uninterrupted["optimizer"]["m"])
     losses = [tuple(step["loss_bits"]) for step in uninterrupted["steps"]]
@@ -1118,7 +1075,226 @@ def _assert_plain_python(value, path="record"):
 
 
 # ===========================================================================
-# 8. The interrupted run, the archive, and the restore ordering
+# 8. The integer evaluation path — argmax
+# ===========================================================================
+
+def test_every_prediction_tensor_is_an_owning_contiguous_int64_leaf(proofs):
+    """§17.3 and §17.9, observed on the real results: a fresh owning
+    contiguous ``int64`` tensor that is a plain leaf even though its source
+    was a live gradient-tracking forward output."""
+    for dtype in RUN_DTYPES:
+        for step, record in proofs[dtype]["evaluations"].items():
+            assert record["prediction_dtype"] == INDEX_DTYPE, (dtype, step)
+            assert record["prediction_dtype"] not in cpp.SUPPORTED_DTYPES
+            assert record["prediction_dtype"] in cpp.INDEX_DTYPES
+            assert record["prediction_shape"] == (BATCH_SIZE,), (dtype, step)
+            assert record["prediction_numel"] == BATCH_SIZE
+            assert record["prediction_device"] == "cpu"
+            assert record["prediction_contiguous"] is True
+            assert record["prediction_owns_core"] is True
+            assert record["prediction_requires_grad"] is False
+            assert record["prediction_is_leaf"] is True
+            assert record["prediction_grad_is_none"] is True
+
+
+def test_every_prediction_index_is_an_exact_in_range_python_int(proofs):
+    for dtype in RUN_DTYPES:
+        for step, record in proofs[dtype]["evaluations"].items():
+            predictions = record["predictions"]
+            assert len(predictions) == BATCH_SIZE, (dtype, step)
+            for value in predictions:
+                assert type(value) is int, (dtype, step, type(value))
+                assert 0 <= value < NUM_CLASSES, (dtype, step, value)
+            assert record["predictions_in_range"] is True
+            assert record["predictions_are_exact_ints"] is True
+
+
+def test_each_prediction_really_names_a_maximum_of_its_own_row(proofs):
+    """An independent check on the *values*, recomputed here from the
+    recorded logits rather than read out of the example.
+
+    Deliberately stated as "the selected value is a maximum of its row"
+    rather than "it equals ``numpy.argmax``": §20.3 declines to claim the
+    two tie rules are equivalent, and this form is true under either while
+    still failing on a wrong index."""
+    for dtype in RUN_DTYPES:
+        for step, record in proofs[dtype]["evaluations"].items():
+            logits = from_bits(record["logit_bits"], dtype,
+                               record["logit_shape"])
+            for row, index in enumerate(record["predictions"]):
+                row_values = logits[row]
+                assert row_values[index] == max(row_values), (dtype, step, row)
+
+
+def test_the_predictions_come_from_the_native_operation_not_a_host_round_trip(
+        proofs):
+    """The recorded prediction dtype is the native index dtype, and the
+    example's own NumPy vocabulary contains no ``argmax`` at all — so the
+    indices cannot have come from a host reduction."""
+    assert "argmax" not in numpy_attributes(EXAMPLE_RELATIVE)
+    assert "argmax" in code_identifiers(EXAMPLE_RELATIVE)
+    for dtype in RUN_DTYPES:
+        assert proofs[dtype]["indexing"]["every_prediction_is_int64"] is True
+
+
+# ===========================================================================
+# 9. The integer evaluation path — index_select, and what it is not
+# ===========================================================================
+
+def test_every_selection_is_a_fresh_owning_graph_free_source_dtype_copy(
+        proofs):
+    """§18.4 and §18.8, observed on the real results."""
+    for dtype in RUN_DTYPES:
+        for step, record in proofs[dtype]["evaluations"].items():
+            assert record["selected_dtype"] == dtype, (dtype, step)
+            assert record["detached_dtype"] == dtype
+            assert record["detached_requires_grad"] is False
+            assert record["selected_device"] == "cpu"
+            assert record["selected_contiguous"] is True
+            assert record["selected_owns_core"] is True
+            assert record["selected_requires_grad"] is False
+            assert record["selected_is_leaf"] is True
+            assert record["selected_grad_is_none"] is True
+
+
+def test_the_selection_is_axis_selection_and_not_a_per_row_gather(proofs):
+    """The shape claim, stated as the thing it actually is.
+
+    ``index_select(1, predictions)`` selects the **same ordered index vector
+    along the class axis for every row**, so a ``(batch, classes)`` source
+    and a ``(batch,)`` index give a ``(batch, batch)`` result — not a
+    ``(batch,)`` per-row gather, which is a different operation TensorForge
+    does not have."""
+    for dtype in RUN_DTYPES:
+        for step, record in proofs[dtype]["evaluations"].items():
+            assert record["logit_shape"] == (BATCH_SIZE, NUM_CLASSES)
+            assert record["selected_shape"] == (BATCH_SIZE, BATCH_SIZE), (
+                dtype, step, record["selected_shape"])
+            assert record["selected_shape"] != (BATCH_SIZE,), "a gather shape"
+            assert record["selected_shape"][CLASS_AXIS] == len(
+                record["predictions"])
+            assert record["class_axis_length_is_prediction_count"] is True
+            assert record["result_is_square_batch"] is True
+            assert len(record["selected_bits"]) == BATCH_SIZE * BATCH_SIZE
+
+
+def test_every_selected_column_is_the_whole_source_class_column(proofs):
+    """Recomputed here from the recorded bits, column by column, rather than
+    trusting the example's boolean: column *j* of the result must be the
+    entire source column ``predictions[j]``, bit for bit."""
+    for dtype in RUN_DTYPES:
+        for step, record in proofs[dtype]["evaluations"].items():
+            logits = from_bits(record["logit_bits"], dtype,
+                               record["logit_shape"])
+            selected = from_bits(record["selected_bits"], dtype,
+                                 record["selected_shape"])
+            for position, index in enumerate(record["predictions"]):
+                assert bits(np.ascontiguousarray(selected[:, position]),
+                            dtype) == bits(
+                    np.ascontiguousarray(logits[:, index]), dtype), (
+                    dtype, step, position)
+            assert record["columns_match_source_columns"] is True
+
+
+def test_the_diagonal_is_each_examples_own_predicted_class_logit(proofs):
+    """The relation that makes this composition useful, recomputed here:
+    ``selected[row, row] == logits[row, predictions[row]]``, compared as raw
+    bits."""
+    for dtype in RUN_DTYPES:
+        for step, record in proofs[dtype]["evaluations"].items():
+            logits = from_bits(record["logit_bits"], dtype,
+                               record["logit_shape"])
+            selected = from_bits(record["selected_bits"], dtype,
+                                 record["selected_shape"])
+            diagonal = np.ascontiguousarray(
+                np.asarray([selected[row][row]
+                            for row in range(BATCH_SIZE)], dtype=logits.dtype))
+            expected = np.ascontiguousarray(
+                np.asarray([logits[row][record["predictions"][row]]
+                            for row in range(BATCH_SIZE)], dtype=logits.dtype))
+            assert bits(diagonal, dtype) == bits(expected, dtype), (dtype, step)
+            assert bits(diagonal, dtype) == record["diagonal_bits"]
+            assert record["diagonal_is_predicted_logits"] is True
+
+
+def test_duplicate_predictions_are_preserved_in_order(proofs):
+    """Duplicates really occur, and where an index repeats the result's
+    columns are identical **and stay in their original positions** — which
+    is the observable form of "duplicates and order are preserved"."""
+    for dtype in RUN_DTYPES:
+        duplicates_seen = 0
+        for step, record in proofs[dtype]["evaluations"].items():
+            predictions = record["predictions"]
+            selected = from_bits(record["selected_bits"], dtype,
+                                 record["selected_shape"])
+            if len(set(predictions)) < len(predictions):
+                duplicates_seen += 1
+            for left in range(len(predictions)):
+                for right in range(left + 1, len(predictions)):
+                    left_column = bits(
+                        np.ascontiguousarray(selected[:, left]), dtype)
+                    right_column = bits(
+                        np.ascontiguousarray(selected[:, right]), dtype)
+                    if predictions[left] == predictions[right]:
+                        assert left_column == right_column, (dtype, step)
+                    else:
+                        # Distinct indices need not give distinct columns in
+                        # general, but the *positions* must still follow the
+                        # index order, which the column check above pins.
+                        assert left_column == bits(
+                            np.ascontiguousarray(
+                                from_bits(record["logit_bits"], dtype,
+                                          record["logit_shape"])
+                                [:, predictions[left]]), dtype)
+            assert record["duplicate_columns_identical"] is True
+        assert duplicates_seen > 0, (dtype, "no duplicate prediction occurred")
+        # ...and duplicates are structural rather than lucky.
+        assert BATCH_SIZE > NUM_CLASSES
+
+
+def test_the_index_select_source_must_be_detached():
+    """§18.9, exercised directly: a gradient-tracking source is **rejected**
+    with a message naming ``detach()``, which is exactly why the example
+    detaches instead of passing the live logits."""
+    dataset = build_dataset("float64")
+    loader = model = None
+    try:
+        loader, _sampler = build_loader(dataset)
+        model = build_model("float64")
+        iterator = iter(loader)
+        try:
+            features, _targets = next(iterator)
+        finally:
+            iterator.close()
+        logits = model(features)
+        predictions = logits.argmax(axis=CLASS_AXIS)
+        try:
+            assert logits.requires_grad is True
+            with pytest.raises(ValueError) as excinfo:
+                logits.index_select(CLASS_AXIS, predictions)
+            assert "detach" in str(excinfo.value)
+            # ...and the detached form works, which is the example's route.
+            detached = logits.detach()
+            try:
+                selected = detached.index_select(CLASS_AXIS, predictions)
+                selected.close()
+            finally:
+                detached.close()
+        finally:
+            predictions.close()
+            logits.close()
+            features.close()
+    finally:
+        if loader is not None:
+            loader.close()
+        dataset.close()
+        if model is not None:
+            for parameter in model.parameters():
+                parameter.close()
+
+
+# ===========================================================================
+# 10. The interrupted run, the archive, and the restore ordering
 # ===========================================================================
 
 def test_the_snapshot_precedes_the_save_with_no_delivery_between(proofs):
@@ -1133,9 +1309,6 @@ def test_the_snapshot_precedes_the_save_with_no_delivery_between(proofs):
 
 
 def test_next_step_is_the_number_of_completed_steps(proofs):
-    """``next_step`` after completed step ``k`` is ``k + 1``. With zero-based
-    steps, completing steps ``0 .. SPLIT_STEP - 1`` gives ``SPLIT_STEP`` —
-    one convention, never two."""
     for dtype in RUN_DTYPES:
         proof = proofs[dtype]
         assert proof["next_step"] == SPLIT_STEP
@@ -1180,8 +1353,6 @@ def test_the_archive_is_a_real_unchanged_version_three_checkpoint(proofs):
             "format", "format_version", "dataset", "seed", "shuffle",
             "batch_size", "drop_last", "epoch", "cursor"}
 
-    # The conventions really are the caller's: no production constant spells
-    # one, asserted over the checkpoint module's own literals.
     tree = ast.parse((REPO_ROOT / "src" / "tensorforge" / "experimental"
                       / "native_checkpoint.py").read_text(encoding="utf-8"))
     literals = {node.value for node in ast.walk(tree)
@@ -1203,26 +1374,14 @@ def test_the_fresh_restore_target_is_deliberately_different(proofs):
         proof = proofs[dtype]
         assert proof["fresh_started_different"] is True
         assert proof["fresh_shares_no_identity"] is True
-
-
-def test_the_restored_graph_shares_no_object_with_the_saving_graph(proofs):
-    """Identity separation, family by family: model, every parameter, every
-    persistent buffer, every registered generator, optimizer, loader,
-    sampler, and dataset."""
-    for dtype in RUN_DTYPES:
-        fresh = proofs[dtype]["fresh_shares_no_identity"]
-        assert fresh is True
-        # And the load restored **in place** rather than constructing
-        # replacements: every id is unchanged across the two calls.
-        assert proofs[dtype]["identities_preserved"] is True
+        assert proof["identities_preserved"] is True
 
 
 def test_the_load_order_is_checkpoint_first_then_loader():
     """Structural: the example's restore path calls
     ``load_native_checkpoint`` before ``loader.load_state_dict``, and never
     the other way round."""
-    source = EXAMPLE.read_text(encoding="utf-8")
-    tree = ast.parse(source)
+    tree = ast.parse(EXAMPLE.read_text(encoding="utf-8"))
     restore = next(node for node in ast.walk(tree)
                    if isinstance(node, ast.FunctionDef)
                    and node.name == "_restore_and_finish")
@@ -1259,18 +1418,19 @@ def test_configuration_is_adopted_from_the_state_not_from_the_constructor():
         target, target_sampler = build_loader(
             target_dataset, seed=FRESH_SAMPLER_SEED,
             batch_size=FRESH_BATCH_SIZE, shuffle=FRESH_SHUFFLE)
-        advance_loader(source, 5)
-        assert (source_sampler.epoch, source_sampler.cursor) == (1, 1)
+        advance_loader(source, SPLIT_STEP)
+        assert (source_sampler.epoch, source_sampler.cursor) == (
+            EXPECTED_SPLIT_POSITION)
         state = source.state_dict()
         assert target_sampler.batch_size == FRESH_BATCH_SIZE
         target.load_state_dict(state)
         assert target_sampler.batch_size == BATCH_SIZE
         assert target_sampler.seed == SAMPLER_SEED
         assert target_sampler.shuffle is SHUFFLE
-        assert (target_sampler.epoch, target_sampler.cursor) == (1, 1)
+        assert (target_sampler.epoch, target_sampler.cursor) == (
+            EXPECTED_SPLIT_POSITION)
         assert target_sampler.next_batch_indices() == (
             EXPECTED_NEXT_BATCH_AT_SPLIT)
-        # Identity is preserved absolutely: nothing was rebound.
         assert target.sampler is target_sampler
         assert target_sampler.dataset is target_dataset
     finally:
@@ -1282,13 +1442,19 @@ def test_configuration_is_adopted_from_the_state_not_from_the_constructor():
 
 
 # ===========================================================================
-# 9. Exact equality — the whole §14.3 inventory
+# 11. Exact equality — the whole comparison inventory
 # ===========================================================================
 
 @pytest.mark.parametrize("check", REQUIRED)
 def test_every_required_exact_check_holds_at_every_dtype(proofs, check):
     for dtype in RUN_DTYPES:
         assert proofs[dtype][check] is True, (dtype, check)
+
+
+@pytest.mark.parametrize("check", REQUIRED_INDEXING)
+def test_every_indexing_non_vacuity_check_holds(proofs, check):
+    for dtype in RUN_DTYPES:
+        assert proofs[dtype]["indexing"][check] is True, (dtype, check)
 
 
 @pytest.mark.parametrize("check", REQUIRED_TRAINING)
@@ -1308,18 +1474,46 @@ def test_the_example_reports_no_failed_check(proofs):
         assert failed_checks(proofs[dtype]) == [], dtype
 
 
-def test_the_exact_comparison_inventory_is_complete(proofs):
-    """Every §14.3 row is present in the gate by name, so a row cannot be
+def test_the_exact_comparison_inventory_is_complete():
+    """Every row K6 owes is present in the gate by name, so a row cannot be
     dropped from the proof without failing here."""
     for row in ("next_batch_after_restore_matches", "suffix_indices_match",
                 "whole_index_sequence_matches", "feature_batches_match",
-                "target_batches_match", "parameters_match", "buffers_match",
-                "moments_match", "counters_match", "hyperparameters_match",
-                "generator_matches", "topology_matches",
+                "target_batches_match", "parameters_match", "moments_match",
+                "counters_match", "hyperparameters_match",
                 "final_loader_state_matches", "loss_sequence_matches",
-                "logits_match", "evaluation_matches", "epoch_boundaries_match",
-                "position_sequence_matches"):
+                "logits_match", "epoch_boundaries_match",
+                "position_sequence_matches", "prediction_indices_match",
+                "selected_bits_match", "diagonal_bits_match",
+                "whole_evaluation_record_matches", "suffix_evaluations_match",
+                "evaluation_steps_match"):
         assert row in REQUIRED, row
+
+
+def test_the_float64_uninterrupted_and_resumed_runs_match_exactly(proofs):
+    """The whole float64 claim in one place, stated as the milestone states
+    it rather than only as a parametrized sweep."""
+    proof = proofs["float64"]
+    assert proof["dtype"] == "float64"
+    assert failed_checks(proof) == []
+    assert proof["whole_index_sequence_matches"] is True
+    assert proof["loss_sequence_matches"] is True
+    assert proof["parameters_match"] is True
+    assert proof["moments_match"] is True
+    assert proof["prediction_indices_match"] is True
+    assert proof["whole_evaluation_record_matches"] is True
+
+
+def test_the_float32_uninterrupted_and_resumed_runs_match_exactly(proofs):
+    proof = proofs["float32"]
+    assert proof["dtype"] == "float32"
+    assert failed_checks(proof) == []
+    assert proof["whole_index_sequence_matches"] is True
+    assert proof["loss_sequence_matches"] is True
+    assert proof["parameters_match"] is True
+    assert proof["moments_match"] is True
+    assert proof["prediction_indices_match"] is True
+    assert proof["whole_evaluation_record_matches"] is True
 
 
 def test_no_tolerance_is_used_anywhere_in_the_proof():
@@ -1327,7 +1521,7 @@ def test_no_tolerance_is_used_anywhere_in_the_proof():
     Asserted over the AST, so the prose sentence promising it does not
     satisfy the check."""
     for relative in (EXAMPLE_RELATIVE,
-                     "tests/test_native_minibatch_training.py"):
+                     "tests/test_native_integer_indexing_example.py"):
         names = code_identifiers(relative)
         for forbidden in ("allclose", "isclose", "approx", "almost_equal",
                           "assert_allclose", "rtol", "atol", "round",
@@ -1347,43 +1541,34 @@ def test_the_tolerance_scanner_can_actually_fail():
     assert "allclose" in named and "atol" in named
 
 
-def test_the_evaluation_is_exact_and_state_neutral(proofs):
-    for dtype in RUN_DTYPES:
-        proof = proofs[dtype]
-        assert proof["evaluation_matches"] is True
-        assert proof["evaluation_is_neutral"] is True
-        evaluation = proof["final_evaluation"]
-        assert evaluation["logit_shape"] == (SAMPLES, NUM_CLASSES)
-        assert evaluation["logit_dtype"] == dtype
-        assert len(evaluation["predictions"]) == SAMPLES
-        assert 0.0 <= evaluation["accuracy"] <= 1.0
-        # The predictions really are an argmax of the recorded logits, not a
-        # returned constant.
-        rows = np.asarray(evaluation["logit_bits"],
-                          dtype=np.uint64 if dtype == "float64"
-                          else np.uint32).view(
-            np.float64 if dtype == "float64" else np.float32
-        ).reshape(SAMPLES, NUM_CLASSES)
-        assert [int(index) for index in np.argmax(rows, axis=1)] == (
-            evaluation["predictions"])
-        assert evaluation["targets"]["writeable"] is False
-
-
-def test_the_final_loader_state_matches_exactly(proofs):
-    for dtype in RUN_DTYPES:
-        proof = proofs[dtype]
-        assert proof["final_loader_state_matches"] is True
-        assert proof["final_loader_position"] == EXPECTED_FINAL_POSITION
+def test_no_index_is_ever_read_at_a_floating_width():
+    """Indices are compared as integers, never converted. ``index_values``
+    refuses a floating tensor outright, and the example's own evaluation
+    record carries the prediction list as built-in ``int``s."""
+    tensor = NativeTensor.from_array([[1.0, 2.0]], dtype="float64")
+    try:
+        with pytest.raises(TypeError):
+            index_values(tensor)
+    finally:
+        tensor.close()
+    indices = NativeTensor.from_int64_array(np.asarray([2, 0, 1],
+                                                       dtype=np.int64))
+    try:
+        values = index_values(indices)
+        assert values == [2, 0, 1]
+        assert all(type(value) is int for value in values)
+    finally:
+        indices.close()
 
 
 # ===========================================================================
-# 10. The negative controls
+# 12. The negative controls
 # ===========================================================================
 
 def test_omitting_the_loader_restoration_makes_the_run_diverge(proofs):
-    """The §14.2 control. With ``loader.load_state_dict`` left out, the next
-    batch, the whole remaining sequence, the losses, the parameters, and the
-    evaluation must all **differ** — otherwise the positive proof would be
+    """With ``loader.load_state_dict`` left out, the next batch, the whole
+    remaining sequence, the losses, the parameters, **and the integer
+    evaluations** must all differ — otherwise the positive proof would be
     passing without the loader restoration doing anything."""
     for dtype in RUN_DTYPES:
         proof = proofs[dtype]
@@ -1391,7 +1576,7 @@ def test_omitting_the_loader_restoration_makes_the_run_diverge(proofs):
         assert proof["omitted_indices_differ"] is True
         assert proof["omitted_losses_differ"] is True
         assert proof["omitted_parameters_differ"] is True
-        assert proof["omitted_evaluation_differs"] is True
+        assert proof["omitted_evaluations_differ"] is True
 
 
 def test_the_omitted_control_leg_cleans_up_completely(live_storages):
@@ -1423,8 +1608,6 @@ def test_the_bit_helper_separates_adjacent_values_at_both_widths():
     narrow_next = np.nextafter(narrow, np.float32(2.0))
     assert narrow_next[0] != narrow[0]
     assert bits(narrow, "float32") != bits(narrow_next, "float32")
-    # Adjacent at float32 is one unit in the last place, and the helper sees
-    # exactly that.
     assert (bits(narrow_next, "float32")[0] - bits(narrow, "float32")[0]) == 1
 
 
@@ -1435,28 +1618,36 @@ def test_the_bit_helper_refuses_a_wrong_width_array_and_converts_nothing():
         bits(narrow, "float64")
     with pytest.raises(TypeError):
         bits(wide, "float32")
-    # No conversion: the result is exactly the raw view.
     values = np.array([1.5, -2.25, 0.0], dtype=np.float64)
     assert bits(values, "float64") == values.view(np.uint64).tolist()
-    narrow_values = np.array([1.5, -2.25, 0.0], dtype=np.float32)
-    assert bits(narrow_values, "float32") == (
-        narrow_values.view(np.uint32).tolist())
+
+
+def test_the_bit_reconstruction_helper_round_trips():
+    """The test's own inverse really is one — otherwise the column and
+    diagonal recomputations above would be checking nothing."""
+    for dtype in RUN_DTYPES:
+        values = np.asarray([[1.5, -2.25, 0.0], [3.75, -0.0, 8.0]],
+                            dtype=_HOST_VIEW[dtype])
+        rebuilt = from_bits(bits(values, dtype), dtype, (2, 3))
+        assert bits(rebuilt, dtype) == bits(values, dtype)
+        assert rebuilt.shape == (2, 3)
+        # ...and it separates the signed zeros it round-trips.
+        assert bits(rebuilt, dtype)[4] == bits(values, dtype)[4]
+        assert bits(rebuilt, dtype)[4] != bits(
+            np.asarray([0.0], dtype=_HOST_VIEW[dtype]), dtype)[0]
 
 
 def test_training_state_actually_changes(proofs):
-    """The training non-vacuity controls, restated as a direct assertion so
-    a silent regression to a no-op task fails here."""
     for dtype in RUN_DTYPES:
         training = proofs[dtype]["training"]
         assert training["parameters_moved"] is True
-        assert training["buffers_moved"] is True
-        assert training["buffer_count"] == 2
         assert training["moments_became_nonzero"] is True
+        assert training["optimizer_state_was_empty_at_the_start"] is True
         assert training["step_counters_advanced"] is True
-        assert training["generator_calls_advanced"] is True
         assert training["loss_sequence_varies"] is True
-        assert training["evaluation_output_changed"] is True
+        assert training["logits_changed_over_training"] is True
         assert training["optimizer_state_nonempty"] is True
+        assert training["gradients_cleared"] is True
 
 
 def test_the_schedule_controls_are_directly_asserted(proofs):
@@ -1466,18 +1657,32 @@ def test_the_schedule_controls_are_directly_asserted(proofs):
         assert schedule["split_position"] == EXPECTED_SPLIT_POSITION
         assert schedule["batches_left_in_active_epoch"] == 3
         assert schedule["epoch_boundaries_crossed"] == 2
-        assert schedule["exercised_epochs"] == 3
+        assert schedule["exercised_epochs"] == EXERCISED_EPOCHS == 3
         assert schedule["split_is_mid_epoch"] is True
         assert schedule["order_is_not_identity"] is True
         assert schedule["epochs_have_distinct_orders"] is True
 
 
+def test_the_indexing_controls_are_directly_asserted(proofs):
+    for dtype in RUN_DTYPES:
+        indexing = proofs[dtype]["indexing"]
+        assert indexing["evaluated_steps"] == list(EVAL_STEPS)
+        assert indexing["evaluated_before_split"] == [
+            step for step in EVAL_STEPS if step < SPLIT_STEP]
+        assert indexing["evaluated_after_split"] == [
+            step for step in EVAL_STEPS if step >= SPLIT_STEP]
+        assert indexing["evaluations_on_both_sides"] is True
+        assert indexing["duplicates_occurred"] is True
+        assert indexing["duplicates_guaranteed_by_pigeonhole"] is True
+
+
 # ===========================================================================
-# 11. The two dtypes
+# 13. The two dtypes
 # ===========================================================================
 
 def test_each_dtype_is_proved_completely_and_only_against_itself(proofs):
     assert RUN_DTYPES == ("float64", "float32")
+    assert cpp.SUPPORTED_DTYPES == RUN_DTYPES
     for dtype in RUN_DTYPES:
         proof = proofs[dtype]
         assert proof["dtype"] == dtype
@@ -1486,18 +1691,21 @@ def test_each_dtype_is_proved_completely_and_only_against_itself(proofs):
         assert failed_checks(proof) == []
 
 
-def test_only_the_dtype_independent_facts_are_compared_across_dtypes(proofs):
+def test_only_the_dtype_independent_facts_are_required_across_dtypes(proofs):
     facts = cross_dtype_facts(proofs)
     assert failed_cross_dtype_checks(facts) == []
     for check in REQUIRED_CROSS_DTYPE:
         assert facts[check] is True, check
     assert facts["dtypes"] == list(RUN_DTYPES)
+    # The prediction agreement is an observation, never a gate.
+    assert "prediction_indices_agree" not in REQUIRED_CROSS_DTYPE
+    assert isinstance(facts["prediction_indices_agree"], bool)
 
 
 def test_the_batch_index_sequence_is_identical_across_dtypes(proofs):
-    """The one cross-dtype equality this design really does have: a
-    permutation is a pure function of ``(seed, epoch, samples)`` and carries
-    no dtype at all."""
+    """The one numeric-looking cross-dtype equality this design really has:
+    a permutation is a pure function of ``(seed, epoch, samples)`` and
+    carries no dtype at all."""
     wide, narrow = (proofs[dtype] for dtype in RUN_DTYPES)
     assert wide["index_sequence"] == narrow["index_sequence"]
     assert tuple(wide["index_sequence"]) == EXPECTED_INDEX_SEQUENCE
@@ -1506,25 +1714,28 @@ def test_the_batch_index_sequence_is_identical_across_dtypes(proofs):
     assert (wide["next_batch_at_interruption"]
             == narrow["next_batch_at_interruption"])
     assert wide["final_loader_position"] == narrow["final_loader_position"]
+    assert wide["selection_shapes"] == narrow["selection_shapes"]
 
 
-def test_no_numeric_value_is_compared_across_dtypes(proofs):
+def test_no_floating_value_is_compared_across_dtypes(proofs):
     """The complement, asserted rather than assumed: the two dtypes really
     do produce **different** bits for the same task, so a cross-dtype
     numeric equality would be false — and nothing here asserts one."""
     wide, narrow = (proofs[dtype] for dtype in RUN_DTYPES)
     assert wide["uninterrupted_losses"] != narrow["uninterrupted_losses"]
-    assert (wide["final_evaluation"]["logit_bits"]
-            != narrow["final_evaluation"]["logit_bits"])
-    # ...and the cross-dtype fact set carries no numeric key at all.
+    wide_selected = [record["selected_bits"]
+                     for _, record in sorted(wide["evaluations"].items())]
+    narrow_selected = [record["selected_bits"]
+                       for _, record in sorted(narrow["evaluations"].items())]
+    assert wide_selected != narrow_selected
     facts = cross_dtype_facts(proofs)
-    for numeric in ("losses", "logits", "parameters", "buffers", "moments",
-                    "evaluation", "loss_bits", "logit_bits"):
+    for numeric in ("losses", "logits", "parameters", "moments", "loss_bits",
+                    "logit_bits", "selected_bits", "diagonal"):
         assert not any(numeric in key for key in facts), numeric
 
 
 # ===========================================================================
-# 12. Ownership, cleanup, and the live-storage baseline
+# 14. Ownership, cleanup, and the live-storage baseline
 # ===========================================================================
 
 def test_the_complete_proof_returns_storage_to_its_exact_baseline(
@@ -1537,6 +1748,57 @@ def test_the_complete_proof_returns_storage_to_its_exact_baseline(
     baseline = len(live_storages)
     for dtype in RUN_DTYPES:
         run_dtype_proof(dtype)
+    gc.collect()
+    assert len(live_storages) == baseline
+
+
+def test_the_integer_evaluation_closes_every_temporary(live_storages):
+    """The three objects ``evaluate_indexing`` creates — the ``argmax``
+    result, the detached source, and the ``index_select`` result — are all
+    released by the helper that created them."""
+    dataset = build_dataset("float64")
+    loader = model = None
+    try:
+        loader, _sampler = build_loader(dataset)
+        model = build_model("float64")
+        iterator = iter(loader)
+        try:
+            features, _targets = next(iterator)
+        finally:
+            iterator.close()
+        logits = model(features)
+        try:
+            gc.collect()
+            baseline = len(live_storages)
+            for _ in range(3):
+                evaluate_indexing(logits, "float64")
+            gc.collect()
+            assert len(live_storages) == baseline
+        finally:
+            logits.close()
+            features.close()
+    finally:
+        if loader is not None:
+            loader.close()
+        dataset.close()
+        if model is not None:
+            for parameter in model.parameters():
+                parameter.close()
+
+
+def test_the_storage_tracker_can_actually_fail(live_storages):
+    """Non-vacuity for every lifecycle assertion above: a deliberately
+    retained tensor must be **seen**, and closing it must clear it. A
+    tracker that had silently stopped recording would make every baseline
+    equality pass for the wrong reason."""
+    gc.collect()
+    baseline = len(live_storages)
+    leaked = NativeTensor.from_int64_array(np.asarray([1, 0], dtype=np.int64))
+    try:
+        gc.collect()
+        assert len(live_storages) > baseline, "the tracker saw nothing"
+    finally:
+        leaked.close()
     gc.collect()
     assert len(live_storages) == baseline
 
@@ -1557,8 +1819,8 @@ def test_the_proof_helpers_return_no_live_object(proofs):
 
 def test_the_example_closes_what_it_owns_and_never_a_delivered_batch():
     """Structural: the cleanup helper closes the loader, the dataset, the
-    optimizer, and every parameter and buffer — and nothing in the example
-    closes a *target* array, which is ordinary host memory."""
+    optimizer, and every parameter — and nothing in the example closes a
+    *target* array, which is ordinary host memory."""
     source = EXAMPLE.read_text(encoding="utf-8")
     tree = ast.parse(source)
     closer = next(node for node in ast.walk(tree)
@@ -1568,43 +1830,54 @@ def test_the_example_closes_what_it_owns_and_never_a_delivered_batch():
               for node in ast.walk(closer)
               if isinstance(node, ast.Call)
               and ast.unparse(node.func).endswith(".close")}
-    assert {"loader", "dataset", "optimizer", "parameter", "buffer"} <= closed
-    # The delivered target array is never closed anywhere.
+    assert {"loader", "dataset", "optimizer", "parameter"} <= closed
     assert ".close()" in source
     assert not re.search(r"\btargets\.close\(\)", source)
+    # The integer temporaries are closed in the evaluation helper itself.
+    evaluator = next(node for node in ast.walk(tree)
+                     if isinstance(node, ast.FunctionDef)
+                     and node.name == "evaluate_indexing")
+    evaluated = {ast.unparse(node.func).rsplit(".", 1)[0]
+                 for node in ast.walk(evaluator)
+                 if isinstance(node, ast.Call)
+                 and ast.unparse(node.func).endswith(".close")}
+    assert {"predictions", "detached", "selected"} <= evaluated, evaluated
 
 
 # ===========================================================================
-# 13. Inventories, and the J6 scope boundary
+# 15. Inventories, and the K6 scope boundary
 # ===========================================================================
 
 def test_the_example_inventory_grew_by_exactly_one():
     examples = sorted(path.name for path in (REPO_ROOT / "examples").glob("*.py")
                       if path.name != "__init__.py")
     assert len(examples) == EXPECTED_EXAMPLE_COUNT, examples
-    assert "native_minibatch_training.py" in examples
+    assert "native_integer_indexing.py" in examples
+    # K6 is the phase's only example, and it is named rather than merely
+    # counted so a second integer example cannot arrive unnoticed.
+    integer = [name for name in examples
+               if "integer" in name or "index" in name]
+    assert integer == ["native_integer_indexing.py"], integer
     benchmarks = sorted(path.name
                         for path in (REPO_ROOT / "benchmarks").glob("*.py")
                         if path.name != "__init__.py")
     assert len(benchmarks) == EXPECTED_BENCHMARK_COUNT, benchmarks
-    # J8 owns the data-pipeline benchmark, and it is named here rather than
-    # merely counted so J6's own delta to the benchmark inventory stays
-    # exactly zero.
-    assert "benchmark_native_data_pipeline.py" in benchmarks
-    for name in benchmarks:
-        if name == "benchmark_native_data_pipeline.py":               # J8
-            continue
-        assert "data_pipeline" not in name and "minibatch" not in name, name
+    assert not [name for name in benchmarks
+                if "integer" in name or "index" in name], benchmarks
 
 
 def test_the_capability_boundary_did_not_move():
     assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
+    assert cpp.INDEX_DTYPES == ("int64",)
     assert cpp.SUPPORTED_DEVICES == ("cpu",)
     assert cpp.UNSUPPORTED == ("cuda", "amp")
     assert cpp.RAW_KERNEL_DTYPES == ("float64",)
     assert cpp.normalize_dtype(None) == "float64"
+    with pytest.raises(ValueError):
+        cpp.normalize_dtype("int64")
     info = cpp.backend_info()
     assert info["dtype"] == "float64"
+    assert info["index_dtypes"] == ("int64",)
     assert info["stable_framework_integration"] is False
 
 
@@ -1615,68 +1888,67 @@ def test_the_abi_and_ctest_inventories_did_not_move():
             r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
             source.read_text(encoding="utf-8"), re.S))
     assert len(names) == EXPECTED_ABI_EXPORTS, sorted(names)
+    assert {"tf_core_argmax", "tf_core_index_select"} <= names
     cmake = (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8")
     tests = re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)
     assert len(tests) == EXPECTED_CTESTS, tests
 
 
 def test_no_cpp_or_build_surface_mentions_the_new_example():
-    """J6 changed no C++, no CMake, and no dependency file."""
+    """K6 changed no C++, no CMake, and no dependency file."""
     for relative in ("cpp/CMakeLists.txt", "cpp/build.py", "pyproject.toml",
                      ".github/workflows/tests.yml"):
         text = (REPO_ROOT / relative).read_text(encoding="utf-8")
-        assert "minibatch" not in text, relative
+        assert "integer_indexing" not in text, relative
     for path in sorted((REPO_ROOT / "cpp").rglob("*.cpp")):
-        assert "minibatch" not in path.read_text(encoding="utf-8"), path.name
+        assert "integer_indexing" not in path.read_text(encoding="utf-8"), (
+            path.name)
 
 
-def test_the_later_phase_j_milestones_live_in_their_own_modules():
-    """J6 is the public-API example, and the milestones after it landed
-    elsewhere rather than here.
-
-    Through J8 this guard also asserted J9's closure module **absent**,
-    because it had not started. That premise expired when J9 landed, and
-    what replaces it is the durable half: J7's hardening matrix, J8's
-    benchmark, and J9's closure guardrails all live in their **own** files
-    — the same "only the milestone that ships a name may move it" split
-    every other inventory in this repository uses. What must stay true of
-    *this* module is that the adversarial work, the measurement, and the
-    closure boundary are all somewhere else: J6 injects nothing, times
-    nothing, and owns no phase-wide claim.
-    """
-    for shipped in ("test_native_data_hardening.py",           # J7
-                    "test_native_data_benchmark.py",           # J8
-                    "test_native_phase_j_closure.py"):         # J9
-        assert (REPO_ROOT / "tests" / shipped).exists(), shipped
-    assert (REPO_ROOT / "benchmarks"
-            / "benchmark_native_data_pipeline.py").exists()
-    # ...and this module contains none of J7's adversarial vocabulary: it
-    # injects nothing, patches no private seam, and adds no failure hook.
-    names = code_identifiers("tests/test_native_minibatch_training.py")
-    for hardening in ("_deliver_batch", "tf_test_arm_alloc_failure",
-                      "_claim_batch", "_publish_pending", "_rollback_pending",
+def test_the_later_phase_k_milestones_have_not_started():
+    """K6 is the integration example. The adversarial matrix (K7), the
+    benchmark (K8), and the closure (K9) are unstarted, and none of their
+    artifacts exists — and this module contains none of their vocabulary
+    either: it injects nothing, times nothing, and owns no phase-wide
+    claim."""
+    for absent in ("test_native_integer_hardening.py",           # K7
+                   "test_native_integer_benchmark.py",           # K8
+                   "test_native_phase_k_closure.py"):            # K9
+        assert not (REPO_ROOT / "tests" / absent).exists(), absent
+    assert not (REPO_ROOT / "benchmarks"
+                / "benchmark_native_integer.py").exists()
+    names = code_identifiers("tests/test_native_integer_indexing_example.py")
+    for hardening in ("tf_test_arm_alloc_failure", "fault_injection_available",
+                      "_deliver_batch", "_claim_batch", "_rollback_pending",
                       "threading", "Thread", "asyncio", "Queue", "Pool"):
         assert hardening not in names, hardening
 
 
-def test_no_worker_thread_prefetch_or_transform_surface_appeared():
-    for forbidden in ("num_workers", "collate_fn", "prefetch", "pin_memory",
-                      "transform", "persistent_workers", "sampler_workers"):
-        assert not hasattr(NativeDataLoader, forbidden), forbidden
-        assert not hasattr(NativeBatchSampler, forbidden), forbidden
-    names = code_identifiers(EXAMPLE_RELATIVE)
-    for forbidden in ("threading", "Thread", "multiprocessing", "asyncio",
-                      "Queue", "Pool", "concurrent", "await", "async"):
-        assert forbidden not in names, forbidden
+def test_no_absent_indexing_operation_appeared():
+    """The operations Phase K deliberately does not have, asserted on the
+    live classes rather than in prose."""
+    for owner in (NativeTensor, cpp.NativeTensorCore):
+        for absent in ("gather", "scatter", "scatter_add", "embedding",
+                       "argmin", "max", "max_with_indices", "take",
+                       "index_add", "index_put", "masked_select",
+                       "index_select_backward", "__getitem__"):
+            assert not hasattr(owner, absent), (owner.__name__, absent)
+    for present in ("argmax", "index_select"):
+        assert hasattr(NativeTensor, present), present
+        assert hasattr(cpp.NativeTensorCore, present), present
+    assert "argmax" in cpp.TENSOR_CORE_OPS
+    assert "index_select" in cpp.TENSOR_CORE_OPS
+    assert "argmax" not in cpp.AUTOGRAD_OPS
+    assert "index_select" not in cpp.AUTOGRAD_OPS
 
 
 def test_the_model_class_stays_an_example_implementation_detail():
-    assert NativeMiniBatchClassifier.__module__ == (
-        "examples.native_minibatch_training")
-    assert issubclass(NativeMiniBatchClassifier, NativeModule)
+    assert NativeIndexingClassifier.__module__ == (
+        "examples.native_integer_indexing")
+    assert issubclass(NativeIndexingClassifier, NativeModule)
     for path in sorted((REPO_ROOT / "src").rglob("*.py")):
         text = path.read_text(encoding="utf-8")
-        assert "NativeMiniBatchClassifier" not in text, path.name
+        assert "NativeIndexingClassifier" not in text, path.name
 
 
 def test_the_reporting_helpers_are_importable_and_pure(uninterrupted):
@@ -1685,6 +1957,4 @@ def test_the_reporting_helpers_are_importable_and_pure(uninterrupted):
     assert isinstance(model_facts, type(optimizer_facts))
     assert set(uninterrupted["parameters"]) == set(
         uninterrupted["initial"]["parameters"])
-    assert uninterrupted["generator"]["algorithm"] == "tensorforge.splitmix64"
-    assert uninterrupted["generator"]["algorithm_version"] == 1
-    assert generator_state is not None
+    assert uninterrupted["optimizer"]["format_version"] == 1

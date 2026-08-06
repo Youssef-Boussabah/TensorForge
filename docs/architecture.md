@@ -1067,7 +1067,7 @@ explicit layer at a time:
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
   complete: milestones J0 through J9 have all landed and J9 closed it.**
-  **Phase K is the latest phase, and only K0 through K5 have landed.** **K6 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved
+  **Phase K is the latest phase, and only K0 through K6 have landed.** **K7 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1255,10 +1255,29 @@ explicit layer at a time:
   `"index_select"` is in `TENSOR_CORE_OPS` and deliberately not in
   `AUTOGRAD_OPS`. Exports moved **55 → 56** — the phase maximum — and
   CTests **26 → 27**.
+  **K5 is the compatibility proof and K6 the end-to-end integration
+  example, and neither added any production code.** K5's deliverable is
+  `tests/test_native_integer_compatibility.py`, which drove the checkpoint,
+  the optimizer, loader, and sampler states, the Phase-J delivery
+  contract, and the classification stack and showed K1–K4 left every one
+  of them exactly where they found it; it moved no inventory at all. K6's
+  is `examples/native_integer_indexing.py` with its owner
+  `tests/test_native_integer_indexing_example.py`: a deterministic
+  classifier whose evaluation path takes a native `argmax` and then an
+  `index_select` over a **detached** copy of the same logits — the sources
+  differ deliberately, because `argmax` yields a plain leaf even from a
+  gradient-tracking input while `index_select` rejects one naming
+  `detach()` — with an interrupted-and-resumed run reproducing the
+  uninterrupted one **exactly** at float64 and float32 independently, every
+  index by exact integer equality and every floating value by raw bits.
+  That call is **axis selection, not a per-row gather**: a `(6, 4)` logits
+  batch and a `(6,)` index vector give `(6, 6)`, column *j* being the whole
+  source column `predictions[j]` and the diagonal each example's own
+  predicted-class logit. K6 moved **one** inventory, examples 16 → **17**.
   No public integer `max`, `argmin`, general `gather`, `scatter`,
   embedding lookup, `index_select` backward, arithmetic,
   reduction, autograd, parameter, buffer, optimizer state, or
-  checkpoint entry exists, and **K5 through K9 are
+  checkpoint entry exists, and **K7 through K9 are
   unstarted**. Its contract is
   [native_integer_tensors_design.md](native_integer_tensors_design.md),
   and the architectural decisions it locks are the ones that would

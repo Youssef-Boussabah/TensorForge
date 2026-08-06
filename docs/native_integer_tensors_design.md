@@ -18,8 +18,8 @@ statements, and only the first is true here. Phase K was not part of the
 Phase-I roadmap, was not planned during Phase J, and did not exist before
 the branch that carries this document.
 
-**Phase-K status: K0 through K5 complete. K0 through K5 are the
-only completed Phase-K milestones. K6 through K9 are unstarted.**
+**Phase-K status: K0 through K6 complete. K0 through K6 are the
+only completed Phase-K milestones. K7 through K9 are unstarted.**
 
 **K0 adds no runtime behavior.** No integer dtype, no dtype code, no C++
 enumerator, no storage change, no kernel, no C ABI symbol, no ctypes
@@ -128,7 +128,28 @@ works and needs no pipeline change; and a model trains, checkpoints, and
 resumes **bit-identically** at both widths while `argmax` and
 `index_select` are used beside it.
 
-**`int64` is not a supported TensorForge native tensor dtype**, at K5 or
+**K6 turned all of that into one end-user program, and moved exactly one
+inventory.** It is the phase's end-to-end integration example and carries
+**zero production code**: `examples/native_integer_indexing.py`, owned by
+`tests/test_native_integer_indexing_example.py`. A deterministic native
+classifier trains over the Phase-J pipeline, and at fixed evaluation points
+on **both sides** of an interruption its logits become native `int64`
+predictions through `argmax` which are then consumed by `index_select` over
+a **detached** copy of the same logits — the two calls taking deliberately
+different sources for the two reasons §17.9 and §18.9 give. The
+interrupted-and-resumed run reproduces the uninterrupted one **exactly** at
+float64 and float32 independently, every prediction index by exact integer
+equality and every floating value by raw IEEE-754 bits. The example is
+written entirely against the public experimental surface, closes every
+native object it creates, leaves no file behind, claims no timing, and
+returns live storage exactly to its baseline. **Examples went 16 → 17**, and
+nothing else moved: no C ABI symbol (still **56**), no public Python name
+(`__all__` still **25**), no CTest (still **27**), no benchmark (still
+**9**), no registry value, and no version. The only file it touches under
+`src/` is the package docstring's Phase-K status sentence, which carries no
+capability.
+
+**`int64` is not a supported TensorForge native tensor dtype**, at K6 or
 ever. It is an **index/result** dtype, in a separate registry, and the
 distinction is the whole of the phase's taxonomy (§5.1). K3 and K4 are where
 that distinction earns itself: one operation now *produces* `int64` and
@@ -137,29 +158,29 @@ dtype a kernel computes at. The compute boundary is exactly what Phase I
 established and Phase J left untouched, and no Phase-K milestone has moved
 any of it:
 
-| Row | Value at K0 | Value at K1 | Value at K2 | Value at K3 | Value at K4 | Value at K5 |
-|---|---|---|---|---|---|---|
-| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `UNSUPPORTED` | `("cuda", "amp")` | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `normalize_dtype(None)` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `normalize_dtype("int64")` | raises `ValueError` | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `backend_info()["dtype"]` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `backend_info()["stable_framework_integration"]` | `False` | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `INDEX_DTYPES` | absent | absent | **`("int64",)`** | unchanged | unchanged | unchanged |
-| Python `_DTYPE_CODES` | `float64`, `float32` | unchanged | **+ `int64: 2`** | unchanged | unchanged | unchanged |
-| C++ `TfDtype` | `FLOAT64`, `FLOAT32` | **+ `INT64 = 2`** | unchanged | unchanged | unchanged | unchanged |
-| Public integer constructor | absent | absent | **`NativeTensor.from_int64_array`** | unchanged | unchanged | unchanged |
-| `TENSOR_CORE_OPS` | Phase-J set | unchanged | unchanged | **+ `"argmax"`** | **+ `"index_select"`** | unchanged |
-| `AUTOGRAD_OPS` | Phase-J set | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Native checkpoint format · version · accepted | `tensorforge.native_checkpoint` · **3** · `(1, 2, 3)` | unchanged | unchanged | unchanged | unchanged | unchanged |
-| In-memory optimizer state version | **1** | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Exported production `tf_*` symbols | **54** | **54** | **54** | **55** | **56** | **56** |
-| Experimental Python exports | **25** | **25** | **25** | **25** | **25** | **25** |
-| Native CTests · examples · benchmarks | **24** · **16** · **9** | **25** · **16** · **9** | **25** · **16** · **9** | **26** · **16** · **9** | **27** · **16** · **9** | **27** · **16** · **9** |
+| Row | Value at K0 | Value at K1 | Value at K2 | Value at K3 | Value at K4 | Value at K5 | Value at K6 |
+|---|---|---|---|---|---|---|---|
+| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `UNSUPPORTED` | `("cuda", "amp")` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `normalize_dtype(None)` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `normalize_dtype("int64")` | raises `ValueError` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `backend_info()["dtype"]` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `backend_info()["stable_framework_integration"]` | `False` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `INDEX_DTYPES` | absent | absent | **`("int64",)`** | unchanged | unchanged | unchanged | unchanged |
+| Python `_DTYPE_CODES` | `float64`, `float32` | unchanged | **+ `int64: 2`** | unchanged | unchanged | unchanged | unchanged |
+| C++ `TfDtype` | `FLOAT64`, `FLOAT32` | **+ `INT64 = 2`** | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Public integer constructor | absent | absent | **`NativeTensor.from_int64_array`** | unchanged | unchanged | unchanged | unchanged |
+| `TENSOR_CORE_OPS` | Phase-J set | unchanged | unchanged | **+ `"argmax"`** | **+ `"index_select"`** | unchanged | unchanged |
+| `AUTOGRAD_OPS` | Phase-J set | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Native checkpoint format · version · accepted | `tensorforge.native_checkpoint` · **3** · `(1, 2, 3)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| In-memory optimizer state version | **1** | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Exported production `tf_*` symbols | **54** | **54** | **54** | **55** | **56** | **56** | **56** |
+| Experimental Python exports | **25** | **25** | **25** | **25** | **25** | **25** | **25** |
+| Native CTests · examples · benchmarks | **24** · **16** · **9** | **25** · **16** · **9** | **25** · **16** · **9** | **26** · **16** · **9** | **27** · **16** · **9** | **27** · **16** · **9** | **27** · **17** · **9** |
 
 **`SUPPORTED_DTYPES` never gains `int64` — not in Phase K and not
 afterwards** (§5). It is, and permanently remains, the **floating compute**
@@ -191,7 +212,7 @@ fail if one is written:
   `max` is declined **permanently** by §17.10 rather than deferred;
 - a general `gather`, a `scatter`, a `scatter_add`, an embedding lookup, or
   an `index_select` **backward** exists — none does (§18.1, §18.9, §35);
-- Phase K is **not** complete, and no milestone after K5 has landed.
+- Phase K is **not** complete, and no milestone after K6 has landed.
 
 Three things that were on this list and have been **moved rather than
 deleted**, which is the discipline the list exists to demonstrate:
@@ -2758,7 +2779,7 @@ existing rule plus the ones this phase makes specific.
 
 ## 32. Final milestone ladder
 
-Ten milestones, **one purpose each**. K0 through K5 are complete; K6
+Ten milestones, **one purpose each**. K0 through K6 are complete; K7
 through K9 are unstarted. No milestone combines two major operations, no
 milestone exists to preserve a numbering, and K9 is the closure.
 
@@ -2827,7 +2848,7 @@ than trusting the prose.
 | **K3** | Native `argmax` — the phase's first operation and its first C ABI symbol | **Complete.** `cpp/include/tf_indexing_internal.h` (the templated traversal and the `tf::require_index` role guard), `cpp/src/indexing.cpp` (`tf_core_argmax`), one CTest (25 → **26**), the ctypes declaration and errcheck hook, `NativeTensorCore.argmax`, `NativeTensor.argmax`, `"argmax"` in `TENSOR_CORE_OPS`, the §20.3 reconciliation, and `tests/test_native_argmax.py`. Exports 54 → **55**. `AUTOGRAD_OPS`, `__all__`, every registry, every version, the examples, and the benchmarks are unmoved, and no `max` was shipped. |
 | **K4** | `index_select`, forward only — the phase's one index-*consuming* operation and its second and final C ABI symbol | **Complete.** `tf::index_select_contiguous` beside K3's traversal in the same internal header, `tf_core_index_select` beside `tf_core_argmax` in the same translation unit, one CTest (26 → **27**), the ctypes declaration and errcheck hook, `NativeTensorCore.index_select`, `NativeTensor.index_select` with the `requires_grad` rejection naming `detach()`, `"index_select"` in `TENSOR_CORE_OPS`, and `tests/test_native_index_select.py`. Exports 55 → **56**, the phase maximum. `AUTOGRAD_OPS`, `__all__`, every registry, every version, the examples, and the benchmarks are unmoved, and no `gather`, `scatter`, embedding, or backward was shipped. |
 | **K5** | Compatibility proof — checkpoint, state, data pipeline, classification | **Complete.** `tests/test_native_integer_compatibility.py`, and the status reconciliation. Zero production code: no export, no public name, no CTest, no example, no benchmark, no registry or version movement. |
-| **K6** | End-to-end integration example and exact proof | *Unstarted.* |
+| **K6** | End-to-end integration example and exact proof | **Complete.** `examples/native_integer_indexing.py` and `tests/test_native_integer_indexing_example.py`. Examples 16 → **17**; zero production code, no export, no `__all__` change, no CTest, no benchmark, no registry or version movement. |
 | **K7** | Adversarial hardening | *Unstarted.* |
 | **K8** | Benchmark characterization | *Unstarted.* |
 | **K9** | Cross-platform validation and Phase-K closure | *Unstarted.* |
@@ -3393,14 +3414,95 @@ This milestone replaces the notion of a separate serialization milestone.
 There is no serialization work to do, and a milestone that assumed there
 was would invite a format change nobody needs.
 
-### K6 — End-to-end integration example and exact proof
+### K6 — End-to-end integration example and exact proof · complete
 
-`examples/native_integer_indexing.py` — a deterministic native classifier
-whose evaluation path takes a native `argmax` and an `index_select` of the
-predicted-class logits, with an interrupted-and-resumed run reproducing the
-uninterrupted one exactly, independently at float32 and float64, and with
-every index compared by exact integer equality. **Examples 16 → 17. No
-production code, no export, no `__all__` change.**
+**Zero production code**, and the whole milestone is two new files —
+`examples/native_integer_indexing.py` and its owner
+`tests/test_native_integer_indexing_example.py` — plus the inventory and
+status reconciliation a landed milestone requires. It added no C ABI symbol
+(still **56**), no public Python name (`__all__` still **25**), no CTest
+(still **27**), no benchmark (still **9**), no registry value, and no
+version of any kind. It moved **exactly one** inventory: examples 16 →
+**17**. The only file it touches under `src/` is the package docstring's
+Phase-K status sentence, which is documentation and carries no capability.
+
+**The program.** A deterministic native classifier —
+`NativeLinear(5 → 8) → NativeReLU → NativeLinear(8 → 4)` with
+`NativeCrossEntropyLoss` and `NativeAdam` — trains over the Phase-J pipeline
+(`NativeTensorDataset` → `NativeBatchSampler` → `NativeDataLoader`) on
+twenty-four fixed samples whose every feature value is a multiple of one
+eighth, so the same literals seed both widths exactly. Ten shuffled steps
+in batches of six cross two epoch boundaries; the interruption lands after
+five, at epoch 1 cursor 1, with three batches still owed by the *active*
+epoch. It is deliberately **smaller** than the Phase-J mini-batch
+classifier: K6's subject is the indexing, and an extra stochastic or
+normalizing layer would have added state to the resume proof without adding
+anything to the indexing one.
+
+**The evaluation path, at fixed steps on both sides of the interruption**
+(1 and 4 before the checkpoint, 6 and 9 after it), taken from the step's own
+logits so no second forward pass can be mistaken for the thing being
+measured:
+
+```python
+predictions     = logits.argmax(axis=1)                       # K3, int64
+detached_logits = logits.detach()
+selected        = detached_logits.index_select(1, predictions)  # K4
+```
+
+The `argmax` reads the **live, gradient-tracking** logits because §17.9
+promises a plain leaf even then; the `index_select` reads a **detached**
+source because §18.9 rejects a `requires_grad=True` one rather than
+detaching it silently. The two deliberately different sources are the
+example's most instructive line, and the owner test drives the rejection
+directly rather than only describing it.
+
+**`index_select` is axis selection, not a per-row gather, and the example
+says so in those words.** With logits of shape `(6, 4)` and predictions of
+shape `(6,)` the result is `(6, 6)`: the *same ordered index vector* is
+selected along the class axis for **every** row, so column *j* is the whole
+source column `predictions[j]` and each example's own predicted-class logit
+sits on the **diagonal**. The owner test rebuilds the whole result from the
+recorded bit patterns and checks **every column** against its source column
+and the diagonal against `logits[row, predictions[row]]` — recomputed rather
+than read out of the example's own booleans. `BATCH_SIZE > NUM_CLASSES`
+makes duplicate predicted classes a pigeonhole guarantee rather than luck,
+and where an index repeats the two columns are proved bit-identical in their
+original positions, which is the observable form of "duplicates and order
+are preserved".
+
+**What the proof compares.** For each dtype independently: an uninterrupted
+run, an interrupted-and-resumed run through a real version-3 archive into an
+entirely fresh object graph proved different *before* the load, and an
+omitted-loader-state negative control proved to **diverge**. The two runs
+agree on the completed step count, the delivered batch-index sequence, the
+loader and sampler position, every parameter bit pattern, every Adam moment
+and counter, every per-step logits and loss, every recorded prediction
+index, every recorded selected value, and every evaluation shape and
+metadata fact. **Prediction indices are compared as exact Python integers
+and are never converted to a floating value**; floating values are compared
+through `uint32`/`uint64` views. The **only** cross-dtype claims gated are
+dtype-independent — the batch schedule, the permutations, the positions, the
+evaluation steps, and the selection shapes. Whether the two widths happen to
+predict the same classes is reported as an **observation** and deliberately
+not required: it is legitimate for them to differ, and each run must still
+reproduce itself exactly.
+
+**Discipline.** The example is written against the **public** experimental
+surface only, proved by an AST scan with a planted negative control; it
+names no private runtime seam, assigns no private state, calls no
+`numpy.argmax` (the indices come from the native operation, and a runtime
+counter proves it), claims and measures no timing, reads no file, clock,
+environment variable, or global RNG, closes every native object it creates
+— the `argmax` result, the detached source, the `index_select` result, every
+delivered batch, forward output, loss, and gradient — under `try`/`finally`,
+leaves no file behind, and returns live native storage exactly to its
+baseline. The storage tracker has its own non-vacuity control proving it
+notices a deliberately retained tensor.
+
+**No K7+ work landed here.** There is no allocation-failure injection, no
+malformed-metadata matrix, no reentrancy or concurrency test, no benchmark,
+and no closure claim; K7's, K8's, and K9's modules are asserted **absent**.
 
 ### K7 — Adversarial hardening
 

@@ -137,6 +137,8 @@ FINAL_EXPORT_COUNT = PHASE_I_EXPORT_COUNT + len(PHASE_J_ADDED_EXPORTS)  # 54
 # int64 storage CTest, milestone K3 the argmax export and its CTest, and
 # milestone K4 the index_select export and its CTest.
 POST_PHASE_J_EXPORTS = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
+# ...and the one example a later phase added, named for the same reason.
+POST_PHASE_J_EXAMPLES = {"native_integer_indexing.py": "K6"}
 POST_PHASE_J_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3",
                        "index_select": "K4"}
 CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(POST_PHASE_J_EXPORTS)  # 56
@@ -1064,10 +1066,19 @@ def test_no_build_output_can_become_repository_content():
 # ===========================================================================
 
 def test_the_example_inventory_closed_at_sixteen():
-    """Phase J's own example delta is **exactly one**, J6's."""
+    """Phase J's own example delta is **exactly one**, J6's.
+
+    The tree may hold more now — later phases ship their own — so the
+    equality is stated as "sixteen, plus exactly the examples later
+    milestones added, each named". That keeps J9's record historically
+    exact while still failing on an unannounced example."""
     names = sorted(path.name for path in (REPO_ROOT / "examples").glob("*.py")
                    if path.name != "__init__.py")
-    assert len(names) == FINAL_EXAMPLE_COUNT, names
+    for name, milestone in POST_PHASE_J_EXAMPLES.items():
+        assert name in names, (name, milestone)
+    assert len([name for name in names
+                if name not in POST_PHASE_J_EXAMPLES]) == (
+        FINAL_EXAMPLE_COUNT), names
     assert Path(J6_EXAMPLE).name in names
     # No second pipeline example arrived under another name.
     pipeline = [n for n in names

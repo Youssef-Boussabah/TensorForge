@@ -1452,6 +1452,7 @@ I9_ADDED_EXAMPLES = frozenset({"examples/native_float32_training.py"})
 # ``examples/``, including an edit to an existing file, still fails.
 POST_PHASE_I_EXAMPLES = frozenset({
     "examples/native_minibatch_training.py",          # Phase J, milestone J6
+    "examples/native_integer_indexing.py",            # Phase K, milestone K6
 })
 assert not (I9_ADDED_EXAMPLES & POST_PHASE_I_EXAMPLES)
 

@@ -110,7 +110,7 @@ capability decision, never a side effect.
 | Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` |
 | Exported production `tf_*` symbols | **56** (Phase H closed at 52; Phase I added 2 at I1; Phase K added `tf_core_argmax` at K3 and `tf_core_index_select` at K4, reaching its phase maximum of 56) |
 | Experimental Python exports | **25** |
-| Native CTests · examples · benchmarks | **27** · **16** · **9** (24 at Phase K's start; K1, K3, and K4 each added one CTest; K5 added none) |
+| Native CTests · examples · benchmarks | **27** · **17** · **9** (24 CTests and 16 examples at Phase K's start; K1, K3, and K4 each added one CTest; K5 added nothing; K6 added one example) |
 
 **Three dtype rows, three different questions**, and none may be reported as
 another: `SUPPORTED_DTYPES` is the **capability**; `backend_info()["dtype"]`
@@ -458,7 +458,7 @@ uv run python cpp/build.py          # build the native backend (Release)
 uv run python cpp/build.py --debug  # unoptimized, assertions on
 uv sync --group cpp                 # only if you have no C++ compiler
 uv run python scripts/smoke_cpp_backend.py
-uv run python examples/<name>.py    # all 16 run; see docs/examples.md
+uv run python examples/<name>.py    # all 17 run; see docs/examples.md
 uv run python benchmarks/benchmark_native_data_pipeline.py --smoke
 uv run python benchmarks/benchmark_native_data_pipeline.py --smoke --json
 ```
@@ -630,7 +630,8 @@ that changes the public API or the examples updates the matching document
   and it added **no C ABI export**. J1–J3 each added exactly one public name
   — `NativeTensorDataset`, `NativeBatchSampler`, `NativeDataLoader` — and
   **every other milestone added none**, leaving **25** experimental names,
-  **16** examples, and **9** benchmarks. Per-milestone records live in
+  **16** examples (Phase K's K6 later added the 17th), and **9**
+  benchmarks. Per-milestone records live in
   `docs/native_data_pipeline_design.md` §23 and `docs/release_history.md`;
   what follows here are the rules that outlive them.
 - **No Phase-J milestone remains.** That sentence read "and no successor
@@ -639,7 +640,7 @@ that changes the public API or the examples updates the matching document
   Record it that way rather than rewriting it: "the phase that came next"
   and "the phase that was always planned next" are different facts.
 - **Native line: Phase K — Native Integer Tensors and Indexing — is the
-  newly approved phase and is the latest phase, and only K0 through K5 have landed.**
+  newly approved phase and is the latest phase, and only K0 through K6 have landed.**
   Authority
   `docs/native_integer_tensors_design.md`. **K0 is architecture, contract,
   status, and guardrails only and added no runtime behavior at all**: no
@@ -788,11 +789,39 @@ that changes the public API or the examples updates the matching document
   `tests/test_native_checkpoint.py`. **No format, field, version,
   capability, registry, export, CTest, example, or benchmark moved**, and
   K5 itself stays the test-and-documentation milestone it is.
+  **K6 is the end-to-end integration example and added zero production
+  code**: `examples/native_integer_indexing.py`, owned by
+  `tests/test_native_integer_indexing_example.py`. A deterministic
+  `NativeLinear(5→8) → NativeReLU → NativeLinear(8→4)` classifier with
+  `NativeCrossEntropyLoss` and `NativeAdam` trains ten shuffled batches of
+  six over the Phase-J pipeline, is interrupted **strictly mid-epoch** with
+  batches still owed, and resumes through a real version-3 archive into an
+  entirely fresh graph proved different before the load. At four fixed
+  steps — two on each side of the interruption — the step's own logits
+  become native `int64` predictions through `argmax` and are consumed by
+  `index_select` over a **detached** copy of them: the sources differ
+  deliberately, because §17.9 gives a plain leaf even from a
+  gradient-tracking input while §18.9 **rejects** one naming `detach()`.
+  That call is **axis selection, not a per-row gather** — a `(6, 4)` logits
+  batch and a `(6,)` index vector give `(6, 6)`, column *j* is the whole
+  source column `predictions[j]`, and the **diagonal** is each example's own
+  predicted-class logit, both recomputed from raw bits by the owner test
+  rather than read off the example's booleans, with duplicates guaranteed by
+  pigeonhole (`BATCH_SIZE > NUM_CLASSES`) and proved to give identical
+  columns in their original positions. The uninterrupted and resumed runs
+  agree exactly at float64 and float32 **independently** — prediction
+  indices by exact integer equality, floating values by raw IEEE-754 bits,
+  never a tolerance and never across widths — and the omitted-loader-state
+  leg is proved to diverge. Cross entropy still trains on the loader's
+  read-only host `int64` target arrays. **Examples 16 → 17**, and exports
+  **56**, CTests **27**, benchmarks **9**, `__all__` **25**, every registry,
+  and every version are unmoved; the only file it touches under `src/` is
+  the same package-docstring status sentence.
   No `max`, no `argmin`, no general `gather`, no `scatter`, no embedding
   lookup, no `index_select` backward, no
   integer arithmetic or reduction, no integer autograd, parameter, buffer,
   optimizer state, or checkpoint entry, and no casting or promotion exists,
-  and **K6 through K9 are unstarted**. Every reachability barrier landed at
+  and **K7 through K9 are unstarted**. Every reachability barrier landed at
   **K1**, one milestone before an integer tensor could be constructed at
   all: **prove first, then promise.** The phase's C ABI maximum is **56**
   (54 + `argmax` at K3 + `index_select` at K4), which K4 reached, and

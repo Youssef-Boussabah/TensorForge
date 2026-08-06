@@ -151,6 +151,21 @@ by the stable framework — carries a complete native CPU training line:
   unchanged version-3 checkpoint, so the archive still captures no
   data-loader position of its own. It is deterministic **exact-resume
   evidence, not a benchmark** — no timing is measured or claimed anywhere.
+- **An end-to-end native integer indexing proof**:
+  `examples/native_integer_indexing.py` trains a
+  `Linear → ReLU → Linear` classifier over the same pipeline and, at four
+  fixed steps on both sides of a mid-epoch interruption, turns the step's
+  own logits into native **`int64` prediction indices** with
+  `NativeTensor.argmax` and consumes them with `NativeTensor.index_select`
+  over a **detached** copy of those logits. That call is *axis selection,
+  not a per-row gather*: a `(6, 4)` logits batch and a `(6,)` index vector
+  give a `(6, 6)` result whose column *j* is the whole source column
+  `predictions[j]` and whose **diagonal** is each example's own
+  predicted-class logit. The uninterrupted and resumed runs agree exactly at
+  float64 and float32 independently — every prediction index by exact
+  integer equality, every floating value by raw IEEE-754 bits — while cross
+  entropy keeps training on the loader's read-only host `int64` target
+  arrays. Also **evidence, not a benchmark**: no timing anywhere.
 
 The exact operation-by-operation status lives in the
 [native support matrix](docs/native_support_matrix.md).
@@ -201,6 +216,7 @@ uv run python examples/native_normalization_training.py   # native BatchNorm+Lay
 uv run python examples/native_dropout_training.py         # native Dropout training + exact STOCHASTIC resume
 uv run python examples/native_float32_training.py          # integrated float32 AND float64 exact resume
 uv run python examples/native_minibatch_training.py        # shuffled mini-batch training + exact mid-epoch resume
+uv run python examples/native_integer_indexing.py          # native int64 argmax + index_select + exact resume
 uv run python benchmarks/benchmark_native_autograd.py --smoke
 uv run python benchmarks/benchmark_native_cnn.py --smoke  # CNN characterization
 uv run python benchmarks/benchmark_native_classification.py --smoke        # classification characterization
@@ -500,7 +516,7 @@ and nothing asserts that it does.
 
 **Phase J — a deterministic native data pipeline and mini-batching — is
 complete: milestones J0 through J9 have all landed, and J9 closed it.**
-**Phase K is the latest phase, and only K0 through K5 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after*
+**Phase K is the latest phase, and only K0 through K6 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after*
 Phase I closed at I11 rather than having been on the earlier roadmap. **J0 was
 architecture, contract, and documentation work only, and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -788,7 +804,7 @@ any floating operation.
 of that, and K3 and K4 are where the distinction earns itself: one
 operation now *produces* `int64` and another *consumes* it as a role
 operand, without `int64` ever becoming a dtype a kernel computes at.
-There is **no `max`**, no `max_with_indices`, no `argmin`, no general `gather`, no `scatter`, no embedding lookup, no `index_select` backward, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion, and **K6 through K9 are unstarted**.
+There is **no `max`**, no `max_with_indices`, no `argmin`, no general `gather`, no `scatter`, no embedding lookup, no `index_select` backward, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion, and **K7 through K9 are unstarted**.
 
 **K5 is the compatibility proof, and it added zero production code** —
 one new test module, `tests/test_native_integer_compatibility.py`. It
@@ -809,6 +825,32 @@ checkpoints, and resumes **bit-identically** at float64 and float32 while
 `argmax` and a detached `index_select` run beside the training path.
 Exports stayed 56, CTests 27, examples 16, benchmarks 9, and
 `experimental.__all__` 25.
+
+**K6 is the end-to-end integration example, and it added zero production
+code too** — `examples/native_integer_indexing.py` with its owner
+`tests/test_native_integer_indexing_example.py`. A deterministic native
+classifier (`NativeLinear(5 → 8) → NativeReLU → NativeLinear(8 → 4)`,
+`NativeCrossEntropyLoss`, `NativeAdam`) trains ten shuffled batches of six
+over the Phase-J pipeline, is interrupted **strictly mid-epoch**, and
+resumes through a real version-3 archive into an entirely fresh object
+graph proved different before the load. At four fixed steps — two on each
+side of the interruption — the step's own logits become native `int64`
+predictions through `argmax`, which are then consumed by `index_select`
+over a **detached** copy of those logits: `argmax` returns a plain leaf even
+from a gradient-tracking input, while `index_select` *rejects* one with a
+message naming `detach()`. That call is **axis selection, not a per-row
+gather** — a `(6, 4)` logits batch and a `(6,)` index vector give a
+`(6, 6)` result whose column *j* is the whole source column
+`predictions[j]` and whose **diagonal** is each example's own
+predicted-class logit, both verified on the host from raw bits, with
+duplicate predicted classes guaranteed by pigeonhole and proved to give
+identical columns in their original positions. The resumed run reproduces
+the uninterrupted one exactly at float64 and float32 **independently**
+(every index by exact integer equality, every floating value by raw
+IEEE-754 bits), and an omitted-loader-state control is proved to diverge.
+Cross entropy still trains on the loader's read-only host `int64` target
+arrays. **Examples went 16 → 17**; exports stayed 56, CTests 27,
+benchmarks 9, and `experimental.__all__` 25.
 
 **The proof found one real defect, and the chronology is part of the record.** Driving the two module registration routes with a deliberately forged `NativeParameter` — the only way to reach them, because the public constructor refuses an `int64` tensor — showed that `save_native_checkpoint` trusted whatever dtype live state reported, so the **writer** could emit an archive declaring an `int64` entry that its own loader then refused. That was a pre-existing gap in the writer, not something Phase K introduced and not reachable through any public API, and it was repaired in a **separate checkpoint-hardening change committed before K5**: a save-side persisted-dtype authority asking the same `cpp.normalize_dtype` question the loader asks, applied in `_validate_model`'s preflight and again at `_coherent_snapshot`'s serialization seam, with its own regression in `tests/test_native_checkpoint.py`. No format, field, version, capability, registry, export, CTest, example, or benchmark moved; the forged parameter is test-only and never supported public usage; and K5 itself remains the test-and-documentation compatibility milestone.
 

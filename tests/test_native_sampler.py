@@ -2412,12 +2412,14 @@ def test_this_milestone_touched_no_cpp_cmake_or_abi_surface():
     # Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
     assert cmake.count("add_test") == 27
     # 15 when J2 landed; 16 since **J6** added the one training example, and
-    # no other. 8 benchmarks when J2 landed; 9 since **J8** added exactly
-    # one, named rather than merely counted.
+    # 17 since **K6** added the one integer-indexing example. 8 benchmarks
+    # when J2 landed; 9 since **J8** added exactly one, named rather than
+    # merely counted.
     examples = sorted(path.name
                       for path in (REPO_ROOT / "examples").glob("*.py"))
-    assert len(examples) == 16, examples
+    assert len(examples) == 17, examples
     assert "native_minibatch_training.py" in examples
+    assert "native_integer_indexing.py" in examples
     benchmarks = sorted(path.name
                         for path in (REPO_ROOT / "benchmarks").glob("*.py"))
     assert len(benchmarks) == 9, benchmarks

@@ -2328,9 +2328,9 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase K — native integer tensors and indexing (K0–K5)
+### Phase K — native integer tensors and indexing (K0–K6)
 
-**Phase K is newly approved, and K0 through K5 have
+**Phase K is newly approved, and K0 through K6 have
 landed.** **No version is claimed** — the native line
 stays experimental and is not production-ready, and this entry records
 milestones rather than a release.
@@ -2338,7 +2338,7 @@ milestones rather than a release.
 Phase K was approved **after** Phase J closed at J9. The repository
 deliberately finished Phase J without committing to a successor, so Phase K
 is not carried-over roadmap work and must not be described as though it
-were. **K6 through K9 are unstarted**, and work beyond Phase K would
+were. **K7 through K9 are unstarted**, and work beyond Phase K would
 require a separately approved phase with its own design contract.
 
 **K0 added no runtime behavior at all.** No integer dtype, no dtype code,
@@ -2622,15 +2622,66 @@ contain.
 
 **The proof found one real defect, and the chronology is part of the record.** Driving the two module registration routes with a deliberately forged `NativeParameter` — the only way to reach them, because the public constructor refuses an `int64` tensor — showed that `save_native_checkpoint` trusted whatever dtype live state reported, so the **writer** could emit an archive declaring an `int64` entry that its own loader then refused. That was a pre-existing gap in the writer, not something Phase K introduced and not reachable through any public API, and it was repaired in a **separate checkpoint-hardening change committed before K5**: a save-side persisted-dtype authority asking the same `cpp.normalize_dtype` question the loader asks, applied in `_validate_model`'s preflight and again at `_coherent_snapshot`'s serialization seam, with its own regression in `tests/test_native_checkpoint.py`. No format, field, version, capability, registry, export, CTest, example, or benchmark moved; the forged parameter is test-only and never supported public usage; and K5 itself remains the test-and-documentation compatibility milestone.
 
+**K6 is the end-to-end integration example, and it added zero production
+code too.** Its whole deliverable is
+`examples/native_integer_indexing.py` and its owner
+`tests/test_native_integer_indexing_example.py`, plus the inventory and
+status reconciliation a landed milestone requires; the only file it
+touches under `src/` is the same package-docstring status sentence, which
+carries no capability. It exists because K1 through K5 proved the
+*pieces*, and an end-user program is a different claim from a unit proof.
+
+A deterministic `NativeLinear(5 → 8) → NativeReLU → NativeLinear(8 → 4)`
+classifier with `NativeCrossEntropyLoss` and `NativeAdam` trains ten
+shuffled batches of six over the Phase-J pipeline, is interrupted
+**strictly mid-epoch** with three batches still owed by the active epoch,
+and resumes through a real version-3 archive — the loader position
+travelling as ordinary caller metadata — into an entirely fresh object
+graph proved different before the load. At four fixed steps, two on each
+side of the interruption, the step's own logits become native `int64`
+predictions through `argmax`, which are then consumed by `index_select`
+over a **detached** copy of those logits. The two sources differ
+deliberately: `argmax` returns a plain leaf even from a gradient-tracking
+input, while `index_select` **rejects** one with a message naming
+`detach()` rather than detaching it silently.
+
+That call is **axis selection, not a per-row gather**, and the example
+says so in those words: a `(6, 4)` logits batch and a `(6,)` index vector
+give a `(6, 6)` result whose column *j* is the whole source column
+`predictions[j]` and whose **diagonal** is each example's own
+predicted-class logit. The owner test rebuilds the whole result from the
+recorded bit patterns and checks every column against its source column
+and the diagonal against `logits[row, predictions[row]]`, recomputed
+rather than read out of the example's own booleans; duplicate predicted
+classes are a pigeonhole guarantee (six predictions over four classes) and
+are proved to give bit-identical columns in their original positions.
+
+The uninterrupted and resumed runs agree **exactly** at float64 and
+float32 independently — every prediction index by exact Python integer
+equality and never converted to a floating value, every floating value
+through `uint32`/`uint64` views, never a tolerance and never across
+widths — and the omitted-loader-state leg is proved to diverge. Whether
+the two widths happen to predict the same classes is reported as an
+**observation**, never required. Cross entropy still trains on the
+loader's read-only host `int64` target arrays, and no native integer
+tensor is ever a target, a parameter, a buffer, optimizer state, or a
+checkpoint entry. The example is written entirely against the public
+experimental surface, calls no `numpy.argmax`, claims and measures no
+timing, leaves no file behind, and returns live native storage exactly to
+its baseline. **Examples moved 16 → 17** — the one inventory K6 touches —
+while exports stayed **56**, CTests **27**, benchmarks **9**, and
+`experimental.__all__` **25**.
+
 Every registry and
 inventory is exactly what Phase J left, with five exceptions — the CTest
 count at K1, `INDEX_DTYPES` at K2, the export count and CTest count again
-at K3, and both again at K4, with **K5 moving none of them**:
+at K3, and both again at K4, with **K5 moving none of them** and **K6
+moving only the example count**:
 `SUPPORTED_DTYPES ==
 ("float64", "float32")`, `SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED ==
 ("cuda", "amp")`, `RAW_KERNEL_DTYPES == ("float64",)`, **25** experimental
-names, **16**
-examples, **9** benchmarks, checkpoint version **3** with `(1, 2, 3)`
+names, **17**
+examples (16 until K6 added one), **9** benchmarks, checkpoint version **3** with `(1, 2, 3)`
 accepted, and optimizer, loader, and sampler state at version **1** — while
 the native CTest inventory moved **24 → 25** at K1
 (`cpp/tests/test_dtype_int64_storage.cpp`), **25 → 26** at K3

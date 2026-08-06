@@ -158,6 +158,7 @@ MILESTONES = tuple(f"I{index}" for index in range(12))   # I0 ... I11
 # always will have, whatever the tree grows to afterwards.
 POST_PHASE_I_EXAMPLES = {
     "native_minibatch_training.py": "J6",
+    "native_integer_indexing.py": "K6",
 }
 CURRENT_EXAMPLE_COUNT = FINAL_EXAMPLE_COUNT + len(POST_PHASE_I_EXAMPLES)
 

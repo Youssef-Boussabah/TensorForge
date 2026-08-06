@@ -5552,9 +5552,11 @@ def test_j7_added_no_public_name_module_example_or_benchmark():
                 if path.name != "__init__.py"]
     benchmarks = [path.name for path in (REPO_ROOT / "benchmarks").glob("*.py")
                   if path.name != "__init__.py"]
-    # 16 examples since J6; 8 benchmarks when J7 landed, and 9 since J8
-    # added exactly one. J7's own delta to both is still zero.
-    assert len(examples) == 16, sorted(examples)
+    # 16 examples since J6 and 17 since **K6** added exactly one; 8
+    # benchmarks when J7 landed, and 9 since J8 added exactly one. J7's own
+    # delta to both is still zero, and the numbers are updated rather than
+    # the assertions relaxed.
+    assert len(examples) == 17, sorted(examples)
     assert len(benchmarks) == 9, sorted(benchmarks)
     assert "benchmark_native_data_pipeline.py" in benchmarks
 

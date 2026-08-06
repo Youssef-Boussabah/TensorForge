@@ -542,7 +542,12 @@ def test_no_public_capability_registry_or_version_moved_at_k3():
     assert native_optimizer_state.FORMAT_VERSION == 1
     assert native_data_loader._FORMAT_VERSION == 1
     assert native_sampler._FORMAT_VERSION == 1
-    assert len(list((REPO_ROOT / "examples").glob("*.py"))) == 16
+    # Phase K, milestone K6 took the example inventory from 16 to 17
+    # (examples/native_integer_indexing.py). The number is updated rather
+    # than the assertion relaxed: this still pins an exact inventory, K3's
+    # own example delta is still zero, and an unrecorded addition still
+    # fails.
+    assert len(list((REPO_ROOT / "examples").glob("*.py"))) == 17
     assert len(list((REPO_ROOT / "benchmarks").glob("*.py"))) == 9
 
 
@@ -1953,9 +1958,11 @@ def test_k3_added_no_benchmark_timing_or_performance_control():
     assert banned.search("auto t = std::chrono::steady_clock::now();")
     assert banned.search("the noexcept compute kernel") is None
     assert banned.search("a clocking convention") is None
-    # No benchmark or example inventory moved, and no result file exists.
+    # No benchmark inventory moved, and no result file exists. The example
+    # inventory went 16 -> 17 at **K6**, whose example is named in its own
+    # module; K3's own delta to both is still zero.
     assert len(list((REPO_ROOT / "benchmarks").glob("*.py"))) == 9
-    assert len(list((REPO_ROOT / "examples").glob("*.py"))) == 16
+    assert len(list((REPO_ROOT / "examples").glob("*.py"))) == 17
     # ...and the control: a token that *is* in the unit is found, so the
     # scan is reading the files it claims to.
     unit = (REPO_ROOT / "cpp" / "src" / "indexing.cpp").read_text(

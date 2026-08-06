@@ -130,6 +130,11 @@ J0_BENCHMARK_COUNT = 8
 POST_PHASE_J_EXPORTS = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
 POST_PHASE_J_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3",
                        "index_select": "K4"}
+# ...and milestone K6 added the one integer-indexing example, which is named
+# here for the same reason: a bumped literal would absorb it into Phase J's
+# record, while a named map keeps it attributed and still fails on an
+# unrecorded example.
+POST_PHASE_J_EXAMPLES = {"native_integer_indexing.py": "K6"}
 CURRENT_EXPORT_COUNT = J0_EXPORT_COUNT + len(POST_PHASE_J_EXPORTS)   # 56
 CURRENT_CTEST_COUNT = J0_CTEST_COUNT + len(POST_PHASE_J_CTESTS)      # 27
 
@@ -1248,12 +1253,18 @@ def test_the_example_and_benchmark_inventories_moved_by_exactly_two_artifacts():
     Driven from ``PHASE_J_EXAMPLES`` and ``PHASE_J_BENCHMARKS`` rather
     than from bumped literals, so each artifact stays attributed to the
     milestone that shipped it and an unannounced one fails the exact
-    equality."""
+    equality. Examples a **later** phase added are named in
+    ``POST_PHASE_J_EXAMPLES`` and subtracted the same way, so Phase J's own
+    count stays historically exact."""
     examples = [path.name for path in (REPO_ROOT / "examples").glob("*.py")
                 if path.name != "__init__.py"]
     benchmarks = [path.name for path in (REPO_ROOT / "benchmarks").glob("*.py")
                   if path.name != "__init__.py"]
-    assert len(examples) == CURRENT_EXAMPLE_COUNT == 16, sorted(examples)
+    for name, milestone in POST_PHASE_J_EXAMPLES.items():
+        assert name in examples, (name, milestone)
+    assert len([name for name in examples
+                if name not in POST_PHASE_J_EXAMPLES]) == (
+        CURRENT_EXAMPLE_COUNT) == 16, sorted(examples)
     assert len(benchmarks) == CURRENT_BENCHMARK_COUNT == 9, sorted(benchmarks)
     assert set(PHASE_J_EXAMPLES) <= set(examples), sorted(PHASE_J_EXAMPLES)
     assert set(PHASE_J_BENCHMARKS) <= set(benchmarks), sorted(

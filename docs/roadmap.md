@@ -38,13 +38,13 @@ the experimental native line has completed **Phases A through J** — the
 last of them, the deterministic native data pipeline and mini-batching,
 closed at milestone J9, so **Phase J is the latest completed phase**.
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and only K0 through K5 have landed.** Each phase's record is in its own
+and only K0 through K6 have landed.** Each phase's record is in its own
 design document; the sections above are the narrative.
 
-## The current phase — Phase K, K0 through K5 complete
+## The current phase — Phase K, K0 through K6 complete
 
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and K0 through K5 are complete.** **K6 through K9 are unstarted.** Its
+and K0 through K6 are complete.** **K7 through K9 are unstarted.** Its
 architecture contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md).
 
@@ -848,6 +848,35 @@ training path, with an observational control showing that indexing changes
 no trainable state. Exports stayed **56**, CTests **27**, examples **16**,
 benchmarks **9**, and `experimental.__all__` **25**.
 
+**K6** is the **end-to-end integration example**, and it added **zero
+production code** too: `examples/native_integer_indexing.py` and its owner
+`tests/test_native_integer_indexing_example.py`. A deterministic native
+classifier — `NativeLinear(5 → 8) → NativeReLU → NativeLinear(8 → 4)` with
+`NativeCrossEntropyLoss` and `NativeAdam` — trains ten shuffled batches of
+six over the Phase-J pipeline, is interrupted **strictly mid-epoch** with
+batches still owed, and resumes through a real version-3 archive into an
+entirely fresh object graph proved different before the load. At four fixed
+steps, two on each side of the interruption, the step's own logits become
+native `int64` predictions through `argmax` and are then consumed by
+`index_select` over a **detached** copy of those logits — the two calls
+taking deliberately different sources because `argmax` returns a plain leaf
+even from a gradient-tracking input while `index_select` *rejects* one with
+a message naming `detach()`. That call is **axis selection, not a per-row
+gather**: a `(6, 4)` logits batch and a `(6,)` index vector give a `(6, 6)`
+result whose column *j* is the whole source column `predictions[j]` and
+whose **diagonal** is each example's own predicted-class logit, both
+verified on the host from raw bit patterns, with duplicate predicted
+classes guaranteed by pigeonhole and proved to give identical columns in
+their original positions. The resumed run reproduces the uninterrupted one
+exactly at float64 and float32 **independently** — every prediction index by
+exact integer equality, every floating value by raw IEEE-754 bits — and an
+omitted-loader-state control is proved to diverge. Cross entropy still
+trains on the loader's read-only host `int64` target arrays; no native
+integer tensor is ever a target, a parameter, a buffer, optimizer state, or
+a checkpoint entry. **Examples went 16 → 17**; exports stayed **56**, CTests
+**27**, benchmarks **9**, and `experimental.__all__` **25**, and no registry
+or version moved.
+
 **The proof found one real defect, and the chronology is part of the record.** Driving the two module registration routes with a deliberately forged `NativeParameter` — the only way to reach them, because the public constructor refuses an `int64` tensor — showed that `save_native_checkpoint` trusted whatever dtype live state reported, so the **writer** could emit an archive declaring an `int64` entry that its own loader then refused. That was a pre-existing gap in the writer, not something Phase K introduced and not reachable through any public API, and it was repaired in a **separate checkpoint-hardening change committed before K5**: a save-side persisted-dtype authority asking the same `cpp.normalize_dtype` question the loader asks, applied in `_validate_model`'s preflight and again at `_coherent_snapshot`'s serialization seam, with its own regression in `tests/test_native_checkpoint.py`. No format, field, version, capability, registry, export, CTest, example, or benchmark moved; the forged parameter is test-only and never supported public usage; and K5 itself remains the test-and-documentation compatibility milestone.
 
 **`int64` is not a supported native tensor dtype** — it is an
@@ -858,7 +887,7 @@ none is planned, no general `gather`, `scatter`, or embedding lookup
 exists, no `index_select` backward exists, no `argmin` exists, no
 integer arithmetic or reduction exists, no integer autograd, parameter,
 buffer, optimizer state, or checkpoint entry exists, and
-**K6 through K9 are unstarted**. What
+**K7 through K9 are unstarted**. What
 K0 decides is the architecture: one extended `NativeTensor` rather than a
 parallel integer class, `int64` as an exact non-differentiable
 index/result dtype and the only integer dtype in the phase, one strict

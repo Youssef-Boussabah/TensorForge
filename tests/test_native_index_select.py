@@ -94,7 +94,11 @@ K4_EXPORT_COUNT = 56          # the Phase-K maximum (design §22.3, §33)
 K4_CTEST_COUNT = 27
 K4_CHECKED_KERNELS = 38
 EXPERIMENTAL_EXPORTS = 25
-EXAMPLE_COUNT = 16
+# 16 when K4 landed; 17 since **K6** added exactly one example
+# (examples/native_integer_indexing.py). The number is updated rather than
+# the assertion relaxed: K4's own example delta is still zero, and an
+# unrecorded addition still fails an exact equality.
+EXAMPLE_COUNT = 17
 BENCHMARK_COUNT = 9
 
 # The raw-bit view each floating dtype is compared through. Never a

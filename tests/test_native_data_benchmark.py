@@ -1896,10 +1896,13 @@ def test_the_benchmark_inventory_moved_from_eight_to_nine():
         "benchmark_native_normalization.py",
         "cpp_backend.py",
     ])
-    # Examples did not move: J8 shipped no example.
+    # J8 shipped no example. 16 when J8 landed; 17 since **K6** added
+    # exactly one (examples/native_integer_indexing.py). The number is
+    # updated rather than the assertion relaxed: this still pins an exact
+    # inventory and still fails on an unrecorded addition.
     examples = [path.name for path in (REPO_ROOT / "examples").glob("*.py")
                 if path.name != "__init__.py"]
-    assert len(examples) == 16, sorted(examples)
+    assert len(examples) == 17, sorted(examples)
 
 
 def test_j8_moved_no_capability_registry_or_version():

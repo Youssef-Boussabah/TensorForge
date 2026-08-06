@@ -82,8 +82,8 @@ Phase J.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
 complete: milestones J0 through J9 have all landed and J9 closed it.**
-**Phase K is the latest phase, and only K0 through K5 have landed;
-K6 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
+**Phase K is the latest phase, and only K0 through K6 have landed;
+K7 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -298,6 +298,42 @@ suite green; and `scripts/smoke_cpp_backend.py`. No Linux or WSL run, no
 sanitizer run, and no LeakSanitizer lifecycle is claimed for this milestone
 — those belong to **K9**. No result file of any kind was written and no
 benchmark was added.
+
+### K6 — the integration example, with no native rebuild required
+
+**K6 changed no C++, no CMake, and no executable production source, so no
+native rebuild, no CTest run, and no sanitizer run was required or is
+claimed.** The library is byte-identical to the one K4 built: still exactly
+**56** exported `tf_*` symbols — the phase maximum — still **27**
+registered CTests, and every `Int64` arm, role guard, and validation order
+exactly as K1, K3, and K4 left them. K6 is a *composition* milestone: it
+uses the two exports K3 and K4 already shipped and adds none.
+
+**What K6 added.** Two files —
+`examples/native_integer_indexing.py` and its owner
+`tests/test_native_integer_indexing_example.py` — plus inventory and status
+reconciliation. The example inventory moved 16 → **17**; nothing else did.
+The only file it touched under `src/` is the package docstring's Phase-K
+status sentence, which is documentation and carries no capability, proved
+docstring-only by comparing the module's compiled code objects before and
+after.
+
+**What the example demonstrates on the native side**, without adding
+anything to it: `NativeTensor.argmax` producing a fresh owning contiguous
+`int64` tensor from live gradient-tracking logits, and
+`NativeTensor.index_select` consuming that tensor over a **detached**
+floating source — the axis-selection semantics, not a per-row gather —
+with every prediction index compared as an exact integer and every
+floating value as a raw IEEE-754 bit pattern, at float64 and float32
+independently. Live native storage returns exactly to its baseline, which
+the program measures rather than asserts.
+
+**Windows evidence.** The full `uv run pytest` suite green on the K4
+library, the example run directly as a script, and
+`scripts/smoke_cpp_backend.py`. No Linux or WSL run, no sanitizer run, and
+no LeakSanitizer lifecycle is claimed for this milestone either — those
+belong to **K9**. No result file of any kind was written, no benchmark was
+added, and **no timing was measured**.
 
 ### J9 — the Phase-J closure matrix
 
