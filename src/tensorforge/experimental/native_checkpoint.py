@@ -131,6 +131,25 @@ atomically on success and remains byte-intact on failure, and no
 temporary file survives either way (same-filesystem atomicity only; no
 directory creation).
 
+**Saving cannot emit an entry its own loader would reject.** Every dtype
+that would reach the archive is validated on the way out, through the
+same question the loader asks (``_canonical_persisted_dtype`` over
+``cpp.normalize_dtype``): once in the **preflight**, over every live model
+state entry in ``_state_named_tensors()`` order before a snapshot exists,
+and again at the **serialization seam** in ``_coherent_snapshot``, over
+each model snapshot, each optimizer parameter-metadata entry, and each
+Adam ``m`` and ``v`` snapshot, before the manifest is built. A rejection
+is a ``ValueError`` naming the entry and the dtype; nothing is cast,
+narrowed, or silently dropped, no archive is created, an existing
+destination is untouched because no temporary file has been made yet, and
+every snapshot already taken is closed on the way out.
+
+That the *public* construction paths already refuse a non-floating
+parameter or buffer is a property of those paths, not of this one: a
+serializer that writes a file its own reader rejects is a defect on its
+own terms, so the writer states the schema it emits rather than
+inheriting it from what callers happen to be able to build.
+
 **Loading is one transaction over the whole archive** (§10.7), in four
 phases.
 
@@ -300,10 +319,86 @@ def _validated_path(path, where):
     )
 
 
+def _canonical_persisted_dtype(value):
+    """The **one** question both checkpoint sides ask about a dtype:
+    *is this a floating checkpoint dtype?*
+
+    ``cpp.normalize_dtype`` is the authority, so this file keeps no dtype
+    table of its own and cannot drift from the storage layer. The
+    non-string check comes first and is not optional: ``normalize_dtype``
+    reads ``None`` as "the default dtype", which is the right answer to a
+    different question and the wrong answer to this one.
+
+    Deliberately answer-shaped rather than raising. The load side names a
+    field of a manifest it is reading and the save side names a live state
+    entry it is about to write, so the two phrase their rejections
+    differently — but they must ask exactly one question of exactly one
+    authority, or the writer can emit an archive its own loader refuses.
+    Returns ``(canonical, None)`` when the dtype may be persisted, and
+    ``(None, reason)`` when it may not."""
+    if not isinstance(value, str):
+        return None, TypeError(f"must be a string, got {type(value).__name__}")
+    try:
+        return cpp.normalize_dtype(value), None
+    except (TypeError, ValueError) as error:
+        return None, error
+
+
+def _validated_persisted_dtype(dtype, entry_path, where):
+    """One **live** dtype about to be written, validated before it can
+    reach an archive — the save-side twin of ``_validated_entry_dtype``.
+
+    Both go through ``_canonical_persisted_dtype``, so the writer can
+    never emit an archive whose entries its own loader would reject. This
+    exists because the writer used to trust whatever dtype the live state
+    reported. Every *public* construction path had already refused a
+    non-floating parameter or buffer, so that trust was correct for every
+    model a caller could build — but "no reachable caller can violate it"
+    and "the serializer enforces it" are different guarantees, and only
+    the second keeps the archive inside its schema whatever hands it live
+    state. A serializer that can write a file its own reader rejects is
+    the defect, independently of how the state got there.
+
+    No version rule is applied here, and that is not an omission: every
+    save writes the current format version, and ``_FLOAT64_ONLY_VERSIONS``
+    describes archives that can only be *read*.
+
+    Returns the canonical dtype string. Raises a checkpoint ``ValueError``
+    naming the entry and the dtype — before any snapshot array, manifest,
+    or temporary file exists, and therefore before any destination can be
+    touched."""
+    canonical, rejection = _canonical_persisted_dtype(dtype)
+    if rejection is not None:
+        _checkpoint_error(
+            where,
+            f"{entry_path} has dtype {dtype!r}, which a native checkpoint "
+            f"cannot store: persisted checkpoint state must be a floating "
+            f"compute dtype ({rejection}). Nothing is cast, narrowed, or "
+            f"silently omitted",
+            cause=rejection,
+        )
+    return canonical
+
+
 def _validate_model(model, where):
     """``model`` must be a NativeModule whose parameters and persistent
-    buffers are all open. Stable framework modules are rejected by the
-    type check — nothing is converted."""
+    buffers are all open **and all of a floating checkpoint dtype**.
+    Stable framework modules are rejected by the type check — nothing is
+    converted.
+
+    The two checks run per entry in ``_state_named_tensors()`` order,
+    open-state first: ``dtype`` is layout metadata and a closed tensor
+    refuses to report it, so the existing precedence is also the only
+    order that can ask the second question at all.
+
+    This is the **preflight**: it runs before ``state_dict()`` allocates a
+    single snapshot, before ``_coherent_snapshot`` builds any array,
+    before a temporary file exists, and therefore before any existing
+    destination could be touched. ``_coherent_snapshot`` validates again
+    at the serialization seam, because the two are answering different
+    questions — "may this model be saved?" and "may this array be
+    written?" — and only the second sees what ``state_dict()`` actually
+    returned."""
     if not isinstance(model, NativeModule):
         raise TypeError(
             f"{where}: model must be a NativeModule, got "
@@ -314,6 +409,9 @@ def _validate_model(model, where):
             raise RuntimeError(
                 f"{where}: model state entry {name!r} has been closed"
             )
+        _validated_persisted_dtype(
+            tensor.dtype, f"model state entry {name!r}", where
+        )
 
 
 def _validate_optimizer(optimizer, model, where):
@@ -547,7 +645,19 @@ def _coherent_snapshot(model, optimizer, metadata, where):
     serialization boundary and is closed in the ``finally`` — the arrays
     are independent copies, so nothing here aliases live state, and a
     failure leaves the model, optimizer, generators, and filesystem
-    untouched."""
+    untouched.
+
+    Every dtype that would reach the archive is validated here as well as
+    in the preflight, through ``_validated_persisted_dtype``: each model
+    snapshot, each optimizer parameter-metadata entry, and each Adam ``m``
+    and ``v`` snapshot, one role at a time, before the manifest is built
+    and before the temporary file exists. The preflight answers "may this
+    model be saved?" from the live registries; this answers "may this
+    array be written?" from the objects actually in hand, so an internal
+    ``state_dict()`` returning something the preflight never saw is still
+    refused rather than serialized. A rejection here propagates through
+    the ``finally``, so every snapshot already taken is closed on the way
+    out — under any BaseException, not only this one."""
     arrays = {}
     model_state = None
     optimizer_state = None
@@ -567,6 +677,18 @@ def _coherent_snapshot(model, optimizer, metadata, where):
                 # back bit for bit. Nothing is cast, widened, narrowed, or
                 # guessed on either side; ``to_numpy()`` materializes at
                 # the snapshot's own dtype and the entry records it.
+                #
+                # The serialization seam's own dtype authority, independent
+                # of the preflight in ``_validate_model``: this is the
+                # dtype that would actually be written, read from the
+                # object that would actually be written, so it holds even
+                # if ``state_dict()`` returned something the preflight
+                # never saw. Asked before the host array is materialized,
+                # and every snapshot already taken is closed by the
+                # ``finally`` below, under any BaseException.
+                _validated_persisted_dtype(
+                    snapshot.dtype, f"model state entry {key!r}", where
+                )
                 array_name = f"model::{index:06d}"
                 arrays[array_name] = snapshot.to_numpy()
                 entries[key] = {
@@ -578,18 +700,27 @@ def _coherent_snapshot(model, optimizer, metadata, where):
             optimizer_section = None
             if optimizer is not None:
                 optimizer_state = optimizer.state_dict()
+                # Every optimizer dtype about to be written is asked the
+                # same question, one role at a time and in deterministic
+                # order: the parameter *metadata* first (a declaration the
+                # loader will check against a live parameter), then each
+                # moment snapshot below (a real array).
+                parameter_entries = []
+                for index, entry in enumerate(optimizer_state["parameters"]):
+                    _validated_persisted_dtype(
+                        entry["dtype"],
+                        f"optimizer state parameters[{index}]", where
+                    )
+                    parameter_entries.append({
+                        "shape": list(entry["shape"]),
+                        "dtype": entry["dtype"],
+                        "device": entry["device"],
+                    })
                 optimizer_section = {
                     "type": optimizer_state["optimizer"],
                     "state_format_version": optimizer_state["format_version"],
                     "lr": optimizer_state["lr"],
-                    "parameters": [
-                        {
-                            "shape": list(entry["shape"]),
-                            "dtype": entry["dtype"],
-                            "device": entry["device"],
-                        }
-                        for entry in optimizer_state["parameters"]
-                    ],
+                    "parameters": parameter_entries,
                 }
                 if isinstance(optimizer, NativeAdam):
                     optimizer_section["betas"] = list(
@@ -608,6 +739,10 @@ def _coherent_snapshot(model, optimizer, metadata, where):
                         for index, snapshot in enumerate(
                             optimizer_state[label]
                         ):
+                            _validated_persisted_dtype(
+                                snapshot.dtype,
+                                f"optimizer state {label!r}[{index}]", where
+                            )
                             array_name = f"optimizer::{label}::{index:06d}"
                             arrays[array_name] = snapshot.to_numpy()
                             entries_out.append({
@@ -827,11 +962,15 @@ def _validated_entry_dtype(declared, version, entry_path, where):
     shipped code could write has ever contained a non-floating entry, and
     the two validators accepted the same set on the day it landed) and it
     is the layer that makes a hand-written archive unable to declare an
-    integer model, buffer, or optimizer entry. It is **one of three
+    integer model, buffer, or optimizer entry. It is **one of four
     independent layers**, not the only one: a parameter cannot be
-    non-floating, a buffer cannot be non-floating, and an archive entry
-    cannot declare it — each with a different first authority and a
-    different error, because a single layer is a single point of failure.
+    non-floating, a buffer cannot be non-floating, a save cannot *write* a
+    non-floating entry (``_validated_persisted_dtype``, which asks this
+    same question through the same authority), and an archive entry cannot
+    *declare* one — each with a different first authority and a different
+    error, because a single layer is a single point of failure. The
+    writing layer was added last, after a compatibility proof showed that
+    this one was doing its job while the writer was doing none.
 
     Returns the canonical dtype string. Raises a checkpoint ``ValueError``
     naming the field, the value, and what was expected — before anything
@@ -842,14 +981,17 @@ def _validated_entry_dtype(declared, version, entry_path, where):
             f"{entry_path}['dtype'] must be a string, got "
             f"{type(declared).__name__}",
         )
-    try:
-        canonical = cpp.normalize_dtype(declared)
-    except (TypeError, ValueError) as error:
+    # Rule 1 goes through the shared question ``_validated_persisted_dtype``
+    # also asks, so the reader and the writer cannot disagree about what a
+    # checkpoint entry may carry. Only the wording differs: this side names
+    # a manifest field it is reading.
+    canonical, rejection = _canonical_persisted_dtype(declared)
+    if rejection is not None:
         _checkpoint_error(
             where,
             f"{entry_path}['dtype'] is {declared!r}, which is not a dtype "
-            f"a native checkpoint entry may declare: {error}",
-            cause=error,
+            f"a native checkpoint entry may declare: {rejection}",
+            cause=rejection,
         )
     if version in _FLOAT64_ONLY_VERSIONS and canonical != "float64":
         _checkpoint_error(
