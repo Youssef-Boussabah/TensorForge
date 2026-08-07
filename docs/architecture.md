@@ -1067,7 +1067,7 @@ explicit layer at a time:
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
   complete: milestones J0 through J9 have all landed and J9 closed it.**
-  **Phase K is the latest phase, and only K0 through K7 have landed.** **K8 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved
+  **Phase K is the latest phase, and only K0 through K8 have landed.** **K9 is unstarted.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1295,10 +1295,28 @@ explicit layer at a time:
   malformed-metadata *and* dtype-role matrices proving every prefilled
   operand byte-identical after every rejection. It found no defect and
   moved no inventory.
+  **K8 is the benchmark characterization milestone and added zero
+  production code**: `benchmarks/benchmark_native_integer.py`, owned by
+  `tests/test_native_integer_benchmark.py`. It measures the shipped
+  integer stack as **four separate workload families** —
+  `integer_construction`, `host_materialization`, `argmax`, and
+  `index_select` — with **no composed case**, every case `native_only`
+  and publishing **no ratio at all** (each family allocates and transfers
+  where the apparent host equivalent does not, `argmax` against
+  `numpy.argmax` being the one the contract names by name), correctness
+  gated before timing both structurally and with a spy timer for every
+  case, `argmax` gated against a transcription of the design's own NaN and
+  tie rule rather than against `numpy.argmax`, `index_select` against a
+  per-position slice concatenation written without `numpy.take`, the timed
+  region pinned to exactly one operation call with a non-contiguous
+  operand's Policy-B materialization deliberately inside it, no result
+  file in any mode, and no speed asserted anywhere. It moved one
+  inventory, benchmarks 9 → **10**, and no measurement changed the
+  runtime.
   No public integer `max`, `argmin`, general `gather`, `scatter`,
   embedding lookup, `index_select` backward, arithmetic,
   reduction, autograd, parameter, buffer, optimizer state, or
-  checkpoint entry exists, and **K8 through K9 are
+  checkpoint entry exists, and **K9 is
   unstarted**. Its contract is
   [native_integer_tensors_design.md](native_integer_tensors_design.md),
   and the architectural decisions it locks are the ones that would

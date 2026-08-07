@@ -1661,7 +1661,7 @@ The ladder ran **H0–H10 and ended there**: it was reordered at H5, revised at 
 
 **Phase J — deterministic native data pipeline and mini-batching — is
 complete: milestones J0 through J9 have all landed, and J9 closed it.**
-**Phase K is the latest phase, and only K0 through K7 have landed.** **K8 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after* Phase I
+**Phase K is the latest phase, and only K0 through K8 have landed.** **K9 is unstarted.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after* Phase I
 closed at I11, so it is not pre-existing roadmap work. **J0 was
 architecture, contract, and documentation work and added no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -2165,7 +2165,7 @@ benchmarked on its own; and the I0–I11 ladder, in which the public
 support registry changes at **I9** and at no earlier milestone.
 
 **Phase K — Native Integer Tensors and Indexing — is the newly approved
-successor, and only K0 through K7 have landed.** K0 is architecture, contract, status,
+successor, and only K0 through K8 have landed.** K0 is architecture, contract, status,
 and guardrails, and it **added no runtime behavior at all**: no integer
 dtype or dtype code, no C++ enumerator, no kernel, no C ABI symbol, no
 public export, no capability-registry movement, no checkpoint or state
@@ -2323,6 +2323,32 @@ production defect**, performed no native build, and moved no inventory:
 exports **56**, CTests **27**, examples **17**, benchmarks **9**, and
 `experimental.__all__` **25**.
 
+**K8 is the benchmark characterization milestone, and it added zero
+production code.** Its deliverable is
+`benchmarks/benchmark_native_integer.py`, owned by
+`tests/test_native_integer_benchmark.py`. It measures the stack K1–K4
+shipped as **four separate workload families** — `integer_construction`,
+`host_materialization`, `argmax`, and `index_select` — over sixteen cases
+in an exact ordered inventory, with **no composed case**: a single
+`argmax`-then-`index_select` number could not say which of the two
+dominates. Every case is **`native_only` and publishes no ratio at all**,
+because each family allocates native storage and transfers into or out of
+it while the apparent host equivalent does not — `argmax` against
+`numpy.argmax` being the fairness risk the contract names by name.
+Correctness is gated before timing, proved structurally off the AST and
+behaviourally with a spy timer for every case; `argmax` is gated against a
+transcription of the design's own tie and NaN rule and its committed
+twelve-row case table rather than against `numpy.argmax`, and
+`index_select` against a per-position slice concatenation written without
+`numpy.take`, compared as raw IEEE-754 bits. The timed region is pinned to
+exactly one operation call, with a non-contiguous operand's Policy-B
+materialization and the destination allocation deliberately inside it; no
+result file is written in any mode, no sample is discarded, and no speed
+is asserted anywhere. **K8 found no production defect**, performed no
+native build, and moved one inventory — benchmarks **9 → 10** — leaving
+exports **56**, CTests **27**, examples **17**, and
+`experimental.__all__` **25** exactly as K7 left them.
+
 `int64` is **still not**
 a supported native tensor dtype — it is an index/result dtype in its own
 registry, `normalize_dtype("int64")` keeps raising, and **no generic
@@ -2331,7 +2357,7 @@ real integer tensor, and no integer
 arithmetic, reduction, autograd, parameter, buffer, optimizer state, or
 checkpoint entry exists, nor any `max`, `argmin`, general `gather`,
 `scatter`, embedding lookup, or `index_select` backward;
-**K8 through K9 are unstarted**. Its contract is
+**K9 is unstarted**. Its contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md),
 which locks one extended `NativeTensor` rather than a parallel integer
 class, `int64` as the only integer dtype and an exact non-differentiable

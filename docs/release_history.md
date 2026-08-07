@@ -2328,9 +2328,9 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase K — native integer tensors and indexing (K0–K6)
+### Phase K — native integer tensors and indexing (K0–K8)
 
-**Phase K is newly approved, and K0 through K7 have
+**Phase K is newly approved, and K0 through K8 have
 landed.** **No version is claimed** — the native line
 stays experimental and is not production-ready, and this entry records
 milestones rather than a release.
@@ -2338,7 +2338,7 @@ milestones rather than a release.
 Phase K was approved **after** Phase J closed at J9. The repository
 deliberately finished Phase J without committing to a successor, so Phase K
 is not carried-over roadmap work and must not be described as though it
-were. **K8 through K9 are unstarted**, and work beyond Phase K would
+were. **K9 is unstarted**, and work beyond Phase K would
 require a separately approved phase with its own design contract.
 
 **K0 added no runtime behavior at all.** No integer dtype, no dtype code,
@@ -2753,8 +2753,78 @@ destination unchanged at both widths.
 **K7 found no production defect.** No inventory moved: exports **56**,
 CTests **27**, examples **17**, benchmarks **9**, `experimental.__all__`
 **25**, and every registry and version exactly what K6 left. No native
-build was performed or required, and no K8 or K9 work landed — the
-benchmark, its owner, and the closure module are all still absent.
+build was performed or required, and no K8 or K9 work landed at that
+milestone — the benchmark, its owner, and the closure module were all
+still absent.
+
+### K8 — benchmark characterization
+
+**K8 is the benchmark characterization milestone, and it added zero
+production code.** Its whole deliverable is
+`benchmarks/benchmark_native_integer.py` and its owner
+`tests/test_native_integer_benchmark.py`; it **measures** the integer
+stack K1–K4 shipped rather than changing any of it, and nothing it
+measured was allowed to motivate a change.
+
+The harness answers §31's four questions as **four workload families** —
+`integer_construction`, `host_materialization`, `argmax`, and
+`index_select` — over sixteen cases in an exact ordered inventory the
+owner test writes down independently. **There is no composed case.** §31
+permits one; K8 declines it, because a single
+`argmax`-then-`index_select` number cannot say which of the two dominates
+and labelling it a composition would document that weakness rather than
+remove it.
+
+**Every case is `native_only` and publishes no ratio at all**, and the
+reference registry has exactly one member. Each of the four families
+allocates native storage and transfers into or out of it while the
+apparent host equivalent does not — construction against `numpy.array`,
+materialization against a host-to-host copy, `argmax` against
+`numpy.argmax` over an existing array, `index_select` against
+`numpy.take`. `argmax` is the case design §31 names by name as the live
+fairness risk, and it is resolved by publishing nothing rather than by
+qualifying a number. The payload's `ratio_to_reference`, `ratio_meaning`,
+and `reference` are literal `None` in the one place a record is built,
+asserted off the AST so no arithmetic could ever produce one.
+
+**The oracles are the harness's own.** `argmax` is gated against a direct
+transcription of design §17.5's algorithm and against that section's
+committed twelve-row case table — unique maximum, equal maxima, both
+signed-zero orders, all `-inf`, `+inf`, one NaN, several NaNs, a NaN
+against either infinity, a NaN at index 0, and a length-1 run — run as
+known answers at both floating widths inside every `argmax` gate. The
+owner test proves the rule touches no array library, and proves the table
+*discriminates* by showing a skip-NaN rule and a last-maximum rule each
+fail it. `index_select` is gated against a per-position slice
+concatenation written without `numpy.take`, compared as whole arrays and
+again position by position, so a deduplicated, sorted, or reordered result
+fails.
+
+**Correctness precedes timing, proved twice** — structurally off
+`run_case`'s AST, and behaviourally with a spy timer for every one of the
+sixteen cases. Seven planted-defect controls abort in the gate with the
+timer never reached, clean stdout, and live storage exactly at baseline; a
+sitecustomize-shim CLI run proves the same from outside the process, with
+a nonzero exit. **The timed region is exactly the operation**, with each
+family's `run` closure pinned to a single literal call expression, and a
+non-contiguous operand's internal Policy-B materialization, the complete
+index bounds scan, and the destination allocation deliberately **inside**
+it, because they are part of the operation. Every measured sample is
+retained, no outlier is removed, no timer overhead is subtracted, and the
+median with an explicit interquartile range is the published shape.
+
+**The three measured dtypes stay three separate questions.** `--dtype`
+names a measured dtype and its help text says so: `int64` selects the
+index/result families and `float64`/`float32` the floating source width of
+`argmax` and `index_select`. Every record carries a `dtype_role`, no case
+straddles the two registries, no payload key names two of the three
+dtypes, and no float32/float64 or int64/floating ratio exists anywhere.
+
+**K8 found no production defect**, performed no native build, and moved
+one inventory: benchmarks **9 → 10**. Exports **56**, CTests **27**,
+examples **17**, `experimental.__all__` **25**, and every registry and
+version are exactly what K7 left. **K9 has not started** — the closure
+module is still absent.
 
 Every registry and
 inventory is exactly what Phase J left, with five exceptions — the CTest

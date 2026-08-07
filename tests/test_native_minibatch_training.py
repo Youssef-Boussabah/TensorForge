@@ -202,7 +202,10 @@ EXPECTED_FINAL_POSITION = (2, 2)
 # the assertion relaxed: J6's own example delta is still exactly one, and an
 # unrecorded example still fails an exact equality.
 EXPECTED_EXAMPLE_COUNT = 17
-EXPECTED_BENCHMARK_COUNT = 9        # 8 when J6 landed; J8 added exactly one
+# 8 when J6 landed; J8 added exactly one, and Phase K, milestone K8 added
+# the integer characterization harness. J6's own benchmark delta is still
+# zero, and an unrecorded addition still fails an exact equality.
+EXPECTED_BENCHMARK_COUNT = 10
 EXPECTED_EXPERIMENTAL_EXPORTS = 25
 # Phase K moved both of these, and the numbers are updated rather than the
 # assertions relaxed: K1 added the int64 storage CTest (24 -> 25), and K3
@@ -1587,10 +1590,11 @@ def test_the_example_inventory_grew_by_exactly_one():
                         for path in (REPO_ROOT / "benchmarks").glob("*.py")
                         if path.name != "__init__.py")
     assert len(benchmarks) == EXPECTED_BENCHMARK_COUNT, benchmarks
-    # J8 owns the data-pipeline benchmark, and it is named here rather than
-    # merely counted so J6's own delta to the benchmark inventory stays
-    # exactly zero.
+    # J8 owns the data-pipeline benchmark and K8 the integer one, and both
+    # are named here rather than merely counted so J6's own delta to the
+    # benchmark inventory stays exactly zero.
     assert "benchmark_native_data_pipeline.py" in benchmarks
+    assert "benchmark_native_integer.py" in benchmarks
     for name in benchmarks:
         if name == "benchmark_native_data_pipeline.py":               # J8
             continue

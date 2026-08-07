@@ -148,6 +148,12 @@ K0_BENCHMARK_COUNT = 9
 K6_EXAMPLES = {"native_integer_indexing.py": "K6"}
 K6_EXAMPLE_COUNT = K0_EXAMPLE_COUNT + len(K6_EXAMPLES)      # 17
 
+# The one benchmark the phase adds, at K8, written the same way and for the
+# same reason: the artifact stays attributed to the milestone that shipped
+# it, and an unrecorded benchmark still fails an exact equality.
+K8_BENCHMARKS = {"benchmark_native_integer.py": "K8"}
+K8_BENCHMARK_COUNT = K0_BENCHMARK_COUNT + len(K8_BENCHMARKS)  # 10
+
 # What the live tree holds after K4, derived from K0's inventory plus the
 # additions each milestone is on record for, so an unrecorded addition fails
 # an exact equality rather than being absorbed into a bumped literal.
@@ -214,10 +220,10 @@ INDEXING_EXPORTS = ("tf_core_argmax", "tf_core_index_select")
 # milestone moves its identifier from the second tuple to the first and
 # nowhere else, so the two together are always exactly ``MILESTONES``.
 MILESTONES = tuple(f"K{index}" for index in range(10))      # K0 ... K9
-COMPLETE_MILESTONES = ("K0", "K1", "K2", "K3", "K4", "K5", "K6", "K7")
+COMPLETE_MILESTONES = ("K0", "K1", "K2", "K3", "K4", "K5", "K6", "K7", "K8")
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
-assert len(UNSTARTED_MILESTONES) == 2
+assert len(UNSTARTED_MILESTONES) == 1
 
 # The milestones that ship **no production code at all**, and the module
 # each one's proof lives in. K0 was architecture and guardrails; K5 is the
@@ -227,12 +233,16 @@ assert len(UNSTARTED_MILESTONES) == 2
 # the second is what the *package* inventories above are measured against.
 # K6 adds one file under ``examples/``, which is a program written against
 # the public API rather than production code — the design's own K6 row says
-# so, and ``K6_EXAMPLES`` names it. K7 adds nothing outside ``tests/``.
+# so, and ``K6_EXAMPLES`` names it. K7 adds nothing outside ``tests/``. K8
+# adds one file under ``benchmarks/``, which is a measurement tool written
+# against the public API and registered in no runtime inventory —
+# ``K8_BENCHMARKS`` names it.
 ZERO_PRODUCTION_MILESTONES = {
     "K0": "tests/test_native_phase_k.py",
     "K5": "tests/test_native_integer_compatibility.py",
     "K6": "tests/test_native_integer_indexing_example.py",
     "K7": "tests/test_native_integer_hardening.py",
+    "K8": "tests/test_native_integer_benchmark.py",
 }
 
 # The ordering the phase turns on (design §32.1): every reachability
@@ -474,11 +484,12 @@ _PHASE_K_OVERCLAIMS = (
     # The sentinel advances one milestone as each lands, and only then:
     # it read K2-and-later while K1 was the newest, moved to K3 when K2
     # shipped, to K4 when K3 did, to K5 when K4 did, to K6 when K5 did, to
-    # K7 when K6 did, and to K8 when K7 did. Keeping the old bound would
-    # force every status surface to under-report the project, which is the
-    # mirror of the failure this scanner exists to catch.
-    ("a Phase-K milestone after K7 has landed",
-     r"\bK(?:[89]|10)\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
+    # K7 when K6 did, to K8 when K7 did, and to K9 when K8 did. Keeping the
+    # old bound would force every status surface to under-report the
+    # project, which is the mirror of the failure this scanner exists to
+    # catch.
+    ("a Phase-K milestone after K8 has landed",
+     r"\bK(?:9|10)\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
      + _DONE + r")"),
     ("Phase K is finished",
      r"\bPhase K\s+(is|was|has been)\s+" + _DONE),
@@ -709,7 +720,7 @@ def test_the_overclaim_scanner_can_actually_fail():
         "scatter_add is implemented",
         "embedding is now supported",
         "Phase K is complete",
-        "K8 has landed",
+        "K9 has landed",
         "K9 is shipped",
         "the checkpoint is now at version 4",
         "CUDA is supported",
@@ -717,12 +728,12 @@ def test_the_overclaim_scanner_can_actually_fail():
         "integer parameters are available",
     ):
         assert _overclaims(caught), caught
-    # ...and every accurate sentence a K7 surface must be able to write.
+    # ...and every accurate sentence a K8 surface must be able to write.
     for allowed in (
         "int64 is not a supported native tensor dtype",
-        "Phase K is newly approved and K0 through K7 are complete",
-        "K0 through K7 are the only completed Phase-K milestones",
-        "K8 through K9 are unstarted",
+        "Phase K is newly approved and K0 through K8 are complete",
+        "K0 through K8 are the only completed Phase-K milestones",
+        "K9 is unstarted",
         "K4 is complete",
         "K5 is complete",
         "K5 landed and added zero production code",
@@ -730,6 +741,9 @@ def test_the_overclaim_scanner_can_actually_fail():
         "K6 landed and added zero production code",
         "K7 is complete",
         "K7 landed and added zero production code",
+        "K8 is complete",
+        "K8 landed and added zero production code",
+        "the benchmark characterization has landed",
         "the adversarial hardening matrix has landed",
         "the end-to-end integration example has landed",
         "the compatibility proof has landed",
@@ -869,10 +883,17 @@ def test_the_design_states_what_has_landed_and_what_has_not():
     ranged = f"{COMPLETE_MILESTONES[0]} through {COMPLETE_MILESTONES[-1]}"
     assert re.search(rf"({enumerated}|{ranged}) are the only completed "
                      rf"Phase-K milestones", head, re.I), head[:1800]
+    # The unstarted set's *shape* changed when it shrank to one milestone:
+    # "K9 through K9 are unstarted" is not a sentence the design should be
+    # forced to write. Both forms pin the exact remaining set, so a header
+    # naming the wrong milestone still fails either way.
     first_unstarted = UNSTARTED_MILESTONES[0]
     last = UNSTARTED_MILESTONES[-1]
-    assert re.search(rf"{first_unstarted} through {last} are unstarted",
-                     head, re.I), head[:1800]
+    if first_unstarted == last:
+        unstarted_form = rf"{first_unstarted} is unstarted"
+    else:                                             # pragma: no cover
+        unstarted_form = rf"{first_unstarted} through {last} are unstarted"
+    assert re.search(unstarted_form, head, re.I), head[:1800]
     assert re.search(r"[Rr]untime capability begins at K1", head), head[:2200]
     # The claim that must be impossible to misread at every milestone
     # before K2, and after it: ``int64`` never joins the compute registry.
@@ -1071,10 +1092,13 @@ def test_the_experimental_export_list_is_still_twenty_five():
 
 
 def test_the_ctest_example_and_benchmark_inventories_match_the_ladder():
-    """Four milestones have moved an inventory, each by exactly one artifact
+    """Five milestones have moved an inventory, each by exactly one artifact
     — K1's int64 storage CTest, K3's argmax CTest, K4's index_select CTest,
-    and **K6's** integration example — and nothing else. Benchmarks belong
-    to K8 and have not moved."""
+    **K6's** integration example, and **K8's** benchmark — and nothing else.
+
+    Each addition is **named and subtracted** rather than absorbed into a
+    bumped literal, so the residue still has to equal K0's own inventory
+    and an unrecorded artifact fails an exact equality."""
     cmake = _read("cpp/CMakeLists.txt")
     assert len(re.findall(r"^\s*add_test\(", cmake, re.M)) == K4_CTEST_COUNT
     assert len(list((REPO_ROOT / "cpp" / "tests").glob("*.cpp"))) == \
@@ -1090,8 +1114,13 @@ def test_the_ctest_example_and_benchmark_inventories_match_the_ladder():
     assert len(examples) == K6_EXAMPLE_COUNT, sorted(examples)
     assert len([name for name in examples
                 if name not in K6_EXAMPLES]) == K0_EXAMPLE_COUNT
-    assert len(list((REPO_ROOT / "benchmarks").glob("*.py"))) == \
-        K0_BENCHMARK_COUNT
+    benchmarks = [path.name
+                  for path in (REPO_ROOT / "benchmarks").glob("*.py")]
+    for name, milestone in K8_BENCHMARKS.items():
+        assert name in benchmarks, (name, milestone)
+    assert len(benchmarks) == K8_BENCHMARK_COUNT, sorted(benchmarks)
+    assert len([name for name in benchmarks
+                if name not in K8_BENCHMARKS]) == K0_BENCHMARK_COUNT
 
 
 def test_the_production_cpp_translation_units_are_k0s_plus_the_indexing_unit():
@@ -1910,7 +1939,7 @@ def test_every_zero_production_milestone_names_the_module_that_proves_it():
         # The ladder row says the same thing in its own words.
         assert "complete" in _flat(rows[milestone]).lower(), milestone
     # Each row names its module, which is what makes the claim checkable.
-    for milestone in ("K5", "K6", "K7"):
+    for milestone in ("K5", "K6", "K7", "K8"):
         assert ZERO_PRODUCTION_MILESTONES[milestone] in _flat(
             _milestone_record(milestone)), milestone
     # ...and the negative control: a milestone that *did* change the
@@ -2004,11 +2033,50 @@ def test_the_hardening_module_is_k7s_and_moves_no_inventory_at_all():
     public = _delta_column("Public Python")
     assert not re.search(r"\bfrom_int64_array\b|\bargmax\b|\bindex_select\b",
                          public["K7"]), public["K7"]
-    # The K8/K9 artifacts stay absent while K7 is the newest milestone.
-    for absent in ("benchmarks/benchmark_native_integer.py",
-                   "tests/test_native_integer_benchmark.py",
-                   "tests/test_native_phase_k_closure.py"):
-        assert not (REPO_ROOT / absent).exists(), absent
+
+
+def test_the_benchmark_is_k8s_and_moves_only_the_benchmark_inventory():
+    """K8's whole deliverable, asserted where a reader can find it: the
+    harness and its owner exist, the design assigns the owner to K8 in the
+    ownership table, and the milestone's delta row moves the **benchmark**
+    column and nothing else.
+
+    K8 is the third milestone in a row to add no production code and the
+    fourth overall. Like K6 it moves exactly one artifact inventory, and
+    like K6 that artifact is a program written against the public API —
+    here a measurement tool, registered in no runtime inventory, because a
+    benchmark is never a capability."""
+    module = ZERO_PRODUCTION_MILESTONES["K8"]
+    assert (REPO_ROOT / module).is_file(), module
+    for name in K8_BENCHMARKS:
+        assert (REPO_ROOT / "benchmarks" / name).is_file(), name
+    ownership = _flat(_section(_design(), 30))
+    assert "test_native_integer_benchmark.py" in ownership
+    assert re.search(r"test_native_integer_benchmark\.py[^|]{0,60}K8",
+                     ownership), ownership[:400]
+    # Every column of K8's delta row is K7's, except Benchmarks.
+    for column, expected in (("C ABI", str(PHASE_K_MAX_EXPORTS)),
+                             ("CTests", str(K4_CTEST_COUNT)),
+                             ("Examples", str(K6_EXAMPLE_COUNT))):
+        cells = _delta_column(column)
+        assert cells["K8"] == expected, (column, cells["K8"])
+        assert cells["K8"] == cells["K7"], column
+    benchmarks = _delta_column("Benchmarks")
+    assert benchmarks["K7"] == str(K0_BENCHMARK_COUNT), benchmarks["K7"]
+    assert benchmarks["K8"] == str(K8_BENCHMARK_COUNT), benchmarks["K8"]
+    # ...and it promises no public Python name.
+    public = _delta_column("Public Python")
+    assert not re.search(r"\bfrom_int64_array\b|\bargmax\b|\bindex_select\b",
+                         public["K8"]), public["K8"]
+    # The K9 artifact stays absent while K8 is the newest milestone; K8's
+    # own two are named as **present** rather than dropped silently, which
+    # keeps this a claim about the ladder rather than a shrinking list.
+    assert (REPO_ROOT / "benchmarks"
+            / "benchmark_native_integer.py").is_file()       # K8
+    assert (REPO_ROOT / "tests"
+            / "test_native_integer_benchmark.py").is_file()  # K8
+    assert not (REPO_ROOT / "tests"
+                / "test_native_phase_k_closure.py").exists()  # K9
 
 
 def test_the_ladder_has_a_closure_milestone_and_no_successor_promise():
@@ -2167,17 +2235,27 @@ def test_the_latest_phase_forms_can_actually_fail():
 _LANDED_CLAIM = re.compile(
     rf"only {COMPLETE_MILESTONES[0]} through {COMPLETE_MILESTONES[-1]} "
     rf"have landed", re.I)
-_UNSTARTED_CLAIM = re.compile(
-    rf"{UNSTARTED_MILESTONES[0]} through {UNSTARTED_MILESTONES[-1]} are "
-    rf"unstarted", re.I)
+# The unstarted set shrank to a single milestone when K8 landed, so the
+# claim's *shape* changed with it: "K9 through K9 are unstarted" is not a
+# sentence any status surface should be forced to write. The derivation
+# still pins the exact remaining set — a surface naming K8 as unstarted, or
+# omitting K9, fails either form.
+if len(UNSTARTED_MILESTONES) == 1:
+    _UNSTARTED_CLAIM = re.compile(
+        rf"{UNSTARTED_MILESTONES[0]} is unstarted", re.I)
+else:                                                 # pragma: no cover
+    _UNSTARTED_CLAIM = re.compile(
+        rf"{UNSTARTED_MILESTONES[0]} through {UNSTARTED_MILESTONES[-1]} are "
+        rf"unstarted", re.I)
 
 
 def test_the_landed_and_unstarted_claim_forms_can_actually_fail():
     """Negative controls for both, on temporary strings."""
-    assert _LANDED_CLAIM.search("only K0 through K7 have landed")
-    assert not _LANDED_CLAIM.search("only K0 through K6 have landed")
-    assert _UNSTARTED_CLAIM.search("K8 through K9 are unstarted")
-    assert not _UNSTARTED_CLAIM.search("K7 through K9 are unstarted")
+    assert _LANDED_CLAIM.search("only K0 through K8 have landed")
+    assert not _LANDED_CLAIM.search("only K0 through K7 have landed")
+    assert _UNSTARTED_CLAIM.search("K9 is unstarted")
+    assert not _UNSTARTED_CLAIM.search("K8 is unstarted")
+    assert not _UNSTARTED_CLAIM.search("K9 is complete")
 
 
 @pytest.mark.parametrize("surface", EDITABLE_STATUS_SURFACES)

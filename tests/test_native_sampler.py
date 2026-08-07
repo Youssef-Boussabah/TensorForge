@@ -2413,7 +2413,8 @@ def test_this_milestone_touched_no_cpp_cmake_or_abi_surface():
     assert cmake.count("add_test") == 27
     # 15 when J2 landed; 16 since **J6** added the one training example, and
     # 17 since **K6** added the one integer-indexing example. 8 benchmarks
-    # when J2 landed; 9 since **J8** added exactly one, named rather than
+    # when J2 landed; 9 since **J8** added exactly one, and 10 since **K8**
+    # added the integer characterization harness — each named rather than
     # merely counted.
     examples = sorted(path.name
                       for path in (REPO_ROOT / "examples").glob("*.py"))
@@ -2422,8 +2423,9 @@ def test_this_milestone_touched_no_cpp_cmake_or_abi_surface():
     assert "native_integer_indexing.py" in examples
     benchmarks = sorted(path.name
                         for path in (REPO_ROOT / "benchmarks").glob("*.py"))
-    assert len(benchmarks) == 9, benchmarks
+    assert len(benchmarks) == 10, benchmarks
     assert "benchmark_native_data_pipeline.py" in benchmarks
+    assert "benchmark_native_integer.py" in benchmarks
     for module in (SAMPLER_SOURCE, PERMUTATION_SOURCE):
         names = code_identifiers(module)
         assert not any(name.startswith("tf_") for name in names), module

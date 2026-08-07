@@ -110,7 +110,7 @@ capability decision, never a side effect.
 | Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` |
 | Exported production `tf_*` symbols | **56** (Phase H closed at 52; Phase I added 2 at I1; Phase K added `tf_core_argmax` at K3 and `tf_core_index_select` at K4, reaching its phase maximum of 56) |
 | Experimental Python exports | **25** |
-| Native CTests · examples · benchmarks | **27** · **17** · **9** (24 CTests and 16 examples at Phase K's start; K1, K3, and K4 each added one CTest; K5 added nothing; K6 added one example; K7 added nothing) |
+| Native CTests · examples · benchmarks | **27** · **17** · **10** (24 CTests, 16 examples, and 9 benchmarks at Phase K's start; K1, K3, and K4 each added one CTest; K5 added nothing; K6 added one example; K7 added nothing; K8 added one benchmark) |
 
 **Three dtype rows, three different questions**, and none may be reported as
 another: `SUPPORTED_DTYPES` is the **capability**; `backend_info()["dtype"]`
@@ -543,9 +543,15 @@ Benchmarks are **characterization, never a test gate.**
 `benchmarks/cpp_backend.py` compares raw kernels against NumPy; the per-stack
 harnesses beside it (`benchmark_native_autograd`, `_cnn`, `_classification`,
 `benchmark_native_normalization`, `_dropout`,
-`benchmark_native_cpu_performance`, `_dtype`) characterize their own stacks.
+`benchmark_native_cpu_performance`, `_dtype`, `_data_pipeline`, `_integer`)
+characterize their own stacks.
 The dtype harness is a separate file on purpose and measures each dtype
-**separately**, never as a ratio of one to the other.
+**separately**, never as a ratio of one to the other. The integer harness
+(K8) is separate for the same reason and goes further: **every** one of its
+cases is `native_only`, because each of its four families allocates native
+storage and transfers into or out of it while the apparent host equivalent
+does not, and it publishes no float32/float64 **or** int64/floating ratio
+anywhere.
 
 Non-negotiable, in every harness:
 
@@ -640,7 +646,7 @@ that changes the public API or the examples updates the matching document
   Record it that way rather than rewriting it: "the phase that came next"
   and "the phase that was always planned next" are different facts.
 - **Native line: Phase K — Native Integer Tensors and Indexing — is the
-  newly approved phase and is the latest phase, and only K0 through K7 have landed.**
+  newly approved phase and is the latest phase, and only K0 through K8 have landed.**
   Phase K remains **in progress**; Phase J is still the latest completed
   native phase.
   Authority
@@ -866,11 +872,53 @@ that changes the public API or the examples updates the matching document
   benchmarks **9**, `__all__` **25**, and every registry and version are
   exactly what K6 left; the only file it touches under `src/` is the same
   package-docstring status sentence.
+  **K8 is the benchmark characterization milestone and added zero
+  production code**: two files, `benchmarks/benchmark_native_integer.py`
+  and its owner `tests/test_native_integer_benchmark.py`, plus status
+  reconciliation. It **measures** what K1–K4 shipped and changes none of
+  it, and no measurement was allowed to motivate a change. §31's four
+  questions stay **four workload families** — `integer_construction`,
+  `host_materialization`, `argmax`, `index_select` — over sixteen cases in
+  an exact ordered inventory the owner test writes down independently, and
+  **there is no composed case**: §31 permits one and K8 declines it,
+  because a single `argmax`-then-`index_select` number cannot say which of
+  the two dominates. **Every case is `native_only` and publishes no ratio
+  at all**, and the reference registry has exactly one member: each family
+  allocates native storage and transfers into or out of it where the
+  apparent host equivalent does not — the fairness risk §31 names by name
+  for `argmax` against `numpy.argmax` — and `ratio_to_reference`,
+  `ratio_meaning`, and `reference` are literal `None` in the single place
+  a record is built, asserted off the AST. The oracles are the harness's
+  own: `argmax` against a transcription of §17.5's algorithm and that
+  section's committed **twelve-row** case table, run as known answers at
+  both widths inside every `argmax` gate and proved to *discriminate* by a
+  skip-NaN and a last-maximum rule each failing it; `index_select` against
+  a per-position slice concatenation written without `numpy.take`,
+  compared whole **and** position by position so a deduplicated or
+  reordered result fails. Correctness precedes timing structurally (off
+  `run_case`'s AST) **and** behaviourally (a spy timer, for every one of
+  the sixteen cases), with seven planted-defect controls aborting in the
+  gate at a clean baseline and a shim-driven CLI run proving a nonzero
+  exit with clean stdout. The timed region is exactly the operation — each
+  family's `run` closure pinned to one literal call expression — with a
+  non-contiguous operand's Policy-B materialization, the complete bounds
+  scan, and the destination allocation **inside** it, because they are
+  part of the operation. Every sample is retained, nothing is trimmed or
+  overhead-corrected, and the median with an explicit IQR is what is
+  published. `--dtype` names a *measured* dtype and says so: `int64`
+  selects the index/result families and `float64`/`float32` the floating
+  source width, every record carries a `dtype_role`, and no
+  float32/float64 or int64/floating ratio exists anywhere. **K8 found no
+  production defect**, performed no native build, and moved one inventory:
+  **benchmarks 9 → 10**. Exports **56**, CTests **27**, examples **17**,
+  `__all__` **25**, and every registry and version are exactly what K7
+  left; the only file it touches under `src/` is the same
+  package-docstring status sentence.
   No `max`, no `argmin`, no general `gather`, no `scatter`, no embedding
   lookup, no `index_select` backward, no
   integer arithmetic or reduction, no integer autograd, parameter, buffer,
   optimizer state, or checkpoint entry, and no casting or promotion exists,
-  and **K8 through K9 are unstarted**. Every reachability barrier landed at
+  and **K9 is unstarted**. Every reachability barrier landed at
   **K1**, one milestone before an integer tensor could be constructed at
   all: **prove first, then promise.** The phase's C ABI maximum is **56**
   (54 + `argmax` at K3 + `index_select` at K4), which K4 reached, and

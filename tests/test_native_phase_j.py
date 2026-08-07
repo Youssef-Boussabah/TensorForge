@@ -148,6 +148,11 @@ PHASE_J_BENCHMARKS = {"benchmark_native_data_pipeline.py": "J8"}
 CURRENT_EXAMPLE_COUNT = J0_EXAMPLE_COUNT + len(PHASE_J_EXAMPLES)
 CURRENT_BENCHMARK_COUNT = J0_BENCHMARK_COUNT + len(PHASE_J_BENCHMARKS)
 
+# Benchmarks a **later** phase added, named and subtracted the same way
+# ``POST_PHASE_J_EXAMPLES`` is, so Phase J's own count above stays
+# historically exact rather than absorbing later work.
+POST_PHASE_J_BENCHMARKS = {"benchmark_native_integer.py": "K8"}
+
 MILESTONES = tuple(f"J{index}" for index in range(10))   # J0 ... J9
 
 # The three eventual public names, and the milestone that adds each.
@@ -1265,7 +1270,11 @@ def test_the_example_and_benchmark_inventories_moved_by_exactly_two_artifacts():
     assert len([name for name in examples
                 if name not in POST_PHASE_J_EXAMPLES]) == (
         CURRENT_EXAMPLE_COUNT) == 16, sorted(examples)
-    assert len(benchmarks) == CURRENT_BENCHMARK_COUNT == 9, sorted(benchmarks)
+    for name, milestone in POST_PHASE_J_BENCHMARKS.items():
+        assert name in benchmarks, (name, milestone)
+    assert len([name for name in benchmarks
+                if name not in POST_PHASE_J_BENCHMARKS]) == (
+        CURRENT_BENCHMARK_COUNT) == 9, sorted(benchmarks)
     assert set(PHASE_J_EXAMPLES) <= set(examples), sorted(PHASE_J_EXAMPLES)
     assert set(PHASE_J_BENCHMARKS) <= set(benchmarks), sorted(
         PHASE_J_BENCHMARKS)

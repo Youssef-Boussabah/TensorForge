@@ -82,8 +82,8 @@ Phase J.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
 complete: milestones J0 through J9 have all landed and J9 closed it.**
-**Phase K is the latest phase, and only K0 through K7 have landed;
-K8 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
+**Phase K is the latest phase, and only K0 through K8 have landed;
+K9 is unstarted.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -387,6 +387,50 @@ library and `scripts/smoke_cpp_backend.py`. No Linux or WSL run, no
 sanitizer run, and no LeakSanitizer lifecycle is claimed for this milestone
 either — those belong to **K9**. No result file of any kind was written, no
 benchmark was added, and **no timing was measured**.
+
+### K8 — benchmark characterization, with no native rebuild required
+
+**K8 changed no C++, no CMake, and no executable production source, so no
+rebuild was performed and none was required.** The library this milestone
+measured is byte-identical to the one K4 built: **56** exported `tf_*`
+symbols, **27** registered CTests, and the same `_CHECKED_KERNELS`
+inventory of 38. The whole milestone is
+`benchmarks/benchmark_native_integer.py` and its owner
+`tests/test_native_integer_benchmark.py`.
+
+**What K8 measured, and what it deliberately did not.** Four separate
+workload families — `int64` construction through
+`NativeTensor.from_int64_array`, host materialization through
+`to_numpy()`, `argmax`, and `index_select` — over sixteen cases, at
+contiguous, strided-host, transposed, and offset layouts. There is **no
+composed case**: a single `argmax`-then-`index_select` number could not
+say which of the two dominates. Every case is `native_only` and publishes
+**no ratio at all**, because each family allocates native storage and
+transfers into or out of it while the apparent host equivalent does not —
+`argmax` against `numpy.argmax` being the fairness risk the phase contract
+names by name. `float64`, `float32`, and `int64` are characterized
+separately and none is divided by another.
+
+**Discipline.** Correctness is gated before timing — proved structurally
+off the runner's AST and behaviourally with a spy timer for every case,
+with planted-defect controls aborting in the gate at a clean live-storage
+baseline. `argmax` is gated against an independent transcription of the
+design's own tie and NaN rule plus its committed twelve-row case table,
+never against `numpy.argmax`; `index_select` against a per-position slice
+concatenation written without `numpy.take`, compared as raw IEEE-754 bits
+inside one width. The timed region holds exactly one operation call, with
+a non-contiguous operand's internal Policy-B materialization, the complete
+index bounds scan, and the destination allocation **inside** it. Every
+measured sample is retained, no outlier is removed, and no timer overhead
+is subtracted.
+
+**Windows evidence.** The full `uv run pytest` suite green on the
+unchanged K4 library, `scripts/smoke_cpp_backend.py`, and the harness's
+own smoke, JSON, per-workload, per-dtype, and full characterization runs.
+No Linux or WSL run, no sanitizer run, and no LeakSanitizer lifecycle is
+claimed for this milestone — those belong to **K9**. **No result file of
+any kind was written**, no number from this milestone is committed
+anywhere in the repository, and no CI job consumes one.
 
 ### J9 — the Phase-J closure matrix
 

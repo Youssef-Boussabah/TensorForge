@@ -5553,12 +5553,14 @@ def test_j7_added_no_public_name_module_example_or_benchmark():
     benchmarks = [path.name for path in (REPO_ROOT / "benchmarks").glob("*.py")
                   if path.name != "__init__.py"]
     # 16 examples since J6 and 17 since **K6** added exactly one; 8
-    # benchmarks when J7 landed, and 9 since J8 added exactly one. J7's own
-    # delta to both is still zero, and the numbers are updated rather than
-    # the assertions relaxed.
+    # benchmarks when J7 landed, 9 since J8 added exactly one, and 10 since
+    # **K8** added the integer characterization harness. J7's own delta to
+    # both is still zero, and the numbers are updated rather than the
+    # assertions relaxed.
     assert len(examples) == 17, sorted(examples)
-    assert len(benchmarks) == 9, sorted(benchmarks)
+    assert len(benchmarks) == 10, sorted(benchmarks)
     assert "benchmark_native_data_pipeline.py" in benchmarks
+    assert "benchmark_native_integer.py" in benchmarks
 
 
 def test_j7_moved_no_capability_schema_or_version():

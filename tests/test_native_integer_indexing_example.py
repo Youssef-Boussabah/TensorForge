@@ -201,7 +201,14 @@ EXPECTED_FINAL_POSITION = (2, 2)
 # nothing else moved. 56 exports and 27 CTests are the phase maximum K4
 # reached; `__all__` stays at 25 for the whole phase.
 EXPECTED_EXAMPLE_COUNT = 17
-EXPECTED_BENCHMARK_COUNT = 9
+# 9 when K6 landed; 10 since **K8** added exactly one benchmark
+# (benchmarks/benchmark_native_integer.py). The number is updated rather
+# than the assertion relaxed: K6's own benchmark delta is still zero, K8's
+# artifact is named and subtracted below, and an unrecorded addition still
+# fails an exact equality.
+K6_BENCHMARK_COUNT = 9
+POST_K6_BENCHMARKS = {"benchmark_native_integer.py": "K8"}
+EXPECTED_BENCHMARK_COUNT = K6_BENCHMARK_COUNT + len(POST_K6_BENCHMARKS)
 EXPECTED_EXPERIMENTAL_EXPORTS = 25
 EXPECTED_ABI_EXPORTS = 56
 EXPECTED_CTESTS = 27
@@ -1862,8 +1869,18 @@ def test_the_example_inventory_grew_by_exactly_one():
                         for path in (REPO_ROOT / "benchmarks").glob("*.py")
                         if path.name != "__init__.py")
     assert len(benchmarks) == EXPECTED_BENCHMARK_COUNT, benchmarks
+    # K6 added no benchmark. Through K7 this guard also asserted that no
+    # integer benchmark existed at all; that premise expired when **K8**
+    # shipped one, and what replaces it is the durable half — K8's harness
+    # is named and subtracted, so the residue is still K6's own inventory
+    # and an *unrecorded* integer benchmark still fails.
+    for name, milestone in POST_K6_BENCHMARKS.items():
+        assert name in benchmarks, (name, milestone)
+    assert len([name for name in benchmarks
+                if name not in POST_K6_BENCHMARKS]) == K6_BENCHMARK_COUNT
     assert not [name for name in benchmarks
-                if "integer" in name or "index" in name], benchmarks
+                if ("integer" in name or "index" in name)
+                and name not in POST_K6_BENCHMARKS], benchmarks
 
 
 def test_the_capability_boundary_did_not_move():
@@ -1906,23 +1923,22 @@ def test_no_cpp_or_build_surface_mentions_the_new_example():
 
 
 def test_the_later_phase_k_milestones_have_not_started():
-    """K6 is the integration example. The benchmark (K8) and the closure
-    (K9) are unstarted and neither artifact exists — and **this module**
-    still contains none of the vocabulary a later milestone owns: it
-    injects nothing, times nothing, and makes no phase-wide claim.
+    """K6 is the integration example. The closure (K9) is unstarted and its
+    artifact does not exist — and **this module** still contains none of
+    the vocabulary a later milestone owns: it injects nothing, times
+    nothing, and makes no phase-wide claim.
 
-    K7's adversarial matrix landed after K6 and is therefore asserted
-    **present** rather than absent. The entry moved instead of being
-    deleted, so this stays a claim about the ladder: what K6 did not ship
-    is still what a later milestone owns, and this module still does not
-    do any of it."""
-    assert (REPO_ROOT / "tests"
-            / "test_native_integer_hardening.py").is_file()      # K7
-    for absent in ("test_native_integer_benchmark.py",           # K8
-                   "test_native_phase_k_closure.py"):            # K9
-        assert not (REPO_ROOT / "tests" / absent).exists(), absent
-    assert not (REPO_ROOT / "benchmarks"
-                / "benchmark_native_integer.py").exists()
+    K7's adversarial matrix and K8's benchmark landed after K6 and are
+    therefore asserted **present** rather than absent. Each entry moved
+    instead of being deleted, so this stays a claim about the ladder: what
+    K6 did not ship is still what a later milestone owns, and this module
+    still does not do any of it."""
+    for shipped in ("tests/test_native_integer_hardening.py",        # K7
+                    "tests/test_native_integer_benchmark.py",        # K8
+                    "benchmarks/benchmark_native_integer.py"):       # K8
+        assert (REPO_ROOT / shipped).is_file(), shipped
+    assert not (REPO_ROOT / "tests"
+                / "test_native_phase_k_closure.py").exists()         # K9
     names = code_identifiers("tests/test_native_integer_indexing_example.py")
     for hardening in ("tf_test_arm_alloc_failure", "fault_injection_available",
                       "_deliver_batch", "_claim_batch", "_rollback_pending",

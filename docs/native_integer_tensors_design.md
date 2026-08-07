@@ -18,8 +18,8 @@ statements, and only the first is true here. Phase K was not part of the
 Phase-I roadmap, was not planned during Phase J, and did not exist before
 the branch that carries this document.
 
-**Phase-K status: K0 through K7 complete. K0 through K7 are the
-only completed Phase-K milestones. K8 through K9 are unstarted.**
+**Phase-K status: K0 through K8 complete. K0 through K8 are the
+only completed Phase-K milestones. K9 is unstarted.**
 
 **K0 adds no runtime behavior.** No integer dtype, no dtype code, no C++
 enumerator, no storage change, no kernel, no C ABI symbol, no ctypes
@@ -177,7 +177,42 @@ exports still **56**, CTests **27**, examples **17**, benchmarks **9**,
 the only file it touches under `src/` is the package docstring's Phase-K
 status sentence, which carries no capability.
 
-**`int64` is not a supported TensorForge native tensor dtype**, at K7 or
+**K8 is the benchmark characterization milestone, and it added zero
+production code too.** Its whole deliverable is
+`benchmarks/benchmark_native_integer.py` and its owner
+`tests/test_native_integer_benchmark.py`, and it **measures** the shipped
+integer stack rather than changing it. It answers §31's four questions and
+keeps them four — `integer_construction`, `host_materialization`,
+`argmax`, `index_select` — with **no composed case at all**, because one
+`argmax`-then-`index_select` number could not say which of the two
+dominates and labelling it a composition would not fix that. Every case is
+`native_only` and publishes **no ratio**: each of the four families
+allocates native storage and transfers into or out of it while the
+apparent host equivalent does not, which is exactly the fairness risk §31
+names by name for `argmax` against `numpy.argmax`, and a conservative
+absence is worth more than a ratio a reader would have to discount. The
+correctness gates run to completion **before** the timing helper is
+reached — proved both structurally, off the AST, and behaviourally with a
+spy timer for **every** case — and they are exact: integer values and
+`argmax` results by exact integer equality against an independent
+transcription of §17.5's algorithm and that section's committed twelve-row
+case table, floating payloads by raw IEEE-754 bits against a per-position
+slice concatenation written without `numpy.take`. The three measured
+dtypes are characterized separately and none is divided by another, and
+`--dtype int64` is documented as selecting the **index/result** families
+rather than as naming a compute width. No file is written in any mode, no
+CLI option could ask for one, no duration is a pass/fail criterion, and
+the AST shows the timed region of each family holding exactly one
+operation call — with a non-contiguous operand's internal Policy-B
+materialization deliberately **inside** it, because it is part of the
+operation. K8 moves exactly one inventory: benchmarks **9 → 10**. Exports
+stay **56**, CTests **27**, examples **17**, `__all__` **25**, and every
+registry and version is exactly what K7 left; the only file it touches
+under `src/` is the package docstring's Phase-K status sentence, which
+carries no capability. **No native build was performed or required**, and
+no measurement changed the runtime.
+
+**`int64` is not a supported TensorForge native tensor dtype**, at K8 or
 ever. It is an **index/result** dtype, in a separate registry, and the
 distinction is the whole of the phase's taxonomy (§5.1). K3 and K4 are where
 that distinction earns itself: one operation now *produces* `int64` and
@@ -186,29 +221,29 @@ dtype a kernel computes at. The compute boundary is exactly what Phase I
 established and Phase J left untouched, and no Phase-K milestone has moved
 any of it:
 
-| Row | Value at K0 | Value at K1 | Value at K2 | Value at K3 | Value at K4 | Value at K5 | Value at K6 | Value at K7 |
-|---|---|---|---|---|---|---|---|---|
-| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `UNSUPPORTED` | `("cuda", "amp")` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `normalize_dtype(None)` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `normalize_dtype("int64")` | raises `ValueError` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `backend_info()["dtype"]` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `backend_info()["stable_framework_integration"]` | `False` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `INDEX_DTYPES` | absent | absent | **`("int64",)`** | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Python `_DTYPE_CODES` | `float64`, `float32` | unchanged | **+ `int64: 2`** | unchanged | unchanged | unchanged | unchanged | unchanged |
-| C++ `TfDtype` | `FLOAT64`, `FLOAT32` | **+ `INT64 = 2`** | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Public integer constructor | absent | absent | **`NativeTensor.from_int64_array`** | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `TENSOR_CORE_OPS` | Phase-J set | unchanged | unchanged | **+ `"argmax"`** | **+ `"index_select"`** | unchanged | unchanged | unchanged |
-| `AUTOGRAD_OPS` | Phase-J set | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Native checkpoint format · version · accepted | `tensorforge.native_checkpoint` · **3** · `(1, 2, 3)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| In-memory optimizer state version | **1** | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Exported production `tf_*` symbols | **54** | **54** | **54** | **55** | **56** | **56** | **56** | **56** |
-| Experimental Python exports | **25** | **25** | **25** | **25** | **25** | **25** | **25** | **25** |
-| Native CTests · examples · benchmarks | **24** · **16** · **9** | **25** · **16** · **9** | **25** · **16** · **9** | **26** · **16** · **9** | **27** · **16** · **9** | **27** · **16** · **9** | **27** · **17** · **9** | **27** · **17** · **9** |
+| Row | Value at K0 | Value at K1 | Value at K2 | Value at K3 | Value at K4 | Value at K5 | Value at K6 | Value at K7 | Value at K8 |
+|---|---|---|---|---|---|---|---|---|---|
+| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `UNSUPPORTED` | `("cuda", "amp")` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `normalize_dtype(None)` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `normalize_dtype("int64")` | raises `ValueError` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `backend_info()["dtype"]` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `backend_info()["stable_framework_integration"]` | `False` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `INDEX_DTYPES` | absent | absent | **`("int64",)`** | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Python `_DTYPE_CODES` | `float64`, `float32` | unchanged | **+ `int64: 2`** | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| C++ `TfDtype` | `FLOAT64`, `FLOAT32` | **+ `INT64 = 2`** | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Public integer constructor | absent | absent | **`NativeTensor.from_int64_array`** | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `TENSOR_CORE_OPS` | Phase-J set | unchanged | unchanged | **+ `"argmax"`** | **+ `"index_select"`** | unchanged | unchanged | unchanged | unchanged |
+| `AUTOGRAD_OPS` | Phase-J set | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Native checkpoint format · version · accepted | `tensorforge.native_checkpoint` · **3** · `(1, 2, 3)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| In-memory optimizer state version | **1** | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Exported production `tf_*` symbols | **54** | **54** | **54** | **55** | **56** | **56** | **56** | **56** | **56** |
+| Experimental Python exports | **25** | **25** | **25** | **25** | **25** | **25** | **25** | **25** | **25** |
+| Native CTests · examples · benchmarks | **24** · **16** · **9** | **25** · **16** · **9** | **25** · **16** · **9** | **26** · **16** · **9** | **27** · **16** · **9** | **27** · **16** · **9** | **27** · **17** · **9** | **27** · **17** · **9** | **27** · **17** · **10** |
 
 **`SUPPORTED_DTYPES` never gains `int64` — not in Phase K and not
 afterwards** (§5). It is, and permanently remains, the **floating compute**
@@ -240,7 +275,7 @@ fail if one is written:
   `max` is declined **permanently** by §17.10 rather than deferred;
 - a general `gather`, a `scatter`, a `scatter_add`, an embedding lookup, or
   an `index_select` **backward** exists — none does (§18.1, §18.9, §35);
-- Phase K is **not** complete, and no milestone after K7 has landed.
+- Phase K is **not** complete, and no milestone after K8 has landed.
 
 Three things that were on this list and have been **moved rather than
 deleted**, which is the discipline the list exists to demonstrate:
@@ -2752,7 +2787,7 @@ used, and each dtype is proved only against itself.
 | Checkpoint, state, pipeline, classification compatibility | `tests/test_native_integer_compatibility.py` (K5, shipped) |
 | The end-to-end example | `tests/test_native_integer_indexing_example.py` (K6) |
 | Adversarial hardening | `tests/test_native_integer_hardening.py` (K7) |
-| The benchmark | `tests/test_native_integer_benchmark.py` (K8) |
+| The benchmark | `tests/test_native_integer_benchmark.py` (K8, shipped) + `benchmarks/benchmark_native_integer.py` (K8, shipped) |
 | The closed boundary | `tests/test_native_phase_k_closure.py` (K9) |
 
 Names are indicative; the *split* is contractual. A claim about closure
@@ -2819,9 +2854,9 @@ existing rule plus the ones this phase makes specific.
 
 ## 32. Final milestone ladder
 
-Ten milestones, **one purpose each**. K0 through K7 are complete; K8
-through K9 are unstarted. No milestone combines two major operations, no
-milestone exists to preserve a numbering, and K9 is the closure.
+Ten milestones, **one purpose each**. K0 through K8 are complete; K9 is
+unstarted. No milestone combines two major operations, no milestone exists
+to preserve a numbering, and K9 is the closure.
 
 ### 32.1 The window proof — there is no unsafe intermediate state
 
@@ -2890,7 +2925,7 @@ than trusting the prose.
 | **K5** | Compatibility proof — checkpoint, state, data pipeline, classification | **Complete.** `tests/test_native_integer_compatibility.py`, and the status reconciliation. Zero production code: no export, no public name, no CTest, no example, no benchmark, no registry or version movement. |
 | **K6** | End-to-end integration example and exact proof | **Complete.** `examples/native_integer_indexing.py` and `tests/test_native_integer_indexing_example.py`. Examples 16 → **17**; zero production code, no export, no `__all__` change, no CTest, no benchmark, no registry or version movement. |
 | **K7** | Adversarial hardening — §27's four injection families at every actual allocating path (both of `index_select`'s Policy-B materialization call sites separately), the complete world fingerprint, `BaseException` cleanup, and the malformed-metadata and dtype-role matrices | **Complete.** `tests/test_native_integer_hardening.py`, and the status reconciliation. Zero production code: no export, no public name, no CTest, no example, no benchmark, no registry or version movement, and no defect found. |
-| **K8** | Benchmark characterization | *Unstarted.* |
+| **K8** | Benchmark characterization — §31 in full, four separate questions and no composition | **Complete.** `benchmarks/benchmark_native_integer.py` and `tests/test_native_integer_benchmark.py`. Benchmarks 9 → **10**; zero production code, no export, no `__all__` change, no CTest, no example, no registry or version movement, and no optimization. |
 | **K9** | Cross-platform validation and Phase-K closure | *Unstarted.* |
 
 ### K0 — Architecture, taxonomy, API/ABI plan, and guardrails · complete
@@ -3641,10 +3676,85 @@ destination byte-identical at both widths.
 build was performed or required. The only file it touches under `src/` is
 the package docstring's Phase-K status sentence.
 
-### K8 — Benchmark characterization
+### K8 — Benchmark characterization · complete
 
-`benchmarks/benchmark_native_integer.py` under §31 in full. **Benchmarks
-9 → 10. No production code, no optimization.**
+`benchmarks/benchmark_native_integer.py` under §31 in full, owned by
+`tests/test_native_integer_benchmark.py`. **Benchmarks 9 → 10. No
+production code, no optimization.**
+
+**What landed.** Two new files and nothing else outside them: the harness
+and its owner. The harness answers §31's four questions as **four
+workload families** — `integer_construction`, `host_materialization`,
+`argmax`, `index_select` — over **sixteen** cases pinned in an exact
+ordered inventory the owner test writes down independently. There is
+**no composed case**: §31 permits one and this milestone declines it,
+because a single `argmax`-then-`index_select` number cannot say which of
+the two dominates, and the label "composition" would document that
+weakness rather than remove it.
+
+**Every case is `native_only`, and the registry has exactly one member.**
+Each of the four families allocates native storage and transfers into or
+out of it while the apparent host equivalent does not — construction
+against `numpy.array`, materialization against a host-to-host copy,
+`argmax` against `numpy.argmax` over an existing array, `index_select`
+against `numpy.take` — so no honest denominator exists for any of them.
+`argmax` is the one §31 names by name as the live fairness risk, and it is
+resolved by publishing no ratio rather than by qualifying one. A second
+reference label would have been an unused invitation, so the registry is
+`("native_only",)` and the payload's `ratio_to_reference`,
+`ratio_meaning`, and `reference` are literal `None` in the single place a
+record is built — asserted off the AST, so no arithmetic could ever
+produce one.
+
+**The oracles are the harness's own.** `argmax` is gated against a direct
+transcription of §17.5's algorithm and against that section's committed
+**twelve-row** case table — unique maximum, equal maxima, both signed-zero
+orders, all `-inf`, `+inf`, one NaN, several NaNs, a NaN against either
+infinity, a NaN at index 0, and a length-1 run — run as known answers at
+**both** floating widths inside every `argmax` gate. The rule is
+transcribed rather than delegated: the owner test proves `argmax_run`
+touches no array library, and proves the table *discriminates* by showing
+that a skip-NaN rule and a last-maximum rule each fail it. That the
+answers happen to coincide with `numpy.argmax` on these rows is a
+coincidence §17.5 explicitly declines to promise, and nothing depends on
+it. `index_select` is gated against a per-position slice concatenation
+written without `numpy.take`, compared as whole arrays **and** position by
+position, so a deduplicated, sorted, or reordered result fails.
+
+**Correctness precedes timing, and it is proved twice.** Structurally, off
+`run_case`'s AST: `check()` is called before `measure`. Behaviourally, with
+a spy timer, for **every one of the sixteen cases**. Seven planted-defect
+controls — a perturbed result at each family, a truncated shape, a
+deduplicated selection, and a result claiming a gradient — each abort in
+the gate with the timer never reached, clean stdout, and live storage
+exactly at baseline; a sitecustomize-shim CLI run proves the same from
+outside the process, with a nonzero exit and nothing on stdout.
+
+**The timed region is exactly the operation**, read off the AST: each
+family's `run` closure is a single `return` of a single call, and the four
+expressions are pinned literally. A non-contiguous operand's internal
+Policy-B materialization, the complete index bounds scan, and the
+destination allocation stay **inside** that call, because they are part of
+the operation; the harness calls no copy helper and reaches for no private
+seam, which the owner test scans for. Setup and every `close()` are
+outside the timer, proved behaviourally with a phase-aware clock. Every
+measured sample is retained, no outlier is removed, and no timer overhead
+is subtracted — the median is the headline and the IQR the spread, both
+checked against known answers.
+
+**The three measured dtypes stay three separate questions.** `--dtype`
+names a *measured* dtype and its help text says so: `int64` selects the
+index/result families and `float64`/`float32` select the floating source
+width of `argmax` and `index_select`. Every record carries a `dtype_role`,
+no case straddles the two registries, no payload key names two of the
+three dtypes, and the owner test bans the wording that would imply
+`SUPPORTED_DTYPES` had grown.
+
+**K8 found no production defect**, performed no native build, and moved
+one inventory: benchmarks **9 → 10**. Exports **56**, CTests **27**,
+examples **17**, `__all__` **25**, every registry, and every version are
+exactly what K7 left, and the only file it touches under `src/` is the
+package docstring's Phase-K status sentence.
 
 ### K9 — Cross-platform validation and Phase-K closure
 

@@ -150,16 +150,27 @@ NUMPY_DTYPE = {"float64": np.float64, "float32": np.float32}
 K7_EXPORT_COUNT = 56
 K7_CTEST_COUNT = 27
 K7_EXAMPLE_COUNT = 17
-K7_BENCHMARK_COUNT = 9
+# 9 when K7 landed; 10 since **K8** added exactly one benchmark
+# (benchmarks/benchmark_native_integer.py). The number is updated rather
+# than the assertion relaxed: K7's own benchmark delta is still zero, K8's
+# artifact is named and subtracted below, and an unrecorded addition still
+# fails an exact equality.
+K7_OWN_BENCHMARK_COUNT = 9
+POST_K7_BENCHMARKS = {"benchmark_native_integer.py": "K8"}
+K7_BENCHMARK_COUNT = K7_OWN_BENCHMARK_COUNT + len(POST_K7_BENCHMARKS)
 K7_EXPERIMENTAL_EXPORTS = 25
 K7_CHECKED_KERNELS = 38
 
-# The two exports the phase added, and the K8/K9 artifacts that must stay
-# absent while K7 is the newest milestone.
+# The two exports the phase added. K8's two artifacts landed after K7 and
+# are therefore named as **present** rather than absent — the entry moved
+# instead of being deleted, so this stays a claim about the ladder — while
+# K9's closure module must still be absent.
 INDEXING_EXPORTS = ("tf_core_argmax", "tf_core_index_select")
-K8_K9_ARTIFACTS = (
+K8_ARTIFACTS = (
     "benchmarks/benchmark_native_integer.py",
     "tests/test_native_integer_benchmark.py",
+)
+K9_ARTIFACTS = (
     "tests/test_native_phase_k_closure.py",
 )
 
@@ -3841,8 +3852,13 @@ def test_every_inventory_is_exactly_what_k6_left():
     assert loader_module._FORMAT_VERSION == 1
     assert sampler_module._FORMAT_VERSION == 1
     assert len(list((REPO_ROOT / "examples").glob("*.py"))) == K7_EXAMPLE_COUNT
-    assert len(list((REPO_ROOT / "benchmarks").glob("*.py"))) == \
-        K7_BENCHMARK_COUNT
+    benchmarks = [path.name
+                  for path in (REPO_ROOT / "benchmarks").glob("*.py")]
+    assert len(benchmarks) == K7_BENCHMARK_COUNT, sorted(benchmarks)
+    for name, milestone in POST_K7_BENCHMARKS.items():
+        assert name in benchmarks, (name, milestone)
+    assert len([name for name in benchmarks
+                if name not in POST_K7_BENCHMARKS]) == K7_OWN_BENCHMARK_COUNT
 
 
 @needs_native
@@ -3894,10 +3910,18 @@ def test_the_ctest_inventory_did_not_move():
         assert expected in registered, expected
 
 
-def test_no_k8_or_k9_artifact_appeared():
-    """K7 is not K8 and is not K9: the benchmark, its owner, and the closure
-    module must all still be absent."""
-    for relative in K8_K9_ARTIFACTS:
+def test_no_k9_artifact_appeared():
+    """K7 is not K9: the closure module must still be absent.
+
+    Through K7 this guard also asserted K8's benchmark and its owner
+    absent. That premise expired when **K8** landed, so the two entries
+    moved from the absent list to a present one rather than being deleted
+    — a guard that keeps banning a file the repository now legitimately
+    owns is a guard that forces a lie, and one that simply drops the entry
+    stops being a claim about the ladder at all."""
+    for relative in K8_ARTIFACTS:
+        assert (REPO_ROOT / relative).is_file(), relative
+    for relative in K9_ARTIFACTS:
         assert not (REPO_ROOT / relative).exists(), relative
 
 

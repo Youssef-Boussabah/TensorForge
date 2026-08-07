@@ -38,13 +38,13 @@ the experimental native line has completed **Phases A through J** — the
 last of them, the deterministic native data pipeline and mini-batching,
 closed at milestone J9, so **Phase J is the latest completed phase**.
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and only K0 through K7 have landed.** Each phase's record is in its own
+and only K0 through K8 have landed.** Each phase's record is in its own
 design document; the sections above are the narrative.
 
-## The current phase — Phase K, K0 through K7 complete
+## The current phase — Phase K, K0 through K8 complete
 
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and K0 through K7 are complete.** **K8 through K9 are unstarted.** Its
+and K0 through K8 are complete.** **K9 is unstarted.** Its
 architecture contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md).
 
@@ -907,6 +907,22 @@ every rejection. It
 found **no production defect**. Exports stayed **56**, CTests **27**,
 examples **17**, benchmarks **9**, and `experimental.__all__` **25**.
 
+**K8** is the **benchmark characterization** milestone, and it added
+**zero production code**: `benchmarks/benchmark_native_integer.py`, owned
+by `tests/test_native_integer_benchmark.py`. It measures the shipped
+integer stack as **four separate workload families** —
+`integer_construction`, `host_materialization`, `argmax`, and
+`index_select` — with **no composed case**, every case `native_only` and
+publishing **no ratio at all**, correctness gated before timing (proved
+structurally and with a spy timer for every case), `argmax` gated against
+a transcription of the design's own tie and NaN rule rather than against
+`numpy.argmax`, `index_select` against a per-position slice concatenation
+written without `numpy.take`, the timed region pinned to exactly one
+operation call, no result file in any mode, and no speed asserted
+anywhere. It found **no production defect**, required no native build,
+and moved one inventory: benchmarks **9 → 10**. Exports stayed **56**,
+CTests **27**, examples **17**, and `experimental.__all__` **25**.
+
 **`int64` is not a supported native tensor dtype** — it is an
 index/result dtype in its own registry, and no generic constructor accepts
 it. A native `argmax` exists from **K3** and a native `index_select` from
@@ -915,7 +931,7 @@ none is planned, no general `gather`, `scatter`, or embedding lookup
 exists, no `index_select` backward exists, no `argmin` exists, no
 integer arithmetic or reduction exists, no integer autograd, parameter,
 buffer, optimizer state, or checkpoint entry exists, and
-**K8 through K9 are unstarted**. What
+**K9 is unstarted**. What
 K0 decides is the architecture: one extended `NativeTensor` rather than a
 parallel integer class, `int64` as an exact non-differentiable
 index/result dtype and the only integer dtype in the phase, one strict

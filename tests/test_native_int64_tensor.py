@@ -2241,8 +2241,8 @@ def test_the_ctest_example_and_benchmark_inventories_did_not_move_at_k2():
     """K2 registered no CTest and added no example or benchmark. The
     CTest total carries K3's argmax target and K4's index_select target,
     each named and subtracted rather than absorbed; the example total
-    carries **K6's** one example, named and subtracted the same way, and
-    benchmarks belong to K8 and have not moved at all."""
+    carries **K6's** one example and the benchmark total **K8's** one
+    harness, each named and subtracted the same way."""
     cmake = (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8")
     later_ctests = {"argmax": "K3", "index_select": "K4"}
     registered = re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)
@@ -2257,7 +2257,13 @@ def test_the_ctest_example_and_benchmark_inventories_did_not_move_at_k2():
     for name, milestone in later_examples.items():
         assert name in present, (name, milestone)
     assert len([n for n in present if n not in later_examples]) == 16, present
-    assert len(list((REPO_ROOT / "benchmarks").glob("*.py"))) == 9
+    later_benchmarks = {"benchmark_native_integer.py": "K8"}
+    harnesses = [path.name
+                 for path in (REPO_ROOT / "benchmarks").glob("*.py")]
+    for name, milestone in later_benchmarks.items():
+        assert name in harnesses, (name, milestone)
+    assert len([n for n in harnesses
+                if n not in later_benchmarks]) == 9, harnesses
 
 
 def test_the_experimental_export_list_is_still_twenty_five():

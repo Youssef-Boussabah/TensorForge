@@ -99,7 +99,11 @@ EXPERIMENTAL_EXPORTS = 25
 # the assertion relaxed: K4's own example delta is still zero, and an
 # unrecorded addition still fails an exact equality.
 EXAMPLE_COUNT = 17
-BENCHMARK_COUNT = 9
+# 9 when K4 landed; 10 since **K8** added exactly one benchmark
+# (benchmarks/benchmark_native_integer.py), for the same reason and with
+# the same discipline: K4's own benchmark delta is still zero, and an
+# unrecorded addition still fails an exact equality.
+BENCHMARK_COUNT = 10
 
 # The raw-bit view each floating dtype is compared through. Never a
 # tolerance, and each dtype is only ever compared against itself.

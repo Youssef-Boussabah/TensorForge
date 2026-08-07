@@ -1881,9 +1881,16 @@ def test_the_harness_never_arms_fault_injection_or_relies_on_collection():
 
 
 def test_the_benchmark_inventory_moved_from_eight_to_nine():
-    benchmarks = sorted(path.name
-                        for path in (REPO_ROOT / "benchmarks").glob("*.py")
-                        if path.name != "__init__.py")
+    """J8's own delta is exactly one. A benchmark a **later** phase added is
+    named and subtracted rather than absorbed, so this stays a claim about
+    J8 and an *unrecorded* harness still fails the equality."""
+    later_benchmarks = {"benchmark_native_integer.py": "K8"}
+    present = sorted(path.name
+                     for path in (REPO_ROOT / "benchmarks").glob("*.py")
+                     if path.name != "__init__.py")
+    for name, milestone in later_benchmarks.items():
+        assert name in present, (name, milestone)
+    benchmarks = [name for name in present if name not in later_benchmarks]
     assert len(benchmarks) == 9, benchmarks
     assert benchmarks == sorted([
         "benchmark_native_autograd.py",

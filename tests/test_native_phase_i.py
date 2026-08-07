@@ -1490,6 +1490,7 @@ I10_ADDED_BENCHMARKS = frozenset({"benchmarks/benchmark_native_dtype.py"})
 # an inherited file — still fails.
 POST_PHASE_I_BENCHMARKS = frozenset({
     "benchmarks/benchmark_native_data_pipeline.py",   # Phase J, milestone J8
+    "benchmarks/benchmark_native_integer.py",         # Phase K, milestone K8
 })
 assert not (I10_ADDED_BENCHMARKS & POST_PHASE_I_BENCHMARKS)
 

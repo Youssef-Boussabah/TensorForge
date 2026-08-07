@@ -1587,6 +1587,7 @@ H0_HARNESSES = (
 LATER_PHASE_HARNESSES = (
     "benchmark_native_dtype.py",              # Phase I, I10
     "benchmark_native_data_pipeline.py",      # Phase J, J8
+    "benchmark_native_integer.py",            # Phase K, K8
 )
 
 

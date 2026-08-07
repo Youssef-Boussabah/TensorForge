@@ -180,15 +180,18 @@ SAMPLER_VERSIONS = (1,)
 EXPORT_COUNT = 56
 CTEST_COUNT = 27
 EXPERIMENTAL_EXPORTS = 25
-BENCHMARK_COUNT = 9
 
-# The example inventory K5 left at 16, plus exactly the examples later
-# milestones added, each named. Keeping the split explicit is what stops
-# later growth from being absorbed into K5's record: K5's own example delta
-# is zero and always will have been, whatever the tree grows to afterwards.
+# The example and benchmark inventories K5 left at 16 and 9, plus exactly
+# the artifacts later milestones added, each named. Keeping the split
+# explicit is what stops later growth from being absorbed into K5's record:
+# K5's own delta to both is zero and always will have been, whatever the
+# tree grows to afterwards.
 K5_EXAMPLE_COUNT = 16
 POST_K5_EXAMPLES = {"native_integer_indexing.py": "K6"}
 EXAMPLE_COUNT = K5_EXAMPLE_COUNT + len(POST_K5_EXAMPLES)
+K5_BENCHMARK_COUNT = 9
+POST_K5_BENCHMARKS = {"benchmark_native_integer.py": "K8"}
+BENCHMARK_COUNT = K5_BENCHMARK_COUNT + len(POST_K5_BENCHMARKS)
 
 MANIFEST_ROOT_KEYS = {"format", "format_version", "model", "optimizer",
                       "generators", "metadata"}
@@ -2786,16 +2789,17 @@ def test_no_k7_or_later_surface_exists():
     Through K5 this guard also asserted K6's example **absent**, because it
     had not started. That premise expired when K6 landed, and what replaces
     it is the durable half: K6's example is named and subtracted rather than
-    absorbed, so the count still fails on an *unrecorded* example, and the
-    benchmark inventory K8 owns is still asserted empty of integer work.
+    absorbed, so the count still fails on an *unrecorded* example.
 
-    The same thing happened again at **K7**, whose hardening module landed
-    and is therefore no longer assertable as absent. The entry is removed
-    rather than exempted — a guard that keeps banning a file the repository
-    now legitimately owns is a guard that forces a lie — and what remains is
-    the claim K7 did not earn: **K8's benchmark and its owner, and K9's
-    closure module, are still absent**, and K5's own inventories are still
-    exact."""
+    The same thing happened again at **K7**, whose hardening module landed,
+    and again at **K8**, whose benchmark and owner did. Each entry is
+    removed rather than exempted — a guard that keeps banning a file the
+    repository now legitimately owns is a guard that forces a lie — and
+    each is named as **present** so the list stays a claim about the ladder
+    rather than a shrinking one. The benchmark inventory is subtracted the
+    same way the example inventory is, so an *unrecorded* integer benchmark
+    still fails. What remains is the claim K8 did not earn: **K9's closure
+    module is still absent**, and K5's own inventories are still exact."""
     for owner in (NativeTensor, cpp.NativeTensorCore, cpp.NativeStorage):
         for absent in ("argmin", "gather", "scatter", "scatter_add",
                        "embedding", "max", "amax", "take", "topk", "sort",
@@ -2819,15 +2823,22 @@ def test_no_k7_or_later_surface_exists():
     assert not [name for name in examples
                 if "integer" in name and name not in POST_K5_EXAMPLES], (
         examples)
-    assert not [name for name in benchmarks if "integer" in name], benchmarks
-    # K8's and K9's own modules are still absent; K7's landed, so it is
+    for name, milestone in POST_K5_BENCHMARKS.items():
+        assert name in benchmarks, (name, milestone)
+    assert len([name for name in benchmarks
+                if name not in POST_K5_BENCHMARKS]) == K5_BENCHMARK_COUNT
+    assert not [name for name in benchmarks
+                if "integer" in name
+                and name not in POST_K5_BENCHMARKS], benchmarks
+    # K9's own module is still absent; K7's and K8's landed, so each is
     # named as **present** here rather than dropped silently, which keeps
     # this list a claim about the ladder rather than a shrinking list.
-    assert (REPO_ROOT / "tests"
-            / "test_native_integer_hardening.py").is_file()      # K7
-    for absent in ("test_native_integer_benchmark.py",           # K8
-                   "test_native_phase_k_closure.py"):            # K9
-        assert not (REPO_ROOT / "tests" / absent).exists(), absent
+    for shipped in ("tests/test_native_integer_hardening.py",     # K7
+                    "tests/test_native_integer_benchmark.py",     # K8
+                    "benchmarks/benchmark_native_integer.py"):    # K8
+        assert (REPO_ROOT / shipped).is_file(), shipped
+    assert not (REPO_ROOT / "tests"
+                / "test_native_phase_k_closure.py").exists()      # K9
 
 
 def test_the_c_abi_and_ctest_inventories_did_not_move_at_k5():

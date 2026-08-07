@@ -173,6 +173,7 @@ INHERITED_BENCHMARK_COUNT = 7
 # one and a later addition is attributed rather than absorbed.
 POST_PHASE_I_BENCHMARKS = {
     "benchmark_native_data_pipeline.py": "J8",
+    "benchmark_native_integer.py": "K8",
 }
 CURRENT_BENCHMARK_COUNT = (INHERITED_BENCHMARK_COUNT + 1
                            + len(POST_PHASE_I_BENCHMARKS))

@@ -2324,13 +2324,15 @@ def test_no_c_abi_ctest_example_or_benchmark_surface_moved():
                   if p.name != "__init__.py"]
     # 15 when J4 landed; 16 since **J6** added the one training example, and
     # 17 since **K6** added the one integer-indexing example. 8 benchmarks
-    # when J4 landed; 9 since **J8** added exactly one. Each is named rather
-    # than pattern-matched, so every *other* artifact still fails here.
+    # when J4 landed; 9 since **J8** added exactly one, and 10 since **K8**
+    # added the integer characterization harness. Each is named rather than
+    # pattern-matched, so every *other* artifact still fails here.
     assert len(examples) == 17, sorted(examples)
     assert "native_minibatch_training.py" in examples
     assert "native_integer_indexing.py" in examples
-    assert len(benchmarks) == 9, sorted(benchmarks)
+    assert len(benchmarks) == 10, sorted(benchmarks)
     assert "benchmark_native_data_pipeline.py" in benchmarks
+    assert "benchmark_native_integer.py" in benchmarks
     for name in examples + benchmarks:
         if name in ("native_minibatch_training.py",                   # J6
                     "benchmark_native_data_pipeline.py"):             # J8

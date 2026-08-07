@@ -139,6 +139,9 @@ FINAL_EXPORT_COUNT = PHASE_I_EXPORT_COUNT + len(PHASE_J_ADDED_EXPORTS)  # 54
 POST_PHASE_J_EXPORTS = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
 # ...and the one example a later phase added, named for the same reason.
 POST_PHASE_J_EXAMPLES = {"native_integer_indexing.py": "K6"}
+# Benchmarks a later phase added, named and subtracted the same way, so
+# Phase J's own closing benchmark count stays historically exact.
+POST_PHASE_J_BENCHMARKS = {"benchmark_native_integer.py": "K8"}
 POST_PHASE_J_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3",
                        "index_select": "K4"}
 CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(POST_PHASE_J_EXPORTS)  # 56
@@ -1087,11 +1090,20 @@ def test_the_example_inventory_closed_at_sixteen():
 
 
 def test_the_benchmark_inventory_closed_at_nine():
-    """Phase J's own benchmark delta is **exactly one**, J8's."""
+    """Phase J's own benchmark delta is **exactly one**, J8's.
+
+    Benchmarks a later phase added are named in ``POST_PHASE_J_BENCHMARKS``
+    and subtracted the same way later examples are, so what this asserts
+    stays a fact about **Phase J's close** rather than drifting into a
+    claim about today."""
     names = sorted(path.name for path in
                    (REPO_ROOT / "benchmarks").glob("*.py")
                    if path.name != "__init__.py")
-    assert len(names) == FINAL_BENCHMARK_COUNT, names
+    for name, milestone in POST_PHASE_J_BENCHMARKS.items():
+        assert name in names, (name, milestone)
+    assert len([name for name in names
+                if name not in POST_PHASE_J_BENCHMARKS]) == (
+        FINAL_BENCHMARK_COUNT), names
     assert Path(J8_BENCHMARK).name in names
     pipeline = [n for n in names if "data_pipeline" in n]
     assert pipeline == [Path(J8_BENCHMARK).name], pipeline

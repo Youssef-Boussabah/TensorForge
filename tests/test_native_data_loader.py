@@ -332,14 +332,16 @@ def test_no_c_abi_or_build_surface_moved():
                   if p.name != "__init__.py"]
     # 15 when J3 landed; 16 since **J6** added the one training example, and
     # 17 since **K6** added the one integer-indexing example. 8 benchmarks
-    # when J3 landed; 9 since **J8** added exactly one. Every artifact is
-    # named rather than merely counted, so this check keeps stating which
+    # when J3 landed; 9 since **J8** added exactly one, and 10 since **K8**
+    # added the integer characterization harness. Every artifact is named
+    # rather than merely counted, so this check keeps stating which
     # milestone contributed each.
     assert len(examples) == 17, sorted(examples)
     assert "native_minibatch_training.py" in examples
     assert "native_integer_indexing.py" in examples
-    assert len(benchmarks) == 9, sorted(benchmarks)
+    assert len(benchmarks) == 10, sorted(benchmarks)
     assert "benchmark_native_data_pipeline.py" in benchmarks
+    assert "benchmark_native_integer.py" in benchmarks
 
 
 # ===========================================================================
