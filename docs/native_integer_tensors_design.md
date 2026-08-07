@@ -18,8 +18,8 @@ statements, and only the first is true here. Phase K was not part of the
 Phase-I roadmap, was not planned during Phase J, and did not exist before
 the branch that carries this document.
 
-**Phase-K status: K0 through K6 complete. K0 through K6 are the
-only completed Phase-K milestones. K7 through K9 are unstarted.**
+**Phase-K status: K0 through K7 complete. K0 through K7 are the
+only completed Phase-K milestones. K8 through K9 are unstarted.**
 
 **K0 adds no runtime behavior.** No integer dtype, no dtype code, no C++
 enumerator, no storage change, no kernel, no C ABI symbol, no ctypes
@@ -149,7 +149,35 @@ nothing else moved: no C ABI symbol (still **56**), no public Python name
 `src/` is the package docstring's Phase-K status sentence, which carries no
 capability.
 
-**`int64` is not a supported TensorForge native tensor dtype**, at K6 or
+**K7 is the adversarial hardening milestone, and it added zero production
+code.** Its whole deliverable is
+`tests/test_native_integer_hardening.py`, which attacks the shipped
+integer stack rather than extending it: §27's four injection families at
+**every actual allocating path**, resolved from the live call graph and
+recorded as a traceable matrix in which a family that genuinely does not
+apply to a path is an `N/A` with its technical reason rather than a
+borrowed injection, and in which one export reached from two different
+call sites gets **two rows** — `index_select`'s source and index Policy-B
+materializations, the second driven by a call journal that delegates the
+first to the real export so it can be reached at all; a complete
+before/after fingerprint of the observable world after every rejection and
+every injected failure, with a scan of the module's own AST making that
+"every" literal; a `BaseException` through each cleanup-capable seam;
+retained-reference proofs so no closure claim can rest on `__del__`
+timing; the malformed-metadata **and** dtype-role matrices for **both**
+exports, kept separate because their validation lists are, each asserting
+every operand byte-identical after every rejection; the complete index
+scan proved to precede the first destination byte; and a non-vacuity
+control for every injector, every fingerprint component, and every parser.
+Every allocation row fires the backend's **own** thread-local arm, armed
+at the exact production seam it names. K7 found **no production defect**.
+**No inventory moved**:
+exports still **56**, CTests **27**, examples **17**, benchmarks **9**,
+`__all__` **25**, every registry and every version exactly what K6 left;
+the only file it touches under `src/` is the package docstring's Phase-K
+status sentence, which carries no capability.
+
+**`int64` is not a supported TensorForge native tensor dtype**, at K7 or
 ever. It is an **index/result** dtype, in a separate registry, and the
 distinction is the whole of the phase's taxonomy (§5.1). K3 and K4 are where
 that distinction earns itself: one operation now *produces* `int64` and
@@ -158,29 +186,29 @@ dtype a kernel computes at. The compute boundary is exactly what Phase I
 established and Phase J left untouched, and no Phase-K milestone has moved
 any of it:
 
-| Row | Value at K0 | Value at K1 | Value at K2 | Value at K3 | Value at K4 | Value at K5 | Value at K6 |
-|---|---|---|---|---|---|---|---|
-| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `UNSUPPORTED` | `("cuda", "amp")` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `normalize_dtype(None)` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `normalize_dtype("int64")` | raises `ValueError` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `backend_info()["dtype"]` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `backend_info()["stable_framework_integration"]` | `False` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| `INDEX_DTYPES` | absent | absent | **`("int64",)`** | unchanged | unchanged | unchanged | unchanged |
-| Python `_DTYPE_CODES` | `float64`, `float32` | unchanged | **+ `int64: 2`** | unchanged | unchanged | unchanged | unchanged |
-| C++ `TfDtype` | `FLOAT64`, `FLOAT32` | **+ `INT64 = 2`** | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Public integer constructor | absent | absent | **`NativeTensor.from_int64_array`** | unchanged | unchanged | unchanged | unchanged |
-| `TENSOR_CORE_OPS` | Phase-J set | unchanged | unchanged | **+ `"argmax"`** | **+ `"index_select"`** | unchanged | unchanged |
-| `AUTOGRAD_OPS` | Phase-J set | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Native checkpoint format · version · accepted | `tensorforge.native_checkpoint` · **3** · `(1, 2, 3)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| In-memory optimizer state version | **1** | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
-| Exported production `tf_*` symbols | **54** | **54** | **54** | **55** | **56** | **56** | **56** |
-| Experimental Python exports | **25** | **25** | **25** | **25** | **25** | **25** | **25** |
-| Native CTests · examples · benchmarks | **24** · **16** · **9** | **25** · **16** · **9** | **25** · **16** · **9** | **26** · **16** · **9** | **27** · **16** · **9** | **27** · **16** · **9** | **27** · **17** · **9** |
+| Row | Value at K0 | Value at K1 | Value at K2 | Value at K3 | Value at K4 | Value at K5 | Value at K6 | Value at K7 |
+|---|---|---|---|---|---|---|---|---|
+| `SUPPORTED_DTYPES` | `("float64", "float32")` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `SUPPORTED_DEVICES` | `("cpu",)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `UNSUPPORTED` | `("cuda", "amp")` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `RAW_KERNEL_DTYPES` | `("float64",)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `normalize_dtype(None)` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `normalize_dtype("int64")` | raises `ValueError` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `backend_info()["dtype"]` | `"float64"` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `backend_info()["stable_framework_integration"]` | `False` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `INDEX_DTYPES` | absent | absent | **`("int64",)`** | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Python `_DTYPE_CODES` | `float64`, `float32` | unchanged | **+ `int64: 2`** | unchanged | unchanged | unchanged | unchanged | unchanged |
+| C++ `TfDtype` | `FLOAT64`, `FLOAT32` | **+ `INT64 = 2`** | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Public integer constructor | absent | absent | **`NativeTensor.from_int64_array`** | unchanged | unchanged | unchanged | unchanged | unchanged |
+| `TENSOR_CORE_OPS` | Phase-J set | unchanged | unchanged | **+ `"argmax"`** | **+ `"index_select"`** | unchanged | unchanged | unchanged |
+| `AUTOGRAD_OPS` | Phase-J set | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Native checkpoint format · version · accepted | `tensorforge.native_checkpoint` · **3** · `(1, 2, 3)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| In-memory optimizer state version | **1** | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Loader state format · version · accepted | `tensorforge.native_data_loader` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged | unchanged |
+| Exported production `tf_*` symbols | **54** | **54** | **54** | **55** | **56** | **56** | **56** | **56** |
+| Experimental Python exports | **25** | **25** | **25** | **25** | **25** | **25** | **25** | **25** |
+| Native CTests · examples · benchmarks | **24** · **16** · **9** | **25** · **16** · **9** | **25** · **16** · **9** | **26** · **16** · **9** | **27** · **16** · **9** | **27** · **16** · **9** | **27** · **17** · **9** | **27** · **17** · **9** |
 
 **`SUPPORTED_DTYPES` never gains `int64` — not in Phase K and not
 afterwards** (§5). It is, and permanently remains, the **floating compute**
@@ -212,7 +240,7 @@ fail if one is written:
   `max` is declined **permanently** by §17.10 rather than deferred;
 - a general `gather`, a `scatter`, a `scatter_add`, an embedding lookup, or
   an `index_select` **backward** exists — none does (§18.1, §18.9, §35);
-- Phase K is **not** complete, and no milestone after K6 has landed.
+- Phase K is **not** complete, and no milestone after K7 has landed.
 
 Three things that were on this list and have been **moved rather than
 deleted**, which is the discipline the list exists to demonstrate:
@@ -2599,6 +2627,18 @@ allocation (through the existing thread-local arm only, disarmed in a
 `finally` *and* an autouse fixture), host → native transfer, and kernel
 execution. Every injection needs a non-vacuity control proving it can fire.
 
+A **family** is not a position. Where one operation reaches the same
+export from two different call sites, those are two positions and each
+must be injected on its own: `index_select` materializes through
+`tf_core_contiguous_copy` once for its floating source and once for its
+`int64` index, and a stand-in that fails the export immediately reaches
+only the first. Reaching the second requires delegating the first call to
+the real export, and the two must be shown distinguishable by dtype, size,
+or metadata rather than by ordering alone. Conversely, a cleanup
+*invariant* checked at a position the matrix already names — reverse-order
+release, or release **exactly once** — is not a new position and may not
+be added as one: the matrix describes seams, not tests.
+
 ### 27.3 No `int64` path uses uninitialized allocation
 
 `argmax`'s destination and `index_select`'s destination are
@@ -2779,7 +2819,7 @@ existing rule plus the ones this phase makes specific.
 
 ## 32. Final milestone ladder
 
-Ten milestones, **one purpose each**. K0 through K6 are complete; K7
+Ten milestones, **one purpose each**. K0 through K7 are complete; K8
 through K9 are unstarted. No milestone combines two major operations, no
 milestone exists to preserve a numbering, and K9 is the closure.
 
@@ -2849,7 +2889,7 @@ than trusting the prose.
 | **K4** | `index_select`, forward only — the phase's one index-*consuming* operation and its second and final C ABI symbol | **Complete.** `tf::index_select_contiguous` beside K3's traversal in the same internal header, `tf_core_index_select` beside `tf_core_argmax` in the same translation unit, one CTest (26 → **27**), the ctypes declaration and errcheck hook, `NativeTensorCore.index_select`, `NativeTensor.index_select` with the `requires_grad` rejection naming `detach()`, `"index_select"` in `TENSOR_CORE_OPS`, and `tests/test_native_index_select.py`. Exports 55 → **56**, the phase maximum. `AUTOGRAD_OPS`, `__all__`, every registry, every version, the examples, and the benchmarks are unmoved, and no `gather`, `scatter`, embedding, or backward was shipped. |
 | **K5** | Compatibility proof — checkpoint, state, data pipeline, classification | **Complete.** `tests/test_native_integer_compatibility.py`, and the status reconciliation. Zero production code: no export, no public name, no CTest, no example, no benchmark, no registry or version movement. |
 | **K6** | End-to-end integration example and exact proof | **Complete.** `examples/native_integer_indexing.py` and `tests/test_native_integer_indexing_example.py`. Examples 16 → **17**; zero production code, no export, no `__all__` change, no CTest, no benchmark, no registry or version movement. |
-| **K7** | Adversarial hardening | *Unstarted.* |
+| **K7** | Adversarial hardening — §27's four injection families at every actual allocating path (both of `index_select`'s Policy-B materialization call sites separately), the complete world fingerprint, `BaseException` cleanup, and the malformed-metadata and dtype-role matrices | **Complete.** `tests/test_native_integer_hardening.py`, and the status reconciliation. Zero production code: no export, no public name, no CTest, no example, no benchmark, no registry or version movement, and no defect found. |
 | **K8** | Benchmark characterization | *Unstarted.* |
 | **K9** | Cross-platform validation and Phase-K closure | *Unstarted.* |
 
@@ -3504,7 +3544,7 @@ notices a deliberately retained tensor.
 malformed-metadata matrix, no reentrancy or concurrency test, no benchmark,
 and no closure claim; K7's, K8's, and K9's modules are asserted **absent**.
 
-### K7 — Adversarial hardening
+### K7 — Adversarial hardening · complete
 
 `tests/test_native_integer_hardening.py`: §27's four injection positions at
 every allocating path, the complete before/after world fingerprint after
@@ -3512,6 +3552,94 @@ every rejection, a `BaseException` through each cleanup, malformed-metadata
 C-side negative controls, and a non-vacuity control for every injection and
 every parser. **No production code** — and if it finds a defect, that
 defect is fixed here and reported, rather than absorbed.
+
+**What landed.** One new module, `tests/test_native_integer_hardening.py`,
+plus status reconciliation, and **zero production code**. The four §27.2
+families are resolved against the live call graph rather than assumed, and
+recorded in the module as a traceable path-by-position matrix that a
+guardrail in the same module checks: every row names either an owner test
+that exists or an `N/A` with the technical reason the family cannot exist
+on that path — `from_int64_array` runs no compute kernel, and `int64`
+`contiguous_copy` has no host operand and no host→native transfer, so
+neither is faked with a neighbour's injection.
+
+Each of the four attacked paths is driven at **every** actual allocating
+step, separately: `from_int64_array` at host validation, at the index
+registry gate, at the `int64` storage allocation, at the host→storage
+copy, at core/view construction, and at public publication; `int64`
+`contiguous_copy` at the destination allocation, at
+`tf_core_contiguous_copy`, and at publication; `argmax` at the Policy-B
+temporary, at the `int64` destination, at the materialization kernel, at
+`tf_core_argmax`, and at publication; `index_select` at the source
+temporary, at the **index** temporary, at the destination, at **both** of
+its Policy-B materialization call sites, at `tf_core_index_select`, and at
+publication.
+
+Those last two are **two rows, not one**, and the distinction is the
+substantive one this milestone insisted on. `index_select` reaches
+`tf_core_contiguous_copy` twice on a both-strided call — once through
+`self._contiguous_temp` for the floating source, once through
+`indices._contiguous_temp` for the `int64` index — and an injection that
+fails the export immediately can only ever reach the **first**. The second
+is therefore driven by a call **journal** that delegates call 1 to the real
+export, so the failure happens with the source temporary genuinely
+materialized, and the journal proves the two calls are distinguishable by
+dtype, element count, and rank rather than by ordering alone. Both sites
+run at float64 and float32 and under both an `Exception` and a
+`BaseException`; the index-site failure additionally proves that **no
+destination is allocated** after it and that both temporaries are closed
+while the test still holds them. One representative failure is not allowed
+to stand for both.
+
+Every allocation row fires the backend's **own** thread-local arm, armed
+immediately before the production seam it names so the position is exact
+and no ordinal counting of unrelated allocations is involved; every kernel
+and publication row runs under both an `Exception` and a `BaseException`
+and at **both** floating widths, each width proved only against itself,
+and retains the allocated core or storage in an external list so its
+closure is proved by production cleanup **while a strong reference still
+holds it**. The three-allocation `index_select` failure proves
+reverse-order cleanup and a per-object release count proves **exactly
+once** rather than merely *closed* — a cleanup **invariant** at a position
+the matrix already names, deliberately traced as such rather than added as
+a row, because re-describing one physical seam as two would inflate the
+matrix without attacking anything new.
+
+Around every rejection and every injected failure the module compares one
+reusable fingerprint of the observable world — both operands by identity,
+layout, graph state, gradient, and raw payload bytes; an unrelated
+parameter with its version and gradient; a persistent **and** a
+non-persistent buffer; a live optimizer; a registered generator; every
+capability registry, dtype table, operation inventory, format, and
+version; `experimental.__all__`; both global RNGs; the environment; a
+watched directory; the live-storage count; and the native error slot —
+and every component has a perturbation control proving it can notice the
+change it exists for. That "every" is **literal, and checked**: a scan of
+the module's own AST requires each non-`N/A` matrix row's owner to enter
+the fingerprint, so a narrower check can never be reported as the complete
+one. Where a rejection needs a deliberate instrument — an emptied
+`INDEX_DTYPES`, a lowered `_INT64_MAX` — the instrument is applied first
+and the snapshot taken after it, so what is proved unchanged is what the
+*rejected call* touches, and the instrument is restored in a `finally`
+with the ordinary path exercised afterwards.
+
+The two exports keep **separate** malformed-metadata matrices *and*
+separate dtype-role matrices, held to the same standard: every rejection
+prefills every operand with distinctive values and asserts not one byte
+moved in **any** of them — two handles for `argmax`, three for
+`index_select` — allocates no native storage, and leaves the error slot
+clean once the `errcheck` hook has run. The valid controls are preserved
+and prove the permitted role combinations really execute: `argmax`'s
+mixed-role call, which either forbidden guard would reject, and
+`index_select`'s matching floating pair with an `int64` index. A late
+invalid index following three valid ones is proved to leave the whole
+destination byte-identical at both widths.
+
+**K7 found no production defect**, and it moved no inventory: exports
+**56**, CTests **27**, examples **17**, benchmarks **9**, `__all__`
+**25**, every registry and every version exactly what K6 left. No native
+build was performed or required. The only file it touches under `src/` is
+the package docstring's Phase-K status sentence.
 
 ### K8 — Benchmark characterization
 

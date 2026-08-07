@@ -214,24 +214,25 @@ INDEXING_EXPORTS = ("tf_core_argmax", "tf_core_index_select")
 # milestone moves its identifier from the second tuple to the first and
 # nowhere else, so the two together are always exactly ``MILESTONES``.
 MILESTONES = tuple(f"K{index}" for index in range(10))      # K0 ... K9
-COMPLETE_MILESTONES = ("K0", "K1", "K2", "K3", "K4", "K5", "K6")
+COMPLETE_MILESTONES = ("K0", "K1", "K2", "K3", "K4", "K5", "K6", "K7")
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
-assert len(UNSTARTED_MILESTONES) == 3
+assert len(UNSTARTED_MILESTONES) == 2
 
 # The milestones that ship **no production code at all**, and the module
 # each one's proof lives in. K0 was architecture and guardrails; K5 is the
-# compatibility proof; K6 is the end-to-end example and its owner. Written
-# down because "this milestone landed" and "this milestone changed the
-# package" are different facts, and the second is what the *package*
-# inventories above are measured against. K6 adds one file under
-# ``examples/``, which is a program written against the public API rather
-# than production code — the design's own K6 row says so, and
-# ``K6_EXAMPLES`` names it.
+# compatibility proof; K6 is the end-to-end example and its owner; K7 is
+# the adversarial hardening matrix. Written down because "this milestone
+# landed" and "this milestone changed the package" are different facts, and
+# the second is what the *package* inventories above are measured against.
+# K6 adds one file under ``examples/``, which is a program written against
+# the public API rather than production code — the design's own K6 row says
+# so, and ``K6_EXAMPLES`` names it. K7 adds nothing outside ``tests/``.
 ZERO_PRODUCTION_MILESTONES = {
     "K0": "tests/test_native_phase_k.py",
     "K5": "tests/test_native_integer_compatibility.py",
     "K6": "tests/test_native_integer_indexing_example.py",
+    "K7": "tests/test_native_integer_hardening.py",
 }
 
 # The ordering the phase turns on (design §32.1): every reachability
@@ -472,12 +473,12 @@ _PHASE_K_OVERCLAIMS = (
      + _BECAME + _LANDED),
     # The sentinel advances one milestone as each lands, and only then:
     # it read K2-and-later while K1 was the newest, moved to K3 when K2
-    # shipped, to K4 when K3 did, to K5 when K4 did, to K6 when K5 did, and
-    # to K7 when K6 did. Keeping the old bound would force every status
-    # surface to under-report the project, which is the mirror of the
-    # failure this scanner exists to catch.
-    ("a Phase-K milestone after K6 has landed",
-     r"\bK(?:[7-9]|10)\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
+    # shipped, to K4 when K3 did, to K5 when K4 did, to K6 when K5 did, to
+    # K7 when K6 did, and to K8 when K7 did. Keeping the old bound would
+    # force every status surface to under-report the project, which is the
+    # mirror of the failure this scanner exists to catch.
+    ("a Phase-K milestone after K7 has landed",
+     r"\bK(?:[89]|10)\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
      + _DONE + r")"),
     ("Phase K is finished",
      r"\bPhase K\s+(is|was|has been)\s+" + _DONE),
@@ -708,25 +709,28 @@ def test_the_overclaim_scanner_can_actually_fail():
         "scatter_add is implemented",
         "embedding is now supported",
         "Phase K is complete",
-        "K7 has landed",
-        "K8 is shipped",
+        "K8 has landed",
+        "K9 is shipped",
         "the checkpoint is now at version 4",
         "CUDA is supported",
         "integer gradients are supported",
         "integer parameters are available",
     ):
         assert _overclaims(caught), caught
-    # ...and every accurate sentence a K6 surface must be able to write.
+    # ...and every accurate sentence a K7 surface must be able to write.
     for allowed in (
         "int64 is not a supported native tensor dtype",
-        "Phase K is newly approved and K0 through K6 are complete",
-        "K0 through K6 are the only completed Phase-K milestones",
-        "K7 through K9 are unstarted",
+        "Phase K is newly approved and K0 through K7 are complete",
+        "K0 through K7 are the only completed Phase-K milestones",
+        "K8 through K9 are unstarted",
         "K4 is complete",
         "K5 is complete",
         "K5 landed and added zero production code",
         "K6 is complete",
         "K6 landed and added zero production code",
+        "K7 is complete",
+        "K7 landed and added zero production code",
+        "the adversarial hardening matrix has landed",
         "the end-to-end integration example has landed",
         "the compatibility proof has landed",
         "a native argmax is implemented",
@@ -1906,7 +1910,7 @@ def test_every_zero_production_milestone_names_the_module_that_proves_it():
         # The ladder row says the same thing in its own words.
         assert "complete" in _flat(rows[milestone]).lower(), milestone
     # Each row names its module, which is what makes the claim checkable.
-    for milestone in ("K5", "K6"):
+    for milestone in ("K5", "K6", "K7"):
         assert ZERO_PRODUCTION_MILESTONES[milestone] in _flat(
             _milestone_record(milestone)), milestone
     # ...and the negative control: a milestone that *did* change the
@@ -1972,6 +1976,39 @@ def test_the_example_module_is_k6s_and_moves_only_the_example_inventory():
     public = _delta_column("Public Python")
     assert not re.search(r"\bfrom_int64_array\b|\bargmax\b|\bindex_select\b",
                          public["K6"]), public["K6"]
+
+
+def test_the_hardening_module_is_k7s_and_moves_no_inventory_at_all():
+    """K7's whole deliverable, asserted where a reader can find it: the
+    module exists, the design assigns it to K7 in the ownership table, and
+    every column of its delta row is K6's.
+
+    K7 is the second milestone in a row to add **no** production code, and
+    the third overall — so unlike K6 it does not even move the example
+    count, which is what makes "every column is the previous one's" the
+    right check rather than an approximation of one."""
+    module = ZERO_PRODUCTION_MILESTONES["K7"]
+    assert (REPO_ROOT / module).is_file(), module
+    ownership = _flat(_section(_design(), 30))
+    assert "test_native_integer_hardening.py" in ownership
+    assert re.search(r"test_native_integer_hardening\.py[^|]{0,40}K7",
+                     ownership), ownership[:400]
+    for column, expected in (("C ABI", str(PHASE_K_MAX_EXPORTS)),
+                             ("CTests", str(K4_CTEST_COUNT)),
+                             ("Examples", str(K6_EXAMPLE_COUNT)),
+                             ("Benchmarks", str(K0_BENCHMARK_COUNT))):
+        cells = _delta_column(column)
+        assert cells["K7"] == expected, (column, cells["K7"])
+        assert cells["K7"] == cells["K6"], column
+    # ...and it promises no public Python name.
+    public = _delta_column("Public Python")
+    assert not re.search(r"\bfrom_int64_array\b|\bargmax\b|\bindex_select\b",
+                         public["K7"]), public["K7"]
+    # The K8/K9 artifacts stay absent while K7 is the newest milestone.
+    for absent in ("benchmarks/benchmark_native_integer.py",
+                   "tests/test_native_integer_benchmark.py",
+                   "tests/test_native_phase_k_closure.py"):
+        assert not (REPO_ROOT / absent).exists(), absent
 
 
 def test_the_ladder_has_a_closure_milestone_and_no_successor_promise():
@@ -2137,10 +2174,10 @@ _UNSTARTED_CLAIM = re.compile(
 
 def test_the_landed_and_unstarted_claim_forms_can_actually_fail():
     """Negative controls for both, on temporary strings."""
-    assert _LANDED_CLAIM.search("only K0 through K6 have landed")
-    assert not _LANDED_CLAIM.search("only K0 through K5 have landed")
-    assert _UNSTARTED_CLAIM.search("K7 through K9 are unstarted")
-    assert not _UNSTARTED_CLAIM.search("K6 through K9 are unstarted")
+    assert _LANDED_CLAIM.search("only K0 through K7 have landed")
+    assert not _LANDED_CLAIM.search("only K0 through K6 have landed")
+    assert _UNSTARTED_CLAIM.search("K8 through K9 are unstarted")
+    assert not _UNSTARTED_CLAIM.search("K7 through K9 are unstarted")
 
 
 @pytest.mark.parametrize("surface", EDITABLE_STATUS_SURFACES)

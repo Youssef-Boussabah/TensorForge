@@ -399,10 +399,10 @@ async primitive, and none joins the process-wide state-replacement lock
 order. One thread at a time; external locking is the caller's job.
 
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and only K0 through K6 have landed.** Its contract is
+and only K0 through K7 have landed.** Its contract is
 ``docs/native_integer_tensors_design.md``. Phase K was approved **after**
 Phase J closed at J9 without a committed successor, so it is not
-carried-over roadmap work; **K7 through K9 are unstarted**. **K5 added no
+carried-over roadmap work; **K8 through K9 are unstarted**. **K5 added no
 production code**: it is the compatibility proof
 (``tests/test_native_integer_compatibility.py``), showing that K1 through
 K4 left the checkpoint, the optimizer, loader, and sampler states, the
@@ -416,8 +416,17 @@ with ``argmax`` and consumes them with ``index_select`` over a **detached**
 source, and an interrupted-and-resumed run reproduces the uninterrupted one
 exactly at float64 and float32 independently — every index by exact integer
 equality, every floating value by raw bits. It moved one inventory,
-examples 16 to **17**, and nothing else. This paragraph is the only thing
-in this package either milestone changed.
+examples 16 to **17**, and nothing else. **K7 added no production code
+either**: it is the adversarial hardening matrix
+(``tests/test_native_integer_hardening.py``), which drives every actual
+allocating path of the integer stack through the four injection families —
+including both of ``index_select``'s Policy-B materialization call sites,
+separately — compares a complete before/after fingerprint of the observable
+world after every rejection, proves cleanup under a ``BaseException`` with
+retained references rather than collection timing, and re-proves both
+exports' malformed-metadata and dtype-role no-write behavior — finding no
+defect and moving no inventory at all. This paragraph is the only thing in this package any of
+the three milestones changed.
 
 **K0** was architecture, contract, status, and guardrails only, and added
 no runtime behavior at all. **K1 added the internal ``int64``

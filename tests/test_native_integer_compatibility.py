@@ -2787,7 +2787,15 @@ def test_no_k7_or_later_surface_exists():
     had not started. That premise expired when K6 landed, and what replaces
     it is the durable half: K6's example is named and subtracted rather than
     absorbed, so the count still fails on an *unrecorded* example, and the
-    benchmark inventory K8 owns is still asserted empty of integer work."""
+    benchmark inventory K8 owns is still asserted empty of integer work.
+
+    The same thing happened again at **K7**, whose hardening module landed
+    and is therefore no longer assertable as absent. The entry is removed
+    rather than exempted — a guard that keeps banning a file the repository
+    now legitimately owns is a guard that forces a lie — and what remains is
+    the claim K7 did not earn: **K8's benchmark and its owner, and K9's
+    closure module, are still absent**, and K5's own inventories are still
+    exact."""
     for owner in (NativeTensor, cpp.NativeTensorCore, cpp.NativeStorage):
         for absent in ("argmin", "gather", "scatter", "scatter_add",
                        "embedding", "max", "amax", "take", "topk", "sort",
@@ -2812,10 +2820,13 @@ def test_no_k7_or_later_surface_exists():
                 if "integer" in name and name not in POST_K5_EXAMPLES], (
         examples)
     assert not [name for name in benchmarks if "integer" in name], benchmarks
-    # K7's, K8's, and K9's own modules are still absent.
-    for absent in ("test_native_integer_hardening.py",
-                   "test_native_integer_benchmark.py",
-                   "test_native_phase_k_closure.py"):
+    # K8's and K9's own modules are still absent; K7's landed, so it is
+    # named as **present** here rather than dropped silently, which keeps
+    # this list a claim about the ladder rather than a shrinking list.
+    assert (REPO_ROOT / "tests"
+            / "test_native_integer_hardening.py").is_file()      # K7
+    for absent in ("test_native_integer_benchmark.py",           # K8
+                   "test_native_phase_k_closure.py"):            # K9
         assert not (REPO_ROOT / "tests" / absent).exists(), absent
 
 

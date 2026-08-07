@@ -82,8 +82,8 @@ Phase J.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
 complete: milestones J0 through J9 have all landed and J9 closed it.**
-**Phase K is the latest phase, and only K0 through K6 have landed;
-K7 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
+**Phase K is the latest phase, and only K0 through K7 have landed;
+K8 through K9 are unstarted.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -334,6 +334,59 @@ library, the example run directly as a script, and
 no LeakSanitizer lifecycle is claimed for this milestone either — those
 belong to **K9**. No result file of any kind was written, no benchmark was
 added, and **no timing was measured**.
+
+### K7 — adversarial hardening, with no native rebuild required
+
+**K7 changed no C++, no CMake, and no executable production source, so no
+native rebuild, no CTest run, and no sanitizer run was performed, required,
+or is claimed.** The library is byte-identical to the one K4 built: still
+exactly **56** exported `tf_*` symbols — the phase maximum — still **27**
+registered CTests, and every `Int64` arm, role guard, validation order, and
+no-write-on-rejection property exactly as K1, K3, and K4 left them. K7's
+whole deliverable is `tests/test_native_integer_hardening.py` plus status
+reconciliation, and the only file it touched under `src/` is the package
+docstring's Phase-K status sentence, which carries no capability.
+
+**What K7 exercised against that unchanged library.** The backend's own
+thread-local allocation-failure arm, `tf_test_arm_alloc_failure`, fired at
+every actual native allocation the four integer paths make — armed
+immediately before the production seam it targets so the position is exact
+rather than an ordinal over unrelated allocations — with the arm disarmed
+in each test's own `finally` **and** in an autouse fixture, and the
+thread-local error slot proved clear afterwards so one test's injected
+failure cannot change another's result. `tf_core_contiguous_copy` was
+driven at **both** of the call sites `index_select` reaches it from — its
+floating source materialization and its `int64` index materialization —
+through a call journal that delegates the first call to the real export, so
+the second is entered with the source temporary genuinely materialized;
+they are distinguishable in the journal by dtype, element count, and rank.
+
+Both K3/K4 exports were driven
+directly through `ctypes` with the Python validators bypassed, each against
+its **own** malformed-metadata list **and its own dtype-role list**, with
+every prefilled operand — two handles for `argmax`, three for
+`index_select` — proved byte-identical after every rejection, no native
+allocation, a clean error slot afterwards, and valid controls proving both
+that the sentinel detector can see a write and that the permitted role
+combinations really execute.
+
+`tf_storage_fill` and `tf_storage_scale` were re-confirmed **guarded but
+unhooked**, and the two words mean different things. K1 gave both
+`TF_GUARD_BEGIN` / `TF_GUARD_END_VOID` precisely so they could *record* an
+integer-role rejection instead of letting an exception escape the C ABI, so
+calling them "unguarded" would describe the opposite of what K1 did — the
+guards are asserted present by reading `cpp/src/storage.cpp` with comments
+and string literals stripped. What they deliberately are **not** is members
+of `_CHECKED_KERNELS`: no Python `errcheck` hook is attached, so a rejected
+fill records in the slot, writes nothing, and raises no Python exception,
+exactly as the error contract says — and the Python wrapper refuses the
+unsupported `int64` role ahead of the native call entirely.
+
+**Windows evidence.** The full `uv run pytest` suite green on the K4
+library and `scripts/smoke_cpp_backend.py`. No Linux or WSL run, no
+sanitizer run, and no LeakSanitizer lifecycle is claimed for this milestone
+either — those belong to **K9**. No result file of any kind was written, no
+benchmark was added, and **no timing was measured**.
 
 ### J9 — the Phase-J closure matrix
 

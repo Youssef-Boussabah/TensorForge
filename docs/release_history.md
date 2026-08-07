@@ -2330,7 +2330,7 @@ kernels still deliberately naive.
 
 ### Phase K — native integer tensors and indexing (K0–K6)
 
-**Phase K is newly approved, and K0 through K6 have
+**Phase K is newly approved, and K0 through K7 have
 landed.** **No version is claimed** — the native line
 stays experimental and is not production-ready, and this entry records
 milestones rather than a release.
@@ -2338,7 +2338,7 @@ milestones rather than a release.
 Phase K was approved **after** Phase J closed at J9. The repository
 deliberately finished Phase J without committing to a successor, so Phase K
 is not carried-over roadmap work and must not be described as though it
-were. **K7 through K9 are unstarted**, and work beyond Phase K would
+were. **K8 through K9 are unstarted**, and work beyond Phase K would
 require a separately approved phase with its own design contract.
 
 **K0 added no runtime behavior at all.** No integer dtype, no dtype code,
@@ -2671,6 +2671,90 @@ timing, leaves no file behind, and returns live native storage exactly to
 its baseline. **Examples moved 16 → 17** — the one inventory K6 touches —
 while exports stayed **56**, CTests **27**, benchmarks **9**, and
 `experimental.__all__` **25**.
+
+**K7 is the adversarial hardening milestone, and it added zero production
+code too.** Its whole deliverable is
+`tests/test_native_integer_hardening.py`, plus the status reconciliation a
+landed milestone requires; the only file it touches under `src/` is the
+same package-docstring status sentence, which carries no capability. It
+exists because K1 through K6 proved what the integer stack *does*, and how
+it behaves when something fails is a different claim.
+
+The module resolves the four injection families against the live call graph
+and records them as a traceable path-by-position matrix — a family that
+genuinely cannot exist on a path is an `N/A` with its technical reason,
+never a neighbour's injection reused. `from_int64_array` is driven at host
+validation, at the index registry gate, at the `int64` storage allocation,
+at the host-to-storage copy, at core/view construction, and at public
+publication; `int64` `contiguous_copy` at the destination allocation, at
+`tf_core_contiguous_copy`, and at publication; `argmax` at the Policy-B
+temporary, at the `int64` destination, at the materialization kernel, at
+`tf_core_argmax`, and at publication; `index_select` at the source
+temporary, at the **index** temporary, at the destination, at **both** of
+its Policy-B materialization call sites, at `tf_core_index_select`, and at
+publication.
+
+Those last two are two rows rather than one, and the distinction is the
+one this milestone insisted on: `index_select` reaches
+`tf_core_contiguous_copy` twice on a both-strided call — once through
+`self._contiguous_temp` for the floating source, once through
+`indices._contiguous_temp` for the `int64` index — and an injection that
+fails the export immediately reaches only the first. The second is driven
+by a call **journal** that delegates call 1 to the real export, so the
+failure happens with the source temporary genuinely materialized, and the
+journal proves the two calls distinguishable by dtype, element count, and
+rank rather than by ordering. The index-site failure additionally proves
+that **no destination is allocated** after it. A family is not a position,
+and one representative failure may not stand for two call sites.
+
+Every allocation row fires the backend's **own** thread-local arm, armed
+immediately before the production seam it names, and every kernel and
+publication row runs under both an `Exception` and a `BaseException`, at
+**both** floating widths and each width proved only against itself, while
+holding the allocated core or storage in an external list — so "it was
+closed" is a fact about production cleanup rather than about reference
+counting. The three-allocation `index_select` failure proves reverse-order
+cleanup, and a per-object release count proves **exactly once** rather than
+merely closed — a cleanup *invariant* checked at a position the matrix
+already names, and deliberately traced as such rather than added as a row,
+since re-describing one seam as two would inflate the matrix without
+attacking anything new.
+
+Around every rejection and every injected failure the module compares one
+reusable fingerprint of the observable world: both operands by identity,
+layout, graph state, gradient, and raw payload bytes; an unrelated
+parameter with its version and gradient; a persistent and a non-persistent
+buffer; a live optimizer; a registered generator; every capability
+registry, dtype table, operation inventory, format, and version;
+`experimental.__all__`; both global RNGs; the environment; a watched
+directory; the live-storage count; and the native error slot. Every
+component has a perturbation control proving it can notice the change it
+exists for, every injector has a record proving it fired at the seam it
+names, and every parser has a planted in-memory negative control. That
+"every rejection and every injected failure" is **literal and checked**: a
+scan of the module's own AST requires each non-`N/A` matrix row's owner to
+enter the fingerprint, so a narrower assertion can never be reported as the
+complete one. Where a rejection needs a deliberate instrument — an emptied
+`INDEX_DTYPES`, a lowered `_INT64_MAX` — the instrument is applied first
+and the snapshot taken after it, so what is proved unchanged is what the
+*rejected call* touches, and the instrument is restored in a `finally` with
+the ordinary path exercised afterwards.
+
+The two C ABI exports keep **separate** malformed-metadata matrices *and*
+separate dtype-role matrices, because their validation lists are separate:
+each prefills **every** operand with distinctive values and proves not one
+byte moved in any of them — two handles for `argmax`, three for
+`index_select` — with no native allocation and a clean error slot once the
+`errcheck` hook has run, and with controls proving the sentinel detector
+can see a write and that the permitted role combinations really execute. A
+late invalid index following three valid ones is proved to leave the whole
+destination unchanged at both widths.
+
+**K7 found no production defect.** No inventory moved: exports **56**,
+CTests **27**, examples **17**, benchmarks **9**, `experimental.__all__`
+**25**, and every registry and version exactly what K6 left. No native
+build was performed or required, and no K8 or K9 work landed — the
+benchmark, its owner, and the closure module are all still absent.
 
 Every registry and
 inventory is exactly what Phase J left, with five exceptions — the CTest

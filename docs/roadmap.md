@@ -38,13 +38,13 @@ the experimental native line has completed **Phases A through J** — the
 last of them, the deterministic native data pipeline and mini-batching,
 closed at milestone J9, so **Phase J is the latest completed phase**.
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and only K0 through K6 have landed.** Each phase's record is in its own
+and only K0 through K7 have landed.** Each phase's record is in its own
 design document; the sections above are the narrative.
 
-## The current phase — Phase K, K0 through K6 complete
+## The current phase — Phase K, K0 through K7 complete
 
 **Phase K — Native Integer Tensors and Indexing — is the current phase,
-and K0 through K6 are complete.** **K7 through K9 are unstarted.** Its
+and K0 through K7 are complete.** **K8 through K9 are unstarted.** Its
 architecture contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md).
 
@@ -879,6 +879,34 @@ or version moved.
 
 **The proof found one real defect, and the chronology is part of the record.** Driving the two module registration routes with a deliberately forged `NativeParameter` — the only way to reach them, because the public constructor refuses an `int64` tensor — showed that `save_native_checkpoint` trusted whatever dtype live state reported, so the **writer** could emit an archive declaring an `int64` entry that its own loader then refused. That was a pre-existing gap in the writer, not something Phase K introduced and not reachable through any public API, and it was repaired in a **separate checkpoint-hardening change committed before K5**: a save-side persisted-dtype authority asking the same `cpp.normalize_dtype` question the loader asks, applied in `_validate_model`'s preflight and again at `_coherent_snapshot`'s serialization seam, with its own regression in `tests/test_native_checkpoint.py`. No format, field, version, capability, registry, export, CTest, example, or benchmark moved; the forged parameter is test-only and never supported public usage; and K5 itself remains the test-and-documentation compatibility milestone.
 
+**K7** is the **adversarial hardening** milestone, and it added **zero
+production code** too: one new module,
+`tests/test_native_integer_hardening.py`, plus status reconciliation. It
+drives the four injection families — host validation, the backend's own
+thread-local allocation arm, host-to-native transfer or materialization,
+and kernel execution — at every actual allocating step of
+`from_int64_array`, `int64` `contiguous_copy`, `argmax`, and
+`index_select`, with a traceable path-by-position matrix in which an
+inapplicable family is an `N/A` carrying its technical reason, and in
+which a **family is not a position**: `index_select` reaches
+`tf_core_contiguous_copy` at two call sites — its floating source and its
+`int64` index — so it carries two materialization rows, the second reached
+only through a call journal that delegates the first to the real export.
+Every rejection and every injected failure is followed by a complete
+before/after fingerprint of the observable world, and a scan of the
+module's own AST makes that "every" literal; every fingerprint
+component, injector, and parser has a non-vacuity control; cleanup is
+proved under a `BaseException` with retained references rather than
+collection timing, at **both** floating widths; the three-allocation
+`index_select` failure proves reverse-order cleanup and a per-object
+release count proves **exactly once**, traced as a cleanup invariant
+rather than as a matrix row because it attacks a position already listed;
+and both exports keep separate malformed-metadata *and* dtype-role
+matrices whose every prefilled operand is proved byte-identical after
+every rejection. It
+found **no production defect**. Exports stayed **56**, CTests **27**,
+examples **17**, benchmarks **9**, and `experimental.__all__` **25**.
+
 **`int64` is not a supported native tensor dtype** — it is an
 index/result dtype in its own registry, and no generic constructor accepts
 it. A native `argmax` exists from **K3** and a native `index_select` from
@@ -887,7 +915,7 @@ none is planned, no general `gather`, `scatter`, or embedding lookup
 exists, no `index_select` backward exists, no `argmin` exists, no
 integer arithmetic or reduction exists, no integer autograd, parameter,
 buffer, optimizer state, or checkpoint entry exists, and
-**K7 through K9 are unstarted**. What
+**K8 through K9 are unstarted**. What
 K0 decides is the architecture: one extended `NativeTensor` rather than a
 parallel integer class, `int64` as an exact non-differentiable
 index/result dtype and the only integer dtype in the phase, one strict

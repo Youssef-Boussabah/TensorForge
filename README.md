@@ -516,7 +516,7 @@ and nothing asserts that it does.
 
 **Phase J — a deterministic native data pipeline and mini-batching — is
 complete: milestones J0 through J9 have all landed, and J9 closed it.**
-**Phase K is the latest phase, and only K0 through K6 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after*
+**Phase K is the latest phase, and only K0 through K7 have landed.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved *after*
 Phase I closed at I11 rather than having been on the earlier roadmap. **J0 was
 architecture, contract, and documentation work only, and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper module,
@@ -804,7 +804,7 @@ any floating operation.
 of that, and K3 and K4 are where the distinction earns itself: one
 operation now *produces* `int64` and another *consumes* it as a role
 operand, without `int64` ever becoming a dtype a kernel computes at.
-There is **no `max`**, no `max_with_indices`, no `argmin`, no general `gather`, no `scatter`, no embedding lookup, no `index_select` backward, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion, and **K7 through K9 are unstarted**.
+There is **no `max`**, no `max_with_indices`, no `argmin`, no general `gather`, no `scatter`, no embedding lookup, no `index_select` backward, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion, and **K8 through K9 are unstarted**.
 
 **K5 is the compatibility proof, and it added zero production code** —
 one new test module, `tests/test_native_integer_compatibility.py`. It
@@ -853,6 +853,37 @@ arrays. **Examples went 16 → 17**; exports stayed 56, CTests 27,
 benchmarks 9, and `experimental.__all__` 25.
 
 **The proof found one real defect, and the chronology is part of the record.** Driving the two module registration routes with a deliberately forged `NativeParameter` — the only way to reach them, because the public constructor refuses an `int64` tensor — showed that `save_native_checkpoint` trusted whatever dtype live state reported, so the **writer** could emit an archive declaring an `int64` entry that its own loader then refused. That was a pre-existing gap in the writer, not something Phase K introduced and not reachable through any public API, and it was repaired in a **separate checkpoint-hardening change committed before K5**: a save-side persisted-dtype authority asking the same `cpp.normalize_dtype` question the loader asks, applied in `_validate_model`'s preflight and again at `_coherent_snapshot`'s serialization seam, with its own regression in `tests/test_native_checkpoint.py`. No format, field, version, capability, registry, export, CTest, example, or benchmark moved; the forged parameter is test-only and never supported public usage; and K5 itself remains the test-and-documentation compatibility milestone.
+
+**K7 is the adversarial hardening milestone, and it added zero production
+code too** — one new module, `tests/test_native_integer_hardening.py`, plus
+the status reconciliation a landed milestone requires. It attacks the
+shipped integer stack rather than extending it: the four injection families
+(host validation, the backend's **own** thread-local allocation arm, the
+host-to-native transfer or materialization, and kernel execution) at
+**every** actual allocating step of `from_int64_array`, `int64`
+`contiguous_copy`, `argmax`, and `index_select`, recorded as a traceable
+matrix in which a family that genuinely cannot exist on a path is an `N/A`
+with its reason rather than a borrowed injection, and in which one export
+reached from two different call sites gets **two rows**: `index_select`
+materializes through `tf_core_contiguous_copy` once for its floating source
+and once for its `int64` index, and the second is reached only by a call
+journal that delegates the first to the real export. Around every rejection
+and every injected failure it compares one complete fingerprint of the
+observable world — both operands, an unrelated parameter with its version
+and gradient, both buffer kinds, a live optimizer, a registered generator,
+every registry and every version, both global RNGs, the filesystem, the
+live-storage count, and the native error slot — and every component, every
+injector, and every parser has a control proving it can fail; a scan of the
+module's own AST makes "every injected failure" literal rather than a
+promise. Cleanup is proved under a `BaseException` as well as an
+`Exception` and at **both** floating widths, with the allocated core or
+storage held in an external list so no closure claim rests on `__del__`
+timing, and both C ABI exports keep **separate** malformed-metadata *and*
+dtype-role matrices in which every operand — two handles for `argmax`,
+three for `index_select` — is proved byte-identical after every rejection,
+including one where three valid indices precede an invalid one. K7 found no
+production defect and moved no inventory: exports stayed 56, CTests 27,
+examples 17, benchmarks 9, and `experimental.__all__` 25.
 
 What K0 shipped is
 [docs/native_integer_tensors_design.md](docs/native_integer_tensors_design.md)

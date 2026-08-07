@@ -110,7 +110,7 @@ capability decision, never a side effect.
 | Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` |
 | Exported production `tf_*` symbols | **56** (Phase H closed at 52; Phase I added 2 at I1; Phase K added `tf_core_argmax` at K3 and `tf_core_index_select` at K4, reaching its phase maximum of 56) |
 | Experimental Python exports | **25** |
-| Native CTests · examples · benchmarks | **27** · **17** · **9** (24 CTests and 16 examples at Phase K's start; K1, K3, and K4 each added one CTest; K5 added nothing; K6 added one example) |
+| Native CTests · examples · benchmarks | **27** · **17** · **9** (24 CTests and 16 examples at Phase K's start; K1, K3, and K4 each added one CTest; K5 added nothing; K6 added one example; K7 added nothing) |
 
 **Three dtype rows, three different questions**, and none may be reported as
 another: `SUPPORTED_DTYPES` is the **capability**; `backend_info()["dtype"]`
@@ -640,7 +640,9 @@ that changes the public API or the examples updates the matching document
   Record it that way rather than rewriting it: "the phase that came next"
   and "the phase that was always planned next" are different facts.
 - **Native line: Phase K — Native Integer Tensors and Indexing — is the
-  newly approved phase and is the latest phase, and only K0 through K6 have landed.**
+  newly approved phase and is the latest phase, and only K0 through K7 have landed.**
+  Phase K remains **in progress**; Phase J is still the latest completed
+  native phase.
   Authority
   `docs/native_integer_tensors_design.md`. **K0 is architecture, contract,
   status, and guardrails only and added no runtime behavior at all**: no
@@ -817,11 +819,58 @@ that changes the public API or the examples updates the matching document
   **56**, CTests **27**, benchmarks **9**, `__all__` **25**, every registry,
   and every version are unmoved; the only file it touches under `src/` is
   the same package-docstring status sentence.
+  **K7 is the adversarial hardening milestone and added zero production
+  code**: one module, `tests/test_native_integer_hardening.py`, plus status
+  reconciliation. §27's four injection families — host validation, the
+  backend's **own** thread-local allocation arm, host→native transfer or
+  materialization, and kernel execution — are resolved against the live
+  call graph and driven at **every** actual allocating step of
+  `from_int64_array`, `int64` `contiguous_copy`, `argmax`, and
+  `index_select`, with a traceable path-by-position matrix in which a
+  family that genuinely cannot exist on a path is an `N/A` carrying its
+  technical reason rather than a borrowed injection, and in which a
+  **family is not a position**: `index_select` reaches
+  `tf_core_contiguous_copy` at two different call sites — its floating
+  source and its `int64` index — so it carries **two** materialization
+  rows, the second driven by a call journal that delegates the first call
+  to the real export (an injection that fails immediately can never reach
+  it) and proves the two distinguishable by dtype, element count, and rank.
+  Each allocation row
+  arms the real countdown immediately before the production seam it names,
+  so the position is exact; each kernel and publication row runs under both
+  an `Exception` and a `BaseException` **at both floating widths**, each
+  width proved only against itself, and retains the allocated core or
+  storage externally, so closure is proved by production cleanup rather
+  than by `__del__` timing; the three-allocation `index_select` failure
+  proves reverse-order cleanup and a per-object release count proves
+  **exactly once** — a cleanup *invariant* at a position the matrix already
+  names, deliberately traced as such rather than added as a row, because
+  the matrix describes seams and not tests. Every rejection and every
+  injected failure is bracketed
+  by one reusable fingerprint of the observable world — both operands, an
+  unrelated parameter with its version and gradient, both buffer kinds, a
+  live optimizer, a registered generator, every registry and version,
+  `__all__`, both global RNGs, the filesystem, the live-storage count, and
+  the native error slot — and every component, injector, and parser has a
+  non-vacuity control; a scan of the module's own AST requires every
+  matrix owner to enter that fingerprint, so a narrower check can never be
+  reported as the complete one, and where a rejection needs a deliberate
+  instrument (an emptied `INDEX_DTYPES`, a lowered `_INT64_MAX`) the
+  instrument is applied first and the snapshot taken after it. The two
+  exports keep **separate** malformed-metadata *and* dtype-role
+  matrices, each proving **every** operand byte-identical after every
+  rejection — two handles for `argmax`, three for `index_select` — with no
+  allocation and a clean error slot, including a late invalid index that
+  follows three valid ones. **K7 found no production defect**, performed no native build,
+  and moved nothing: exports **56**, CTests **27**, examples **17**,
+  benchmarks **9**, `__all__` **25**, and every registry and version are
+  exactly what K6 left; the only file it touches under `src/` is the same
+  package-docstring status sentence.
   No `max`, no `argmin`, no general `gather`, no `scatter`, no embedding
   lookup, no `index_select` backward, no
   integer arithmetic or reduction, no integer autograd, parameter, buffer,
   optimizer state, or checkpoint entry, and no casting or promotion exists,
-  and **K7 through K9 are unstarted**. Every reachability barrier landed at
+  and **K8 through K9 are unstarted**. Every reachability barrier landed at
   **K1**, one milestone before an integer tensor could be constructed at
   all: **prove first, then promise.** The phase's C ABI maximum is **56**
   (54 + `argmax` at K3 + `index_select` at K4), which K4 reached, and

@@ -1906,13 +1906,19 @@ def test_no_cpp_or_build_surface_mentions_the_new_example():
 
 
 def test_the_later_phase_k_milestones_have_not_started():
-    """K6 is the integration example. The adversarial matrix (K7), the
-    benchmark (K8), and the closure (K9) are unstarted, and none of their
-    artifacts exists — and this module contains none of their vocabulary
-    either: it injects nothing, times nothing, and owns no phase-wide
-    claim."""
-    for absent in ("test_native_integer_hardening.py",           # K7
-                   "test_native_integer_benchmark.py",           # K8
+    """K6 is the integration example. The benchmark (K8) and the closure
+    (K9) are unstarted and neither artifact exists — and **this module**
+    still contains none of the vocabulary a later milestone owns: it
+    injects nothing, times nothing, and makes no phase-wide claim.
+
+    K7's adversarial matrix landed after K6 and is therefore asserted
+    **present** rather than absent. The entry moved instead of being
+    deleted, so this stays a claim about the ladder: what K6 did not ship
+    is still what a later milestone owns, and this module still does not
+    do any of it."""
+    assert (REPO_ROOT / "tests"
+            / "test_native_integer_hardening.py").is_file()      # K7
+    for absent in ("test_native_integer_benchmark.py",           # K8
                    "test_native_phase_k_closure.py"):            # K9
         assert not (REPO_ROOT / "tests" / absent).exists(), absent
     assert not (REPO_ROOT / "benchmarks"
