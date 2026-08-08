@@ -274,6 +274,9 @@ TF_EXPORT void tf_core_dropout_forward(
                 input_handle, input_offset, output_handle, mask_handle,
                 count, seed, call_index, p);
             break;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand above.
+            break;
     }
     TF_GUARD_END_VOID()
 }

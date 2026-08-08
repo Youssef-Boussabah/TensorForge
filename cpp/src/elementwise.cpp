@@ -473,6 +473,11 @@ void unary_by_dtype(
             unary_dispatch<Op, float>(src_handle, dst_handle, shape, strides,
                                       offset, ndim);
             return;
+        case tf::Dtype::Int64:
+            // Unreachable: every caller export applied require_floating
+            // before dispatching. Written out, and a *return* rather than a
+            // break, so an int64 tag can never fall into the double path.
+            return;
         case tf::Dtype::Float64:
             break;
     }
@@ -488,6 +493,10 @@ void unary_contiguous_by_dtype(
         case tf::Dtype::Float32:
             unary_contiguous_dispatch<Op, float>(src_handle, dst_handle, numel,
                                                  offset);
+            return;
+        case tf::Dtype::Int64:
+            // Unreachable: every caller export applied require_floating
+            // before dispatching; a return so int64 never reads as double.
             return;
         case tf::Dtype::Float64:
             break;
@@ -508,6 +517,10 @@ void binary_by_dtype(
                                        a_strides, b_strides, a_offset, b_offset,
                                        ndim);
             return;
+        case tf::Dtype::Int64:
+            // Unreachable: every caller export applied require_floating
+            // before dispatching; a return so int64 never reads as double.
+            return;
         case tf::Dtype::Float64:
             break;
     }
@@ -524,6 +537,10 @@ void binary_contiguous_by_dtype(
         case tf::Dtype::Float32:
             binary_contiguous_dispatch<Op, float>(a_handle, b_handle, dst_handle,
                                                   numel, a_offset, b_offset);
+            return;
+        case tf::Dtype::Int64:
+            // Unreachable: every caller export applied require_floating
+            // before dispatching; a return so int64 never reads as double.
             return;
         case tf::Dtype::Float64:
             break;
@@ -973,6 +990,10 @@ TF_EXPORT void tf_core_exp(
             core_unary<float>(src, dst, shape, strides, offset, ndim,
                               op_exp<float>);
             return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
+            return;
         case tf::Dtype::Float64:
             break;
     }
@@ -1000,6 +1021,10 @@ TF_EXPORT void tf_core_exp_contiguous(
         case tf::Dtype::Float32:
             core_unary_contiguous<float>(src, dst, numel, offset,
                                          op_exp<float>);
+            return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
             return;
         case tf::Dtype::Float64:
             break;
@@ -1031,6 +1056,10 @@ TF_EXPORT void tf_core_log(
             core_unary<float>(src, dst, shape, strides, offset, ndim,
                               op_log<float>);
             return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
+            return;
         case tf::Dtype::Float64:
             break;
     }
@@ -1058,6 +1087,10 @@ TF_EXPORT void tf_core_log_contiguous(
         case tf::Dtype::Float32:
             core_unary_contiguous<float>(src, dst, numel, offset,
                                          op_log<float>);
+            return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
             return;
         case tf::Dtype::Float64:
             break;

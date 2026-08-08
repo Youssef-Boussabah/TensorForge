@@ -270,7 +270,8 @@ selector, threshold setter, dispatch tracer, profiling counter, or
 environment variable.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is
-complete (I0-I11), and it is the latest completed native phase.** Its
+complete (I0-I11); it was the latest completed native phase until Phase J
+closed after it.** Its
 contract is ``docs/native_dtype_float32_design.md``. Phase I made this
 line *dtype-general* without making it wider in any other direction:
 native storage is dtype-tagged and is the single authority for every view
@@ -309,8 +310,9 @@ guardrails in ``tests/test_native_phase_i_closure.py``, and the final
 inventory reconciliation — adding no capability at all.
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
-complete: milestones J0 through J9 have all landed, and J9 closed it, so
-Phase J is the latest completed phase.** Its contract is
+complete: milestones J0 through J9 have all landed, and J9 closed it.**
+It was the latest completed phase until Phase K closed after it. Its
+contract is
 ``docs/native_data_pipeline_design.md`` (milestone **J0**: architecture,
 contract, and documentation only, adding no runtime behavior).
 **Milestone J1** adds ``NativeTensorDataset`` below — the finite,
@@ -398,11 +400,34 @@ object is thread-safe, none contains a lock, thread, queue, future, or
 async primitive, and none joins the process-wide state-replacement lock
 order. One thread at a time; external locking is the caller's job.
 
-**Phase K — Native Integer Tensors and Indexing — is the current phase,
-and only K0 through K8 have landed.** Its contract is
+**Phase K — Native Integer Tensors and Indexing — is complete: K0 through
+K9 have all landed, K9 closed the phase, and Phase K is the latest
+completed phase.** Its contract is
 ``docs/native_integer_tensors_design.md``. Phase K was approved **after**
 Phase J closed at J9 without a committed successor, so it is not
-carried-over roadmap work; **K9 is unstarted**. **K5 added no
+carried-over roadmap work. **K9 added no new capability, and it was not a
+proof-only milestone**: it is the
+cross-platform validation and closure milestone — fresh Windows Release
+and Debug builds, the Clang ASan/UBSan and LeakSanitizer procedure, the
+WSL/Linux validation run, the exact Windows/Linux integer-equality
+proof, and the permanent closure guardrails in
+``tests/test_native_phase_k_closure.py`` — and it also carries **two**
+behaviour-preserving executable production repairs. The first gives the
+pre-existing
+float-only dispatch ``switch``es their explicit unreachable ``Int64``
+arms across seven translation units, which closes the ``-Wswitch``
+diagnostics K1's third dtype enumerator had introduced on ``-Wall``
+builds. The second closes a **pre-existing** lifecycle hole in
+``NativeTensorCore.from_array``/``zeros``/``_uninitialized``, which
+published a view and core over freshly allocated storage with no guard;
+they now close that storage explicitly when publication raises, including
+under ``BaseException``, as their newer siblings have since Phase I. The
+window sat on the Phase-K Policy-B materialization path because
+``_uninitialized`` is the allocator the floating arm of
+``contiguous_copy`` takes. Every added switch arm is unreachable by
+construction and the ownership guard runs only on a previously-leaking
+failure path, so K9 moved no
+registry, version, export, public name, or inventory. **K5 added no
 production code**: it is the compatibility proof
 (``tests/test_native_integer_compatibility.py``), showing that K1 through
 K4 left the checkpoint, the optimizer, loader, and sampler states, the

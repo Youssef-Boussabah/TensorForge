@@ -163,8 +163,10 @@ K7_CHECKED_KERNELS = 38
 
 # The two exports the phase added. K8's two artifacts landed after K7 and
 # are therefore named as **present** rather than absent — the entry moved
-# instead of being deleted, so this stays a claim about the ladder — while
-# K9's closure module must still be absent.
+# instead of being deleted, so this stays a claim about the ladder. K9's
+# closure module was on the absent side of the same claim until **K9**
+# landed and closed the phase; its entry moved to the present tuple on the
+# identical discipline.
 INDEXING_EXPORTS = ("tf_core_argmax", "tf_core_index_select")
 K8_ARTIFACTS = (
     "benchmarks/benchmark_native_integer.py",
@@ -994,6 +996,12 @@ INJECTION_MATRIX = (
      "test_argmax_destination_allocation_failure_closes_the_temporary"),
     ("argmax", "Policy-B materialization kernel", FAMILY_TRANSFER,
      "test_argmax_materialization_failure_leaks_nothing"),
+    # K9. A third position on the Policy-B path, distinct from the two
+    # above: the temporary's storage is allocated and its **core has not
+    # been published yet**. Until K9's lifecycle repair
+    # ``NativeTensorCore._uninitialized`` released nothing here.
+    ("argmax", "Policy-B temporary core publication", FAMILY_TRANSFER,
+     "test_argmax_policy_b_temporary_publication_failure"),
     ("argmax", "tf_core_argmax", FAMILY_KERNEL,
      "test_argmax_kernel_failure_closes_everything"),
     ("argmax", "wrapper publication", FAMILY_KERNEL,
@@ -1018,6 +1026,10 @@ INJECTION_MATRIX = (
     ("index_select", "Policy-B index materialization kernel",
      FAMILY_TRANSFER,
      "test_index_select_index_materialization_kernel_failure"),
+    # K9, the same newly proved position on this operation's own source
+    # materialization — see the argmax row above.
+    ("index_select", "Policy-B temporary core publication", FAMILY_TRANSFER,
+     "test_index_select_policy_b_temporary_publication_failure"),
     ("index_select", "tf_core_index_select", FAMILY_KERNEL,
      "test_index_select_kernel_failure_closes_everything"),
     ("index_select", "wrapper publication", FAMILY_KERNEL,
@@ -2752,12 +2764,183 @@ def test_index_select_publication_failure_closes_the_core(failure, dtype,
         _close_case(case)
 
 
+@contextlib.contextmanager
+def failing_policy_b_publication(failure):
+    """Fail ``NativeTensorCore`` publication of a Policy-B temporary,
+    **after** its storage has been allocated and before any core exists.
+
+    ``_contiguous_view`` is the production seam between the two: the
+    floating arm of ``contiguous_copy`` allocates through
+    ``NativeTensorCore._uninitialized``, which allocates the storage and
+    then calls this function to build the view it publishes the core over.
+    Raising here reproduces exactly the window K9's lifecycle repair
+    closed — and the asynchronous ``KeyboardInterrupt`` it is genuinely
+    reachable through, which is what the ``BaseException`` leg stands in
+    for.
+
+    Yields the list of ``NativeStorage`` objects allocated while installed,
+    **strongly**, so closure is asserted against a live reference rather
+    than inferred from ``__del__``.
+    """
+    retained = []
+    original_view = cpp._contiguous_view
+    original_init = cpp.NativeStorage.__init__
+
+    def retaining_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        retained.append(self)
+
+    def failing_view(storage, dims):
+        # The seam is downstream of the allocation, which is the whole
+        # point: the storage exists and is open when this fires.
+        assert isinstance(storage, cpp.NativeStorage)
+        assert storage._handle is not None
+        raise failure("injected: Policy-B temporary publication")
+
+    cpp.NativeStorage.__init__ = retaining_init
+    cpp._contiguous_view = failing_view
+    try:
+        yield retained
+    finally:
+        cpp._contiguous_view = original_view
+        cpp.NativeStorage.__init__ = original_init
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", FLOATING_DTYPES)
+@pytest.mark.parametrize("failure", [Boom, Abort],
+                         ids=["Exception", "BaseException"])
+def test_argmax_policy_b_temporary_publication_failure(failure, dtype,
+                                                       live_storages,
+                                                       tmp_path):
+    """The Phase-K half of K9's lifecycle repair, on ``argmax``.
+
+    A **non-contiguous** source forces Policy-B materialization, and the
+    injection lands between the temporary's storage allocation and its core
+    publication — the window ``NativeTensorCore._uninitialized`` left open
+    until K9. The freshly allocated storage is retained here and proved
+    closed while this test still holds it, so the proof does not rest on
+    collection timing, and the operands are untouched.
+    """
+    source, base, axis, expected = _argmax_case(dtype, contiguous=False)
+    sentinels = Sentinels()
+    here = settled(live_storages)
+    try:
+        with unchanged_world(operands=(source, base), sentinels=sentinels,
+                             directory=tmp_path, live=live_storages):
+            with failing_policy_b_publication(failure) as retained:
+                with pytest.raises(failure, match="injected"):
+                    source.argmax(axis=axis)
+        # Exactly one storage was allocated — the Policy-B temporary — and
+        # no int64 destination was reached, because the operation could not
+        # get that far.
+        assert len(retained) == 1, [(s.dtype, s.size) for s in retained]
+        temporary = retained[0]
+        assert (temporary.dtype, temporary.size) == (dtype, 4)
+        assert temporary._handle is None, "the temporary storage leaked"
+        assert settled(live_storages) == here
+        # ...and the operation still works once the injection is gone.
+        result = source.argmax(axis=axis)
+        try:
+            assert exact_ints(result.to_numpy()) == expected
+        finally:
+            result.close()
+    finally:
+        sentinels.close()
+        source.close()
+        base.close()
+
+
+@needs_native
+@pytest.mark.parametrize("dtype", FLOATING_DTYPES)
+@pytest.mark.parametrize("failure", [Boom, Abort],
+                         ids=["Exception", "BaseException"])
+def test_index_select_policy_b_temporary_publication_failure(failure, dtype,
+                                                             live_storages,
+                                                             tmp_path):
+    """The same window on ``index_select``'s **source** materialization,
+    which reaches the identical allocator by the identical route.
+
+    Proved on its own operation rather than borrowed from ``argmax``: the
+    two operations enter ``contiguous_copy`` from different call sites with
+    different operands owed cleanup afterwards, and a repair that fixed one
+    entry point would not be evidence about the other.
+    """
+    case = _index_select_case(dtype, False, False)
+    source, source_base, indices, index_base, expected = case
+    sentinels = Sentinels()
+    here = settled(live_storages)
+    try:
+        with unchanged_world(operands=(source, indices), sentinels=sentinels,
+                             directory=tmp_path, live=live_storages):
+            with failing_policy_b_publication(failure) as retained:
+                with pytest.raises(failure, match="injected"):
+                    source.index_select(0, indices)
+        # The source temporary is the first allocation on this path, and
+        # the failure stops the call before the index temporary or the
+        # destination is reached.
+        assert len(retained) == 1, [(s.dtype, s.size) for s in retained]
+        temporary = retained[0]
+        assert (temporary.dtype, temporary.size) == (dtype, 6)
+        assert temporary._handle is None, "the temporary storage leaked"
+        assert settled(live_storages) == here
+        result = source.index_select(0, indices)
+        try:
+            assert same_bits(result.to_numpy(), expected)
+        finally:
+            result.close()
+    finally:
+        sentinels.close()
+        _close_case(case)
+
+
+def assert_reverse_order(allocation_order, close_order):
+    """The cleanup-order rule, as one authority shared by the proof and its
+    own control: the sequence of releases is the allocation sequence
+    reversed, exactly — same length, same members, opposite order."""
+    assert len(close_order) == len(allocation_order), (allocation_order,
+                                                       close_order)
+    assert close_order == list(reversed(allocation_order)), (
+        f"cleanup order {close_order} is not the reverse of "
+        f"allocation order {allocation_order}")
+
+
+def test_the_reverse_order_rule_rejects_forward_order_cleanup():
+    """Non-vacuity for the rule above, on planted sequences: forward order
+    — the exact regression a ``for temp in temporaries`` would introduce —
+    is rejected, a short sequence is rejected, and the true reverse
+    passes."""
+    allocated = [("float64", 6), (INDEX_DTYPE, 4), ("float64", 8)]
+    with pytest.raises(AssertionError):
+        assert_reverse_order(allocated, list(allocated))          # forward
+    with pytest.raises(AssertionError):
+        assert_reverse_order(allocated, list(reversed(allocated))[:2])
+    with pytest.raises(AssertionError):                            # swapped
+        assert_reverse_order(allocated, [allocated[2], allocated[0],
+                                         allocated[1]])
+    assert_reverse_order(allocated, list(reversed(allocated)))
+    assert_reverse_order([], [])
+
+
 @needs_native
 def test_a_failed_index_select_closes_each_allocation_exactly_once(
         live_storages, tmp_path):
-    """"Closed" and "closed exactly once" are different claims, and the
-    second is the one a double-free would break. Every ``NativeStorage``
-    release is counted per object across a failed three-allocation call.
+    """"Closed", "closed exactly once", and "closed in reverse allocation
+    order" are three different claims, and this is where all three are
+    made about the same failed three-allocation call.
+
+    Every ``NativeStorage`` the operation allocates is recorded as it is
+    allocated and again as it is released, so the two sequences can be
+    compared rather than only counted — a regression to
+    ``for temp in temporaries`` (forward order) passes a count and fails
+    here. Releases are counted **per object**, which is the claim a
+    double-free would break, and every allocated storage is retained
+    strongly while the assertions run, so closure is proved against a live
+    reference rather than inferred from ``__del__``.
+
+    The instrumentation is installed **after** the operands and sentinels
+    exist, so the recorded sequences describe the injected call and nothing
+    else.
 
     This is a cleanup **invariant** checked at a position ``INJECTION_MATRIX``
     already names (``tf_core_index_select``), not a physical seam of its
@@ -2768,12 +2951,21 @@ def test_a_failed_index_select_closes_each_allocation_exactly_once(
     """
     library = cpp._require_library()
     original_kernel = library.tf_core_index_select
+    original_init = cpp.NativeStorage.__init__
     original_close = cpp.NativeStorage.close
+    retained = []              # strong references, so nothing is collected
+    allocation_order, close_order = [], []
     releases = {}
+
+    def recording_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        retained.append(self)
+        allocation_order.append((self.dtype, self.size))
 
     def counting_close(self):
         if self._handle is not None:
             releases[id(self)] = releases.get(id(self), 0) + 1
+            close_order.append((self.dtype, self.size))
         original_close(self)
 
     def failing_kernel(*arguments):
@@ -2786,6 +2978,9 @@ def test_a_failed_index_select_closes_each_allocation_exactly_once(
     try:
         with unchanged_world(operands=(source, indices), sentinels=sentinels,
                              directory=tmp_path, live=live_storages):
+            # Installed only now: everything the fingerprint watches is
+            # already built, so the sequences below are this call's.
+            cpp.NativeStorage.__init__ = recording_init
             cpp.NativeStorage.close = counting_close
             library.tf_core_index_select = failing_kernel
             try:
@@ -2793,10 +2988,26 @@ def test_a_failed_index_select_closes_each_allocation_exactly_once(
                     source.index_select(0, indices)
             finally:
                 library.tf_core_index_select = original_kernel
+                cpp.NativeStorage.__init__ = original_init
                 cpp.NativeStorage.close = original_close
+        # The three allocations the operation makes, in the order it makes
+        # them: the Policy-B source temporary, the Policy-B index
+        # temporary, then the destination. Written as literals so a
+        # silently reordered production path fails rather than adapting.
+        assert len(allocation_order) == 3, allocation_order
+        assert allocation_order == [("float64", 6), (INDEX_DTYPE, 4),
+                                    ("float64", 8)], allocation_order
+        # ...and the releases are that sequence reversed, exactly.
+        assert len(close_order) == 3, close_order
+        assert_reverse_order(allocation_order, close_order)
         # Three storages were released by the failure, and each exactly once.
         assert len(releases) == 3, releases
         assert set(releases.values()) == {1}, releases
+        assert {id(storage) for storage in retained} == set(releases)
+        # Every one of them is released **while this test still holds a
+        # strong reference**, so no assertion here rests on collection.
+        for storage in retained:
+            assert storage._handle is None, storage
         assert settled(live_storages) == here
         # ...and the operation still works once the injection is gone.
         result = source.index_select(0, indices)
@@ -2805,6 +3016,7 @@ def test_a_failed_index_select_closes_each_allocation_exactly_once(
         finally:
             result.close()
     finally:
+        cpp.NativeStorage.__init__ = original_init
         cpp.NativeStorage.close = original_close
         library.tf_core_index_select = original_kernel
         sentinels.close()
@@ -3910,19 +4122,22 @@ def test_the_ctest_inventory_did_not_move():
         assert expected in registered, expected
 
 
-def test_no_k9_artifact_appeared():
-    """K7 is not K9: the closure module must still be absent.
+def test_every_later_milestone_artifact_is_present_rather_than_banned():
+    """K7 is not K8 and not K9, and this guard records that as a claim
+    about the ladder rather than a shrinking list.
 
-    Through K7 this guard also asserted K8's benchmark and its owner
-    absent. That premise expired when **K8** landed, so the two entries
-    moved from the absent list to a present one rather than being deleted
-    — a guard that keeps banning a file the repository now legitimately
-    owns is a guard that forces a lie, and one that simply drops the entry
-    stops being a claim about the ladder at all."""
+    Through K7 it asserted K8's benchmark and its owner absent. That
+    premise expired when **K8** landed, so the two entries moved from the
+    absent list to a present one rather than being deleted. Through K8 it
+    then asserted K9's closure module absent, and that premise expired when
+    **K9** landed and closed the phase — the same expiry, one milestone
+    later. A guard that keeps banning a file the repository now
+    legitimately owns is a guard that forces a lie, and one that simply
+    drops the entry stops being a claim about the ladder at all."""
     for relative in K8_ARTIFACTS:
         assert (REPO_ROOT / relative).is_file(), relative
     for relative in K9_ARTIFACTS:
-        assert not (REPO_ROOT / relative).exists(), relative
+        assert (REPO_ROOT / relative).is_file(), relative
 
 
 def test_this_module_asserts_no_timing_and_no_tolerance():

@@ -1067,7 +1067,7 @@ explicit layer at a time:
   option was added.
 - **A deterministic native data pipeline and mini-batching (Phase J) is
   complete: milestones J0 through J9 have all landed and J9 closed it.**
-  **Phase K is the latest phase, and only K0 through K8 have landed.** **K9 is unstarted.** **Phase J is the latest completed phase**, and it remains complete. Phase J was approved
+  **Phase K is the latest phase, and it is complete: K0 through K9 have all landed, K9 closed it, and Phase K is the latest completed phase.** Phase J was the latest completed phase until Phase K closed after it, and it remains complete. Phase J was approved
   *after* Phase I closed at I11 rather than having been on the earlier
   roadmap. **J0 was architecture, contract, and documentation work and
   added no runtime behavior**: no dataset, sampler, or loader class, no
@@ -1187,8 +1187,9 @@ explicit layer at a time:
   defined" for as long as it was true; **Phase K was approved
   afterwards**, and the successor is recorded below rather than folded
   into Phase J's record.
-- **Phase K — Native Integer Tensors and Indexing — is the newly approved
-  phase, and K0, K1, and K2 have landed.** **K0 added no
+- **Phase K — Native Integer Tensors and Indexing — was the newly
+  approved phase, and it is complete: K0 through K9 have all landed and
+  K9 closed it.** **K0 added no
   runtime behavior at all**: no integer dtype or dtype code, no C++
   enumerator, no kernel, no C ABI symbol, no ctypes declaration, no public
   export, no capability-registry movement, no checkpoint or state version
@@ -1316,8 +1317,40 @@ explicit layer at a time:
   No public integer `max`, `argmin`, general `gather`, `scatter`,
   embedding lookup, `index_select` backward, arithmetic,
   reduction, autograd, parameter, buffer, optimizer state, or
-  checkpoint entry exists, and **K9 is
-  unstarted**. Its contract is
+  checkpoint entry exists.
+  **K9 closed the phase with that boundary intact, adding no new
+  capability — though not proof only**:
+  the permanent closure guardrails in
+  `tests/test_native_phase_k_closure.py`, fresh Windows Release and Debug
+  builds with zero project warnings and 27/27 CTests each, the Clang
+  ASan/UBSan and LeakSanitizer procedure with instrumentation proved
+  present and a real detector negative control, the WSL/Linux
+  validation run, and a direct Windows/Linux integer-equality witness
+  compared byte for byte — moving no registry, version, export, public
+  name, or artifact inventory. **It did carry two behaviour-preserving
+  executable production repairs**, and neither is the only one.
+  The first, across seven C++ translation units:
+  the pre-existing float-only dispatch
+  `switch`es gained their written-out unreachable `Int64` arms, closing
+  the 237 `-Wswitch` diagnostics K1's third enumerator had introduced
+  across 21 sites on `-Wall` builds, with a structural regression in
+  `tests/test_native_integer_barriers.py` that now classifies a dtype
+  switch by its case labels across `cpp/src` and `cpp/include` — 34 of
+  them — with `dtype_from_code`'s ABI-code validation the one documented
+  exemption. The second, in `src/tensorforge/backends/cpp.py`:
+  `NativeTensorCore.from_array`, `zeros`, and `_uninitialized` published
+  their view and core over freshly allocated storage with no guard, so a
+  failure in between closed nothing explicitly; they now carry the
+  `except BaseException: storage.close()` shape their newer siblings have
+  had since Phase I. That window is **pre-existing** — it predates Phase K
+  — but `_uninitialized` is the allocator the floating arm of
+  `contiguous_copy` takes, so it sat on every Policy-B materialization
+  inside `argmax` and `index_select`, which is why the repair lands here.
+  Every added switch arm is unreachable
+  by construction and the ownership guard runs only on a path that
+  previously leaked, which is why neither moved an inventory — "no new
+  capability" and "no production code" are different claims, and only the
+  first holds. Its contract is
   [native_integer_tensors_design.md](native_integer_tensors_design.md),
   and the architectural decisions it locks are the ones that would
   otherwise be re-argued in every later milestone: **one extended

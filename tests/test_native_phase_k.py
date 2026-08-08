@@ -1,8 +1,9 @@
 """Phase-K contract guardrails (native integer tensors and indexing).
 
-**Phase K is newly approved, it was approved after Phase J closed, and K0
-through K6 are the milestones that have landed.** K0 was an architecture,
-contract, documentation, and status milestone: it shipped
+**Phase K is complete: K0 through K9 have all landed, and K9 closed the
+phase.** It was approved after Phase J closed at J9 without a committed
+successor, and that chronology is part of the record. K0 was an
+architecture, contract, documentation, and status milestone: it shipped
 ``docs/native_integer_tensors_design.md``, this module, and the narrow
 status reconciliation a newly approved phase requires — and **no runtime
 behavior at all**.
@@ -57,13 +58,23 @@ examples 16 -> **17** — and it moved nothing else: no C ABI symbol, no
 public Python name, no CTest, no benchmark, no registry value, and no
 version.
 
+**K7 is the adversarial hardening matrix
+(``tests/test_native_integer_hardening.py``), K8 the benchmark
+characterization (``benchmarks/benchmark_native_integer.py`` and its
+owner), and K9 the cross-platform validation and closure, whose permanent
+guardrails are ``tests/test_native_phase_k_closure.py``** — that module
+owns the *closed* boundary (every ladder row complete, every status
+surface saying so, the final registries and inventories pinned), while
+this one keeps owning the phase contract itself. K7 and K9 moved no
+inventory at all; K8 moved exactly one, benchmarks 9 -> **10**.
+
 ``SUPPORTED_DTYPES`` never gains ``int64`` at all, at any milestone, and
-``normalize_dtype("int64")`` keeps raising forever. **K7 through K9 are
-unstarted**: there is no hardening matrix, no benchmark, no closure, no
+``normalize_dtype("int64")`` keeps raising forever. There is still no
 general ``gather``, ``scatter``, or embedding lookup, no ``index_select``
 backward, no ``max`` or ``argmin``, no integer arithmetic or reduction, no
 integer autograd, parameter, buffer, optimizer, or checkpoint entry, and no
-casting or promotion.
+casting or promotion — closure made that boundary permanent rather than
+provisional.
 
 Three kinds of fact live here, and keeping them apart is the point of the
 module:
@@ -216,27 +227,48 @@ K3_CPP_SOURCES = ("indexing.cpp",)
 K3_CPP_HEADER = "tf_indexing_internal.h"
 INDEXING_EXPORTS = ("tf_core_argmax", "tf_core_index_select")
 
-# The whole Phase-K ladder, and the split that carries the phase. A
-# milestone moves its identifier from the second tuple to the first and
+# The whole Phase-K ladder, and the split that carried the phase. A
+# milestone moved its identifier from the second tuple to the first and
 # nowhere else, so the two together are always exactly ``MILESTONES``.
+# **At closure every milestone is complete and the second tuple is
+# empty** — the split stays, as the derivation the ladder checks run on,
+# rather than being collapsed into a bare literal.
 MILESTONES = tuple(f"K{index}" for index in range(10))      # K0 ... K9
-COMPLETE_MILESTONES = ("K0", "K1", "K2", "K3", "K4", "K5", "K6", "K7", "K8")
+COMPLETE_MILESTONES = MILESTONES                            # K0 ... K9
 UNSTARTED_MILESTONES = tuple(name for name in MILESTONES
                              if name not in COMPLETE_MILESTONES)
-assert len(UNSTARTED_MILESTONES) == 1
+assert UNSTARTED_MILESTONES == ()
 
 # The milestones that ship **no production code at all**, and the module
-# each one's proof lives in. K0 was architecture and guardrails; K5 is the
+# each one's proof lives in. There are exactly five, and they are
+# **K0, K5, K6, K7, and K8**: K0 was architecture and guardrails; K5 is the
 # compatibility proof; K6 is the end-to-end example and its owner; K7 is
-# the adversarial hardening matrix. Written down because "this milestone
-# landed" and "this milestone changed the package" are different facts, and
-# the second is what the *package* inventories above are measured against.
+# the adversarial hardening matrix; K8 is the benchmark characterization
+# and its owner. Written down because "this milestone landed" and "this
+# milestone changed the package" are different facts, and the second is
+# what the *package* inventories above are measured against.
 # K6 adds one file under ``examples/``, which is a program written against
 # the public API rather than production code — the design's own K6 row says
 # so, and ``K6_EXAMPLES`` names it. K7 adds nothing outside ``tests/``. K8
 # adds one file under ``benchmarks/``, which is a measurement tool written
 # against the public API and registered in no runtime inventory —
 # ``K8_BENCHMARKS`` names it.
+#
+# **K9 is deliberately absent from this mapping, and its absence is a
+# claim rather than an omission.** Closure moved no capability and no
+# inventory — no export, no public name, no registry, no version, no
+# CTest, no example, no benchmark — but that is a *different property*
+# from the one this mapping records, and only the first is true of K9: it
+# carries two behaviour-preserving executable production repairs, the C++
+# switch-exhaustiveness change across seven translation units and the
+# ``NativeTensorCore`` fresh-storage ownership guard in
+# ``src/tensorforge/backends/cpp.py``. So K9 belongs in neither this map
+# nor any sentence derived from it. The property K9 *does* have is proved
+# elsewhere and stays proved there — by the delta-row and registry checks
+# in this module and by ``tests/test_native_phase_k_closure.py``, which
+# owns the closed boundary — and
+# ``test_the_closure_milestone_is_not_a_zero_production_milestone`` below
+# reads this very dict so the entry cannot come back.
 ZERO_PRODUCTION_MILESTONES = {
     "K0": "tests/test_native_phase_k.py",
     "K5": "tests/test_native_integer_compatibility.py",
@@ -244,6 +276,19 @@ ZERO_PRODUCTION_MILESTONES = {
     "K7": "tests/test_native_integer_hardening.py",
     "K8": "tests/test_native_integer_benchmark.py",
 }
+
+# K9's own owner, named here so the exclusion above can be checked against
+# a module that exists rather than against a gap, and the two production
+# repairs closure carried — the reason K9 is not in the map. The C++
+# switch census itself is owned by tests/test_native_integer_barriers.py
+# and the lifecycle guard by tests/test_native_tensor_core.py; what this
+# module pins is only that the files the exclusion rests on are real.
+K9_CLOSURE_MODULE = "tests/test_native_phase_k_closure.py"
+K9_PRODUCTION_REPAIRS = (
+    "src/tensorforge/backends/cpp.py",                     # repair 2
+) + tuple(f"cpp/src/{name}" for name in K0_CPP_SOURCES     # repair 1
+          if name not in ("error.cpp", "storage.cpp"))
+assert len(K9_PRODUCTION_REPAIRS) == 8                     # 1 Python + 7 C++
 
 # The ordering the phase turns on (design §32.1): every reachability
 # barrier lands at K1, and the first milestone at which an ``int64`` tensor
@@ -483,16 +528,17 @@ _PHASE_K_OVERCLAIMS = (
      + _BECAME + _LANDED),
     # The sentinel advances one milestone as each lands, and only then:
     # it read K2-and-later while K1 was the newest, moved to K3 when K2
-    # shipped, to K4 when K3 did, to K5 when K4 did, to K6 when K5 did, to
-    # K7 when K6 did, to K8 when K7 did, and to K9 when K8 did. Keeping the
-    # old bound would force every status surface to under-report the
-    # project, which is the mirror of the failure this scanner exists to
-    # catch.
-    ("a Phase-K milestone after K8 has landed",
-     r"\bK(?:9|10)\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
+    # shipped, and so on one milestone at a time until it read K9-and-later
+    # while K8 was the newest. **K9 landed and closed the phase**, so the
+    # sentinel's last move leaves only the milestones the ladder does not
+    # define: a claimed K10 is an invented milestone, permanently. The
+    # "Phase K is finished" entry that stood beside this one through K8
+    # was removed at closure for the reason every removal in this tuple
+    # shares — the sentence became true, and a scanner that bans an
+    # accurate sentence forces every status surface to lie.
+    ("a milestone beyond the ladder has landed",
+     r"\bK1[0-9]\b[^.]{0,30}" + _BECAME + r"(" + _LANDED + r"|"
      + _DONE + r")"),
-    ("Phase K is finished",
-     r"\bPhase K\s+(is|was|has been)\s+" + _DONE),
     ("a checkpoint version beyond 3",
      r"\bcheckpoint\b[^.]{0,40}\b(is|was|now|at|to|moved to|bumped to)\s+"
      r"version\s*[4-9]\b"),
@@ -719,21 +765,26 @@ def test_the_overclaim_scanner_can_actually_fail():
         "a general gather has landed",
         "scatter_add is implemented",
         "embedding is now supported",
-        "Phase K is complete",
-        "K9 has landed",
-        "K9 is shipped",
+        "K10 has landed",
+        "K11 is shipped",
         "the checkpoint is now at version 4",
         "CUDA is supported",
         "integer gradients are supported",
         "integer parameters are available",
     ):
         assert _overclaims(caught), caught
-    # ...and every accurate sentence a K8 surface must be able to write.
+    # ...and every accurate sentence a closed-phase surface must be able
+    # to write. "Phase K is complete" and "K9 has landed" sat on the
+    # *caught* side of this control through K8 and moved here when K9
+    # made them true — the same one-way move every landed operation's
+    # sentence has taken.
     for allowed in (
         "int64 is not a supported native tensor dtype",
-        "Phase K is newly approved and K0 through K8 are complete",
-        "K0 through K8 are the only completed Phase-K milestones",
-        "K9 is unstarted",
+        "Phase K is complete",
+        "Phase K was newly approved and is now closed",
+        "K0 through K9 are complete",
+        "K9 has landed",
+        "K9 is complete and closed the phase",
         "K4 is complete",
         "K5 is complete",
         "K5 landed and added zero production code",
@@ -874,26 +925,20 @@ def test_the_design_presents_phase_k_as_newly_approved_after_phase_j():
 def test_the_design_states_what_has_landed_and_what_has_not():
     head = _head()
     assert re.search(r"K0 adds no runtime behavior", head, re.I), head[:800]
-    # Both shapes of the same claim: the enumeration the header used while
-    # the completed set was short, and the range form it takes once the list
-    # would be unreadable. The **bounds** are what is checked either way, so
-    # a header naming the wrong last milestone still fails.
-    enumerated = ", ".join(COMPLETE_MILESTONES[:-1]) + \
-        f", and {COMPLETE_MILESTONES[-1]}"
+    # Through K8 the header had to carry two claims — the completed range
+    # and the exact unstarted remainder — and this test derived both forms
+    # from the ladder split. **At closure the remainder is empty**, so the
+    # completed claim covers the whole ladder and the unstarted claim is
+    # not merely absent but banned: a closed phase's header naming an
+    # unstarted milestone would be the drift the closure module exists to
+    # stop, and it is asserted here too because this module owns the
+    # header.
+    assert UNSTARTED_MILESTONES == ()
     ranged = f"{COMPLETE_MILESTONES[0]} through {COMPLETE_MILESTONES[-1]}"
-    assert re.search(rf"({enumerated}|{ranged}) are the only completed "
-                     rf"Phase-K milestones", head, re.I), head[:1800]
-    # The unstarted set's *shape* changed when it shrank to one milestone:
-    # "K9 through K9 are unstarted" is not a sentence the design should be
-    # forced to write. Both forms pin the exact remaining set, so a header
-    # naming the wrong milestone still fails either way.
-    first_unstarted = UNSTARTED_MILESTONES[0]
-    last = UNSTARTED_MILESTONES[-1]
-    if first_unstarted == last:
-        unstarted_form = rf"{first_unstarted} is unstarted"
-    else:                                             # pragma: no cover
-        unstarted_form = rf"{first_unstarted} through {last} are unstarted"
-    assert re.search(unstarted_form, head, re.I), head[:1800]
+    assert re.search(rf"{ranged}\b.{{0,60}}?complete", head, re.I), (
+        head[:1800])
+    assert not re.search(r"\bK\d+\b[^.;]{0,40}\b(is|are) unstarted", head,
+                         re.I), head[:1800]
     assert re.search(r"[Rr]untime capability begins at K1", head), head[:2200]
     # The claim that must be impossible to misread at every milestone
     # before K2, and after it: ``int64`` never joins the compute registry.
@@ -1926,6 +1971,11 @@ def test_every_zero_production_milestone_names_the_module_that_proves_it():
     package" are different facts, and every count in this module measures
     the second."""
     rows = _ladder_rows()
+    # The exact membership, written down here independently of the dict so
+    # the two have to agree: an entry added or dropped later fails on this
+    # line rather than being absorbed by a loop that iterates whatever it
+    # is given. K9 is not in it — see the dedicated test below.
+    assert set(ZERO_PRODUCTION_MILESTONES) == {"K0", "K5", "K6", "K7", "K8"}
     for milestone, module in ZERO_PRODUCTION_MILESTONES.items():
         assert milestone in COMPLETE_MILESTONES, milestone
         assert (REPO_ROOT / module).is_file(), module
@@ -1944,14 +1994,70 @@ def test_every_zero_production_milestone_names_the_module_that_proves_it():
             _milestone_record(milestone)), milestone
     # ...and the negative control: a milestone that *did* change the
     # package is not in the map, so the map is a claim rather than a list
-    # of everything — and the phrase check really can fail.
-    for shipped in ("K1", "K2", "K3", "K4"):
+    # of everything — and the phrase check really can fail. **K9 is in
+    # this tuple for the same reason K1-K4 are**, and for no weaker one:
+    # closure carried executable production repairs, so it changed the
+    # package's source even though it moved none of its inventories.
+    for shipped in ("K1", "K2", "K3", "K4", "K9"):
         assert shipped not in ZERO_PRODUCTION_MILESTONES, shipped
     pattern = re.compile(r"\b(zero|no)\s+(production\s+(code|source)"
                          r"|runtime\b)")
     assert pattern.search("this milestone adds zero production code")
     assert pattern.search("k0 adds no runtime behavior at all")
     assert not pattern.search("this milestone adds one export and a ctest")
+
+
+def test_the_closure_milestone_is_not_a_zero_production_milestone():
+    """K9 is complete, it owns the phase's closure evidence, and it moved
+    **no** capability or inventory at all — and it is still not a
+    zero-production milestone, because closure carried two
+    behaviour-preserving executable production repairs: the C++
+    switch-exhaustiveness change across seven translation units and the
+    ``NativeTensorCore`` fresh-storage ownership guard in
+    ``src/tensorforge/backends/cpp.py``.
+
+    The regression this exists for is exact, and it happened. The prose
+    scanners in ``tests/test_native_phase_k_closure.py`` ban a *sentence*
+    that credits K9 with "zero production code"; what got past them was
+    this module's own **constant** stating the same falsehood as data,
+    from which the surrounding tests then derived it. So this guard reads
+    the live mapping rather than any source text: re-adding the entry
+    ``"K9": "tests/test_native_phase_k_closure.py"`` fails here
+    immediately, whatever the prose around it says.
+
+    The two properties are asserted separately on purpose. "Moved no
+    capability" and "touched no executable source" are different facts,
+    and conflating them is precisely how the false classification was
+    written in the first place."""
+    # 1. K9 exists and is complete — the exclusion is not a claim that the
+    #    milestone is missing.
+    assert "K9" in MILESTONES and "K9" in COMPLETE_MILESTONES
+    assert "closure" in _ladder_rows()["K9"].lower()
+    # 2. K9 is not in the map, by key and by value, so neither an entry
+    #    under a different key nor a re-pointed module slips back in.
+    assert "K9" not in ZERO_PRODUCTION_MILESTONES
+    assert ZERO_PRODUCTION_MILESTONES.get("K9") is None
+    assert K9_CLOSURE_MODULE not in ZERO_PRODUCTION_MILESTONES.values()
+    # 3. K9 owns its closure evidence independently of this map, which is
+    #    what makes the exclusion honest rather than a dropped row.
+    assert (REPO_ROOT / K9_CLOSURE_MODULE).is_file(), K9_CLOSURE_MODULE
+    assert K9_CLOSURE_MODULE in _flat(_milestone_record("K9"))
+    # 4. The reason for the exclusion is grounded in files that exist,
+    #    rather than in a decision recorded only in a comment. The eight
+    #    are one Python module and seven C++ translation units; what each
+    #    repair *does* is owned by tests/test_native_integer_barriers.py
+    #    and tests/test_native_tensor_core.py, not restated here.
+    for relative in K9_PRODUCTION_REPAIRS:
+        assert (REPO_ROOT / relative).is_file(), relative
+    # 5. ...and the property K9 genuinely has, kept where it belongs:
+    #    every column of its delta row is K8's, so "moved no inventory"
+    #    stays proved even though "shipped no production code" is false.
+    for column in ("C ABI", "CTests", "Examples", "Benchmarks"):
+        cells = _delta_column(column)
+        assert cells["K9"] == cells["K8"], column
+    public = _delta_column("Public Python")
+    assert not re.search(r"\bfrom_int64_array\b|\bargmax\b|\bindex_select\b",
+                         public["K9"]), public["K9"]
 
 
 def test_the_compatibility_module_is_k5s_and_adds_no_production_code():
@@ -2068,15 +2174,16 @@ def test_the_benchmark_is_k8s_and_moves_only_the_benchmark_inventory():
     public = _delta_column("Public Python")
     assert not re.search(r"\bfrom_int64_array\b|\bargmax\b|\bindex_select\b",
                          public["K8"]), public["K8"]
-    # The K9 artifact stays absent while K8 is the newest milestone; K8's
-    # own two are named as **present** rather than dropped silently, which
-    # keeps this a claim about the ladder rather than a shrinking list.
+    # K8's two artifacts are named as **present** rather than dropped
+    # silently, which keeps this a claim about the ladder rather than a
+    # shrinking list — and the K9 closure module, absent while K8 was the
+    # newest milestone, joined them when K9 landed and closed the phase.
     assert (REPO_ROOT / "benchmarks"
             / "benchmark_native_integer.py").is_file()       # K8
     assert (REPO_ROOT / "tests"
             / "test_native_integer_benchmark.py").is_file()  # K8
-    assert not (REPO_ROOT / "tests"
-                / "test_native_phase_k_closure.py").exists()  # K9
+    assert (REPO_ROOT / "tests"
+            / "test_native_phase_k_closure.py").is_file()    # K9
 
 
 def test_the_ladder_has_a_closure_milestone_and_no_successor_promise():
@@ -2142,12 +2249,23 @@ def test_no_surface_claims_an_integer_runtime_exists(surface):
 
 @pytest.mark.parametrize("surface", STATUS_SURFACES)
 def test_every_status_surface_places_phase_k_after_a_complete_phase_j(surface):
+    """The chronology, which closure must not erase: Phase J is complete,
+    Phase K came after it, and Phase K was **approved** afterwards rather
+    than having been on the earlier roadmap.
+
+    The approval clause is matched in past **or** present tense, because
+    at closure "Phase K *was* newly approved after Phase J closed" is the
+    accurate form and forcing the present tense would make every surface
+    write a sentence that is no longer true."""
     text = _flat(_read(surface))
     assert "Phase J" in text, f"{surface} does not name Phase J"
     assert re.search(r"Phase J[^.]{0,60}\b(is|was)\s+complete"
                      r"|Phase J[^.]{0,60}complete\b", text, re.I), surface
     assert "Phase K" in text, f"{surface} does not name Phase K"
-    assert re.search(r"Phase K[^.]{0,80}newly approved", text, re.I), surface
+    assert re.search(r"Phase K[^.]{0,80}(is|was)?\s*(the )?newly approved"
+                     r"|Phase K was approved\b"
+                     r"|Phase K[^.]{0,60}approved (after|afterwards)",
+                     text, re.I), surface
 
 
 @pytest.mark.parametrize("surface", STATUS_SURFACES)
@@ -2229,47 +2347,43 @@ def test_the_latest_phase_forms_can_actually_fail():
                           "Phase J is the latest phase") == set()
 
 
-# The landed/unstarted claim every editable surface must carry, derived
-# from the ladder split above rather than written out, so a milestone
-# landing moves one tuple and the wording follows.
+# The landed claim every editable surface must carry, derived from the
+# ladder split above rather than written out. Through K8 it read "only K0
+# through K8 have landed" and travelled with a separate unstarted claim;
+# **at closure the unstarted set is empty**, so the landed claim covers
+# the whole ladder and the unstarted form is banned rather than required.
 _LANDED_CLAIM = re.compile(
-    rf"only {COMPLETE_MILESTONES[0]} through {COMPLETE_MILESTONES[-1]} "
-    rf"have landed", re.I)
-# The unstarted set shrank to a single milestone when K8 landed, so the
-# claim's *shape* changed with it: "K9 through K9 are unstarted" is not a
-# sentence any status surface should be forced to write. The derivation
-# still pins the exact remaining set — a surface naming K8 as unstarted, or
-# omitting K9, fails either form.
-if len(UNSTARTED_MILESTONES) == 1:
-    _UNSTARTED_CLAIM = re.compile(
-        rf"{UNSTARTED_MILESTONES[0]} is unstarted", re.I)
-else:                                                 # pragma: no cover
-    _UNSTARTED_CLAIM = re.compile(
-        rf"{UNSTARTED_MILESTONES[0]} through {UNSTARTED_MILESTONES[-1]} are "
-        rf"unstarted", re.I)
+    rf"{COMPLETE_MILESTONES[0]} through {COMPLETE_MILESTONES[-1]}"
+    rf"\b[^.;]{{0,60}}?\b(are )?(all )?(complete|landed|have (all )?landed|"
+    rf"closed)", re.I)
+_UNSTARTED_FORM = re.compile(r"\bK\d+\b[^.;]{0,40}?\bis unstarted\b", re.I)
 
 
 def test_the_landed_and_unstarted_claim_forms_can_actually_fail():
     """Negative controls for both, on temporary strings."""
-    assert _LANDED_CLAIM.search("only K0 through K8 have landed")
+    assert _LANDED_CLAIM.search("K0 through K9 are complete")
+    assert _LANDED_CLAIM.search("milestones K0 through K9 have all landed")
+    assert not _LANDED_CLAIM.search("K0 through K8 are complete")
     assert not _LANDED_CLAIM.search("only K0 through K7 have landed")
-    assert _UNSTARTED_CLAIM.search("K9 is unstarted")
-    assert not _UNSTARTED_CLAIM.search("K8 is unstarted")
-    assert not _UNSTARTED_CLAIM.search("K9 is complete")
+    assert _UNSTARTED_FORM.search("K9 is unstarted")
+    assert not _UNSTARTED_FORM.search("K9 is complete")
 
 
 @pytest.mark.parametrize("surface", EDITABLE_STATUS_SURFACES)
-def test_every_editable_status_surface_names_k_as_the_current_phase(surface):
+def test_every_editable_status_surface_records_the_closed_ladder(surface):
     text = _flat(_read(surface))
-    assert _phase_letters(_LATEST_PHASE_FORM, text) == {"K"}, surface
+    assert _phase_letters(_LATEST_PHASE_FORM, text) <= {"K"}, surface
     assert _LANDED_CLAIM.search(text), surface
-    assert _UNSTARTED_CLAIM.search(text), surface
+    assert not _UNSTARTED_FORM.search(text), surface
 
 
 @pytest.mark.parametrize("surface", EDITABLE_STATUS_SURFACES)
-def test_every_editable_status_surface_names_j_as_latest_completed(surface):
+def test_every_editable_status_surface_names_k_as_latest_completed(surface):
+    """Closure merged the two letters test_docs.py tracks: Phase K is now
+    both the latest phase and the latest *completed* one, exactly as H10,
+    I11, and J9 merged them before K0 split them again."""
     text = _flat(_read(surface))
-    assert _phase_letters(_LATEST_COMPLETED_FORM, text) == {"J"}, surface
+    assert _phase_letters(_LATEST_COMPLETED_FORM, text) == {"K"}, surface
 
 
 @pytest.mark.parametrize("surface", EDITABLE_STATUS_SURFACES)
@@ -2282,13 +2396,14 @@ def test_no_editable_status_surface_calls_j_the_latest_phase(surface):
 def test_the_production_docstring_was_repaired_at_k1():
     """The repair K1 owns, asserted directly on the file it names.
 
-    This is the same check the K0 exemption existed to defer, inverted:
-    the module must now name Phase K as current and Phase J as the latest
-    completed one, and it must not still say the thing the exemption
-    covered."""
+    This is the same check the K0 exemption existed to defer, inverted.
+    Through K8 the module had to name Phase K as current and Phase J as
+    the latest completed one; at closure the two letters merged, so it now
+    names Phase K as the latest completed phase — and it must not still
+    say the thing the exemption covered."""
     text = _flat(_read(REPAIRED_PRODUCTION_SURFACE))
-    assert _phase_letters(_LATEST_PHASE_FORM, text) == {"K"}, text[:200]
-    assert _phase_letters(_LATEST_COMPLETED_FORM, text) == {"J"}
+    assert _phase_letters(_LATEST_PHASE_FORM, text) <= {"K"}, text[:200]
+    assert _phase_letters(_LATEST_COMPLETED_FORM, text) == {"K"}
     assert not re.search(r"Phase J[^.;]{0,80}?\bis the latest phase\b", text,
                          re.I)
     # ...and it records what each landed milestone actually did, including
@@ -2466,19 +2581,24 @@ def test_the_sweep_only_suppresses_a_utf8_decoding_failure():
 def test_the_roadmap_headings_match_the_corrected_body():
     """A stale heading over corrected prose is still a wrong document.
 
-    The failure this prevents: the roadmap body says Phase K is current
-    while the section headings still announce Phase J as *the latest phase*
-    and Phase I as *the latest completed phase*."""
+    Through K8 this required a *current phase — Phase K* heading over a
+    *latest completed phase — Phase J* one, because the two letters
+    differed. **K9 closed Phase K and merged them**, exactly as H10, I11,
+    and J9 merged them before, so what the headings must now announce is
+    Phase K as the latest **completed** phase with Phase J demoted to the
+    previous one. The stale forms stay banned in every direction."""
     headings = [line.strip() for line in _read("docs/roadmap.md").splitlines()
                 if line.startswith("## ")]
     joined = " | ".join(headings)
-    assert any(re.fullmatch(r"## The current phase [—-] Phase K.*", h)
+    assert any(re.fullmatch(r"## The latest completed phase [—-] Phase K.*", h)
                for h in headings), joined
-    assert any(re.fullmatch(r"## The latest completed phase [—-] Phase J.*", h)
+    assert any(re.match(r"## The previous completed phase [—-] Phase J", h)
                for h in headings), joined
-    # The two stale forms must be gone, in either direction.
+    # Every stale form this heading set has ever carried, banned together.
     for stale in (r"## The latest phase [—-] Phase J",
-                  r"## The latest completed phase [—-] Phase I"):
+                  r"## The latest completed phase [—-] Phase I",
+                  r"## The latest completed phase [—-] Phase J",
+                  r"## The current phase [—-] Phase K"):
         assert not [h for h in headings if re.match(stale, h)], (stale, joined)
     # No heading may name a phase later than K as current or completed.
     for heading in headings:
@@ -2487,15 +2607,15 @@ def test_the_roadmap_headings_match_the_corrected_body():
 
 
 def test_the_roadmap_current_status_paragraph_is_accurate():
-    """The introductory status must state all five current facts."""
+    """The introductory status must state every current fact."""
     text = _flat(_read("docs/roadmap.md"))
     assert re.search(r"Python line is (?:\*\*)?complete at v3\.0", text, re.I)
-    assert re.search(r"Phases A through J", text)
-    assert re.search(r"Phase K[^.;]{0,90}?(current|latest) phase", text, re.I)
+    # Through K8 this read "Phases A through J", because Phase K was still
+    # open; K9 closed it, so the completed run reaches K.
+    assert re.search(r"Phases A through K", text)
     assert _LANDED_CLAIM.search(text)
-    assert re.search(r"Phase J is the latest completed phase", text, re.I)
-    # ...and the Phase-K section states the absence half.
-    assert _UNSTARTED_CLAIM.search(text)
+    assert re.search(r"Phase K is the latest completed phase", text, re.I)
+    assert not _UNSTARTED_FORM.search(text)
     assert re.search(r"design, documentation, and guardrails only", text, re.I)
     # The presence half K3 and K4 earned, and the absence half neither
     # touched.
@@ -2509,19 +2629,27 @@ def test_the_roadmap_current_status_paragraph_is_accurate():
 
 
 def test_the_roadmap_heading_scanner_can_actually_fail():
-    """Negative control for the heading test, on temporary strings."""
+    """Negative control for the heading test, on temporary strings.
+
+    Both the pre-closure stale forms and the one closure itself made
+    stale — a *current phase — Phase K* heading over a closed phase — are
+    driven through the same patterns the test uses."""
     stale = ["## The latest phase — Phase J, complete",
-             "## The latest completed phase — Phase I, complete"]
-    assert [h for h in stale
-            if re.match(r"## The latest phase [—-] Phase J", h)]
-    assert [h for h in stale
-            if re.match(r"## The latest completed phase [—-] Phase I", h)]
-    fresh = ["## The current phase — Phase K, K0 complete",
-             "## The latest completed phase — Phase J, complete"]
-    assert any(re.fullmatch(r"## The current phase [—-] Phase K.*", h)
+             "## The latest completed phase — Phase I, complete",
+             "## The current phase — Phase K, K0 through K8 complete"]
+    for pattern in (r"## The latest phase [—-] Phase J",
+                    r"## The latest completed phase [—-] Phase I",
+                    r"## The current phase [—-] Phase K"):
+        assert [h for h in stale if re.match(pattern, h)], pattern
+    fresh = ["## The latest completed phase — Phase K, complete (K0–K9)",
+             "## The previous completed phase — Phase J, complete"]
+    assert any(re.fullmatch(r"## The latest completed phase [—-] Phase K.*", h)
                for h in fresh)
-    assert not [h for h in fresh
-                if re.match(r"## The latest phase [—-] Phase J", h)]
+    assert any(re.match(r"## The previous completed phase [—-] Phase J", h)
+               for h in fresh)
+    for pattern in (r"## The latest phase [—-] Phase J",
+                    r"## The current phase [—-] Phase K"):
+        assert not [h for h in fresh if re.match(pattern, h)], pattern
 
 
 def test_the_k2_summary_does_not_call_all_python_construction_private():

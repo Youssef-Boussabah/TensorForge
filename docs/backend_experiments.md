@@ -78,12 +78,14 @@ and Runtime Efficiency — is complete (H0–H10)**; both are recorded further
 below. (This sentence added "and is the latest *completed* phase", which
 was accurate until Phase I closed at I11 and stale afterwards; it is
 repaired here rather than rewritten away. The latest completed phase is
-Phase J.)
+Phase K.)
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
 complete: milestones J0 through J9 have all landed and J9 closed it.**
-**Phase K is the latest phase, and only K0 through K8 have landed;
-K9 is unstarted.** **Phase J is the latest completed phase**, and it remains complete. It was approved *after* Phase
+**Phase K is the latest phase, and it is complete: K0 through K9 have
+all landed, K9 closed it, and Phase K is the latest completed phase.**
+Phase J was the latest completed phase until Phase K closed after it,
+and it remains complete. It was approved *after* Phase
 I closed at I11, not carried over from an earlier plan. **J0 was
 architecture, contract, and documentation work and shipped no runtime
 behavior at all** — no dataset, sampler, or loader class, no helper
@@ -432,6 +434,225 @@ claimed for this milestone — those belong to **K9**. **No result file of
 any kind was written**, no number from this milestone is committed
 anywhere in the repository, and no CI job consumes one.
 
+### K9 — the Phase-K closure matrix
+
+**K9 changed no public surface**, so nothing this page records as a
+capability moved: the library still exports **56** `tf_*` symbols, the
+CTest inventory is still **27**, and every registry and version is exactly
+what K8 left. It did, however, **change production code** — the two
+repairs below, across seven C++ translation units and one Python module —
+so "no new capability" is the
+accurate description of K9 and "no production code" is not. What K9 adds
+here is evidence that the tree Phase K leaves behind builds, runs, and
+stays clean everywhere the project validates — and the two real repairs
+its validation and its independent final audit surfaced. **Neither is
+"K9's one production repair".**
+
+**Repair 1 — C++ switch exhaustiveness, and the chronology.** The Windows
+builds were clean, and so
+they had been at every Phase-K milestone: MSVC's default warning level
+does not diagnose a non-exhaustive `switch` over an enumeration. The first
+Linux build of the phase produced **237 `-Wswitch` diagnostics across 21
+sites** — "enumeration value 'Int64' not handled in switch" — in
+`elementwise.cpp`, `classification.cpp`, `conv2d.cpp`, `pooling.cpp`,
+`reduction.cpp`, `matmul.cpp`, and `random.cpp`. Those are the
+pre-existing float-only dispatch switches, and the enumerator K1 added
+made every one of them non-exhaustive. **Nothing was wrong at runtime**:
+`tf::require_floating` rejects an `int64` handle before any of them is
+reached, which is precisely why K1 did not rely on the warning. But the
+project requires **zero** project compiler warnings, and design §22.4
+explicitly says Phase K does not rely on that diagnostic being read — so
+a build that emits it 237 times is a contract violation in its own right.
+The repair writes the unreachable `Int64` arm out at every site, in the
+idiom K3's `indexing.cpp` had already established, and uses a `return`
+rather than a `break` in the fallthrough-shaped dispatches so an `int64`
+tag can never reach the `double` path even if a future guard were
+removed. Its regression is structural rather than anecdotal:
+`tests/test_native_integer_barriers.py` parses every `switch` in
+`cpp/src/*.cpp` **and** `cpp/include/*.h`, classifies the `tf::Dtype`
+enumeration ones **by their case labels** rather than by the spelling of
+the condition, and requires explicit `Float64`, `Float32`, and `Int64`
+arms and **no** `default:` label — the last being what keeps the *next*
+enumerator a compile-time diagnostic instead of a silent misread. The
+census is **34** switches, pinned per file as an equality; the first
+version of the regression matched only the two shared dispatch helpers
+over `cpp/src` and therefore enforced 29 of them, missing
+`create_storage`, `destroy_storage_data` (where a wrong arm is a
+`delete[]` through the wrong type) and the three `tf_internal.h` helpers,
+all of which already complied. `dtype_from_code` is the one documented
+exemption — an open `std::int32_t` ABI-code domain whose mandatory
+`default:` **rejects** rather than dispatching. **No
+export, no registry, no version, and no behavior changed**, and after the
+repair the Linux build reports **zero** warnings.
+
+**Repair 2 — `NativeTensorCore` fresh-storage ownership.** Surfaced by
+K9's independent final audit rather than by a build: `from_array`,
+`zeros`, and `_uninitialized` in `src/tensorforge/backends/cpp.py`
+allocated a `NativeStorage` and then constructed the view and core with no
+`try`, so a failure between the two left the storage owned by nothing and
+released only by `__del__` — while `_typed`, `_from_int64_array`, and
+`_typed_from_array` had carried `except BaseException: storage.close();
+raise` since I2/K2. The defect **predates Phase K** and no Phase-K
+milestone introduced it; K7's own core-construction injection row existed
+only for `from_int64_array`, whose guard is `_from_int64_array`'s. It is
+nonetheless a Phase-K path defect, which is why it is repaired here:
+`_uninitialized` is the allocator the floating arm of `contiguous_copy`
+takes, so the unguarded window sat on every Policy-B materialization
+inside `argmax` and `index_select`, and §5.1's "closes everything it
+allocated" was not met there. The three constructors now use the sibling
+guard; **no shape, dtype, device, allocation-kind, API, ABI, registry, or
+version semantics changed**, and the only observable difference is on a
+failure path that previously leaked. Regressions:
+`tests/test_native_tensor_core.py` (each constructor, both
+post-allocation seams, both `Exception` and `BaseException`, with the
+freshly allocated storage retained strongly while its release is
+asserted, plus an AST check over every allocating-and-publishing
+constructor) and `tests/test_native_integer_hardening.py` (the same
+window driven through the real `argmax` and `index_select` Policy-B
+materialization, as two new `INJECTION_MATRIX` positions). Both were
+verified to **fail** against the pre-repair constructors before the repair
+was accepted.
+
+**Windows** (MSVC 19.44.35228.0, CMake 4.4.0), both configurations
+configured and built from scratch in directories **outside the
+repository**, each writing its library to its own output directory so
+neither could be mistaken for the other or for the active runtime. Each:
+clean configure, clean build, **zero** project CMake, compiler, and linker
+warnings, and **27/27** CTests. The Release and Debug libraries are
+distinct artifacts (different SHA-256 digests, different sizes), and both
+export **56** symbols with the source inventory and the PE export table
+**exactly equal** — verified by reading the PE export directory directly
+rather than by trusting a load. The active runtime was rebuilt from the
+same K9 sources afterwards and independently proved to carry
+`tf_core_argmax` and `tf_core_index_select`.
+
+**WSL/Linux validation** — WSL2 Ubuntu 24.04.4, kernel 6.6.87.2, glibc
+2.39, x86_64, g++ 13.3.0 with `-Wall -Wextra`, Clang 18.1.3, CMake 3.28.3,
+uv, in an isolated environment (`UV_PROJECT_ENVIRONMENT`) outside the
+Windows worktree and on the native Linux filesystem. The workflow's own
+steps all pass — `cpp/build.py`, the hard-failing smoke check, the quick
+benchmark, and the full pytest suite — and a separate out-of-source
+Release build reports **zero** warnings, **27/27** CTests, **56** exports,
+**zero** mangled exported symbols, and source/library equality.
+
+**How the tree is obtained matters, and the first attempt got it wrong.**
+Copying the Windows working tree into WSL carries the CRLF checkout with
+it, and a Git whose `core.autocrlf` is unset then reports *every* text
+file as modified. Phase I's tree-diff guards detect exactly that — a
+sentinel file the phase never touches coming back "changed" — and skip
+rather than answer a question they cannot answer, so that run reported
+**2 skips**. Those guards are correct and were **not** weakened, disabled,
+filtered, or deselected. The tree is obtained the way a Linux machine
+obtains one instead: a `git clone` of the repository into a Linux scratch
+directory, which checks out with LF endings, followed by `git apply` of
+the K9 patch and a copy of the one untracked module. `LICENSE` is then
+clean, the guards have a question they can answer, and the suite runs with
+**zero skips**. Nothing in the primary repository's Git state is touched
+by any of this.
+
+**It is a validation run, not the CI run**, and the two are not the same
+claim. Matching a hosted Ubuntu checkout's *semantics* is what the scratch
+clone achieves; it is not a run of `.github/workflows/tests.yml` on
+GitHub's runners against a committed tree. See the Actions paragraph
+below, which is where that obligation lives.
+
+**Sanitizers, with instrumentation proved.** A fresh Clang **18.1.3**
+`-DTF_SANITIZE=address,undefined` build outside the repository compiled
+with **zero** project diagnostics. `nm -D` shows **23 `__asan*`** and **16
+`__ubsan*`** dynamic symbols alongside the **56** exported `tf_*` symbols,
+and the library **refuses to load** without the sanitizer runtime
+(`undefined symbol: __ubsan_vptr_type_cache`) — so the instrumentation is
+proved present rather than assumed. Under
+`halt_on_error=1:abort_on_error=1:detect_stack_use_after_return=1` and
+`UBSAN_OPTIONS=halt_on_error=1:print_stacktrace=1`: **27/27** sanitized
+CTests, and the Python suite against the sanitized library with **zero
+AddressSanitizer and zero UndefinedBehaviorSanitizer diagnostics**.
+Python-level runs preload the ASan runtime (`LD_PRELOAD`) because the
+interpreter itself is not instrumented, so the claim covers the **native**
+library and the native test binaries. The sanitized `.so` was substituted
+into the package location only for the duration of the run and the
+ordinary library rebuilt afterwards; no sanitized library was left in a
+runtime location and the Windows DLL was never touched.
+
+**A negative control makes that zero mean something.** A test-only program
+— compiled outside the repository, never committed, and deleted afterwards
+— hands `tf_storage_copy_to` a host destination one element shorter than
+the storage it declares, which is a size the C ABI cannot validate because
+a raw host pointer carries none. It aborts with `ERROR: AddressSanitizer:
+heap-buffer-overflow`. The same program with a correctly sized destination
+exits zero with no diagnostic, so the control **discriminates** rather
+than always firing. **No production failure API was added**, and the one
+documented allocation hook is unchanged.
+
+**LeakSanitizer, scope stated literally.** With `detect_leaks=1` and **no
+suppression file** (`LSAN_OPTIONS` confirmed unset, and no `.supp` file
+exists anywhere in the tree), a temporary and never committed workload
+drove the Phase-K lifecycle end to end: `int64` construction, a view
+chain, a `contiguous_copy`, `argmax`, `index_select`, the shipped K6
+example at both dtypes, and a repeated K8 benchmark run.
+
+Two separate facts, and neither is stated as the other:
+
+1. **TensorForge's own live-storage counter returned exactly to baseline
+   (0)** at every checkpoint — after K2–K4, after the K6 example, after
+   the K8 benchmark, and at the end of the lifecycle.
+2. **No leak record in the report has a frame attributable to
+   TensorForge's native code.** 287 records, 721 objects, 6,552 stack
+   frames scanned; **zero** matched the built library
+   (`_tensorforge_cpp.*`), any exported `tf_*` symbol, any `tf::` symbol
+   (mangled or not), or any `cpp/src` · `cpp/include` source path.
+
+**The process is not leak-free, and that is not claimed.** The raw log
+ends with an interpreter-level report — `SUMMARY: AddressSanitizer:
+797387 byte(s) leaked in 721 allocation(s).` — whose stacks are CPython's
+own import, marshal, and interpreter-state allocations plus NumPy's, freed
+by neither at exit. That number is **disclosed here rather than
+suppressed**, because the honest claim is about TensorForge's ownership
+contract and not about the process. Suppressing it would have made the
+zero above unfalsifiable, which is exactly the failure mode the project's
+sanitizer discipline exists to avoid.
+
+**The classifier that produces that zero has its own non-vacuity
+controls.** It is a parser over the raw text, and it is driven against
+synthetic reports carrying a planted TensorForge frame in each shape a
+real one could take — the built shared library on both platforms' naming,
+an exported `tf_*` symbol, an internal `tf::` symbol in both plain and
+Itanium-mangled form, and a source path under `cpp/src/` including one of
+the seven files K9 repaired — and reports every one of them; and against a
+CPython-only and a NumPy-only report, which it must **not** attribute.
+Eleven controls, all passing, and the tool refuses to print a clean result
+if any of them fails. It also cross-checks its own parse against the
+report's own totals: the bytes and object counts it sums from the records
+equal the `SUMMARY` line exactly.
+
+**Windows/Linux integer equality, asserted directly (design §29.5).** A
+temporary witness outside the repository generates the same deterministic
+cases on both platforms using only shipped public Phase-K behavior —
+exact construction and transfer including `INT64_MIN`, `INT64_MAX`,
+±2³¹, ±(2⁵³+1), and a non-contiguous ingress; `argmax` over §17.5's whole
+case table plus axis, negative-axis, `keepdims`, rank-3, and
+non-contiguous reductions; and `index_select` with duplicates, reordering,
+and non-contiguous source, index, and both — and writes one canonical
+record with `int64` values as decimal integers and every floating value as
+a raw `uint32`/`uint64` hexadecimal bit string. The two records are
+**byte-identical**: 58 cases, 13,929 bytes, zero differing paths, with no
+tolerance and no cross-dtype comparison anywhere. The comparator is proved
+able to fail by mutating an in-memory copy — a flipped index, a flipped
+bit string, a changed integer, and a dropped case are each reported with
+their exact path — and neither evidence file was written to.
+
+**GitHub Actions is separate, and it is the final CI-equivalent proof.**
+The K9 tree is uncommitted, so its workflow run has not happened. **A
+green run of `.github/workflows/tests.yml` on GitHub's hosted Ubuntu
+runner, against the committed K9 tree, is the CI-equivalent evidence, it
+has not been executed, and it must be green before merge.** Nothing above
+stands in for it and nothing above may be reported as it: the WSL/Linux
+run matches a hosted checkout's semantics and runs the same steps, but it
+is a local validation run on a scratch clone. No claim is made here about
+a run that has not happened. The workflow itself is unchanged and still
+performs checkout, uv setup, the native build, the smoke check, the quick
+benchmark, and the full suite.
+
 ### J9 — the Phase-J closure matrix
 
 **J9 changed no production code and added no export**, so nothing on this
@@ -598,8 +819,8 @@ the locked `tensorforge.splitmix64` derivation already compiled into
 `cpp/src/random.cpp` rather than adding a second one.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is
-complete (I0–I11); Phase J closed after it, so the latest completed phase
-is Phase J.** Milestone
+complete (I0–I11); Phase J closed after it and Phase K after that, so
+the latest completed phase is Phase K.** Milestone
 I11 revalidated the whole dtype-general stack on every required platform
 and closed the phase. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md). **I0
@@ -4877,7 +5098,7 @@ which has since closed.
 complete.** Milestones H0 through H10 have all landed. (This paragraph read
 "is the latest *completed* phase" twice, which was accurate until Phase I
 closed at I11 and stale afterwards; it is repaired here rather than
-rewritten away. The latest completed phase is Phase J.) H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
+rewritten away. The latest completed phase is Phase K.) H10 re-measured the whole phase against a reconstructed and verified H0 baseline (52 cases, **zero checksum mismatches** — every figure compares implementations that produced bit-identical results), resolved the acceleration gate as three documented rejections with measurements (SIMD, threading/OpenMP, BLAS), assessed `tf_core_narrow_backward` and the small-operation boundary floor and implemented neither, ran the full Release/Debug/Linux/sanitizer/lifecycle matrix, and closed the phase. **Every shipped training workload is 1.50×–3.89× faster than at H0**, matmul 4.71×, Conv2d kernels 2.59×–4.64×, reductions 3.78×–5.06×, with no allocation count or memory peak raised anywhere — and across the whole phase **no capability, dtype, device, registry value, public API, checkpoint field, or checkpoint version moved**, with exactly **one** C ABI symbol added (`tf_storage_create_uninitialized`, at H1): 51 → **52**.
 
 Reported as honestly as the wins. The controls held — the unchanged raw-buffer matmul at 0.99×, NumPy at 1.03×, storage allocation at 0.98×, and Dropout at 1.00× — and **`to_numpy` at 0.95× is the one reproducible regression**, attributed rather than smoothed over: its compiled traversal is byte-identical source measuring 0.975×–1.008×, so what changed is that H3's and H7's much cheaper wrapper no longer hides it. The remaining limitations are stated plainly: the gap to a tuned multi-threaded BLAS is **3.6×–9.3×** and widens with size; convolution is entirely scalar (0 packed-double instructions); `tf_core_narrow_backward` still walks the odometer, deliberately, because it executes **0 times** in every shipped training workload; and a small operation still costs a few microseconds because **60 % of that is the owning allocation and 19 % is building the result's Python ownership objects, against 12 % for the ctypes crossing** — an architectural floor rather than a defect. Every number is a local characterization of one machine, reported with its spread, and asserted by no test. Its contract is
 [native_cpu_performance_design.md](native_cpu_performance_design.md).

@@ -195,7 +195,11 @@ K7_BENCHMARK_COUNT = 9
 K8_BENCHMARK = "benchmark_native_integer.py"
 K8_BENCHMARK_COUNT = K7_BENCHMARK_COUNT + 1                     # 10
 
-# K9's own module, which must not exist while K8 is the newest milestone.
+# K9's own module. While K8 was the newest milestone this guard asserted
+# it absent; that premise expired when **K9** landed and closed the phase,
+# so the entry moved from the absent side to the present side rather than
+# being deleted — the same discipline every earlier expiry in this phase
+# followed.
 K9_ARTIFACT = "tests/test_native_phase_k_closure.py"
 
 SMOKE = {"smoke": True}
@@ -2854,21 +2858,47 @@ def test_the_line_ending_normalizer_can_actually_fail():
     assert _normalized(b"a\r\nb") != _normalized(b"a\r\nc")
 
 
+# Production sources under ``src/`` that a **later** milestone legitimately
+# changed, each named with the milestone that owns it — the ``src/`` twin of
+# ``POST_K8_NON_SRC_CHANGES`` below, and added on the same discipline.
+#
+# K9's independent closure audit found that ``NativeTensorCore.from_array``,
+# ``zeros``, and ``_uninitialized`` published their view and core over
+# freshly allocated storage with **no guard**, so a failure between the two
+# released nothing explicitly — a pre-existing hole that sat on the Phase-K
+# Policy-B materialization path, because ``_uninitialized`` is the allocator
+# the floating arm of ``contiguous_copy`` takes. That is K9's repair, not
+# K8's work, so it is **named and subtracted** here rather than absorbed
+# silently or used to weaken the claim.
+POST_K8_SRC_CHANGES = {
+    "src/tensorforge/backends/cpp.py": "K9",
+}
+
+
 def test_no_production_file_differs_from_head_except_one_docstring():
     """The milestone half: before K8 is committed, every production source
-    is byte-identical to ``HEAD`` except the package status docstring, and
-    that one is **executable-code identical**.
+    is byte-identical to ``HEAD`` except the package status docstring — and
+    that one is **executable-code identical** — plus whatever a later
+    milestone legitimately changed and named in ``POST_K8_SRC_CHANGES``.
 
     After the milestone is committed this comparison is trivially true,
     which is exactly right: the claim it makes is about the K8 patch, and
     ``test_only_the_package_status_docstring_may_name_k8`` above is the
     durable statement that survives it.
+
+    The subtraction list was empty through K8 and gained its first entry at
+    **K9**, whose repair really does change executable Python. Naming the
+    file keeps this a claim about K8's patch instead of a check that
+    silently stops meaning anything once the tree moves on; the entry's
+    non-vacuity is proved below.
     """
     tracked = _git_bytes("ls-files", "src").decode("utf-8").splitlines()
     assert tracked, "no production source is tracked"
     checked = 0
     for relative in tracked:
         if not relative.endswith(".py"):
+            continue
+        if relative in POST_K8_SRC_CHANGES:
             continue
         checked += 1
         live = _normalized((REPO_ROOT / relative).read_bytes())
@@ -2879,20 +2909,111 @@ def test_no_production_file_differs_from_head_except_one_docstring():
         else:
             assert live == head, relative
     assert checked > 10, checked
+    # The subtraction excuses production files only, and never the one the
+    # docstring exception already covers — two escapes on one file would
+    # leave nothing checked about it at all.
+    for relative in POST_K8_SRC_CHANGES:
+        assert relative.startswith("src/"), relative
+        assert relative != _PRODUCTION_DOCSTRING_EXCEPTION, relative
+        assert (REPO_ROOT / relative).is_file(), relative
+
+
+def test_the_subtracted_src_file_carries_the_repair_it_is_named_for():
+    """A subtraction that excused a file for no reason would be a hole.
+
+    ``backends/cpp.py`` is excused for K9's fresh-storage ownership repair,
+    so it must actually carry it: each of the three repaired constructors
+    wraps its publication in a ``try`` whose ``BaseException`` handler
+    closes the storage it allocated. Read from the module's **AST**, so a
+    docstring describing the guard cannot satisfy the check.
+
+    The behavioural proof lives in ``tests/test_native_tensor_core.py`` and
+    the Phase-K path proof in ``tests/test_native_integer_hardening.py``;
+    what is checked here is only that this file is the one K9 touched."""
+    relative, = POST_K8_SRC_CHANGES
+    tree = ast.parse((REPO_ROOT / relative).read_text(encoding="utf-8"))
+    core = next(node for node in ast.walk(tree)
+                if isinstance(node, ast.ClassDef)
+                and node.name == "NativeTensorCore")
+    repaired = set()
+    for node in core.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        if node.name not in ("from_array", "zeros", "_uninitialized"):
+            continue
+        for handler in (inner for inner in ast.walk(node)
+                        if isinstance(inner, ast.ExceptHandler)):
+            if not (isinstance(handler.type, ast.Name)
+                    and handler.type.id == "BaseException"):
+                continue
+            if any(ast.unparse(call) == "storage.close()"
+                   for call in ast.walk(handler)
+                   if isinstance(call, ast.Call)):
+                repaired.add(node.name)
+    assert repaired == {"from_array", "zeros", "_uninitialized"}, repaired
+
+
+# Files outside ``src/`` that a **later** milestone legitimately changed,
+# each named with the milestone that owns it. K9's closure validation found
+# that K1's third dtype enumerator had left the pre-existing float-only
+# dispatch switches non-exhaustive — a ``-Wswitch`` diagnostic on every
+# ``-Wall`` build, which the zero-warning contract forbids — and wrote the
+# unreachable ``Int64`` arms out. That is K9's repair, not K8's work, so it
+# is **named and subtracted** here rather than absorbed silently or used to
+# weaken the claim: everything not on this list must still be untouched.
+POST_K8_NON_SRC_CHANGES = {
+    "cpp/src/classification.cpp": "K9",
+    "cpp/src/conv2d.cpp": "K9",
+    "cpp/src/elementwise.cpp": "K9",
+    "cpp/src/matmul.cpp": "K9",
+    "cpp/src/pooling.cpp": "K9",
+    "cpp/src/random.cpp": "K9",
+    "cpp/src/reduction.cpp": "K9",
+}
 
 
 def test_no_production_or_build_surface_outside_src_changed():
     """``cpp/``, ``examples/``, ``.github/``, and the project files carry no
-    K8 change at all — no rebuild was performed and none was required."""
+    K8 change at all — no rebuild was performed and none was required.
+
+    Every file a later milestone legitimately changed is named in
+    ``POST_K8_NON_SRC_CHANGES`` and subtracted, which keeps this a claim
+    about **K8's** patch rather than a check that quietly stops meaning
+    anything once the tree moves on. The examples, the workflow, and the
+    project files carry no later change at all, and the subtraction list is
+    proved non-vacuous below."""
     for directory in ("cpp", "examples", ".github"):
         for relative in _git_bytes(
                 "ls-files", directory).decode("utf-8").splitlines():
+            if relative in POST_K8_NON_SRC_CHANGES:
+                continue
             assert _normalized(
                 (REPO_ROOT / relative).read_bytes()) == _normalized(
                 _git_bytes("show", f"HEAD:{relative}")), relative
     for name in ("pyproject.toml", "uv.lock"):
         assert _normalized((REPO_ROOT / name).read_bytes()) == _normalized(
             _git_bytes("show", f"HEAD:{name}")), name
+    # The subtraction names only ``cpp/src`` files, so no example, no
+    # workflow, and no project file is excused by it.
+    for relative in POST_K8_NON_SRC_CHANGES:
+        assert relative.startswith("cpp/src/"), relative
+        assert (REPO_ROOT / relative).is_file(), relative
+
+
+def test_the_subtracted_files_carry_the_repair_they_are_named_for():
+    """A subtraction that excused a file for no reason would be a hole.
+
+    Each named file must actually carry K9's repair — an explicit
+    ``Int64`` arm in a dtype-dispatch ``switch`` — so the list cannot grow
+    to cover an unrelated change. The structural completeness of that
+    repair is owned by ``tests/test_native_integer_barriers.py``; what is
+    checked here is only that these files are the ones it touched."""
+    for relative in POST_K8_NON_SRC_CHANGES:
+        code = re.sub(r"//[^\n]*", " ",
+                      re.sub(r"/\*.*?\*/", " ",
+                             (REPO_ROOT / relative).read_text(encoding="utf-8"),
+                             flags=re.S))
+        assert "Dtype::Int64" in code, relative
 
 
 def test_no_ci_job_runs_or_gates_on_this_benchmark():
@@ -2903,17 +3024,20 @@ def test_no_ci_job_runs_or_gates_on_this_benchmark():
         assert banned not in workflow, banned
 
 
-def test_k9_has_not_started():
-    """K8 is not K9: the closure module must still be absent, and this
-    module performs no rebuild, no sanitizer run, and no cross-platform
-    comparison.
+def test_k9_owns_closure_and_this_module_still_runs_none_of_it():
+    """K8 is not K9: the closure module exists now that K9 landed — the
+    "must still be absent" premise expired at closure, so the assertion
+    moved from absence to presence — but this module still performs no
+    rebuild, no sanitizer run, and no cross-platform comparison, because
+    those belong to K9's validation record and never to the benchmark
+    owner.
 
     Scanned over **executable code**, not raw text — a ban list spelled in
     this module's own prose would otherwise fail on the sentence that
     documents it, which is the scanner failure mode this repository
     already has on record.
     """
-    assert not (REPO_ROOT / K9_ARTIFACT).exists(), K9_ARTIFACT
+    assert (REPO_ROOT / K9_ARTIFACT).is_file(), K9_ARTIFACT
     own_code = code_only(Path(__file__).read_text(encoding="utf-8"))
     for banned in ("tf_sanitize", "tf_build_tests", "asan", "ubsan",
                    "sanitize", "leaksanitizer"):

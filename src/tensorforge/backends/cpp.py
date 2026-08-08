@@ -2767,13 +2767,22 @@ class NativeTensorCore:
         ``"float64"``/``"cpu"``; unsupported values are rejected, and the
         host input is converted once to the requested dtype at this
         explicit host-to-native boundary (never inferred from the input —
-        see ``NativeStorage.from_array``)."""
+        see ``NativeStorage.from_array``).
+
+        A failed view or wrapper construction closes the storage this call
+        allocated, so a rejected core leaks nothing — the guard ``_typed``
+        has carried since I2, applied here in the K9 closure repair."""
         canonical = normalize_dtype(dtype)
         array = np.ascontiguousarray(values, dtype=_DTYPE_NUMPY[canonical])
         # empty input fails here; dtype/device validated in the storage
         storage = NativeStorage.from_array(array, dtype=canonical,
                                            device=device)
-        return cls(storage, _contiguous_view(storage, _as_shape(array.shape)))
+        try:
+            return cls(storage,
+                       _contiguous_view(storage, _as_shape(array.shape)))
+        except BaseException:
+            storage.close()
+            raise
 
     @classmethod
     def zeros(cls, shape, dtype="float64", device="cpu", *,
@@ -2811,14 +2820,22 @@ class NativeTensorCore:
         keeping visible — without selecting a wider table. Its two callers
         are ``sum`` and ``narrow_backward``, both floating accumulators, so
         a zeroed integer output has no caller here and must not become
-        reachable by inheriting a lower primitive's trust."""
+        reachable by inheriting a lower primitive's trust.
+
+        A failed view or wrapper construction closes the storage this call
+        allocated, so a rejected core leaks nothing — the guard ``_typed``
+        has carried since I2, applied here in the K9 closure repair."""
         dims = _as_shape(shape)  # validates shape by the v0.7 rules
         dtype = normalize_dtype(dtype)  # K1: floating on both arms
         storage = NativeStorage(
             _numel_checked(dims), dtype=dtype, device=device,
             _trusted_dtype=_trusted_dtype,
         )
-        return cls(storage, _contiguous_view(storage, dims))
+        try:
+            return cls(storage, _contiguous_view(storage, dims))
+        except BaseException:
+            storage.close()
+            raise
 
     @classmethod
     def _uninitialized(cls, shape, dtype="float64", device="cpu"):
@@ -2852,13 +2869,25 @@ class NativeTensorCore:
         property rather than an accident of delegation. No integer
         destination uses the uninitialized path at any Phase-K milestone
         (§27.3), so the H1 audit table and its poison tests are untouched.
+
+        A failed view or wrapper construction closes the storage this call
+        allocated, so a rejected core leaks nothing — the guard ``_typed``
+        has carried since I2, applied here in the K9 closure repair. It
+        matters most on *this* constructor: this is the allocator the
+        floating arm of ``contiguous_copy`` takes, so it sits on every
+        Policy-B copy-then-compute path, including ``argmax``'s and
+        ``index_select``'s source materialization.
         """
         dims = _as_shape(shape)  # validates shape by the v0.7 rules
         dtype = normalize_dtype(dtype)  # K1: floating destinations only
         storage = NativeStorage._uninitialized(
             _numel_checked(dims), dtype=dtype, device=device
         )
-        return cls(storage, _contiguous_view(storage, dims))
+        try:
+            return cls(storage, _contiguous_view(storage, dims))
+        except BaseException:
+            storage.close()
+            raise
 
     @classmethod
     def _typed(cls, shape, dtype, device="cpu", *, zero_initialize=True):

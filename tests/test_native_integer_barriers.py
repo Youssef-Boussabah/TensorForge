@@ -1221,6 +1221,291 @@ def test_the_export_guard_scanner_can_actually_fail():
         assert found == expected, source
 
 
+# The C++ surface every dtype switch must be found on. Headers are scanned
+# too, because three of the enumeration switches live in
+# ``tf_internal.h`` — and a scan that stopped at ``cpp/src`` would report
+# the property enforced while leaving them unread.
+_CPP_SURFACE = (("cpp", "src", "*.cpp"), ("cpp", "include", "*.h"))
+
+# A ``tf::Dtype`` **case label**, which is what classifies a switch below.
+# Deliberately not "the body mentions Dtype::Float64 somewhere":
+# ``dtype_from_code`` assigns those enumerators in its arms while switching
+# on an ABI *code*, and reading a mention would misfile it as a dispatch.
+_DTYPE_CASE = re.compile(r"\bcase\s+(?:tf::)?Dtype::(Float64|Float32|Int64)\s*:")
+_DEFAULT_LABEL = re.compile(r"\bdefault\s*:")
+
+# The exact per-file census, as literals. An equality rather than a floor:
+# the whole point of the K9 repair is that the enforced set is the *whole*
+# dispatch surface, and a floor cannot notice a file dropping out of it.
+DTYPE_SWITCH_CENSUS = {
+    "cpp/include/tf_internal.h": 3,     # item_size, name, is_floating
+    "cpp/src/classification.cpp": 4,
+    "cpp/src/conv2d.cpp": 3,
+    "cpp/src/elementwise.cpp": 9,
+    "cpp/src/indexing.cpp": 2,         # K3/K4, written exhaustive
+    "cpp/src/matmul.cpp": 1,
+    "cpp/src/pooling.cpp": 2,
+    "cpp/src/random.cpp": 1,
+    "cpp/src/reduction.cpp": 2,
+    "cpp/src/storage.cpp": 7,          # incl. create/destroy, unscanned pre-K9
+}
+DTYPE_SWITCH_TOTAL = 34
+
+# The one switch on this surface that is **not** an enumeration dispatch,
+# named rather than left to fall through a regex it no longer matches. It
+# validates an open ``std::int32_t`` ABI-code domain, so it must keep a
+# ``default:`` — and that default **rejects** instead of dispatching, which
+# is the property that makes the exemption safe.
+VALIDATION_SWITCH = ("cpp/include/tf_internal.h", "dtype_from_code")
+
+
+def _cpp_comment_free(text):
+    """``text`` with block and line comments replaced by spaces."""
+    return re.sub(r"//[^\n]*", " ",
+                  re.sub(r"/\*.*?\*/", " ", text, flags=re.S))
+
+
+def _switch_blocks(code):
+    """Every balanced ``switch`` block in comment-stripped C++ ``code``, as
+    ``(condition, body)`` pairs in source order.
+
+    Found from the ``switch`` **keyword** rather than from any particular
+    spelling of the condition — which is the whole repair. The pre-K9
+    scanner recognized only ``switch (tf::dispatch_dtype(...))`` and
+    ``switch (tf::storage_dtype(...))``, so ``create_storage``'s
+    ``switch (dtype)``, ``destroy_storage_data``'s
+    ``switch (storage->dtype)`` — where a wrong arm is a ``delete[]``
+    through the wrong type — and all three header switches were invisible
+    to it while every status surface said the property was enforced.
+
+    The condition's parentheses are walked first, because the shipped call
+    shape passes a **braced initializer list** of handles —
+    ``switch (tf::dispatch_dtype({src, dst}))`` — so the first ``{`` after
+    the keyword belongs to the argument, not to the body. Reading that one
+    would make every assertion below vacuous.
+
+    A pure function over text, so the negative controls can feed it
+    deliberately malformed switches."""
+    blocks = []
+    for match in re.finditer(r"\bswitch\s*\(", code):
+        # Walk the condition's parentheses to their close.
+        start = code.index("(", match.start())
+        depth, position = 1, start + 1
+        while depth and position < len(code):
+            if code[position] == "(":
+                depth += 1
+            elif code[position] == ")":
+                depth -= 1
+            position += 1
+        condition = code[start:position]
+        opening = code.index("{", position)
+        depth, position = 1, opening + 1
+        while depth and position < len(code):
+            if code[position] == "{":
+                depth += 1
+            elif code[position] == "}":
+                depth -= 1
+            position += 1
+        blocks.append((condition, code[opening:position]))
+    return blocks
+
+
+def _dtype_enumeration_switches(code):
+    """Every ``tf::Dtype`` **enumeration** switch in ``code``, classified by
+    its case labels rather than by its condition.
+
+    A switch belongs to this set when its body carries a case label for
+    ``Dtype::Float64`` or ``Dtype::Float32``. That rule is what makes the
+    scan independent of how the dispatch is spelled: a helper call, a bare
+    ``dtype``, a ``storage->dtype`` member, a header parameter, and any
+    future renaming of the shared helpers are all found the same way.
+
+    Returns ``(condition, body, labels)`` triples."""
+    found = []
+    for condition, body in _switch_blocks(code):
+        labels = set(_DTYPE_CASE.findall(body))
+        if labels & {"Float64", "Float32"}:
+            found.append((condition, body, labels))
+    return found
+
+
+def _dtype_switch_report(code):
+    """``(count, offenders)`` for one comment-stripped translation unit."""
+    offenders, count = [], 0
+    for condition, body, labels in _dtype_enumeration_switches(code):
+        count += 1
+        if labels != {"Float64", "Float32", "Int64"}:
+            offenders.append(("missing arm", condition.strip()[:60],
+                              sorted(labels)))
+        elif _DEFAULT_LABEL.search(body):
+            offenders.append(("default: label", condition.strip()[:60],
+                              sorted(labels)))
+    return count, offenders
+
+
+def _surface_paths():
+    for parts in _CPP_SURFACE:
+        for path in sorted((REPO_ROOT.joinpath(*parts[:-1])).glob(parts[-1])):
+            yield path
+
+
+def test_every_dtype_dispatch_switch_is_exhaustive_over_the_enumeration():
+    """The K9-closure repair's regression, owned here because K1 owns the
+    fencing: every ``tf::Dtype`` enumeration ``switch`` in the production
+    C++ surface carries explicit ``Float64``, ``Float32``, and ``Int64``
+    arms and no ``default:`` label.
+
+    K1 added the third enumerator and fenced every float-only export with
+    ``tf::require_floating``, but left the pre-existing two-arm dispatch
+    switches non-exhaustive — harmless at runtime, because the guard
+    rejects an int64 handle first, but a ``-Wswitch`` diagnostic on every
+    ``-Wall`` build, which the zero-warning contract forbids. K9's
+    validation surfaced it (237 GCC diagnostics across 21 sites; MSVC's
+    default warning level never showed it) and the repair wrote the
+    unreachable arm out in the idiom K3's ``indexing.cpp`` had already
+    established. The ``default:``-freedom half is what keeps the *next*
+    enumerator a compile-time diagnostic rather than a silent misread.
+
+    The census is an **equality** per file, so a switch disappearing from
+    the scan's reach fails here rather than quietly shrinking the set the
+    property is proved over — which is exactly how the pre-K9 scanner came
+    to enforce 29 of the 34."""
+    census, offenders = {}, []
+    for path in _surface_paths():
+        relative = path.relative_to(REPO_ROOT).as_posix()
+        code = _cpp_comment_free(path.read_text(encoding="utf-8"))
+        count, bad = _dtype_switch_report(code)
+        if count:
+            census[relative] = count
+        offenders.extend((relative,) + entry for entry in bad)
+    assert offenders == [], offenders
+    assert census == DTYPE_SWITCH_CENSUS, census
+    assert sum(census.values()) == DTYPE_SWITCH_TOTAL, sum(census.values())
+
+
+def test_no_dtype_switch_nests_another_switch():
+    """The census reads each switch's whole balanced body, so a nested
+    switch's labels would be attributed to its enclosing one as well. None
+    exists, and pinning that is what keeps the classification above exact
+    rather than approximately exact."""
+    for path in _surface_paths():
+        code = _cpp_comment_free(path.read_text(encoding="utf-8"))
+        for condition, body, _labels in _dtype_enumeration_switches(code):
+            assert "switch" not in body, (path.name, condition.strip()[:60])
+
+
+def test_the_abi_code_validation_switch_is_the_one_documented_exemption():
+    """``dtype_from_code`` is a **different kind of switch** and is exempt
+    deliberately, not by having slipped out of a regex's reach.
+
+    It switches on an open ``std::int32_t`` ABI code rather than on a
+    ``tf::Dtype`` value, so exhaustiveness over the enumeration is not even
+    expressible for it and a ``default:`` is mandatory. What matters is
+    that the default **rejects**: it returns ``false`` and leaves the
+    caller's ``out`` untouched, so an unknown code can never be dispatched
+    on. Both halves are asserted here, and it is the *only* non-enumeration
+    switch on the whole surface — proved by exhaustion rather than by
+    assumption."""
+    relative, function = VALIDATION_SWITCH
+    exempt = []
+    for path in _surface_paths():
+        code = _cpp_comment_free(path.read_text(encoding="utf-8"))
+        for condition, body in _switch_blocks(code):
+            # The same classification the census uses, asked here of every
+            # switch rather than only of the enumeration ones — so the
+            # complement is found by exhaustion instead of by a second rule.
+            if set(_DTYPE_CASE.findall(body)) & {"Float64", "Float32"}:
+                continue
+            exempt.append((path.relative_to(REPO_ROOT).as_posix(),
+                           condition.strip(), body))
+    assert len(exempt) == 1, [(entry[0], entry[1]) for entry in exempt]
+    where, condition, body = exempt[0]
+    assert where == relative, where
+    assert condition == "(code)", condition
+    # It dispatches on the ABI code domain, never on a Dtype value...
+    assert not _DTYPE_CASE.search(body), body[:200]
+    assert re.search(r"\bcase\s+TF_DTYPE_FLOAT64\s*:", body), body[:200]
+    assert re.search(r"\bcase\s+TF_DTYPE_INT64\s*:", body), body[:200]
+    # ...and its default rejects rather than choosing an arm.
+    assert re.search(r"\bdefault\s*:\s*return\s+false\s*;", body), body[:200]
+    # The function it lives in is named, so the exemption is traceable to a
+    # place rather than to a shape.
+    code = _cpp_comment_free((REPO_ROOT / relative).read_text(encoding="utf-8"))
+    assert re.search(rf"\b{function}\s*\(", code), function
+
+
+def test_the_dtype_switch_scanner_can_actually_fail():
+    """Negative control driving the **real** helpers over planted source:
+    every condition spelling the production tree uses is discovered, a
+    missing ``Int64`` arm fails, a ``default:`` fails, and the exhaustive
+    form passes.
+
+    Every fixture keeps the shape it is standing in for — including the
+    braced-initializer condition, so the parenthesis walk is exercised
+    rather than bypassed. A scanner that read the argument list instead of
+    the body would pass every fixture here and prove nothing."""
+    exhaustive_arms = ("    case tf::Dtype::Float32: f(); return;\n"
+                       "    case tf::Dtype::Int64: return;\n"
+                       "    case tf::Dtype::Float64: break;\n")
+    # 1-4: every condition spelling on the production surface must be
+    # discovered, which is the half the pre-K9 scanner failed.
+    spellings = (
+        "switch (tf::dispatch_dtype({a, b}))",   # the helper-call form
+        "switch (dtype)",                        # create_storage
+        "switch (storage->dtype)",               # destroy_storage_data
+        "switch (value)",                        # a header helper's parameter
+    )
+    for condition in spellings:
+        source = f"{condition} {{\n{exhaustive_arms}}}\n"
+        found = _dtype_enumeration_switches(source)
+        assert len(found) == 1, (condition, found)
+        assert found[0][2] == {"Float64", "Float32", "Int64"}, condition
+        assert "Float32" in found[0][1], "the body was not read at all"
+        assert _dtype_switch_report(source) == (1, []), condition
+
+    # 5: a missing Int64 arm is reported, at every spelling.
+    for condition in spellings:
+        missing = (f"{condition} {{\n"
+                   "    case tf::Dtype::Float32: f(); return;\n"
+                   "    case tf::Dtype::Float64: break;\n"
+                   "}\n")
+        count, offenders = _dtype_switch_report(missing)
+        assert count == 1 and len(offenders) == 1, (condition, offenders)
+        assert offenders[0][0] == "missing arm", offenders
+
+    # 6: a ``default:`` arm is reported even when all three arms are there.
+    defaulted = (f"{spellings[1]} {{\n{exhaustive_arms}"
+                 "    default: break;\n}\n")
+    count, offenders = _dtype_switch_report(defaulted)
+    assert count == 1 and offenders[0][0] == "default: label", offenders
+
+    # 7: the exhaustive form passes — the positive control, so the scan is
+    # not simply always-firing.
+    assert _dtype_switch_report(
+        f"{spellings[0]} {{\n{exhaustive_arms}}}\n") == (1, [])
+
+    # Comment-stripping matters: an ``Int64`` that lives only in a comment
+    # must not satisfy the scan, and the real stripper is what proves it.
+    commented = (f"{spellings[0]} {{\n"
+                 "    // case tf::Dtype::Int64: return;\n"
+                 "    case tf::Dtype::Float32: f(); return;\n"
+                 "    case tf::Dtype::Float64: break;\n"
+                 "}\n")
+    count, offenders = _dtype_switch_report(_cpp_comment_free(commented))
+    assert count == 1 and offenders[0][0] == "missing arm", offenders
+
+    # A code-domain validation switch is classified as **not** an
+    # enumeration switch even though its arms mention the enumerators —
+    # which is why classification reads case *labels* and not mentions.
+    validation = ("switch (code) {\n"
+                  "    case TF_DTYPE_FLOAT64: out = Dtype::Float64; "
+                  "return true;\n"
+                  "    default: return false;\n"
+                  "}\n")
+    assert _dtype_enumeration_switches(validation) == []
+    assert len(_switch_blocks(validation)) == 1
+
+
 @needs_native
 def test_the_c_abi_rejects_int64_independently_of_python():
     """Fact 3, driven straight at the ABI with the Python layer bypassed,

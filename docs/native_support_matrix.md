@@ -969,13 +969,14 @@ asserted by no test.
 
 ## Phase I — native dtype generalization and float32 CPU support, **complete (I0–I11)**
 
-**Phase I is complete: milestones I0 through I11 have all landed; Phase J closed after it, so the
-latest completed phase is Phase J.** I11 revalidated the stack across every
+**Phase I is complete: milestones I0 through I11 have all landed; Phase J
+closed after it and Phase K after that, so the latest completed phase is
+Phase K.** I11 revalidated the stack across every
 required platform, added the closure guardrails, and reconciled the status
 surfaces. Its architecture contract is
 [native_dtype_float32_design.md](native_dtype_float32_design.md).
 Phase H is unaffected and remains complete — it closed at **52** exports.
-Phase J, below, is complete (J0–J9). **Phase K is the latest phase, and only K0 through K8 have landed.** **K9 is unstarted.** **Phase J is the latest completed phase**, and it remains complete. Phase J moved no
+Phase J, below, is complete (J0–J9). **Phase K is the latest phase, and it is complete: K0 through K9 have all landed, K9 closed it, and Phase K is the latest completed phase.** Phase J was the latest completed phase until Phase K closed after it, and it remains complete. Phase J moved no
 row in this document at any milestone.
 
 **Since milestone I9, `float32` and `float64` are both supported native
@@ -1532,7 +1533,7 @@ G9 while the operation and the module both already existed.
 
 ## Phase J — deterministic native data pipeline and mini-batching, **complete (J0–J9)**
 
-**Phase J is complete.** **Phase K is the latest phase, and only K0 through K8 have landed.** **Phase J is the latest completed phase**, and it remains complete. It was newly approved
+**Phase J is complete.** **Phase K is the latest phase, and it is complete: K0 through K9 have all landed, and Phase K is the latest completed phase.** Phase J was the latest completed phase until Phase K closed after it, and it remains complete. It was newly approved
 when it opened: the repository closed Phase I at I11 without committing to
 a successor, and Phase J was approved afterwards, so nothing here describes
 pre-existing roadmap work.
@@ -1784,10 +1785,11 @@ the existing validated `metadata` channel — which needs no new checkpoint
 field, no new version, and no coupling between the checkpoint runtime and
 the pipeline.
 
-## Phase K — native integer tensors and indexing, **K0, K1, and K2 complete**
+## Phase K — native integer tensors and indexing, **complete (K0–K9)**
 
-**Phase K is newly approved**, after Phase J closed at J9 without a
-committed successor, and **K0, K1, and K2 have landed**. Its
+**Phase K was newly approved** after Phase J closed at J9 without a
+committed successor, **and it is complete: K0 through K9 have all landed
+and K9 closed the phase**. Its
 authoritative contract is
 [native_integer_tensors_design.md](native_integer_tensors_design.md).
 
@@ -1898,7 +1900,53 @@ constructor accepts it, and no kernel computes at it.
 
 **K8 is the benchmark characterization milestone, and it added zero production code.** Its deliverable is `benchmarks/benchmark_native_integer.py`, owned by `tests/test_native_integer_benchmark.py`, and it **measures** what K1–K4 shipped rather than changing any of it. It answers four separate questions and keeps them four — `integer_construction`, `host_materialization`, `argmax`, and `index_select` — over sixteen cases at contiguous, strided-host, transposed, and offset layouts, with **no composed case**, because a single `argmax`-then-`index_select` number could not say which of the two dominates. **Every case is `native_only` and publishes no ratio at all**: each family allocates native storage and transfers into or out of it while the apparent host equivalent does not, which is precisely the fairness risk the phase contract names by name for `argmax` against `numpy.argmax`, and a conservative absence is worth more than a ratio a reader would have to discount. Correctness is gated before timing, proved structurally off the runner's AST **and** behaviourally with a spy timer for every case, and the gates are exact: `argmax` against an independent transcription of the design's own tie and NaN rule plus its committed twelve-row case table (never against `numpy.argmax`, whose rules are another library's decisions), and `index_select` against a per-position slice concatenation written without `numpy.take`, compared as raw IEEE-754 bits inside one width and again position by position. `float64`, `float32`, and `int64` are characterized separately and none is ever divided by another; `--dtype int64` selects the **index/result** families and says so, because `int64` is not a supported compute dtype and this milestone does not let a CLI imply otherwise. The timed region holds exactly one operation call, with a non-contiguous operand's internal Policy-B materialization, the complete index bounds scan, and the destination allocation deliberately **inside** it; every measured sample is retained, no outlier is removed, no timer overhead is subtracted, no result file is written in any mode, and no duration is a pass/fail criterion anywhere. **K8 required no native rebuild and found no production defect.** It moved exactly one inventory — benchmarks **9 → 10** — leaving exports **56**, CTests **27**, examples **17**, `experimental.__all__` **25**, and every registry and version exactly what K7 left.
 
-There is **no `max`**, no `max_with_indices`, no `argmin`, no general `gather`, no `scatter`, no `scatter_add`, no embedding lookup, no `__getitem__` or advanced/boolean/multi-axis indexing, no `index_select` backward, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion, and **K9 is unstarted**.
+There is **no `max`**, no `max_with_indices`, no `argmin`, no general `gather`, no `scatter`, no `scatter_add`, no embedding lookup, no `__getitem__` or advanced/boolean/multi-axis indexing, no `index_select` backward, no integer arithmetic or reduction, no integer autograd, parameter, buffer, optimizer state, or checkpoint entry, and no casting or promotion.
+
+**K9 closed the phase with that boundary intact, and it added no new
+capability — but it was not a proof-only milestone.** Its deliverables are
+the permanent closure guardrails in
+`tests/test_native_phase_k_closure.py` and the final validation record:
+fresh out-of-source Windows Release and Debug builds with **zero** project
+CMake, compiler, and linker warnings and **27/27** CTests each; the Clang
+ASan/UBSan build with instrumentation proved present (the `__asan*` /
+`__ubsan*` dynamic symbols beside the 56 exports, and the library refusing
+to load without the sanitizer runtime), the sanitized native and Python
+suites with **zero** diagnostics, a real detector negative control, and a
+LeakSanitizer lifecycle returning live storage exactly to baseline with
+**no suppression file**; the WSL/Linux validation run; and a direct
+Windows/Linux integer-equality witness over construction, transfer,
+`argmax`, and `index_select` at both floating widths, compared **byte for
+byte** as canonical records. **It also carried two behaviour-preserving
+executable production repairs — one in C++ across seven translation units
+and one in Python — which is exactly why "no new capability" is the honest
+description of K9 and "no production code" is not, and why neither may be
+called K9's only production repair.** The first: K1's third dtype
+enumerator had left the pre-existing float-only dispatch `switch`es
+non-exhaustive — harmless at runtime, because `tf::require_floating`
+rejects an `int64` handle before any dispatch, but 237 `-Wswitch`
+diagnostics across 21 sites on every `-Wall` build — and the unreachable
+`Int64` arms are now written out at every one of those sites, in the idiom
+`indexing.cpp` established, with a structural regression in
+`tests/test_native_integer_barriers.py` covering all **34** `tf::Dtype`
+enumeration switches across `cpp/src` and `cpp/include`, classified by
+case label, with `dtype_from_code`'s ABI-code validation switch the one
+documented exemption. The second: `NativeTensorCore.from_array`, `zeros`,
+and `_uninitialized` in `src/tensorforge/backends/cpp.py` published their
+view and core over freshly allocated storage with **no guard**, so a
+failure between allocation and publication released nothing explicitly;
+they now carry the `except BaseException: storage.close(); raise` shape
+their newer siblings have had since Phase I. That window predates Phase K
+and no Phase-K milestone introduced it, but `_uninitialized` is the
+allocator the floating arm of `contiguous_copy` takes, so it sat on every
+Policy-B materialization inside `argmax` and `index_select`. Every added
+switch arm is unreachable by construction and the ownership guard runs
+only on a previously-leaking failure path, so no observable success
+behaviour changed at any dtype. K9
+moved **no** row in this document: exports **56**, CTests **27**,
+examples **17**, benchmarks **10**, `__all__` **25**, every registry and
+every version exactly what K8 left. **`int64` remains an index/result
+tensor dtype only; `float64` and `float32` remain the floating compute
+dtypes.**
 
 **What the contract decides**, so that a later milestone implements rather
 than re-argues it: one extended `NativeTensor` rather than a parallel

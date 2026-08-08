@@ -32,13 +32,9 @@ DOCS = (
     "native_data_pipeline_design.md",
 )
 
-# The native line's phase ladder, oldest to newest. Phases A-J are all
-# complete; Phase J (deterministic native data pipeline and mini-batching)
-# is the latest *completed* phase, closed at milestone J9. Phase K (native
-# integer tensors and indexing) is the current phase: it has begun at
-# milestone K0, which is architecture-contract and documentation work only
-# and shipped no runtime behavior and no capability. Nothing after K
-# exists.
+# The native line's phase ladder, oldest to newest. Phases A-K are all
+# complete; Phase K (native integer tensors and indexing) is the latest
+# *completed* phase, closed at milestone K9. Nothing after K exists.
 #
 # Phase K was appended when K0 landed, on exactly the terms Phase J was
 # appended when J0 landed and Phase I when I0 landed: naming a phase
@@ -6815,14 +6811,15 @@ CURRENT_STATUS_SURFACES = (
 # *completed* phase while Phase I was the latest phase. I11 then closed
 # Phase I and merged them again, and J0 split them a third time. J9 then
 # closed Phase J and merged them once more, and **Phase K opening at K0
-# has split them a fourth time**, on the identical terms: K0 is the
+# split them a fourth time**, on the identical terms: K0 is the
 # architecture contract, its guardrails, and documentation, so it closed
-# nothing. **Phase K is therefore the current/latest phase and Phase J is
-# the latest completed one.** The pair tracks two facts that are routinely
-# different, and the values move one letter at a time as each phase opens
-# and closes.
+# nothing. Phase K was therefore the current/latest phase while Phase J
+# was the latest completed one — **and K9 closing Phase K has merged the
+# two letters once more**, exactly as H10, I11, and J9 did before it.
+# The pair tracks two facts that are routinely different, and the values
+# move one letter at a time as each phase opens and closes.
 _LATEST_PHASE = "K"
-_LATEST_COMPLETED_PHASE = "J"
+_LATEST_COMPLETED_PHASE = "K"
 # **There is no exempt surface.** For the length of K0 exactly one was
 # allowed to lag — ``src/tensorforge/experimental/__init__.py``, whose
 # docstring still called Phase J the latest phase, because K0 changed no

@@ -103,9 +103,11 @@ Discipline inherited (integer design §29.6, §30.2):
 * No test starts a thread, touches the network, needs a Git ancestor, or
   depends on a total suite count.
 
-**Not proved here, because it does not exist:** the K6 example, the K7
-hardening matrix, the K8 benchmark, and the K9 closure. §7 below asserts
-their absence.
+**Not proved here, because other milestones own it:** the K6 example, the
+K7 hardening matrix, the K8 benchmark, and the K9 closure. At K5 none of
+the four existed and §7 asserted their absence; each of those premises
+expired as its milestone landed, and §7 now names every one of their
+artifacts as present while this module still performs none of their work.
 
 Selector: python -m pytest -q tests/test_native_integer_compatibility.py
 """
@@ -2798,8 +2800,10 @@ def test_no_k7_or_later_surface_exists():
     each is named as **present** so the list stays a claim about the ladder
     rather than a shrinking one. The benchmark inventory is subtracted the
     same way the example inventory is, so an *unrecorded* integer benchmark
-    still fails. What remains is the claim K8 did not earn: **K9's closure
-    module is still absent**, and K5's own inventories are still exact."""
+    still fails. And it happened one final time at **K9**, whose closure
+    module landed and closed the phase — the "still absent" claim K8 left
+    here expired with it, so that entry too is now named as **present**.
+    K5's own inventories are still exact."""
     for owner in (NativeTensor, cpp.NativeTensorCore, cpp.NativeStorage):
         for absent in ("argmin", "gather", "scatter", "scatter_add",
                        "embedding", "max", "amax", "take", "topk", "sort",
@@ -2830,15 +2834,15 @@ def test_no_k7_or_later_surface_exists():
     assert not [name for name in benchmarks
                 if "integer" in name
                 and name not in POST_K5_BENCHMARKS], benchmarks
-    # K9's own module is still absent; K7's and K8's landed, so each is
-    # named as **present** here rather than dropped silently, which keeps
-    # this list a claim about the ladder rather than a shrinking list.
+    # K7's, K8's, and — since the phase closed — K9's modules all landed,
+    # so each is named as **present** here rather than dropped silently,
+    # which keeps this list a claim about the ladder rather than a
+    # shrinking list.
     for shipped in ("tests/test_native_integer_hardening.py",     # K7
                     "tests/test_native_integer_benchmark.py",     # K8
-                    "benchmarks/benchmark_native_integer.py"):    # K8
+                    "benchmarks/benchmark_native_integer.py",     # K8
+                    "tests/test_native_phase_k_closure.py"):      # K9
         assert (REPO_ROOT / shipped).is_file(), shipped
-    assert not (REPO_ROOT / "tests"
-                / "test_native_phase_k_closure.py").exists()      # K9
 
 
 def test_the_c_abi_and_ctest_inventories_did_not_move_at_k5():

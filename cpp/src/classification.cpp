@@ -338,6 +338,9 @@ TF_EXPORT void tf_core_softmax_forward(
                 src_handle, src_offset, dst_handle,
                 outer, axis_length, inner);
             break;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand above.
+            break;
     }
     TF_GUARD_END_VOID()
 }
@@ -381,6 +384,9 @@ TF_EXPORT void tf_core_log_softmax_forward(
             log_softmax_forward_dispatch<double>(
                 src_handle, src_offset, dst_handle,
                 outer, axis_length, inner);
+            break;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand above.
             break;
     }
     TF_GUARD_END_VOID()
@@ -478,6 +484,9 @@ TF_EXPORT void tf_core_cross_entropy_forward(
                 loss_handle, probabilities_handle,
                 batch_size, num_classes, reduction_code);
             break;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand above.
+            break;
     }
     TF_GUARD_END_VOID()
 }
@@ -571,6 +580,9 @@ TF_EXPORT void tf_core_cross_entropy_backward(
                 probabilities_handle, probabilities_offset, targets,
                 upstream_handle, upstream_offset, grad_logits_handle,
                 batch_size, num_classes, reduction_code);
+            break;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand above.
             break;
     }
     TF_GUARD_END_VOID()

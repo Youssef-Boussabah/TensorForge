@@ -110,7 +110,7 @@ capability decision, never a side effect.
 | Sampler state format · version · accepted | `tensorforge.native_sampler` · **1** · `(1,)` |
 | Exported production `tf_*` symbols | **56** (Phase H closed at 52; Phase I added 2 at I1; Phase K added `tf_core_argmax` at K3 and `tf_core_index_select` at K4, reaching its phase maximum of 56) |
 | Experimental Python exports | **25** |
-| Native CTests · examples · benchmarks | **27** · **17** · **10** (24 CTests, 16 examples, and 9 benchmarks at Phase K's start; K1, K3, and K4 each added one CTest; K5 added nothing; K6 added one example; K7 added nothing; K8 added one benchmark) |
+| Native CTests · examples · benchmarks | **27** · **17** · **10** (24 CTests, 16 examples, and 9 benchmarks at Phase K's start; K1, K3, and K4 each added one CTest; K5 added nothing; K6 added one example; K7 added nothing; K8 added one benchmark; K9 added nothing) |
 
 **Three dtype rows, three different questions**, and none may be reported as
 another: `SUPPORTED_DTYPES` is the **capability**; `backend_info()["dtype"]`
@@ -135,10 +135,27 @@ never read the public promise off that last row.
 - One narrow dispatch per exported call into templated `float`/`double`
   kernels: no dtype branching below it, no string dispatch, no per-element
   indirection.
-- **No `device` argument exists anywhere and none may be added**, and there
-  is no device movement.
-- Classification targets stay **host `int64` metadata** at every width. No
-  integer tensor dtype exists.
+- **No *new* `device` argument may be added, and there is no device
+  movement.** State this precisely — the absolute form is false. The
+  inherited floating constructors (`NativeStorage`,
+  `NativeStorage.from_array`, `NativeTensorCore.from_array`/`zeros`/`full`,
+  `NativeTensor.from_array`/`zeros`/`full`) already carry a defaulted,
+  validated `device="cpu"` **metadata** tag: normalized through
+  `normalize_device`, accepting only `"cpu"`, selecting nothing and
+  transferring nothing. Everything **public** added since — including all
+  three Phase-K public methods, `from_int64_array`, `argmax`, and
+  `index_select` — carries **no** `device` parameter, and none may gain
+  one. State that scope too: the two **private** K2 ingress helpers,
+  `NativeStorage._from_int64_array` and
+  `NativeTensorCore._from_int64_array`, do carry the same inherited,
+  defaulted, `normalize_device`-validated `device="cpu"` metadata tag —
+  the unqualified form is false about them, and Phase K added no *new*
+  device argument either way. No `.to()` / `.cpu()` / `.cuda()` /
+  `map_location`, no CUDA, no GPU execution, no device transfer.
+- Classification targets stay **host `int64` metadata** at every width and
+  never become a native label tensor. (A native `int64` *tensor* dtype does
+  exist from K2 — see the Phase-K taxonomy below — but it is an
+  index/result dtype and no classification path produces one.)
 - Constructors that own numeric state take a **keyword-only** `dtype`
   accepting exactly `"float64"` / `"float32"`, through the one shared private
   validator. A class owning no dtype-bearing state — the losses, the metric,
@@ -164,8 +181,8 @@ training, C++-side autograd, attention/Transformers. Automatic loader
 contract, evidence, and rejected alternatives:
 `docs/native_dtype_float32_design.md`.
 
-Integer *tensors* are the subject of the newly approved Phase K, whose
-contract is `docs/native_integer_tensors_design.md`, and **K2 shipped
+Integer *tensors* are the subject of Phase K — complete since K9, contract
+`docs/native_integer_tensors_design.md` — and **K2 shipped
 one**. The distinction that row used to carry is now carried by the
 taxonomy instead, and it is sharper rather than weaker: **`int64` is an
 index/result dtype, not a supported compute dtype.** It is **not** in
@@ -624,8 +641,9 @@ that changes the public API or the examples updates the matching document
 - **Native line: Phases A–I are complete** — CPU runtime (A) through dtype
   generalization and float32 CPU support (I); per-phase subjects are in the
   §11 map and `docs/release_history.md`. **Phase I** (I0–I11) is complete
-  and closed the dtype work; Phase J closed after it, so **Phase J is the
-  latest completed phase**. Phase I's one public capability change, float32 joining
+  and closed the dtype work. Two phases closed after it — the data
+  pipeline, then native integer tensors and indexing — so
+  **Phase K is the latest completed phase**. Phase I's one public capability change, float32 joining
   `SUPPORTED_DTYPES`, landed only after the integrated exact-resume proof
   passed. That ordering is the rule: **prove first, then promise.**
 - **Native line: Phase J is complete (J0–J9)** — Deterministic Native Data
@@ -646,9 +664,10 @@ that changes the public API or the examples updates the matching document
   Record it that way rather than rewriting it: "the phase that came next"
   and "the phase that was always planned next" are different facts.
 - **Native line: Phase K — Native Integer Tensors and Indexing — is the
-  newly approved phase and is the latest phase, and only K0 through K8 have landed.**
-  Phase K remains **in progress**; Phase J is still the latest completed
-  native phase.
+  latest phase, and it is complete: K0 through K9 have all landed and K9
+  closed the phase, so Phase K is the latest completed native phase.**
+  It was newly approved after Phase J closed; Phase J was the latest
+  completed phase until Phase K closed after it.
   Authority
   `docs/native_integer_tensors_design.md`. **K0 is architecture, contract,
   status, and guardrails only and added no runtime behavior at all**: no
@@ -918,12 +937,78 @@ that changes the public API or the examples updates the matching document
   lookup, no `index_select` backward, no
   integer arithmetic or reduction, no integer autograd, parameter, buffer,
   optimizer state, or checkpoint entry, and no casting or promotion exists,
-  and **K9 is unstarted**. Every reachability barrier landed at
+  and closure made that boundary **permanent** rather than provisional.
+  Every reachability barrier landed at
   **K1**, one milestone before an integer tensor could be constructed at
   all: **prove first, then promise.** The phase's C ABI maximum is **56**
   (54 + `argmax` at K3 + `index_select` at K4), which K4 reached, and
   `experimental.__all__` stays at **25**
   throughout.
+  **K9 is the cross-platform validation and closure milestone. It added
+  no new capability, and it is *not* a proof-only milestone** — never
+  describe it as "zero production code", "no production code", or "proof
+  only", because it carries **two** behaviour-preserving executable
+  production repairs (below), one in C++ and one in Python. Never describe
+  either as "K9's one production repair" or "the only production repair in
+  K9". Its
+  deliverables: the permanent closure guardrails in
+  `tests/test_native_phase_k_closure.py`, the expiry edits the earlier
+  owner modules needed (each "K9 is absent" premise moved to a present
+  entry rather than deleted), fresh out-of-source Windows Release and
+  Debug builds with zero project warnings and 27/27 CTests each, a fresh
+  Linux Release build with the same result, the Clang ASan/UBSan matrix
+  with instrumentation proved present and a real detector negative
+  control, sanitized native and Python suites with zero diagnostics, a
+  LeakSanitizer lifecycle returning live storage exactly to baseline
+  with no suppression file, the WSL/Linux validation run, and the
+  §29.5 Windows/Linux integer-equality witness compared byte for byte at
+  both floating widths. It moved **no** inventory, registry, version,
+  export, public name, `TENSOR_CORE_OPS`, or `AUTOGRAD_OPS` entry.
+  **K9's validation surfaced two real pre-existing defects and carries a
+  behaviour-preserving repair for each. Neither adds capability, and
+  neither is the only one.**
+  **Repair 1 — C++ switch exhaustiveness, in seven production translation
+  units** (`cpp/src/`:
+  `classification.cpp`, `conv2d.cpp`, `elementwise.cpp`, `matmul.cpp`,
+  `pooling.cpp`, `random.cpp`, `reduction.cpp`): K1's third dtype
+  enumerator had left
+  the pre-existing float-only dispatch `switch`es non-exhaustive —
+  harmless at runtime, because `tf::require_floating` rejects an `int64`
+  handle before any dispatch, but 237 `-Wswitch` diagnostics across 21
+  sites on every `-Wall` build, never surfaced by MSVC's default warning
+  level. The unreachable `Int64` arms are now written out in the idiom
+  K3's `indexing.cpp` established (a `return` in the fallthrough-shaped
+  dispatches, so an `int64` tag can never fall into the `double` path),
+  with a structural regression in
+  `tests/test_native_integer_barriers.py` requiring every `tf::Dtype`
+  **enumeration** `switch` — classified by its **case labels**, over
+  `cpp/src/*.cpp` *and* `cpp/include/*.h`, **34** of them, pinned as a
+  per-file census equality — to carry explicit `Float64`, `Float32`, and
+  `Int64` arms and no `default:` label. `dtype_from_code` is the one
+  documented exemption: it validates an open `int32` ABI-code domain, so
+  its `default:` is mandatory and **rejects** rather than dispatching.
+  **Repair 2 — `NativeTensorCore` fresh-storage ownership**, in
+  `src/tensorforge/backends/cpp.py`: `from_array`, `zeros`, and
+  `_uninitialized` allocated a storage and then published the view and
+  core with **no guard**, so a failure between the two left that storage
+  closed by nothing but `__del__` — while `_typed`,
+  `_from_int64_array`, and `_typed_from_array` had carried
+  `except BaseException: storage.close(); raise` since I2/K2. The window
+  is **pre-existing** (it predates Phase K; no Phase-K milestone
+  introduced it, and K7 did not catch it — its core-construction row
+  existed only for `from_int64_array`), but it sat on a Phase-K path:
+  `_uninitialized` is the allocator the floating arm of `contiguous_copy`
+  takes, so every Policy-B materialization inside `argmax` and
+  `index_select` ran through it. The three constructors now use the same
+  sibling guard and nothing else moves — no shape, dtype, device,
+  allocation-kind, API, ABI, registry, or version change. Regressions:
+  `tests/test_native_tensor_core.py` (both post-allocation seams, both
+  `Exception` and `BaseException`, storage retained strongly while its
+  release is asserted, plus an AST check that every allocating-and-
+  publishing constructor carries the guard) and
+  `tests/test_native_integer_hardening.py` (the same window reproduced
+  through the real `argmax` and `index_select` Policy-B path, traced as
+  two new `INJECTION_MATRIX` positions).
 - Further work beyond Phase K — further dtypes or devices, CUDA
   experiments — requires a **separately approved** phase with its own
   design contract. See `docs/roadmap.md`; never invent a phase or a

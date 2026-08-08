@@ -122,6 +122,10 @@ TF_EXPORT void tf_core_matmul(
                                    a_stride0, a_stride1, b_stride0, b_stride1,
                                    a_offset, b_offset);
             return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
+            return;
         case tf::Dtype::Float64:
             break;
     }

@@ -1102,3 +1102,242 @@ def test_backend_info_reports_supported_dtype_device_sets():
     assert info["device"] == "cpu"
     assert info["supported_dtypes"] == ("float64", "float32")
     assert info["supported_devices"] == ("cpu",)
+
+
+# ===========================================================================
+# Fresh-storage ownership across a failed publication (Phase K, K9)
+# ===========================================================================
+#
+# ``from_array``, ``zeros``, and ``_uninitialized`` allocate a storage and
+# then build the view and the core. Until K9 they did so with no guard, so a
+# failure between the two — an injected error, or an asynchronous
+# ``KeyboardInterrupt`` — left the storage unreferenced by any core and
+# unclosed by anything, reachable only through ``__del__``. Their newer
+# siblings ``_typed``, ``_from_int64_array``, and ``_typed_from_array`` had
+# carried the correct shape since I2/K2; K9's independent final audit found
+# the three older ones had never been brought in line.
+#
+# §5.1's letter is "any failure closes everything it allocated, so live
+# storage returns exactly to baseline" — explicitly, not by collection. The
+# window matters beyond symmetry because ``_uninitialized`` is the allocator
+# the floating arm of ``contiguous_copy`` takes, which puts it on every
+# Policy-B copy-then-compute path, including Phase K's ``argmax`` and
+# ``index_select`` source materialization.
+#
+# Every assertion below is made while a **strong reference** to the freshly
+# allocated storage is still held, and nothing here calls ``gc.collect()``:
+# a proof that depends on collection timing would pass just as happily on
+# the unguarded code it exists to reject.
+
+class _CoreBoom(Exception):
+    """The injected ``Exception``, distinct enough that an accidental
+    production error can never be mistaken for it."""
+
+
+class _CoreAbort(BaseException):
+    """The injected ``BaseException``, standing in for the asynchronous
+    ``KeyboardInterrupt`` this window is genuinely reachable through."""
+
+
+# (label, thunk) for each unguarded-until-K9 constructor, driven through the
+# real production entry point rather than a test-only helper.
+_FRESH_STORAGE_CONSTRUCTORS = (
+    ("from_array", lambda: cpp.NativeTensorCore.from_array(
+        np.arange(6.0).reshape(2, 3))),
+    ("zeros", lambda: cpp.NativeTensorCore.zeros((2, 3))),
+    ("_uninitialized", lambda: cpp.NativeTensorCore._uninitialized((2, 3))),
+)
+
+
+class _StorageWatch:
+    """Every ``NativeStorage`` allocated while installed, retained strongly,
+    plus the set still open.
+
+    Installed with an explicit save/restore rather than through
+    ``monkeypatch`` so a test can take an injection back out mid-test
+    without silently uninstalling the watch with it.
+    """
+
+    def __init__(self):
+        self.allocated = []
+        self.open_ids = set()
+        self._init = cpp.NativeStorage.__init__
+        self._close = cpp.NativeStorage.close
+
+    def __enter__(self):
+        watch = self
+
+        def watched_init(storage, *args, **kwargs):
+            watch._init(storage, *args, **kwargs)
+            watch.allocated.append(storage)      # strong reference, on purpose
+            watch.open_ids.add(id(storage))
+
+        def watched_close(storage):
+            watch._close(storage)
+            watch.open_ids.discard(id(storage))
+
+        cpp.NativeStorage.__init__ = watched_init
+        cpp.NativeStorage.close = watched_close
+        return self
+
+    def __exit__(self, *exc_info):
+        cpp.NativeStorage.__init__ = self._init
+        cpp.NativeStorage.close = self._close
+        return False
+
+
+@pytest.mark.parametrize("label,build", _FRESH_STORAGE_CONSTRUCTORS,
+                         ids=[entry[0] for entry in _FRESH_STORAGE_CONSTRUCTORS])
+@pytest.mark.parametrize("failure", (_CoreBoom, _CoreAbort),
+                         ids=["Exception", "BaseException"])
+@pytest.mark.parametrize("seam", ("view", "core"))
+def test_a_failed_publication_closes_the_fresh_storage(monkeypatch, seam,
+                                                       failure, label, build):
+    """K9's lifecycle repair, at both post-allocation seams, under both an
+    ordinary ``Exception`` and a ``BaseException``.
+
+    ``view`` fails inside ``_contiguous_view``, so the storage exists and
+    nothing else does; ``core`` fails inside ``NativeTensorCore.__init__``,
+    so the view exists too — a borrowing object that owns nothing, which is
+    why the storage is still the only thing that must be released. Both sit
+    strictly after the allocation and strictly before publication.
+    """
+    original_view = cpp._contiguous_view
+    original_init = cpp.NativeTensorCore.__init__
+
+    def failing_view(storage, dims):
+        raise failure("injected: view construction")
+
+    def failing_init(self, storage, view, owns_storage=True):
+        raise failure("injected: core construction")
+
+    with _StorageWatch() as watch:
+        baseline = len(watch.open_ids)
+        if seam == "view":
+            monkeypatch.setattr(cpp, "_contiguous_view", failing_view)
+        else:
+            monkeypatch.setattr(cpp.NativeTensorCore, "__init__", failing_init)
+        try:
+            with pytest.raises(failure, match="injected") as raised:
+                build()
+        finally:
+            monkeypatch.undo()
+        # The injection is the error the caller sees — unchanged, not
+        # wrapped, and not replaced by a cleanup error.
+        assert type(raised.value) is failure
+        assert str(raised.value).startswith("injected:")
+        # Exactly one storage was allocated, and this test holds it.
+        assert len(watch.allocated) == 1, watch.allocated
+        storage = watch.allocated[0]
+        # Released **explicitly**, while that strong reference is alive:
+        # no ``gc.collect()`` runs anywhere in this test.
+        assert storage._handle is None, storage
+        assert watch.open_ids == set()
+        assert len(watch.open_ids) == baseline
+        # The restored production path still works, and the storage it
+        # allocates this time is a different object that really opens.
+        assert cpp._contiguous_view is original_view
+        assert cpp.NativeTensorCore.__init__ is original_init
+        retry = build()
+        try:
+            assert retry.shape == (2, 3)
+            assert retry._storage._handle is not None
+            assert retry._storage is not storage
+        finally:
+            retry.close()
+        assert len(watch.allocated) == 2, watch.allocated
+        assert watch.open_ids == set()
+
+
+def test_the_publication_injection_is_not_vacuous(monkeypatch):
+    """The control for the test above: without the injection every
+    constructor publishes normally, and with it the seam really is reached
+    **after** the allocation rather than before it.
+
+    A guard proved by an injection that fires too early would be no proof at
+    all — the storage would never have existed to leak."""
+    for _label, build in _FRESH_STORAGE_CONSTRUCTORS:
+        with _StorageWatch() as watch:
+            core = build()
+            try:
+                assert len(watch.allocated) == 1
+                assert core._storage is watch.allocated[0]
+                assert watch.open_ids == {id(core._storage)}
+            finally:
+                core.close()
+            assert watch.open_ids == set()
+
+    # ...and the injected seam is genuinely downstream of the allocation.
+    def failing_view(storage, dims):
+        assert isinstance(storage, cpp.NativeStorage)
+        assert storage._handle is not None      # allocated, and still open
+        raise _CoreBoom("injected: view construction")
+
+    with _StorageWatch() as watch:
+        monkeypatch.setattr(cpp, "_contiguous_view", failing_view)
+        try:
+            with pytest.raises(_CoreBoom):
+                cpp.NativeTensorCore.zeros((2, 3))
+        finally:
+            monkeypatch.undo()
+        assert len(watch.allocated) == 1
+        assert watch.allocated[0]._handle is None
+
+
+def test_every_fresh_storage_core_constructor_carries_the_guard():
+    """The structural half, read from ``backends/cpp.py``'s own AST: every
+    ``NativeTensorCore`` classmethod that allocates a storage and then
+    publishes a core wraps the publication in a ``try`` whose handler is
+    ``BaseException`` and closes that storage.
+
+    Six constructors qualify — the three K9 repaired and the three that
+    already had it — and the check is an equality over the set, so a
+    seventh added without the guard fails here rather than shipping the
+    same latent window again."""
+    import ast
+    from pathlib import Path
+
+    source = (Path(cpp.__file__)).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    core = next(node for node in ast.walk(tree)
+                if isinstance(node, ast.ClassDef)
+                and node.name == "NativeTensorCore")
+    allocating, guarded = set(), set()
+    for node in core.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        calls = [inner for inner in ast.walk(node)
+                 if isinstance(inner, ast.Call)]
+        names = {inner.func.attr for inner in calls
+                 if isinstance(inner.func, ast.Attribute)}
+        names |= {inner.func.id for inner in calls
+                  if isinstance(inner.func, ast.Name)}
+        # Allocates fresh storage of its own *and* publishes a core over it.
+        allocates = any(
+            isinstance(inner.func, ast.Attribute)
+            and isinstance(inner.func.value, ast.Name)
+            and inner.func.value.id == "NativeStorage"
+            for inner in calls) or any(
+            isinstance(inner.func, ast.Name) and inner.func.id == "NativeStorage"
+            for inner in calls)
+        if not (allocates and "_contiguous_view" in names):
+            continue
+        allocating.add(node.name)
+        for handler in (inner for inner in ast.walk(node)
+                        if isinstance(inner, ast.ExceptHandler)):
+            catches_base = (isinstance(handler.type, ast.Name)
+                            and handler.type.id == "BaseException")
+            closes = any(
+                isinstance(call.func, ast.Attribute)
+                and call.func.attr == "close"
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "storage"
+                for call in ast.walk(handler)
+                if isinstance(call, ast.Call))
+            reraises = any(isinstance(inner, ast.Raise) and inner.exc is None
+                           for inner in ast.walk(handler))
+            if catches_base and closes and reraises:
+                guarded.add(node.name)
+    assert allocating == {"from_array", "zeros", "_uninitialized", "_typed",
+                          "_from_int64_array", "_typed_from_array"}, allocating
+    assert guarded == allocating, sorted(allocating - guarded)

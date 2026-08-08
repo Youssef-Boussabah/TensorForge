@@ -53,10 +53,14 @@ dtypes**: each is proved only against itself. Whether the two widths happen
 to predict the same classes is reported by the example as an *observation*
 and is deliberately not required here.
 
-**K7, K8, and K9 are not started and are not anticipated here.** The
-adversarial injection matrix is K7's, the benchmark is K8's, and the phase
-closure is K9's; this module contains none of them, and asserts that none
-of their artifacts exists.
+**The later milestones stay other milestones' work, and none of it is
+performed here.** The adversarial injection matrix is K7's, the benchmark
+is K8's, and the phase closure is K9's. When this module was written at K6
+none of the three had started and their artifacts were asserted absent;
+each premise expired as its milestone landed — K7, then K8, then K9, which
+closed the phase — and each entry moved from the absent side to a present
+one. What has not moved is this module's own scope: it injects nothing,
+times nothing, and makes no phase-wide claim.
 """
 import ast
 import gc
@@ -1922,23 +1926,22 @@ def test_no_cpp_or_build_surface_mentions_the_new_example():
             path.name)
 
 
-def test_the_later_phase_k_milestones_have_not_started():
-    """K6 is the integration example. The closure (K9) is unstarted and its
-    artifact does not exist — and **this module** still contains none of
-    the vocabulary a later milestone owns: it injects nothing, times
-    nothing, and makes no phase-wide claim.
+def test_the_later_phase_k_milestones_stayed_other_milestones_work():
+    """K6 is the integration example, and **this module** still contains
+    none of the vocabulary a later milestone owns: it injects nothing,
+    times nothing, and makes no phase-wide claim.
 
     K7's adversarial matrix and K8's benchmark landed after K6 and are
-    therefore asserted **present** rather than absent. Each entry moved
-    instead of being deleted, so this stays a claim about the ladder: what
-    K6 did not ship is still what a later milestone owns, and this module
-    still does not do any of it."""
+    therefore asserted **present** rather than absent, and when **K9**
+    landed and closed the phase its closure module joined them on the same
+    terms. Each entry moved instead of being deleted, so this stays a
+    claim about the ladder: what K6 did not ship is still what a later
+    milestone owns, and this module still does not do any of it."""
     for shipped in ("tests/test_native_integer_hardening.py",        # K7
                     "tests/test_native_integer_benchmark.py",        # K8
-                    "benchmarks/benchmark_native_integer.py"):       # K8
+                    "benchmarks/benchmark_native_integer.py",        # K8
+                    "tests/test_native_phase_k_closure.py"):         # K9
         assert (REPO_ROOT / shipped).is_file(), shipped
-    assert not (REPO_ROOT / "tests"
-                / "test_native_phase_k_closure.py").exists()         # K9
     names = code_identifiers("tests/test_native_integer_indexing_example.py")
     for hardening in ("tf_test_arm_alloc_failure", "fault_injection_available",
                       "_deliver_batch", "_claim_batch", "_rollback_pending",

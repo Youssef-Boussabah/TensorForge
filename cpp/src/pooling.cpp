@@ -336,6 +336,9 @@ TF_EXPORT void tf_core_maxpool2d_forward(
                 kernel_height, kernel_width, stride_height, stride_width,
                 pad_height, pad_width, output_height, output_width);
             break;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand above.
+            break;
     }
     TF_GUARD_END_VOID()
 }
@@ -489,6 +492,9 @@ TF_EXPORT void tf_core_maxpool2d_backward(
                 winners_handle, winners_offset, grad_input_handle,
                 batch, channels, input_height, input_width,
                 output_height, output_width);
+            break;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand above.
             break;
     }
     TF_GUARD_END_VOID()

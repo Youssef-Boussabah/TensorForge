@@ -2328,18 +2328,19 @@ ordinary concurrent *training* is not claimed thread-safe. The native line
 remains experimental, float64/CPU only, and not production-ready, with the
 kernels still deliberately naive.
 
-### Phase K — native integer tensors and indexing (K0–K8)
+### Phase K — native integer tensors and indexing (K0–K9, complete)
 
-**Phase K is newly approved, and K0 through K8 have
-landed.** **No version is claimed** — the native line
+**Phase K is complete: K0 through K9 have all landed, and K9 closed the
+phase.** **No version is claimed** — the native line
 stays experimental and is not production-ready, and this entry records
 milestones rather than a release.
 
 Phase K was approved **after** Phase J closed at J9. The repository
 deliberately finished Phase J without committing to a successor, so Phase K
 is not carried-over roadmap work and must not be described as though it
-were. **K9 is unstarted**, and work beyond Phase K would
-require a separately approved phase with its own design contract.
+were. Work beyond Phase K would
+require a separately approved phase with its own design contract, and none
+is defined.
 
 **K0 added no runtime behavior at all.** No integer dtype, no dtype code,
 no C++ enumerator, no storage change, no kernel, no C ABI symbol, no
@@ -2823,19 +2824,86 @@ dtypes, and no float32/float64 or int64/floating ratio exists anywhere.
 **K8 found no production defect**, performed no native build, and moved
 one inventory: benchmarks **9 → 10**. Exports **56**, CTests **27**,
 examples **17**, `experimental.__all__` **25**, and every registry and
-version are exactly what K7 left. **K9 has not started** — the closure
-module is still absent.
+version are exactly what K7 left.
+
+**K9 closed the phase, and it added no new capability — but it was not a
+proof-only milestone.** Its deliverables are
+the permanent closure guardrails in
+`tests/test_native_phase_k_closure.py`, the expiry edits the earlier
+Phase-K owner modules needed (each "K9 is absent" premise moved to a
+present entry rather than being deleted), **two behaviour-preserving
+executable production repairs — one across seven C++ translation units
+and one in `src/tensorforge/backends/cpp.py`** (both below),
+and the final validation
+matrix: fresh out-of-source Windows Release and Debug builds with zero
+project CMake, compiler, and linker warnings and 27/27 CTests each; a
+fresh Linux Release build with the same result; the Clang ASan/UBSan
+build with instrumentation proved present, a real detector negative
+control, sanitized native and Python suites with zero diagnostics, and a
+LeakSanitizer lifecycle returning live storage exactly to baseline with
+no suppression file; the WSL/Linux validation run, on a scratch Linux
+clone with zero skips; and the design's
+§29.5 Windows/Linux integer-equality witness, compared byte for byte as
+canonical records at both floating widths.
+
+**K9's closure surfaced two real pre-existing defects and carries a
+behaviour-preserving repair for each. Neither is "K9's one production
+repair".**
+
+**The first, surfaced by the Linux build.** K1's third dtype
+enumerator had left the pre-existing float-only dispatch `switch`es
+non-exhaustive — harmless at runtime, because `tf::require_floating`
+rejects an `int64` handle before any dispatch, but 237 `-Wswitch`
+diagnostics across 21 sites on every `-Wall` build, which the
+zero-warning contract forbids and which MSVC's default warning level had
+never surfaced. The repair writes the unreachable `Int64` arm out at
+every site in the idiom K3's `indexing.cpp` had already established —
+a `return` in the fallthrough-shaped dispatches, so an `int64` tag can
+never fall into the `double` path — with a structural regression in
+`tests/test_native_integer_hardening.py`'s sibling owner
+`tests/test_native_integer_barriers.py` requiring every `tf::Dtype`
+**enumeration** `switch` — classified by case label, across
+`cpp/src/*.cpp` and `cpp/include/*.h`, **34** of them under a per-file
+census equality — to carry explicit `Float64`, `Float32`, and `Int64`
+arms and no `default:` label, with `dtype_from_code`'s open ABI-code
+domain the one documented exemption. The
+seven files it touches are `cpp/src/classification.cpp`, `conv2d.cpp`,
+`elementwise.cpp`, `matmul.cpp`, `pooling.cpp`, `random.cpp`, and
+`reduction.cpp`; every added arm is unreachable by construction, so no
+observable behaviour changed at any dtype.
+
+**The second, surfaced by K9's independent final audit.**
+`NativeTensorCore.from_array`, `zeros`, and `_uninitialized` allocated a
+`NativeStorage` and then published the view and core with **no guard**, so
+a failure between the two — an injected error or an asynchronous
+`KeyboardInterrupt` — left that storage released only by `__del__`, while
+`_typed`, `_from_int64_array`, and `_typed_from_array` had carried
+`except BaseException: storage.close(); raise` since I2/K2. The window is
+**pre-existing**: it predates Phase K, no Phase-K milestone introduced it,
+and K7 did not catch it — K7's core-construction injection row existed
+only for `from_int64_array`, whose guard is `_from_int64_array`'s own. It
+is repaired here rather than deferred because `_uninitialized` is the
+allocator the floating arm of `contiguous_copy` takes, which put the
+unguarded window on every Policy-B materialization inside `argmax` and
+`index_select`. The three constructors now carry the sibling guard and
+nothing else moves — no shape, dtype, device, allocation-kind, API, ABI,
+registry, or version semantics — with regressions in
+`tests/test_native_tensor_core.py` and a direct Policy-B reproduction in
+`tests/test_native_integer_hardening.py`, both verified to fail against
+the pre-repair constructors. K9
+moved **no** inventory, registry, version, export, or public name.
 
 Every registry and
-inventory is exactly what Phase J left, with five exceptions — the CTest
+inventory is exactly what Phase J left, with seven exceptions — the CTest
 count at K1, `INDEX_DTYPES` at K2, the export count and CTest count again
-at K3, and both again at K4, with **K5 moving none of them** and **K6
-moving only the example count**:
+at K3, both again at K4, the example count at K6, and the benchmark count
+at K8, with **K5, K7, and K9 moving none of them**:
 `SUPPORTED_DTYPES ==
 ("float64", "float32")`, `SUPPORTED_DEVICES == ("cpu",)`, `UNSUPPORTED ==
 ("cuda", "amp")`, `RAW_KERNEL_DTYPES == ("float64",)`, **25** experimental
 names, **17**
-examples (16 until K6 added one), **9** benchmarks, checkpoint version **3** with `(1, 2, 3)`
+examples (16 until K6 added one), **10** benchmarks (9 until K8 added
+one), checkpoint version **3** with `(1, 2, 3)`
 accepted, and optimizer, loader, and sampler state at version **1** — while
 the native CTest inventory moved **24 → 25** at K1
 (`cpp/tests/test_dtype_int64_storage.cpp`), **25 → 26** at K3

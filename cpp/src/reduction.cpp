@@ -240,6 +240,10 @@ TF_EXPORT void tf_core_sum(
             sum_dispatch<float>(src_handle, dst_handle, shape, in_strides,
                                 out_strides, offset, ndim);
             return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
+            return;
         case tf::Dtype::Float64:
             break;
     }
@@ -296,6 +300,10 @@ TF_EXPORT void tf_core_narrow_backward(
             narrow_backward_dispatch<float>(upstream_handle, dst_handle, shape,
                                             u_strides, out_strides, u_offset,
                                             out_offset, ndim);
+            return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
             return;
         case tf::Dtype::Float64:
             break;
