@@ -129,6 +129,7 @@ owner's explicit ``close()`` (there is no ``NativeModule.close()``).
 from collections import namedtuple
 from collections.abc import Mapping
 
+from ._native_dtype import require_floating_state_dtype
 from .native_generator import (
     GeneratorStateEntry,
     NativeGenerator,
@@ -455,6 +456,23 @@ class NativeModule:
                 f"a buffer must not require grad (buffers are "
                 f"non-trainable), got requires_grad=True for {name!r}"
             )
+        # Phase K, milestone K1: buffers are floating-only, for **both**
+        # ``persistent`` values (integer design §10.2). A persistent buffer
+        # is by contract serialized into ``state_dict()`` and into a native
+        # checkpoint, so allowing a non-floating one would force a
+        # checkpoint decision in the same breath; a **non**-persistent one
+        # would avoid the archive but would still make the tensor part of
+        # this module's registered state, reachable by ``buffers()``, and
+        # subject to ``load_state_dict``'s transactional replacement —
+        # three contracts that would each need their own proof. Prohibition
+        # with a check is stronger than prohibition by omission: it makes
+        # the boundary a rejection a test can drive rather than an accident
+        # waiting for the first caller. Rejected **before** the name is
+        # evicted from the other registries, so a refused registration
+        # leaves every registry byte-identical.
+        require_floating_state_dtype(
+            tensor.dtype, f"register_buffer({name!r})", role="buffer"
+        )
         # Validation passed — commit the registration and evict the name
         # from the other categories so it stays exactly one category.
         if name in parameters:

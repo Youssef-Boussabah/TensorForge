@@ -54,6 +54,12 @@ def test_backend_info_shape():
         "dtype",
         "device",
         "supported_dtypes",
+        # Phase K, milestone K2: the index/result dtype registry, reported
+        # beside ``supported_dtypes`` and never merged into it. They answer
+        # two different questions — at what dtypes the kernels *compute*,
+        # and what dtypes a native tensor may *carry* as exact integer
+        # data — and neither may be read off the other.
+        "index_dtypes",
         "supported_devices",
         "raw_kernels",
         # Phase I, milestone I2: the raw kernels' own dtype limitation,
@@ -87,6 +93,11 @@ def test_backend_info_shape():
     assert info["dtype"] == "float64"
     assert info["device"] == "cpu"
     assert info["supported_dtypes"] == ("float64", "float32")
+    assert info["index_dtypes"] == ("int64",)
+    # The two rows are disjoint, and the flat ``dtype`` key is still the
+    # **default** rather than a capability: no omitted dtype selects int64.
+    assert not set(info["supported_dtypes"]) & set(info["index_dtypes"])
+    assert info["dtype"] not in info["index_dtypes"]
     assert info["supported_devices"] == ("cpu",)
     assert tuple(info["kernels"]) == EXPECTED_KERNELS
     assert tuple(info["raw_kernels"]) == EXPECTED_KERNELS
@@ -315,8 +326,12 @@ def test_e8_added_no_capability_inventory_entry():
             offenders = [name for name in info[inventory]
                          if banned in name.lower()]
             assert offenders == [], (inventory, banned, offenders)
-    # No accuracy/argmax/training C ABI symbol was invented for the proof.
-    for absent in ("tf_core_accuracy", "tf_core_argmax", "tf_core_train_step"):
+    # No accuracy or training C ABI symbol was invented for the proof.
+    # (``tf_core_argmax`` is deliberately absent from this list: Phase K
+    # milestone K3 shipped it as a general index-producing reduction, which
+    # is unrelated to E8's proof — that milestone added no export, and the
+    # metric it proves still takes the host round trip.)
+    for absent in ("tf_core_accuracy", "tf_core_train_step"):
         assert absent not in cpp._CHECKED_KERNELS, absent
     # The proof persists nothing new: still float64/cpu, still separate.
     assert info["supported_dtypes"] == ("float64", "float32")

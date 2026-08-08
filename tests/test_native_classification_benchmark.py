@@ -574,8 +574,10 @@ def test_e9_adds_no_kernel_abi_operation_or_schema():
     from tensorforge.experimental import native_checkpoint
 
     assert native_checkpoint._FORMAT_VERSION == 3
+    # (``tf_core_argmax`` left this list at Phase K milestone K3, which
+    # shipped it. E9 still added no export of any kind.)
     for absent in ("tf_core_benchmark", "tf_core_train_step",
-                   "tf_core_accuracy", "tf_core_argmax"):
+                   "tf_core_accuracy"):
         assert absent not in cpp._CHECKED_KERNELS, absent
     # The benchmark defines no runtime surface of its own: it imports no
     # ctypes machinery, declares no ABI signature, and registers no

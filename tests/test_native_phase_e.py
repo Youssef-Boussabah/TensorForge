@@ -315,10 +315,18 @@ def test_unsupported_stays_honest_after_closure():
                   "NativeLogSoftmax", "native_top_k_accuracy",
                   "native_confusion_matrix", "NativeBatchNorm3d"):
         assert not hasattr(experimental, never), never
-    for never in ("argmax", "nll_loss", "one_hot", "randn", "rand"):
+    # (``argmax`` and ``tf_core_argmax`` are deliberately absent from the two
+    # lists below, for exactly the reason NativeDropout and NativeDataLoader
+    # are absent above: Phase K milestone K3 shipped them, as a general
+    # index-producing reduction rather than as a classification feature.
+    # Phase E's boundary is unchanged — it added no such operation, and the
+    # classification extensions it declined are still absent — and
+    # ``native_accuracy`` still reports through the host boundary, which
+    # ``tests/test_native_metrics.py`` proves.)
+    for never in ("nll_loss", "one_hot", "randn", "rand"):
         assert not hasattr(NativeTensor, never), never
         assert not hasattr(cpp.NativeTensorCore, never), never
-    for absent in ("tf_core_accuracy", "tf_core_argmax", "tf_core_nll_loss",
+    for absent in ("tf_core_accuracy", "tf_core_nll_loss",
                    "tf_core_softmax_backward", "tf_core_log_softmax_backward"):
         assert absent not in cpp._CHECKED_KERNELS, absent
     # No integer dtype and no second device appeared for targets.

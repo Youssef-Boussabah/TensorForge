@@ -2309,26 +2309,30 @@ def test_no_c_abi_ctest_example_or_benchmark_surface_moved():
     for source in sorted((REPO_ROOT / "cpp" / "src").glob("*.cpp")):
         names.update(re.findall(r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
                                 source.read_text(encoding="utf-8"), re.S))
-    assert len(names) == 54, sorted(names)
+    assert len(names) == 56, sorted(names)
     forbidden = re.compile(
         r"^tf_(dataset|sampler|loader|batch|shuffle|permut|gather|state)",
         re.I)
     for name in sorted(names):
         assert not forbidden.search(name), name
     cmake = (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8")
-    assert len(re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)) == 24
+    # Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
+    assert len(re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)) == 27
     examples = [p.name for p in (REPO_ROOT / "examples").glob("*.py")
                 if p.name != "__init__.py"]
     benchmarks = [p.name for p in (REPO_ROOT / "benchmarks").glob("*.py")
                   if p.name != "__init__.py"]
-    # 15 when J4 landed; 16 since **J6** added the one training example.
-    # 8 benchmarks when J4 landed; 9 since **J8** added exactly one. Both
-    # are named rather than pattern-matched, so every *other*
-    # data-pipeline artifact still fails here.
-    assert len(examples) == 16, sorted(examples)
+    # 15 when J4 landed; 16 since **J6** added the one training example, and
+    # 17 since **K6** added the one integer-indexing example. 8 benchmarks
+    # when J4 landed; 9 since **J8** added exactly one, and 10 since **K8**
+    # added the integer characterization harness. Each is named rather than
+    # pattern-matched, so every *other* artifact still fails here.
+    assert len(examples) == 17, sorted(examples)
     assert "native_minibatch_training.py" in examples
-    assert len(benchmarks) == 9, sorted(benchmarks)
+    assert "native_integer_indexing.py" in examples
+    assert len(benchmarks) == 10, sorted(benchmarks)
     assert "benchmark_native_data_pipeline.py" in benchmarks
+    assert "benchmark_native_integer.py" in benchmarks
     for name in examples + benchmarks:
         if name in ("native_minibatch_training.py",                   # J6
                     "benchmark_native_data_pipeline.py"):             # J8

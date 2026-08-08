@@ -5552,11 +5552,15 @@ def test_j7_added_no_public_name_module_example_or_benchmark():
                 if path.name != "__init__.py"]
     benchmarks = [path.name for path in (REPO_ROOT / "benchmarks").glob("*.py")
                   if path.name != "__init__.py"]
-    # 16 examples since J6; 8 benchmarks when J7 landed, and 9 since J8
-    # added exactly one. J7's own delta to both is still zero.
-    assert len(examples) == 16, sorted(examples)
-    assert len(benchmarks) == 9, sorted(benchmarks)
+    # 16 examples since J6 and 17 since **K6** added exactly one; 8
+    # benchmarks when J7 landed, 9 since J8 added exactly one, and 10 since
+    # **K8** added the integer characterization harness. J7's own delta to
+    # both is still zero, and the numbers are updated rather than the
+    # assertions relaxed.
+    assert len(examples) == 17, sorted(examples)
+    assert len(benchmarks) == 10, sorted(benchmarks)
     assert "benchmark_native_data_pipeline.py" in benchmarks
+    assert "benchmark_native_integer.py" in benchmarks
 
 
 def test_j7_moved_no_capability_schema_or_version():
@@ -5623,17 +5627,18 @@ def test_j7_left_the_native_artifacts_untouched():
     """No C++, no CMake, no CTest, and no ABI change: the counts are read
     from the real files."""
     sources = sorted((REPO_ROOT / "cpp" / "tests").glob("test_*.cpp"))
-    assert len(sources) == 24, [path.name for path in sources]
+    # Phase K, milestone K1 took the native CTest inventory from 24 to 25 (cpp/tests/test_dtype_int64_storage.cpp), which is the first movement since Phase I. The number is updated rather than the assertion relaxed: this test still pins an exact inventory, and still fails on an unrecorded addition.
+    assert len(sources) == 27, [path.name for path in sources]
     registered = re.findall(
         r"add_test\s*\(\s*NAME\s+(\w+)",
         (REPO_ROOT / "cpp" / "CMakeLists.txt").read_text(encoding="utf-8"))
-    assert len(registered) == 24 == len(set(registered)), registered
+    assert len(registered) == 27 == len(set(registered)), registered
     exported = set()
     for source in sorted((REPO_ROOT / "cpp" / "src").glob("*.cpp")):
         text = source.read_text(encoding="utf-8")
         exported.update(re.findall(
             r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(", text, re.S))
-    assert len(exported) == 54, sorted(exported)
+    assert len(exported) == 56, sorted(exported)
     # Negative control: the export scanner really does find symbols, so
     # "54" is a measurement rather than a dead regex.
     assert "tf_storage_create" in exported or any(

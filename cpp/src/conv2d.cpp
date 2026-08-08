@@ -276,6 +276,13 @@ TF_EXPORT void tf_core_conv2d_forward(
     // Every participating handle — the nullable bias included when it is
     // present — must agree; the list form skips nulls, so the export's own
     // null validation below keeps its message and its ordering.
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_conv2d_forward",
+            {input_handle, weight_handle, bias_handle, output_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype(
             "tf_core_conv2d_forward",
             {input_handle, weight_handle, bias_handle, output_handle})) {
@@ -379,6 +386,9 @@ TF_EXPORT void tf_core_conv2d_forward(
                 stride_height, stride_width, pad_height, pad_width,
                 output_height, output_width);
             break;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand above.
+            break;
     }
     TF_GUARD_END_VOID()
 }
@@ -465,6 +475,13 @@ TF_EXPORT void tf_core_conv2d_input_backward(
     int64_t output_height,
     int64_t output_width) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_conv2d_input_backward",
+            {grad_output_handle, weight_handle, grad_input_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype(
             "tf_core_conv2d_input_backward",
             {grad_output_handle, weight_handle, grad_input_handle})) {
@@ -533,6 +550,9 @@ TF_EXPORT void tf_core_conv2d_input_backward(
                 stride_height, stride_width, pad_height, pad_width,
                 output_height, output_width);
             break;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand above.
+            break;
     }
     TF_GUARD_END_VOID()
 }
@@ -557,6 +577,13 @@ TF_EXPORT void tf_core_conv2d_weight_backward(
     int64_t output_height,
     int64_t output_width) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_conv2d_weight_backward",
+            {grad_output_handle, input_handle, grad_weight_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype(
             "tf_core_conv2d_weight_backward",
             {grad_output_handle, input_handle, grad_weight_handle})) {
@@ -624,6 +651,9 @@ TF_EXPORT void tf_core_conv2d_weight_backward(
                 out_channels, kernel_height, kernel_width,
                 stride_height, stride_width, pad_height, pad_width,
                 output_height, output_width);
+            break;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand above.
             break;
     }
     TF_GUARD_END_VOID()

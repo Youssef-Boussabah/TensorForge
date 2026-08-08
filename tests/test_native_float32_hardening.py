@@ -2350,14 +2350,24 @@ def test_the_registries_are_exactly_the_post_i9_truth():
 @needs_native
 def test_the_dtype_abi_codes_and_item_sizes_are_frozen():
     """``0 = float64``, ``1 = float32``, 8 and 4 bytes — and exactly one
-    item-size authority, so no second table can drift."""
-    assert cpp._DTYPE_CODES == {"float64": 0, "float32": 1}
-    assert set(cpp._DTYPE_NUMPY) == {"float64", "float32"}
+    item-size authority, so no second table can drift.
+
+    **Frozen means the two Phase-I codes never move**, not that the table
+    never grows: Phase K milestone K2 added ``"int64": 2``, the code the
+    header comment reserved, and neither float code shifted. The exact
+    dictionary is asserted rather than a membership test, so a fourth entry
+    would still fail here."""
+    assert cpp._DTYPE_CODES == {"float64": 0, "float32": 1, "int64": 2}
+    assert set(cpp._DTYPE_NUMPY) == {"float64", "float32", "int64"}
     assert cpp._DTYPE_NUMPY["float64"] == np.float64
     assert cpp._DTYPE_NUMPY["float32"] == np.float32
+    assert cpp._DTYPE_NUMPY["int64"] == np.int64
     assert np.dtype(np.float64).itemsize == 8
     assert np.dtype(np.float32).itemsize == 4
-    assert set(cpp._CHECKED_HOST_ARRAYS) == {"float64", "float32"}
+    assert np.dtype(np.int64).itemsize == 8
+    assert set(cpp._CHECKED_HOST_ARRAYS) == {"float64", "float32", "int64"}
+    # The float32 story this module owns is untouched by that addition.
+    assert cpp.SUPPORTED_DTYPES == ("float64", "float32")
 
 
 @needs_native
@@ -2375,7 +2385,7 @@ def test_the_export_inventory_is_still_exactly_fifty_four():
         text = path.read_text(encoding="utf-8")
         declared |= set(re.findall(r"TF_EXPORT[^(;]*?\b(tf_[a-z0-9_]+)\s*\(",
                                    text))
-    assert len(declared) == 54, sorted(declared)
+    assert len(declared) == 56, sorted(declared)
     assert "tf_storage_create_typed" in declared
     assert "tf_storage_create_uninitialized_typed" in declared
     # No per-dtype compute symbol, no cast symbol, no dtype query.

@@ -262,19 +262,32 @@ def test_normalize_device_still_accepts_only_cpu(value):
     assert cpp.normalize_device("cpu") == "cpu"
 
 
-def test_the_internal_normalizer_now_agrees_with_the_public_one():
+def test_the_internal_normalizer_agrees_with_the_public_one_on_both_floats():
     """Between I1 and I8 the representation table was genuinely wider than
     the public registry — that gap was the rollout. **At I9 they became
-    equal.** Asserted as agreement over the whole accepted set rather than
-    as a merger: the two remain separate functions answering separate
-    questions ("can the runtime lay these bits out?" versus "does
-    TensorForge promise this dtype?"), and a future representable dtype
-    would open the gap again before it earned the promise."""
+    equal**, and the note that closed this test predicted the rest: *"a
+    future representable dtype would open the gap again before it earned
+    the promise"*. **Phase K milestone K2 is that future**, and the gap it
+    opened is permanent rather than a rollout: ``int64`` is representable,
+    is promised by its own ``INDEX_DTYPES`` row, and is **never** a member
+    of the floating-compute registry.
+
+    What is asserted here is the durable half — the two functions agree on
+    every dtype the *public* registry contains, and remain separate
+    functions answering separate questions ("can the runtime lay these bits
+    out?" versus "does TensorForge compute at this dtype?")."""
     for dtype in BOTH_DTYPES:
         assert cpp.normalize_dtype(dtype) == cpp._normalize_internal_dtype(
             dtype)
-    assert set(cpp._DTYPE_CODES) == set(cpp.SUPPORTED_DTYPES)
-    for bad in ("float16", "bfloat16", "int64", "Float32"):
+    assert set(cpp.SUPPORTED_DTYPES) < set(cpp._DTYPE_CODES)
+    assert set(cpp._DTYPE_CODES) == (set(cpp.SUPPORTED_DTYPES)
+                                     | set(cpp.INDEX_DTYPES))
+    # ``int64`` is representable and is still not a compute dtype: the one
+    # dtype on which the two validators deliberately disagree.
+    assert cpp._normalize_internal_dtype("int64") == "int64"
+    with pytest.raises(ValueError):
+        cpp.normalize_dtype("int64")
+    for bad in ("float16", "bfloat16", "Float32", "int32", "uint64"):
         with pytest.raises(ValueError):
             cpp._normalize_internal_dtype(bad)
 
@@ -839,7 +852,7 @@ def test_the_export_count_did_not_move_at_i9():
         text = path.read_text(encoding="utf-8")
         names.update(re.findall(r"TF_EXPORT[^;{]*?\b(tf_[A-Za-z0-9_]+)\s*\(",
                                 text))
-    assert len(names) == 54, sorted(names)
+    assert len(names) == 56, sorted(names)
     for name in names:
         assert not name.endswith("_f32"), name
         assert "float32" not in name, name

@@ -839,10 +839,20 @@ same property `sqrt`/`reciprocal`/`maxpool2d` already have.
 
 ## 6. Target contract
 
-The native runtime has **no integer dtype**, and Phase E deliberately
-does not add one (a public integer `NativeTensor` is a much larger
-change: storage, ABI, dtype normalization, promotion rules). So
+**At Phase E** the native runtime had **no integer dtype**, and Phase E
+deliberately did not add one (a public integer `NativeTensor` is a much
+larger change: storage, ABI, dtype normalization, promotion rules). So
 classification targets are **not** `NativeTensor`s.
+
+**That reason is historical; the contract is not.** Phase K added a
+native `int64` **index/result** dtype — the representation at K1 and the
+publicly constructible tensor at K2 — and deliberately did **not** widen
+cross-entropy. Classification targets remain **exact host-side label
+metadata** under this contract, at every Phase-K milestone, and no
+Phase-K milestone touches the cross-entropy Core path or
+`native_cross_entropy_loss.py` (see
+[native_integer_tensors_design.md](native_integer_tensors_design.md)
+§20.1–§20.2). Everything below is unchanged and stays unchanged.
 
 **Targets are accepted as Python or NumPy integer data and immediately
 converted to an independently owned contiguous `int64` copy.** That copy
@@ -967,9 +977,18 @@ notes:
 - **It is not native compute, and nothing claims otherwise.** There is
   no accuracy kernel, no C ABI export, no ctypes symbol, no
   `NativeTensorCore` method, and no autograd node — E7 changed no C++
-  file at all. There is deliberately no native `argmax` either: the
-  runtime has no integer dtype for an index-producing reduction to
-  return.
+  file at all. (**At Phase E** there was deliberately no native `argmax`
+  either, because the runtime had no integer dtype for an index-producing
+  reduction to return. The integer result dtype arrived at Phase K, K2,
+  and a **native `argmax` now exists** — Phase K, K3 — and this helper
+  still reports through the host boundary, **deliberately**: rewriting it
+  over the native `argmax` would still need an integer *equality*
+  reduction to compare predictions against targets, which no milestone
+  ships, so the metric would materialize to the host anyway, one operation
+  later and one allocation heavier, with its single explicit conversion
+  harder to see. The absence being recorded here is now `native_accuracy`'s
+  own choice rather than the type system's limitation, and that is a
+  stronger statement, not a weaker one.)
 - **One shared target validator.** The metric calls the *same* private
   `_prepare_class_targets` helper the E5 Core forward calls, so the
   accepted and rejected forms of §6 are identical at both call sites by

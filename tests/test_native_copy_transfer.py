@@ -1546,10 +1546,18 @@ def test_h5_added_no_exported_symbol():
     assert (len(storage_tests.phase_h_export_names(exported))
             == storage_tests.PHASE_H_TF_EXPORTS)
     assert "tf_core_contiguous_copy" in exported
-    # Nothing copy-, overlap-, or traversal-flavored was added.
+    # Nothing copy-, overlap-, or traversal-flavored was added. ``select``
+    # is matched as a **path-selector** spelling rather than as a bare
+    # substring: Phase K milestone K4's ``tf_core_index_select`` is an
+    # *operation* that selects slices by index, not a control that selects a
+    # traversal, and a bare substring ban would reject the very name the
+    # phase shipped.
     for banned in ("copy_mode", "set_copy", "overlap", "memcpy",
-                   "traversal", "prefers", "select"):
+                   "traversal", "prefers",
+                   "select_path", "path_select", "kernel_select"):
         assert not [n for n in exported if banned in n.lower()], banned
+    assert [n for n in exported if "select" in n.lower()] == \
+        ["tf_core_index_select"]
 
 
 @needs_native

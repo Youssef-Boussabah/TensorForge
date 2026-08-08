@@ -220,6 +220,11 @@ TF_EXPORT void tf_core_sum(
     int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_sum", {src_handle, dst_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_sum", {src_handle, dst_handle})) {
         return;
     }
@@ -234,6 +239,10 @@ TF_EXPORT void tf_core_sum(
         case tf::Dtype::Float32:
             sum_dispatch<float>(src_handle, dst_handle, shape, in_strides,
                                 out_strides, offset, ndim);
+            return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
             return;
         case tf::Dtype::Float64:
             break;
@@ -275,6 +284,13 @@ TF_EXPORT void tf_core_narrow_backward(
     int64_t u_offset, int64_t out_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating(
+            "tf_core_narrow_backward",
+            {upstream_handle, dst_handle})) {
+        return;
+    }
     if (!tf::require_matching_dtype(
             "tf_core_narrow_backward", {upstream_handle, dst_handle})) {
         return;
@@ -284,6 +300,10 @@ TF_EXPORT void tf_core_narrow_backward(
             narrow_backward_dispatch<float>(upstream_handle, dst_handle, shape,
                                             u_strides, out_strides, u_offset,
                                             out_offset, ndim);
+            return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
             return;
         case tf::Dtype::Float64:
             break;

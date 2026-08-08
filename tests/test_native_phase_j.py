@@ -119,6 +119,25 @@ J0_CTEST_COUNT = 24
 J0_EXAMPLE_COUNT = 15
 J0_BENCHMARK_COUNT = 8
 
+# Native artifacts added by **later phases**, after Phase J closed, each
+# mapped to the milestone that shipped it — the same attribution
+# ``PHASE_J_EXAMPLES`` and ``PHASE_J_BENCHMARKS`` below use, and for the same
+# reason: a bumped literal absorbs later growth into Phase J's record, while
+# a named map keeps every addition attributed and still fails on an
+# unrecorded one. Phase K, milestone K1 added the int64 storage CTest,
+# milestone K3 added the argmax export and its CTest, and milestone K4 the
+# index_select export and its CTest.
+POST_PHASE_J_EXPORTS = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
+POST_PHASE_J_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3",
+                       "index_select": "K4"}
+# ...and milestone K6 added the one integer-indexing example, which is named
+# here for the same reason: a bumped literal would absorb it into Phase J's
+# record, while a named map keeps it attributed and still fails on an
+# unrecorded example.
+POST_PHASE_J_EXAMPLES = {"native_integer_indexing.py": "K6"}
+CURRENT_EXPORT_COUNT = J0_EXPORT_COUNT + len(POST_PHASE_J_EXPORTS)   # 56
+CURRENT_CTEST_COUNT = J0_CTEST_COUNT + len(POST_PHASE_J_CTESTS)      # 27
+
 # The artifacts Phase J has shipped so far, each mapped to the milestone
 # that added it. J0-J5 added none; **J6** added exactly one example and
 # **J8** exactly one benchmark. The current counts are derived rather than
@@ -128,6 +147,11 @@ PHASE_J_EXAMPLES = {"native_minibatch_training.py": "J6"}
 PHASE_J_BENCHMARKS = {"benchmark_native_data_pipeline.py": "J8"}
 CURRENT_EXAMPLE_COUNT = J0_EXAMPLE_COUNT + len(PHASE_J_EXAMPLES)
 CURRENT_BENCHMARK_COUNT = J0_BENCHMARK_COUNT + len(PHASE_J_BENCHMARKS)
+
+# Benchmarks a **later** phase added, named and subtracted the same way
+# ``POST_PHASE_J_EXAMPLES`` is, so Phase J's own count above stays
+# historically exact rather than absorbing later work.
+POST_PHASE_J_BENCHMARKS = {"benchmark_native_integer.py": "K8"}
 
 MILESTONES = tuple(f"J{index}" for index in range(10))   # J0 ... J9
 
@@ -1185,8 +1209,16 @@ def _source_exports():
 
 
 def test_the_source_still_exports_exactly_fifty_four_symbols():
+    """Phase J added no C ABI symbol at any milestone. Measured against the
+    live source with later phases' additions removed, each of which is named
+    with the milestone that shipped it — so Phase J's claim stays exactly
+    true and later growth is recorded rather than absorbed."""
     names = _source_exports()
-    assert len(names) == J0_EXPORT_COUNT, sorted(names)
+    assert len(names) == CURRENT_EXPORT_COUNT, sorted(names)
+    assert len(names - set(POST_PHASE_J_EXPORTS)) == J0_EXPORT_COUNT, \
+        sorted(names)
+    for name, milestone in POST_PHASE_J_EXPORTS.items():
+        assert name in names, (name, milestone)
     # And no data-pipeline symbol appeared: the phase plans none.
     forbidden = re.compile(
         r"^tf_(dataset|sampler|loader|batch|shuffle|permut|gather)", re.I)
@@ -1203,9 +1235,16 @@ def test_the_built_library_exports_exactly_what_the_source_declares():
 
 
 def test_the_ctest_inventory_is_still_exactly_twenty_four():
+    """Phase J registered no native CTest. Same attribution as the export
+    claim above: the later targets are named with the milestone that added
+    them and subtracted, rather than dissolved into a larger literal."""
     cmake = _read("cpp/CMakeLists.txt")
     names = re.findall(r"add_test\s*\(\s*NAME\s+(\w+)", cmake)
-    assert len(names) == J0_CTEST_COUNT, names
+    assert len(names) == CURRENT_CTEST_COUNT, names
+    for name, milestone in POST_PHASE_J_CTESTS.items():
+        assert name in names, (name, milestone)
+    assert len([n for n in names
+                if n not in POST_PHASE_J_CTESTS]) == J0_CTEST_COUNT, names
     assert len(set(names)) == len(names), "a CTest name is registered twice"
     sources = {path.stem for path in
                sorted((REPO_ROOT / "cpp" / "tests").glob("test_*.cpp"))}
@@ -1219,13 +1258,23 @@ def test_the_example_and_benchmark_inventories_moved_by_exactly_two_artifacts():
     Driven from ``PHASE_J_EXAMPLES`` and ``PHASE_J_BENCHMARKS`` rather
     than from bumped literals, so each artifact stays attributed to the
     milestone that shipped it and an unannounced one fails the exact
-    equality."""
+    equality. Examples a **later** phase added are named in
+    ``POST_PHASE_J_EXAMPLES`` and subtracted the same way, so Phase J's own
+    count stays historically exact."""
     examples = [path.name for path in (REPO_ROOT / "examples").glob("*.py")
                 if path.name != "__init__.py"]
     benchmarks = [path.name for path in (REPO_ROOT / "benchmarks").glob("*.py")
                   if path.name != "__init__.py"]
-    assert len(examples) == CURRENT_EXAMPLE_COUNT == 16, sorted(examples)
-    assert len(benchmarks) == CURRENT_BENCHMARK_COUNT == 9, sorted(benchmarks)
+    for name, milestone in POST_PHASE_J_EXAMPLES.items():
+        assert name in examples, (name, milestone)
+    assert len([name for name in examples
+                if name not in POST_PHASE_J_EXAMPLES]) == (
+        CURRENT_EXAMPLE_COUNT) == 16, sorted(examples)
+    for name, milestone in POST_PHASE_J_BENCHMARKS.items():
+        assert name in benchmarks, (name, milestone)
+    assert len([name for name in benchmarks
+                if name not in POST_PHASE_J_BENCHMARKS]) == (
+        CURRENT_BENCHMARK_COUNT) == 9, sorted(benchmarks)
     assert set(PHASE_J_EXAMPLES) <= set(examples), sorted(PHASE_J_EXAMPLES)
     assert set(PHASE_J_BENCHMARKS) <= set(benchmarks), sorted(
         PHASE_J_BENCHMARKS)
@@ -1256,10 +1305,15 @@ def test_every_phase_j_artifact_exists_and_nothing_later_does():
     # J9's closure module, which owns the closed boundary this module
     # deliberately stops short of.
     assert (REPO_ROOT / "tests" / "test_native_phase_j_closure.py").is_file()
-    # ...and nothing belonging to a phase nobody approved.
+    # ...and nothing belonging to a phase nobody approved. The J10 entry is
+    # permanent — this ladder ran J0-J9 and ended there — while the
+    # phase-letter entries are a moving sentinel: they named Phase K until
+    # Phase K was **separately approved after this phase closed**, and its
+    # K0 artifacts now legitimately exist (see
+    # tests/test_native_phase_k.py, which owns that phase's boundary).
     for invented in ("tests/test_native_phase_j10.py",
-                     "tests/test_native_phase_k.py",
-                     "docs/native_phase_k_design.md"):
+                     "tests/test_native_phase_l.py",
+                     "docs/native_phase_l_design.md"):
         assert not (REPO_ROOT / invented).exists(), invented
     # The example is an example: it adds no public name and no production
     # module, and its model class stays an implementation detail of it.
@@ -1654,7 +1708,18 @@ def test_no_status_surface_claims_a_capability_phase_j_never_delivered():
 
 def test_no_status_surface_claims_a_milestone_beyond_the_closed_ladder():
     """Closure is not permission to promise a successor. Work after Phase J
-    requires a separately approved phase, and no surface may name one."""
+    requires a separately approved phase, and no surface may name an
+    *unapproved* one.
+
+    The invented-milestone half is permanent: there is no J10, and there
+    never will be. The phase-name half is a moving sentinel, and it moved
+    once — ``Phase K`` was **separately approved after this phase closed**,
+    and its K0 contract now exists, so naming it is a status update rather
+    than an invention. ``Phase L`` takes its place as the phase that does
+    not exist. What may not be claimed for Phase K is a *capability*, and
+    that half is checked against the live registry, the live source, and
+    the built library by tests/test_native_phase_k.py — a stronger check
+    than a phase-name scan, exactly as for Phase J itself."""
     for surface in ("README.md", "CLAUDE.md", "docs/roadmap.md",
                     "docs/project_summary.md",
                     "docs/native_support_matrix.md",
@@ -1664,7 +1729,7 @@ def test_no_status_surface_claims_a_milestone_beyond_the_closed_ladder():
         text = _read(surface)
         for match in re.finditer(r"\bJ1[0-9]\b", text):
             raise AssertionError(f"{surface} names {match.group(0)}")
-        assert not re.search(r"\bPhase K\b", _flat(text), re.I), surface
+        assert not re.search(r"\bPhase L\b", _flat(text), re.I), surface
 
 
 def test_the_completion_scanner_can_actually_fail():

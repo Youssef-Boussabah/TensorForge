@@ -19,27 +19,38 @@ design §12.2 states directly: *no constructor invents its own dtype
 validation*. Six independent checks would be six chances for the accepted
 set, the exception kinds, or the messages to drift apart.
 
-Why it is not ``normalize_dtype`` — yet
----------------------------------------
+Why it delegated to the internal table, and why it no longer does
+-----------------------------------------------------------------
 
-``cpp.normalize_dtype`` validates against ``SUPPORTED_DTYPES``, the
-**public capability registry**, which still reads ``("float64",)`` and
-moves to ``("float64", "float32")`` at milestone **I9** and at no other
-(design §27.3). Calling it here would either reject every float32 module —
-making I7 impossible — or force the registry to move five milestones
-early, which would publish a support promise the phase has not yet earned:
-float32 optimizers do not exist, checkpoint version 3 does not exist, and
-the exact float32 resume proof has not been run.
+At I7 ``cpp.normalize_dtype`` validated against ``SUPPORTED_DTYPES``, the
+**public capability registry**, which still read ``("float64",)`` and moved
+to ``("float64", "float32")`` at milestone **I9** and at no other (design
+§27.3). Calling it then would either have rejected every float32 module —
+making I7 impossible — or forced the registry to move five milestones
+early, publishing a support promise the phase had not yet earned: float32
+optimizers did not exist, checkpoint version 3 did not exist, and the exact
+float32 resume proof had not been run. So this delegated to
+``cpp._normalize_internal_dtype``, the private counterpart measured against
+the internal representation table — the deliberate rollout pattern of
+design §27, the one Phase G used for ``dropout``. I9 closed that gap by
+moving the registry, after the proof.
 
-So this delegates to ``cpp._normalize_internal_dtype``, the private
-counterpart that measures against the internal representation table
-instead. It is the *same* canonicalization, the *same* ``TypeError`` for a
-non-string, and the *same* shape of ``ValueError`` — only the set it is
-measured against differs, and only until I9, when the two become the same
-set and this indirection becomes a formality. That gap between internal
-capability and public promise is the deliberate rollout pattern of design
-§27, the one Phase G used for ``dropout``: the operation existed from G3
-and the *name* left ``UNSUPPORTED`` only at the G10 closure.
+**Phase K, milestone K1 narrowed the delegate to ``cpp.normalize_dtype``**
+(see docs/native_integer_tensors_design.md §5.4). The two validators
+accepted the same set on the day it landed, so the change is
+behavior-preserving — and it is preventive from the milestone the
+representation table learns a third name, because this is the **one**
+validator the six state-owning constructors share, ``NativeParameter``
+among them. Measured against the representation table, an ``int64``
+entering that table would make ``NativeParameter(data, dtype="int64")``
+legal the same day, and a trainable integer parameter is exactly what the
+phase's autograd, optimizer, buffer, and checkpoint boundaries forbid.
+Measured against ``SUPPORTED_DTYPES`` — which under Phase K's taxonomy
+**is** the floating-compute registry, permanently — it cannot.
+
+It is still a strict delegate with no rule of its own: the same
+canonicalization, the same ``TypeError`` for a non-string, the same shape
+of ``ValueError``, decided in one place.
 
 Why the modules do not call ``cpp`` themselves
 ----------------------------------------------
@@ -73,6 +84,28 @@ def normalize_module_dtype(dtype):
     not ``"f4"``, not ``"single"``, not ``"Float32"``, not ``" float32"``.
 
     It is a strict delegate with no rule of its own, so the module surface
-    and the storage layer can never disagree about what a dtype is.
+    and the storage layer can never disagree about what a dtype is. Since
+    Phase K, milestone K1 the delegate is the **floating-compute**
+    validator, so a state-owning module can never be constructed at a
+    non-floating dtype — see the module docstring.
     """
-    return cpp._normalize_internal_dtype(dtype)
+    return cpp.normalize_dtype(dtype)
+
+
+def require_floating_state_dtype(dtype, where, role="tensor"):
+    """Reject a non-floating dtype where a native object would become
+    **model or optimizer state** (Phase K, milestone K1).
+
+    ``normalize_module_dtype`` above validates a *requested* dtype string;
+    this validates the dtype an object *already carries* before that object
+    is adopted as a parameter, a buffer, or an optimizer's charge. The two
+    are different questions with different operands, and both are needed:
+    a caller can name a legal dtype and hand over an object at another.
+
+    A strict delegate over ``cpp._require_floating_dtype``, for exactly
+    ``normalize_module_dtype``'s reason — one accepted set, one exception
+    kind, one message shape, decided in one place — and routed through this
+    private module so the state-owning experimental modules keep their
+    existing distance from the ctypes layer. Raises ``ValueError`` before
+    the caller registers, allocates, or mutates anything."""
+    return cpp._require_floating_dtype(dtype, where, role=role)

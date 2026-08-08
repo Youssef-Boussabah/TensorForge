@@ -473,6 +473,11 @@ void unary_by_dtype(
             unary_dispatch<Op, float>(src_handle, dst_handle, shape, strides,
                                       offset, ndim);
             return;
+        case tf::Dtype::Int64:
+            // Unreachable: every caller export applied require_floating
+            // before dispatching. Written out, and a *return* rather than a
+            // break, so an int64 tag can never fall into the double path.
+            return;
         case tf::Dtype::Float64:
             break;
     }
@@ -488,6 +493,10 @@ void unary_contiguous_by_dtype(
         case tf::Dtype::Float32:
             unary_contiguous_dispatch<Op, float>(src_handle, dst_handle, numel,
                                                  offset);
+            return;
+        case tf::Dtype::Int64:
+            // Unreachable: every caller export applied require_floating
+            // before dispatching; a return so int64 never reads as double.
             return;
         case tf::Dtype::Float64:
             break;
@@ -508,6 +517,10 @@ void binary_by_dtype(
                                        a_strides, b_strides, a_offset, b_offset,
                                        ndim);
             return;
+        case tf::Dtype::Int64:
+            // Unreachable: every caller export applied require_floating
+            // before dispatching; a return so int64 never reads as double.
+            return;
         case tf::Dtype::Float64:
             break;
     }
@@ -524,6 +537,10 @@ void binary_contiguous_by_dtype(
         case tf::Dtype::Float32:
             binary_contiguous_dispatch<Op, float>(a_handle, b_handle, dst_handle,
                                                   numel, a_offset, b_offset);
+            return;
+        case tf::Dtype::Int64:
+            // Unreachable: every caller export applied require_floating
+            // before dispatching; a return so int64 never reads as double.
             return;
         case tf::Dtype::Float64:
             break;
@@ -648,6 +665,11 @@ TF_EXPORT void tf_core_relu(
     int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_relu", {src, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_relu", {src, dst})) {
         return;
     }
@@ -659,6 +681,11 @@ TF_EXPORT void tf_core_relu_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_relu_contiguous", {src, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_relu_contiguous", {src, dst})) {
         return;
     }
@@ -673,6 +700,11 @@ TF_EXPORT void tf_core_sqrt(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_sqrt", {src, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_sqrt", {src, dst})) {
         return;
     }
@@ -684,6 +716,11 @@ TF_EXPORT void tf_core_sqrt_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_sqrt_contiguous", {src, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_sqrt_contiguous", {src, dst})) {
         return;
     }
@@ -696,6 +733,11 @@ TF_EXPORT void tf_core_reciprocal(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_reciprocal", {src, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_reciprocal", {src, dst})) {
         return;
     }
@@ -707,6 +749,11 @@ TF_EXPORT void tf_core_reciprocal_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_reciprocal_contiguous", {src, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_reciprocal_contiguous",
                                     {src, dst})) {
         return;
@@ -846,6 +893,17 @@ void copy_dispatch(
 // request rather than a conversion. The rejection is recorded before the
 // span validation runs and long before any element is written, so a
 // rejected call leaves the destination byte-for-byte unchanged.
+//
+// **Phase K, milestone K1 generalized it to int64**, and it is the only
+// compute-family export the milestone generalizes rather than fences. The
+// argument is I2's, unchanged: this is a *transfer*, so ``IdentityOp``
+// performs no arithmetic at any width, and every one of the three
+// traversal tiers writes ``dst[out] = src[pos]`` over the same logical
+// elements in the same order. It therefore gets an ``Int64`` arm and
+// **no** ``require_floating`` — a floating-role guard here would refuse
+// the value-transfer primitive the phase's later milestones are built on.
+// ``require_matching_dtype`` still applies and is what keeps a float
+// source from being copied into an int64 destination, or the reverse.
 TF_EXPORT void tf_core_contiguous_copy(
     const void* src, void* dst,
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
@@ -867,6 +925,10 @@ TF_EXPORT void tf_core_contiguous_copy(
     switch (tf::storage_dtype(src)) {
         case tf::Dtype::Float32:
             copy_dispatch<float>(src, dst, shape, strides, offset, ndim);
+            return;
+        case tf::Dtype::Int64:
+            copy_dispatch<std::int64_t>(src, dst, shape, strides, offset,
+                                        ndim);
             return;
         case tf::Dtype::Float64:
             break;
@@ -910,6 +972,11 @@ TF_EXPORT void tf_core_exp(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_exp", {src, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_exp", {src, dst})) {
         return;
     }
@@ -923,6 +990,10 @@ TF_EXPORT void tf_core_exp(
             core_unary<float>(src, dst, shape, strides, offset, ndim,
                               op_exp<float>);
             return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
+            return;
         case tf::Dtype::Float64:
             break;
     }
@@ -934,6 +1005,11 @@ TF_EXPORT void tf_core_exp_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_exp_contiguous", {src, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_exp_contiguous", {src, dst})) {
         return;
     }
@@ -945,6 +1021,10 @@ TF_EXPORT void tf_core_exp_contiguous(
         case tf::Dtype::Float32:
             core_unary_contiguous<float>(src, dst, numel, offset,
                                          op_exp<float>);
+            return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
             return;
         case tf::Dtype::Float64:
             break;
@@ -958,6 +1038,11 @@ TF_EXPORT void tf_core_log(
     const int64_t* shape, const int64_t* strides, int64_t offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_log", {src, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_log", {src, dst})) {
         return;
     }
@@ -971,6 +1056,10 @@ TF_EXPORT void tf_core_log(
             core_unary<float>(src, dst, shape, strides, offset, ndim,
                               op_log<float>);
             return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
+            return;
         case tf::Dtype::Float64:
             break;
     }
@@ -982,6 +1071,11 @@ TF_EXPORT void tf_core_log_contiguous(
     const void* src, void* dst, int64_t numel, int64_t offset
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_log_contiguous", {src, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_log_contiguous", {src, dst})) {
         return;
     }
@@ -993,6 +1087,10 @@ TF_EXPORT void tf_core_log_contiguous(
         case tf::Dtype::Float32:
             core_unary_contiguous<float>(src, dst, numel, offset,
                                          op_log<float>);
+            return;
+        case tf::Dtype::Int64:
+            // Unreachable: require_floating rejected an int64 operand
+            // above; a return so int64 never reads as double.
             return;
         case tf::Dtype::Float64:
             break;
@@ -1009,6 +1107,11 @@ TF_EXPORT void tf_core_add(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_add", {a, b, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_add", {a, b, dst})) {
         return;
     }
@@ -1023,6 +1126,11 @@ TF_EXPORT void tf_core_subtract(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_subtract", {a, b, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_subtract", {a, b, dst})) {
         return;
     }
@@ -1037,6 +1145,11 @@ TF_EXPORT void tf_core_multiply(
     int64_t a_offset, int64_t b_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_multiply", {a, b, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_multiply", {a, b, dst})) {
         return;
     }
@@ -1056,6 +1169,11 @@ TF_EXPORT void tf_core_relu_backward(
     int64_t x_offset, int64_t u_offset, int64_t ndim
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_relu_backward", {x, upstream, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_relu_backward",
                                     {x, upstream, dst})) {
         return;
@@ -1070,6 +1188,11 @@ TF_EXPORT void tf_core_add_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_add_contiguous", {a, b, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_add_contiguous", {a, b, dst})) {
         return;
     }
@@ -1082,6 +1205,11 @@ TF_EXPORT void tf_core_subtract_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_subtract_contiguous", {a, b, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_subtract_contiguous",
                                     {a, b, dst})) {
         return;
@@ -1096,6 +1224,11 @@ TF_EXPORT void tf_core_multiply_contiguous(
     int64_t numel, int64_t a_offset, int64_t b_offset
 ) {
     TF_GUARD_BEGIN
+    // K1: the dtype-role guard runs first — an int64 operand is
+    // a role error, never a promotion opportunity (§22.4).
+    if (!tf::require_floating("tf_core_multiply_contiguous", {a, b, dst})) {
+        return;
+    }
     if (!tf::require_matching_dtype("tf_core_multiply_contiguous",
                                     {a, b, dst})) {
         return;

@@ -270,7 +270,8 @@ selector, threshold setter, dispatch tracer, profiling counter, or
 environment variable.
 
 **Phase I — Native Dtype Generalization and Float32 CPU Support — is
-complete (I0-I11), and it is the latest completed native phase.** Its
+complete (I0-I11); it was the latest completed native phase until Phase J
+closed after it.** Its
 contract is ``docs/native_dtype_float32_design.md``. Phase I made this
 line *dtype-general* without making it wider in any other direction:
 native storage is dtype-tagged and is the single authority for every view
@@ -309,8 +310,9 @@ guardrails in ``tests/test_native_phase_i_closure.py``, and the final
 inventory reconciliation — adding no capability at all.
 
 **Phase J — Deterministic Native Data Pipeline and Mini-Batching — is
-the latest phase and is complete: milestones J0 through J9 have all
-landed, and J9 closed it.** Its contract is
+complete: milestones J0 through J9 have all landed, and J9 closed it.**
+It was the latest completed phase until Phase K closed after it. Its
+contract is
 ``docs/native_data_pipeline_design.md`` (milestone **J0**: architecture,
 contract, and documentation only, adding no runtime behavior).
 **Milestone J1** adds ``NativeTensorDataset`` below — the finite,
@@ -397,6 +399,207 @@ optimization; and J9 the permanent closure guardrails.
 object is thread-safe, none contains a lock, thread, queue, future, or
 async primitive, and none joins the process-wide state-replacement lock
 order. One thread at a time; external locking is the caller's job.
+
+**Phase K — Native Integer Tensors and Indexing — is complete: K0 through
+K9 have all landed, K9 closed the phase, and Phase K is the latest
+completed phase.** Its contract is
+``docs/native_integer_tensors_design.md``. Phase K was approved **after**
+Phase J closed at J9 without a committed successor, so it is not
+carried-over roadmap work. **K9 added no new capability, and it was not a
+proof-only milestone**: it is the
+cross-platform validation and closure milestone — fresh Windows Release
+and Debug builds, the Clang ASan/UBSan and LeakSanitizer procedure, the
+WSL/Linux validation run, the exact Windows/Linux integer-equality
+proof, and the permanent closure guardrails in
+``tests/test_native_phase_k_closure.py`` — and it also carries **two**
+behaviour-preserving executable production repairs. The first gives the
+pre-existing
+float-only dispatch ``switch``es their explicit unreachable ``Int64``
+arms across seven translation units, which closes the ``-Wswitch``
+diagnostics K1's third dtype enumerator had introduced on ``-Wall``
+builds. The second closes a **pre-existing** lifecycle hole in
+``NativeTensorCore.from_array``/``zeros``/``_uninitialized``, which
+published a view and core over freshly allocated storage with no guard;
+they now close that storage explicitly when publication raises, including
+under ``BaseException``, as their newer siblings have since Phase I. The
+window sat on the Phase-K Policy-B materialization path because
+``_uninitialized`` is the allocator the floating arm of
+``contiguous_copy`` takes. Every added switch arm is unreachable by
+construction and the ownership guard runs only on a previously-leaking
+failure path, so K9 moved no
+registry, version, export, public name, or inventory. **K5 added no
+production code**: it is the compatibility proof
+(``tests/test_native_integer_compatibility.py``), showing that K1 through
+K4 left the checkpoint, the optimizer, loader, and sampler states, the
+Phase-J delivery contract, the classification stack, and deterministic
+training and resume exactly where they were. **K6 added no production code
+either**: it is the end-to-end integration example
+(``examples/native_integer_indexing.py``, owned by
+``tests/test_native_integer_indexing_example.py``), in which a
+deterministic native classifier turns its logits into ``int64`` predictions
+with ``argmax`` and consumes them with ``index_select`` over a **detached**
+source, and an interrupted-and-resumed run reproduces the uninterrupted one
+exactly at float64 and float32 independently — every index by exact integer
+equality, every floating value by raw bits. It moved one inventory,
+examples 16 to **17**, and nothing else. **K7 added no production code
+either**: it is the adversarial hardening matrix
+(``tests/test_native_integer_hardening.py``), which drives every actual
+allocating path of the integer stack through the four injection families —
+including both of ``index_select``'s Policy-B materialization call sites,
+separately — compares a complete before/after fingerprint of the observable
+world after every rejection, proves cleanup under a ``BaseException`` with
+retained references rather than collection timing, and re-proves both
+exports' malformed-metadata and dtype-role no-write behavior — finding no
+defect and moving no inventory at all. **K8 added no production code
+either**: it is the benchmark characterization
+(``benchmarks/benchmark_native_integer.py``, owned by
+``tests/test_native_integer_benchmark.py``), which measures the shipped
+integer stack as four separate questions — ``int64`` construction, host
+materialization, ``argmax``, and ``index_select`` — with no composed case,
+every case ``native_only`` and publishing no ratio at all, correctness
+gated before timing, no result file, and no speed asserted anywhere. It
+moved one inventory, benchmarks 9 to **10**, and nothing else, and no
+measurement changed the runtime. This paragraph is the only thing in this
+package any of the four milestones changed.
+
+**K0** was architecture, contract, status, and guardrails only, and added
+no runtime behavior at all. **K1 added the internal ``int64``
+representation and every reachability barrier, and no public capability at
+all.** Internally the C++ dtype model gained a third enumerator at ABI
+code 2, storage allocates and destroys genuine ``std::int64_t[]`` buffers,
+and the four transfer boundaries move integer values **bit for bit**;
+every other handle-based export refuses an ``int64`` operand at the ABI
+through ``tf::require_floating``, applied ahead of the operand-agreement
+guard so a mixed float/integer call is a **role** error rather than a tag
+mismatch. On this side, nine trusted dtype paths were narrowed from the
+representation table to the floating registry, and every barrier landed —
+wrapper construction, autograd (``_from_op``, ``backward``,
+``_accumulate_grad``), ``NativeParameter``, ``register_buffer`` at **both**
+``persistent`` values, both optimizers, checkpoint entry validation, and
+every floating operation entry. K1 added no C ABI symbol, no public
+Python name, and no registry or version movement, and left the Python
+dtype tables untouched, so at K1 no supported wrapper or public Python API
+could allocate or wrap ``int64`` storage at all.
+
+**K2 made the ``int64`` tensor publicly constructible, and it landed
+atomically** — splitting it would have opened exactly the window the
+ladder is ordered to close. The three Python dtype tables and the checked
+host binding learned ``"int64"`` (code 2, 8 bytes, ``numpy.int64``,
+reusing the already-existing ``int64`` ndpointer object so the class-label
+and storage bindings cannot diverge); ``cpp.INDEX_DTYPES == ("int64",)``
+appeared beside an **unmoved** ``cpp.SUPPORTED_DTYPES`` and is reported as
+``backend_info()["index_dtypes"]``; the Phase-I no-drift guard was
+generalized to ``set(_DTYPE_CODES) == set(SUPPORTED_DTYPES) |
+set(INDEX_DTYPES)`` rather than deleted; the private
+``NativeStorage._from_int64_array`` / ``NativeTensorCore._from_int64_array``
+ingress arrived; and exactly two gates widened —
+``NativeTensorCore.__init__`` and ``NativeTensor.__init__``, from
+"floating" to "floating **or** index".
+
+**``NativeTensor.from_int64_array(values, *, requires_grad=False)`` is the
+one public API in the repository through which an ``int64`` buffer can
+come into existence**, beside the dtype-general ``item()`` and
+``tolist()``. It converts nothing: exactly a ``numpy.ndarray`` of exactly
+native ``int64``, so a float array (even one holding ``[1.0, 2.0]``), an
+``int32`` array, a ``uint64`` array, a ``bool`` array, an ``object``
+array, a byte-swapped ``>i8`` array, a list, and a scalar are all
+rejected, while a *non-contiguous* exact-``int64`` array is accepted and
+copied because layout normalization is not conversion. The result is an
+owning gradient-free leaf the caller closes; every value in
+``[-(2**63), 2**63 - 1]`` survives exactly, including the ones beyond
+float64's exact integer range. Views (``reshape``/``transpose``/``T``/
+``narrow``), ``contiguous_copy``, ``to_numpy()``, ``item()``, and
+``tolist()`` all work at ``int64`` through the machinery that already
+existed. K2 added no C ABI symbol, no experimental export, no CTest, no
+example, no benchmark, and no version change.
+
+**K3 shipped the phase's first operation and its first C ABI symbol:
+native ``argmax``.** ``NativeTensor.argmax(axis=None, keepdims=False)``
+and ``NativeTensorCore.argmax(axis=None, keepdims=False)`` search a
+**floating** tensor at either dtype, at any rank including 0, contiguous or
+not, and return a fresh owning contiguous **``int64``** tensor — the one
+operation in the runtime whose result dtype differs from its operand's,
+which is exactly what an index is. Shapes come from the existing
+``cpp.reduce_shape`` authority and axes from the existing
+``cpp._normalize_axis_checked``, so ``axis``/``keepdims`` behave as they do
+at ``sum`` and ``mean``, with the axis validated **before** ``keepdims``.
+The value rule is exact rather than adjectival: equal maxima give the
+**lowest** index, ``+0.0`` and ``-0.0`` tie, an all-``-inf`` run gives 0,
+and the **first** NaN wins against every finite value and either infinity,
+with no NaN payload, sign, or signalling bit ever inspected. A
+non-contiguous input is materialized through Policy-B copy-then-compute, so
+the answers are identical either way.
+
+**The result is never a graph node, even from a gradient-tracking input** —
+the derivative of an index with respect to a value does not exist — so
+``"argmax"`` joined ``cpp.TENSOR_CORE_OPS`` and deliberately **not**
+``cpp.AUTOGRAD_OPS``, and the result is a plain leaf with no parents, no
+backward, and no operation name. K3 took the exported ``tf_*`` inventory
+from 54 to **55** (``tf_core_argmax``, against a phase maximum of 56) and
+the native CTests from 25 to **26**; it moved no registry, no version, no
+example, and no benchmark, and it shipped **no ``max``**: a kernel that
+finds the position of a maximum necessarily knows the maximum, and the
+phase deliberately does not expose it.
+
+**K4 shipped the phase's one index-*consuming* operation and its second
+and final C ABI symbol: native ``index_select``, forward only.**
+``NativeTensor.index_select(axis, indices)`` and
+``NativeTensorCore.index_select(axis, indices)`` take a **floating**
+source at either dtype, any rank ≥ 1, contiguous or not, together with a
+rank-1 **``int64``** index tensor, and return a fresh owning contiguous
+tensor of the **source's** dtype whose selected axis has ``indices.numel``
+positions. It is ``argmax``'s mirror image, and the two compose directly.
+There is exactly one index input form: a native ``int64`` tensor — never a
+NumPy array, a list, a tuple, or a Python ``int``, so a caller with host
+indices goes through ``from_int64_array`` first, one visible conversion
+instead of a hidden one.
+
+Duplicates and order are preserved **exactly**: the output's *j*-th slice
+is the source's slice at ``indices[j]``, with no sorting, deduplication,
+normalization, wrapping, or clamping. Negative and out-of-range indices
+are **rejected**, and every index is scanned completely — in Python before
+anything is allocated, and again independently at the C ABI before the
+first destination element is written. Values cross by **object
+representation**, so both signed zeros, both infinities, subnormals, and
+every NaN payload survive bit for bit. A non-contiguous source *or* index
+is materialized through Policy-B copy-then-compute, so the answers are
+identical either way.
+
+**It is forward only, and it says so.** A source with
+``requires_grad=True`` is **rejected** with a message naming
+``detach()``, never silently detached: the backward is a scatter-add with
+its own contract and its own milestone, and a graph-free result from a
+gradient-tracking source would be a silent gradient hole. So
+``"index_select"`` joined ``cpp.TENSOR_CORE_OPS`` and deliberately **not**
+``cpp.AUTOGRAD_OPS``, the result is a plain leaf, and the index tensor
+never receives a gradient. K4 took the exported ``tf_*`` inventory from 55
+to **56** (``tf_core_index_select`` — the phase maximum, now reached) and
+the native CTests from 26 to **27**; it moved no registry, no version, no
+example, and no benchmark.
+
+**``int64`` is still not a supported native tensor dtype**, and the
+distinction is the point — K3 and K4 are where it earns itself, because
+one operation now *produces* ``int64`` and another *consumes* it as a
+**role** operand, without ``int64`` ever becoming a dtype a kernel
+computes at. It is an **index/result** dtype in its own
+registry, ``cpp.normalize_dtype("int64")`` still raises, and no generic
+constructor changed what it accepts — public ``NativeStorage(size,
+dtype="int64")`` stays prohibited, and there is no public
+``NativeStorage.from_int64_array`` or
+``NativeTensorCore.from_int64_array``. Every K1 barrier holds against a
+real integer tensor: it can never require gradients, build or enter an
+autograd graph, accumulate one, become a ``NativeParameter``, be
+registered as a buffer at either persistence value, be owned by
+``NativeSGD`` or ``NativeAdam``, be declared in a checkpoint archive, or
+enter any floating operation — including as an ``index_select`` *source*,
+which is a floating role. There is no ``max``, no ``argmin``, no general
+``gather``, no ``scatter``, no embedding lookup, no ``index_select``
+backward, no integer arithmetic or reduction, no integer optimizer state,
+and no promotion or casting — prove first, then promise. ``native_accuracy``
+still reports through its explicit ``to_numpy()`` host boundary,
+deliberately. ``__all__`` stays at
+**25** names for the whole phase, because every new capability is a
+method on an existing class.
 
 ``NativeGenerator`` (Phase G, milestone G1) is the Python half of the
 phase's central split — random state is Python-managed, and the native

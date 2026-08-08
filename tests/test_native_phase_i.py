@@ -108,7 +108,16 @@ I8_CHECKPOINT_VERSIONS = (1, 2, 3)
 
 # What I1 added, and the only thing it added to the ABI. The count is
 # arithmetic over the inherited baseline so the two cannot drift apart.
-I1_EXPORT_COUNT = I0_EXPORT_COUNT + 2  # 54, and it does not move again
+I1_EXPORT_COUNT = I0_EXPORT_COUNT + 2  # 54, for the whole of Phase I
+
+# Symbols added by **later phases**, after Phase I closed, each mapped to
+# the milestone that shipped it. Keeping the split explicit is what stops
+# later growth from being absorbed into Phase I's record: every
+# "this milestone added no export" claim below is a claim about Phase I,
+# it is still exactly true, and it is measured against the live source
+# with these removed rather than against a number that quietly moved.
+POST_PHASE_I_EXPORTS = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
+CURRENT_EXPORT_COUNT = I1_EXPORT_COUNT + len(POST_PHASE_I_EXPORTS)  # 56
 
 # The ABI dtype codes, frozen. Written here independently of the module
 # under test so a silent renumbering fails rather than propagating.
@@ -1104,10 +1113,17 @@ def test_the_production_export_count_is_now_fifty_four():
     arithmetic over Phase H's 52 so that an unplanned addition and a
     silent removal both fail, rather than cancelling out."""
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT, sorted(exports)
+    assert len(exports) == CURRENT_EXPORT_COUNT, sorted(exports)
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT, \
+        sorted(exports)
     for planned in PLANNED_NEW_EXPORTS:
         assert planned in exports, f"{planned} is missing from the source"
-    assert len(exports - set(PLANNED_NEW_EXPORTS)) == I0_EXPORT_COUNT
+    assert len(exports - set(PLANNED_NEW_EXPORTS)
+               - set(POST_PHASE_I_EXPORTS)) == I0_EXPORT_COUNT
+    # ...and every later symbol really is a later phase's, named with the
+    # milestone that shipped it, so growth is recorded rather than absorbed.
+    for name, milestone in POST_PHASE_I_EXPORTS.items():
+        assert name in exports, (name, milestone)
     # 54 is the count for the **whole** phase: no later milestone adds a
     # symbol, so any per-operation or per-dtype export is a contract
     # violation wherever it appears.
@@ -1165,9 +1181,14 @@ def test_the_typed_creators_and_the_i2_raw_kernel_registry_are_declared():
     assert not [name for name in cpp.RAW_KERNELS
                 if name.endswith(("_f32", "_f64"))]
     # Internal representability is wider than both — that gap is the whole
-    # point of the registry existing now rather than at I0.
-    assert set(cpp._DTYPE_CODES) == {"float64", "float32"}
+    # point of the registry existing now rather than at I0. It was I1-I8's
+    # float32 gap, it closed at I9, and **Phase K milestone K2 reopened it**
+    # with ``int64``, which is representable and is deliberately not a
+    # *compute* dtype. The relation this asserts — raw kernels ⊂
+    # representable — is the durable one and holds at every milestone.
+    assert set(cpp._DTYPE_CODES) == {"float64", "float32", "int64"}
     assert set(cpp.RAW_KERNEL_DTYPES) < set(cpp._DTYPE_CODES)
+    assert set(cpp.SUPPORTED_DTYPES) < set(cpp._DTYPE_CODES)
 
 
 def test_the_cpp_storage_struct_is_dtype_tagged():
@@ -1246,6 +1267,12 @@ def test_storage_owns_a_genuine_typed_array_under_cpp17():
     assert re.search(r"create_typed_storage\s*<\s*double\s*>", source), (
         "storage.cpp never instantiates the allocation body for double"
     )
+    # Phase K, milestone K1: the same one body, a third instantiation. It
+    # is asserted here rather than in a Phase-K module because the C++17
+    # array-lifetime argument this test exists for is what licenses it.
+    assert re.search(r"create_typed_storage\s*<\s*std::int64_t\s*>", source), (
+        "storage.cpp never instantiates the allocation body for int64"
+    )
 
     # 3. Type-correct array ownership across the metadata allocation.
     assert re.search(r"std::unique_ptr\s*<\s*T\s*\[\s*\]\s*>", source), (
@@ -1254,7 +1281,12 @@ def test_storage_owns_a_genuine_typed_array_under_cpp17():
     )
 
     # 4. Destruction is a centralized, dtype-matched delete[] — one
-    #    switch, both dtypes, each applied to its own element type.
+    #    switch, **every** representable dtype, each applied to its own
+    #    element type. Phase K, milestone K1 added ``std::int64_t`` as a
+    #    third representable element type on exactly the terms this
+    #    guardrail states, so it is checked here rather than exempted: the
+    #    rule is "one array new-expression per dtype, one matching
+    #    delete[] per dtype, and no delete[] outside the one switch".
     destroy = re.search(r"void\s+destroy_storage_data\s*\(.*?\n\}", source,
                         re.S)
     assert destroy, "storage.cpp has no central destroy_storage_data"
@@ -1263,8 +1295,12 @@ def test_storage_owns_a_genuine_typed_array_under_cpp17():
                      body), "float32 storage is not released as float[]"
     assert re.search(r"delete\s*\[\s*\]\s*static_cast\s*<\s*double\s*\*\s*>",
                      body), "float64 storage is not released as double[]"
-    # ...and nowhere else duplicates it.
-    assert len(re.findall(r"delete\s*\[\s*\]", source)) == 2, (
+    assert re.search(
+        r"delete\s*\[\s*\]\s*static_cast\s*<\s*std::int64_t\s*\*\s*>", body
+    ), "int64 storage is not released as std::int64_t[]"
+    # ...and nowhere else duplicates it: exactly one delete[] per arm of
+    # the one switch, and nothing outside it.
+    assert len(re.findall(r"delete\s*\[\s*\]", source)) == 3, (
         "a delete[] exists outside the central destroy_storage_data switch"
     )
 
@@ -1416,6 +1452,7 @@ I9_ADDED_EXAMPLES = frozenset({"examples/native_float32_training.py"})
 # ``examples/``, including an edit to an existing file, still fails.
 POST_PHASE_I_EXAMPLES = frozenset({
     "examples/native_minibatch_training.py",          # Phase J, milestone J6
+    "examples/native_integer_indexing.py",            # Phase K, milestone K6
 })
 assert not (I9_ADDED_EXAMPLES & POST_PHASE_I_EXAMPLES)
 
@@ -1453,8 +1490,72 @@ I10_ADDED_BENCHMARKS = frozenset({"benchmarks/benchmark_native_dtype.py"})
 # an inherited file — still fails.
 POST_PHASE_I_BENCHMARKS = frozenset({
     "benchmarks/benchmark_native_data_pipeline.py",   # Phase J, milestone J8
+    "benchmarks/benchmark_native_integer.py",         # Phase K, milestone K8
 })
 assert not (I10_ADDED_BENCHMARKS & POST_PHASE_I_BENCHMARKS)
+
+# CI maintenance reviewed **after** Phase I closed at I11 — the counterpart
+# of ``POST_PHASE_I_EXAMPLES`` and ``POST_PHASE_I_BENCHMARKS`` above, and it
+# exists for exactly the same reason: the check below is a *cumulative* diff
+# against the I0 commit, so it keeps seeing later work forever. Phase I
+# itself changed no workflow file at any milestone. That historical fact is
+# what the guard records and is not what this authority relaxes; nor does
+# the change named here belong to any Phase-K milestone's semantics. It is
+# repository upkeep, attributed as such:
+#
+#     post-K9 CI maintenance: migrate GitHub Actions from Node-20-backed
+#     versions to Node-24-backed versions without changing workflow
+#     semantics.
+#
+# Where the example and benchmark authorities attribute **by path**, this
+# one attributes **by content**, because for CI the two are not the same
+# question. A path waiver would exempt every future edit to the workflow,
+# which is the one guarantee a CI guard exists to give. The value is
+# SHA-256 over the approved bytes after the repository's single
+# normalization rule — CRLF to LF, via ``_content_digest`` below — so a
+# Windows and a Linux checkout agree on it. Any other content at this path
+# fails here, including a later action bump, until a further deliberate
+# maintenance decision replaces the digest.
+POST_PHASE_I_CI_DIGESTS = {
+    ".github/workflows/tests.yml":
+        "0cc9a2485571d79d68bfb3f40ab9036dd0dd392ea3885c1404a2b456b721f4e8",
+}
+
+# The migration's semantic intent, named rather than left implicit in the
+# digest: a hash says "exactly these bytes" without recording *why* they
+# were approved. The two Node-24-backed versions the change moved to are
+# required by name, and the two Node-20-backed ones it moved away from are
+# forbidden by name. Exact strings deliberately — no version regex and no
+# moving-major allowance, either of which would let an unreviewed bump
+# satisfy the intent check.
+POST_PHASE_I_CI_REQUIRED = (
+    "actions/checkout@v6",
+    "astral-sh/setup-uv@v8.3.2",
+)
+POST_PHASE_I_CI_FORBIDDEN = (
+    "actions/checkout@v4",
+    "astral-sh/setup-uv@v5",
+)
+
+
+def _approved_ci_maintenance(relative, data):
+    """Is ``relative`` the one attributed post-Phase-I CI change, carrying
+    exactly the content that was approved for it?
+
+    Total, and false by default. A ``.github/`` path absent from
+    ``POST_PHASE_I_CI_DIGESTS`` is never approved; a listed one is approved
+    only while its normalized bytes hash to the pinned digest *and* carry
+    the migration's intent. ``data`` is ``None`` for a path that no longer
+    exists, so a deletion is a divergence like any other rather than a
+    silent pass."""
+    expected = POST_PHASE_I_CI_DIGESTS.get(relative)
+    if expected is None or data is None:
+        return False
+    if _content_digest(data) != expected:
+        return False
+    text = _normalized(data).decode("utf-8")
+    return (all(token in text for token in POST_PHASE_I_CI_REQUIRED)
+            and not any(token in text for token in POST_PHASE_I_CI_FORBIDDEN))
 
 
 def test_the_phase_changed_no_ci_or_dependency_file():
@@ -1464,12 +1565,16 @@ def test_the_phase_changed_no_ci_or_dependency_file():
     The milestones legitimately change C++ sources, the CMake build, and
     the Python package — that is the phase. What they must *not* touch is
     the surface that would signal an unearned capability change or a
-    changed environment: the CI workflow or the dependency set. Phase I
-    adds no dependency and no build option, and neither of those has an
-    exemption at any milestone.
+    changed environment: the CI workflow or the dependency set. **Phase I
+    changed neither, at any milestone**, and that is the historical fact
+    this guard exists to hold.
 
-    **Examples and benchmarks are the two qualified cases**, and both
-    qualifications are enumerated rather than waived:
+    **Dependencies have no exemption here at all** — not Phase I's own, and
+    no post-Phase-I one either. ``pyproject.toml``, ``uv.lock``, and
+    ``conftest.py`` fail unconditionally.
+
+    **Three qualified cases exist**, every one enumerated rather than
+    waived:
 
     - I1 through I8 added no example — those milestones were deliberately
       unable to write one, because no public constructor could produce a
@@ -1478,16 +1583,27 @@ def test_the_phase_changed_no_ci_or_dependency_file():
     - I0 through I9 changed no benchmark at all, because §22 assigns
       benchmark work to I10. **I10 adds exactly one**, and adds it as a new
       file rather than as a mode of the Phase-H harness.
+    - **CI maintenance reviewed after the phase closed**, which is neither
+      Phase I's work nor any later phase's semantics — repository upkeep
+      the cumulative diff would otherwise report forever.
 
     Any *other* change under ``examples/`` or ``benchmarks/`` — including
     an edit to an existing one — still fails here.
 
     The diff is **cumulative against the I0 commit**, so it keeps seeing
-    later phases' work indefinitely. ``POST_PHASE_I_EXAMPLES`` names those
-    additions explicitly, one entry per shipping milestone, rather than
-    relaxing the rule to a prefix or a count: Phase I's own example set
-    stays exactly I9's one, and an edit to any pre-existing example still
-    fails.
+    later work indefinitely. ``POST_PHASE_I_EXAMPLES`` and
+    ``POST_PHASE_I_BENCHMARKS`` name those additions explicitly, one entry
+    per shipping milestone, rather than relaxing the rule to a prefix or a
+    count: Phase I's own example set stays exactly I9's one, its benchmark
+    set exactly I10's one, and an edit to any pre-existing file of either
+    kind still fails.
+
+    ``POST_PHASE_I_CI_DIGESTS`` does that job for CI on **stricter** terms,
+    and the difference is the point. It is a content pin, not a blanket
+    path waiver: the workflow is permitted only while it hashes to the one
+    approved value, so the *next* edit to it — however small — fails here
+    until it is deliberately reviewed and the digest replaced. Every other
+    ``.github/`` path stays forbidden outright.
     """
     forbidden = []
     for path in _changed_since(I0_COMMIT):
@@ -1500,7 +1616,10 @@ def test_the_phase_changed_no_ci_or_dependency_file():
                 and path not in POST_PHASE_I_BENCHMARKS):
             forbidden.append(path)
         if path.startswith(".github/"):
-            forbidden.append(path)
+            live = REPO_ROOT / path
+            data = live.read_bytes() if live.is_file() else None
+            if not _approved_ci_maintenance(path, data):
+                forbidden.append(path)
         if path in ("pyproject.toml", "uv.lock", "conftest.py"):
             forbidden.append(path)
     assert not forbidden, (
@@ -1510,8 +1629,54 @@ def test_the_phase_changed_no_ci_or_dependency_file():
     # ...and the files those exemptions were written for really exist, so
     # an exemption cannot outlive its subject.
     for allowed in (I9_ADDED_EXAMPLES | I10_ADDED_BENCHMARKS
-                    | POST_PHASE_I_EXAMPLES | POST_PHASE_I_BENCHMARKS):
+                    | POST_PHASE_I_EXAMPLES | POST_PHASE_I_BENCHMARKS
+                    | set(POST_PHASE_I_CI_DIGESTS)):
         assert (REPO_ROOT / allowed).is_file(), allowed
+
+
+def test_the_post_phase_i_ci_authority_is_content_pinned_not_a_path_waiver():
+    """The CI exemption's non-vacuity, driven through the real helper.
+
+    A waiver that accepted any content at the permitted path would be
+    indistinguishable from deleting the ``.github/`` branch above, so each
+    way it could quietly become one is produced and shown to be caught:
+    reverting either action to the Node-20-backed version it was migrated
+    from, editing an unrelated command in the same file, and presenting the
+    approved bytes at a different ``.github/`` path.
+
+    Every candidate is a temporary string. No repository file is written."""
+    relative, = POST_PHASE_I_CI_DIGESTS
+    assert relative == ".github/workflows/tests.yml"
+    approved = (REPO_ROOT / relative).read_bytes()
+    text = _normalized(approved).decode("utf-8")
+
+    # The approved content passes, and really does carry the intent the
+    # digest was taken over — asserted directly, so neither token tuple
+    # can rot into a claim nothing checks.
+    assert _approved_ci_maintenance(relative, approved)
+    for token in POST_PHASE_I_CI_REQUIRED:
+        assert token in text, token
+    for token in POST_PHASE_I_CI_FORBIDDEN:
+        assert token not in text, token
+
+    # Each reversion, and one unrelated semantic edit, are rejected. The
+    # substitution is proved to have matched something first — otherwise
+    # the candidate would *be* the approved content and prove nothing.
+    for before, after in (("actions/checkout@v6", "actions/checkout@v4"),
+                          ("astral-sh/setup-uv@v8.3.2",
+                           "astral-sh/setup-uv@v5"),
+                          ("uv run pytest", "uv run pytest --exitfirst")):
+        candidate = text.replace(before, after)
+        assert candidate != text, before
+        assert not _approved_ci_maintenance(
+            relative, candidate.encode("utf-8")), after
+
+    # ...and no other ``.github/`` path is approved, whatever it holds —
+    # including the approved bytes themselves. A missing file is a
+    # divergence too.
+    assert not _approved_ci_maintenance(".github/workflows/release.yml",
+                                        approved)
+    assert not _approved_ci_maintenance(relative, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1520,7 +1685,7 @@ def test_the_phase_changed_no_ci_or_dependency_file():
 # The question this guard answers — "did the phase modify a benchmark it
 # inherited?" — was originally asked by reading each file's committed blob
 # at ``I0_COMMIT``. That works locally and fails in CI, and the failure is
-# instructive rather than incidental: ``actions/checkout@v4`` with no
+# instructive rather than incidental: ``actions/checkout@v6`` with no
 # ``fetch-depth`` performs a **depth-1** clone, so the runner has the
 # triggering commit and no history at all. ``git show I0:path`` then exits
 # non-zero and ``git ls-tree I0`` exits 128, and a guard that cannot read
@@ -2027,6 +2192,22 @@ def test_the_phase_touched_only_the_python_modules_its_scope_names():
         # the batches it delivers carry the *dataset's*, so it takes no
         # ``dtype`` argument and appears in no dtype inventory above.
         "src/tensorforge/experimental/native_data_loader.py",
+        # Phase K, K1 — the buffer reachability barrier. Registering a
+        # buffer is a *state* decision, not a dtype decision: the module
+        # gained no ``dtype`` argument, owns no dtype-bearing state of its
+        # own, and appears in none of the dtype inventories above. It reads
+        # a tensor's existing dtype through the same shared private
+        # validator this phase introduced, which is why the file changed at
+        # all.
+        "src/tensorforge/experimental/native_module.py",
+        # Phase K, K2 — a documentation-only reconciliation, and the
+        # narrowest kind. The module docstring explained the absence of a
+        # native ``argmax`` by saying the runtime has no integer dtype; K2
+        # gave the runtime an ``int64`` **index/result** dtype, so the
+        # *reason* became false while the absence stayed true. No code
+        # changed, the metric still reports through the host boundary, it
+        # owns no dtype, and it appears in no dtype inventory above.
+        "src/tensorforge/experimental/native_metrics.py",
     }
     changed = [path for path in _changed_since(I0_COMMIT)
                if path.startswith("src/") and path not in LATER_PHASE_FILES]
@@ -2120,12 +2301,20 @@ def _create_typed(size, code, zero_initialize=True):
 
 def test_the_python_dtype_tables_agree_with_the_frozen_abi_codes():
     """One authority per side of the boundary, agreeing by construction
-    because the codes are the same integers."""
+    because the codes are the same integers.
+
+    The two Phase-I codes are **frozen** and neither moved when Phase K
+    milestone K2 gave the tables their third entry — ``"int64": 2``, the
+    code the Phase-I header comment reserved for a future dtype. The entry
+    is asserted here rather than merely tolerated, so a table that gained a
+    *fourth* name would still fail this."""
     assert cpp._DTYPE_CODES == {"float64": DTYPE_CODE_FLOAT64,
-                                "float32": DTYPE_CODE_FLOAT32}
-    assert cpp._DTYPE_ITEM_SIZES == {"float64": 8, "float32": 4}
+                                "float32": DTYPE_CODE_FLOAT32,
+                                "int64": 2}
+    assert cpp._DTYPE_ITEM_SIZES == {"float64": 8, "float32": 4, "int64": 8}
     assert cpp._DTYPE_NUMPY["float64"] is np.float64
     assert cpp._DTYPE_NUMPY["float32"] is np.float32
+    assert cpp._DTYPE_NUMPY["int64"] is np.int64
     # The three tables describe the same set of dtypes, so none can gain a
     # value the others do not know about.
     assert (set(cpp._DTYPE_CODES) == set(cpp._DTYPE_ITEM_SIZES)
@@ -2143,11 +2332,19 @@ def test_the_dtype_tables_stayed_private_when_the_promise_caught_up():
     That is the durable half of the original claim. "Wider" was a fact
     about eight milestones, and it stopped being one when the registry
     moved; "private, and never a public dtype object" is a fact about the
-    design and does not lapse. The two sets agreeing is asserted here
-    rather than assumed, because a representation table that could hold a
-    dtype the registry does not is exactly the drift this guards."""
+    design and does not lapse.
+
+    The no-drift guarantee this exists for — *nothing representable is
+    unpromised* — is asserted here rather than assumed. **Phase K milestone
+    K2 generalized it rather than deleting it**: the representation table
+    now equals the union of the floating-compute registry and the
+    index/result registry, which is the same guarantee over two rows
+    instead of one. It is written as an exact equality on purpose; a subset
+    check would be strictly weaker and would let a fourth representable
+    name in unnoticed."""
     assert "float32" in cpp._DTYPE_CODES
-    assert set(cpp._DTYPE_CODES) == set(cpp.SUPPORTED_DTYPES)
+    assert set(cpp._DTYPE_CODES) == (set(cpp.SUPPORTED_DTYPES)
+                                     | set(cpp.INDEX_DTYPES))
     assert "float32" not in cpp.UNSUPPORTED
     for name in ("_DTYPE_CODES", "_DTYPE_ITEM_SIZES", "_DTYPE_NUMPY"):
         assert name.startswith("_"), name
@@ -2193,7 +2390,15 @@ def test_typed_storage_can_be_created_and_destroyed_at_both_dtypes():
 
 @needs_native
 def test_an_unknown_dtype_code_raises_value_error_and_allocates_nothing():
-    for code in (-1, 2, 3, 99, 2 ** 31 - 1):
+    """Code **2 is no longer here**: Phase K, milestone K1 gave it to
+    ``int64`` as the internal representation, taking exactly the code the
+    Phase-I header comment reserved for a future dtype. It moved from this
+    list to a positive assertion in the Phase-K modules rather than being
+    dropped, so the total coverage of the code space did not shrink — 3 and
+    every neighbour of the representable range are still rejected here, and
+    a representable code is still never *supported* merely by being
+    representable."""
+    for code in (-1, 3, 4, 99, 2 ** 31 - 1):
         for zero in (True, False):
             with pytest.raises(ValueError, match="dtype"):
                 _create_typed(16, code, zero)
@@ -2823,7 +3028,7 @@ def test_i2_moved_no_public_capability_at_all():
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I2 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_storage_copy_from_typed", "tf_storage_copy_to_typed",
                    "tf_storage_materialize_typed",
                    "tf_core_contiguous_copy_f32", "tf_storage_dtype",
@@ -3998,7 +4203,8 @@ def test_the_elementwise_exports_use_the_matching_dtype_guard():
         assert "require_float64" not in body, name
     # ...and the export count did not move: generalization ships inside the
     # symbols Python already declares.
-    assert len(_source_exports()) == I1_EXPORT_COUNT
+    assert len(_source_exports()
+               - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
 
 
 @needs_native
@@ -4014,7 +4220,7 @@ def test_i3_moved_no_public_capability_at_all():
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I3 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_core_add_f32", "tf_core_relu_f32", "tf_core_add_float32",
                    "tf_core_multiply_f64", "tf_storage_dtype",
                    "tf_storage_cast", "tf_dtype_item_size"):
@@ -5359,7 +5565,8 @@ def test_the_generalized_reduction_and_matmul_exports_carry_one_dispatch():
         assert "require_float64" not in body, name
     # ...and the export count did not move: generalization ships inside the
     # symbols Python already declares.
-    assert len(_source_exports()) == I1_EXPORT_COUNT
+    assert len(_source_exports()
+               - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
 
 
 @needs_native
@@ -5526,7 +5733,7 @@ def test_i4_moved_no_public_capability_at_all():
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I4 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_core_sum_f32", "tf_core_matmul_f32",
                    "tf_core_narrow_backward_f32", "tf_storage_fill_f32",
                    "tf_storage_scale_typed", "tf_core_sum_typed",
@@ -6550,7 +6757,7 @@ def test_i5_moved_no_public_capability_at_all():
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I5 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_core_conv2d_forward_f32", "tf_core_maxpool2d_f32",
                    "tf_core_conv2d_forward_typed", "tf_storage_winners",
                    "tf_core_maxpool2d_forward_f32"):
@@ -8027,7 +8234,7 @@ def test_i6_moved_no_public_capability_at_all():
     assert (native_checkpoint._SUPPORTED_FORMAT_VERSIONS
             == I8_CHECKPOINT_VERSIONS)
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I6 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_core_softmax_forward_f32", "tf_core_softmax_typed",
                    "tf_core_cross_entropy_forward_f32",
                    "tf_core_cross_entropy_targets", "tf_storage_create_int64",
@@ -8265,30 +8472,37 @@ def test_every_state_owning_constructor_rejects_everything_else(
 @needs_native
 def test_the_module_dtype_validator_is_a_strict_delegate():
     """Design §12.2: *no constructor invents its own dtype validation*. The
-    shared helper is a delegate over the internal normalizer, so the module
+    shared helper is a delegate with no rule of its own, so the module
     surface and the storage layer cannot disagree about what a dtype is —
     asserted by comparing both functions' answers, and both functions'
-    exception types and messages, over the same inputs."""
+    exception types and messages, over the same inputs.
+
+    **Which** function it delegates to moved at Phase K, milestone K1, from
+    the internal representation table to ``cpp.normalize_dtype``, the
+    floating-compute validator (integer design §5.4). The property this
+    test exists for is unchanged and is checked against the new delegate:
+    that the helper adds nothing and subtracts nothing. The narrowing is
+    also asserted directly here — the helper must now agree with the
+    *public* validator and must **not** agree with the representation
+    table the moment those two differ, which is what keeps a trainable
+    integer parameter impossible."""
     from tensorforge.experimental import _native_dtype
 
     assert _native_dtype.MODULE_DTYPES == ("float64", "float32")
     for good in (None, "float64", "float32"):
         assert (_native_dtype.normalize_module_dtype(good)
-                == cpp._normalize_internal_dtype(good))
+                == cpp.normalize_dtype(good))
     for bad in ("f4", "Float32", "cuda", "", np.float32, 4, True):
         with pytest.raises(BaseException) as helper:
             _native_dtype.normalize_module_dtype(bad)
         with pytest.raises(BaseException) as direct:
-            cpp._normalize_internal_dtype(bad)
+            cpp.normalize_dtype(bad)
         assert type(helper.value) is type(direct.value), bad
         assert str(helper.value) == str(direct.value), bad
-    # It is **not** the public validator and must not become one, even now
-    # that the two accept the same set. Through I8 the difference was
-    # visible — the public registry refused ``"float32"`` outright — and at
-    # I9 it stopped being visible without stopping being real: they remain
-    # separate functions measured against separate tables, and the delegate
-    # answers "what may a module be constructed at?" rather than "what does
-    # TensorForge support?".
+    # It is still **not** the public validator itself, and must not become
+    # one: it stays a separate function answering "what may a module be
+    # constructed at?", which is a different question from "what does
+    # TensorForge support?" even while the two have the same answer.
     assert (_native_dtype.normalize_module_dtype
             is not cpp.normalize_dtype)
     assert set(_native_dtype.MODULE_DTYPES) == set(cpp.SUPPORTED_DTYPES)
@@ -9271,7 +9485,7 @@ def test_normalization_still_adds_no_kernel_export_or_numpy_compute():
         assert name not in experimental.__all__, name
     exports = _source_exports()
     assert not [name for name in exports if "norm" in name.lower()]
-    assert len(exports) == I1_EXPORT_COUNT
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for relative in ("src/tensorforge/experimental/native_batchnorm.py",
                      "src/tensorforge/experimental/native_layernorm.py"):
         source = _read(relative)
@@ -10044,7 +10258,7 @@ def test_i7_moved_no_public_capability_at_all():
             == I8_CHECKPOINT_VERSIONS)
 
     exports = _source_exports()
-    assert len(exports) == I1_EXPORT_COUNT       # still 54; I7 adds none
+    assert len(exports - set(POST_PHASE_I_EXPORTS)) == I1_EXPORT_COUNT
     for absent in ("tf_core_dropout_forward_f32", "tf_core_dropout_typed",
                    "tf_core_dropout_backward", "tf_core_layer_norm",
                    "tf_core_batch_norm", "tf_storage_cast",

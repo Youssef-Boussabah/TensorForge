@@ -1712,7 +1712,12 @@ def test_native_cross_entropy_scope_boundaries_hold():
     the stable framework is untouched."""
     x = NativeTensor.from_array(LOGITS, requires_grad=True)
     core = cpp.NativeTensorCore.from_array(LOGITS)
-    for absent in ("max", "argmax", "amax", "divide", "gather", "scatter",
+    # (``argmax`` left this list at Phase K milestone K3, which shipped it
+    # as a general index-producing reduction. ``max`` and ``amax`` stay
+    # banned and always will: a kernel that finds the position of a
+    # maximum necessarily knows the maximum, and Phase K deliberately does
+    # not expose it — design §17.10.)
+    for absent in ("max", "amax", "divide", "gather", "scatter",
                    "sigmoid", "tanh", "one_hot", "binary_cross_entropy"):
         assert not hasattr(x, absent), absent
         assert not hasattr(core, absent), absent

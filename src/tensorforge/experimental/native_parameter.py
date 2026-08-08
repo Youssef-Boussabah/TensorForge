@@ -175,6 +175,19 @@ class NativeParameter(NativeTensor):
             # and by construction inherits no graph history: the new
             # core has never been near an operation.
             source = data._require_open()
+            # Phase K, milestone K1: the explicit non-floating-source
+            # rejection (integer design §6.5, §9.2). The dtype *argument*
+            # is already floating — ``normalize_module_dtype`` was narrowed
+            # to the floating registry at K1 — so a non-floating source
+            # would fail the equality check below anyway. It is checked
+            # separately, and first, because the two are different reports:
+            # "this source cannot be a trainable parameter at all" is not
+            # "this source is at the wrong one of two legal widths", and a
+            # caller who sees the second while the first is true has been
+            # told the wrong thing. A trainable integer parameter is
+            # impossible by construction, not by arithmetic accident.
+            cpp._require_floating_dtype(source.dtype, "NativeParameter",
+                                        role="source tensor")
             # A native tensor is a *tensor*, and there is no tensor cast in
             # this runtime (design §9.1/§9.5): it must already be at the
             # requested dtype. A host array is a different thing entirely —

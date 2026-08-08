@@ -953,3 +953,560 @@ def test_native_checkpoint_security_and_scope_guardrails(tmp_path):
         for absent in ("save", "load", "save_checkpoint",
                        "load_checkpoint", "rng_state"):
             assert not hasattr(owner, absent)
+
+
+# ======================================================================
+# 12. The save side cannot emit an entry its own loader would reject
+# ======================================================================
+#
+# A checkpoint-hardening repair, and its own regression. The compatibility
+# proof written for Phase K milestone K5 showed that the *writer* trusted
+# whatever dtype live state reported: every public construction path
+# already refuses a non-floating parameter or buffer, so the trust held
+# for every model a caller could build — but a serializer that can write
+# a file its own reader rejects is a defect on its own terms, and the
+# archive schema has to be enforced by the thing that emits it.
+#
+# The forged objects below are **test-only** and are never a supported
+# way to use the framework. They exist to drive the writer with state the
+# public API cannot produce, which is exactly what a schema guarantee has
+# to survive. No production barrier is weakened to build them: the
+# parameter constructor still rejects an ``int64`` tensor (asserted
+# below), ``register_buffer`` still rejects one, and the buffer registry
+# is corrupted directly rather than through it.
+
+
+import contextlib  # noqa: E402
+import gc  # noqa: E402
+from collections import namedtuple  # noqa: E402
+
+from tensorforge.experimental.native_module import (  # noqa: E402
+    _BufferEntry,
+)
+
+_Destination = namedtuple("_Destination", ("exists", "size", "mtime_ns",
+                                           "payload"))
+
+
+def _index_tensor(values=(0, 1)):
+    return NativeTensor.from_int64_array(np.asarray(values, dtype=np.int64))
+
+
+def _step_once(model, optimizer):
+    """One real forward/backward/step, so Adam's moments exist — with
+    every tensor the test owns closed explicitly rather than dropped.
+    The graph's own internal nodes stay framework-owned cycles, which is
+    why the caller uses ``settle=True``."""
+    features = NativeTensor.from_array(X_VALUES)
+    try:
+        output = model(features)
+        try:
+            total = output.sum()
+            try:
+                total.backward()
+            finally:
+                total.close()
+        finally:
+            output.close()
+    finally:
+        features.close()
+    optimizer.step()
+    optimizer.zero_grad()
+
+
+@contextlib.contextmanager
+def _forged_index_parameter(tensor):
+    """A genuine ``NativeParameter`` instance carrying a real ``int64``
+    core, built through ``__new__``.
+
+    It has to be: ``NativeParameter(tensor)`` refuses an index tensor,
+    which is the barrier this object exists to get behind. Every field is
+    what ``__init__`` would have set except ``_owns_core=False`` — the
+    core belongs to the caller's ``tensor``, which closes it — so this is
+    never a second owner and closes nothing. Disarmed on exit, ``_closed``
+    before the core reference is dropped, so the ``__del__`` fallback is
+    already a no-op."""
+    fake = NativeParameter.__new__(NativeParameter)
+    fake._core = tensor._core
+    fake._owns_core = False
+    fake._closed = False
+    fake._requires_grad = True
+    fake._grad = None
+    fake._parents = ()
+    fake._backward = None
+    fake._op = ""
+    fake._is_leaf = True
+    fake._graph_freed = False
+    fake._expected_versions = ()
+    fake._graph_resources = ()
+    fake._version = 0
+    assert type(fake) is NativeParameter
+    assert fake.dtype == "int64"
+    assert fake.owns_core is False
+    try:
+        yield fake
+    finally:
+        fake._closed = True
+        fake._core = None
+    assert tensor.closed is False
+
+
+@contextlib.contextmanager
+def _live_storage_baseline(settle=False):
+    """Native live storage must return exactly to baseline.
+
+    Installed outside ``monkeypatch`` on purpose: a mid-test ``undo()``
+    must not be able to disarm the tracker that proves a rejection leaked
+    nothing.
+
+    ``settle`` is narrow and is never the proof that anything was
+    released: an autograd graph's internal nodes are framework-owned and
+    form reference cycles between a node and its backward closure, so a
+    block that trained reclaims them rather than closing them. Every
+    object a test owns is closed explicitly first, and
+    ``test_native_checkpoint_live_storage_tracker_can_fail`` proves a
+    retained, unclosed tensor is still reported after a collection."""
+    live = {}
+    original_init = cpp.NativeStorage.__init__
+    original_close = cpp.NativeStorage.close
+
+    def counting_init(self, *args, **kwargs):
+        original_init(self, *args, **kwargs)
+        live[id(self)] = self.dtype
+
+    def counting_close(self):
+        original_close(self)
+        live.pop(id(self), None)
+
+    cpp.NativeStorage.__init__ = counting_init
+    cpp.NativeStorage.close = counting_close
+    try:
+        yield live
+        if settle:
+            gc.collect()
+        assert not live, f"{len(live)} native storages were never closed"
+    finally:
+        cpp.NativeStorage.__init__ = original_init
+        cpp.NativeStorage.close = original_close
+
+
+def _destination(path):
+    """Everything a save must not have changed about a destination."""
+    if not os.path.exists(path):
+        return _Destination(False, None, None, None)
+    stat = os.stat(path)
+    with open(path, "rb") as handle:
+        payload = handle.read()
+    return _Destination(True, stat.st_size, stat.st_mtime_ns, payload)
+
+
+def _directory(path):
+    return sorted(os.listdir(path))
+
+
+def _assert_baseline_parameters_untouched(model, fingerprint):
+    """``_assert_model_untouched`` compares every *current* parameter, and
+    while a forged entry is registered the model deliberately holds one
+    more than the fingerprint. The baseline entries are therefore compared
+    by name; the forged one is not a baseline parameter and is asserted
+    separately, as the operand the rejection must have left alone."""
+    live = dict(model.named_parameters())
+    for name, (values, version, grad) in fingerprint.items():
+        parameter = live[name]
+        assert np.array_equal(parameter.to_numpy(), values), name
+        assert parameter.version == version, name
+        assert parameter.grad is grad, name
+
+
+def _assert_save_rejected(path, entry, model, optimizer, fingerprint,
+                          directory, before, tensor):
+    """One save-side dtype rejection, and everything it must have left
+    alone: no new archive, an existing destination byte-for-byte intact,
+    no collision-safe temporary left behind, the live model untouched,
+    and the offending caller-owned tensor still open and unchanged."""
+    values = tensor.tolist()
+    with pytest.raises(ValueError) as error:
+        save_native_checkpoint(path, model, optimizer=optimizer)
+    message = str(error.value)
+    assert "save_native_checkpoint" in message, message
+    assert entry in message, message
+    assert "int64" in message, message
+    assert "floating" in message, message
+    assert _destination(path) == before                 # byte-for-byte
+    parent = os.path.dirname(path)
+    assert _directory(parent) == directory              # no temporary left
+    assert not [name for name in _directory(parent) if name.endswith(".tmp")]
+    _assert_baseline_parameters_untouched(model, fingerprint)
+    assert tensor.closed is False
+    assert tensor.tolist() == values
+    assert tensor.dtype == "int64"
+
+
+@needs_native
+def test_native_checkpoint_save_rejects_a_forged_index_parameter(tmp_path):
+    """Both registration routes, driven for real, then saved.
+
+    Registration itself carries no dtype authority — the parameter
+    constructor does, and it is proved separately below — so the writer
+    is what must refuse, and this asserts that it does at both routes,
+    against a fresh destination and against an existing one."""
+    with _live_storage_baseline():
+        model = _small_model(seed=0)
+        optimizer = NativeAdam(model.parameters(), lr=0.1)
+        tensor = _index_tensor()
+        try:
+            existing = str(tmp_path / "existing.npz")
+            save_native_checkpoint(existing, model, optimizer=optimizer)
+            existing_before = _destination(existing)
+            assert existing_before.exists
+            fresh = str(tmp_path / "never-written.npz")
+            baseline_names = [n for n, _ in model.named_parameters()]
+            fingerprint = _model_fingerprint(model)
+
+            with _forged_index_parameter(tensor) as fake:
+                routes = (
+                    ("assignment",
+                     lambda: model.__setattr__("indices", fake)),
+                    ("register_parameter",
+                     lambda: model.register_parameter("indices", fake)),
+                )
+                for label, register in routes:
+                    register()
+                    # The registration really happened — otherwise the
+                    # save below would be rejecting nothing.
+                    assert model.indices is fake, label
+                    assert "indices" in dict(model.named_parameters()), label
+                    assert dict(model._state_named_tensors())["indices"] \
+                        is fake, label
+
+                    # A destination that does not exist stays absent...
+                    _assert_save_rejected(
+                        fresh, "'indices'", model, optimizer, fingerprint,
+                        _directory(tmp_path), _destination(fresh), tensor)
+                    assert not os.path.exists(fresh), label
+                    # ...and one that does exist is untouched.
+                    _assert_save_rejected(
+                        existing, "'indices'", model, optimizer, fingerprint,
+                        _directory(tmp_path), existing_before, tensor)
+
+                    # Unregistering restores the exact baseline; ``del``
+                    # is the undo that installs no ordinary attribute.
+                    del model.indices
+                    assert [n for n, _ in model.named_parameters()] == \
+                        baseline_names, label
+                    assert "indices" not in model.__dict__, label
+                    assert not hasattr(model, "indices"), label
+
+            # The control: with the forgery gone the same save succeeds
+            # and the archive declares floating dtypes only.
+            control = str(tmp_path / "control.npz")
+            save_native_checkpoint(control, model, optimizer=optimizer)
+            manifest = _manifest_of(control)
+            declared = [entry["dtype"]
+                        for entry in manifest["model"]["entries"].values()]
+            declared += [entry["dtype"]
+                         for entry in manifest["optimizer"]["parameters"]]
+            for label in ("m", "v"):
+                declared += [entry["dtype"]
+                             for entry in manifest["optimizer"][label]]
+            assert declared and set(declared) == {"float64"}
+            load_native_checkpoint(control, model, optimizer=optimizer)
+            assert _destination(existing) == existing_before
+        finally:
+            tensor.close()
+            optimizer.close()
+            for _, parameter in model.named_parameters():
+                if parameter.grad is not None:
+                    parameter.zero_grad()
+                parameter.close()
+
+
+@needs_native
+def test_native_checkpoint_parameter_constructor_still_refuses_int64():
+    """The separate, differently located barrier: construction.
+
+    Kept apart from the save-side proof deliberately. The constructor is
+    the supported authority for the parameter role and the reason no
+    public route can reach the writer with an integer parameter at all;
+    the writer's own check is what makes the archive schema true anyway."""
+    with _live_storage_baseline():
+        tensor = _index_tensor()
+        try:
+            with pytest.raises(ValueError, match="int64"):
+                NativeParameter(tensor)
+            with pytest.raises(ValueError, match="int64"):
+                NativeParameter(tensor, dtype="int64")
+            with pytest.raises(ValueError, match="int64"):
+                NativeParameter(np.array([0, 1], dtype=np.int64),
+                                dtype="int64")
+            assert tensor.closed is False and tensor.tolist() == [0, 1]
+            # ...and register_buffer, the other public state door.
+            model = _small_model()
+            try:
+                for persistent in (True, False):
+                    with pytest.raises(ValueError, match="int64"):
+                        model.register_buffer("stat", tensor,
+                                              persistent=persistent)
+                assert list(model.named_buffers()) == []
+            finally:
+                for _, parameter in model.named_parameters():
+                    parameter.close()
+        finally:
+            tensor.close()
+
+
+@needs_native
+def test_native_checkpoint_save_rejects_a_forged_persistent_buffer(tmp_path):
+    """The buffer role, driven by corrupting the buffer **registry**
+    directly rather than by weakening ``register_buffer``.
+
+    ``_state_named_tensors()`` then presents an ``int64`` persistent
+    buffer, which is precisely the state the writer must refuse."""
+    with _live_storage_baseline():
+        model = _small_model(seed=1)
+        optimizer = NativeAdam(model.parameters(), lr=0.1)
+        tensor = _index_tensor((3, 4, 5))
+        floating = NativeTensor.from_array(np.array([1.0, 2.0]))
+        try:
+            model.register_buffer("stat", floating, persistent=True)
+            existing = str(tmp_path / "buffers.npz")
+            save_native_checkpoint(existing, model, optimizer=optimizer)
+            before = _destination(existing)
+            fingerprint = _model_fingerprint(model)
+
+            # The narrow injection: one registry entry, replaced.
+            model._buffers["stat"] = _BufferEntry(tensor, True)
+            assert dict(model._state_named_tensors())["stat"] is tensor
+            _assert_save_rejected(existing, "'stat'", model, optimizer,
+                                  fingerprint, _directory(tmp_path), before,
+                                  tensor)
+            absent = str(tmp_path / "absent.npz")
+            _assert_save_rejected(absent, "'stat'", model, optimizer,
+                                  fingerprint, _directory(tmp_path),
+                                  _destination(absent), tensor)
+            assert not os.path.exists(absent)
+
+            # A **non**-persistent forged buffer is not checkpoint state
+            # at all, so the save succeeds and the archive omits it —
+            # the negative control that keeps the claim about *persisted*
+            # state rather than about every registered tensor.
+            model._buffers["stat"] = _BufferEntry(tensor, False)
+            transient = str(tmp_path / "transient.npz")
+            save_native_checkpoint(transient, model, optimizer=optimizer)
+            assert "stat" not in _manifest_of(transient)["model"]["entries"]
+
+            # Restored, the same save succeeds and declares floating only.
+            model._buffers["stat"] = _BufferEntry(floating, True)
+            control = str(tmp_path / "restored.npz")
+            save_native_checkpoint(control, model, optimizer=optimizer)
+            entries = _manifest_of(control)["model"]["entries"]
+            assert "stat" in entries
+            assert {entry["dtype"] for entry in entries.values()} == \
+                {"float64"}
+            load_native_checkpoint(control, model, optimizer=optimizer)
+            assert tensor.closed is False and tensor.tolist() == [3, 4, 5]
+        finally:
+            tensor.close()
+            floating.close()
+            optimizer.close()
+            for _, parameter in model.named_parameters():
+                if parameter.grad is not None:
+                    parameter.zero_grad()
+                parameter.close()
+
+
+@needs_native
+@pytest.mark.parametrize("role", ["parameters", "m", "v"])
+def test_native_checkpoint_save_rejects_forged_optimizer_state(tmp_path, role):
+    """The optimizer's three persisted roles, one at a time, injected
+    around the real ``state_dict()`` authority.
+
+    The injection is restored in ``finally``, proved to have fired, and
+    every snapshot it created is proved closed after the rejection — by
+    the writer's own ``finally``, not by the test and not by collection."""
+    with _live_storage_baseline(settle=True):
+        model = _small_model(seed=2)
+        optimizer = NativeAdam(model.parameters(), lr=0.1)
+        injected = []
+        displaced = []
+        fired = []
+        try:
+            _step_once(model, optimizer)
+            existing = str(tmp_path / "optimizer.npz")
+            save_native_checkpoint(existing, model, optimizer=optimizer)
+            before = _destination(existing)
+            fingerprint = _model_fingerprint(model)
+            original = NativeAdam.state_dict
+
+            def poisoned(self):
+                state = original(self)
+                fired.append(role)
+                if role == "parameters":
+                    state["parameters"] = [
+                        {**entry, "dtype": "int64"}
+                        for entry in state["parameters"]
+                    ]
+                else:
+                    snapshot = _index_tensor((6, 7))
+                    injected.append(snapshot)
+                    # The displaced real snapshot leaves the list the
+                    # writer closes, so the test closes it instead —
+                    # explicitly, never by collection.
+                    displaced.append(state[role][0])
+                    state[role] = [snapshot] + list(state[role][1:])
+                return state
+
+            NativeAdam.state_dict = poisoned
+            try:
+                absent = str(tmp_path / "optimizer-absent.npz")
+                for path, expected in (
+                    (existing, before),
+                    (absent, _Destination(False, None, None, None)),
+                ):
+                    with pytest.raises(ValueError) as error:
+                        save_native_checkpoint(path, model,
+                                               optimizer=optimizer)
+                    message = str(error.value)
+                    assert "save_native_checkpoint" in message, message
+                    assert "optimizer state" in message, message
+                    assert role in message, message
+                    assert "int64" in message, message
+                    assert "floating" in message, message
+                    assert _destination(path) == expected
+                    assert not [name for name in _directory(tmp_path)
+                                if name.endswith(".tmp")]
+                    _assert_baseline_parameters_untouched(model, fingerprint)
+                assert not os.path.exists(absent)
+            finally:
+                NativeAdam.state_dict = original
+            # The injection really ran, and everything it allocated was
+            # released by the writer on the way out.
+            assert fired, "the optimizer injection never fired"
+            assert all(snapshot.closed for snapshot in injected), injected
+            if role != "parameters":
+                assert injected, "no snapshot was injected"
+
+            # The control: the same optimizer saves and loads once the
+            # injection is gone, declaring floating dtypes only.
+            control = str(tmp_path / "optimizer-control.npz")
+            save_native_checkpoint(control, model, optimizer=optimizer)
+            manifest = _manifest_of(control)
+            declared = [entry["dtype"]
+                        for entry in manifest["optimizer"]["parameters"]]
+            for label in ("m", "v"):
+                declared += [entry["dtype"]
+                             for entry in manifest["optimizer"][label]]
+            assert declared and set(declared) == {"float64"}
+            load_native_checkpoint(control, model, optimizer=optimizer)
+            assert _destination(existing) == before
+        finally:
+            for snapshot in injected + displaced:
+                if not snapshot.closed:
+                    snapshot.close()
+            optimizer.close()
+            for _, parameter in model.named_parameters():
+                if parameter.grad is not None:
+                    parameter.zero_grad()
+                parameter.close()
+
+
+@needs_native
+def test_native_checkpoint_live_storage_tracker_can_fail():
+    """"Nothing leaked" means something only when a leak is detectable —
+    and a collection must not be able to launder one."""
+    retained = []
+    with pytest.raises(AssertionError, match="never closed"):
+        with _live_storage_baseline(settle=True):
+            retained.append(NativeTensor.from_array(np.array([1.0, 2.0])))
+    retained[0].close()
+    with _live_storage_baseline():
+        tensor = NativeTensor.from_array(np.array([1.0, 2.0]))
+        tensor.close()
+
+
+@needs_native
+def test_native_checkpoint_save_seam_rejects_state_the_preflight_never_saw(
+        tmp_path):
+    """The two save-side checks answer different questions, so the second
+    is not redundant: a ``state_dict()`` that returns an entry the live
+    registries never held is still refused, at the serialization seam,
+    before the manifest or any temporary file exists."""
+    with _live_storage_baseline():
+        model = _small_model(seed=3)
+        injected = []
+        try:
+            path = str(tmp_path / "seam.npz")
+            original = NativeModule.state_dict
+
+            def poisoned(self):
+                state = original(self)
+                snapshot = _index_tensor((8, 9))
+                injected.append(snapshot)
+                state["sneaky"] = snapshot
+                return state
+
+            NativeModule.state_dict = poisoned
+            try:
+                with pytest.raises(ValueError) as error:
+                    save_native_checkpoint(path, model)
+                message = str(error.value)
+                assert "'sneaky'" in message, message
+                assert "int64" in message, message
+            finally:
+                NativeModule.state_dict = original
+            assert injected, "the seam injection never fired"
+            assert all(snapshot.closed for snapshot in injected)
+            assert not os.path.exists(path)
+            assert _directory(tmp_path) == []
+            # The preflight passed — the live model was always valid —
+            # which is what makes this the seam's own rejection.
+            checkpoint_module._validate_model(model, "probe")
+            save_native_checkpoint(path, model)
+            assert os.path.exists(path)
+        finally:
+            for snapshot in injected:
+                if not snapshot.closed:
+                    snapshot.close()
+            for _, parameter in model.named_parameters():
+                parameter.close()
+
+
+@needs_native
+def test_native_checkpoint_save_and_load_ask_one_dtype_question():
+    """The unit level: the writer's authority and the reader's rule 1 go
+    through the same private question, so the two cannot drift apart and
+    the writer cannot emit what the reader refuses."""
+    where = "save_native_checkpoint()"
+    for dtype in cpp.SUPPORTED_DTYPES:
+        assert checkpoint_module._validated_persisted_dtype(
+            dtype, "model state entry 'w'", where) == dtype
+        assert checkpoint_module._canonical_persisted_dtype(dtype) == \
+            (dtype, None)
+    for rejected in ("int64", "int32", "uint8", "bool", "float16",
+                     "complex64", "", "FLOAT64"):
+        canonical, reason = checkpoint_module._canonical_persisted_dtype(
+            rejected)
+        assert canonical is None and reason is not None, rejected
+        with pytest.raises(ValueError, match="floating"):
+            checkpoint_module._validated_persisted_dtype(
+                rejected, "model state entry 'w'", where)
+    # ``normalize_dtype(None)`` means "the default", which is the right
+    # answer to a different question — so a non-string is refused before
+    # the authority is asked, on both sides.
+    for bad in (None, 1, np.dtype("float64"), b"float64"):
+        canonical, reason = checkpoint_module._canonical_persisted_dtype(bad)
+        assert canonical is None and isinstance(reason, TypeError), bad
+        with pytest.raises(ValueError):
+            checkpoint_module._validated_persisted_dtype(bad, "e", where)
+    # The reader's rule 1 asks the same question, and its own version rule
+    # still stands on top of it, unchanged.
+    for version in checkpoint_module._SUPPORTED_FORMAT_VERSIONS:
+        with pytest.raises(ValueError, match="may declare"):
+            checkpoint_module._validated_entry_dtype("int64", version, "e",
+                                                     "load")
+    assert checkpoint_module._validated_entry_dtype("float32", 3, "e",
+                                                    "load") == "float32"
+    for version in checkpoint_module._FLOAT64_ONLY_VERSIONS:
+        with pytest.raises(ValueError, match="float64 only"):
+            checkpoint_module._validated_entry_dtype("float32", version, "e",
+                                                     "load")

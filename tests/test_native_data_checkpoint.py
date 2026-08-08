@@ -2188,12 +2188,18 @@ def test_j5_added_no_example_and_no_benchmark():
     benchmarks = sorted(path.name
                         for path in (REPO_ROOT / "benchmarks").glob("*.py")
                         if path.name != "__init__.py")
-    # 15 at J5, 16 since J6 — the one example J6 added, and no other.
-    assert len(examples) == 16, examples
+    # 15 at J5, 16 since J6 — the one example J6 added — and 17 since
+    # **K6** added the one integer-indexing example. Both are named rather
+    # than merely counted, so an unrecorded example still fails.
+    assert len(examples) == 17, examples
     assert "native_minibatch_training.py" in examples
-    # 8 at J5, 9 since **J8** — the one benchmark J8 added, and no other.
-    assert len(benchmarks) == 9, benchmarks
+    assert "native_integer_indexing.py" in examples
+    # 8 at J5, 9 since **J8** — the one benchmark J8 added — and 10 since
+    # **K8** added the one integer characterization harness. Both are
+    # named, so an unrecorded benchmark still fails.
+    assert len(benchmarks) == 10, benchmarks
     assert "benchmark_native_data_pipeline.py" in benchmarks
+    assert "benchmark_native_integer.py" in benchmarks
     # J6 landed its own proof module, J7 its hardening matrix, J8 its
     # benchmark contract module, and J9 the closure guardrails — all four
     # test-only, and each in a file of its own. J5's own artifact delta to

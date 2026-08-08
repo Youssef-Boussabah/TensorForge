@@ -130,6 +130,22 @@ FLOAT32_SUPPORT_MILESTONE = "I9"
 PHASE_J_ADDED_EXPORTS = ()
 FINAL_EXPORT_COUNT = PHASE_I_EXPORT_COUNT + len(PHASE_J_ADDED_EXPORTS)  # 54
 
+# Symbols and CTests added by **later phases**, after Phase J closed, each
+# mapped to the milestone that shipped it. Phase J's own record does not
+# move; the live tree's is derived from it plus these, so an unrecorded
+# addition still fails an exact equality. Phase K, milestone K1 added the
+# int64 storage CTest, milestone K3 the argmax export and its CTest, and
+# milestone K4 the index_select export and its CTest.
+POST_PHASE_J_EXPORTS = {"tf_core_argmax": "K3", "tf_core_index_select": "K4"}
+# ...and the one example a later phase added, named for the same reason.
+POST_PHASE_J_EXAMPLES = {"native_integer_indexing.py": "K6"}
+# Benchmarks a later phase added, named and subtracted the same way, so
+# Phase J's own closing benchmark count stays historically exact.
+POST_PHASE_J_BENCHMARKS = {"benchmark_native_integer.py": "K8"}
+POST_PHASE_J_CTESTS = {"dtype_int64_storage": "K1", "argmax": "K3",
+                       "index_select": "K4"}
+CURRENT_EXPORT_COUNT = FINAL_EXPORT_COUNT + len(POST_PHASE_J_EXPORTS)  # 56
+
 # Serialization — four separate authorities, none of which moved.
 FINAL_CHECKPOINT_FORMAT = "tensorforge.native_checkpoint"
 FINAL_CHECKPOINT_VERSION = 3
@@ -625,13 +641,25 @@ def test_every_status_surface_marks_phase_j_complete(surface):
 
 @pytest.mark.parametrize("surface", STATUS_SURFACES + ("CLAUDE.md",))
 def test_no_status_surface_invents_a_phase_after_j(surface):
-    """Closure is not permission to name the next phase. A J10, a Phase K,
-    or a committed successor would be a roadmap promise nobody approved."""
+    """Closure is not permission to *invent* the next phase. A J10, an
+    unapproved successor, or a committed promise about one would be a
+    roadmap entry nobody approved.
+
+    The J10 half is permanent: this ladder ran J0-J9 and ended there. The
+    phase-name half is a moving sentinel. It banned ``Phase K``, which was
+    accurate protection right up until it stopped being: Phase K (native
+    integer tensors and indexing) was **separately approved after this
+    phase closed**, and its K0 architecture contract now exists, so naming
+    it is a status update rather than an invention — and keeping the ban
+    would force every status surface to under-report the project. ``Phase
+    L`` takes its place. What may not be claimed for Phase K is a
+    *capability*, which tests/test_native_phase_k.py checks against the
+    live registry, the live source, and the built library."""
     text = _read(surface)
     for match in re.finditer(r"\bJ1[0-9]\b", text):
         raise AssertionError(f"{surface} names {match.group(0)}")
     flat = _flat(text)
-    for pattern in (r"\bPhase K\b",
+    for pattern in (r"\bPhase L\b",
                     r"\bthe next phase (is|will be)\b[^.;]{0,40}?\b\w"):
         offender = re.search(pattern, flat, re.I)
         assert offender is None, f"{surface}: {offender.group(0)!r}"
@@ -893,12 +921,17 @@ def test_the_closure_milestone_added_no_public_name_of_its_own():
 # ===========================================================================
 
 def test_the_source_exports_exactly_fifty_four_symbols():
-    """Stated as arithmetic rather than as a bare number, so the two facts
-    stay separable: Phase I closed at 54, and Phase J added none."""
+    """Stated as arithmetic rather than as a bare number, so the facts stay
+    separable: Phase I closed at 54, Phase J added none, and every symbol
+    the live source carries beyond that belongs to a named later
+    milestone."""
     exports = _source_exports()
-    assert len(exports) == FINAL_EXPORT_COUNT, sorted(exports)
+    assert len(exports) == CURRENT_EXPORT_COUNT, sorted(exports)
     assert PHASE_J_ADDED_EXPORTS == ()
-    assert len(exports) == PHASE_I_EXPORT_COUNT
+    for name, milestone in POST_PHASE_J_EXPORTS.items():
+        assert name in exports, (name, milestone)
+    assert len(exports - set(POST_PHASE_J_EXPORTS)) == FINAL_EXPORT_COUNT
+    assert len(exports - set(POST_PHASE_J_EXPORTS)) == PHASE_I_EXPORT_COUNT
 
 
 def test_no_pipeline_shaped_c_abi_symbol_was_added():
@@ -950,8 +983,13 @@ def _registered_ctests():
 
 
 def test_the_ctest_inventory_is_exactly_twenty_four_unique_targets():
+    """Phase J registered none, and every target the live tree carries
+    beyond its 24 belongs to a named later milestone."""
     names = _registered_ctests()
-    assert len(names) == FINAL_CTEST_COUNT, names
+    for name, milestone in POST_PHASE_J_CTESTS.items():
+        assert name in names, (name, milestone)
+    assert len([n for n in names
+                if n not in POST_PHASE_J_CTESTS]) == FINAL_CTEST_COUNT, names
     assert len(set(names)) == len(names), "a CTest name is registered twice"
     # Every registered test has a source file, and every source file is
     # registered — so a target cannot be added or orphaned unnoticed.
@@ -1031,10 +1069,19 @@ def test_no_build_output_can_become_repository_content():
 # ===========================================================================
 
 def test_the_example_inventory_closed_at_sixteen():
-    """Phase J's own example delta is **exactly one**, J6's."""
+    """Phase J's own example delta is **exactly one**, J6's.
+
+    The tree may hold more now — later phases ship their own — so the
+    equality is stated as "sixteen, plus exactly the examples later
+    milestones added, each named". That keeps J9's record historically
+    exact while still failing on an unannounced example."""
     names = sorted(path.name for path in (REPO_ROOT / "examples").glob("*.py")
                    if path.name != "__init__.py")
-    assert len(names) == FINAL_EXAMPLE_COUNT, names
+    for name, milestone in POST_PHASE_J_EXAMPLES.items():
+        assert name in names, (name, milestone)
+    assert len([name for name in names
+                if name not in POST_PHASE_J_EXAMPLES]) == (
+        FINAL_EXAMPLE_COUNT), names
     assert Path(J6_EXAMPLE).name in names
     # No second pipeline example arrived under another name.
     pipeline = [n for n in names
@@ -1043,11 +1090,20 @@ def test_the_example_inventory_closed_at_sixteen():
 
 
 def test_the_benchmark_inventory_closed_at_nine():
-    """Phase J's own benchmark delta is **exactly one**, J8's."""
+    """Phase J's own benchmark delta is **exactly one**, J8's.
+
+    Benchmarks a later phase added are named in ``POST_PHASE_J_BENCHMARKS``
+    and subtracted the same way later examples are, so what this asserts
+    stays a fact about **Phase J's close** rather than drifting into a
+    claim about today."""
     names = sorted(path.name for path in
                    (REPO_ROOT / "benchmarks").glob("*.py")
                    if path.name != "__init__.py")
-    assert len(names) == FINAL_BENCHMARK_COUNT, names
+    for name, milestone in POST_PHASE_J_BENCHMARKS.items():
+        assert name in names, (name, milestone)
+    assert len([name for name in names
+                if name not in POST_PHASE_J_BENCHMARKS]) == (
+        FINAL_BENCHMARK_COUNT), names
     assert Path(J8_BENCHMARK).name in names
     pipeline = [n for n in names if "data_pipeline" in n]
     assert pipeline == [Path(J8_BENCHMARK).name], pipeline
@@ -2469,7 +2525,7 @@ def test_the_current_tree_inventory_checks_need_no_repository_at_all(tmp_path):
     for source in sorted(staging.glob("*.cpp")):
         names.update(re.findall(r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
                                 source.read_text(encoding="utf-8"), re.S))
-    assert len(names) == FINAL_EXPORT_COUNT
+    assert len(names) == CURRENT_EXPORT_COUNT
     assert names == _source_exports()
 
     # ...and a deliberately mutated copy is still caught there, so the
@@ -2482,7 +2538,7 @@ def test_the_current_tree_inventory_checks_need_no_repository_at_all(tmp_path):
     for source in sorted(staging.glob("*.cpp")):
         mutated.update(re.findall(r"TF_EXPORT[^;{]*?\b(tf_[a-z0-9_]+)\s*\(",
                                   source.read_text(encoding="utf-8"), re.S))
-    assert len(mutated) == FINAL_EXPORT_COUNT + 1
+    assert len(mutated) == CURRENT_EXPORT_COUNT + 1
     assert "tf_invented_symbol" in mutated
 
 
