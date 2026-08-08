@@ -1494,6 +1494,69 @@ POST_PHASE_I_BENCHMARKS = frozenset({
 })
 assert not (I10_ADDED_BENCHMARKS & POST_PHASE_I_BENCHMARKS)
 
+# CI maintenance reviewed **after** Phase I closed at I11 — the counterpart
+# of ``POST_PHASE_I_EXAMPLES`` and ``POST_PHASE_I_BENCHMARKS`` above, and it
+# exists for exactly the same reason: the check below is a *cumulative* diff
+# against the I0 commit, so it keeps seeing later work forever. Phase I
+# itself changed no workflow file at any milestone. That historical fact is
+# what the guard records and is not what this authority relaxes; nor does
+# the change named here belong to any Phase-K milestone's semantics. It is
+# repository upkeep, attributed as such:
+#
+#     post-K9 CI maintenance: migrate GitHub Actions from Node-20-backed
+#     versions to Node-24-backed versions without changing workflow
+#     semantics.
+#
+# Where the example and benchmark authorities attribute **by path**, this
+# one attributes **by content**, because for CI the two are not the same
+# question. A path waiver would exempt every future edit to the workflow,
+# which is the one guarantee a CI guard exists to give. The value is
+# SHA-256 over the approved bytes after the repository's single
+# normalization rule — CRLF to LF, via ``_content_digest`` below — so a
+# Windows and a Linux checkout agree on it. Any other content at this path
+# fails here, including a later action bump, until a further deliberate
+# maintenance decision replaces the digest.
+POST_PHASE_I_CI_DIGESTS = {
+    ".github/workflows/tests.yml":
+        "0cc9a2485571d79d68bfb3f40ab9036dd0dd392ea3885c1404a2b456b721f4e8",
+}
+
+# The migration's semantic intent, named rather than left implicit in the
+# digest: a hash says "exactly these bytes" without recording *why* they
+# were approved. The two Node-24-backed versions the change moved to are
+# required by name, and the two Node-20-backed ones it moved away from are
+# forbidden by name. Exact strings deliberately — no version regex and no
+# moving-major allowance, either of which would let an unreviewed bump
+# satisfy the intent check.
+POST_PHASE_I_CI_REQUIRED = (
+    "actions/checkout@v6",
+    "astral-sh/setup-uv@v8.3.2",
+)
+POST_PHASE_I_CI_FORBIDDEN = (
+    "actions/checkout@v4",
+    "astral-sh/setup-uv@v5",
+)
+
+
+def _approved_ci_maintenance(relative, data):
+    """Is ``relative`` the one attributed post-Phase-I CI change, carrying
+    exactly the content that was approved for it?
+
+    Total, and false by default. A ``.github/`` path absent from
+    ``POST_PHASE_I_CI_DIGESTS`` is never approved; a listed one is approved
+    only while its normalized bytes hash to the pinned digest *and* carry
+    the migration's intent. ``data`` is ``None`` for a path that no longer
+    exists, so a deletion is a divergence like any other rather than a
+    silent pass."""
+    expected = POST_PHASE_I_CI_DIGESTS.get(relative)
+    if expected is None or data is None:
+        return False
+    if _content_digest(data) != expected:
+        return False
+    text = _normalized(data).decode("utf-8")
+    return (all(token in text for token in POST_PHASE_I_CI_REQUIRED)
+            and not any(token in text for token in POST_PHASE_I_CI_FORBIDDEN))
+
 
 def test_the_phase_changed_no_ci_or_dependency_file():
     """The phase's discipline, expressed as a cumulative diff assertion
@@ -1502,12 +1565,16 @@ def test_the_phase_changed_no_ci_or_dependency_file():
     The milestones legitimately change C++ sources, the CMake build, and
     the Python package — that is the phase. What they must *not* touch is
     the surface that would signal an unearned capability change or a
-    changed environment: the CI workflow or the dependency set. Phase I
-    adds no dependency and no build option, and neither of those has an
-    exemption at any milestone.
+    changed environment: the CI workflow or the dependency set. **Phase I
+    changed neither, at any milestone**, and that is the historical fact
+    this guard exists to hold.
 
-    **Examples and benchmarks are the two qualified cases**, and both
-    qualifications are enumerated rather than waived:
+    **Dependencies have no exemption here at all** — not Phase I's own, and
+    no post-Phase-I one either. ``pyproject.toml``, ``uv.lock``, and
+    ``conftest.py`` fail unconditionally.
+
+    **Three qualified cases exist**, every one enumerated rather than
+    waived:
 
     - I1 through I8 added no example — those milestones were deliberately
       unable to write one, because no public constructor could produce a
@@ -1516,16 +1583,27 @@ def test_the_phase_changed_no_ci_or_dependency_file():
     - I0 through I9 changed no benchmark at all, because §22 assigns
       benchmark work to I10. **I10 adds exactly one**, and adds it as a new
       file rather than as a mode of the Phase-H harness.
+    - **CI maintenance reviewed after the phase closed**, which is neither
+      Phase I's work nor any later phase's semantics — repository upkeep
+      the cumulative diff would otherwise report forever.
 
     Any *other* change under ``examples/`` or ``benchmarks/`` — including
     an edit to an existing one — still fails here.
 
     The diff is **cumulative against the I0 commit**, so it keeps seeing
-    later phases' work indefinitely. ``POST_PHASE_I_EXAMPLES`` names those
-    additions explicitly, one entry per shipping milestone, rather than
-    relaxing the rule to a prefix or a count: Phase I's own example set
-    stays exactly I9's one, and an edit to any pre-existing example still
-    fails.
+    later work indefinitely. ``POST_PHASE_I_EXAMPLES`` and
+    ``POST_PHASE_I_BENCHMARKS`` name those additions explicitly, one entry
+    per shipping milestone, rather than relaxing the rule to a prefix or a
+    count: Phase I's own example set stays exactly I9's one, its benchmark
+    set exactly I10's one, and an edit to any pre-existing file of either
+    kind still fails.
+
+    ``POST_PHASE_I_CI_DIGESTS`` does that job for CI on **stricter** terms,
+    and the difference is the point. It is a content pin, not a blanket
+    path waiver: the workflow is permitted only while it hashes to the one
+    approved value, so the *next* edit to it — however small — fails here
+    until it is deliberately reviewed and the digest replaced. Every other
+    ``.github/`` path stays forbidden outright.
     """
     forbidden = []
     for path in _changed_since(I0_COMMIT):
@@ -1538,7 +1616,10 @@ def test_the_phase_changed_no_ci_or_dependency_file():
                 and path not in POST_PHASE_I_BENCHMARKS):
             forbidden.append(path)
         if path.startswith(".github/"):
-            forbidden.append(path)
+            live = REPO_ROOT / path
+            data = live.read_bytes() if live.is_file() else None
+            if not _approved_ci_maintenance(path, data):
+                forbidden.append(path)
         if path in ("pyproject.toml", "uv.lock", "conftest.py"):
             forbidden.append(path)
     assert not forbidden, (
@@ -1548,8 +1629,54 @@ def test_the_phase_changed_no_ci_or_dependency_file():
     # ...and the files those exemptions were written for really exist, so
     # an exemption cannot outlive its subject.
     for allowed in (I9_ADDED_EXAMPLES | I10_ADDED_BENCHMARKS
-                    | POST_PHASE_I_EXAMPLES | POST_PHASE_I_BENCHMARKS):
+                    | POST_PHASE_I_EXAMPLES | POST_PHASE_I_BENCHMARKS
+                    | set(POST_PHASE_I_CI_DIGESTS)):
         assert (REPO_ROOT / allowed).is_file(), allowed
+
+
+def test_the_post_phase_i_ci_authority_is_content_pinned_not_a_path_waiver():
+    """The CI exemption's non-vacuity, driven through the real helper.
+
+    A waiver that accepted any content at the permitted path would be
+    indistinguishable from deleting the ``.github/`` branch above, so each
+    way it could quietly become one is produced and shown to be caught:
+    reverting either action to the Node-20-backed version it was migrated
+    from, editing an unrelated command in the same file, and presenting the
+    approved bytes at a different ``.github/`` path.
+
+    Every candidate is a temporary string. No repository file is written."""
+    relative, = POST_PHASE_I_CI_DIGESTS
+    assert relative == ".github/workflows/tests.yml"
+    approved = (REPO_ROOT / relative).read_bytes()
+    text = _normalized(approved).decode("utf-8")
+
+    # The approved content passes, and really does carry the intent the
+    # digest was taken over — asserted directly, so neither token tuple
+    # can rot into a claim nothing checks.
+    assert _approved_ci_maintenance(relative, approved)
+    for token in POST_PHASE_I_CI_REQUIRED:
+        assert token in text, token
+    for token in POST_PHASE_I_CI_FORBIDDEN:
+        assert token not in text, token
+
+    # Each reversion, and one unrelated semantic edit, are rejected. The
+    # substitution is proved to have matched something first — otherwise
+    # the candidate would *be* the approved content and prove nothing.
+    for before, after in (("actions/checkout@v6", "actions/checkout@v4"),
+                          ("astral-sh/setup-uv@v8.3.2",
+                           "astral-sh/setup-uv@v5"),
+                          ("uv run pytest", "uv run pytest --exitfirst")):
+        candidate = text.replace(before, after)
+        assert candidate != text, before
+        assert not _approved_ci_maintenance(
+            relative, candidate.encode("utf-8")), after
+
+    # ...and no other ``.github/`` path is approved, whatever it holds —
+    # including the approved bytes themselves. A missing file is a
+    # divergence too.
+    assert not _approved_ci_maintenance(".github/workflows/release.yml",
+                                        approved)
+    assert not _approved_ci_maintenance(relative, None)
 
 
 # ---------------------------------------------------------------------------
@@ -1558,7 +1685,7 @@ def test_the_phase_changed_no_ci_or_dependency_file():
 # The question this guard answers — "did the phase modify a benchmark it
 # inherited?" — was originally asked by reading each file's committed blob
 # at ``I0_COMMIT``. That works locally and fails in CI, and the failure is
-# instructive rather than incidental: ``actions/checkout@v4`` with no
+# instructive rather than incidental: ``actions/checkout@v6`` with no
 # ``fetch-depth`` performs a **depth-1** clone, so the runner has the
 # triggering commit and no history at all. ``git show I0:path`` then exits
 # non-zero and ``git ls-tree I0`` exits 128, and a guard that cannot read
